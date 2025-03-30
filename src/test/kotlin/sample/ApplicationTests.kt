@@ -20,9 +20,8 @@ class ApplicationTests @Autowired constructor(
 
     @Test
     fun foo() {
-        val spec = QuerySpecification<BusinessPartner>(
-            cypherStatement("MATCH (n:BusinessPartner) RETURN properties(n)")
-        )
+        val spec = QuerySpecification
+            .withStatement<BusinessPartner>("MATCH (n:BusinessPartner) RETURN properties(n)")
             .limit(10)
             .transform(BusinessPartner::class.java)
 

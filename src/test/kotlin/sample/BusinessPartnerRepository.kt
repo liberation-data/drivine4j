@@ -3,7 +3,6 @@ package sample
 import drivine.connection.BusinessPartner
 import drivine.manager.PersistenceManager
 import drivine.query.QuerySpecification
-import drivine.query.cypherStatement
 import drivine.transaction.DrivineTransactional
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
@@ -16,9 +15,8 @@ class BusinessPartnerRepository @Autowired constructor(
 
     @DrivineTransactional
     fun listBusinessPartner(): List<BusinessPartner> {
-        val spec = QuerySpecification<BusinessPartner>(
-            cypherStatement("MATCH (n:BusinessPartner) RETURN properties(n)")
-        )
+        val spec = QuerySpecification
+            .withStatement<BusinessPartner>("MATCH (n:BusinessPartner) RETURN properties(n)")
             .limit(10)
             .transform(BusinessPartner::class.java)
 

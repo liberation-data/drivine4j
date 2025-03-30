@@ -20,9 +20,8 @@ class NonTransactionalPersistenceManagerTests {
     @Test
     fun query_should_transform_results() {
         val manager = NonTransactionalPersistenceManager(provider, "default", DatabaseType.NEO4J)
-        val spec = QuerySpecification<BusinessPartner>(
-            cypherStatement("match (n:BusinessPartner) return properties(n)")
-        )
+        val spec = QuerySpecification
+            .withStatement<BusinessPartner>("match (n:BusinessPartner) return properties(n)")
             .limit(10)
             .transform(BusinessPartner::class.java)
 

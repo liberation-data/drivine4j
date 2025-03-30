@@ -14,9 +14,10 @@ class Neo4jConnectionProviderTests {
 
         val connection = provider.connect()
 
-        val spec = QuerySpecification<Any>(cypherStatement("match (n:BusinessPartner) return n"))
+        val spec = QuerySpecification
+            .withStatement<Any>("match (n:BusinessPartner) return n")
             .limit(10)
-        val result = connection.query(spec)
+        val result = connection.query<Any>(spec)
         connection.release()
     }
 

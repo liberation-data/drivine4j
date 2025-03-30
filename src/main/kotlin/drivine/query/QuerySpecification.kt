@@ -4,7 +4,7 @@ import drivine.mapper.MapPostProcessor
 import drivine.mapper.ResultPostProcessor
 import drivine.mapper.TransformPostProcessor
 
-class QuerySpecification<T>(
+class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
     var parameters: Map<String, Any> = emptyMap<String, Any>(),
     var postProcessors: MutableList<ResultPostProcessor<Any, T>> = mutableListOf(),
@@ -15,6 +15,10 @@ class QuerySpecification<T>(
     companion object {
         fun <T> withStatement(statement: Statement): QuerySpecification<T> {
             return QuerySpecification(statement = statement)
+        }
+
+        fun <T> withStatement(statement: String): QuerySpecification<T> {
+            return QuerySpecification(statement = Statement(statement))
         }
     }
 
