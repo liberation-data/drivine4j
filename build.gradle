@@ -21,6 +21,8 @@ repositories {
 dependencies {
 	implementation 'org.neo4j.driver:neo4j-java-driver:5.22.0'
 	implementation 'org.springframework.boot:spring-boot-starter'
+	implementation 'org.springframework.boot:spring-boot-starter-aop' // Spring AOP
+	implementation 'org.aspectj:aspectjweaver:1.9.7'
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin:2.15.0'
 	implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.0'

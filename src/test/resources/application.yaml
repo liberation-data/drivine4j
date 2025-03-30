@@ -1,0 +1,19 @@
+database:
+  dataSources:
+    neo:
+      type: NEO4J
+      userName: neo4j
+      password: mypass
+      host: localhost
+      port: 7687
+      databaseName: neo4j
+
+logging:
+  level:
+    root: info
+    drivine: debug
+
+spring:
+  output:
+    ansi:
+      enabled: always

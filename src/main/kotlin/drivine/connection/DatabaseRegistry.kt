@@ -1,31 +1,10 @@
 package drivine.connection
 
-import java.util.Properties
+import org.springframework.stereotype.Component
 
-class DatabaseRegistry private constructor() {
+@Component
+class DatabaseRegistry {
     private val providers: MutableMap<String, ConnectionProvider> = mutableMapOf()
-
-    companion object {
-        @Volatile
-        private var instance: DatabaseRegistry? = null
-
-        fun resolveFromProperties(properties: Properties, name: String? = null): ConnectionProvider {
-            return getInstance()
-                .builder()
-                .withProperties(ConnectionProperties.fromProperties(properties, name))
-                .register(name ?: "default")
-        }
-
-        fun getInstance(): DatabaseRegistry {
-            return instance ?: synchronized(this) {
-                instance ?: DatabaseRegistry().also { instance = it }
-            }
-        }
-
-        fun tearDown() {
-            instance = null
-        }
-    }
 
     fun builder(): ConnectionProviderBuilder {
         return ConnectionProviderBuilder(this)
@@ -38,4 +17,9 @@ class DatabaseRegistry private constructor() {
     fun register(connectionProvider: ConnectionProvider) {
         providers[connectionProvider.name] = connectionProvider
     }
+
+    fun withProperties(properties: ConnectionProperties, name: String = "default"): ConnectionProviderBuilder {
+        return this.builder().withProperties(properties)
+    }
+
 }

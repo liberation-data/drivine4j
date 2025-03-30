@@ -21,21 +21,6 @@ class ConnectionProviderBuilder(private val registry: DatabaseRegistry) {
     private var name: String? = null
     private var defaultGraphPath: String? = null
 
-    fun withProperties(properties: ConnectionProperties): ConnectionProviderBuilder {
-        this.type = properties.databaseType
-        this.host = properties.host
-        this.port = properties.port
-        this.userName = properties.userName
-        this.password = properties.password
-        this.idleTimeout = properties.idleTimeout
-        this.connectionTimeout = properties.connectionTimeout ?: 5000
-        this.name = properties.databaseName
-        this.defaultGraphPath = properties.defaultGraphPath
-        this.protocol = properties.protocol
-        this.poolMax = properties.poolMax ?: 40
-        return this
-    }
-
     fun withType(type: DatabaseType): ConnectionProviderBuilder {
         requireNotNull(type) { "Database type argument is required" }
         this.type = type
@@ -50,6 +35,16 @@ class ConnectionProviderBuilder(private val registry: DatabaseRegistry) {
     fun idleTimeout(idleTimeout: Int): ConnectionProviderBuilder = apply { this.idleTimeout = idleTimeout }
     fun databaseName(name: String): ConnectionProviderBuilder = apply { this.name = name }
     fun defaultGraphPath(path: String): ConnectionProviderBuilder = apply { this.defaultGraphPath = path }
+
+    fun withProperties(properties: ConnectionProperties): ConnectionProviderBuilder {
+        properties.type?.let { withType(it) }
+        properties.userName?.let {userName(it) }
+        properties.password?.let { password(it) }
+        properties.host?.let { host(it) }
+        properties.port?.let { port(it) }
+        properties.databaseName?.let { databaseName(it) }
+        return this
+    }
 
     fun register(name: String = "default"): ConnectionProvider {
         registry.connectionProvider(name)?.let { return it }
@@ -83,6 +78,9 @@ class ConnectionProviderBuilder(private val registry: DatabaseRegistry) {
 //    }
 
     private fun buildNeo4jProvider(name: String): ConnectionProvider {
+        if (protocol == null) {
+            protocol = "bolt"
+        }
         requireNotNull(userName) { "Neo4j requires a username" }
 
         if (idleTimeout != null) {
