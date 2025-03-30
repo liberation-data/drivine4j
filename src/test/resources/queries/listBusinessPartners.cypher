@@ -1,0 +1,1 @@
+match (n:BusinessPartner) where n.name starts with $startsWith return properties(n)

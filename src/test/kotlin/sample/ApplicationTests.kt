@@ -31,7 +31,7 @@ class ApplicationTests @Autowired constructor(
 
     @Test
     fun bar() {
-        val results = repo.listBusinessPartner()
+        val results = repo.listBusinessPartner(nameStartsWith = "a")
         println(results)
     }
 }
