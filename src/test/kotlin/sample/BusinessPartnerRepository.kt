@@ -2,6 +2,7 @@ package sample
 
 import drivine.connection.BusinessPartner
 import drivine.manager.PersistenceManager
+import drivine.query.CypherStatement
 import drivine.query.QuerySpecification
 import drivine.transaction.DrivineTransactional
 import org.springframework.beans.factory.annotation.Autowired
@@ -11,7 +12,7 @@ import org.springframework.stereotype.Component
 @Component
 class BusinessPartnerRepository @Autowired constructor(
     @Qualifier("neo") private val persistenceManager: PersistenceManager,
-    @Qualifier("listBusinessPartners") private val stmtListPartners: String
+    @Qualifier("listBusinessPartners") private val stmtListPartners: CypherStatement
 ) {
 
     @DrivineTransactional
