@@ -12,5 +12,5 @@ class Queries {
     fun listBusinessPartners(): CypherStatement {
         return CypherStatement(QueryLoader.loadQuery("listBusinessPartners"))
     }
-    
+
 }

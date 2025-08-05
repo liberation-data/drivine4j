@@ -19,8 +19,12 @@ class TransactionContextHolder {
     var currentTransaction: Transaction?
         get() = localStorage.get()[TransactionContextKeys.TRANSACTION.name] as Transaction?
         set(value) {
-            // Safely update the thread-local map by setting the value
-            localStorage.get()[TransactionContextKeys.TRANSACTION.name] = value ?: return // Avoid setting null value
+            val map = localStorage.get()
+            if (value == null) {
+                map.remove(TransactionContextKeys.TRANSACTION.name)
+            } else {
+                map[TransactionContextKeys.TRANSACTION.name] = value
+            }
         }
 
 

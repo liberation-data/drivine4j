@@ -2,7 +2,6 @@ package drivine.transaction
 
 import drivine.DrivineException
 import drivine.connection.Connection
-import drivine.connection.DatabaseRegistry
 import drivine.manager.DelegatingPersistenceManager
 import drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
