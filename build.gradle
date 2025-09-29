@@ -3,15 +3,24 @@ plugins {
 	id 'org.jetbrains.kotlin.plugin.spring' version '1.9.25'
 	id 'org.springframework.boot' version '3.4.2'
 	id 'io.spring.dependency-management' version '1.1.7'
+
+	id 'maven-publish'
+	id 'signing'
+	id 'org.jetbrains.dokka' version '1.9.20'
 }
 
 group = 'com.liberation-data'
 version = '0.0.1-SNAPSHOT'
 
+base {
+	archivesName = 'drivine4j'
+}
+
 java {
 	toolchain {
 		languageVersion = JavaLanguageVersion.of(21)
 	}
+	withSourcesJar()
 }
 
 repositories {
@@ -19,14 +28,19 @@ repositories {
 }
 
 dependencies {
-	implementation 'org.neo4j.driver:neo4j-java-driver:5.22.0'
+	implementation 'org.neo4j.driver:neo4j-java-driver:5.28.9'
+
+	// Boot dependencies are useful in tests and samples; publishing will use plain JAR
 	implementation 'org.springframework.boot:spring-boot-starter'
-	implementation 'org.springframework.boot:spring-boot-starter-aop' // Spring AOP
+	implementation 'org.springframework.boot:spring-boot-starter-aop'
 	implementation 'org.aspectj:aspectjweaver:1.9.7'
+
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin:2.15.0'
 	implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.0'
+
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.springframework:spring-tx'
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
@@ -37,6 +51,93 @@ kotlin {
 	}
 }
 
+// Use JUnit 5
 tasks.named('test') {
 	useJUnitPlatform()
+}
+
+// Ensure we publish a normal library JAR, not the Spring Boot fat jar
+tasks.named('bootJar') {
+	enabled = false
+}
+tasks.named('jar') {
+	enabled = true
+}
+
+// --- Dokka-based javadoc jar for Kotlin ---
+tasks.register('javadocJar', Jar) {
+	dependsOn tasks.named('dokkaHtml')
+	archiveClassifier = 'javadoc'
+	from tasks.named('dokkaHtml').get().outputDirectory
+}
+
+// --- Publishing configuration ---
+publishing {
+	publications {
+		mavenJava(MavenPublication) {
+			from components.java
+
+			// Explicit coords (optional if group/version/base.archivesName are set)
+			groupId = project.group
+			artifactId = project.extensions.getByType(BasePluginExtension).archivesName.get()
+			version = project.version
+
+			// Attach sources/javadoc jars
+			artifact tasks.named('sourcesJar')
+			artifact tasks.named('javadocJar')
+
+			pom {
+				name = 'drivine4j'
+				description = 'Drivine for JVM — Neo4j/Spring-oriented utilities'
+				url = 'https://github.com/your-org/drivine4j' // <- change me
+
+				licenses {
+					license {
+						name = 'Apache License 2.0'
+						url = 'https://www.apache.org/licenses/LICENSE-2.0'
+						distribution = 'repo'
+					}
+				}
+				developers {
+					developer {
+						id = 'jasperblues'        // <- change me
+						name = 'Jasper Blues'     // <- change me
+						email = 'you@example.com' // <- change me / optional
+					}
+				}
+				scm {
+					connection = 'scm:git:https://github.com/your-org/drivine4j.git'       // <- change me
+					developerConnection = 'scm:git:ssh://git@github.com/your-org/drivine4j.git'
+					url = 'https://github.com/your-org/drivine4j'
+				}
+			}
+		}
+	}
+
+	repositories {
+		// Sonatype (s01). Switches snapshot vs. staging by version suffix
+		maven {
+			name = 'Sonatype'
+			url = version.endsWith('SNAPSHOT')
+					? uri('https://s01.oss.sonatype.org/content/repositories/snapshots/')
+					: uri('https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/')
+
+			credentials {
+				username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+				password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+			}
+		}
+		// Optional: also publish to ~/.m2 via `publish` (you can rely on publishToMavenLocal instead)
+		// mavenLocal()
+	}
+}
+
+// --- Signing (required for non-SNAPSHOT releases to Maven Central) ---
+signing {
+	required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
+	useInMemoryPgpKeys(
+			findProperty('signingKey') ?: System.getenv('SIGNING_KEY'),
+			findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+	)
+	sign publishing.publications.mavenJava
 }

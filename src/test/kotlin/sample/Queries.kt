@@ -13,4 +13,24 @@ class Queries {
         return CypherStatement(QueryLoader.loadQuery("listBusinessPartners"))
     }
 
+    @Bean
+    fun listHolidays(): CypherStatement {
+        return CypherStatement(QueryLoader.loadQuery("listHolidays"))
+    }
+
+    @Bean
+    fun listPersons(): CypherStatement {
+        return CypherStatement(QueryLoader.loadQuery("listPersons"))
+    }
+
+    @Bean
+    fun listHolidaysByType(): CypherStatement {
+        return CypherStatement(QueryLoader.loadQuery("listHolidaysByType"))
+    }
+
+    @Bean
+    fun listPersonsByProfession(): CypherStatement {
+        return CypherStatement(QueryLoader.loadQuery("listPersonsByProfession"))
+    }
+
 }

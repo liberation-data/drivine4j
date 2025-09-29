@@ -1,1 +1,3 @@
-match (n:BusinessPartner) where n.name starts with $startsWith return properties(n)
+MATCH (n:BusinessPartner)
+  WHERE n.name STARTS WITH $startsWith
+RETURN properties(n)

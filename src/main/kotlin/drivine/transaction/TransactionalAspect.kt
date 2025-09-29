@@ -15,7 +15,7 @@ class TransactionalAspect {
     @Autowired
     lateinit var contextHolder: TransactionContextHolder
 
-    @Around("@annotation(drivine.transaction.DrivineTransactional)")
+    @Around("@annotation(drivine.transaction.DrivineTransactional) || @annotation(org.springframework.transaction.annotation.Transactional)")
     fun aroundTransactionalMethod(joinPoint: ProceedingJoinPoint): Any? {
 
         val options = optionsWithDefaults()

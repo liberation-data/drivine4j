@@ -9,7 +9,7 @@ class Neo4jConnectionProviderTests {
     @Test
     fun contextLoads() {
         val provider = Neo4jConnectionProvider(name = "test", type = DatabaseType.NEO4J, host = "localhost",
-            port = 7687, user = "neo4j", password = "mypass", database = "neo4j", protocol = "bolt",
+            port = 7687, user = "neo4j", password = "h4ckM3$$$$", database = "neo4j", protocol = "bolt",
             config = emptyMap() )
 
         val connection = provider.connect()

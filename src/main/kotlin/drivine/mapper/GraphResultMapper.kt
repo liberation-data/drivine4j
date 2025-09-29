@@ -4,14 +4,35 @@ import drivine.query.QuerySpecification
 
 abstract class GraphResultMapper : ResultMapper {
 
-    override fun <T : Any> mapQueryResults(records: List<Any>, spec: QuerySpecification<T>): List<T> {
-        // TODO: The default mapper(s) can be a result post processor too - then users can specify their own, if desired.
-        var results: List<Any> = mapToNative(records)
-        spec.postProcessors.forEach { processor ->
-            results = processor.apply(results)
+    override fun <T : Any> mapQueryResults(results: List<Any>, spec: QuerySpecification<T>): List<T> {
+        // Get the chain of specs from original to final
+        val specChain = getSpecChain(spec)
+
+        // Start with mapToNative only on the first (original) spec
+        var results: List<Any> = mapToNative(results)
+
+        // Process each spec in the chain
+        specChain.forEach { chainSpec ->
+            chainSpec.postProcessors.forEach { processor ->
+                results = processor.apply(results)
+            }
         }
+
         @Suppress("UNCHECKED_CAST")
         return results as List<T>
+    }
+
+    private fun getSpecChain(spec: QuerySpecification<*>): List<QuerySpecification<*>> {
+        val chain = mutableListOf<QuerySpecification<*>>()
+        var current: QuerySpecification<*>? = spec
+
+        // Build chain from current back to original
+        while (current != null) {
+            chain.add(0, current)  // Add to beginning to maintain order
+            current = current.originalSpec
+        }
+
+        return chain
     }
 
     private fun mapToNative(records: List<Any>): List<Any> {
