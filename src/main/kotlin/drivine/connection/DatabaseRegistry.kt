@@ -4,6 +4,13 @@ import org.springframework.stereotype.Component
 
 @Component
 class DatabaseRegistry {
+
+    constructor(dataSourceMap: DataSourceMap) {
+        dataSourceMap.dataSources.forEach { (key, value) ->
+            withProperties(value).register(key)
+        }
+    }
+
     private val providers: MutableMap<String, ConnectionProvider> = mutableMapOf()
 
     fun builder(): ConnectionProviderBuilder {

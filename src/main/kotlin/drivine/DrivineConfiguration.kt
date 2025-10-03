@@ -1,9 +1,9 @@
 package drivine
 
+import drivine.connection.DataSourceMap
 import drivine.connection.DatabaseRegistry
 import drivine.manager.PersistenceManagerFactory
 import drivine.transaction.TransactionContextHolder
-import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Configuration
@@ -12,15 +12,19 @@ import org.springframework.context.annotation.Configuration
 @ComponentScan(basePackages = ["drivine"])
 class DrivineConfiguration {
 
-    @Autowired
-    lateinit var databaseRegistry: DatabaseRegistry
-
-    @Autowired
-    lateinit var contextHolder: TransactionContextHolder
+    @Bean
+    fun databaseRegistry(dataSourceMap: DataSourceMap): DatabaseRegistry {
+        return DatabaseRegistry(dataSourceMap)
+    }
 
     @Bean
-    fun factory(): PersistenceManagerFactory {
-        return PersistenceManagerFactory(databaseRegistry, contextHolder)
+    fun transactionContextHolder(): TransactionContextHolder {
+        return TransactionContextHolder()
+    }
+
+    @Bean
+    fun factory(databaseRegistry: DatabaseRegistry): PersistenceManagerFactory {
+        return PersistenceManagerFactory(databaseRegistry, transactionContextHolder())
     }
 
 }

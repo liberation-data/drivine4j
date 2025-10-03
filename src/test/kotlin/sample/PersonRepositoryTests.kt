@@ -9,7 +9,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import java.util.UUID
 
-@SpringBootTest(classes = [AppContext::class])
+@SpringBootTest(classes = [TestAppContext::class])
 class PersonRepositoryTests @Autowired constructor(
     private val manager: PersistenceManager,
     private val personRepository: PersonRepository

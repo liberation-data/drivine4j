@@ -21,6 +21,7 @@ interface PersistenceManager {
     /**
      * Queries for a set of results according to the supplied specification.
      * @param spec
+     * TODO: Return Map type.
      */
     fun <T: Any> query(spec: QuerySpecification<T>): List<T>
 

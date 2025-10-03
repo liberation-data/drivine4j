@@ -1,3 +1,29 @@
+# Logging configuration for tests
+logging:
+  level:
+    drivine: DEBUG
+    sample: DEBUG
+    org.neo4j.driver: INFO
+
+# Spring configuration
+spring:
+  main:
+    banner-mode: off
+  output:
+    ansi:
+      enabled: always
+  profiles:
+    active: local  # Change from 'default' to 'local' to use local Neo4j instead of test containers
+
+---
+# Local profile configuration - for using local Neo4j instance
+spring:
+  config:
+    activate:
+      on-profile: local
+
+# Data-source below is used then the 'local' config is active
+
 database:
   dataSources:
     neo:
@@ -7,13 +33,3 @@ database:
       host: localhost
       port: 7687
       databaseName: neo4j
-
-logging:
-  level:
-    root: info
-    drivine: debug
-
-spring:
-  output:
-    ansi:
-      enabled: always

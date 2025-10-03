@@ -10,7 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import java.util.UUID
 
-@SpringBootTest(classes = [AppContext::class])
+@SpringBootTest(classes = [TestAppContext::class])
 class PersistenceManagerTests @Autowired constructor(
     private val manager: PersistenceManager,
     private val holidayRepository: HolidayRepository,
@@ -21,9 +21,9 @@ class PersistenceManagerTests @Autowired constructor(
     fun setupTestData() {
         // Clear existing test data
         manager.execute(QuerySpecification
-            .withStatement("MATCH (h:Holiday) WHERE h.createdBy = 'test' DELETE h"))
+            .withStatement("MATCH (h:Holiday) WHERE h.createdBy = 'test' detach DELETE h"))
         manager.execute(QuerySpecification
-            .withStatement("MATCH (p:Person) WHERE p.createdBy = 'test' DELETE p"))
+            .withStatement("MATCH (p:Person) WHERE p.createdBy = 'test' detach DELETE p"))
 
         // Insert test holidays
         val holidayData = listOf(

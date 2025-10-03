@@ -37,10 +37,10 @@ class ConnectionProviderBuilder(private val registry: DatabaseRegistry) {
     fun defaultGraphPath(path: String): ConnectionProviderBuilder = apply { this.defaultGraphPath = path }
 
     fun withProperties(properties: ConnectionProperties): ConnectionProviderBuilder {
-        properties.type?.let { withType(it) }
+        properties.type.let { withType(it) }
         properties.userName?.let {userName(it) }
         properties.password?.let { password(it) }
-        properties.host?.let { host(it) }
+        properties.host.let { host(it) }
         properties.port?.let { port(it) }
         properties.databaseName?.let { databaseName(it) }
         return this

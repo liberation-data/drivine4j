@@ -1,15 +1,15 @@
 package sample
 
 import drivine.connection.Holiday
-import drivine.query.QuerySpecification
 import drivine.manager.PersistenceManager
+import drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
-import java.util.UUID
+import java.util.*
 
-@SpringBootTest(classes = [AppContext::class])
+@SpringBootTest(classes = [TestAppContext::class])
 class HolidayRepositoryTests @Autowired constructor(
     private val manager: PersistenceManager,
     private val holidayRepository: HolidayRepository
@@ -19,7 +19,7 @@ class HolidayRepositoryTests @Autowired constructor(
     fun setupTestData() {
         // Clear existing test data
         manager.execute(QuerySpecification
-            .withStatement("MATCH (h:Holiday) WHERE h.createdBy = 'test' DELETE h"))
+            .withStatement("MATCH (h:Holiday) WHERE h.createdBy = 'test' DETACH DELETE h"))
 
         // Insert test holidays
         val holidayData = listOf(
