@@ -4,10 +4,14 @@ import drivine.connection.Person
 import drivine.manager.PersistenceManager
 import drivine.query.CypherStatement
 import drivine.query.QuerySpecification
+import drivine.utils.ObjectUtils
+import drivine.utils.Partial
+import drivine.utils.toMap
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Component
 import org.springframework.transaction.annotation.Transactional
+import java.util.UUID
 
 @Component
 class PersonRepository @Autowired constructor(
@@ -50,6 +54,34 @@ class PersonRepository @Autowired constructor(
             .filter { it.isActive }
 
         return persistenceManager.query(spec)
+    }
+
+    @Transactional
+    fun update(person: Person): Person {
+        return update(ObjectUtils.primitiveProps(person, includeNulls = false))
+    }
+
+    @Transactional
+    fun update(uuid: UUID, partial: Partial<Person>): Person {
+        return update(buildMap {
+            putAll(partial.toMap())
+            put("uuid", uuid.toString())
+        })
+    }
+
+    private fun update(props: Map<String, Any?>): Person {
+        val statement = """
+            MERGE (p:Person {uuid: ${'$'}props.uuid})
+            SET p += ${'$'}props
+            RETURN properties(p)
+        """
+
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement<Any>(statement)
+                .bind(mapOf("props" to props))
+                .transform(Person::class.java)
+        )
     }
 
 }

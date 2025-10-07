@@ -5,7 +5,7 @@ import java.util.UUID
 
 @JsonIgnoreProperties(ignoreUnknown = true)
 data class Person(
-    val uuid: UUID?,
+    val uuid: UUID,
     val firstName: String?,
     val lastName: String?,
     val email: String?,

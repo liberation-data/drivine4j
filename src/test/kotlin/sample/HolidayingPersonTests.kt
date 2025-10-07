@@ -209,8 +209,8 @@ class HolidayingPersonTests @Autowired constructor(
         assert(bob.person.firstName == "Bob")
         assert(bob.holidays.size == 2)
 
-        val bobHolidayNames = bob.holidays?.map { it.name }
-        assert(bobHolidayNames?.contains("Canada Day") == true)
-        assert(bobHolidayNames?.contains("Christmas Day") == true)
+        val bobHolidayNames = bob.holidays.map { it.name }
+        assert(bobHolidayNames.contains("Canada Day"))
+        assert(bobHolidayNames.contains("Christmas Day"))
     }
 }

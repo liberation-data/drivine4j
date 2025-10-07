@@ -3,6 +3,7 @@ package sample
 import drivine.connection.Person
 import drivine.query.QuerySpecification
 import drivine.manager.PersistenceManager
+import drivine.utils.partial
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -12,7 +13,8 @@ import java.util.UUID
 @SpringBootTest(classes = [TestAppContext::class])
 class PersonRepositoryTests @Autowired constructor(
     private val manager: PersistenceManager,
-    private val personRepository: PersonRepository
+    @Autowired private val personRepository: PersonRepository,
+    repository: PersonRepository
 ) {
 
     @BeforeEach
@@ -145,5 +147,44 @@ class PersonRepositoryTests @Autowired constructor(
         val results = manager.query(spec)
         println("NY Engineer emails: $results")
         assert(results.all { it.contains("@") })
+    }
+
+    @Test
+    fun testUpdate() {
+        // Get an existing person
+        val person = personRepository.findPersonsByCity("New York").first()
+        println("Before update: ${person.firstName} ${person.lastName}, age: ${person.age}")
+
+        // Update the person
+        val updated = personRepository.update(person.copy(age = 35, city = "Los Angeles"))
+        println("After update: ${updated.firstName} ${updated.lastName}, age: ${updated.age}, city: ${updated.city}")
+
+        // Verify the update
+        assert(updated.uuid == person.uuid)
+        assert(updated.age == 35)
+        assert(updated.city == "Los Angeles")
+    }
+
+    @Test
+    fun `update using partial should be supported`() {
+        // Get an existing person
+        val person = personRepository.findPersonsByCity("New York").first()
+        println("Before update: ${person.firstName} ${person.lastName}, age: ${person.age}")
+
+
+        val patch = partial<Person> {
+            set(Person::profession, "Stock Broker")
+            set(Person::email, "jane@wallstreet.com")
+        }
+
+        val updated = personRepository.update(person.uuid, patch)
+
+        println("After update: ${updated.firstName} ${updated.lastName}, age: ${updated.age}, city: ${updated.city}")
+
+        // Verify the update
+        assert(updated.uuid == person.uuid)
+        assert(updated.profession == "Stock Broker")
+        assert(updated.email == "jane@wallstreet.com")
+        assert(person.age == updated.age)
     }
 }

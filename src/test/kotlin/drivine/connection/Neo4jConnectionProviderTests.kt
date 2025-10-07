@@ -3,14 +3,29 @@ package drivine.connection
 import drivine.query.QuerySpecification
 import drivine.query.cypherStatement
 import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.SpringBootTest
+import sample.TestAppContext
 
-class Neo4jConnectionProviderTests {
+@SpringBootTest(classes = [TestAppContext::class])
+class Neo4jConnectionProviderTests @Autowired constructor(
+    private val dataSourceMap: DataSourceMap
+) {
 
     @Test
     fun contextLoads() {
-        val provider = Neo4jConnectionProvider(name = "test", type = DatabaseType.NEO4J, host = "localhost",
-            port = 7687, user = "neo4j", password = "h4ckM3$$$$", database = "neo4j", protocol = "bolt",
-            config = emptyMap() )
+        val connectionProperties = dataSourceMap.dataSources["neo"]!!
+        val provider = Neo4jConnectionProvider(
+            name = "test",
+            type = connectionProperties.type,
+            host = connectionProperties.host,
+            port = connectionProperties.port!!,
+            user = connectionProperties.userName!!,
+            password = connectionProperties.password,
+            database = connectionProperties.databaseName,
+            protocol = "bolt",
+            config = emptyMap()
+        )
 
         val connection = provider.connect()
 

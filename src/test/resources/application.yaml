@@ -13,7 +13,7 @@ spring:
     ansi:
       enabled: always
   profiles:
-    active: local  # Change from 'default' to 'local' to use local Neo4j instead of test containers
+    active: default  # Change from 'default' to 'local' to use local Neo4j instead of test containers
 
 ---
 # Local profile configuration - for using local Neo4j instance
