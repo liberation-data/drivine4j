@@ -1,14 +1,13 @@
 package sample
 
-import drivine.connection.Holiday
-import drivine.connection.HolidayingPerson
-import drivine.query.QuerySpecification
-import drivine.manager.PersistenceManager
+import org.drivine.connection.HolidayingPerson
+import org.drivine.manager.PersistenceManager
+import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
-import java.util.UUID
+import java.util.*
 
 @SpringBootTest(classes = [TestAppContext::class])
 class HolidayingPersonTests @Autowired constructor(

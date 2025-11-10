@@ -1,7 +1,7 @@
 package sample
 
-import drivine.query.CypherStatement
-import drivine.query.QueryLoader
+import org.drivine.query.CypherStatement
+import org.drivine.query.QueryLoader
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 

@@ -1,12 +1,12 @@
 package sample
 
-import drivine.connection.Person
-import drivine.manager.PersistenceManager
-import drivine.query.CypherStatement
-import drivine.query.QuerySpecification
-import drivine.utils.ObjectUtils
-import drivine.utils.Partial
-import drivine.utils.toMap
+import org.drivine.connection.Person
+import org.drivine.manager.PersistenceManager
+import org.drivine.query.CypherStatement
+import org.drivine.query.QuerySpecification
+import org.drivine.utils.ObjectUtils
+import org.drivine.utils.Partial
+import org.drivine.utils.toMap
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.beans.factory.annotation.Qualifier
 import org.springframework.stereotype.Component

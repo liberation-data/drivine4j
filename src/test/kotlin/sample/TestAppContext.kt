@@ -1,17 +1,17 @@
 package sample
 
-import drivine.connection.ConnectionProperties
-import drivine.connection.DataSourceMap
-import drivine.connection.DatabaseType
-import drivine.connection.PropertyProvidedDataSourceMap
-import drivine.manager.PersistenceManager
-import drivine.manager.PersistenceManagerFactory
-import drivine.test.Neo4jTestContainer
+import org.drivine.connection.ConnectionProperties
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.PropertyProvidedDataSourceMap
+import org.drivine.manager.PersistenceManager
+import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.test.Neo4jTestContainer
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.*
 
 @Configuration
-@ComponentScan(basePackages = ["drivine", "sample"])
+@ComponentScan(basePackages = ["org.drivine", "sample"])
 @PropertySource("classpath:application.yaml")
 @EnableAspectJAutoProxy(proxyTargetClass = true)
 @EnableConfigurationProperties(value = [PropertyProvidedDataSourceMap::class])

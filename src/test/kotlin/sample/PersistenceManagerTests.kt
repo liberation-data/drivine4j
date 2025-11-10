@@ -1,9 +1,9 @@
 package sample
 
-import drivine.connection.Holiday
-import drivine.connection.Person
-import drivine.query.QuerySpecification
-import drivine.manager.PersistenceManager
+import org.drivine.connection.Holiday
+import org.drivine.connection.Person
+import org.drivine.query.QuerySpecification
+import org.drivine.manager.PersistenceManager
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired

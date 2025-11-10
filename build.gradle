@@ -9,7 +9,7 @@ plugins {
 	id 'org.jetbrains.dokka' version '1.9.20'
 }
 
-group = 'com.liberation-data'
+group = 'org.drivine'
 version = '0.0.1-SNAPSHOT'
 
 base {
@@ -36,8 +36,8 @@ dependencies {
 	implementation 'org.aspectj:aspectjweaver:1.9.7'
 
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
-	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin:2.15.0'
-	implementation 'com.fasterxml.jackson.core:jackson-databind:2.15.0'
+	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
+	implementation 'com.fasterxml.jackson.core:jackson-databind'
 
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework:spring-tx'
@@ -48,6 +48,9 @@ dependencies {
 	testImplementation 'org.testcontainers:testcontainers:1.19.3'
 	testImplementation 'org.testcontainers:junit-jupiter:1.19.3'
 	testImplementation 'org.testcontainers:neo4j:1.19.3'
+
+	// Fix Dokka Jackson compatibility issue
+	dokkaPlugin 'org.jetbrains.dokka:kotlin-as-java-plugin:1.9.20'
 }
 
 kotlin {
@@ -70,10 +73,12 @@ tasks.named('jar') {
 }
 
 // --- Dokka-based javadoc jar for Kotlin ---
+// Temporary workaround: create empty javadoc jar to avoid Dokka/Jackson compatibility issue
 tasks.register('javadocJar', Jar) {
-	dependsOn tasks.named('dokkaHtml')
 	archiveClassifier = 'javadoc'
-	from tasks.named('dokkaHtml').get().outputDirectory
+	// Empty for now - can enable Dokka later when compatibility is resolved
+	// dependsOn tasks.named('dokkaHtml')
+	// from tasks.named('dokkaHtml').get().outputDirectory
 }
 
 // --- Publishing configuration ---
@@ -87,8 +92,7 @@ publishing {
 			artifactId = project.extensions.getByType(BasePluginExtension).archivesName.get()
 			version = project.version
 
-			// Attach sources/javadoc jars
-			artifact tasks.named('sourcesJar')
+			// Attach javadoc jar (sources jar is already included via components.java + withSourcesJar())
 			artifact tasks.named('javadocJar')
 
 			pom {
@@ -105,9 +109,9 @@ publishing {
 				}
 				developers {
 					developer {
-						id = 'jasperblues'        // <- change me
-						name = 'Jasper Blues'     // <- change me
-						email = 'you@example.com' // <- change me / optional
+						id = 'jasperblues'
+						name = 'Jasper Blues'
+						email = 'jasper@liberation-data.com'
 					}
 				}
 				scm {

@@ -1,9 +1,9 @@
 package sample
 
-import drivine.connection.Person
-import drivine.query.QuerySpecification
-import drivine.manager.PersistenceManager
-import drivine.utils.partial
+import org.drivine.connection.Person
+import org.drivine.query.QuerySpecification
+import org.drivine.manager.PersistenceManager
+import org.drivine.utils.partial
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
