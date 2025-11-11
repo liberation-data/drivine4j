@@ -80,7 +80,7 @@ class PersistenceManagerTests @Autowired constructor(
                 h += ${'$'}holiday
             """.trimIndent()
             manager.execute(QuerySpecification
-                .withStatement<Unit>(query)
+                .withStatement(query)
                 .bind(mapOf("holiday" to holiday)))
         }
 
@@ -161,7 +161,7 @@ class PersistenceManagerTests @Autowired constructor(
             """.trimIndent()
             manager.execute(
                 QuerySpecification
-                    .withStatement<Unit>(query)
+                    .withStatement(query)
                     .bind(mapOf("person" to person)))
         }
     }
@@ -169,7 +169,7 @@ class PersistenceManagerTests @Autowired constructor(
     @Test
     fun testQuerySpecificationWithHolidays() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (h:Holiday) WHERE h.createdBy = 'test' RETURN properties(h)
                 """.trimIndent())
             .limit(10)
@@ -184,7 +184,7 @@ class PersistenceManagerTests @Autowired constructor(
     @Test
     fun testQuerySpecificationWithPersons() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (p:Person) WHERE p.createdBy = 'test' RETURN properties(p)
                 """.trimIndent())
             .transform(Person::class.java)
@@ -199,7 +199,7 @@ class PersistenceManagerTests @Autowired constructor(
     @Test
     fun testComplexQueryChaining() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (p:Person) WHERE p.createdBy = 'test' AND p.profession = 'Engineer'
                 RETURN properties(p)
                 """.trimIndent())

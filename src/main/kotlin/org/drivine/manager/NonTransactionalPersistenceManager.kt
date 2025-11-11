@@ -27,8 +27,8 @@ class NonTransactionalPersistenceManager(
         }
     }
 
-    override fun execute(spec: QuerySpecification<Unit>) {
-        query(spec)
+    override fun execute(spec: QuerySpecification<*>) {
+        query(spec as QuerySpecification<Any>)
     }
 
     override fun <T: Any> getOne(spec: QuerySpecification<T>): T {

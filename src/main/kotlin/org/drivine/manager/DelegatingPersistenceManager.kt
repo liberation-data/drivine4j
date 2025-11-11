@@ -30,7 +30,7 @@ class DelegatingPersistenceManager(
         return persistenceManager().query(spec)
     }
 
-    override fun execute(spec: QuerySpecification<Unit>) {
+    override fun execute(spec: QuerySpecification<*>) {
         return persistenceManager().execute(spec)
     }
 

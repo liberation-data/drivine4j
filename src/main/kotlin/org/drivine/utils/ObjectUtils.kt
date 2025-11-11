@@ -10,6 +10,8 @@ import kotlin.reflect.jvm.isAccessible
 
 object ObjectUtils {
 
+    @JvmStatic
+    @JvmOverloads
     fun primitiveProps(obj: Any, includeNulls: Boolean = true): Map<String, Any?> {
         // Try Kotlin reflection first (if kotlin-reflect is on the classpath)
         return try {

@@ -29,7 +29,7 @@ database:
     neo:
       type: NEO4J
       userName: neo4j
-      password: h4ckM3$$$$
+      password: brahmsian
       host: localhost
       port: 7687
       databaseName: neo4j

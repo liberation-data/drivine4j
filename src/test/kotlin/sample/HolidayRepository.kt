@@ -19,7 +19,7 @@ class HolidayRepository @Autowired constructor(
     @Transactional
     fun findHolidaysByCountry(country: String): List<Holiday> {
         val spec = QuerySpecification
-            .withStatement<Any>(stmtListHolidays)
+            .withStatement(stmtListHolidays)
             .bind(mapOf("country" to country))
             .limit(20)
             .transform(Holiday::class.java)
@@ -31,7 +31,7 @@ class HolidayRepository @Autowired constructor(
     @Transactional
     fun findHolidaysByType(type: String): List<Holiday> {
         val spec = QuerySpecification
-            .withStatement<Any>(stmtListHolidaysByType)
+            .withStatement(stmtListHolidaysByType)
             .bind(mapOf("type" to type))
             .limit(15)
             .transform(Holiday::class.java)

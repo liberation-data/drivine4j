@@ -63,7 +63,7 @@ class HolidayingPersonTests @Autowired constructor(
             """.trimIndent()
             manager.execute(
                 QuerySpecification
-                    .withStatement<Unit>(query)
+                    .withStatement(query)
                     .bind(mapOf("person" to person)))
         }
 
@@ -115,21 +115,21 @@ class HolidayingPersonTests @Autowired constructor(
                 h += ${'$'}holiday
             """.trimIndent()
             manager.execute(QuerySpecification
-                .withStatement<Unit>(query)
+                .withStatement(query)
                 .bind(mapOf("holiday" to holiday)))
         }
 
         // Create BOOKED_HOLIDAY relationships
         // Alice booked Independence Day and Christmas
         manager.execute(QuerySpecification
-            .withStatement<Unit>("""
+            .withStatement("""
                 MATCH (p:Person {uuid: ${'$'}personId}), (h:Holiday {uuid: ${'$'}holidayId})
                 CREATE (p)-[:BOOKED_HOLIDAY {createdBy: 'test'}]->(h)
             """.trimIndent())
             .bind(mapOf("personId" to aliceId, "holidayId" to independenceDayId)))
 
         manager.execute(QuerySpecification
-            .withStatement<Unit>("""
+            .withStatement("""
                 MATCH (p:Person {uuid: ${'$'}personId}), (h:Holiday {uuid: ${'$'}holidayId})
                 CREATE (p)-[:BOOKED_HOLIDAY {createdBy: 'test'}]->(h)
             """.trimIndent())
@@ -137,14 +137,14 @@ class HolidayingPersonTests @Autowired constructor(
 
         // Bob booked Canada Day and Christmas
         manager.execute(QuerySpecification
-            .withStatement<Unit>("""
+            .withStatement("""
                 MATCH (p:Person {uuid: ${'$'}personId}), (h:Holiday {uuid: ${'$'}holidayId})
                 CREATE (p)-[:BOOKED_HOLIDAY {createdBy: 'test'}]->(h)
             """.trimIndent())
             .bind(mapOf("personId" to bobId, "holidayId" to canadaDayId)))
 
         manager.execute(QuerySpecification
-            .withStatement<Unit>("""
+            .withStatement("""
                 MATCH (p:Person {uuid: ${'$'}personId}), (h:Holiday {uuid: ${'$'}holidayId})
                 CREATE (p)-[:BOOKED_HOLIDAY {createdBy: 'test'}]->(h)
             """.trimIndent())
@@ -154,12 +154,12 @@ class HolidayingPersonTests @Autowired constructor(
     @Test
     fun testHolidayingPersonComplexQuery() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (person:Person {firstName: ${'$'}firstName})
-                WITH person, [(person)-[:BOOKED_HOLIDAY]->(holiday:Holiday) | holiday {.name, .date, .country, .type, .description, .isPublicHoliday, .tags}] as holidays
+                WITH person, [(person)-[:BOOKED_HOLIDAY]->(holiday:Holiday) | holiday {.*}] AS holidays
                 RETURN {
-                    person: properties(person),
-                    holidays: holidays
+                  person:   properties(person),
+                  holidays: holidays
                 }
             """.trimIndent())
             .bind(mapOf("firstName" to "Alice"))
@@ -181,7 +181,7 @@ class HolidayingPersonTests @Autowired constructor(
     @Test
     fun testMultipleHolidayingPersons() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (person:Person)
                 WHERE person.createdBy = 'test'
                 WITH person, [(person)-[:BOOKED_HOLIDAY]->(holiday:Holiday) | holiday {.name, .date, .country, .type, .description, .isPublicHoliday, .tags}] as holidays

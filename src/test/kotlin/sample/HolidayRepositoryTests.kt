@@ -76,7 +76,7 @@ class HolidayRepositoryTests @Autowired constructor(
                 h += ${'$'}holiday
             """.trimIndent()
             manager.execute(QuerySpecification
-                .withStatement<Unit>(query)
+                .withStatement(query)
                 .bind(mapOf("holiday" to holiday)))
         }
     }
@@ -84,7 +84,7 @@ class HolidayRepositoryTests @Autowired constructor(
     @Test
     fun testHolidayQueryChaining() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (h:Holiday) WHERE h.createdBy = 'test' RETURN properties(h)
                 """.trimIndent())
             .limit(10)

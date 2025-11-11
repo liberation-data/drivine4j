@@ -16,18 +16,15 @@ class QuerySpecification<T> private constructor(
 
     companion object {
 
-        fun <T> withStatement(statement: Statement): QuerySpecification<T> {
+        @JvmStatic
+        fun withStatement(statement: Statement): QuerySpecification<Any> {
             return QuerySpecification(statement = statement)
         }
 
-        fun <T> withStatement(statement: String): QuerySpecification<T> {
+        @JvmStatic
+        fun withStatement(statement: String): QuerySpecification<Any> {
             return QuerySpecification(statement = Statement(statement))
         }
-    }
-
-    fun withStatement(statement: String): QuerySpecification<T> {
-        this.statement = Statement(statement)
-        return this
     }
 
     fun bind(parameters: Map<String, Any>): QuerySpecification<T> {

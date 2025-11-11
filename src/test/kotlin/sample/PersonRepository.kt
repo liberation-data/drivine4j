@@ -23,7 +23,7 @@ class PersonRepository @Autowired constructor(
     @Transactional
     fun findPersonsByCity(city: String): List<Person> {
         val spec = QuerySpecification
-            .withStatement<Any>(stmtListPersons)
+            .withStatement(stmtListPersons)
             .bind(mapOf("city" to city))
             .limit(15)
             .transform(Person::class.java)
@@ -35,7 +35,7 @@ class PersonRepository @Autowired constructor(
     @Transactional
     fun findPersonsByProfession(profession: String): List<String> {
         val spec = QuerySpecification
-            .withStatement<Any>(stmtListPersonsByProfession)
+            .withStatement(stmtListPersonsByProfession)
             .bind(mapOf("profession" to profession))
             .limit(10)
             .transform(Person::class.java)
@@ -48,7 +48,7 @@ class PersonRepository @Autowired constructor(
     @Transactional
     fun findYoungPeople(): List<Person> {
         val spec = QuerySpecification
-            .withStatement<Any>("MATCH (p:Person) WHERE p.createdBy = 'test' RETURN properties(p)")
+            .withStatement("MATCH (p:Person) WHERE p.createdBy = 'test' RETURN properties(p)")
             .transform(Person::class.java)
             .filter { it.age != null && it.age < 30 }
             .filter { it.isActive }
@@ -78,7 +78,7 @@ class PersonRepository @Autowired constructor(
 
         return persistenceManager.getOne(
             QuerySpecification
-                .withStatement<Any>(statement)
+                .withStatement(statement)
                 .bind(mapOf("props" to props))
                 .transform(Person::class.java)
         )

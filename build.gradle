@@ -70,6 +70,7 @@ tasks.named('bootJar') {
 }
 tasks.named('jar') {
 	enabled = true
+	archiveClassifier.set('')  // Remove '-plain' classifier to make it the main JAR
 }
 
 // --- Dokka-based javadoc jar for Kotlin ---

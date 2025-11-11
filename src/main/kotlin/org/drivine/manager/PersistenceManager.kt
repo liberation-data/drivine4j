@@ -1,10 +1,10 @@
 package org.drivine.manager
 
-import org.neo4j.driver.*
 import org.drivine.query.QuerySpecification
 //import drivine.cursor.Cursor
 //import drivine.cursor.CursorSpecification
 import org.drivine.connection.DatabaseType
+import java.util.Optional
 
 interface PersistenceManager {
 
@@ -29,7 +29,7 @@ interface PersistenceManager {
      * Execute a statement and disregard any results that are returned.
      * @param spec
      */
-    fun execute(spec: QuerySpecification<Unit>)
+    fun execute(spec: QuerySpecification<*>)
 
     /**
      * Queries for a single result according to the supplied specification. Expects exactly one result or throws.
@@ -45,6 +45,8 @@ interface PersistenceManager {
      * @throws DrivineError
      */
     fun <T: Any> maybeGetOne(spec: QuerySpecification<T>): T?
+
+    fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): Optional<T> = Optional.ofNullable(maybeGetOne(spec))
 
     /**
      * Returns an object that streams results.

@@ -100,7 +100,7 @@ class PersonRepositoryTests @Autowired constructor(
             """.trimIndent()
             manager.execute(
                 QuerySpecification
-                    .withStatement<Unit>(query)
+                    .withStatement(query)
                     .bind(mapOf("person" to person)))
         }
     }
@@ -108,7 +108,7 @@ class PersonRepositoryTests @Autowired constructor(
     @Test
     fun testPersonQueryWithMapping() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (p:Person) WHERE p.createdBy = 'test' RETURN properties(p)
                 """.trimIndent())
             .transform(Person::class.java)
@@ -135,7 +135,7 @@ class PersonRepositoryTests @Autowired constructor(
     @Test
     fun testComplexChaining() {
         val spec = QuerySpecification
-            .withStatement<Any>("""
+            .withStatement("""
                 MATCH (p:Person) WHERE p.createdBy = 'test' AND p.profession = 'Engineer'
                 RETURN properties(p)
                 """.trimIndent())

@@ -1,12 +1,10 @@
 package org.drivine.connection
 
 import org.drivine.query.QuerySpecification
-import org.drivine.query.cypherStatement
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import sample.TestAppContext
-import kotlin.text.get
 
 @SpringBootTest(classes = [TestAppContext::class])
 class Neo4jConnectionProviderTests @Autowired constructor(
@@ -31,7 +29,7 @@ class Neo4jConnectionProviderTests @Autowired constructor(
         val connection = provider.connect()
 
         val spec = QuerySpecification
-            .withStatement<Any>("match (n:BusinessPartner) return n")
+            .withStatement("match (n:BusinessPartner) return n")
             .limit(10)
         val result = connection.query<Any>(spec)
         connection.release()
