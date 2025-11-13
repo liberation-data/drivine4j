@@ -2,7 +2,7 @@ package sample
 
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
-import org.drivine.test.DrivineTestTransactionListener
+import org.drivine.test.TestTransactionListener
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -18,7 +18,7 @@ import java.util.*
  */
 @SpringBootTest(classes = [TestAppContext::class])
 @TestExecutionListeners(
-    listeners = [DrivineTestTransactionListener::class],
+    listeners = [TestTransactionListener::class],
     mergeMode = TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS
 )
 class TransactionRollbackTests @Autowired constructor(
@@ -88,7 +88,7 @@ class TransactionRollbackTests @Autowired constructor(
  */
 @SpringBootTest(classes = [TestAppContext::class])
 @TestExecutionListeners(
-    listeners = [DrivineTestTransactionListener::class],
+    listeners = [TestTransactionListener::class],
     mergeMode = TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS
 )
 @Rollback(false) // Class-level: commit by default

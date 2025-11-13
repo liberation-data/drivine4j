@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.aspectj.lang.ProceedingJoinPoint
 import org.aspectj.lang.annotation.Around
 import org.aspectj.lang.annotation.Aspect
+import org.drivine.test.TestTransactionContext
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.stereotype.Component
 
@@ -39,12 +40,8 @@ class TransactionalAspect {
             throw DrivineException("Only REQUIRED level of propagation is currently supported")
         }
 
-        // Check if we're in a test context and should respect @Rollback
         val testRollback = try {
-            // Use reflection to avoid hard dependency on test code
-            Class.forName("org.drivine.test.TestTransactionContext")
-                .getMethod("shouldRollback")
-                .invoke(null) as Boolean?
+            TestTransactionContext.shouldRollback()
         } catch (e: Exception) {
             null // Not in test context
         }

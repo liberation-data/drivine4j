@@ -33,8 +33,8 @@ import org.springframework.test.context.TestExecutionListener
  * }
  * ```
  */
-class DrivineTestTransactionListener : TestExecutionListener {
-    private val logger = LoggerFactory.getLogger(DrivineTestTransactionListener::class.java)
+class TestTransactionListener : TestExecutionListener {
+    private val logger = LoggerFactory.getLogger(TestTransactionListener::class.java)
 
     override fun beforeTestMethod(testContext: TestContext) {
         val contextHolder = getContextHolder(testContext)
