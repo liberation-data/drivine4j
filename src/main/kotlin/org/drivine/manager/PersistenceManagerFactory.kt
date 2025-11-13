@@ -44,7 +44,6 @@ class PersistenceManagerFactory(
                 managers[database]?.delegating
                     ?: throw DrivineException("No delegating manager found for database: $database")
             }
-            else -> throw DrivineException("Invalid PersistenceManagerType: $type")
         }
     }
 
