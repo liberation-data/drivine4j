@@ -39,8 +39,18 @@ class TransactionalAspect {
             throw DrivineException("Only REQUIRED level of propagation is currently supported")
         }
 
+        // Check if we're in a test context and should respect @Rollback
+        val testRollback = try {
+            // Use reflection to avoid hard dependency on test code
+            Class.forName("org.drivine.test.TestTransactionContext")
+                .getMethod("shouldRollback")
+                .invoke(null) as Boolean?
+        } catch (e: Exception) {
+            null // Not in test context
+        }
+
         return TransactionOptions(
-            rollback = options?.rollback ?: false,
+            rollback = testRollback ?: options?.rollback ?: false,
             propagation = options?.propagation ?: Propagation.REQUIRED,
         )
     }

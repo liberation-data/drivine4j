@@ -39,8 +39,11 @@ dependencies {
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
 	implementation 'com.fasterxml.jackson.core:jackson-databind'
 
+	// Test support - needed for @Rollback and TestExecutionListener
+	implementation 'org.springframework:spring-test'
+	implementation 'org.springframework:spring-tx'
+
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
-	testImplementation 'org.springframework:spring-tx'
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 

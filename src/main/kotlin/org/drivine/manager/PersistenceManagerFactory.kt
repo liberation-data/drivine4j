@@ -26,6 +26,7 @@ class PersistenceManagerFactory(
      * will decide at runtime, depending on whether a transaction is in flight, ie whether the current context of execution
      * is @Transactional().
      */
+    @JvmOverloads
     fun get(database: String = "default", type: PersistenceManagerType = PersistenceManagerType.DELEGATING): PersistenceManager {
         if (!managers.containsKey(database)) {
             register(database)
