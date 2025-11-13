@@ -46,7 +46,13 @@ interface PersistenceManager {
      */
     fun <T: Any> maybeGetOne(spec: QuerySpecification<T>): T?
 
-    fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): Optional<T> = Optional.ofNullable(maybeGetOne(spec))
+    /**
+     * Queries for a single result according to the supplied specification. Returns Optional.empty() if no result.
+     * Expects zero or one result, otherwise throws.
+     * @param spec
+     * @throws DrivineError
+     */
+    fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): Optional<T>
 
     /**
      * Returns an object that streams results.

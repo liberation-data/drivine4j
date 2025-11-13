@@ -39,6 +39,10 @@ class NonTransactionalPersistenceManager(
         return finderOperations.maybeGetOne(spec)
     }
 
+    override fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): java.util.Optional<T> {
+        return java.util.Optional.ofNullable(maybeGetOne(spec))
+    }
+
 //    override fun <T> openCursor(spec: CursorSpecification<T>): Cursor<T> {
 //        logger.verbose("Open consumer for $spec")
 //        return try {
