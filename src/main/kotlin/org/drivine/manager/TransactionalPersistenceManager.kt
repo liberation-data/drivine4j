@@ -21,7 +21,8 @@ class TransactionalPersistenceManager(
     }
 
     override fun execute(spec: QuerySpecification<*>) {
-        query(spec as QuerySpecification<Any>)
+        val transaction = currentTransactionOrThrow()
+        transaction.query(spec as QuerySpecification<Any>, database)
     }
 
     override fun <T: Any> getOne(spec: QuerySpecification<T>): T {

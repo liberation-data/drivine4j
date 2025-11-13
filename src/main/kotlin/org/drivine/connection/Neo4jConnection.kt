@@ -1,12 +1,13 @@
 package org.drivine.connection
 
+import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.ResultMapper
 import org.drivine.query.Neo4jSpecCompiler
 import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
-import org.drivine.transaction.Transaction
 import org.neo4j.driver.Session
+import org.neo4j.driver.Transaction
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -29,10 +30,8 @@ class Neo4jConnection(
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
 
-//        val result: Result = transaction?.run(compiledSpec.statement, compiledSpec.parameters)
-//            ?: session.run(compiledSpec.statement, compiledSpec.parameters)
-
-        val result = this.session.run(compiledSpec.statement, compiledSpec.parameters)
+        val result = transaction?.run(compiledSpec.statement, compiledSpec.parameters)
+            ?: session.run(compiledSpec.statement, compiledSpec.parameters)
 
         statementLogger.log(spec, startTime)
         return resultMapper.mapQueryResults(result.list(), finalizedSpec)
@@ -43,21 +42,21 @@ class Neo4jConnection(
 //    }
 
     override fun startTransaction() {
-//        transaction = this.session.beginTransaction()
+        transaction = this.session.beginTransaction()
     }
 
     override fun commitTransaction() {
-//        transaction?.commit() ?: throw DrivineException("There is no transaction to commit.")
-//        transaction = null
+        transaction?.commit() ?: throw DrivineException("There is no transaction to commit.")
+        transaction = null
     }
 
     override fun rollbackTransaction() {
-//        transaction?.rollback() ?: throw DrivineException("There is no transaction to rollback.")
-//        transaction = null
+        transaction?.rollback() ?: throw DrivineException("There is no transaction to rollback.")
+        transaction = null
     }
 
-    override fun release(error: Throwable?) {
-        error?.let { logger.warn("Closing session with error: $it") }
+    override fun release(err: Throwable?) {
+        err?.let { logger.warn("Closing session with error: $it") }
         session.close()
     }
 }
