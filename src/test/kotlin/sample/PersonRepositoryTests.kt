@@ -187,4 +187,64 @@ class PersonRepositoryTests @Autowired constructor(
         assert(updated.email == "jane@wallstreet.com")
         assert(person.age == updated.age)
     }
+
+    @Test
+    fun `update with null value and includeNulls=false should preserve existing value`() {
+        // Get an existing person with an email
+        val person = personRepository.findPersonsByCity("New York").first()
+        val originalEmail = person.email
+        println("Before update: ${person.firstName} ${person.lastName}, email: ${person.email}")
+        assert(originalEmail != null) { "Test requires person with non-null email" }
+
+        // Update using the standard update method which uses includeNulls=false
+        // This should preserve the existing email since null values are excluded from the map
+        val updated = personRepository.update(person.copy(email = null, age = 99))
+        println("After update: ${updated.firstName} ${updated.lastName}, email: ${updated.email}, age: ${updated.age}")
+
+        // Verify: age should be updated, but email should remain unchanged (preserved)
+        assert(updated.uuid == person.uuid)
+        assert(updated.age == 99) { "Age should be updated to 99" }
+        assert(updated.email == originalEmail) {
+            "Email should be preserved when updating with null and includeNulls=false. " +
+            "Expected: $originalEmail, Got: ${updated.email}"
+        }
+    }
+
+    @Test
+    fun `update with null value and includeNulls=true should remove property from node`() {
+        // Get an existing person with an email
+        val person = personRepository.findPersonsByCity("Toronto").first()
+        println("Before update: ${person.firstName} ${person.lastName}, email: ${person.email}")
+        assert(person.email != null) { "Test requires person with non-null email" }
+
+        // Create a custom update method that uses includeNulls=true
+        // Using SET p = $props (not +=) to replace all properties
+        val propsWithNulls = org.drivine.utils.ObjectUtils.primitiveProps(
+            person.copy(email = null, age = 88),
+            includeNulls = true
+        )
+
+        val statement = """
+            MERGE (p:Person {uuid: ${'$'}props.uuid})
+            SET p = ${'$'}props
+            RETURN properties(p)
+        """
+
+        val updated = manager.getOne(
+            QuerySpecification
+                .withStatement(statement)
+                .bind(mapOf("props" to propsWithNulls))
+                .transform(Person::class.java)
+        )
+
+        println("After update: ${updated.firstName} ${updated.lastName}, email: ${updated.email}, age: ${updated.age}")
+
+        // Verify: both age and email should be updated, email should now be null
+        assert(updated.uuid == person.uuid)
+        assert(updated.age == 88) { "Age should be updated to 88" }
+        assert(updated.email == null) {
+            "Email should be null when updating with includeNulls=true and SET p = \$props. " +
+            "Got: ${updated.email}"
+        }
+    }
 }
