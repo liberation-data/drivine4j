@@ -94,4 +94,30 @@ class ObjectUtilsTest {
         // Sanity: only primitive-like entries present
         assertEquals(setOf("username", "active", "scores"), map.keys)
     }
+
+    @Test
+    fun `java bean - subclass with inherited fields`() {
+        val user = AnonymousWebUserData(
+            "user123",
+            "John Doe",
+            "johndoe",
+            "john@example.com",
+            "hashedPassword",
+            "refreshToken123"
+        )
+
+        val map = ObjectUtils.primitiveProps(user)
+
+        // All inherited fields should be present
+        assertEquals("user123", map["id"])
+        assertEquals("John Doe", map["displayName"])
+        assertEquals("johndoe", map["userName"])
+        assertEquals("john@example.com", map["userEmail"])
+        assertEquals("hashedPassword", map["passwordHash"])
+        assertEquals("refreshToken123", map["refreshToken"])
+
+        // Should have 6 fields from parent class
+        assertTrue(map.isNotEmpty(), "Map should not be empty for subclass with inherited fields")
+        assertEquals(6, map.size, "Should have all 6 inherited fields")
+    }
 }

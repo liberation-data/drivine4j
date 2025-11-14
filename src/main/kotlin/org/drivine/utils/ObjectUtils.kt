@@ -13,6 +13,14 @@ object ObjectUtils {
     @JvmStatic
     @JvmOverloads
     fun primitiveProps(obj: Any, includeNulls: Boolean = true): Map<String, Any?> {
+        // Check if this is a pure Java class (no Kotlin metadata)
+        val isJavaClass = obj.javaClass.getAnnotation(Metadata::class.java) == null
+
+        // For Java classes, use Java reflection directly
+        if (isJavaClass) {
+            return toJavaMap(obj, includeNulls)
+        }
+
         // Try Kotlin reflection first (if kotlin-reflect is on the classpath)
         return try {
             toKotlinMap(obj, includeNulls)
@@ -78,26 +86,33 @@ object ObjectUtils {
             // Fall through to fields
         }
 
-        // 2) Otherwise, read instance fields directly
-        for (field in clazz.declaredFields) {
-            if (Modifier.isStatic(field.modifiers)) continue
-            if (Modifier.isTransient(field.modifiers)) continue
-            if (field.isSynthetic) continue
+        // 2) Otherwise, read instance fields directly (including inherited fields)
+        var currentClass: Class<*>? = clazz
+        while (currentClass != null && currentClass != Object::class.java) {
+            for (field in currentClass.declaredFields) {
+                // Skip if already processed (subclass may have overridden field)
+                if (field.name in map) continue
 
-            field.isAccessible = true
-            try {
-                val value = field.get(obj)
-                val converted = convertValue(value)
+                if (Modifier.isStatic(field.modifiers)) continue
+                if (Modifier.isTransient(field.modifiers)) continue
+                if (field.isSynthetic) continue
 
-                // Only include if conversion succeeded, or if value was originally null and includeNulls=true
-                if (converted != null) {
-                    map[field.name] = converted
-                } else if (value == null && includeNulls) {
-                    map[field.name] = null
+                field.isAccessible = true
+                try {
+                    val value = field.get(obj)
+                    val converted = convertValue(value)
+
+                    // Only include if conversion succeeded, or if value was originally null and includeNulls=true
+                    if (converted != null) {
+                        map[field.name] = converted
+                    } else if (value == null && includeNulls) {
+                        map[field.name] = null
+                    }
+                } catch (_: Exception) {
+                    // Ignore
                 }
-            } catch (_: Exception) {
-                // Ignore
             }
+            currentClass = currentClass.superclass
         }
         return map
     }

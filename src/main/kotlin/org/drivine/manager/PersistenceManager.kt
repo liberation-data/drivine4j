@@ -1,10 +1,10 @@
 package org.drivine.manager
 
-import org.drivine.query.QuerySpecification
 //import drivine.cursor.Cursor
 //import drivine.cursor.CursorSpecification
 import org.drivine.connection.DatabaseType
-import java.util.Optional
+import org.drivine.query.QuerySpecification
+import java.util.*
 
 interface PersistenceManager {
 
