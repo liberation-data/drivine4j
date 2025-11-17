@@ -37,7 +37,7 @@ open class Neo4jResultMapper : GraphResultMapper() {
         }
     }
 
-    private fun recordToNative(rec: org.neo4j.driver.Record): Map<String, Any?> {
+    private fun recordToNative(rec: Record): Map<String, Any?> {
         val out = mutableMapOf<String, Any?>()
         rec.keys().forEachIndexed { index, key ->
             out[key] = rec.get(index).asObject() // Converts Neo4j Value to a native type

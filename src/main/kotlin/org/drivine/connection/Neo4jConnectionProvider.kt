@@ -5,6 +5,7 @@ import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.Session
+import org.neo4j.driver.SessionConfig
 
 // TODO: Config options are not being handled
 class Neo4jConnectionProvider(
@@ -25,7 +26,7 @@ class Neo4jConnectionProvider(
     )
 
     override fun connect(): Connection {
-        val session: Session = driver.session()
+        val session: Session = driver.session(SessionConfig.forDatabase(database ?: "neo4j"))
         val connection = Neo4jConnection(session, Neo4jResultMapper())
         return connection
     }
