@@ -1,11 +1,16 @@
 package org.drivine.mapper
 
+import com.fasterxml.jackson.databind.SerializationFeature
+import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.neo4j.driver.internal.value.MapValue
 
 class TransformPostProcessor<S, T>(private val type: Class<T>) : ResultPostProcessor<S, T> {
 
-    private val objectMapper = jacksonObjectMapper()
+    private val objectMapper = jacksonObjectMapper().apply {
+        registerModule(JavaTimeModule())
+        disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
+    }
 
     override fun apply(results: List<S>): List<T> {
         return results.map { result ->

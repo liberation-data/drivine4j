@@ -2,6 +2,11 @@ package org.drivine.utils
 
 import java.beans.Introspector
 import java.lang.reflect.Modifier
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZonedDateTime
+import java.util.Date
 import java.util.UUID
 import kotlin.reflect.KClass
 import kotlin.reflect.KProperty1
@@ -13,6 +18,12 @@ object ObjectUtils {
     @JvmStatic
     @JvmOverloads
     fun primitiveProps(obj: Any, includeNulls: Boolean = true): Map<String, Any?> {
+        // If it's already a Map, process it recursively
+        if (obj is Map<*, *>) {
+            @Suppress("UNCHECKED_CAST")
+            return primitiveProps(obj as Map<String, Any?>, includeNulls)
+        }
+
         // Check if this is a pure Java class (no Kotlin metadata)
         val isJavaClass = obj.javaClass.getAnnotation(Metadata::class.java) == null
 
@@ -28,6 +39,25 @@ object ObjectUtils {
             // Fallbacks for plain Java objects
             toJavaMap(obj, includeNulls)
         }
+    }
+
+    /**
+     * Overload for processing a map recursively.
+     * Converts values to Neo4j-compatible types (e.g., Instant -> ZonedDateTime).
+     */
+    @JvmStatic
+    @JvmOverloads
+    fun primitiveProps(map: Map<String, Any?>, includeNulls: Boolean = true): Map<String, Any?> {
+        val result = LinkedHashMap<String, Any?>()
+        for ((key, value) in map) {
+            val converted = convertValue(value)
+            if (converted != null) {
+                result[key] = converted
+            } else if (value == null && includeNulls) {
+                result[key] = null
+            }
+        }
+        return result
     }
 
     // ---------- Kotlin reflection path ----------
@@ -122,6 +152,10 @@ object ObjectUtils {
     /**
      * Converts a value to a Neo4j-compatible primitive type.
      * - UUID -> String
+     * - Instant -> ZonedDateTime (at UTC) - Neo4j driver doesn't support Instant directly
+     * - LocalDate, LocalDateTime, ZonedDateTime -> preserved as-is (native Neo4j temporal types)
+     * - Date -> Instant -> ZonedDateTime (at UTC)
+     * - Maps -> converted recursively
      * - Collections/Arrays -> converted recursively
      * - null -> null
      * - Primitives -> as-is
@@ -132,6 +166,21 @@ object ObjectUtils {
             null -> null
             is String, is Number, is Boolean, is Enum<*> -> v
             is UUID -> v.toString()
+
+            // Temporal types - Neo4j driver supports LocalDate, LocalDateTime, ZonedDateTime, etc.
+            // but NOT Instant, so we convert Instant to ZonedDateTime at UTC
+            is Instant -> v.atZone(java.time.ZoneId.of("UTC"))
+            is ZonedDateTime -> v  // Already supported by Neo4j driver
+            is LocalDateTime -> v  // Already supported by Neo4j driver
+            is LocalDate -> v      // Already supported by Neo4j driver
+            is Date -> v.toInstant().atZone(java.time.ZoneId.of("UTC"))
+
+            // Nested maps - process recursively
+            is Map<*, *> -> {
+                @Suppress("UNCHECKED_CAST")
+                val stringMap = v as? Map<String, Any?> ?: return null
+                primitiveProps(stringMap, includeNulls = true)
+            }
 
             // Object arrays
             is Array<*> -> {

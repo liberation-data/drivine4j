@@ -38,6 +38,7 @@ dependencies {
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
 	implementation 'com.fasterxml.jackson.core:jackson-databind'
+	implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
 
 	// Test support - needed for @Rollback and TestExecutionListener
 	implementation 'org.springframework:spring-test'
@@ -102,7 +103,7 @@ publishing {
 			pom {
 				name = 'drivine4j'
 				description = 'Drivine for JVM — Neo4j/Spring-oriented utilities'
-				url = 'https://github.com/your-org/drivine4j' // <- change me
+				url = 'https://github.com/liberation-data/drivine4j'
 
 				licenses {
 					license {
@@ -119,9 +120,9 @@ publishing {
 					}
 				}
 				scm {
-					connection = 'scm:git:https://github.com/your-org/drivine4j.git'       // <- change me
-					developerConnection = 'scm:git:ssh://git@github.com/your-org/drivine4j.git'
-					url = 'https://github.com/your-org/drivine4j'
+					connection = 'scm:git:https://github.com/liberation-data/drivine4j.git'
+					developerConnection = 'scm:git:ssh://git@github.com/liberation-data/drivine4j.git'
+					url = 'https://github.com/liberation-data/drivine4j'
 				}
 			}
 		}

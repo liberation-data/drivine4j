@@ -212,4 +212,102 @@ class HolidayingPersonTests @Autowired constructor(
         assert(bobHolidayNames.contains("Canada Day"))
         assert(bobHolidayNames.contains("Christmas Day"))
     }
+
+    @Test
+    fun testTransformToMapClass() {
+        val spec = QuerySpecification
+            .withStatement("""
+                MATCH (person:Person {firstName: ${'$'}firstName})
+                WITH person, [(person)-[:BOOKED_HOLIDAY]->(holiday:Holiday) | holiday {.*}] AS holidays
+                RETURN {
+                  person:   properties(person),
+                  holidays: holidays
+                }
+            """.trimIndent())
+            .bind(mapOf("firstName" to "Alice"))
+            .transform(Map::class.java)
+
+        val results = manager.query(spec)
+
+        println("Map results: $results")
+        assert(results.isNotEmpty())
+
+        val firstResult = results[0]
+
+        // Access person data
+        val personMap = firstResult["person"] as Map<*, *>
+        assert(personMap["firstName"] == "Alice")
+        assert(personMap["lastName"] == "Johnson")
+
+        // Access holidays data
+        val holidays = firstResult["holidays"] as List<*>
+        assert(holidays.size == 2)
+
+        val holidayNames = holidays.map { (it as Map<*, *>)["name"] }
+        assert(holidayNames.contains("Independence Day"))
+        assert(holidayNames.contains("Christmas Day"))
+    }
+
+    @Test
+    fun testFloatArrayParameter() {
+        // Create a node with embedding vector using pure Cypher
+        val embeddingVector = floatArrayOf(0.5f, 0.8f, 0.3f, 0.9f, 0.1f)
+
+        // Create the document node
+        manager.execute(QuerySpecification
+            .withStatement("""
+                CREATE (doc:Document {
+                    id: 'doc1',
+                    title: 'Test Document',
+                    embedding: ${'$'}embedding,
+                    createdBy: 'test'
+                })
+            """.trimIndent())
+            .bind(mapOf("embedding" to embeddingVector)))
+
+        // Query back the document with a FloatArray parameter for similarity search
+        val queryVector = floatArrayOf(0.6f, 0.7f, 0.4f, 0.8f, 0.2f)
+
+        val spec = QuerySpecification
+            .withStatement("""
+                MATCH (doc:Document {createdBy: 'test'})
+                WHERE doc.embedding IS NOT NULL
+                WITH doc,
+                     reduce(dot = 0.0, i IN range(0, size(${'$'}queryVector) - 1) |
+                        dot + (doc.embedding[i] * ${'$'}queryVector[i])
+                     ) AS dotProduct
+                RETURN {
+                    id: doc.id,
+                    title: doc.title,
+                    embedding: doc.embedding,
+                    dotProduct: dotProduct
+                } AS result
+                ORDER BY dotProduct DESC
+            """.trimIndent())
+            .bind(mapOf("queryVector" to queryVector))
+            .transform(Map::class.java)
+
+        val results = manager.query(spec)
+
+        println("FloatArray results: $results")
+        assert(results.isNotEmpty())
+
+        val firstResult = results[0]
+        assert(firstResult["id"] == "doc1")
+        assert(firstResult["title"] == "Test Document")
+
+        // Verify the embedding was stored and retrieved correctly
+        val retrievedEmbedding = firstResult["embedding"] as List<*>
+        assert(retrievedEmbedding.size == 5)
+        assert((retrievedEmbedding[0] as Number).toFloat() == 0.5f)
+        assert((retrievedEmbedding[1] as Number).toFloat() == 0.8f)
+
+        // Verify dot product calculation worked
+        val dotProduct = (firstResult["dotProduct"] as Number).toDouble()
+        assert(dotProduct > 0.0)
+
+        // Cleanup
+        manager.execute(QuerySpecification
+            .withStatement("MATCH (doc:Document {createdBy: 'test'}) DELETE doc"))
+    }
 }

@@ -4,6 +4,7 @@ import org.drivine.mapper.FilterPostProcessor
 import org.drivine.mapper.MapPostProcessor
 import org.drivine.mapper.ResultPostProcessor
 import org.drivine.mapper.TransformPostProcessor
+import org.drivine.utils.ObjectUtils
 
 class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
