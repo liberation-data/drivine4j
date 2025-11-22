@@ -30,11 +30,16 @@ class Neo4jConnection(
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
 
-        val result = transaction?.run(compiledSpec.statement, compiledSpec.parameters)
-            ?: session.run(compiledSpec.statement, compiledSpec.parameters)
+        try {
+            val result = transaction?.run(compiledSpec.statement, compiledSpec.parameters)
+                ?: session.run(compiledSpec.statement, compiledSpec.parameters)
 
-        statementLogger.log(spec, startTime)
-        return resultMapper.mapQueryResults(result.list(), finalizedSpec)
+            statementLogger.log(spec, startTime)
+            return resultMapper.mapQueryResults(result.list(), finalizedSpec)
+        } catch (e: Exception) {
+            statementLogger.log(spec, startTime, e)
+            throw DrivineException.withRootCause(e)
+        }
     }
 
 //    suspend fun <T> openCursor(spec: CursorSpecification<T>): Neo4jCursor<T> {
