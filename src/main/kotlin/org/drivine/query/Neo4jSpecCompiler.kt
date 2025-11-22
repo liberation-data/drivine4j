@@ -13,7 +13,7 @@ class Neo4jSpecCompiler<T>(spec: QuerySpecification<T>) : QuerySpecificationComp
         return appliedStatement()
     }
 
-    override fun formattedParams(): Map<String, Any> {
+    override fun formattedParams(): Map<String, Any?> {
         return this.spec.parameters
     }
 }

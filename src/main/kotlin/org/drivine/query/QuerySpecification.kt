@@ -8,7 +8,7 @@ import org.drivine.utils.ObjectUtils
 
 class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
-    var parameters: Map<String, Any> = emptyMap<String, Any>(),
+    var parameters: Map<String, Any?> = emptyMap<String, Any?>(),
     var postProcessors: MutableList<ResultPostProcessor<Any, Any>> = mutableListOf(),
     var _skip: Int? = null,
     var _limit: Int? = null,
@@ -28,7 +28,7 @@ class QuerySpecification<T> private constructor(
         }
     }
 
-    fun bind(parameters: Map<String, Any>): QuerySpecification<T> {
+    fun bind(parameters: Map<String, Any?>): QuerySpecification<T> {
         this.parameters = parameters
         return this
     }

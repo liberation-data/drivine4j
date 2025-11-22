@@ -133,7 +133,7 @@ class EventRepositoryTests @Autowired constructor(
                     "uuid" to eventId,
                     "occurredAt" to now,
                     "createdAt" to now
-                )) as Map<String, Any>)
+                )))
         )
 
         // Query with Instant in WHERE clause - use primitiveProps to convert
@@ -146,7 +146,7 @@ class EventRepositoryTests @Autowired constructor(
         val result = manager.getOne(
             QuerySpecification
                 .withStatement(queryWithInstant)
-                .bind(ObjectUtils.primitiveProps(mapOf("timestamp" to now)) as Map<String, Any>)
+                .bind(ObjectUtils.primitiveProps(mapOf("timestamp" to now)))
                 .transform(Event::class.java)
         )
 

@@ -27,5 +27,5 @@ abstract class QuerySpecificationCompiler(protected val spec: QuerySpecification
 
     abstract fun formattedStatement(): String
 
-    abstract fun formattedParams(): Map<String, Any>
+    abstract fun formattedParams(): Map<String, Any?>
 }

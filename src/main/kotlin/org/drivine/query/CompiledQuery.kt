@@ -5,5 +5,5 @@ package org.drivine.query
  */
 data class CompiledQuery(
     val statement: String,
-    val parameters: Map<String, Any>
+    val parameters: Map<String, Any?>
 )
