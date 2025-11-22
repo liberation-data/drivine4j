@@ -7,4 +7,6 @@ class FilterPostProcessor<T>(private val filterFunction: (T) -> Boolean) : Resul
             filterFunction(it)
         }
     }
+
+    override fun toString(): String = "filter(predicate)"
 }

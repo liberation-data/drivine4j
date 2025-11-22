@@ -96,4 +96,60 @@ class QuerySpecification<T> private constructor(
             originalSpec = this.originalSpec
         )
     }
+
+    override fun toString(): String {
+        val sb = StringBuilder("QuerySpecification(\n")
+
+        // Statement
+        sb.append("  statement: ${statement?.text ?: "null"}\n")
+
+        // Parameters
+        if (parameters.isEmpty()) {
+            sb.append("  parameters: <empty>\n")
+        } else {
+            sb.append("  parameters:\n")
+            parameters.forEach { (key, value) ->
+                val valueStr = when {
+                    value == null -> "null"
+                    value is String -> "\"$value\""
+                    value is Collection<*> -> "[${value.joinToString(", ")}]"
+                    value is Map<*, *> -> value.toString()
+                    else -> value.toString()
+                }
+                sb.append("    $key = $valueStr\n")
+            }
+        }
+
+        // Post-processors - collect from entire spec chain
+        val allProcessors = getAllPostProcessors()
+        if (allProcessors.isEmpty()) {
+            sb.append("  postProcessors: <none>\n")
+        } else {
+            sb.append("  postProcessors:\n")
+            allProcessors.forEachIndexed { index, processor ->
+                sb.append("    [$index] $processor\n")
+            }
+        }
+
+        // Skip/Limit
+        _skip?.let { sb.append("  skip: $it\n") }
+        _limit?.let { sb.append("  limit: $it\n") }
+
+        sb.append(")")
+        return sb.toString()
+    }
+
+    private fun getAllPostProcessors(): List<ResultPostProcessor<Any, Any>> {
+        val chain = mutableListOf<QuerySpecification<*>>()
+        var current: QuerySpecification<*>? = this
+
+        // Build chain from current back to original
+        while (current != null) {
+            chain.add(0, current)  // Add to beginning to maintain order
+            current = current.originalSpec
+        }
+
+        // Collect all post-processors from the chain
+        return chain.flatMap { it.postProcessors }
+    }
 }

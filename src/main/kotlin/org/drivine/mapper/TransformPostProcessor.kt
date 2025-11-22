@@ -32,4 +32,6 @@ class TransformPostProcessor<S, T>(private val type: Class<T>) : ResultPostProce
             }
         }
     }
+
+    override fun toString(): String = "transform(${type.simpleName})"
 }

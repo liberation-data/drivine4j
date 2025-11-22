@@ -5,4 +5,6 @@ class MapPostProcessor<S, T>(private val mapFunction: (S) -> T) : ResultPostProc
     override fun apply(results: List<S>): List<T> {
         return results.map { mapFunction(it) }
     }
+
+    override fun toString(): String = "map(mapper)"
 }
