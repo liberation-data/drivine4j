@@ -14,10 +14,11 @@ class TransactionContextHolder {
     private val localStorage: ThreadLocal<MutableMap<String, Any>> = ThreadLocal.withInitial { mutableMapOf() }
 
     /**
-     * Gets the current Transaction from thread-local storage.
+     * Gets the current DrivineTransactionObject from thread-local storage.
+     * This is managed by Spring's PlatformTransactionManager.
      */
-    var currentTransaction: Transaction?
-        get() = localStorage.get()[TransactionContextKeys.TRANSACTION.name] as Transaction?
+    var currentTransaction: DrivineTransactionObject?
+        get() = localStorage.get()[TransactionContextKeys.TRANSACTION.name] as DrivineTransactionObject?
         set(value) {
             val map = localStorage.get()
             if (value == null) {

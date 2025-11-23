@@ -3,10 +3,12 @@ package org.drivine
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.ComponentScan
 import org.springframework.context.annotation.Configuration
+import org.springframework.transaction.PlatformTransactionManager
 
 @Configuration
 @ComponentScan(basePackages = ["drivine"])
@@ -20,6 +22,11 @@ class DrivineConfiguration {
     @Bean
     fun transactionContextHolder(): TransactionContextHolder {
         return TransactionContextHolder()
+    }
+
+    @Bean
+    fun transactionManager(contextHolder: TransactionContextHolder): PlatformTransactionManager {
+        return DrivineTransactionManager(contextHolder)
     }
 
     @Bean

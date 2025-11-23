@@ -2,25 +2,21 @@ package sample
 
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
-import org.drivine.test.TestTransactionListener
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.annotation.Rollback
-import org.springframework.test.context.TestExecutionListeners
+import org.springframework.transaction.annotation.Transactional
 import java.util.*
 
 /**
- * Example tests demonstrating Drivine's @Rollback support.
+ * Example tests demonstrating Spring's @Transactional and @Rollback support with Drivine.
  *
- * By default, all test methods will rollback their transactions (just like Spring).
+ * By default, all @Transactional test methods will rollback their transactions (just like Spring).
  * Use @Rollback(false) to commit changes permanently.
  */
 @SpringBootTest(classes = [TestAppContext::class])
-@TestExecutionListeners(
-    listeners = [TestTransactionListener::class],
-    mergeMode = TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS
-)
+@Transactional
 class TransactionRollbackTests @Autowired constructor(
     private val manager: PersistenceManager
 ) {
@@ -87,10 +83,7 @@ class TransactionRollbackTests @Autowired constructor(
  * All tests in this class will commit by default unless overridden at method level.
  */
 @SpringBootTest(classes = [TestAppContext::class])
-@TestExecutionListeners(
-    listeners = [TestTransactionListener::class],
-    mergeMode = TestExecutionListeners.MergeMode.MERGE_WITH_DEFAULTS
-)
+@Transactional
 @Rollback(false) // Class-level: commit by default
 class ClassLevelRollbackTests @Autowired constructor(
     private val manager: PersistenceManager

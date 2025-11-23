@@ -34,11 +34,12 @@ class Neo4jConnection(
             val result = transaction?.run(compiledSpec.statement, compiledSpec.parameters)
                 ?: session.run(compiledSpec.statement, compiledSpec.parameters)
 
+            val mapped = resultMapper.mapQueryResults(result.list(), finalizedSpec)
             statementLogger.log(spec, startTime)
-            return resultMapper.mapQueryResults(result.list(), finalizedSpec)
+            return mapped
         } catch (e: Exception) {
             statementLogger.log(spec, startTime, e)
-            throw DrivineException.withRootCause(e)
+            throw e
         }
     }
 
