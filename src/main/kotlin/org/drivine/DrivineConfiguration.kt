@@ -11,7 +11,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.transaction.PlatformTransactionManager
 
 @Configuration
-@ComponentScan(basePackages = ["drivine"])
+@ComponentScan(basePackages = ["org.drivine"])
 class DrivineConfiguration {
 
     @Bean
