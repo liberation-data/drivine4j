@@ -24,8 +24,6 @@ class DrivineTransactionManager(
     private val contextHolder: TransactionContextHolder
 ) : AbstractPlatformTransactionManager() {
 
-    private val logger = LoggerFactory.getLogger(DrivineTransactionManager::class.java)
-
     init {
         // Configure default behavior
         isNestedTransactionAllowed = false
