@@ -7,7 +7,7 @@ package org.drivine.mapper
  * Example usage:
  * ```
  * class PersonRowMapper : RowMapper<Person> {
- *     override fun map(row: Map<String, Any?>): Person {
+ *     override fun map(row: Map<String, *>): Person {
  *         return Person(
  *             uuid = row["uuid"] as String,
  *             firstName = row["firstName"] as String,
@@ -29,5 +29,5 @@ interface RowMapper<T> {
      * @param row The result row as a Map of column names to values
      * @return The mapped domain object
      */
-    fun map(row: Map<String, Any?>): T
+    fun map(row: Map<String, *>): T
 }

@@ -59,7 +59,7 @@ class QuerySpecification<T> private constructor(
      * Example:
      * ```
      * class PersonRowMapper : RowMapper<Person> {
-     *     override fun map(row: Map<String, Any?>): Person {
+     *     override fun map(row: Map<String, *>): Person {
      *         return Person(
      *             uuid = row["uuid"] as String,
      *             firstName = row["firstName"] as String
