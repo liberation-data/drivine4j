@@ -178,6 +178,66 @@ class ScalarResultTests @Autowired constructor(
     }
 
     @Test
+    fun `query returning String scalar`() {
+        // Create test data
+        val uuid = UUID.randomUUID().toString()
+        manager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (p:Person {uuid: ${'$'}uuid, firstName: 'Alice', createdBy: 'scalar-test'})
+                """.trimIndent())
+                .bind(mapOf("uuid" to uuid))
+        )
+
+        // Query that returns just a String (firstName)
+        val nameQuery = """
+            MATCH (p:Person {uuid: ${'$'}uuid})
+            RETURN p.firstName
+        """.trimIndent()
+
+        val result = manager.query(
+            QuerySpecification
+                .withStatement(nameQuery)
+                .bind(mapOf("uuid" to uuid))
+                .transform(String::class.java)
+        )
+
+        println("String scalar result: $result")
+        assert(result.size == 1)
+        assert(result[0] == "Alice")
+    }
+
+    @Test
+    fun `query returning String scalar with alias`() {
+        // Create test data
+        val uuid = UUID.randomUUID().toString()
+        manager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (p:Person {uuid: ${'$'}uuid, firstName: 'Bob', createdBy: 'scalar-test'})
+                """.trimIndent())
+                .bind(mapOf("uuid" to uuid))
+        )
+
+        // Query that returns a String with alias
+        val nameQuery = """
+            MATCH (p:Person {uuid: ${'$'}uuid})
+            RETURN p.firstName as name
+        """.trimIndent()
+
+        val result = manager.query(
+            QuerySpecification
+                .withStatement(nameQuery)
+                .bind(mapOf("uuid" to uuid))
+                .transform(String::class.java)
+        )
+
+        println("String scalar with alias result: $result")
+        assert(result.size == 1)
+        assert(result[0] == "Bob")
+    }
+
+    @Test
     fun `query returning scalar count transformed to Map`() {
         // Create some test data
         manager.execute(

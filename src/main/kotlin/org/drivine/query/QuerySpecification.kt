@@ -3,6 +3,7 @@ package org.drivine.query
 import org.drivine.mapper.FilterPostProcessor
 import org.drivine.mapper.MapPostProcessor
 import org.drivine.mapper.ResultPostProcessor
+import org.drivine.mapper.RowMapper
 import org.drivine.mapper.TransformPostProcessor
 import org.drivine.utils.ObjectUtils
 
@@ -50,6 +51,48 @@ class QuerySpecification<T> private constructor(
         )
         newSpec.postProcessors.add(MapPostProcessor<Any, Any> { input ->
             mapper(input as T) as Any
+        })
+        return newSpec
+    }
+
+    /**
+     * Maps query results to type U using a RowMapper instance.
+     * Automatically transforms results to Map<String, Any?> first, then applies the mapper.
+     *
+     * This is useful when you want to manually map results similar to Spring JDBC's RowMapper.
+     *
+     * Example:
+     * ```
+     * class PersonRowMapper : RowMapper<Person> {
+     *     override fun map(row: Map<String, Any?>): Person {
+     *         return Person(
+     *             uuid = row["uuid"] as String,
+     *             firstName = row["firstName"] as String
+     *         )
+     *     }
+     * }
+     *
+     * val people = manager.query(
+     *     QuerySpecification
+     *         .withStatement("MATCH (p:Person) RETURN p")
+     *         .mapWith(PersonRowMapper())
+     * )
+     * ```
+     */
+    fun <U> mapWith(mapper: RowMapper<U>): QuerySpecification<U> {
+        val newSpec = QuerySpecification<U>(
+            statement = this.statement,
+            parameters = this.parameters,
+            postProcessors = mutableListOf(),
+            _skip = this._skip,
+            _limit = this._limit,
+            originalSpec = this
+        )
+        // First transform to Map, then apply the RowMapper
+        newSpec.postProcessors.add(TransformPostProcessor<Any, Any>(Map::class.java as Class<Any>))
+        newSpec.postProcessors.add(MapPostProcessor<Any, Any> { input ->
+            @Suppress("UNCHECKED_CAST")
+            mapper.map(input as Map<String, Any?>) as Any
         })
         return newSpec
     }

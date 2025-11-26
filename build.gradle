@@ -7,10 +7,11 @@ plugins {
 	id 'maven-publish'
 	id 'signing'
 	id 'org.jetbrains.dokka' version '1.9.20'
+	id 'com.gradleup.nmcp' version '0.0.8'
 }
 
 group = 'org.drivine'
-version = '0.0.1-SNAPSHOT'
+version = '0.0.2-SNAPSHOT'
 
 base {
 	archivesName = 'drivine4j'
@@ -128,30 +129,37 @@ publishing {
 		}
 	}
 
-	repositories {
-		// Sonatype (s01). Switches snapshot vs. staging by version suffix
-		maven {
-			name = 'Sonatype'
-			url = version.endsWith('SNAPSHOT')
-					? uri('https://s01.oss.sonatype.org/content/repositories/snapshots/')
-					: uri('https://s01.oss.sonatype.org/service/local/staging/deploy/maven2/')
-
-			credentials {
-				username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
-				password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
-			}
-		}
-		// Optional: also publish to ~/.m2 via `publish` (you can rely on publishToMavenLocal instead)
-		// mavenLocal()
-	}
+	// No longer need explicit repositories - nmcp plugin handles Central Portal publishing
 }
 
 // --- Signing (required for non-SNAPSHOT releases to Maven Central) ---
 signing {
 	required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
-	useInMemoryPgpKeys(
-			findProperty('signingKey') ?: System.getenv('SIGNING_KEY'),
-			findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
-	)
+
+	// Try in-memory keys first (for CI/CD), fall back to GPG agent (for local dev)
+	def signingKey = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
+	def signingPassword = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+
+	if (signingKey != null && signingKey.contains('BEGIN PGP')) {
+		// Full ASCII-armored key provided - use in-memory signing
+		useInMemoryPgpKeys(signingKey, signingPassword)
+	} else if (signingKey != null) {
+		// Key ID provided - use GPG agent
+		useGpgCmd()
+	} else {
+		// No key specified - use default GPG agent
+		useGpgCmd()
+	}
+
 	sign publishing.publications.mavenJava
+}
+
+// --- Central Publishing Portal (new Maven Central) ---
+nmcp {
+	publishAllPublications {
+		username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+		password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+		// Automatically publish (set to false to manually release from web UI)
+		publicationType = "AUTOMATIC"
+	}
 }

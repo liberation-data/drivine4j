@@ -4,6 +4,7 @@ build/
 !gradle/wrapper/gradle-wrapper.jar
 !**/src/main/**/build/
 !**/src/test/**/build/
+.envrc
 
 ### STS ###
 .apt_generated
@@ -38,3 +39,5 @@ out/
 
 ### Kotlin ###
 .kotlin
+
+.envrc
