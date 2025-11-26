@@ -1,11 +1,6 @@
 package org.drivine.query
 
-import org.drivine.mapper.FilterPostProcessor
-import org.drivine.mapper.MapPostProcessor
-import org.drivine.mapper.ResultPostProcessor
-import org.drivine.mapper.RowMapper
-import org.drivine.mapper.TransformPostProcessor
-import org.drivine.utils.ObjectUtils
+import org.drivine.mapper.*
 
 class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
@@ -119,6 +114,58 @@ class QuerySpecification<T> private constructor(
         return this
     }
 
+    /**
+     * Filters results to only instances of the specified type.
+     * Combines filter and map operations for type narrowing.
+     *
+     * Java example:
+     * ```
+     * QuerySpecification<Chunk> chunks = spec.filterIsInstance(Chunk.class);
+     * ```
+     *
+     * @param type The class to filter by
+     * @return A new QuerySpecification with results narrowed to type U
+     */
+    fun <U : Any> filterIsInstance(type: Class<U>): QuerySpecification<U> {
+        val newSpec = QuerySpecification<U>(
+            statement = this.statement,
+            parameters = this.parameters,
+            postProcessors = mutableListOf(),
+            _skip = this._skip,
+            _limit = this._limit,
+            originalSpec = this
+        )
+        // Filter to only instances of the target type
+        newSpec.postProcessors.add(FilterPostProcessor<Any> { input ->
+            type.isInstance(input)
+        })
+        // Map/cast to the target type
+        newSpec.postProcessors.add(MapPostProcessor<Any, Any> { input ->
+            input as Any  // Already filtered, safe cast
+        })
+        return newSpec
+    }
+
+    /**
+     * Filters results to only instances of the specified type (Kotlin reified version).
+     * Combines filter and map operations for type narrowing.
+     *
+     * Kotlin example:
+     * ```
+     * val chunks = spec.filterIsInstance<Chunk>()
+     * ```
+     *
+     * This is equivalent to:
+     * ```
+     * spec.filter { it is Chunk }.map { it as Chunk }
+     * ```
+     *
+     * @return A new QuerySpecification with results narrowed to type U
+     */
+    inline fun <reified U : Any> filterIsInstance(): QuerySpecification<U> {
+        return filterIsInstance(U::class.java)
+    }
+
     fun skip(results: Int): QuerySpecification<T> {
         this._skip = results
         return this
@@ -142,11 +189,20 @@ class QuerySpecification<T> private constructor(
 
     override fun toString(): String {
         val sb = StringBuilder("QuerySpecification(\n")
-
-        // Statement
         sb.append("  statement: ${statement?.text ?: "null"}\n")
 
-        // Parameters
+        sb.append(paramsToString())
+        sb.append(postProcessorsToString())
+
+        _skip?.let { sb.append("  skip: $it\n") }
+        _limit?.let { sb.append("  limit: $it\n") }
+
+        sb.append(")")
+        return sb.toString()
+    }
+
+    private fun paramsToString(): String {
+        val sb = StringBuilder()
         if (parameters.isEmpty()) {
             sb.append("  parameters: <empty>\n")
         } else {
@@ -162,8 +218,11 @@ class QuerySpecification<T> private constructor(
                 sb.append("    $key = $valueStr\n")
             }
         }
+        return sb.toString()
+    }
 
-        // Post-processors - collect from entire spec chain
+    private fun postProcessorsToString(): String {
+        val sb = StringBuilder()
         val allProcessors = getAllPostProcessors()
         if (allProcessors.isEmpty()) {
             sb.append("  postProcessors: <none>\n")
@@ -173,12 +232,6 @@ class QuerySpecification<T> private constructor(
                 sb.append("    [$index] $processor\n")
             }
         }
-
-        // Skip/Limit
-        _skip?.let { sb.append("  skip: $it\n") }
-        _limit?.let { sb.append("  limit: $it\n") }
-
-        sb.append(")")
         return sb.toString()
     }
 
