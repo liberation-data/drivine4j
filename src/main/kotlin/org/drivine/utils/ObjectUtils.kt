@@ -151,6 +151,7 @@ object ObjectUtils {
 
     /**
      * Converts a value to a Neo4j-compatible primitive type.
+     * - Enum -> String (using enum.name)
      * - UUID -> String
      * - Instant -> ZonedDateTime (at UTC) - Neo4j driver doesn't support Instant directly
      * - LocalDate, LocalDateTime, ZonedDateTime -> preserved as-is (native Neo4j temporal types)
@@ -164,7 +165,8 @@ object ObjectUtils {
     private fun convertValue(v: Any?): Any? {
         return when (v) {
             null -> null
-            is String, is Number, is Boolean, is Enum<*> -> v
+            is String, is Number, is Boolean -> v
+            is Enum<*> -> v.name  // Convert enum to its string name for Neo4j
             is UUID -> v.toString()
 
             // Temporal types - Neo4j driver supports LocalDate, LocalDateTime, ZonedDateTime, etc.

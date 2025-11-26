@@ -46,7 +46,7 @@ class ObjectUtilsTest {
         assertEquals("Jasper", map["name"])
         assertEquals(49, map["age"])
         assertEquals(listOf("dev", "mtb"), map["tags"])
-        assertEquals(Role.ADMIN, map["role"])
+        assertEquals("ADMIN", map["role"])  // Enums are converted to strings for Neo4j compatibility
         assertEquals(listOf(1, 2, 3), map["numbers"])
         assertTrue(map["bytes"] is ByteArray)
         assertEquals(listOf("a", "b"), map["misc"] as List<*>)
