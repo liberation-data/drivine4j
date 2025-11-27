@@ -109,11 +109,10 @@ class PersonRepository @Autowired constructor(
 
     @Transactional
     fun create(person: Person): Person {
-        val props = ObjectUtils.primitiveProps(person)
         return manager.getOne(
             QuerySpecification
                 .withStatement<Any>("CREATE (p:Person) SET p = \$props RETURN properties(p)")
-                .bind(mapOf("props" to props))
+                .bindObject("props", person)
                 .transform(Person::class.java)
         )
     }
@@ -285,15 +284,29 @@ data class ConnectionProperties(
 )
 ```
 
-### ObjectUtils
+### Binding Objects
+
+Use `bindObject()` to serialize objects to Neo4j-compatible types using Jackson:
 
 ```kotlin
-// Convert Kotlin object to Map for Neo4j
-val props: Map<String, Any> = ObjectUtils.primitiveProps(
-    obj = person,
-    includeNulls = false  // Omit null properties
+// Automatically converts Enums to String, UUID to String, Instant to ZonedDateTime
+val task = Task(id = "1", priority = Priority.HIGH, status = Status.OPEN, dueDate = Instant.now())
+manager.execute(
+    QuerySpecification
+        .withStatement("CREATE (t:Task) SET t = $props")
+        .bindObject("props", task)
 )
 ```
+
+The Neo4j ObjectMapper automatically:
+- Converts `Enum` to `String`
+- Converts `UUID` to `String`
+- Converts `Instant` to `ZonedDateTime`
+- Converts `Date` to `ZonedDateTime`
+- Includes null values by default (allows explicit property removal)
+- Ignores unknown properties when deserializing
+
+To exclude nulls on specific properties, use `@JsonInclude(JsonInclude.Include.NON_NULL)`.
 
 ## Multi-Database Support
 

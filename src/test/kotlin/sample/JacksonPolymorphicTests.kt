@@ -54,19 +54,16 @@ class JacksonPolymorphicTests @Autowired constructor(
         abstract val name: String
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class AnnotatedDog(
         override val name: String,
         val breed: String
     ) : AnnotatedAnimal()
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class AnnotatedCat(
         override val name: String,
         val livesRemaining: Int
     ) : AnnotatedAnimal()
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class AnnotatedBird(
         override val name: String,
         val canFly: Boolean
@@ -146,19 +143,16 @@ class JacksonPolymorphicTests @Autowired constructor(
         abstract val name: String
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class LabeledDog(
         override val name: String,
         val breed: String
     ) : LabeledAnimal()
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class LabeledCat(
         override val name: String,
         val livesRemaining: Int
     ) : LabeledAnimal()
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class LabeledBird(
         override val name: String,
         val canFly: Boolean

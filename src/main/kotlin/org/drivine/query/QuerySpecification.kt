@@ -29,6 +29,37 @@ class QuerySpecification<T> private constructor(
         return this
     }
 
+    /**
+     * Binds an object as a parameter using Jackson serialization with Neo4j-aware type conversions.
+     *
+     * This method uses the same ObjectMapper as `.transform()` for consistency, which automatically:
+     * - Converts Enum to String
+     * - Converts UUID to String
+     * - Converts Instant to ZonedDateTime
+     * - Excludes null values
+     * - Ignores unknown properties during deserialization
+     *
+     * Example:
+     * ```kotlin
+     * val task = Task(id = "1", priority = Priority.HIGH, status = Status.OPEN)
+     * QuerySpecification
+     *     .withStatement("CREATE (t:Task $props)")
+     *     .bindObject("props", task)
+     * ```
+     *
+     * This uses Jackson's Neo4j-aware ObjectMapper to convert objects to Neo4j-compatible types.
+     *
+     * @param key The parameter name to bind
+     * @param value The object to serialize
+     * @return This QuerySpecification for method chaining
+     */
+    fun bindObject(key: String, value: Any): QuerySpecification<T> {
+        val converted = Neo4jObjectMapper.instance.convertValue(value, Map::class.java)
+        @Suppress("UNCHECKED_CAST")
+        this.parameters = this.parameters + (key to (converted as Map<String, Any?>))
+        return this
+    }
+
     fun addPostProcessors(vararg postProcessors: ResultPostProcessor<Any, Any>): QuerySpecification<T> {
         this.postProcessors.addAll(postProcessors)
         return this

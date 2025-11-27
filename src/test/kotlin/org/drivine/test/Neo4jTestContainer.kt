@@ -17,7 +17,7 @@ class Neo4jTestContainer : Neo4jContainer<Neo4jTestContainer> {
 
         fun useLocalNeo4j(): Boolean {
             return System.getProperty(USE_LOCAL_NEO4J_PROPERTY, "false").toBoolean() ||
-                   System.getenv("USE_LOCAL_NEO4J")?.toBoolean() ?: false
+                   System.getenv("USE_LOCAL_NEO4J")?.toBoolean() ?: true
         }
 
         fun getBoltUrl(): String {
@@ -38,7 +38,7 @@ class Neo4jTestContainer : Neo4jContainer<Neo4jTestContainer> {
 
         fun getPassword(): String {
             return if (useLocalNeo4j()) {
-                System.getProperty(LOCAL_NEO4J_PASSWORD_PROPERTY, "password")
+                System.getProperty(LOCAL_NEO4J_PASSWORD_PROPERTY, "brahmsian")
             } else {
                 instance?.adminPassword ?: throw IllegalStateException("Neo4j test container not initialized")
             }

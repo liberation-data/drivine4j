@@ -2,18 +2,12 @@ package org.drivine.mapper
 
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
-import com.fasterxml.jackson.databind.SerializationFeature
-import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
-import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import org.neo4j.driver.internal.value.MapValue
 import org.neo4j.driver.Value
 
 class TransformPostProcessor<S, T>(private val type: Class<T>) : ResultPostProcessor<S, T> {
 
-    private val objectMapper = jacksonObjectMapper().apply {
-        registerModule(JavaTimeModule())
-        disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
-    }
+    private val objectMapper = Neo4jObjectMapper.instance
 
     // Cache for subtype mappings to avoid repeated reflection
     private val subtypeMap: Map<String, Class<*>>? by lazy {

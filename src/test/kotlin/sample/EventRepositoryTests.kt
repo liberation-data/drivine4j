@@ -3,7 +3,7 @@ package sample
 import org.drivine.connection.Event
 import org.drivine.query.QuerySpecification
 import org.drivine.manager.PersistenceManager
-import org.drivine.utils.ObjectUtils
+import org.drivine.mapper.Neo4jObjectMapper
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -35,8 +35,9 @@ class EventRepositoryTests @Autowired constructor(
             updatedAt = null
         )
 
-        // Convert event to map for Neo4j using primitiveProps
-        val eventProps = ObjectUtils.primitiveProps(mapOf(
+        // Convert event to map for Neo4j using Neo4jObjectMapper
+        @Suppress("UNCHECKED_CAST")
+        val eventProps = Neo4jObjectMapper.instance.convertValue(mapOf(
             "uuid" to event.uuid.toString(),
             "name" to event.name,
             "description" to event.description,
@@ -44,7 +45,7 @@ class EventRepositoryTests @Autowired constructor(
             "createdAt" to event.createdAt,
             "updatedAt" to event.updatedAt,
             "createdBy" to "test"
-        ))
+        ), Map::class.java) as Map<String, Any?>
 
         val query = """
             CREATE (e:Event)
@@ -126,27 +127,36 @@ class EventRepositoryTests @Autowired constructor(
             })
         """.trimIndent()
 
+        @Suppress("UNCHECKED_CAST")
+        val createParams = Neo4jObjectMapper.instance.convertValue(mapOf(
+            "uuid" to eventId,
+            "occurredAt" to now,
+            "createdAt" to now
+        ), Map::class.java) as Map<String, Any?>
+
         manager.execute(
             QuerySpecification
                 .withStatement(createQuery)
-                .bind(ObjectUtils.primitiveProps(mapOf(
-                    "uuid" to eventId,
-                    "occurredAt" to now,
-                    "createdAt" to now
-                )))
+                .bind(createParams)
         )
 
-        // Query with Instant in WHERE clause - use primitiveProps to convert
+        // Query with Instant in WHERE clause - use Neo4jObjectMapper to convert
         val queryWithInstant = """
             MATCH (e:Event)
             WHERE e.occurredAt = ${'$'}timestamp AND e.createdBy = 'test'
             RETURN properties(e)
         """.trimIndent()
 
+        @Suppress("UNCHECKED_CAST")
+        val queryParams = Neo4jObjectMapper.instance.convertValue(
+            mapOf("timestamp" to now),
+            Map::class.java
+        ) as Map<String, Any?>
+
         val result = manager.getOne(
             QuerySpecification
                 .withStatement(queryWithInstant)
-                .bind(ObjectUtils.primitiveProps(mapOf("timestamp" to now)))
+                .bind(queryParams)
                 .transform(Event::class.java)
         )
 

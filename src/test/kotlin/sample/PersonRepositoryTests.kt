@@ -217,12 +217,14 @@ class PersonRepositoryTests @Autowired constructor(
         println("Before update: ${person.firstName} ${person.lastName}, email: ${person.email}")
         assert(person.email != null) { "Test requires person with non-null email" }
 
-        // Create a custom update method that uses includeNulls=true
+        // Create a custom update method that includes nulls
         // Using SET p = $props (not +=) to replace all properties
-        val propsWithNulls = org.drivine.utils.ObjectUtils.primitiveProps(
+        // Neo4jObjectMapper includes nulls by default (JsonInclude.Include.ALWAYS)
+        @Suppress("UNCHECKED_CAST")
+        val propsWithNulls = org.drivine.mapper.Neo4jObjectMapper.instance.convertValue(
             person.copy(email = null, age = 88),
-            includeNulls = true
-        )
+            Map::class.java
+        ) as Map<String, Any?>
 
         val statement = """
             MERGE (p:Person {uuid: ${'$'}props.uuid})

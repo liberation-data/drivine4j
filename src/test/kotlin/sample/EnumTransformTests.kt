@@ -3,7 +3,6 @@ package sample
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
-import org.drivine.utils.ObjectUtils
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -31,7 +30,6 @@ class EnumTransformTests @Autowired constructor(
         CANCELLED
     }
 
-    @JsonIgnoreProperties(ignoreUnknown = true)
     data class Task(
         val id: String,
         val title: String,
@@ -176,52 +174,6 @@ class EnumTransformTests @Autowired constructor(
     }
 
     @Test
-    fun `create new task with enums and save it using ObjectUtils`() {
-        val newTask = Task(
-            id = "task-5",
-            title = "Review pull request",
-            description = "Review code changes for feature X",
-            priority = Priority.MEDIUM,
-            status = Status.OPEN,
-            assignee = "charlie"
-        )
-
-        // Save the task using ObjectUtils.primitiveProps - this will test enum conversion
-        val props = ObjectUtils.primitiveProps(newTask, includeNulls = false)
-        println("Converted properties: $props")
-
-        manager.execute(
-            QuerySpecification
-                .withStatement("""
-                    MERGE (t:Task {id: ${'$'}props.id})
-                    SET t += ${'$'}props
-                    SET t.createdBy = 'enum-test'
-                """.trimIndent())
-                .bind(mapOf("props" to props))
-        )
-
-        // Load it back
-        val loadedTask = manager.getOne(
-            QuerySpecification
-                .withStatement("""
-                    MATCH (t:Task {id: ${'$'}id})
-                    WHERE t.createdBy = 'enum-test'
-                    RETURN properties(t) AS task
-                """.trimIndent())
-                .bind(mapOf("id" to "task-5"))
-                .transform(Task::class.java)
-        )
-
-        println("Loaded task: $loadedTask")
-        assertEquals(newTask.id, loadedTask.id)
-        assertEquals(newTask.title, loadedTask.title)
-        assertEquals(newTask.description, loadedTask.description)
-        assertEquals(newTask.priority, loadedTask.priority)
-        assertEquals(newTask.status, loadedTask.status)
-        assertEquals(newTask.assignee, loadedTask.assignee)
-    }
-
-    @Test
     fun `group tasks by priority`() {
         val tasks = manager.query(
             QuerySpecification
@@ -268,6 +220,50 @@ class EnumTransformTests @Autowired constructor(
         assertEquals(1, openTasks.size)
         assertEquals("task-2", openTasks[0].id)
         assertEquals(Status.OPEN, openTasks[0].status)
+    }
+
+    @Test
+    fun `create task using bindObject with Jackson serialization`() {
+        val newTask = Task(
+            id = "task-6",
+            title = "Setup CI/CD pipeline",
+            description = "Configure GitHub Actions",
+            priority = Priority.HIGH,
+            status = Status.OPEN,
+            assignee = "devops"
+        )
+
+        // Use bindObject instead of ObjectUtils.primitiveProps
+        // This uses Jackson's Neo4j-aware ObjectMapper for consistency
+        manager.execute(
+            QuerySpecification
+                .withStatement("""
+                    MERGE (t:Task {id: ${'$'}task.id})
+                    SET t += ${'$'}task
+                    SET t.createdBy = 'enum-test'
+                """.trimIndent())
+                .bindObject("task", newTask)
+        )
+
+        // Load it back
+        val loadedTask = manager.getOne(
+            QuerySpecification
+                .withStatement("""
+                    MATCH (t:Task {id: ${'$'}id})
+                    WHERE t.createdBy = 'enum-test'
+                    RETURN properties(t) AS task
+                """.trimIndent())
+                .bind(mapOf("id" to "task-6"))
+                .transform(Task::class.java)
+        )
+
+        println("Loaded task via bindObject: $loadedTask")
+        assertEquals(newTask.id, loadedTask.id)
+        assertEquals(newTask.title, loadedTask.title)
+        assertEquals(newTask.description, loadedTask.description)
+        assertEquals(newTask.priority, loadedTask.priority)
+        assertEquals(newTask.status, loadedTask.status)
+        assertEquals(newTask.assignee, loadedTask.assignee)
     }
 
     @Test

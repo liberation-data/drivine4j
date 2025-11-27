@@ -1,10 +1,11 @@
 package sample
 
 import org.drivine.connection.Person
+import com.fasterxml.jackson.annotation.JsonInclude
 import org.drivine.manager.PersistenceManager
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
-import org.drivine.utils.ObjectUtils
 import org.drivine.utils.Partial
 import org.drivine.utils.toMap
 import org.springframework.beans.factory.annotation.Autowired
@@ -58,7 +59,13 @@ class PersonRepository @Autowired constructor(
 
     @Transactional
     fun update(person: Person): Person {
-        return update(ObjectUtils.primitiveProps(person, includeNulls = false))
+        // Use Neo4jObjectMapper with NON_NULL to exclude nulls (matches old includeNulls=false behavior)
+        val mapper = Neo4jObjectMapper.instance.copy().apply {
+            setSerializationInclusion(JsonInclude.Include.NON_NULL)
+        }
+        @Suppress("UNCHECKED_CAST")
+        val props = mapper.convertValue(person, Map::class.java) as Map<String, Any?>
+        return update(props)
     }
 
     @Transactional

@@ -3,7 +3,7 @@ package sample
 import org.drivine.query.QuerySpecification
 import org.drivine.manager.PersistenceManager
 import org.drivine.connection.Person
-import org.drivine.utils.ObjectUtils
+import org.drivine.mapper.Neo4jObjectMapper
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -120,14 +120,15 @@ class ScalarResultTests @Autowired constructor(
         val uuid = UUID.randomUUID().toString()
 
         // Bind a nested structure
-        val params = ObjectUtils.primitiveProps(mapOf(
+        @Suppress("UNCHECKED_CAST")
+        val params = Neo4jObjectMapper.instance.convertValue(mapOf(
             "person" to mapOf(
                 "uuid" to uuid,
                 "firstName" to "Test",
                 "createdAt" to now,
                 "createdBy" to "scalar-test"
             )
-        ))
+        ), Map::class.java) as Map<String, Any?>
 
         val query = """
             CREATE (p:Person)
