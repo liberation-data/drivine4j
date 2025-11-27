@@ -3,6 +3,7 @@ package sample
 import org.drivine.connection.Person
 import org.drivine.query.QuerySpecification
 import org.drivine.manager.PersistenceManager
+import org.drivine.mapper.toMap
 import org.drivine.utils.partial
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -220,11 +221,9 @@ class PersonRepositoryTests @Autowired constructor(
         // Create a custom update method that includes nulls
         // Using SET p = $props (not +=) to replace all properties
         // Neo4jObjectMapper includes nulls by default (JsonInclude.Include.ALWAYS)
-        @Suppress("UNCHECKED_CAST")
-        val propsWithNulls = org.drivine.mapper.Neo4jObjectMapper.instance.convertValue(
-            person.copy(email = null, age = 88),
-            Map::class.java
-        ) as Map<String, Any?>
+        val propsWithNulls = org.drivine.mapper.Neo4jObjectMapper.instance.toMap(
+            person.copy(email = null, age = 88)
+        )
 
         val statement = """
             MERGE (p:Person {uuid: ${'$'}props.uuid})

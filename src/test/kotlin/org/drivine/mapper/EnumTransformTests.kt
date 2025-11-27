@@ -1,12 +1,12 @@
-package sample
+package org.drivine.mapper
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import sample.TestAppContext
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -42,12 +42,13 @@ class EnumTransformTests @Autowired constructor(
     @BeforeEach
     fun setupTestData() {
         // Clear existing test data
-        manager.execute(QuerySpecification
+        manager.execute(
+            QuerySpecification.Companion
             .withStatement("MATCH (t:Task) WHERE t.createdBy = 'enum-test' DELETE t"))
 
         // Create test tasks with various enum values
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (t1:Task {
                         id: 'task-1',
@@ -92,7 +93,7 @@ class EnumTransformTests @Autowired constructor(
     @Test
     fun `save and load tasks with enum properties`() {
         val tasks = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MATCH (t:Task)
                     WHERE t.createdBy = 'enum-test'
@@ -138,7 +139,7 @@ class EnumTransformTests @Autowired constructor(
     @Test
     fun `filter tasks by enum values`() {
         val urgentTasks = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MATCH (t:Task)
                     WHERE t.createdBy = 'enum-test'
@@ -158,7 +159,7 @@ class EnumTransformTests @Autowired constructor(
     @Test
     fun `filter completed tasks`() {
         val completedTasks = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MATCH (t:Task)
                     WHERE t.createdBy = 'enum-test'
@@ -176,7 +177,7 @@ class EnumTransformTests @Autowired constructor(
     @Test
     fun `group tasks by priority`() {
         val tasks = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MATCH (t:Task)
                     WHERE t.createdBy = 'enum-test'
@@ -205,7 +206,7 @@ class EnumTransformTests @Autowired constructor(
     fun `query tasks by enum value in Cypher`() {
         // You can also filter in Cypher directly
         val openTasks = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MATCH (t:Task)
                     WHERE t.createdBy = 'enum-test'
@@ -236,7 +237,7 @@ class EnumTransformTests @Autowired constructor(
         // Use bindObject instead of ObjectUtils.primitiveProps
         // This uses Jackson's Neo4j-aware ObjectMapper for consistency
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MERGE (t:Task {id: ${'$'}task.id})
                     SET t += ${'$'}task
@@ -247,7 +248,7 @@ class EnumTransformTests @Autowired constructor(
 
         // Load it back
         val loadedTask = manager.getOne(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MATCH (t:Task {id: ${'$'}id})
                     WHERE t.createdBy = 'enum-test'
@@ -269,7 +270,7 @@ class EnumTransformTests @Autowired constructor(
     @Test
     fun `map task priority to display string`() {
         val tasks = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     MATCH (t:Task)
                     WHERE t.createdBy = 'enum-test'

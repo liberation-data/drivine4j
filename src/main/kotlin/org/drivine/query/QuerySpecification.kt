@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import org.drivine.mapper.*
+import org.drivine.mapper.toMap
 
 class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
@@ -54,9 +55,8 @@ class QuerySpecification<T> private constructor(
      * @return This QuerySpecification for method chaining
      */
     fun bindObject(key: String, value: Any): QuerySpecification<T> {
-        val converted = Neo4jObjectMapper.instance.convertValue(value, Map::class.java)
-        @Suppress("UNCHECKED_CAST")
-        this.parameters = this.parameters + (key to (converted as Map<String, Any?>))
+        val converted = Neo4jObjectMapper.instance.toMap(value)
+        this.parameters = this.parameters + (key to converted)
         return this
     }
 

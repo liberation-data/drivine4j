@@ -102,3 +102,21 @@ object Neo4jObjectMapper {
         }
     }
 }
+
+/**
+ * Converts an object to a Map<String, Any?> using Neo4j-aware serialization.
+ *
+ * This extension function provides a type-safe way to convert objects to maps
+ * without requiring @Suppress("UNCHECKED_CAST") at call sites.
+ *
+ * Example:
+ * ```kotlin
+ * val person = Person(uuid = UUID.randomUUID(), name = "Alice", createdAt = Instant.now())
+ * val props = Neo4jObjectMapper.instance.toMap(person)
+ * // props now contains: {uuid: "...", name: "Alice", createdAt: ZonedDateTime}
+ * ```
+ */
+@Suppress("UNCHECKED_CAST")
+fun ObjectMapper.toMap(value: Any): Map<String, Any?> {
+    return this.convertValue(value, Map::class.java) as Map<String, Any?>
+}
