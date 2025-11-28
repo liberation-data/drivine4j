@@ -1,4 +1,4 @@
-package sample
+package sample.simple
 
 import org.drivine.connection.Holiday
 import org.drivine.manager.PersistenceManager

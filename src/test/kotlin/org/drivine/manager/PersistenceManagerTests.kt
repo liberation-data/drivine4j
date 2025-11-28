@@ -1,13 +1,15 @@
-package sample
+package org.drivine.manager
 
 import org.drivine.connection.Holiday
 import org.drivine.connection.Person
 import org.drivine.query.QuerySpecification
-import org.drivine.manager.PersistenceManager
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import sample.simple.HolidayRepository
+import sample.simple.PersonRepository
+import sample.simple.TestAppContext
 import java.util.UUID
 
 @SpringBootTest(classes = [TestAppContext::class])
@@ -20,9 +22,11 @@ class PersistenceManagerTests @Autowired constructor(
     @BeforeEach
     fun setupTestData() {
         // Clear existing test data
-        manager.execute(QuerySpecification
+        manager.execute(
+            QuerySpecification.Companion
             .withStatement("MATCH (h:Holiday) WHERE h.createdBy = 'test' detach DELETE h"))
-        manager.execute(QuerySpecification
+        manager.execute(
+            QuerySpecification.Companion
             .withStatement("MATCH (p:Person) WHERE p.createdBy = 'test' detach DELETE p"))
 
         // Insert test holidays
@@ -79,7 +83,8 @@ class PersistenceManagerTests @Autowired constructor(
                 SET h.createdTimestamp = datetime().epochMillis,
                 h += ${'$'}holiday
             """.trimIndent()
-            manager.execute(QuerySpecification
+            manager.execute(
+                QuerySpecification.Companion
                 .withStatement(query)
                 .bind(mapOf("holiday" to holiday)))
         }
@@ -160,7 +165,7 @@ class PersistenceManagerTests @Autowired constructor(
                 p += ${'$'}person
             """.trimIndent()
             manager.execute(
-                QuerySpecification
+                QuerySpecification.Companion
                     .withStatement(query)
                     .bind(mapOf("person" to person)))
         }
@@ -168,7 +173,7 @@ class PersistenceManagerTests @Autowired constructor(
 
     @Test
     fun testQuerySpecificationWithHolidays() {
-        val spec = QuerySpecification
+        val spec = QuerySpecification.Companion
             .withStatement("""
                 MATCH (h:Holiday) WHERE h.createdBy = 'test' RETURN properties(h)
                 """.trimIndent())
@@ -183,7 +188,7 @@ class PersistenceManagerTests @Autowired constructor(
 
     @Test
     fun testQuerySpecificationWithPersons() {
-        val spec = QuerySpecification
+        val spec = QuerySpecification.Companion
             .withStatement("""
                 MATCH (p:Person) WHERE p.createdBy = 'test' RETURN properties(p)
                 """.trimIndent())
@@ -198,7 +203,7 @@ class PersistenceManagerTests @Autowired constructor(
 
     @Test
     fun testComplexQueryChaining() {
-        val spec = QuerySpecification
+        val spec = QuerySpecification.Companion
             .withStatement("""
                 MATCH (p:Person) WHERE p.createdBy = 'test' AND p.profession = 'Engineer'
                 RETURN properties(p)

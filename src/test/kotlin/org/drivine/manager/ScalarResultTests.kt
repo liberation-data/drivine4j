@@ -1,14 +1,14 @@
-package sample
+package org.drivine.manager
 
-import org.drivine.query.QuerySpecification
-import org.drivine.manager.PersistenceManager
 import org.drivine.connection.Person
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.toMap
+import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import sample.simple.TestAppContext
 import java.time.Instant
 import java.util.UUID
 
@@ -20,7 +20,8 @@ class ScalarResultTests @Autowired constructor(
     @BeforeEach
     fun setupTestData() {
         // Clear existing test data
-        manager.execute(QuerySpecification
+        manager.execute(
+            QuerySpecification.Companion
             .withStatement("MATCH (p:Person) WHERE p.createdBy = 'scalar-test' DELETE p"))
     }
 
@@ -28,7 +29,7 @@ class ScalarResultTests @Autowired constructor(
     fun `query returning count with alias can transform to map`() {
         // Create some test data
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {uuid: ${'$'}uuid, firstName: 'Test', createdBy: 'scalar-test'})
                 """.trimIndent())
@@ -45,7 +46,7 @@ class ScalarResultTests @Autowired constructor(
         // But may fail with conversion error since we're trying to convert to Person
         try {
             val result = manager.query(
-                QuerySpecification
+                QuerySpecification.Companion
                     .withStatement(countQuery)
                     .transform(Person::class.java)  // Trying to transform scalar to Person
             )
@@ -72,7 +73,7 @@ class ScalarResultTests @Autowired constructor(
         // This should not crash - it may fail conversion but shouldn't throw ClassCastException
         try {
             val result = manager.query(
-                QuerySpecification
+                QuerySpecification.Companion
                     .withStatement(countQuery)
                     .transform(Long::class.java)
             )
@@ -92,7 +93,7 @@ class ScalarResultTests @Autowired constructor(
         // Create test data
         val uuid = UUID.randomUUID().toString()
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {uuid: ${'$'}uuid, firstName: 'Test', age: 25, createdBy: 'scalar-test'})
                 """.trimIndent())
@@ -106,7 +107,7 @@ class ScalarResultTests @Autowired constructor(
         """.trimIndent()
 
         val result = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(query)
                 .bind(mapOf("uuid" to uuid))
         )
@@ -138,7 +139,7 @@ class ScalarResultTests @Autowired constructor(
 
         try {
             val result = manager.query(
-                QuerySpecification
+                QuerySpecification.Companion
                     .withStatement(query)
                     .bind(params)
                     .transform(Person::class.java)
@@ -164,9 +165,9 @@ class ScalarResultTests @Autowired constructor(
         try {
             // Bind just the UUID string directly (no map wrapper)
             val result = manager.query(
-                QuerySpecification
+                QuerySpecification.Companion
                     .withStatement(query)
-                    .bind(mapOf("uuid" to uuid))  // This is correct
+                    .bind(mapOf("uuid" to uuid))
                     .transform(Person::class.java)
             )
             println("Result: $result")
@@ -183,7 +184,7 @@ class ScalarResultTests @Autowired constructor(
         // Create test data
         val uuid = UUID.randomUUID().toString()
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {uuid: ${'$'}uuid, firstName: 'Alice', createdBy: 'scalar-test'})
                 """.trimIndent())
@@ -197,7 +198,7 @@ class ScalarResultTests @Autowired constructor(
         """.trimIndent()
 
         val result = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(nameQuery)
                 .bind(mapOf("uuid" to uuid))
                 .transform(String::class.java)
@@ -213,7 +214,7 @@ class ScalarResultTests @Autowired constructor(
         // Create test data
         val uuid = UUID.randomUUID().toString()
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {uuid: ${'$'}uuid, firstName: 'Bob', createdBy: 'scalar-test'})
                 """.trimIndent())
@@ -227,7 +228,7 @@ class ScalarResultTests @Autowired constructor(
         """.trimIndent()
 
         val result = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(nameQuery)
                 .bind(mapOf("uuid" to uuid))
                 .transform(String::class.java)
@@ -242,7 +243,7 @@ class ScalarResultTests @Autowired constructor(
     fun `query returning scalar count transformed to Map`() {
         // Create some test data
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {uuid: ${'$'}uuid, firstName: 'Test', createdBy: 'scalar-test'})
                 """.trimIndent())
@@ -258,7 +259,7 @@ class ScalarResultTests @Autowired constructor(
         // Try to transform scalar to Map - what happens?
         try {
             val result = manager.query(
-                QuerySpecification
+                QuerySpecification.Companion
                     .withStatement(countQuery)
                     .transform(Map::class.java)
             )

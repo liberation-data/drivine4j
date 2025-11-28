@@ -1,13 +1,13 @@
-package sample
+package org.drivine.manager
 
 import org.drivine.connection.Person
-import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.RowMapper
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import sample.simple.TestAppContext
 import java.util.UUID
 
 @SpringBootTest(classes = [TestAppContext::class])
@@ -18,7 +18,8 @@ class RowMapperTests @Autowired constructor(
     @BeforeEach
     fun setupTestData() {
         // Clear existing test data
-        manager.execute(QuerySpecification
+        manager.execute(
+            QuerySpecification.Companion
             .withStatement("MATCH (p:Person) WHERE p.createdBy = 'rowmapper-test' DELETE p"))
     }
 
@@ -27,7 +28,7 @@ class RowMapperTests @Autowired constructor(
         // Create test data
         val uuid = UUID.randomUUID().toString()
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {
                         uuid: ${'$'}uuid,
@@ -57,7 +58,7 @@ class RowMapperTests @Autowired constructor(
         }
 
         val people = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("MATCH (p:Person {uuid: ${'$'}uuid}) RETURN p")
                 .bind(mapOf("uuid" to uuid))
                 .mapWith(PersonRowMapper())
@@ -75,7 +76,7 @@ class RowMapperTests @Autowired constructor(
         // Create test data
         val uuid = UUID.randomUUID().toString()
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {
                         uuid: ${'$'}uuid,
@@ -89,7 +90,7 @@ class RowMapperTests @Autowired constructor(
 
         // Inline RowMapper using object expression
         val people = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("MATCH (p:Person {uuid: ${'$'}uuid}) RETURN p")
                 .bind(mapOf("uuid" to uuid))
                 .mapWith(object : RowMapper<Person> {
@@ -121,7 +122,7 @@ class RowMapperTests @Autowired constructor(
         // Create test data
         val uuid = UUID.randomUUID().toString()
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {
                         uuid: ${'$'}uuid,
@@ -137,7 +138,7 @@ class RowMapperTests @Autowired constructor(
         data class PersonSummary(val fullName: String, val id: String)
 
         val summaries = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("MATCH (p:Person {uuid: ${'$'}uuid}) RETURN p")
                 .bind(mapOf("uuid" to uuid))
                 .mapWith(object : RowMapper<PersonSummary> {
@@ -163,7 +164,7 @@ class RowMapperTests @Autowired constructor(
         // Create test data
         val uuid = UUID.randomUUID().toString()
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("""
                     CREATE (p:Person {
                         uuid: ${'$'}uuid,
@@ -177,7 +178,7 @@ class RowMapperTests @Autowired constructor(
 
         // Query that returns properties(p) explicitly
         val people = manager.query(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement("MATCH (p:Person {uuid: ${'$'}uuid}) RETURN properties(p) as person")
                 .bind(mapOf("uuid" to uuid))
                 .mapWith(object : RowMapper<Person> {

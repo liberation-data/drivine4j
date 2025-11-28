@@ -1,4 +1,4 @@
-package sample
+package sample.simple
 
 import org.drivine.query.CypherStatement
 import org.drivine.query.QueryLoader

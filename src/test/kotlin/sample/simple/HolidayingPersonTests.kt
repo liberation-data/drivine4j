@@ -1,4 +1,4 @@
-package sample
+package sample.simple
 
 import org.drivine.connection.HolidayingPerson
 import org.drivine.manager.PersistenceManager
@@ -8,10 +8,13 @@ import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.annotation.Rollback
+import org.springframework.transaction.annotation.Transactional
 import java.util.*
+import kotlin.collections.get
 
 @SpringBootTest(classes = [TestAppContext::class])
-@Rollback(false)
+@Transactional
+@Rollback(true)
 class HolidayingPersonTests @Autowired constructor(
     private val manager: PersistenceManager
 ) {

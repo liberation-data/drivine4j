@@ -1,6 +1,5 @@
-package sample
+package sample.simple
 
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import org.drivine.manager.PersistenceManager
@@ -9,11 +8,15 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.test.annotation.Rollback
+import org.springframework.transaction.annotation.Transactional
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 @SpringBootTest(classes = [TestAppContext::class])
-class JacksonPolymorphicTests @Autowired constructor(
+@Transactional
+@Rollback(true)
+class PolymorphicTests @Autowired constructor(
     private val manager: PersistenceManager
 ) {
 
@@ -129,11 +132,7 @@ class JacksonPolymorphicTests @Autowired constructor(
      * Drivine's TransformPostProcessor automatically detects @JsonSubTypes and uses Neo4j labels
      * to determine the correct subtype. No custom deserializer needed!
      */
-    @JsonTypeInfo(
-        use = JsonTypeInfo.Id.NAME,
-        include = JsonTypeInfo.As.PROPERTY,
-        property = "type"
-    )
+
     @JsonSubTypes(
         JsonSubTypes.Type(value = LabeledDog::class, name = "Dog"),
         JsonSubTypes.Type(value = LabeledCat::class, name = "Cat"),

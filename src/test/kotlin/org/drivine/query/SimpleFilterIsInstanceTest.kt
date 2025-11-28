@@ -1,6 +1,5 @@
-package sample
+package org.drivine.query
 
-import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue

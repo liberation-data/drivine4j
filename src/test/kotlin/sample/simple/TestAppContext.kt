@@ -1,4 +1,4 @@
-package sample
+package sample.simple
 
 import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap

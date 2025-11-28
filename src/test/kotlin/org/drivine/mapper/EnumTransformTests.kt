@@ -6,7 +6,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
-import sample.TestAppContext
+import sample.simple.TestAppContext
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 

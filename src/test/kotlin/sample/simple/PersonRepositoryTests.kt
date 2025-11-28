@@ -1,17 +1,22 @@
-package sample
+package sample.simple
 
 import org.drivine.connection.Person
 import org.drivine.query.QuerySpecification
 import org.drivine.manager.PersistenceManager
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.toMap
 import org.drivine.utils.partial
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.test.annotation.Rollback
+import org.springframework.transaction.annotation.Transactional
 import java.util.UUID
 
 @SpringBootTest(classes = [TestAppContext::class])
+@Transactional
+@Rollback(true)
 class PersonRepositoryTests @Autowired constructor(
     private val manager: PersistenceManager,
     @Autowired private val personRepository: PersonRepository,
@@ -22,7 +27,7 @@ class PersonRepositoryTests @Autowired constructor(
     fun setupTestData() {
         // Clear existing test data
         manager.execute(QuerySpecification
-            .withStatement("MATCH (p:Person) WHERE p.createdBy = 'test' DELETE p"))
+            .withStatement("MATCH (p:Person) WHERE p.createdBy = 'test' DETACH DELETE p"))
 
         // Insert test persons
         val personData = listOf(
@@ -221,7 +226,7 @@ class PersonRepositoryTests @Autowired constructor(
         // Create a custom update method that includes nulls
         // Using SET p = $props (not +=) to replace all properties
         // Neo4jObjectMapper includes nulls by default (JsonInclude.Include.ALWAYS)
-        val propsWithNulls = org.drivine.mapper.Neo4jObjectMapper.instance.toMap(
+        val propsWithNulls = Neo4jObjectMapper.instance.toMap(
             person.copy(email = null, age = 88)
         )
 

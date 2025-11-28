@@ -4,7 +4,7 @@ import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
-import sample.TestAppContext
+import sample.simple.TestAppContext
 
 @SpringBootTest(classes = [TestAppContext::class])
 class Neo4jConnectionProviderTests @Autowired constructor(

@@ -1,18 +1,22 @@
-package sample
+package sample.simple
 
 import org.drivine.connection.Event
-import org.drivine.query.QuerySpecification
 import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.toMap
+import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.test.annotation.Rollback
+import org.springframework.transaction.annotation.Transactional
 import java.time.Instant
 import java.util.UUID
 
 @SpringBootTest(classes = [TestAppContext::class])
+@Transactional
+@Rollback(true)
 class EventRepositoryTests @Autowired constructor(
     private val manager: PersistenceManager
 ) {
@@ -20,7 +24,8 @@ class EventRepositoryTests @Autowired constructor(
     @BeforeEach
     fun setupTestData() {
         // Clear existing test data
-        manager.execute(QuerySpecification
+        manager.execute(
+            QuerySpecification.Companion
             .withStatement("MATCH (e:Event) WHERE e.createdBy = 'test' DELETE e"))
     }
 
@@ -54,7 +59,7 @@ class EventRepositoryTests @Autowired constructor(
         """.trimIndent()
 
         val result = manager.getOne(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(query)
                 .bind(mapOf("event" to eventProps))
                 .transform(Event::class.java)
@@ -82,7 +87,7 @@ class EventRepositoryTests @Autowired constructor(
         """.trimIndent()
 
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(createQuery)
                 .bind(mapOf(
                     "uuid" to eventId,
@@ -100,7 +105,7 @@ class EventRepositoryTests @Autowired constructor(
         """.trimIndent()
 
         val result = manager.getOne(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(loadQuery)
                 .bind(mapOf("uuid" to eventId))
                 .transform(Event::class.java)
@@ -134,7 +139,7 @@ class EventRepositoryTests @Autowired constructor(
         ))
 
         manager.execute(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(createQuery)
                 .bind(createParams)
         )
@@ -149,7 +154,7 @@ class EventRepositoryTests @Autowired constructor(
         val queryParams = Neo4jObjectMapper.instance.toMap(mapOf("timestamp" to now))
 
         val result = manager.getOne(
-            QuerySpecification
+            QuerySpecification.Companion
                 .withStatement(queryWithInstant)
                 .bind(queryParams)
                 .transform(Event::class.java)
