@@ -8,7 +8,7 @@ import org.drivine.model.GraphViewModel
 /**
  * Builds Cypher queries for GraphView classes.
  */
-class GraphViewQueryBuilder(private val viewModel: GraphViewModel) {
+class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObjectQueryBuilder {
 
     /**
      * Builds a Cypher query to load a GraphView with its root fragment and relationships.
@@ -21,7 +21,7 @@ class GraphViewQueryBuilder(private val viewModel: GraphViewModel) {
      * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
      * @return The generated Cypher query
      */
-    fun buildQuery(whereClause: String? = null): String {
+    override fun buildQuery(whereClause: String?): String {
         val rootFragmentModel = viewModel.rootFragment
         val rootFieldName = rootFragmentModel.fieldName
 

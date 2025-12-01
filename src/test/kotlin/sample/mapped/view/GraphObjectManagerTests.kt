@@ -1,6 +1,6 @@
 package sample.mapped.view
 
-import org.drivine.manager.GraphViewManager
+import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
@@ -23,8 +23,8 @@ import kotlin.test.assertTrue
 @SpringBootTest(classes = [TestAppContext::class])
 @Transactional
 @Rollback(true)
-class GraphViewManagerTests @Autowired constructor(
-    private val graphViewManager: GraphViewManager,
+class GraphObjectManagerTests @Autowired constructor(
+    private val graphObjectManager: GraphObjectManager,
     private val persistenceManager: PersistenceManager
 ) {
 
@@ -102,7 +102,7 @@ class GraphViewManagerTests @Autowired constructor(
 
     @Test
     fun `should load all RaisedAndAssignedIssue instances`() {
-        val results = graphViewManager.loadAll(RaisedAndAssignedIssue::class.java)
+        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java)
 
         println("Loaded ${results.size} RaisedAndAssignedIssue instances")
         results.forEach { issue ->
@@ -141,12 +141,12 @@ class GraphViewManagerTests @Autowired constructor(
     @Test
     fun `should load RaisedAndAssignedIssue by id`() {
         // First get all to find the UUID
-        val all = graphViewManager.loadAll(RaisedAndAssignedIssue::class.java)
+        val all = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java)
         assertTrue(all.isNotEmpty())
         val expectedIssue = all.first()
 
         // Now load by ID
-        val loaded = graphViewManager.load(expectedIssue.issue.uuid.toString(), RaisedAndAssignedIssue::class.java)
+        val loaded = graphObjectManager.load(expectedIssue.issue.uuid.toString(), RaisedAndAssignedIssue::class.java)
 
         assertNotNull(loaded)
         assertEquals(expectedIssue.issue.uuid, loaded.issue.uuid)
@@ -160,7 +160,7 @@ class GraphViewManagerTests @Autowired constructor(
     @Test
     fun `should return null when loading non-existent id`() {
         val nonExistentId = UUID.randomUUID().toString()
-        val result = graphViewManager.load(nonExistentId, RaisedAndAssignedIssue::class.java)
+        val result = graphObjectManager.load(nonExistentId, RaisedAndAssignedIssue::class.java)
 
         assertNull(result)
         println("Correctly returned null for non-existent ID")
@@ -168,7 +168,7 @@ class GraphViewManagerTests @Autowired constructor(
 
     @Test
     fun `should load PersonContext GraphView`() {
-        val results = graphViewManager.loadAll(PersonContext::class.java)
+        val results = graphObjectManager.loadAll(PersonContext::class.java)
 
         println("Loaded ${results.size} PersonContext instances")
         results.forEach { ctx ->

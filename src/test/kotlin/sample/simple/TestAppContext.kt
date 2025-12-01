@@ -4,8 +4,8 @@ import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.PropertyProvidedDataSourceMap
-import org.drivine.manager.GraphViewManager
-import org.drivine.manager.GraphViewManagerFactory
+import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.test.Neo4jTestContainer
@@ -45,7 +45,7 @@ class TestAppContext() {
     }
 
     @Bean
-    fun neoGraphViewManager(factory: GraphViewManagerFactory): GraphViewManager {
+    fun neoGraphObjectManager(factory: GraphObjectManagerFactory): GraphObjectManager {
         return factory.get("neo")
     }
 

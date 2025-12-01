@@ -1,0 +1,68 @@
+package org.drivine.query
+
+import org.drivine.model.FragmentModel
+
+/**
+ * Builds Cypher queries for GraphFragment classes.
+ */
+class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObjectQueryBuilder {
+
+    /**
+     * Builds a Cypher query to load a GraphFragment.
+     *
+     * The query structure:
+     * 1. MATCH the fragment node with its labels and optional WHERE clause
+     * 2. RETURN the node properties mapped to fields
+     *
+     * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @return The generated Cypher query
+     */
+    override fun buildQuery(whereClause: String?): String {
+        // Get all labels from the fragment
+        if (fragmentModel.labels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for fragment ${fragmentModel.className}. @GraphFragment must specify at least one label.")
+        }
+
+        // Build the MATCH clause with all labels
+        val labelString = fragmentModel.labels.joinToString(":")
+        val nodeAlias = "n"
+        val matchClause = "MATCH ($nodeAlias:$labelString)"
+
+        // Build the WHERE clause if provided
+        val whereSection = if (whereClause != null) {
+            "\nWHERE $whereClause"
+        } else {
+            ""
+        }
+
+        // Build field mappings
+        val fieldMappings = fragmentModel.fields.joinToString(",\n    ") {
+            "${it.name}: $nodeAlias.${it.name}"
+        }
+
+        val returnClause = """
+
+RETURN {
+    $fieldMappings
+} AS result"""
+
+        return matchClause + whereSection + returnClause
+    }
+
+    companion object {
+        /**
+         * Creates a query builder for a GraphFragment class.
+         */
+        fun forFragment(fragmentClass: Class<*>): FragmentQueryBuilder {
+            val fragmentModel = FragmentModel.from(fragmentClass)
+            return FragmentQueryBuilder(fragmentModel)
+        }
+
+        /**
+         * Creates a query builder for a GraphFragment class using KClass.
+         */
+        fun forFragment(fragmentClass: kotlin.reflect.KClass<*>): FragmentQueryBuilder {
+            return forFragment(fragmentClass.java)
+        }
+    }
+}

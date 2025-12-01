@@ -2,7 +2,7 @@ package org.drivine
 
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
-import org.drivine.manager.GraphViewManagerFactory
+import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
@@ -36,8 +36,8 @@ class DrivineConfiguration {
     }
 
     @Bean
-    fun graphViewManagerFactory(persistenceManagerFactory: PersistenceManagerFactory): GraphViewManagerFactory {
-        return GraphViewManagerFactory(persistenceManagerFactory)
+    fun graphObjectManagerFactory(persistenceManagerFactory: PersistenceManagerFactory): GraphObjectManagerFactory {
+        return GraphObjectManagerFactory(persistenceManagerFactory)
     }
 
 }
