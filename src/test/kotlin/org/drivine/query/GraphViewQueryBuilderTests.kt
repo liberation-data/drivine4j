@@ -19,8 +19,8 @@ class GraphViewQueryBuilderTests {
         assertTrue(query.contains("WITH"))
         assertTrue(query.contains("-[:ASSIGNED_TO]->"))
         assertTrue(query.contains("-[:RAISED_BY]->"))
-        assertTrue(query.contains("assignedTo:Person"))
-        assertTrue(query.contains("raisedBy:Person")) // PersonContext's root is Person
+        assertTrue(query.contains("assignedTo:Person:Mapped"))
+        assertTrue(query.contains("raisedBy:Person:Mapped")) // PersonContext's root is Person:Mapped
 
         // Verify explicit field mappings (field: var.field format)
         assertTrue(query.contains("body: issue.body"))
@@ -33,6 +33,7 @@ class GraphViewQueryBuilderTests {
         assertTrue(query.contains("name: assignedTo.name"))
 
         // Verify nested GraphView (PersonContext) with its relationships
+        assertTrue(query.contains("person:"))
         assertTrue(query.contains("bio: raisedBy.bio"))
         assertTrue(query.contains("worksFor:"))
         assertTrue(query.contains("-[:WORKS_FOR]->"))
@@ -69,7 +70,7 @@ class GraphViewQueryBuilderTests {
         val query = builder.buildQuery()
 
         // assignedTo is a List, so it should use pattern comprehension without [0]
-        assertTrue(query.contains("[(issue)-[:ASSIGNED_TO]->(assignedTo:Person)"))
+        assertTrue(query.contains("[(issue)-[:ASSIGNED_TO]->(assignedTo:Person:Mapped)"))
         assertTrue(query.contains("] AS assignedTo"))
         assertTrue(!query.contains("][0] AS assignedTo"))
     }
@@ -80,8 +81,8 @@ class GraphViewQueryBuilderTests {
         val query = builder.buildQuery()
 
         // raisedBy is a single PersonContext, so it should use [0] to get first element
-        // PersonContext's root is Person, so the label is Person
-        assertTrue(query.contains("[(issue)-[:RAISED_BY]->(raisedBy:Person)"))
+        // PersonContext's root is Person:Mapped with both labels
+        assertTrue(query.contains("[(issue)-[:RAISED_BY]->(raisedBy:Person:Mapped)"))
         assertTrue(query.contains("][0] AS raisedBy"))
     }
 

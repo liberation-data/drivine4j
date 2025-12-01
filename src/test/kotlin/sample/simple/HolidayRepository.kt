@@ -11,7 +11,7 @@ import org.springframework.transaction.annotation.Transactional
 
 @Component
 class HolidayRepository @Autowired constructor(
-    @param:Qualifier("neo") private val persistenceManager: PersistenceManager,
+    @param:Qualifier("neoManager") private val persistenceManager: PersistenceManager,
     @param:Qualifier("listHolidays") private val stmtListHolidays: CypherStatement,
     @param:Qualifier("listHolidaysByType") private val stmtListHolidaysByType: CypherStatement
 ) {

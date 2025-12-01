@@ -4,6 +4,8 @@ import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.PropertyProvidedDataSourceMap
+import org.drivine.manager.GraphViewManager
+import org.drivine.manager.GraphViewManagerFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.test.Neo4jTestContainer
@@ -37,8 +39,13 @@ class TestAppContext() {
         return DataSourceMap(map.dataSources)
     }
 
-    @Bean("neo")
+    @Bean
     fun neoManager(factory: PersistenceManagerFactory): PersistenceManager {
+        return factory.get("neo")
+    }
+
+    @Bean
+    fun neoGraphViewManager(factory: GraphViewManagerFactory): GraphViewManager {
         return factory.get("neo")
     }
 

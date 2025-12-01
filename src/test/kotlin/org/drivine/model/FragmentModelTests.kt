@@ -20,7 +20,7 @@ class FragmentModelTests {
 
         assertEquals("sample.mapped.fragment.Person", model.className)
         assertEquals(Person::class.java, model.clazz)
-        assertEquals(listOf("Person"), model.labels)
+        assertEquals(listOf("Person", "Mapped"), model.labels)
 
         // Verify nodeIdField
         assertEquals("uuid", model.nodeIdField)
@@ -49,7 +49,7 @@ class FragmentModelTests {
         val model = FragmentModel.from(GithubPerson::class.java)
 
         assertEquals("sample.mapped.fragment.GithubPerson", model.className)
-        assertEquals(listOf("Person", "GithubPerson"), model.labels)
+        assertEquals(listOf("Person", "Mapped", "GithubPerson"), model.labels)
 
         // Verify nodeIdField
         assertEquals("uuid", model.nodeIdField)
@@ -94,7 +94,7 @@ class FragmentModelTests {
         val model = FragmentModel.from(Person::class)
 
         assertEquals("sample.mapped.fragment.Person", model.className)
-        assertEquals(listOf("Person"), model.labels)
+        assertEquals(listOf("Person", "Mapped"), model.labels)
     }
 
     @Test

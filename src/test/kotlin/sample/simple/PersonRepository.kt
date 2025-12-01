@@ -16,7 +16,7 @@ import java.util.UUID
 
 @Component
 class PersonRepository @Autowired constructor(
-    @param:Qualifier("neo") private val persistenceManager: PersistenceManager,
+    @param:Qualifier("neoManager") private val persistenceManager: PersistenceManager,
     @param:Qualifier("listPersons") private val stmtListPersons: CypherStatement,
     @param:Qualifier("listPersonsByProfession") private val stmtListPersonsByProfession: CypherStatement
 ) {

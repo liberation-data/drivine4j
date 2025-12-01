@@ -85,7 +85,7 @@ data class Person(
 ```kotlin
 @Component
 class PersonRepository @Autowired constructor(
-    @Qualifier("neo") val manager: PersistenceManager
+    @Qualifier("neoManager") val manager: PersistenceManager
 ) {
     @Transactional
     fun findByCity(city: String): List<Person> {
@@ -216,7 +216,7 @@ class QueryConfig @Autowired constructor(
 
 @Component
 class PersonRepository @Autowired constructor(
-    @Qualifier("neo") val manager: PersistenceManager,
+    @Qualifier("neoManager") val manager: PersistenceManager,
     val findActiveUsers: CypherStatement
 ) {
     fun getActive(): List<Person> {

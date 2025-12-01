@@ -25,13 +25,15 @@ class GraphViewQueryBuilder(private val viewModel: GraphViewModel) {
         val rootFragmentModel = viewModel.rootFragment
         val rootFieldName = rootFragmentModel.fieldName
 
-        // Get the first label from the fragment as the primary label
+        // Get all labels from the fragment
         val fragmentLabels = getFragmentLabels(rootFragmentModel.fragmentType)
-        val primaryLabel = fragmentLabels.firstOrNull()
-            ?: throw IllegalArgumentException("No labels defined for root fragment ${rootFragmentModel.fragmentType.name}. @GraphFragment must specify at least one label.")
+        if (fragmentLabels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for root fragment ${rootFragmentModel.fragmentType.name}. @GraphFragment must specify at least one label.")
+        }
 
-        // Build the MATCH clause
-        val matchClause = "MATCH ($rootFieldName:$primaryLabel)"
+        // Build the MATCH clause with all labels
+        val labelString = fragmentLabels.joinToString(":")
+        val matchClause = "MATCH ($rootFieldName:$labelString)"
 
         // Build the WHERE clause if provided
         val whereSection = if (whereClause != null) {
@@ -143,20 +145,22 @@ ${returnFields.joinToString(",\n")}
             Direction.UNDIRECTED -> "-[:${rel.type}]-"
         }
 
-        // Get labels for the target type
+        // Get all labels for the target type
         val targetLabels = getLabelsForType(rel.elementType)
-        val targetLabel = targetLabels.firstOrNull()
-            ?: throw IllegalArgumentException("No labels defined for relationship target ${rel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
+        if (targetLabels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for relationship target ${rel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
+        }
+        val targetLabelString = targetLabels.joinToString(":")
 
         // Build the projection for this relationship
         val projection = buildRelationshipProjection(targetAlias, rel.elementType)
 
         val pattern = if (rel.isCollection) {
             // Collection: use pattern comprehension
-            "[($rootFieldName)${direction}($targetAlias:$targetLabel) |\n        $projection\n    ] AS $targetAlias"
+            "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ] AS $targetAlias"
         } else {
             // Single: use [pattern][0] to get the first element
-            "[($rootFieldName)${direction}($targetAlias:$targetLabel) |\n        $projection\n    ][0] AS $targetAlias"
+            "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ][0] AS $targetAlias"
         }
 
         return pattern
@@ -187,16 +191,17 @@ ${returnFields.joinToString(",\n")}
     /**
      * Builds a nested projection for a GraphView within a relationship.
      * Example:
-     * raiser {
-     *     uuid: raiser.uuid,
-     *     name: raiser.name,
-     *     bio: raiser.bio,
-     *
+     * raisedBy {
+     *     person: {
+     *         uuid: raisedBy.uuid,
+     *         name: raisedBy.name,
+     *         bio: raisedBy.bio
+     *     },
      *     worksFor: [
-     *         (raiser)-[:WORKS_FOR]->(org:Organization) |
-     *         org {
-     *             uuid: org.uuid,
-     *             name: org.name
+     *         (raisedBy)-[:WORKS_FOR]->(worksFor:Organization) |
+     *         worksFor {
+     *             uuid: worksFor.uuid,
+     *             name: worksFor.name
      *         }
      *     ]
      * }
@@ -204,11 +209,13 @@ ${returnFields.joinToString(",\n")}
     private fun buildNestedViewProjection(varName: String, nestedViewModel: GraphViewModel): String {
         val fields = mutableListOf<String>()
 
-        // Add the root fragment fields (expanded inline, not as a separate object)
+        // Add the root fragment as a nested object (not flattened)
+        val rootFragmentFieldName = nestedViewModel.rootFragment.fieldName
         val rootFragmentFields = getFragmentFields(nestedViewModel.rootFragment.fragmentType)
-        rootFragmentFields.forEach { field ->
-            fields.add("$field: $varName.$field")
+        val rootFieldMappings = rootFragmentFields.joinToString(",\n                ") {
+            "$it: $varName.$it"
         }
+        fields.add("$rootFragmentFieldName: {\n                $rootFieldMappings\n            }")
 
         // Add nested relationship fields
         nestedViewModel.relationships.forEach { nestedRel ->
@@ -219,8 +226,10 @@ ${returnFields.joinToString(",\n")}
             }
 
             val nestedTargetLabels = getLabelsForType(nestedRel.elementType)
-            val nestedTargetLabel = nestedTargetLabels.firstOrNull()
-                ?: throw IllegalArgumentException("No labels defined for nested relationship target ${nestedRel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
+            if (nestedTargetLabels.isEmpty()) {
+                throw IllegalArgumentException("No labels defined for nested relationship target ${nestedRel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
+            }
+            val nestedTargetLabelString = nestedTargetLabels.joinToString(":")
 
             // Derive the target alias for the nested relationship
             val nestedTargetAlias = nestedRel.deriveTargetAlias()
@@ -232,7 +241,7 @@ ${returnFields.joinToString(",\n")}
             }
 
             val nestedPattern = """[
-                ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabel) |
+                ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |
                 ${nestedTargetAlias} {
                     $nestedFieldMappings
                 }

@@ -220,7 +220,7 @@ class QuerySpecification<T> private constructor(
 
     override fun toString(): String {
         val sb = StringBuilder("QuerySpecification(\n")
-        sb.append("  statement: ${statement?.text ?: "null"}\n")
+        sb.append("  ${statement?.text ?: "null"}\n----\n")
 
         sb.append(paramsToString())
         sb.append(postProcessorsToString())
