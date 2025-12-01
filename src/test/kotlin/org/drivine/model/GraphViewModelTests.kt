@@ -32,7 +32,7 @@ class GraphViewModelTests {
         assertNotNull(assignedTo)
         assertEquals("ASSIGNED_TO", assignedTo.type)
         assertEquals(Direction.OUTGOING, assignedTo.direction)
-        assertEquals("assigned", assignedTo.alias)
+        assertEquals("assignedTo", assignedTo.deriveTargetAlias())
         assertEquals(Person::class.java, assignedTo.elementType)
         assertTrue(assignedTo.isCollection)
 
@@ -41,7 +41,7 @@ class GraphViewModelTests {
         assertNotNull(raisedBy)
         assertEquals("RAISED_BY", raisedBy.type)
         assertEquals(Direction.OUTGOING, raisedBy.direction)
-        assertEquals("raiser", raisedBy.alias)
+        assertEquals("raisedBy", raisedBy.deriveTargetAlias())
         assertEquals(PersonContext::class.java, raisedBy.elementType)
         assertTrue(!raisedBy.isCollection)
     }

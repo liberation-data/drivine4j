@@ -10,6 +10,6 @@ import sample.mapped.fragment.Person
 data class PersonContext(
     val person: Person,
 
-    @GraphRelationship(type = "WORKS_FOR", direction = Direction.OUTGOING, alias = "assigned")
+    @GraphRelationship(type = "WORKS_FOR", direction = Direction.OUTGOING)
     val worksFor: List<Organization>
 )

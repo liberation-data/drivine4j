@@ -81,7 +81,6 @@ data class GraphViewModel(
                             fieldName = prop.name,
                             type = relationshipAnnotation.type,
                             direction = relationshipAnnotation.direction,
-                            alias = relationshipAnnotation.alias,
                             fieldType = fieldType,
                             elementType = elementType,
                             isCollection = isCollection

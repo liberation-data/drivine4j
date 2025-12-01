@@ -11,6 +11,5 @@ enum class Direction {
 @Retention(AnnotationRetention.RUNTIME)
 annotation class GraphRelationship(
     val type: String,                 // Neo4j rel type, e.g. "HAS_HOLIDAY"
-    val direction: Direction = Direction.OUTGOING,
-    val alias: String                 // Cypher variable, e.g. "h"
+    val direction: Direction = Direction.OUTGOING
 )

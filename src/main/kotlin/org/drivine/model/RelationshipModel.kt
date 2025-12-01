@@ -22,11 +22,6 @@ data class RelationshipModel(
     val direction: Direction,
 
     /**
-     * The Cypher variable alias (e.g., "h", "assigned").
-     */
-    val alias: String,
-
-    /**
      * The Java Class type of the field.
      * This will be the actual type (could be a List, single object, etc.).
      */
@@ -43,4 +38,20 @@ data class RelationshipModel(
      * Whether this relationship is a collection (List, Set, etc.).
      */
     val isCollection: Boolean
-)
+) {
+    /**
+     * Returns the field name to use as the target alias in queries.
+     * Simply uses the field name as-is for clarity.
+     */
+    fun deriveTargetAlias(): String {
+        return fieldName
+    }
+
+    /**
+     * Derives the relationship alias given the root alias.
+     * Format: {rootAlias}_{fieldName}
+     */
+    fun deriveRelationshipAlias(rootAlias: String): String {
+        return "${rootAlias}_${fieldName}"
+    }
+}

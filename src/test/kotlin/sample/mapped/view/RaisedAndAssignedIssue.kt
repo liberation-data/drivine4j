@@ -10,9 +10,9 @@ import sample.mapped.fragment.Person
 data class RaisedAndAssignedIssue(
     val issue: Issue,
 
-    @GraphRelationship(type = "ASSIGNED_TO", direction = Direction.OUTGOING, alias = "assigned")
+    @GraphRelationship(type = "ASSIGNED_TO", direction = Direction.OUTGOING)
     val assignedTo: List<Person>,
 
-    @GraphRelationship(type = "RAISED_BY", direction = Direction.OUTGOING, alias = "raiser")
+    @GraphRelationship(type = "RAISED_BY", direction = Direction.OUTGOING)
     val raisedBy: PersonContext
 )
