@@ -3,6 +3,7 @@ package org.drivine.query
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.GraphFragment
 import org.drivine.annotation.GraphView
+import org.drivine.manager.CascadeType
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.session.SessionManager
@@ -16,9 +17,10 @@ interface GraphObjectMergeBuilder {
      * Returns statements in execution order.
      *
      * @param obj The object to save
+     * @param cascade The cascade policy for deleted relationships
      * @return List of MergeStatements to execute in order
      */
-    fun <T : Any> buildMergeStatements(obj: T): List<MergeStatement>
+    fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType = CascadeType.NONE): List<MergeStatement>
 
     companion object {
         /**
@@ -64,7 +66,7 @@ class FragmentMergeBuilderAdapter(
     private val sessionManager: SessionManager
 ) : GraphObjectMergeBuilder {
 
-    override fun <T : Any> buildMergeStatements(obj: T): List<MergeStatement> {
+    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType): List<MergeStatement> {
         val fragmentBuilder = FragmentMergeBuilder(fragmentModel, objectMapper)
 
         // Check if object is in session to determine dirty fields
@@ -73,6 +75,7 @@ class FragmentMergeBuilderAdapter(
             sessionManager.getDirtyFields(obj, idValue)
         } else null
 
+        // Note: Fragments don't have relationships, so cascade is ignored
         return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields))
     }
 }

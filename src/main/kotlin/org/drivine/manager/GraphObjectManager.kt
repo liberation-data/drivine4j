@@ -107,13 +107,14 @@ class GraphObjectManager(
      * For GraphViews:
      * - Saves root fragment
      * - Detects relationship changes (added/removed)
-     * - Deletes removed relationships (keeps fragments)
+     * - Deletes removed relationships according to cascade policy
      * - Merges added relationships and their fragments
      *
      * @param obj The object to save
+     * @param cascade The cascade policy for deleted relationships (default: NONE - only delete relationship)
      * @return The saved object
      */
-    fun <T : Any> save(obj: T): T {
+    fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE): T {
         val graphClass = obj.javaClass
 
         // Build merge statements using polymorphic builder
@@ -122,7 +123,7 @@ class GraphObjectManager(
             objectMapper,
             sessionManager
         )
-        val statements = mergeBuilder.buildMergeStatements(obj)
+        val statements = mergeBuilder.buildMergeStatements(obj, cascade)
 
         // Execute all statements in order
         statements.forEach { statement ->

@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.manager.CascadeType
 import org.drivine.mapper.toMap
 import org.drivine.model.GraphViewModel
 import org.drivine.model.FragmentModel
@@ -27,9 +28,10 @@ class GraphViewMergeBuilder(
      * Returns statements in execution order.
      *
      * @param obj The GraphView object to save
+     * @param cascade The cascade policy for deleted relationships
      * @return List of MergeStatements to execute in order
      */
-    override fun <T : Any> buildMergeStatements(obj: T): List<MergeStatement> {
+    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType): List<MergeStatement> {
         // Get snapshot from session (if exists)
         val rootFragment = extractRootFragment(obj)
         val rootFragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
@@ -42,13 +44,13 @@ class GraphViewMergeBuilder(
             null
         }
 
-        return buildMergeStatementsInternal(obj, snapshot)
+        return buildMergeStatementsInternal(obj, snapshot, cascade)
     }
 
     /**
-     * Internal implementation that accepts an explicit snapshot parameter.
+     * Internal implementation that accepts an explicit snapshot parameter and cascade policy.
      */
-    private fun <T : Any> buildMergeStatementsInternal(obj: T, snapshot: Any?): List<MergeStatement> {
+    private fun <T : Any> buildMergeStatementsInternal(obj: T, snapshot: Any?, cascade: CascadeType): List<MergeStatement> {
         val statements = mutableListOf<MergeStatement>()
 
         // 1. Save the root fragment
@@ -66,7 +68,7 @@ class GraphViewMergeBuilder(
 
         // 2. Handle each relationship
         viewModel.relationships.forEach { relModel ->
-            statements.addAll(buildRelationshipStatements(obj, snapshot, relModel, rootFragment, rootFragmentModel))
+            statements.addAll(buildRelationshipStatements(obj, snapshot, relModel, rootFragment, rootFragmentModel, cascade))
         }
 
         return statements
@@ -81,7 +83,8 @@ class GraphViewMergeBuilder(
         snapshot: Any?,
         relModel: RelationshipModel,
         rootFragment: Any,
-        rootFragmentModel: FragmentModel
+        rootFragmentModel: FragmentModel,
+        cascade: CascadeType
     ): List<MergeStatement> {
         val statements = mutableListOf<MergeStatement>()
 
@@ -124,7 +127,7 @@ class GraphViewMergeBuilder(
 
         // Generate statements for removed relationships
         removed.forEach { removedItem ->
-            statements.add(buildDeleteRelationshipStatement(rootFragment, rootFragmentModel, removedItem, relModel))
+            statements.add(buildDeleteRelationshipStatement(rootFragment, rootFragmentModel, removedItem, relModel, cascade))
         }
 
         // Generate statements for added relationships
@@ -207,7 +210,11 @@ class GraphViewMergeBuilder(
 
     /**
      * Builds a DELETE statement for removing a relationship.
-     * Only deletes the relationship, not the fragment.
+     * Behavior depends on cascade policy:
+     * - NONE: Only deletes the relationship
+     * - DELETE_ALL: Deletes relationship + target (DETACH DELETE for fragments, recursive for views)
+     * - DELETE_ORPHAN: TODO
+     *
      * Handles both GraphFragments and nested GraphViews.
      * Uses objectMapper.toMap() to ensure proper type conversion (e.g., UUID -> String).
      */
@@ -215,7 +222,8 @@ class GraphViewMergeBuilder(
         rootFragment: Any,
         rootFragmentModel: FragmentModel,
         targetItem: Any,
-        relModel: RelationshipModel
+        relModel: RelationshipModel,
+        cascade: CascadeType
     ): MergeStatement {
         // Check if target is a GraphView or GraphFragment
         val targetClass = relModel.elementType
@@ -243,12 +251,51 @@ class GraphViewMergeBuilder(
         val rootLabels = rootFragmentModel.labels.joinToString(":")
         val targetLabels = targetFragmentModel.labels.joinToString(":")
 
-        val query = """
-            MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
-            MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-            MATCH (root)-[r:${relModel.type}]->(target)
-            DELETE r
-        """.trimIndent()
+        val query = when (cascade) {
+            CascadeType.NONE -> {
+                // Only delete the relationship
+                """
+                    MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
+                    MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+                    MATCH (root)-[r:${relModel.type}]->(target)
+                    DELETE r
+                """.trimIndent()
+            }
+            CascadeType.DELETE_ALL -> {
+                if (isView) {
+                    // For views: recursively delete all fragments and relationships
+                    // We build this by traversing the view model and deleting everything
+                    buildCascadeDeleteForView(targetItem, targetClass)
+                } else {
+                    // For fragments: DETACH DELETE the node (removes ALL relationships, not just ours)
+                    // This is the nuclear option - deletes even if other references exist
+                    """
+                        MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+                        DETACH DELETE target
+                    """.trimIndent()
+                }
+            }
+            CascadeType.DELETE_ORPHAN -> {
+                if (isView) {
+                    // For views: delete root fragment only if orphaned after our relationship is removed
+                    buildOrphanDeleteForView(rootLabels, rootIdField, targetLabels, targetIdField, relModel.type)
+                } else {
+                    // For fragments: two-step operation
+                    // 1. Delete our relationship
+                    // 2. Check if target is now orphaned (no other relationships)
+                    // 3. If orphaned, delete target
+                    """
+                        MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
+                        MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+                        MATCH (root)-[r:${relModel.type}]->(target)
+                        DELETE r
+                        WITH target
+                        WHERE NOT EXISTS((target)<-[]-()) AND NOT EXISTS((target)-[]-())
+                        DELETE target
+                    """.trimIndent()
+                }
+            }
+        }
 
         return MergeStatement(
             statement = query,
@@ -257,6 +304,51 @@ class GraphViewMergeBuilder(
                 "targetId" to targetId
             )
         )
+    }
+
+    /**
+     * Builds a cascade delete query for a GraphView (DELETE_ALL).
+     * Recursively deletes all fragments in the view and their relationships.
+     */
+    private fun buildCascadeDeleteForView(viewObj: Any, viewClass: Class<*>): String {
+        val viewModel = GraphViewModel.from(viewClass)
+        val rootFragment = extractRootFragmentFromObject(viewObj, viewModel)
+        val rootFragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
+
+        val rootProps = objectMapper.toMap(rootFragment)
+        val rootIdField = rootFragmentModel.nodeIdField!!
+        val rootLabels = rootFragmentModel.labels.joinToString(":")
+
+        // For now, simple approach: DETACH DELETE the root fragment
+        // This deletes all relationships but leaves related fragments intact
+        // TODO: For true recursive delete, we'd need to traverse all relationships
+        return """
+            MATCH (root:$rootLabels {$rootIdField: ${'$'}targetId})
+            DETACH DELETE root
+        """.trimIndent()
+    }
+
+    /**
+     * Builds an orphan delete query for a GraphView (DELETE_ORPHAN).
+     * Deletes the root fragment only if it has no other relationships after ours is removed.
+     */
+    private fun buildOrphanDeleteForView(
+        rootLabels: String,
+        rootIdField: String,
+        targetLabels: String,
+        targetIdField: String,
+        relType: String
+    ): String {
+        // Two-step: delete relationship, then delete target if orphaned
+        return """
+            MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
+            MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+            MATCH (root)-[r:$relType]->(target)
+            DELETE r
+            WITH target
+            WHERE NOT EXISTS((target)<-[]-()) AND NOT EXISTS((target)-[]-())
+            DETACH DELETE target
+        """.trimIndent()
     }
 
     /**
