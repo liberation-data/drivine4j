@@ -89,9 +89,16 @@ class GraphObjectManager(
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass)
 
+        // Get GraphViewModel if this is a @GraphView (needed for relationship filtering)
+        val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
+            org.drivine.model.GraphViewModel.from(graphClass)
+        } else {
+            null
+        }
+
         // Build WHERE clause from conditions
         val whereClause = if (querySpec.conditions.isNotEmpty()) {
-            org.drivine.query.dsl.CypherGenerator.buildWhereClause(querySpec.conditions)
+            org.drivine.query.dsl.CypherGenerator.buildWhereClause(querySpec.conditions, viewModel)
         } else null
 
         // Build ORDER BY clause from orders

@@ -1,23 +1,35 @@
 package org.drivine.model
 
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.assertThrows
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Tests that @GraphRelationshipFragment is properly detected and throws an error
- * when used (reserving design space for future implementation).
+ * Tests that @GraphRelationshipFragment is properly detected and metadata is extracted.
  */
 class GraphRelationshipFragmentDetectionTests {
 
     @Test
-    fun `should throw UnsupportedOperationException when using GraphRelationshipFragment`() {
-        val exception = assertThrows<UnsupportedOperationException> {
-            GraphViewModel.from(TestViewWithRelationshipFragment::class.java)
-        }
+    fun `should detect and extract relationship fragment metadata`() {
+        val viewModel = GraphViewModel.from(TestViewWithRelationshipFragment::class.java)
 
-        assertTrue(exception.message!!.contains("Relationship fragments"))
-        assertTrue(exception.message!!.contains("not yet supported"))
-        assertTrue(exception.message!!.contains("TestRelationshipFragment"))
+        // Should have one relationship
+        assertEquals(1, viewModel.relationships.size)
+
+        val relationship = viewModel.relationships[0]
+
+        // Verify it's detected as a relationship fragment
+        assertTrue(relationship.isRelationshipFragment)
+
+        // Verify target field info
+        assertEquals("target", relationship.targetFieldName)
+        assertEquals(TestNode::class.java, relationship.targetNodeType)
+
+        // Verify relationship properties
+        assertEquals(1, relationship.relationshipProperties.size)
+        assertTrue(relationship.relationshipProperties.contains("createdAt"))
+
+        // Verify element type is the fragment class itself
+        assertEquals(TestRelationshipFragment::class.java, relationship.elementType)
     }
 }

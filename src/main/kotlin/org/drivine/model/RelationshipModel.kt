@@ -31,13 +31,42 @@ data class RelationshipModel(
      * The element type - the actual GraphFragment or GraphView type.
      * For List<Person>, this would be Person.
      * For a single Person, this would be Person.
+     * For relationship fragments, this is the @GraphRelationshipFragment annotated class.
      */
     val elementType: Class<*>,
 
     /**
      * Whether this relationship is a collection (List, Set, etc.).
      */
-    val isCollection: Boolean
+    val isCollection: Boolean,
+
+    /**
+     * Whether this relationship uses a @GraphRelationshipFragment (rich relationship pattern).
+     * If true, the relationship has properties stored on the relationship itself,
+     * plus a target field pointing to the target node.
+     */
+    val isRelationshipFragment: Boolean = false,
+
+    /**
+     * For relationship fragments: the name of the field pointing to the target node.
+     * For example, if the fragment has "val target: Person", this would be "target".
+     * Null for direct target references.
+     */
+    val targetFieldName: String? = null,
+
+    /**
+     * For relationship fragments: the type of the target node.
+     * This is the element type of the target field in the relationship fragment.
+     * Null for direct target references.
+     */
+    val targetNodeType: Class<*>? = null,
+
+    /**
+     * For relationship fragments: the list of relationship property field names.
+     * These are the fields on the relationship itself (not the target node).
+     * Empty list for direct target references.
+     */
+    val relationshipProperties: List<String> = emptyList()
 ) {
     /**
      * Returns the field name to use as the target alias in queries.

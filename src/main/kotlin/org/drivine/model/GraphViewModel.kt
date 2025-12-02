@@ -79,22 +79,54 @@ data class GraphViewModel(
                         val (elementType, isCollection) = extractElementType(prop.returnType.toString(), fieldType)
 
                         // Check if element type is annotated with @GraphRelationshipFragment (relationship object pattern)
-                        if (elementType.isAnnotationPresent(GraphRelationshipFragment::class.java)) {
-                            throw UnsupportedOperationException(
-                                "Relationship fragments (classes annotated with @GraphRelationshipFragment) are not yet supported. " +
-                                "Field '${prop.name}' in ${clazz.name} uses relationship fragment '${elementType.simpleName}'. " +
-                                "Use direct target references for now, e.g.: val ${prop.name}: List<Person>"
+                        val isRelationshipFragment = elementType.isAnnotationPresent(GraphRelationshipFragment::class.java)
+
+                        if (isRelationshipFragment) {
+                            // Extract relationship fragment metadata
+                            val fragmentKClass = elementType.kotlin
+                            val fragmentProperties = fragmentKClass.memberProperties
+
+                            // Find the target field - must be annotated with @GraphFragment or @GraphView
+                            val targetProperty = fragmentProperties.find { fragProp ->
+                                val targetType = (fragProp.returnType.classifier as? KClass<*>)?.java
+                                targetType?.isAnnotationPresent(GraphFragment::class.java) == true ||
+                                targetType?.isAnnotationPresent(GraphView::class.java) == true
+                            } ?: throw IllegalArgumentException(
+                                "Relationship fragment '${elementType.simpleName}' in field '${prop.name}' " +
+                                "must have exactly one field pointing to a @GraphFragment or @GraphView. " +
+                                "Example: val target: Person"
+                            )
+
+                            val targetNodeType = (targetProperty.returnType.classifier as KClass<*>).java
+
+                            // All other properties are relationship properties
+                            val relationshipProperties = fragmentProperties
+                                .filter { it.name != targetProperty.name }
+                                .map { it.name }
+
+                            RelationshipModel(
+                                fieldName = prop.name,
+                                type = relationshipAnnotation.type,
+                                direction = relationshipAnnotation.direction,
+                                fieldType = fieldType,
+                                elementType = elementType,
+                                isCollection = isCollection,
+                                isRelationshipFragment = true,
+                                targetFieldName = targetProperty.name,
+                                targetNodeType = targetNodeType,
+                                relationshipProperties = relationshipProperties
+                            )
+                        } else {
+                            // Direct target reference (existing behavior)
+                            RelationshipModel(
+                                fieldName = prop.name,
+                                type = relationshipAnnotation.type,
+                                direction = relationshipAnnotation.direction,
+                                fieldType = fieldType,
+                                elementType = elementType,
+                                isCollection = isCollection
                             )
                         }
-
-                        RelationshipModel(
-                            fieldName = prop.name,
-                            type = relationshipAnnotation.type,
-                            direction = relationshipAnnotation.direction,
-                            fieldType = fieldType,
-                            elementType = elementType,
-                            isCollection = isCollection
-                        )
                     } else {
                         null
                     }

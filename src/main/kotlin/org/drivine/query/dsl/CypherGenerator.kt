@@ -1,5 +1,6 @@
 package org.drivine.query.dsl
 
+import org.drivine.model.GraphViewModel
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -13,15 +14,78 @@ object CypherGenerator {
      * All conditions are AND'd together.
      *
      * @param conditions List of filter conditions
+     * @param viewModel Optional GraphViewModel for relationship metadata (needed for relationship filtering)
      * @return Cypher WHERE clause (without the WHERE keyword)
      */
-    fun buildWhereClause(conditions: List<WhereCondition>): String {
-        return conditions.mapIndexed { index, condition ->
+    fun buildWhereClause(conditions: List<WhereCondition>, viewModel: GraphViewModel? = null): String {
+        // Group property conditions by alias to detect relationship filters
+        val grouped = groupConditionsByAlias(conditions, viewModel)
+
+        var paramIndex = 0
+        return grouped.joinToString(" AND ") { condition ->
             when (condition) {
-                is WhereCondition.PropertyCondition -> buildPropertyCondition(condition, index)
-                is WhereCondition.RelationshipCondition -> buildRelationshipCondition(condition)
+                is WhereCondition.PropertyCondition -> {
+                    val result = buildPropertyCondition(condition, paramIndex)
+                    paramIndex++
+                    result
+                }
+                is WhereCondition.RelationshipCondition -> {
+                    val result = buildRelationshipCondition(condition, viewModel, paramIndex)
+                    paramIndex += condition.targetConditions.size
+                    result
+                }
             }
-        }.joinToString(" AND ")
+        }
+    }
+
+    /**
+     * Groups property conditions by alias, converting relationship target conditions
+     * into RelationshipCondition objects.
+     */
+    private fun groupConditionsByAlias(
+        conditions: List<WhereCondition>,
+        viewModel: GraphViewModel?
+    ): List<WhereCondition> {
+        if (viewModel == null) return conditions
+
+        val relationshipNames = viewModel.relationships.map { it.fieldName }.toSet()
+        val rootAlias = viewModel.rootFragment.fieldName
+
+        // Group PropertyConditions by their alias
+        val grouped = mutableListOf<WhereCondition>()
+        val relationshipConditions = mutableMapOf<String, MutableList<WhereCondition.PropertyCondition>>()
+
+        conditions.forEach { condition ->
+            when (condition) {
+                is WhereCondition.PropertyCondition -> {
+                    // Extract alias from property path (e.g., "assignedTo.name" -> "assignedTo")
+                    val alias = condition.propertyPath.substringBefore(".")
+
+                    if (alias in relationshipNames) {
+                        // This is a relationship target property
+                        relationshipConditions.getOrPut(alias) { mutableListOf() }.add(condition)
+                    } else {
+                        // This is a root fragment property
+                        grouped.add(condition)
+                    }
+                }
+                is WhereCondition.RelationshipCondition -> {
+                    grouped.add(condition)
+                }
+            }
+        }
+
+        // Convert grouped relationship conditions into RelationshipCondition objects
+        relationshipConditions.forEach { (relationshipName, propConditions) ->
+            grouped.add(
+                WhereCondition.RelationshipCondition(
+                    relationshipName = relationshipName,
+                    targetConditions = propConditions
+                )
+            )
+        }
+
+        return grouped
     }
 
     /**
@@ -45,20 +109,25 @@ object CypherGenerator {
      */
     fun extractBindings(conditions: List<WhereCondition>): Map<String, Any?> {
         val bindings = mutableMapOf<String, Any?>()
+        var paramIndex = 0
 
-        conditions.forEachIndexed { index, condition ->
-            when (condition) {
-                is WhereCondition.PropertyCondition -> {
-                    val paramName = generateParamName(condition.propertyPath, index)
-                    bindings[paramName] = condition.value
-                }
-                is WhereCondition.RelationshipCondition -> {
-                    // Recursively extract bindings from nested conditions
-                    bindings.putAll(extractBindings(condition.targetConditions))
+        fun extractRecursive(conds: List<WhereCondition>) {
+            conds.forEach { condition ->
+                when (condition) {
+                    is WhereCondition.PropertyCondition -> {
+                        val paramName = generateParamName(condition.propertyPath, paramIndex)
+                        bindings[paramName] = condition.value
+                        paramIndex++
+                    }
+                    is WhereCondition.RelationshipCondition -> {
+                        // Recursively extract bindings from nested conditions
+                        extractRecursive(condition.targetConditions)
+                    }
                 }
             }
         }
 
+        extractRecursive(conditions)
         return bindings
     }
 
@@ -91,16 +160,60 @@ object CypherGenerator {
      * Builds a Cypher condition for relationship target filtering.
      * Uses EXISTS with pattern matching.
      *
-     * Example: EXISTS((issue)-[:ASSIGNED_TO]->(assignee) WHERE assignee.name = $param)
+     * Example: EXISTS { (issue)-[:ASSIGNED_TO]->(assignee) WHERE assignee.name = $param }
      */
-    private fun buildRelationshipCondition(condition: WhereCondition.RelationshipCondition): String {
-        // TODO: Implement relationship filtering
-        // This requires knowing the relationship pattern from the GraphView model
-        // For now, throw an exception
-        throw UnsupportedOperationException(
-            "Relationship filtering not yet implemented. " +
-            "Currently only root fragment properties can be filtered."
-        )
+    private fun buildRelationshipCondition(
+        condition: WhereCondition.RelationshipCondition,
+        viewModel: GraphViewModel?,
+        startIndex: Int
+    ): String {
+        requireNotNull(viewModel) {
+            "GraphViewModel is required for relationship filtering. " +
+            "This is likely a bug - relationship conditions should only be generated for GraphViews."
+        }
+
+        // Find the relationship metadata
+        val relationship = viewModel.relationships.find { it.fieldName == condition.relationshipName }
+            ?: throw IllegalArgumentException(
+                "Relationship '${condition.relationshipName}' not found in ${viewModel.className}. " +
+                "Available relationships: ${viewModel.relationships.map { it.fieldName }}"
+            )
+
+        // Get the root fragment alias (usually the field name)
+        val rootAlias = viewModel.rootFragment.fieldName
+
+        // Get the relationship target alias (usually the relationship field name)
+        val targetAlias = relationship.fieldName
+
+        // Build the relationship pattern based on direction
+        val relationshipPattern = when (relationship.direction) {
+            org.drivine.annotation.Direction.OUTGOING -> "($rootAlias)-[:${relationship.type}]->($targetAlias)"
+            org.drivine.annotation.Direction.INCOMING -> "($rootAlias)<-[:${relationship.type}]-($targetAlias)"
+            org.drivine.annotation.Direction.UNDIRECTED -> "($rootAlias)-[:${relationship.type}]-($targetAlias)"
+        }
+
+        // Build WHERE clauses for target conditions
+        val targetWhere = if (condition.targetConditions.isNotEmpty()) {
+            var paramIndex = startIndex
+            val whereClauses = condition.targetConditions.joinToString(" AND ") { targetCondition ->
+                when (targetCondition) {
+                    is WhereCondition.PropertyCondition -> {
+                        val result = buildPropertyCondition(targetCondition, paramIndex)
+                        paramIndex++
+                        result
+                    }
+                    is WhereCondition.RelationshipCondition -> {
+                        throw UnsupportedOperationException("Nested relationship conditions not yet supported")
+                    }
+                }
+            }
+            " WHERE $whereClauses"
+        } else {
+            ""
+        }
+
+        // Neo4j 5+ uses EXISTS { pattern WHERE conditions }
+        return "EXISTS { $relationshipPattern$targetWhere }"
     }
 
     /**

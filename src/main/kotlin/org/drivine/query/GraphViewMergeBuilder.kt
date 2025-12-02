@@ -143,36 +143,54 @@ class GraphViewMergeBuilder(
     /**
      * Detects which items were added and which were removed.
      * Uses ID-based comparison.
-     * Handles both GraphFragments and nested GraphViews.
+     * Handles both GraphFragments, nested GraphViews, and relationship fragments.
      */
     private fun detectChanges(
         current: List<Any?>,
         snapshot: List<Any?>,
         relModel: RelationshipModel
     ): Pair<List<Any>, List<Any>> {
-        // Determine if we're dealing with a fragment or view
-        val targetClass = relModel.elementType
-        val isView = targetClass.isAnnotationPresent(org.drivine.annotation.GraphView::class.java)
+        // For relationship fragments, we need to extract the target node for comparison
+        val actualTargetClass = if (relModel.isRelationshipFragment) {
+            relModel.targetNodeType!!
+        } else {
+            relModel.elementType
+        }
+
+        val isView = actualTargetClass.isAnnotationPresent(org.drivine.annotation.GraphView::class.java)
 
         val fragmentModel = if (isView) {
             // For views, use the root fragment's model for ID extraction
-            val viewModel = GraphViewModel.from(targetClass)
+            val viewModel = GraphViewModel.from(actualTargetClass)
             FragmentModel.from(viewModel.rootFragment.fragmentType)
         } else {
-            FragmentModel.from(targetClass)
+            FragmentModel.from(actualTargetClass)
         }
 
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("Cannot detect changes for relationship without @GraphNodeId: ${relModel.fieldName}")
 
+        // Helper to extract the actual target node from an item
+        fun extractTargetNode(item: Any): Any {
+            return if (relModel.isRelationshipFragment) {
+                // Extract target from relationship fragment
+                val targetField = item.javaClass.getDeclaredField(relModel.targetFieldName!!)
+                targetField.isAccessible = true
+                targetField.get(item) ?: throw IllegalArgumentException("Target field is null")
+            } else {
+                item
+            }
+        }
+
         // Extract IDs - for views, extract from root fragment
         val currentIds = current.mapNotNull { item ->
             if (item != null) {
+                val targetNode = extractTargetNode(item)
                 val fragment = if (isView) {
-                    val viewModel = GraphViewModel.from(targetClass)
-                    extractRootFragmentFromObject(item, viewModel)
+                    val viewModel = GraphViewModel.from(actualTargetClass)
+                    extractRootFragmentFromObject(targetNode, viewModel)
                 } else {
-                    item
+                    targetNode
                 }
                 val id = sessionManager.extractIdValue(fragment, fragmentModel)
                 Pair(id, item)
@@ -181,28 +199,97 @@ class GraphViewMergeBuilder(
 
         val snapshotIds = snapshot.mapNotNull { item ->
             if (item != null) {
+                val targetNode = extractTargetNode(item)
                 val fragment = if (isView) {
-                    val viewModel = GraphViewModel.from(targetClass)
-                    extractRootFragmentFromObject(item, viewModel)
+                    val viewModel = GraphViewModel.from(actualTargetClass)
+                    extractRootFragmentFromObject(targetNode, viewModel)
                 } else {
-                    item
+                    targetNode
                 }
                 sessionManager.extractIdValue(fragment, fragmentModel)
             } else null
         }.toSet()
 
-        val added = currentIds.filter { (id, _) -> id !in snapshotIds }.values.toList()
-        val removed = snapshot.mapNotNull { item ->
-            if (item != null) {
-                val fragment = if (isView) {
-                    val viewModel = GraphViewModel.from(targetClass)
-                    extractRootFragmentFromObject(item, viewModel)
+        // For relationship fragments, we need to treat property changes as "updates"
+        // which means we regenerate the MERGE statement (added) but don't remove the old one
+        val added = mutableListOf<Any>()
+        val removed = mutableListOf<Any>()
+
+        if (relModel.isRelationshipFragment) {
+            // For relationship fragments: compare full relationship including properties
+            val currentMap = current.mapNotNull { item ->
+                if (item != null) {
+                    val targetNode = extractTargetNode(item)
+                    val fragment = if (isView) {
+                        val viewModel = GraphViewModel.from(actualTargetClass)
+                        extractRootFragmentFromObject(targetNode, viewModel)
+                    } else {
+                        targetNode
+                    }
+                    val id = sessionManager.extractIdValue(fragment, fragmentModel)
+                    Pair(id, item)
+                } else null
+            }.toMap()
+
+            val snapshotMap = snapshot.mapNotNull { item ->
+                if (item != null) {
+                    val targetNode = extractTargetNode(item)
+                    val fragment = if (isView) {
+                        val viewModel = GraphViewModel.from(actualTargetClass)
+                        extractRootFragmentFromObject(targetNode, viewModel)
+                    } else {
+                        targetNode
+                    }
+                    val id = sessionManager.extractIdValue(fragment, fragmentModel)
+                    Pair(id, item)
+                } else null
+            }.toMap()
+
+            // For each current item:
+            // - If ID is new: add it
+            // - If ID exists but relationship properties changed: add it (will update via MERGE + SET)
+            currentMap.forEach { (id, currentItem) ->
+                val snapshotItem = snapshotMap[id]
+                if (snapshotItem == null) {
+                    // New target ID
+                    added.add(currentItem)
                 } else {
-                    item
+                    // Same target ID - check if relationship properties changed
+                    val currentProps = objectMapper.toMap(currentItem)
+                        .filterKeys { it in relModel.relationshipProperties }
+                    val snapshotProps = objectMapper.toMap(snapshotItem)
+                        .filterKeys { it in relModel.relationshipProperties }
+
+                    if (currentProps != snapshotProps) {
+                        // Properties changed - re-run MERGE to update
+                        added.add(currentItem)
+                    }
+                    // If properties are the same, do nothing (no statement needed)
                 }
-                val id = sessionManager.extractIdValue(fragment, fragmentModel)
-                if (id !in currentIds.keys) item else null
-            } else null
+            }
+
+            // Items that exist in snapshot but not in current are removed
+            snapshotMap.forEach { (id, item) ->
+                if (id !in currentMap.keys) {
+                    removed.add(item)
+                }
+            }
+        } else {
+            // For direct references: simple ID-based comparison
+            added.addAll(currentIds.filter { (id, _) -> id !in snapshotIds }.values)
+            removed.addAll(snapshot.mapNotNull { item ->
+                if (item != null) {
+                    val targetNode = extractTargetNode(item)
+                    val fragment = if (isView) {
+                        val viewModel = GraphViewModel.from(actualTargetClass)
+                        extractRootFragmentFromObject(targetNode, viewModel)
+                    } else {
+                        item
+                    }
+                    val id = sessionManager.extractIdValue(fragment, fragmentModel)
+                    if (id !in currentIds.keys) item else null
+                } else null
+            })
         }
 
         return Pair(added, removed)
@@ -225,17 +312,30 @@ class GraphViewMergeBuilder(
         relModel: RelationshipModel,
         cascade: CascadeType
     ): MergeStatement {
+        // For relationship fragments, extract the actual target node
+        val actualTargetItem = if (relModel.isRelationshipFragment) {
+            val targetField = targetItem.javaClass.getDeclaredField(relModel.targetFieldName!!)
+            targetField.isAccessible = true
+            targetField.get(targetItem) ?: throw IllegalArgumentException("Target field is null")
+        } else {
+            targetItem
+        }
+
         // Check if target is a GraphView or GraphFragment
-        val targetClass = relModel.elementType
+        val targetClass = if (relModel.isRelationshipFragment) {
+            relModel.targetNodeType!!
+        } else {
+            relModel.elementType
+        }
         val isView = targetClass.isAnnotationPresent(org.drivine.annotation.GraphView::class.java)
 
         val (targetFragment, targetFragmentModel) = if (isView) {
             // For nested view, extract root fragment
             val viewModel = GraphViewModel.from(targetClass)
-            val fragment = extractRootFragmentFromObject(targetItem, viewModel)
+            val fragment = extractRootFragmentFromObject(actualTargetItem, viewModel)
             Pair(fragment, FragmentModel.from(viewModel.rootFragment.fragmentType))
         } else {
-            Pair(targetItem, FragmentModel.from(targetClass))
+            Pair(actualTargetItem, FragmentModel.from(targetClass))
         }
 
         // Convert to map to get properly converted ID values (UUID -> String, etc.)
@@ -371,44 +471,93 @@ class GraphViewMergeBuilder(
     ): List<MergeStatement> {
         val statements = mutableListOf<MergeStatement>()
 
-        // Check if target is a GraphView or GraphFragment
-        val targetClass = relModel.elementType
-        val isView = targetClass.isAnnotationPresent(org.drivine.annotation.GraphView::class.java)
+        if (relModel.isRelationshipFragment) {
+            // Handle relationship fragment: extract target node and save it
+            val targetNodeField = targetItem.javaClass.getDeclaredField(relModel.targetFieldName!!)
+            targetNodeField.isAccessible = true
+            val targetNode = targetNodeField.get(targetItem)
+                ?: throw IllegalArgumentException("Target node field '${relModel.targetFieldName}' is null in relationship fragment")
 
-        if (isView) {
-            // Handle nested GraphView - recursively build its merge statements
-            val nestedViewModel = GraphViewModel.from(targetClass)
-            val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
-            statements.addAll(nestedViewBuilder.buildMergeStatements(targetItem))
+            val targetNodeClass = relModel.targetNodeType!!
+            val isView = targetNodeClass.isAnnotationPresent(org.drivine.annotation.GraphView::class.java)
 
-            // Now create relationship to the nested view's root fragment
-            val targetRootFragment = extractRootFragmentFromObject(targetItem, nestedViewModel)
-            val targetFragmentModel = FragmentModel.from(nestedViewModel.rootFragment.fragmentType)
+            if (isView) {
+                // Handle nested GraphView - recursively build its merge statements
+                val nestedViewModel = GraphViewModel.from(targetNodeClass)
+                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+                statements.addAll(nestedViewBuilder.buildMergeStatements(targetNode))
 
-            statements.add(buildRelationshipMergeStatement(
-                rootFragment, rootFragmentModel,
-                targetRootFragment, targetFragmentModel,
-                relModel
-            ))
+                // Now create relationship to the nested view's root fragment with relationship properties
+                val targetRootFragment = extractRootFragmentFromObject(targetNode, nestedViewModel)
+                val targetFragmentModel = FragmentModel.from(nestedViewModel.rootFragment.fragmentType)
+
+                statements.add(buildRelationshipMergeStatement(
+                    rootFragment, rootFragmentModel,
+                    targetRootFragment, targetFragmentModel,
+                    relModel,
+                    relationshipFragment = targetItem
+                ))
+            } else {
+                // Handle GraphFragment target
+                val targetFragmentModel = FragmentModel.from(targetNodeClass)
+
+                // 1. MERGE the target fragment
+                val targetId = sessionManager.extractIdValue(targetNode, targetFragmentModel)?.toString()
+                val targetDirtyFields = if (targetId != null) {
+                    sessionManager.getDirtyFields(targetNode, targetId)
+                } else null
+
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
+                statements.add(fragmentBuilder.buildMergeStatement(targetNode, targetDirtyFields))
+
+                // 2. CREATE/MERGE the relationship with properties
+                statements.add(buildRelationshipMergeStatement(
+                    rootFragment, rootFragmentModel,
+                    targetNode, targetFragmentModel,
+                    relModel,
+                    relationshipFragment = targetItem
+                ))
+            }
         } else {
-            // Handle GraphFragment
-            val targetFragmentModel = FragmentModel.from(targetClass)
+            // Direct target reference (existing behavior)
+            val targetClass = relModel.elementType
+            val isView = targetClass.isAnnotationPresent(org.drivine.annotation.GraphView::class.java)
 
-            // 1. MERGE the target fragment
-            val targetId = sessionManager.extractIdValue(targetItem, targetFragmentModel)?.toString()
-            val targetDirtyFields = if (targetId != null) {
-                sessionManager.getDirtyFields(targetItem, targetId)
-            } else null
+            if (isView) {
+                // Handle nested GraphView - recursively build its merge statements
+                val nestedViewModel = GraphViewModel.from(targetClass)
+                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+                statements.addAll(nestedViewBuilder.buildMergeStatements(targetItem))
 
-            val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
-            statements.add(fragmentBuilder.buildMergeStatement(targetItem, targetDirtyFields))
+                // Now create relationship to the nested view's root fragment
+                val targetRootFragment = extractRootFragmentFromObject(targetItem, nestedViewModel)
+                val targetFragmentModel = FragmentModel.from(nestedViewModel.rootFragment.fragmentType)
 
-            // 2. CREATE/MERGE the relationship
-            statements.add(buildRelationshipMergeStatement(
-                rootFragment, rootFragmentModel,
-                targetItem, targetFragmentModel,
-                relModel
-            ))
+                statements.add(buildRelationshipMergeStatement(
+                    rootFragment, rootFragmentModel,
+                    targetRootFragment, targetFragmentModel,
+                    relModel
+                ))
+            } else {
+                // Handle GraphFragment
+                val targetFragmentModel = FragmentModel.from(targetClass)
+
+                // 1. MERGE the target fragment
+                val targetId = sessionManager.extractIdValue(targetItem, targetFragmentModel)?.toString()
+                val targetDirtyFields = if (targetId != null) {
+                    sessionManager.getDirtyFields(targetItem, targetId)
+                } else null
+
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
+                statements.add(fragmentBuilder.buildMergeStatement(targetItem, targetDirtyFields))
+
+                // 2. CREATE/MERGE the relationship
+                statements.add(buildRelationshipMergeStatement(
+                    rootFragment, rootFragmentModel,
+                    targetItem, targetFragmentModel,
+                    relModel
+                ))
+            }
         }
 
         return statements
@@ -417,13 +566,15 @@ class GraphViewMergeBuilder(
     /**
      * Builds a MERGE statement for a relationship between two fragments.
      * Uses objectMapper.toMap() to ensure proper type conversion (e.g., UUID -> String).
+     * Supports relationship properties for @GraphRelationshipFragment.
      */
     private fun buildRelationshipMergeStatement(
         rootFragment: Any,
         rootFragmentModel: FragmentModel,
         targetFragment: Any,
         targetFragmentModel: FragmentModel,
-        relModel: RelationshipModel
+        relModel: RelationshipModel,
+        relationshipFragment: Any? = null
     ): MergeStatement {
         // Convert to map to get properly converted ID values (UUID -> String, etc.)
         val rootProps = objectMapper.toMap(rootFragment)
@@ -438,18 +589,37 @@ class GraphViewMergeBuilder(
         val rootLabels = rootFragmentModel.labels.joinToString(":")
         val targetLabels = targetFragmentModel.labels.joinToString(":")
 
-        val query = """
-            MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
-            MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-            MERGE (root)-[:${relModel.type}]->(target)
-        """.trimIndent()
+        val bindings = mutableMapOf<String, Any?>(
+            "rootId" to rootId,
+            "targetId" to targetId
+        )
+
+        val query = if (relModel.isRelationshipFragment && relationshipFragment != null) {
+            // Relationship fragment: set properties on the relationship
+            val relProps = objectMapper.toMap(relationshipFragment)
+            val relPropsString = relModel.relationshipProperties.joinToString(", ") { propName ->
+                bindings["rel_$propName"] = relProps[propName]
+                "$propName: \$rel_$propName"
+            }
+
+            """
+                MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
+                MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+                MERGE (root)-[r:${relModel.type}]->(target)
+                SET r += {$relPropsString}
+            """.trimIndent()
+        } else {
+            // Direct target reference: simple MERGE with no properties
+            """
+                MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
+                MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+                MERGE (root)-[:${relModel.type}]->(target)
+            """.trimIndent()
+        }
 
         return MergeStatement(
             statement = query,
-            bindings = mapOf(
-                "rootId" to rootId,
-                "targetId" to targetId
-            )
+            bindings = bindings
         )
     }
 

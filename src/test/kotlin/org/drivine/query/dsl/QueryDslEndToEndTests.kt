@@ -273,6 +273,61 @@ class QueryDslEndToEndTests @Autowired constructor(
         assertEquals(false, results[0].issue.locked)
         assertEquals(1001, results[0].issue.id)
     }
+
+    @Test
+    fun `should filter by relationship target property`() {
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                this(query.assignedTo.name eq "Charlie")
+            }
+        }
+
+        // Should return 2 issues assigned to Charlie (1001 and 1003)
+        assertEquals(2, results.size)
+        assertTrue(results.all { issue ->
+            issue.assignedTo.any { it.name == "Charlie" }
+        })
+    }
+
+    @Test
+    fun `should filter by multiple relationship target properties`() {
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                this(query.assignedTo.name eq "Charlie")
+                this(query.assignedTo.bio.contains("Backend"))
+            }
+        }
+
+        // Should return 2 issues assigned to Charlie who is a Backend Engineer
+        assertEquals(2, results.size)
+        assertTrue(results.all { issue ->
+            issue.assignedTo.any { it.name == "Charlie" && it.bio?.contains("Backend") == true }
+        })
+    }
+
+    @Test
+    fun `should combine root and relationship filters`() {
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                this(query.issue.state eq "open")
+                this(query.raisedBy.name eq "Alice")
+            }
+        }
+
+        // Should return 2 open issues raised by Alice (1001 and 1003)
+        assertEquals(2, results.size)
+        assertTrue(results.all { it.issue.state == "open" })
+        assertTrue(results.all { it.raisedBy.person.name == "Alice" })
+    }
 }
 
 /**
@@ -282,9 +337,10 @@ class QueryDslEndToEndTests @Autowired constructor(
  */
 class RaisedAndAssignedIssueQueryDsl {
     val issue = RaisedIssueProperties()
-
-    // Future: Add relationship filtering
-    // val assignedTo = PersonProperties()
+    // For relationship filtering - codegen will generate these
+    // Currently using PersonProperties from GeneratedQueryExample.kt
+    val assignedTo = PersonProperties("assignedTo")
+    val raisedBy = PersonProperties("raisedBy")
 
     companion object {
         // Singleton instance for convenience
@@ -303,6 +359,7 @@ class RaisedIssueProperties {
     val body = StringPropertyReference("issue", "body")
     val locked = PropertyReference<Boolean>("issue", "locked")
 }
+
 
 // ============================================================================
 // CODE GENERATION EXAMPLE: Extension Function Approach

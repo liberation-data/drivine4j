@@ -141,7 +141,7 @@ ${returnFields.joinToString(",\n")}
     /**
      * Builds a relationship pattern comprehension for a single relationship.
      *
-     * Example output:
+     * Example output for direct target:
      * [(issue)-[:ASSIGNED_TO]->(assigned:Person) |
      *     assigned {
      *         uuid: assigned.uuid,
@@ -150,13 +150,29 @@ ${returnFields.joinToString(",\n")}
      *     }
      * ] AS assigned
      *
-     * For nested GraphViews, recursively builds the projection with nested relationships.
+     * Example output for relationship fragment:
+     * [(issue)-[assigned_rel:ASSIGNED_TO]->(assigned_target:Person) |
+     *     {
+     *         createdAt: assigned_rel.createdAt,
+     *         priority: assigned_rel.priority,
+     *         target: assigned_target {
+     *             uuid: assigned_target.uuid,
+     *             name: assigned_target.name
+     *         }
+     *     }
+     * ] AS assigned
      *
      * @param rootFieldName The alias for the root node
      * @param rel The relationship model
      * @param targetAlias The derived alias for the relationship target
      */
     private fun buildRelationshipPattern(rootFieldName: String, rel: org.drivine.model.RelationshipModel, targetAlias: String): String {
+        if (rel.isRelationshipFragment) {
+            // Relationship fragment pattern: capture both relationship properties and target node
+            return buildRelationshipFragmentPattern(rootFieldName, rel, targetAlias)
+        }
+
+        // Direct target reference pattern (existing behavior)
         val direction = when (rel.direction) {
             Direction.OUTGOING -> "-[:${rel.type}]->"
             Direction.INCOMING -> "<-[:${rel.type}]-"
@@ -179,6 +195,73 @@ ${returnFields.joinToString(",\n")}
         } else {
             // Single: use [pattern][0] to get the first element
             "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ][0] AS $targetAlias"
+        }
+
+        return pattern
+    }
+
+    /**
+     * Builds a relationship fragment pattern that captures both relationship properties
+     * and the target node.
+     *
+     * Example output:
+     * [(issue)-[assigned_rel:ASSIGNED_TO]->(assigned_target:Person) |
+     *     {
+     *         createdAt: assigned_rel.createdAt,
+     *         priority: assigned_rel.priority,
+     *         target: assigned_target {
+     *             uuid: assigned_target.uuid,
+     *             name: assigned_target.name
+     *         }
+     *     }
+     * ] AS assigned
+     *
+     * @param rootFieldName The alias for the root node
+     * @param rel The relationship model (must be a relationship fragment)
+     * @param fieldAlias The alias for this relationship field
+     */
+    private fun buildRelationshipFragmentPattern(rootFieldName: String, rel: org.drivine.model.RelationshipModel, fieldAlias: String): String {
+        require(rel.isRelationshipFragment) { "This method should only be called for relationship fragments" }
+
+        // Build the relationship pattern with named relationship variable
+        val relAlias = "${fieldAlias}_rel"
+        val targetAlias = "${fieldAlias}_target"
+
+        val direction = when (rel.direction) {
+            Direction.OUTGOING -> "-[$relAlias:${rel.type}]->"
+            Direction.INCOMING -> "<-[$relAlias:${rel.type}]-"
+            Direction.UNDIRECTED -> "-[$relAlias:${rel.type}]-"
+        }
+
+        // Get labels for the target node type
+        val targetNodeType = rel.targetNodeType!!
+        val targetLabels = getLabelsForType(targetNodeType)
+        if (targetLabels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for relationship fragment target ${targetNodeType.name}. @GraphFragment or @GraphView must specify at least one label.")
+        }
+        val targetLabelString = targetLabels.joinToString(":")
+
+        // Build projection object with relationship properties + target
+        val projectionFields = mutableListOf<String>()
+
+        // Add relationship properties
+        rel.relationshipProperties.forEach { propName ->
+            projectionFields.add("$propName: $relAlias.$propName")
+        }
+
+        // Add target projection
+        val targetFieldName = rel.targetFieldName!!
+        val targetProjection = buildRelationshipProjection(targetAlias, targetNodeType)
+        projectionFields.add("$targetFieldName: $targetProjection")
+
+        val projection = "{\n            ${projectionFields.joinToString(",\n            ")}\n        }"
+
+        val pattern = if (rel.isCollection) {
+            // Collection: use pattern comprehension
+            "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ] AS $fieldAlias"
+        } else {
+            // Single: use [pattern][0] to get the first element
+            "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ][0] AS $fieldAlias"
         }
 
         return pattern
