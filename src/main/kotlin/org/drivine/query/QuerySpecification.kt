@@ -280,3 +280,20 @@ class QuerySpecification<T> private constructor(
         return chain.flatMap { it.postProcessors }
     }
 }
+
+/**
+ * Reified extension for transform() - allows `.transform<Int>()` instead of `.transform(Int::class.java)`
+ *
+ * Example:
+ * ```kotlin
+ * val count = persistenceManager.query(
+ *     QuerySpecification
+ *         .withStatement("MATCH (p:Person) RETURN count(p)")
+ *         .transform<Int>()  // Much cleaner than .transform(Int::class.java)
+ * )
+ * ```
+ */
+inline fun <reified U> QuerySpecification<*>.transform(): QuerySpecification<U> {
+    @Suppress("UNCHECKED_CAST")
+    return (this as QuerySpecification<Any>).transform(U::class.java)
+}

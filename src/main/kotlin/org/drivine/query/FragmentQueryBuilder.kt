@@ -49,6 +49,12 @@ RETURN {
         return matchClause + whereSection + returnClause
     }
 
+    override fun buildIdWhereClause(idParamName: String): String {
+        val nodeIdField = fragmentModel.nodeIdField
+            ?: throw IllegalArgumentException("GraphFragment ${fragmentModel.className} does not have a @GraphNodeId field")
+        return "n.$nodeIdField = \$$idParamName"
+    }
+
     companion object {
         /**
          * Creates a query builder for a GraphFragment class.

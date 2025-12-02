@@ -78,6 +78,15 @@ ${returnFields.joinToString(",\n")}
         return matchClause + whereSection + withClause + returnClause
     }
 
+    override fun buildIdWhereClause(idParamName: String): String {
+        val rootFragmentModel = viewModel.rootFragment
+        val fragmentModel = FragmentModel.from(rootFragmentModel.fragmentType)
+        val nodeIdField = fragmentModel.nodeIdField
+            ?: throw IllegalArgumentException("GraphView root fragment ${rootFragmentModel.fragmentType.name} does not have a @GraphNodeId field")
+        val rootFieldName = rootFragmentModel.fieldName
+        return "$rootFieldName.$nodeIdField = \$$idParamName"
+    }
+
     /**
      * Builds a comment describing a relationship.
      */

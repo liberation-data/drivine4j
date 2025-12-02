@@ -1,11 +1,16 @@
 package org.drivine.manager
 
+import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.session.SessionManager
+
 /**
  * Factory for creating GraphObjectManager instances.
  * Uses PersistenceManagerFactory to inject PersistenceManager instances.
+ * Each GraphObjectManager gets its own SessionManager instance.
  */
 class GraphObjectManagerFactory(
-    private val persistenceManagerFactory: PersistenceManagerFactory
+    private val persistenceManagerFactory: PersistenceManagerFactory,
+    private val objectMapper: ObjectMapper
 ) {
     private val managers: MutableMap<String, GraphObjectManager> = mutableMapOf()
 
@@ -19,7 +24,8 @@ class GraphObjectManagerFactory(
         val key = "$database:$type"
         if (!managers.containsKey(key)) {
             val persistenceManager = persistenceManagerFactory.get(database, type)
-            managers[key] = GraphObjectManager(persistenceManager)
+            val sessionManager = SessionManager(objectMapper)
+            managers[key] = GraphObjectManager(persistenceManager, sessionManager, objectMapper)
         }
         return managers[key]!!
     }

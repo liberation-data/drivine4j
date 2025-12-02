@@ -1,9 +1,11 @@
 package org.drivine
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
 import org.springframework.context.annotation.Bean
@@ -14,6 +16,11 @@ import org.springframework.transaction.PlatformTransactionManager
 @Configuration
 @ComponentScan(basePackages = ["org.drivine"])
 class DrivineConfiguration {
+
+    @Bean
+    fun neo4jObjectMapper(): ObjectMapper {
+        return Neo4jObjectMapper.instance
+    }
 
     @Bean
     fun databaseRegistry(dataSourceMap: DataSourceMap): DatabaseRegistry {
@@ -36,8 +43,11 @@ class DrivineConfiguration {
     }
 
     @Bean
-    fun graphObjectManagerFactory(persistenceManagerFactory: PersistenceManagerFactory): GraphObjectManagerFactory {
-        return GraphObjectManagerFactory(persistenceManagerFactory)
+    fun graphObjectManagerFactory(
+        persistenceManagerFactory: PersistenceManagerFactory,
+        objectMapper: ObjectMapper
+    ): GraphObjectManagerFactory {
+        return GraphObjectManagerFactory(persistenceManagerFactory, objectMapper)
     }
 
 }

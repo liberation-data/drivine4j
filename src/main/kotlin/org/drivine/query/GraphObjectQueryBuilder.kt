@@ -16,6 +16,16 @@ interface GraphObjectQueryBuilder {
      */
     fun buildQuery(whereClause: String? = null): String
 
+    /**
+     * Builds a WHERE clause for loading by ID.
+     * Implementations know the correct alias and field name for their type.
+     * This will be the integration point for a future filter DSL.
+     *
+     * @param idParamName The parameter name for binding (e.g., "id" becomes $id in query)
+     * @return The WHERE clause condition (e.g., "n.uuid = $id" or "issue.uuid = $id")
+     */
+    fun buildIdWhereClause(idParamName: String = "id"): String
+
     companion object {
         /**
          * Creates the appropriate query builder for a graph object class.
