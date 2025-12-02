@@ -2,6 +2,7 @@ package org.drivine.model
 
 import org.drivine.annotation.GraphFragment
 import org.drivine.annotation.GraphRelationship
+import org.drivine.annotation.GraphRelationshipFragment
 import org.drivine.annotation.GraphView
 import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
@@ -76,6 +77,15 @@ data class GraphViewModel(
 
                         // Determine element type and whether it's a collection
                         val (elementType, isCollection) = extractElementType(prop.returnType.toString(), fieldType)
+
+                        // Check if element type is annotated with @GraphRelationshipFragment (relationship object pattern)
+                        if (elementType.isAnnotationPresent(GraphRelationshipFragment::class.java)) {
+                            throw UnsupportedOperationException(
+                                "Relationship fragments (classes annotated with @GraphRelationshipFragment) are not yet supported. " +
+                                "Field '${prop.name}' in ${clazz.name} uses relationship fragment '${elementType.simpleName}'. " +
+                                "Use direct target references for now, e.g.: val ${prop.name}: List<Person>"
+                            )
+                        }
 
                         RelationshipModel(
                             fieldName = prop.name,
