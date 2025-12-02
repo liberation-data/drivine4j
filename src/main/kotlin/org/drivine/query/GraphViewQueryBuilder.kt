@@ -17,11 +17,13 @@ class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObject
      * 1. MATCH the root fragment node with optional WHERE clause
      * 2. WITH the root node, collect relationships using pattern comprehension
      * 3. RETURN the assembled object
+     * 4. Optional ORDER BY clause
      *
      * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @param orderByClause Optional ORDER BY clause (without the ORDER BY keywords)
      * @return The generated Cypher query
      */
-    override fun buildQuery(whereClause: String?): String {
+    override fun buildQuery(whereClause: String?, orderByClause: String?): String {
         val rootFragmentModel = viewModel.rootFragment
         val rootFieldName = rootFragmentModel.fieldName
 
@@ -75,7 +77,14 @@ RETURN {
 ${returnFields.joinToString(",\n")}
 } AS result"""
 
-        return matchClause + whereSection + withClause + returnClause
+        // Add ORDER BY clause if provided
+        val orderBySection = if (orderByClause != null) {
+            "\nORDER BY $orderByClause"
+        } else {
+            ""
+        }
+
+        return matchClause + whereSection + withClause + returnClause + orderBySection
     }
 
     override fun buildIdWhereClause(idParamName: String): String {

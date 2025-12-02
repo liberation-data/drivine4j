@@ -13,11 +13,13 @@ class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObje
      * The query structure:
      * 1. MATCH the fragment node with its labels and optional WHERE clause
      * 2. RETURN the node properties mapped to fields
+     * 3. Optional ORDER BY clause
      *
      * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @param orderByClause Optional ORDER BY clause (without the ORDER BY keywords)
      * @return The generated Cypher query
      */
-    override fun buildQuery(whereClause: String?): String {
+    override fun buildQuery(whereClause: String?, orderByClause: String?): String {
         // Get all labels from the fragment
         if (fragmentModel.labels.isEmpty()) {
             throw IllegalArgumentException("No labels defined for fragment ${fragmentModel.className}. @GraphFragment must specify at least one label.")
@@ -46,7 +48,14 @@ RETURN {
     $fieldMappings
 } AS result"""
 
-        return matchClause + whereSection + returnClause
+        // Add ORDER BY clause if provided
+        val orderBySection = if (orderByClause != null) {
+            "\nORDER BY $orderByClause"
+        } else {
+            ""
+        }
+
+        return matchClause + whereSection + returnClause + orderBySection
     }
 
     override fun buildIdWhereClause(idParamName: String): String {

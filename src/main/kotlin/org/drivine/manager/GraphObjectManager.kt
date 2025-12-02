@@ -49,6 +49,76 @@ class GraphObjectManager(
     }
 
     /**
+     * Loads instances of a graph object using a type-safe query DSL.
+     * Supports filtering and ordering.
+     *
+     * Pass the query DSL object explicitly to enable type-safe property access.
+     *
+     * Example:
+     * ```kotlin
+     * graphObjectManager.loadAll(
+     *     RaisedAndAssignedIssue::class.java,
+     *     RaisedAndAssignedIssueQueryDsl.INSTANCE
+     * ) {
+     *     where {
+     *         this(query.issue.state eq "open")
+     *         this(query.issue.id gt 1000)
+     *     }
+     *     orderBy {
+     *         this(query.issue.id.desc())
+     *     }
+     * }
+     * ```
+     *
+     * **Future with Code Generation:**
+     * When code generation is implemented, query DSLs will be auto-registered via QueryDslRegistry,
+     * and you'll be able to use an even cleaner extension function syntax without passing the query object.
+     *
+     * @param graphClass The graph object class to load
+     * @param queryObject The query object providing property references
+     * @param spec DSL block for building the query
+     * @return List of graph object instances matching the criteria
+     */
+    fun <T : Any, Q : Any> loadAll(
+        graphClass: Class<T>,
+        queryObject: Q,
+        spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
+    ): List<T> {
+        val querySpec = org.drivine.query.dsl.GraphQuerySpec(queryObject)
+        querySpec.spec()
+
+        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+
+        // Build WHERE clause from conditions
+        val whereClause = if (querySpec.conditions.isNotEmpty()) {
+            org.drivine.query.dsl.CypherGenerator.buildWhereClause(querySpec.conditions)
+        } else null
+
+        // Build ORDER BY clause from orders
+        val orderByClause = if (querySpec.orders.isNotEmpty()) {
+            org.drivine.query.dsl.CypherGenerator.buildOrderByClause(querySpec.orders)
+        } else null
+
+        // Build the complete query
+        val query = builder.buildQuery(whereClause, orderByClause)
+
+        // Extract bindings from conditions
+        val bindings = org.drivine.query.dsl.CypherGenerator.extractBindings(querySpec.conditions)
+
+        val results = persistenceManager.query(
+            QuerySpecification
+                .withStatement(query)
+                .bind(bindings)
+                .transform(graphClass)
+        )
+
+        // Snapshot loaded objects for dirty tracking
+        snapshotResults(graphClass, results)
+
+        return results
+    }
+
+    /**
      * Loads a single graph object instance by its ID.
      * The loaded object is automatically added to the session for dirty tracking.
      *

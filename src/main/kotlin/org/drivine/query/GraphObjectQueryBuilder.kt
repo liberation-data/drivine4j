@@ -9,12 +9,13 @@ import org.drivine.model.FragmentModel
  */
 interface GraphObjectQueryBuilder {
     /**
-     * Builds a Cypher query with an optional WHERE clause.
+     * Builds a Cypher query with optional WHERE and ORDER BY clauses.
      *
      * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @param orderByClause Optional ORDER BY clause (without the ORDER BY keywords)
      * @return The generated Cypher query
      */
-    fun buildQuery(whereClause: String? = null): String
+    fun buildQuery(whereClause: String? = null, orderByClause: String? = null): String
 
     /**
      * Builds a WHERE clause for loading by ID.
