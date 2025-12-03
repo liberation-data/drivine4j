@@ -67,8 +67,19 @@ object CypherGenerator {
                     val alias = condition.propertyPath.substringBefore(".")
 
                     if (alias in relationshipNames) {
-                        // This is a relationship target property
+                        // This is a direct relationship target property
                         relationshipConditions.getOrPut(alias) { mutableListOf() }.add(condition)
+                    } else if (alias.contains("_")) {
+                        // Possibly a nested relationship (e.g., "raisedBy_worksFor.name")
+                        val parentAlias = alias.substringBefore("_")
+                        if (parentAlias in relationshipNames) {
+                            // This is a nested relationship property
+                            // Group it under the parent relationship for now
+                            relationshipConditions.getOrPut(parentAlias) { mutableListOf() }.add(condition)
+                        } else {
+                            // Not a nested relationship, treat as root property
+                            grouped.add(condition)
+                        }
                     } else {
                         // This is a root fragment property
                         grouped.add(condition)
@@ -206,10 +217,13 @@ object CypherGenerator {
             org.drivine.annotation.Direction.UNDIRECTED -> "($rootAlias)-[:${relationship.type}]-($targetAlias)"
         }
 
-        // Build WHERE clauses for target conditions
-        val targetWhere = if (condition.targetConditions.isNotEmpty()) {
+        // Separate direct properties from nested relationship properties
+        val (directConditions, nestedConditions) = separateNestedConditions(condition.targetConditions, targetAlias)
+
+        // Build WHERE clauses for direct target conditions
+        val directWhere = if (directConditions.isNotEmpty()) {
             var paramIndex = startIndex
-            val whereClauses = condition.targetConditions.joinToString(" AND ") { targetCondition ->
+            val whereClauses = directConditions.joinToString(" AND ") { targetCondition ->
                 when (targetCondition) {
                     is WhereCondition.PropertyCondition -> {
                         val result = buildPropertyCondition(targetCondition, paramIndex)
@@ -217,7 +231,7 @@ object CypherGenerator {
                         result
                     }
                     is WhereCondition.RelationshipCondition -> {
-                        throw UnsupportedOperationException("Nested relationship conditions not yet supported")
+                        throw UnsupportedOperationException("Should not reach here - nested conditions separated")
                     }
                     is WhereCondition.OrCondition -> {
                         val result = buildOrCondition(targetCondition, viewModel, paramIndex)
@@ -231,8 +245,127 @@ object CypherGenerator {
             ""
         }
 
+        // Build nested EXISTS patterns for nested relationships
+        val nestedPatterns = if (nestedConditions.isNotEmpty()) {
+            // Check if the target is a @GraphView
+            val targetViewModel = try {
+                GraphViewModel.from(relationship.elementType)
+            } catch (e: Exception) {
+                null  // Not a GraphView, can't have nested relationships
+            }
+
+            if (targetViewModel != null) {
+                var paramIndex = startIndex + directConditions.size
+                nestedConditions.entries.joinToString(" AND ") { (nestedRelName, nestedConds) ->
+                    buildNestedRelationshipCondition(
+                        parentAlias = targetAlias,
+                        nestedRelationshipName = nestedRelName,
+                        conditions = nestedConds,
+                        targetViewModel = targetViewModel,
+                        startIndex = paramIndex
+                    ).also {
+                        paramIndex += nestedConds.size
+                    }
+                }
+            } else {
+                throw IllegalArgumentException(
+                    "Cannot filter on nested relationship '${targetAlias}_*' because " +
+                    "${relationship.elementType.simpleName} is not a @GraphView"
+                )
+            }
+        } else {
+            ""
+        }
+
+        // Combine direct and nested WHERE clauses
+        val combinedWhere = when {
+            directWhere.isNotEmpty() && nestedPatterns.isNotEmpty() -> "$directWhere AND $nestedPatterns"
+            directWhere.isNotEmpty() -> directWhere
+            nestedPatterns.isNotEmpty() -> " WHERE $nestedPatterns"
+            else -> ""
+        }
+
         // Neo4j 5+ uses EXISTS { pattern WHERE conditions }
-        return "EXISTS { $relationshipPattern$targetWhere }"
+        return "EXISTS { $relationshipPattern$combinedWhere }"
+    }
+
+    /**
+     * Separates conditions into direct properties and nested relationship properties.
+     *
+     * Example: For targetAlias="raisedBy":
+     * - "raisedBy.name" -> direct
+     * - "raisedBy_worksFor.name" -> nested (relationship="worksFor")
+     */
+    private fun separateNestedConditions(
+        conditions: List<WhereCondition>,
+        targetAlias: String
+    ): Pair<List<WhereCondition>, Map<String, List<WhereCondition.PropertyCondition>>> {
+        val direct = mutableListOf<WhereCondition>()
+        val nested = mutableMapOf<String, MutableList<WhereCondition.PropertyCondition>>()
+
+        conditions.forEach { condition ->
+            when (condition) {
+                is WhereCondition.PropertyCondition -> {
+                    val alias = condition.propertyPath.substringBefore(".")
+                    if (alias.startsWith("${targetAlias}_")) {
+                        // Nested relationship property (e.g., "raisedBy_worksFor.name")
+                        val nestedRelName = alias.substringAfter("${targetAlias}_")
+                        nested.getOrPut(nestedRelName) { mutableListOf() }.add(condition)
+                    } else {
+                        // Direct property (e.g., "raisedBy.name")
+                        direct.add(condition)
+                    }
+                }
+                else -> {
+                    // OR conditions and other types treated as direct
+                    direct.add(condition)
+                }
+            }
+        }
+
+        return Pair(direct, nested)
+    }
+
+    /**
+     * Builds a nested relationship condition within an EXISTS pattern.
+     * This handles filtering on relationships within nested GraphViews.
+     *
+     * Example: When filtering RaisedAndAssignedIssue by raisedBy.worksFor.name:
+     * - parentAlias = "raisedBy"
+     * - nestedRelationshipName = "worksFor"
+     * - Generates: EXISTS { (raisedBy)-[:WORKS_FOR]->(worksFor) WHERE worksFor.name = $param }
+     */
+    private fun buildNestedRelationshipCondition(
+        parentAlias: String,
+        nestedRelationshipName: String,
+        conditions: List<WhereCondition.PropertyCondition>,
+        targetViewModel: GraphViewModel,
+        startIndex: Int
+    ): String {
+        // Find the nested relationship in the target view model
+        val nestedRel = targetViewModel.relationships.find { it.fieldName == nestedRelationshipName }
+            ?: throw IllegalArgumentException(
+                "Nested relationship '$nestedRelationshipName' not found in ${targetViewModel.className}. " +
+                "Available relationships: ${targetViewModel.relationships.map { it.fieldName }}"
+            )
+
+        // Build the relationship pattern
+        val nestedAlias = "${parentAlias}_${nestedRelationshipName}"
+        val relationshipPattern = when (nestedRel.direction) {
+            org.drivine.annotation.Direction.OUTGOING -> "($parentAlias)-[:${nestedRel.type}]->($nestedAlias)"
+            org.drivine.annotation.Direction.INCOMING -> "($parentAlias)<-[:${nestedRel.type}]-($nestedAlias)"
+            org.drivine.annotation.Direction.UNDIRECTED -> "($parentAlias)-[:${nestedRel.type}]-($nestedAlias)"
+        }
+
+        // Build WHERE clause for the nested conditions
+        var paramIndex = startIndex
+        val whereClauses = conditions.joinToString(" AND ") { condition ->
+            buildPropertyCondition(condition, paramIndex).also {
+                paramIndex++
+            }
+        }
+
+        return "EXISTS { $relationshipPattern WHERE $whereClauses }"
     }
 
     /**

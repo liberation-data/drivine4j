@@ -70,10 +70,14 @@ class QueryDslGenerator(
         val firstViewPackage = graphViewClasses.first().packageName.asString()
         val propertiesClasses = generatePropertiesClasses(fragmentTypes)
 
+        // Also generate Properties classes for nested @GraphView types
+        val nestedViewProperties = generateNestedViewPropertiesClasses()
+
         val fileSpec = FileSpec.builder(firstViewPackage, "GeneratedProperties")
             .addFileComment("Generated code - do not modify")
             .apply {
                 propertiesClasses.forEach { addType(it) }
+                nestedViewProperties.forEach { addType(it) }
             }
             .build()
 
@@ -86,6 +90,81 @@ class QueryDslGenerator(
         )
 
         logger.info("Generated shared properties at $firstViewPackage.GeneratedProperties")
+    }
+
+    private fun generateNestedViewPropertiesClasses(): List<TypeSpec> {
+        val result = mutableListOf<TypeSpec>()
+        val processed = mutableSetOf<String>()
+
+        // Find all nested views across all graph views
+        graphViewClasses.forEach { graphViewClass ->
+            val viewStructure = analyzeGraphViewStructure(graphViewClass)
+            viewStructure.forEach { viewProp ->
+                if (viewProp.isNestedView && viewProp.nestedViewClass != null) {
+                    val key = viewProp.nestedViewClass.qualifiedName?.asString() ?: return@forEach
+                    if (!processed.contains(key)) {
+                        processed.add(key)
+                        result.add(generateViewPropertiesClass(viewProp.nestedViewClass))
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
+    private fun generateViewPropertiesClass(viewClass: KSClassDeclaration): TypeSpec {
+        val viewName = viewClass.simpleName.asString()
+        val propertiesClassName = "${viewName}Properties"
+        val viewStructure = analyzeGraphViewStructure(viewClass)
+        val packageName = viewClass.packageName.asString()
+
+        val classBuilder = TypeSpec.classBuilder(propertiesClassName)
+
+        // Add constructor with alias parameter
+        classBuilder.primaryConstructor(
+            FunSpec.constructorBuilder()
+                .addParameter("alias", String::class)
+                .build()
+        )
+        classBuilder.addProperty(
+            PropertySpec.builder("alias", String::class)
+                .initializer("alias")
+                .addModifiers(KModifier.PRIVATE)
+                .build()
+        )
+
+        // Add properties for each fragment/relationship in the view
+        viewStructure.forEach { viewProp ->
+            val fragmentClass = viewProp.type.declaration as? KSClassDeclaration ?: return@forEach
+            val fragmentSimpleName = fragmentClass.simpleName.asString()
+            val propPropertiesClassName = "${fragmentSimpleName}Properties"
+
+            if (viewProp.isRootFragment) {
+                // Root fragment uses the same alias as the view
+                classBuilder.addProperty(
+                    PropertySpec.builder(
+                        viewProp.name,
+                        ClassName(packageName, propPropertiesClassName)
+                    )
+                        .initializer("$propPropertiesClassName(alias)")
+                        .build()
+                )
+            } else if (viewProp.isRelationship) {
+                // Relationship uses composite alias
+                val relationshipAlias = "\${alias}_${viewProp.name}"
+                classBuilder.addProperty(
+                    PropertySpec.builder(
+                        viewProp.name,
+                        ClassName(packageName, propPropertiesClassName)
+                    )
+                        .initializer("$propPropertiesClassName(\"$relationshipAlias\")")
+                        .build()
+                )
+            }
+        }
+
+        return classBuilder.build()
     }
 
     private fun generateViewDslFile(graphViewClass: KSClassDeclaration, viewStructure: List<ViewProperty>) {
@@ -120,7 +199,8 @@ class QueryDslGenerator(
         val isRootFragment: Boolean,
         val isRelationship: Boolean,
         val isNestedView: Boolean = false,
-        val relationshipAlias: String? = null
+        val relationshipAlias: String? = null,
+        val nestedViewClass: KSClassDeclaration? = null
     )
 
     private data class FragmentType(
@@ -145,6 +225,7 @@ class QueryDslGenerator(
                 // It's a relationship property
                 val targetType = extractRelationshipTargetType(propertyType)
                 val isNestedView = isGraphView(targetType)
+                val nestedViewClass = if (isNestedView) targetType.declaration as? KSClassDeclaration else null
 
                 properties.add(
                     ViewProperty(
@@ -153,7 +234,8 @@ class QueryDslGenerator(
                         isRootFragment = false,
                         isRelationship = true,
                         isNestedView = isNestedView,
-                        relationshipAlias = propertyName
+                        relationshipAlias = propertyName,
+                        nestedViewClass = nestedViewClass
                     )
                 )
             } else {
@@ -188,22 +270,17 @@ class QueryDslGenerator(
 
         viewStructure.forEach { viewProp ->
             if (viewProp.isNestedView) {
-                // For nested views, collect their fragment types recursively
+                // For nested views, we need to generate a Properties class for the view itself
+                // This allows query.raisedBy.person.name instead of query.raisedBy_person.name
                 val nestedViewClass = viewProp.type.declaration as? KSClassDeclaration
                 if (nestedViewClass != null) {
-                    nestedViewClass.getAllProperties().forEach { nestedProp ->
-                        val nestedType = nestedProp.type.resolve()
-                        val nestedTargetType = extractRelationshipTargetType(nestedType)
-
-                        if (isGraphFragment(nestedTargetType)) {
-                            val nestedFragmentClass = nestedTargetType.declaration as? KSClassDeclaration
-                            if (nestedFragmentClass != null) {
-                                val nestedName = nestedFragmentClass.simpleName.asString()
-                                if (!fragmentTypes.containsKey(nestedName)) {
-                                    // Nested view fragments need alias constructor
-                                    fragmentTypes[nestedName] = FragmentType(nestedFragmentClass, true)
-                                }
-                            }
+                    // Collect fragment types from the nested view recursively
+                    val nestedStructure = analyzeGraphViewStructure(nestedViewClass)
+                    val nestedFragments = collectFragmentTypes(nestedStructure)
+                    nestedFragments.forEach { fragmentType ->
+                        val key = fragmentType.fragmentClass.simpleName.asString()
+                        if (!fragmentTypes.containsKey(key)) {
+                            fragmentTypes[key] = fragmentType
                         }
                     }
                 }
@@ -318,32 +395,20 @@ class QueryDslGenerator(
 
         // Add property for each part of the view
         viewStructure.forEach { viewProp ->
-            if (viewProp.isNestedView) {
-                // For nested views, generate properties for each of their fragments/relationships
-                val nestedViewClass = viewProp.type.declaration as? KSClassDeclaration ?: return@forEach
+            if (viewProp.isNestedView && viewProp.nestedViewClass != null) {
+                // For nested views, use the generated ViewProperties class
+                // This allows query.raisedBy.person.name instead of query.raisedBy_person.name
+                val nestedViewName = viewProp.nestedViewClass.simpleName.asString()
+                val propertiesClassName = "${nestedViewName}Properties"
 
-                nestedViewClass.getAllProperties().forEach { nestedProp ->
-                    val nestedPropName = "${viewProp.name}_${nestedProp.simpleName.asString()}"
-                    val nestedPropType = nestedProp.type.resolve()
-                    val nestedTargetType = extractRelationshipTargetType(nestedPropType)
-
-                    if (isGraphFragment(nestedTargetType)) {
-                        val fragmentClass = nestedTargetType.declaration as? KSClassDeclaration ?: return@forEach
-                        val fragmentSimpleName = fragmentClass.simpleName.asString()
-                        val propertiesClassName = "${fragmentSimpleName}Properties"
-
-                        val propertyAlias = "${viewProp.relationshipAlias}_${nestedProp.simpleName.asString()}"
-
-                        classBuilder.addProperty(
-                            PropertySpec.builder(
-                                nestedPropName,
-                                ClassName(graphViewClassName.packageName, propertiesClassName)
-                            )
-                                .initializer("$propertiesClassName(\"$propertyAlias\")")
-                                .build()
-                        )
-                    }
-                }
+                classBuilder.addProperty(
+                    PropertySpec.builder(
+                        viewProp.name,
+                        ClassName(graphViewClassName.packageName, propertiesClassName)
+                    )
+                        .initializer("$propertiesClassName(\"${viewProp.relationshipAlias}\")")
+                        .build()
+                )
             } else {
                 // Regular fragment or relationship
                 val fragmentClass = viewProp.type.declaration as? KSClassDeclaration ?: return@forEach
