@@ -1,0 +1,31 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Only depend on annotations from root project, not the full implementation
+    compileOnly rootProject
+
+    // Kotlin Symbol Processing (KSP) for annotation processing
+    implementation 'com.google.devtools.ksp:symbol-processing-api:1.9.21-1.0.15'
+
+    // Kotlin Poet for code generation
+    implementation 'com.squareup:kotlinpoet:1.15.3'
+    implementation 'com.squareup:kotlinpoet-ksp:1.15.3'
+
+    // Kotlin reflection
+    implementation 'org.jetbrains.kotlin:kotlin-reflect'
+
+    // Testing
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.1'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.1'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+}
+
+test {
+    useJUnitPlatform()
+}

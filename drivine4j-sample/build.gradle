@@ -1,0 +1,57 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id 'org.jetbrains.kotlin.plugin.spring' version '1.9.25'
+    id 'com.google.devtools.ksp' version '1.9.25-1.0.20'
+    id 'io.spring.dependency-management' version '1.1.7'
+}
+
+dependencyManagement {
+    imports {
+        mavenBom 'org.springframework.boot:spring-boot-dependencies:3.5.7'
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Depend on root project for core library
+    implementation rootProject
+
+    // Apply code generation processor
+    ksp project(':drivine4j-codegen')
+
+    // Spring Boot dependencies needed for tests
+    testImplementation 'org.springframework.boot:spring-boot-starter:3.5.7'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test:3.5.7'
+    testImplementation 'org.springframework.boot:spring-boot-starter-aop:3.5.7'
+    testImplementation 'org.springframework:spring-tx:6.2.3'
+    testImplementation 'org.springframework:spring-test:6.2.3'
+
+    // Testcontainers for Neo4j
+    testImplementation 'org.testcontainers:neo4j:1.20.4'
+    testImplementation 'org.testcontainers:junit-jupiter:1.20.4'
+
+    // Testing - versions managed by Spring Boot BOM
+    testImplementation 'org.junit.jupiter:junit-jupiter-api'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+}
+
+// Make generated sources visible to the IDE and compilers
+kotlin {
+    sourceSets {
+        main {
+            kotlin.srcDir("build/generated/ksp/main/kotlin")
+        }
+        test {
+            kotlin.srcDir("build/generated/ksp/main/kotlin")  // Test needs access to main generated code
+        }
+    }
+}
+
+test {
+    useJUnitPlatform()
+}

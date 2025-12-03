@@ -133,25 +133,27 @@ publishing {
 }
 
 // --- Signing (required for non-SNAPSHOT releases to Maven Central) ---
-signing {
-	required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
+// Configure signing to be optional for local builds
+def shouldSign = project.hasProperty('sign') || System.getenv('SIGN') == 'true'
 
-	// Try in-memory keys first (for CI/CD), fall back to GPG agent (for local dev)
-	def signingKey = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
-	def signingPassword = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+if (shouldSign) {
+	signing {
+		// Only require signing when explicitly publishing to Maven Central
+		required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
 
-	if (signingKey != null && signingKey.contains('BEGIN PGP')) {
-		// Full ASCII-armored key provided - use in-memory signing
-		useInMemoryPgpKeys(signingKey, signingPassword)
-	} else if (signingKey != null) {
-		// Key ID provided - use GPG agent
-		useGpgCmd()
-	} else {
-		// No key specified - use default GPG agent
-		useGpgCmd()
+		def signingKey = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
+		def signingPassword = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+
+		if (signingKey != null && signingKey.contains('BEGIN PGP')) {
+			// Full ASCII-armored key provided - use in-memory signing
+			useInMemoryPgpKeys(signingKey, signingPassword)
+		} else {
+			// Key ID provided or default - use GPG agent
+			useGpgCmd()
+		}
+
+		sign publishing.publications.mavenJava
 	}
-
-	sign publishing.publications.mavenJava
 }
 
 // --- Central Publishing Portal (new Maven Central) ---
