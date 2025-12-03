@@ -31,7 +31,7 @@ class OrRelationshipDebugTest {
         assertTrue(whereClause.contains("EXISTS"), "Should contain EXISTS")
         assertTrue(whereClause.contains("OR"), "Should contain OR")
 
-        val bindings = CypherGenerator.extractBindings(conditions)
+        val bindings = CypherGenerator.extractBindings(conditions, viewModel)
         println("Bindings: $bindings")
 
         // Should have two parameters

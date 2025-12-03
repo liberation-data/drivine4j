@@ -296,4 +296,231 @@ class GeneratedDslTest @Autowired constructor(
         assertEquals(false, results[0].issue.locked)
         assertEquals("Alice Developer", results[0].raisedBy?.person?.name)
     }
+
+    // ===== Creative & Edge Case Tests =====
+
+    @Test
+    fun `filter with CONTAINS on nested view property`() {
+        // Real-world use case: search for people whose bio contains a keyword
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.raisedBy.person.bio.contains("Engineer"))
+            }
+        }
+
+        assertEquals(1, results.size)
+        assertTrue(results[0].raisedBy?.person?.bio?.contains("Engineer") == true)
+    }
+
+    @Test
+    fun `filter with STARTS_WITH on deeply nested organization`() {
+        // Find issues raised by people from orgs starting with "Ac"
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.raisedBy.worksFor.name.startsWith("Ac"))
+            }
+        }
+
+        assertEquals(1, results.size)
+        assertEquals("Acme Corp", results[0].raisedBy?.worksFor?.get(0)?.name)
+    }
+
+    @Test
+    fun `complex triple OR with mixed root and nested properties`() {
+        // Real-world: "Show me issues that are either locked, OR raised by Alice, OR from Acme Corp"
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.issue.locked eq true)
+                    this(query.raisedBy.person.name eq "Alice Developer")
+                    this(query.raisedBy.worksFor.name eq "Acme Corp")
+                }
+            }
+        }
+
+        // Should match because Alice raised it
+        assertEquals(1, results.size)
+    }
+
+    @Test
+    fun `nested OR within AND - complex boolean logic`() {
+        // Real-world: "Show open issues that are either high priority OR assigned to Alice"
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.issue.state eq "open")  // Must be open
+                anyOf {  // AND one of these
+                    this(query.issue.id eq 123)
+                    this(query.assignedTo.name eq "Alice Developer")
+                }
+            }
+        }
+
+        assertEquals(1, results.size)
+        assertEquals("open", results[0].issue.state)
+    }
+
+    @Test
+    fun `filter by title CONTAINS with AND condition`() {
+        // Real-world: Search issues by title keyword + status
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.issue.title.contains("feature"))
+                this(query.issue.state eq "open")
+            }
+        }
+
+        assertEquals(1, results.size)
+        assertTrue(results[0].issue.title?.contains("feature") == true)
+    }
+
+    @Test
+    fun `multiple OR conditions on same nested relationship`() {
+        // Edge case: Multiple OR conditions all targeting the same deeply nested property
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.raisedBy.worksFor.name eq "Acme Corp")
+                    this(query.raisedBy.worksFor.name eq "Initech")
+                    this(query.raisedBy.worksFor.name eq "Umbrella Corp")
+                }
+            }
+        }
+
+        // Should match Acme Corp
+        assertEquals(1, results.size)
+        assertEquals("Acme Corp", results[0].raisedBy?.worksFor?.get(0)?.name)
+    }
+
+    @Test
+    fun `OR across different relationships`() {
+        // Creative: "Show issues where EITHER assignedTo is Alice OR raisedBy is Alice"
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.assignedTo.name eq "Alice Developer")
+                    this(query.raisedBy.person.name eq "Alice Developer")
+                }
+            }
+        }
+
+        // Both are Alice in our test data
+        assertEquals(1, results.size)
+    }
+
+    @Test
+    fun `complex multi-level AND with OR at different nesting levels`() {
+        // Real-world complex query:
+        // "Show me open, unlocked issues raised by someone at Acme OR assigned to Alice"
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.issue.state eq "open")
+                this(query.issue.locked eq false)
+                anyOf {
+                    this(query.raisedBy.worksFor.name eq "Acme Corp")
+                    this(query.assignedTo.name eq "Alice Developer")
+                }
+            }
+        }
+
+        assertEquals(1, results.size)
+        assertEquals("open", results[0].issue.state)
+        assertEquals(false, results[0].issue.locked)
+    }
+
+    @Test
+    fun `filter PersonContext by person bio CONTAINS`() {
+        // Test string operations on nested views directly
+        val results = graphObjectManager.loadAll<PersonContext> {
+            where {
+                this(query.person.bio.contains("Senior"))
+            }
+        }
+
+        assertEquals(1, results.size)
+        assertTrue(results[0].person.bio?.contains("Senior") == true)
+    }
+
+    @Test
+    fun `combine multiple string operations in OR`() {
+        // Creative: Search across multiple text fields
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.issue.title.contains("Implement"))
+                    this(query.issue.body.contains("test"))
+                    this(query.raisedBy.person.bio.contains("Developer"))
+                }
+            }
+        }
+
+        // Should match on title containing "Implement"
+        assertEquals(1, results.size)
+    }
+
+    @Test
+    fun `edge case - OR with no matches returns empty`() {
+        // Edge case: All OR conditions fail
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.issue.state eq "closed")
+                    this(query.assignedTo.name eq "Nobody")
+                    this(query.raisedBy.worksFor.name eq "NonExistent Corp")
+                }
+            }
+        }
+
+        assertTrue(results.isEmpty())
+    }
+
+    @Test
+    fun `edge case - nested OR within OR`() {
+        // Edge case: Can we nest OR within OR? (Should work with recursive handling)
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.issue.state eq "open")
+                    anyOf {
+                        this(query.issue.locked eq true)
+                        this(query.assignedTo.name eq "Alice Developer")
+                    }
+                }
+            }
+        }
+
+        // Should match because state is "open"
+        assertEquals(1, results.size)
+    }
+
+    @Test
+    fun `real world scenario - search and filter dashboard query`() {
+        // Realistic dashboard query: "Show my open issues from my team"
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.issue.state eq "open")
+                this(query.raisedBy.worksFor.name eq "Acme Corp")
+                anyOf {
+                    this(query.assignedTo.name eq "Alice Developer")
+                    this(query.issue.title.contains("feature"))
+                }
+            }
+        }
+
+        assertEquals(1, results.size)
+        assertEquals("Acme Corp", results[0].raisedBy?.worksFor?.get(0)?.name)
+    }
+
+    @Test
+    fun `edge case - multiple AND conditions on same nested property`() {
+        // Edge case: Can we AND multiple conditions on same nested property?
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.raisedBy.person.name eq "Alice Developer")
+                this(query.raisedBy.person.bio.contains("Engineer"))
+            }
+        }
+
+        // Should work - both conditions on raisedBy.person
+        assertEquals(1, results.size)
+    }
 }

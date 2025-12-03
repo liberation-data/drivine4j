@@ -127,9 +127,13 @@ object CypherGenerator {
      * Converts condition values into parameter map for binding.
      *
      * @param conditions List of filter conditions
+     * @param viewModel Optional GraphViewModel for relationship metadata (needed to match buildWhereClause ordering)
      * @return Map of parameter names to values
      */
-    fun extractBindings(conditions: List<WhereCondition>): Map<String, Any?> {
+    fun extractBindings(conditions: List<WhereCondition>, viewModel: GraphViewModel? = null): Map<String, Any?> {
+        // IMPORTANT: Must group conditions the same way as buildWhereClause to maintain parameter ordering
+        val grouped = groupConditionsByAlias(conditions, viewModel)
+
         val bindings = mutableMapOf<String, Any?>()
         var paramIndex = 0
 
@@ -153,7 +157,7 @@ object CypherGenerator {
             }
         }
 
-        extractRecursive(conditions)
+        extractRecursive(grouped)
         return bindings
     }
 

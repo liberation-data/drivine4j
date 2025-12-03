@@ -109,8 +109,8 @@ class GraphObjectManager(
         // Build the complete query
         val query = builder.buildQuery(whereClause, orderByClause)
 
-        // Extract bindings from conditions
-        val bindings = org.drivine.query.dsl.CypherGenerator.extractBindings(querySpec.conditions)
+        // Extract bindings from conditions (pass viewModel to ensure same ordering as buildWhereClause)
+        val bindings = org.drivine.query.dsl.CypherGenerator.extractBindings(querySpec.conditions, viewModel)
 
         val results = persistenceManager.query(
             QuerySpecification
