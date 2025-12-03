@@ -66,16 +66,13 @@ class SimpleGeneratedDslTest @Autowired constructor(
 
     @Test
     fun `load all issues without filter`() {
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) { }
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> { }
         assertEquals(1, results.size)
     }
 
     @Test
     fun `filter using manual DSL syntax`() {
-        val results = graphObjectManager.loadAll(
-            RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
-        ) {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.issue.state eq "open")
             }

@@ -457,8 +457,11 @@ class QueryDslGenerator(
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
 
         return FunSpec.builder("loadAll")
+            .addModifiers(KModifier.INLINE)
             .receiver(graphObjectManagerClass)
-            .addParameter("type", Class::class.asClassName().parameterizedBy(graphViewClassName))
+            .addTypeVariable(
+                TypeVariableName("T", graphViewClassName).copy(reified = true)
+            )
             .addParameter(
                 ParameterSpec.builder(
                     "spec",
@@ -466,10 +469,11 @@ class QueryDslGenerator(
                         receiver = graphQuerySpecClass.parameterizedBy(dslClass),
                         returnType = Unit::class.asClassName()
                     )
-                ).build()
+                ).addModifiers(KModifier.NOINLINE)
+                .build()
             )
-            .returns(List::class.asClassName().parameterizedBy(graphViewClassName))
-            .addStatement("return loadAll(type, $dslClassName.INSTANCE, spec)")
+            .returns(List::class.asClassName().parameterizedBy(TypeVariableName("T")))
+            .addStatement("return loadAll(T::class.java, $dslClassName.INSTANCE, spec)")
             .build()
     }
 }

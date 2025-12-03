@@ -89,9 +89,10 @@ object CypherGenerator {
                     grouped.add(condition)
                 }
                 is WhereCondition.OrCondition -> {
-                    // Recursively group conditions within OR
-                    val groupedOr = groupConditionsByAlias(condition.conditions, viewModel)
-                    grouped.add(WhereCondition.OrCondition(groupedOr))
+                    // DON'T group conditions within OR - they need to stay separate
+                    // so buildOrCondition can generate separate EXISTS clauses
+                    // Each condition will be processed independently by buildOrCondition
+                    grouped.add(condition)
                 }
             }
         }
@@ -371,19 +372,41 @@ object CypherGenerator {
     /**
      * Builds an OR condition by recursively generating sub-conditions.
      * Example: (issue.state = $param OR issue.state = $param2)
+     *
+     * For relationship properties in OR, each becomes a separate EXISTS clause.
      */
     private fun buildOrCondition(
         condition: WhereCondition.OrCondition,
         viewModel: GraphViewModel?,
         startIndex: Int
     ): String {
+        // First, group PropertyConditions that refer to relationships
+        // But keep them separate - each OR branch gets its own EXISTS
+        val relationshipNames = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
+
         var paramIndex = startIndex
         val orClauses = condition.conditions.joinToString(" OR ") { subCondition ->
             when (subCondition) {
                 is WhereCondition.PropertyCondition -> {
-                    val result = buildPropertyCondition(subCondition, paramIndex)
-                    paramIndex++
-                    result
+                    // Check if this is a relationship property
+                    val alias = subCondition.propertyPath.substringBefore(".")
+                    val baseAlias = if (alias.contains("_")) alias.substringBefore("_") else alias
+
+                    if (baseAlias in relationshipNames) {
+                        // Convert to RelationshipCondition on the fly
+                        val relCondition = WhereCondition.RelationshipCondition(
+                            relationshipName = baseAlias,
+                            targetConditions = listOf(subCondition)
+                        )
+                        val result = buildRelationshipCondition(relCondition, viewModel, paramIndex)
+                        paramIndex++
+                        result
+                    } else {
+                        // Root property
+                        val result = buildPropertyCondition(subCondition, paramIndex)
+                        paramIndex++
+                        result
+                    }
                 }
                 is WhereCondition.RelationshipCondition -> {
                     val result = buildRelationshipCondition(subCondition, viewModel, paramIndex)

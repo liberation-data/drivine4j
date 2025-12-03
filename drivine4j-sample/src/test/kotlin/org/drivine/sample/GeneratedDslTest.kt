@@ -72,7 +72,8 @@ class GeneratedDslTest @Autowired constructor(
     @Test
     fun `load all issues with extension function - no filter`() {
         // Extension function works automatically! Just import the view package
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) { }
+        // Clean reified syntax: loadAll<Type> instead of loadAll(Type::class.java)
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> { }
 
         assertEquals(1, results.size)
         val issue = results[0]
@@ -83,8 +84,8 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `filter by issue state using type-safe DSL`() {
-        // The extension function provides type-safe query access
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+        // The extension function provides type-safe query access with reified types
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.issue.state eq "open")
             }
@@ -96,7 +97,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `filter by issue id`() {
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.issue.id eq 123)
             }
@@ -108,7 +109,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `filter by person name in nested view`() {
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.raisedBy.person.name eq "Alice Developer")
             }
@@ -121,7 +122,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `filter by organization name in deeply nested view`() {
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.raisedBy.worksFor.name eq "Acme Corp")
             }
@@ -136,7 +137,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `combine multiple filters with AND`() {
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.issue.state eq "open")
                 this(query.issue.locked eq false)
@@ -151,7 +152,7 @@ class GeneratedDslTest @Autowired constructor(
     @Test
     fun `load PersonContext with extension function`() {
         // Extension functions work for all @GraphView types!
-        val results = graphObjectManager.loadAll(PersonContext::class.java) { }
+        val results = graphObjectManager.loadAll<PersonContext> { }
 
         assertEquals(1, results.size)
         assertEquals("Alice Developer", results[0].person.name)
@@ -162,7 +163,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `filter PersonContext by organization`() {
-        val results = graphObjectManager.loadAll(PersonContext::class.java) {
+        val results = graphObjectManager.loadAll<PersonContext> {
             where {
                 this(query.worksFor.name eq "Acme Corp")
             }
@@ -174,7 +175,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `filter returns empty list when no matches`() {
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.issue.state eq "closed")
             }
@@ -185,7 +186,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @Test
     fun `filter by title contains specific text`() {
-        val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 this(query.issue.title eq "Implement feature X")
             }
@@ -193,5 +194,106 @@ class GeneratedDslTest @Autowired constructor(
 
         assertEquals(1, results.size)
         assertEquals("Implement feature X", results[0].issue.title)
+    }
+
+    // ===== anyOf (OR) Tests =====
+
+    @Test
+    fun `filter by anyOf on root fragment properties`() {
+        // Test OR conditions on the root fragment
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.issue.state eq "closed")
+                    this(query.issue.locked eq true)
+                }
+            }
+        }
+
+        // Should return empty since our test data has state="open" and locked=false
+        assertTrue(results.isEmpty())
+    }
+
+    @Test
+    fun `filter by anyOf matching one condition on root fragment`() {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.issue.state eq "open")
+                    this(query.issue.state eq "closed")
+                }
+            }
+        }
+
+        // Should return 1 result (state is "open")
+        assertEquals(1, results.size)
+        assertEquals("open", results[0].issue.state)
+    }
+
+    @Test
+    fun `filter by anyOf on relationship properties`() {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.assignedTo.name eq "Alice Developer")
+                    this(query.assignedTo.name eq "Bob Developer")
+                }
+            }
+        }
+
+        // Should return 1 result (Alice Developer exists)
+        assertEquals(1, results.size)
+        assertEquals("Alice Developer", results[0].assignedTo[0].name)
+    }
+
+    @Test
+    fun `filter by anyOf on nested view properties`() {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.raisedBy.person.name eq "Alice Developer")
+                    this(query.raisedBy.person.name eq "Bob Developer")
+                }
+            }
+        }
+
+        // Should return 1 result (Alice Developer raised it)
+        assertEquals(1, results.size)
+        assertEquals("Alice Developer", results[0].raisedBy?.person?.name)
+    }
+
+    @Test
+    fun `filter by anyOf on deeply nested relationships`() {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                anyOf {
+                    this(query.raisedBy.worksFor.name eq "Acme Corp")
+                    this(query.raisedBy.worksFor.name eq "Initech")
+                }
+            }
+        }
+
+        // Should return 1 result (Acme Corp exists)
+        assertEquals(1, results.size)
+        assertEquals("Acme Corp", results[0].raisedBy?.worksFor?.get(0)?.name)
+    }
+
+    @Test
+    fun `combine AND and OR conditions with nested relationships`() {
+        val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+            where {
+                this(query.issue.locked eq false)  // AND
+                anyOf {  // OR
+                    this(query.raisedBy.person.name eq "Alice Developer")
+                    this(query.raisedBy.worksFor.name eq "Initech")
+                }
+            }
+        }
+
+        // Should return 1 result (locked=false AND (Alice OR Initech))
+        // Alice exists, so this matches
+        assertEquals(1, results.size)
+        assertEquals(false, results[0].issue.locked)
+        assertEquals("Alice Developer", results[0].raisedBy?.person?.name)
     }
 }
