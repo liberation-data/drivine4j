@@ -92,6 +92,41 @@ open class WhereBuilder<T : Any>(
     operator fun invoke(chain: PropertyConditionChain) {
         conditions.addAll(chain.conditions)
     }
+
+    /**
+     * Creates an OR condition - at least one of the nested conditions must be true.
+     *
+     * Usage:
+     * ```kotlin
+     * where {
+     *     anyOf {
+     *         this(query.issue.state eq "open")
+     *         this(query.issue.state eq "reopened")
+     *     }
+     * }
+     * ```
+     *
+     * Generates: (issue.state = 'open' OR issue.state = 'reopened')
+     *
+     * Can be combined with AND conditions:
+     * ```kotlin
+     * where {
+     *     this(query.issue.locked eq false)  // AND
+     *     anyOf {
+     *         this(query.issue.state eq "open")
+     *         this(query.issue.state eq "reopened")
+     *     }
+     * }
+     * ```
+     * Generates: issue.locked = false AND (issue.state = 'open' OR issue.state = 'reopened')
+     */
+    fun anyOf(block: WhereBuilder<T>.() -> Unit) {
+        val orBuilder = WhereBuilder(query)
+        orBuilder.block()
+        if (orBuilder.conditions.isNotEmpty()) {
+            conditions.add(WhereCondition.OrCondition(orBuilder.conditions))
+        }
+    }
 }
 
 /**
@@ -126,7 +161,7 @@ class OrderBuilder<T : Any>(
 
 /**
  * Represents a WHERE condition in the query.
- * Can be a simple property condition or a relationship filter.
+ * Can be a simple property condition, a relationship filter, or an OR condition.
  */
 sealed class WhereCondition {
     /**
@@ -146,6 +181,15 @@ sealed class WhereCondition {
     data class RelationshipCondition(
         val relationshipName: String,  // e.g., "assignedTo"
         val targetConditions: List<WhereCondition>
+    ) : WhereCondition()
+
+    /**
+     * OR condition - at least one of the nested conditions must be true.
+     * Example: anyOf { this(query.state eq "open"); this(query.state eq "reopened") }
+     * Generates: (issue.state = 'open' OR issue.state = 'reopened')
+     */
+    data class OrCondition(
+        val conditions: List<WhereCondition>
     ) : WhereCondition()
 }
 

@@ -34,6 +34,11 @@ object CypherGenerator {
                     paramIndex += condition.targetConditions.size
                     result
                 }
+                is WhereCondition.OrCondition -> {
+                    val result = buildOrCondition(condition, viewModel, paramIndex)
+                    paramIndex += countParameters(condition.conditions)
+                    result
+                }
             }
         }
     }
@@ -71,6 +76,11 @@ object CypherGenerator {
                 }
                 is WhereCondition.RelationshipCondition -> {
                     grouped.add(condition)
+                }
+                is WhereCondition.OrCondition -> {
+                    // Recursively group conditions within OR
+                    val groupedOr = groupConditionsByAlias(condition.conditions, viewModel)
+                    grouped.add(WhereCondition.OrCondition(groupedOr))
                 }
             }
         }
@@ -122,6 +132,10 @@ object CypherGenerator {
                     is WhereCondition.RelationshipCondition -> {
                         // Recursively extract bindings from nested conditions
                         extractRecursive(condition.targetConditions)
+                    }
+                    is WhereCondition.OrCondition -> {
+                        // Recursively extract bindings from OR conditions
+                        extractRecursive(condition.conditions)
                     }
                 }
             }
@@ -205,6 +219,11 @@ object CypherGenerator {
                     is WhereCondition.RelationshipCondition -> {
                         throw UnsupportedOperationException("Nested relationship conditions not yet supported")
                     }
+                    is WhereCondition.OrCondition -> {
+                        val result = buildOrCondition(targetCondition, viewModel, paramIndex)
+                        paramIndex += countParameters(targetCondition.conditions)
+                        result
+                    }
                 }
             }
             " WHERE $whereClauses"
@@ -214,6 +233,53 @@ object CypherGenerator {
 
         // Neo4j 5+ uses EXISTS { pattern WHERE conditions }
         return "EXISTS { $relationshipPattern$targetWhere }"
+    }
+
+    /**
+     * Builds an OR condition by recursively generating sub-conditions.
+     * Example: (issue.state = $param OR issue.state = $param2)
+     */
+    private fun buildOrCondition(
+        condition: WhereCondition.OrCondition,
+        viewModel: GraphViewModel?,
+        startIndex: Int
+    ): String {
+        var paramIndex = startIndex
+        val orClauses = condition.conditions.joinToString(" OR ") { subCondition ->
+            when (subCondition) {
+                is WhereCondition.PropertyCondition -> {
+                    val result = buildPropertyCondition(subCondition, paramIndex)
+                    paramIndex++
+                    result
+                }
+                is WhereCondition.RelationshipCondition -> {
+                    val result = buildRelationshipCondition(subCondition, viewModel, paramIndex)
+                    paramIndex += subCondition.targetConditions.size
+                    result
+                }
+                is WhereCondition.OrCondition -> {
+                    // Nested OR: recursively build it
+                    val result = buildOrCondition(subCondition, viewModel, paramIndex)
+                    paramIndex += countParameters(subCondition.conditions)
+                    result
+                }
+            }
+        }
+        return "($orClauses)"
+    }
+
+    /**
+     * Counts the total number of parameters needed for a list of conditions.
+     * Used to properly index parameters in nested OR conditions.
+     */
+    private fun countParameters(conditions: List<WhereCondition>): Int {
+        return conditions.sumOf { condition ->
+            when (condition) {
+                is WhereCondition.PropertyCondition -> 1
+                is WhereCondition.RelationshipCondition -> condition.targetConditions.size
+                is WhereCondition.OrCondition -> countParameters(condition.conditions)
+            }
+        }
     }
 
     /**
