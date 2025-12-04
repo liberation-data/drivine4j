@@ -73,11 +73,15 @@ class QueryDslGenerator(
         // Also generate Properties classes for nested @GraphView types
         val nestedViewProperties = generateNestedViewPropertiesClasses()
 
+        // Also generate Properties classes for RelationshipFragments
+        val relationshipFragmentProperties = generateRelationshipFragmentPropertiesClasses()
+
         val fileSpec = FileSpec.builder(firstViewPackage, "GeneratedProperties")
             .addFileComment("Generated code - do not modify")
             .apply {
                 propertiesClasses.forEach { addType(it) }
                 nestedViewProperties.forEach { addType(it) }
+                relationshipFragmentProperties.forEach { addType(it) }
             }
             .build()
 
@@ -111,6 +115,83 @@ class QueryDslGenerator(
         }
 
         return result
+    }
+
+    private fun generateRelationshipFragmentPropertiesClasses(): List<TypeSpec> {
+        val result = mutableListOf<TypeSpec>()
+        val processed = mutableSetOf<String>()
+
+        // Find all RelationshipFragments across all graph views
+        graphViewClasses.forEach { graphViewClass ->
+            val viewStructure = analyzeGraphViewStructure(graphViewClass)
+            viewStructure.forEach { viewProp ->
+                val propType = viewProp.type
+                if (isRelationshipFragment(propType)) {
+                    val relFragmentClass = propType.declaration as? KSClassDeclaration ?: return@forEach
+                    val key = relFragmentClass.qualifiedName?.asString() ?: return@forEach
+                    if (!processed.contains(key)) {
+                        processed.add(key)
+                        result.add(generateRelationshipFragmentPropertiesClass(relFragmentClass))
+                    }
+                }
+            }
+        }
+
+        return result
+    }
+
+    private fun generateRelationshipFragmentPropertiesClass(relFragmentClass: KSClassDeclaration): TypeSpec {
+        val relFragmentName = relFragmentClass.simpleName.asString()
+        val propertiesClassName = "${relFragmentName}Properties"
+
+        val classBuilder = TypeSpec.classBuilder(propertiesClassName)
+
+        // Add constructor with alias parameter
+        classBuilder.primaryConstructor(
+            FunSpec.constructorBuilder()
+                .addParameter("alias", String::class)
+                .build()
+        )
+        classBuilder.addProperty(
+            PropertySpec.builder("alias", String::class)
+                .initializer("alias")
+                .addModifiers(KModifier.PRIVATE)
+                .build()
+        )
+
+        // Generate property references for each property in the RelationshipFragment
+        // Skip the 'target' property since that's handled separately as a relationship
+        relFragmentClass.getAllProperties().forEach { prop ->
+            val propName = prop.simpleName.asString()
+            if (propName == "target") {
+                // Skip - target is the node, we expose it separately
+                return@forEach
+            }
+
+            val propType = prop.type.resolve()
+
+            val propertyRefType = when {
+                propType.declaration.qualifiedName?.asString() == "kotlin.String" ->
+                    ClassName("org.drivine.query.dsl", "StringPropertyReference")
+                else ->
+                    ClassName("org.drivine.query.dsl", "PropertyReference")
+                        .parameterizedBy(propType.toClassName())
+            }
+
+            classBuilder.addProperty(
+                PropertySpec.builder(propName, propertyRefType)
+                    .initializer(
+                        if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
+                            "$propertyRefType(alias, \"$propName\")"
+                        } else {
+                            "$propertyRefType(alias, \"$propName\")"
+                        }
+                    )
+                    .build()
+            )
+        }
+
+        return classBuilder.build()
     }
 
     private fun generateViewPropertiesClass(viewClass: KSClassDeclaration): TypeSpec {
@@ -272,6 +353,11 @@ class QueryDslGenerator(
         return decl.annotations.any { it.shortName.asString() == "NodeFragment" }
     }
 
+    private fun isRelationshipFragment(type: KSType): Boolean {
+        val decl = type.declaration
+        return decl.annotations.any { it.shortName.asString() == "RelationshipFragment" }
+    }
+
     private fun collectFragmentTypes(viewStructure: List<ViewProperty>): List<FragmentType> {
         val fragmentTypes = mutableMapOf<String, FragmentType>()
 
@@ -292,7 +378,7 @@ class QueryDslGenerator(
                     }
                 }
             } else if (isGraphFragment(viewProp.type)) {
-                // Regular fragment
+                // Regular NodeFragment
                 val fragmentClass = viewProp.type.declaration as? KSClassDeclaration
                 if (fragmentClass != null) {
                     val fragmentName = fragmentClass.simpleName.asString()
@@ -302,6 +388,30 @@ class QueryDslGenerator(
                             needsAliasConstructor = !viewProp.isRootFragment,
                             rootFieldName = if (viewProp.isRootFragment) viewProp.name else null
                         )
+                    }
+                }
+            } else if (isRelationshipFragment(viewProp.type)) {
+                // RelationshipFragment - need to extract its 'target' property's NodeFragment
+                val relFragmentClass = viewProp.type.declaration as? KSClassDeclaration
+                if (relFragmentClass != null) {
+                    // Find the 'target' property in the RelationshipFragment
+                    relFragmentClass.getAllProperties().forEach { prop ->
+                        val propName = prop.simpleName.asString()
+                        if (propName == "target") {
+                            val targetType = prop.type.resolve()
+                            if (isGraphFragment(targetType)) {
+                                val targetFragmentClass = targetType.declaration as? KSClassDeclaration
+                                if (targetFragmentClass != null) {
+                                    val fragmentName = targetFragmentClass.simpleName.asString()
+                                    if (!fragmentTypes.containsKey(fragmentName)) {
+                                        fragmentTypes[fragmentName] = FragmentType(
+                                            targetFragmentClass,
+                                            needsAliasConstructor = true
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

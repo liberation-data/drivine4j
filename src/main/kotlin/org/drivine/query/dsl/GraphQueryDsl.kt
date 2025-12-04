@@ -246,7 +246,9 @@ enum class ComparisonOperator(val cypherOperator: String) {
     IN("IN"),
     CONTAINS("CONTAINS"),
     STARTS_WITH("STARTS WITH"),
-    ENDS_WITH("ENDS WITH")
+    ENDS_WITH("ENDS WITH"),
+    IS_NULL("IS NULL"),
+    IS_NOT_NULL("IS NOT NULL")
 }
 
 /**

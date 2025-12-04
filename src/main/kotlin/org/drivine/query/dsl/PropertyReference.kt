@@ -113,6 +113,36 @@ open class PropertyReference<T>(
     }
 
     /**
+     * IS NULL condition: property IS NULL
+     * Checks if the property is null or absent in the graph.
+     */
+    context(builder: WhereBuilder<*>)
+    fun isNull() {
+        builder.conditions.add(
+            WhereCondition.PropertyCondition(
+                propertyPath = "$alias.$propertyName",
+                operator = ComparisonOperator.IS_NULL,
+                value = null
+            )
+        )
+    }
+
+    /**
+     * IS NOT NULL condition: property IS NOT NULL
+     * Checks if the property exists and has a non-null value.
+     */
+    context(builder: WhereBuilder<*>)
+    fun isNotNull() {
+        builder.conditions.add(
+            WhereCondition.PropertyCondition(
+                propertyPath = "$alias.$propertyName",
+                operator = ComparisonOperator.IS_NOT_NULL,
+                value = null
+            )
+        )
+    }
+
+    /**
      * Ascending order specification.
      * When used in an orderBy block with context parameters, automatically registers itself.
      */

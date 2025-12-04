@@ -26,7 +26,11 @@ object CypherGenerator {
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
                     val result = buildPropertyCondition(condition, paramIndex)
-                    paramIndex++
+                    // Only increment if this operator uses a parameter
+                    if (condition.operator != ComparisonOperator.IS_NULL &&
+                        condition.operator != ComparisonOperator.IS_NOT_NULL) {
+                        paramIndex++
+                    }
                     result
                 }
                 is WhereCondition.RelationshipCondition -> {
@@ -141,9 +145,16 @@ object CypherGenerator {
             conds.forEach { condition ->
                 when (condition) {
                     is WhereCondition.PropertyCondition -> {
-                        val paramName = generateParamName(condition.propertyPath, paramIndex)
-                        bindings[paramName] = condition.value
-                        paramIndex++
+                        // Skip IS NULL and IS NOT NULL operators as they don't have parameters
+                        if (condition.operator != ComparisonOperator.IS_NULL &&
+                            condition.operator != ComparisonOperator.IS_NOT_NULL) {
+                            val paramName = generateParamName(condition.propertyPath, paramIndex)
+                            bindings[paramName] = condition.value
+                            paramIndex++
+                        } else {
+                            // Still increment index to keep ordering consistent with buildWhereClause
+                            // Actually no - these don't have parameters, so don't increment
+                        }
                     }
                     is WhereCondition.RelationshipCondition -> {
                         // Recursively extract bindings from nested conditions
@@ -166,21 +177,27 @@ object CypherGenerator {
      * Example: "issue.state = $param_issue_state_0"
      */
     private fun buildPropertyCondition(condition: WhereCondition.PropertyCondition, index: Int): String {
-        val paramName = generateParamName(condition.propertyPath, index)
-
         return when (condition.operator) {
+            ComparisonOperator.IS_NULL,
+            ComparisonOperator.IS_NOT_NULL -> {
+                // Null checks don't need parameters
+                "${condition.propertyPath} ${condition.operator.cypherOperator}"
+            }
             ComparisonOperator.IN -> {
                 // IN operator requires list syntax
+                val paramName = generateParamName(condition.propertyPath, index)
                 "${condition.propertyPath} ${condition.operator.cypherOperator} \$$paramName"
             }
             ComparisonOperator.CONTAINS,
             ComparisonOperator.STARTS_WITH,
             ComparisonOperator.ENDS_WITH -> {
                 // String operations
+                val paramName = generateParamName(condition.propertyPath, index)
                 "${condition.propertyPath} ${condition.operator.cypherOperator} \$$paramName"
             }
             else -> {
                 // Standard comparison operators
+                val paramName = generateParamName(condition.propertyPath, index)
                 "${condition.propertyPath} ${condition.operator.cypherOperator} \$$paramName"
             }
         }
