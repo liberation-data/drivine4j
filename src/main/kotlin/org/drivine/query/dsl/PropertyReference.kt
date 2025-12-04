@@ -5,6 +5,9 @@ package org.drivine.query.dsl
  * Enables type-safe property access in the query DSL.
  *
  * Example: issue.state where "issue" is the alias and "state" is the property name.
+ *
+ * With context parameters (Kotlin 2.2+), conditions are automatically registered
+ * when used within a where block, eliminating the need for this() or other wrappers.
  */
 open class PropertyReference<T>(
     internal val alias: String,
@@ -12,9 +15,11 @@ open class PropertyReference<T>(
 ) {
     /**
      * Equality condition: property = value
+     * Automatically registers itself when used in a where block (via context parameters).
      */
-    infix fun eq(value: T?): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun eq(value: T?) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.EQUALS,
@@ -26,8 +31,9 @@ open class PropertyReference<T>(
     /**
      * Not equals condition: property <> value
      */
-    infix fun neq(value: T?): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun neq(value: T?) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.NOT_EQUALS,
@@ -39,8 +45,9 @@ open class PropertyReference<T>(
     /**
      * Greater than condition: property > value
      */
-    infix fun gt(value: T): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun gt(value: T) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.GREATER_THAN,
@@ -52,8 +59,9 @@ open class PropertyReference<T>(
     /**
      * Greater than or equal condition: property >= value
      */
-    infix fun gte(value: T): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun gte(value: T) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.GREATER_THAN_OR_EQUAL,
@@ -65,8 +73,9 @@ open class PropertyReference<T>(
     /**
      * Less than condition: property < value
      */
-    infix fun lt(value: T): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun lt(value: T) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.LESS_THAN,
@@ -78,8 +87,9 @@ open class PropertyReference<T>(
     /**
      * Less than or equal condition: property <= value
      */
-    infix fun lte(value: T): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun lte(value: T) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.LESS_THAN_OR_EQUAL,
@@ -91,8 +101,9 @@ open class PropertyReference<T>(
     /**
      * IN condition: property IN [values]
      */
-    infix fun `in`(values: Collection<T>): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun `in`(values: Collection<T>) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.IN,
@@ -103,21 +114,29 @@ open class PropertyReference<T>(
 
     /**
      * Ascending order specification.
+     * When used in an orderBy block with context parameters, automatically registers itself.
      */
-    fun asc(): OrderSpec {
-        return OrderSpec(
-            propertyPath = "$alias.$propertyName",
-            direction = OrderDirection.ASC
+    context(builder: OrderBuilder<*>)
+    fun asc() {
+        builder.orders.add(
+            OrderSpec(
+                propertyPath = "$alias.$propertyName",
+                direction = OrderDirection.ASC
+            )
         )
     }
 
     /**
      * Descending order specification.
+     * When used in an orderBy block with context parameters, automatically registers itself.
      */
-    fun desc(): OrderSpec {
-        return OrderSpec(
-            propertyPath = "$alias.$propertyName",
-            direction = OrderDirection.DESC
+    context(builder: OrderBuilder<*>)
+    fun desc() {
+        builder.orders.add(
+            OrderSpec(
+                propertyPath = "$alias.$propertyName",
+                direction = OrderDirection.DESC
+            )
         )
     }
 }
@@ -133,8 +152,9 @@ class StringPropertyReference(
     /**
      * CONTAINS condition: property CONTAINS value
      */
-    infix fun contains(value: String): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun contains(value: String) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
                 operator = ComparisonOperator.CONTAINS,
@@ -146,8 +166,9 @@ class StringPropertyReference(
     /**
      * STARTS WITH condition: property STARTS WITH value
      */
-    infix fun startsWith(value: String): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun startsWith(value: String) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
                 operator = ComparisonOperator.STARTS_WITH,
@@ -159,8 +180,9 @@ class StringPropertyReference(
     /**
      * ENDS WITH condition: property ENDS WITH value
      */
-    infix fun endsWith(value: String): PropertyConditionBuilder {
-        return PropertyConditionBuilder(
+    context(builder: WhereBuilder<*>)
+    infix fun endsWith(value: String) {
+        builder.conditions.add(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
                 operator = ComparisonOperator.ENDS_WITH,

@@ -130,7 +130,7 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.state eq "open")
+                query.issue.state eq "open"
             }
         }
 
@@ -146,8 +146,8 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.state eq "open")
-                this(query.issue.locked eq false)
+                query.issue.state eq "open"
+                query.issue.locked eq false
             }
         }
 
@@ -164,7 +164,7 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.id gt 1001)
+                query.issue.id gt 1001
             }
         }
 
@@ -180,7 +180,7 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.title.startsWith("Add"))
+                query.issue.title.startsWith("Add")
             }
         }
 
@@ -196,10 +196,10 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.state eq "open")
+                query.issue.state eq "open"
             }
             orderBy {
-                this(query.issue.id.asc())
+                query.issue.id.asc()
             }
         }
 
@@ -216,7 +216,7 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             orderBy {
-                this(query.issue.id.desc())
+                query.issue.id.desc()
             }
         }
 
@@ -234,11 +234,11 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.id gte 1001)
+                query.issue.id gte 1001
             }
             orderBy {
-                this(query.issue.state.desc())
-                this(query.issue.id.asc())
+                query.issue.state.desc()
+                query.issue.id.asc()
             }
         }
 
@@ -259,11 +259,11 @@ class QueryDslEndToEndTests @Autowired constructor(
         // The extension function (defined at bottom of file) automatically provides the query DSL
         val results = graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
             where {
-                this(query.issue.state eq "open")
-                this(query.issue.locked eq false)
+                query.issue.state eq "open"
+                query.issue.locked eq false
             }
             orderBy {
-                this(query.issue.id.asc())
+                query.issue.id.asc()
             }
         }
 
@@ -281,7 +281,7 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.assignedTo.name eq "Charlie")
+                query.assignedTo.name eq "Charlie"
             }
         }
 
@@ -299,8 +299,8 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.assignedTo.name eq "Charlie")
-                this(query.assignedTo.bio.contains("Backend"))
+                query.assignedTo.name eq "Charlie"
+                query.assignedTo.bio.contains("Backend")
             }
         }
 
@@ -318,8 +318,8 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.state eq "open")
-                this(query.raisedBy.name eq "Alice")
+                query.issue.state eq "open"
+                query.raisedBy.name eq "Alice"
             }
         }
 
@@ -336,8 +336,8 @@ class QueryDslEndToEndTests @Autowired constructor(
         ) {
             where {
                 anyOf {
-                    this(query.issue.state eq "open")
-                    this(query.issue.state eq "closed")
+                    query.issue.state eq "open"
+                    query.issue.state eq "closed"
                 }
             }
         }
@@ -353,10 +353,10 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.locked eq false)  // AND
+                query.issue.locked eq false  // AND
                 anyOf {  // OR
-                    this(query.issue.id eq 1001)
-                    this(query.issue.id eq 1002)
+                    query.issue.id eq 1001
+                    query.issue.id eq 1002
                 }
             }
         }
@@ -375,8 +375,8 @@ class QueryDslEndToEndTests @Autowired constructor(
         ) {
             where {
                 anyOf {
-                    this(query.issue.locked eq true)
-                    this(query.issue.state eq "closed")
+                    query.issue.locked eq true
+                    query.issue.state eq "closed"
                 }
             }
         }
@@ -397,11 +397,11 @@ class QueryDslEndToEndTests @Autowired constructor(
             RaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
-                this(query.issue.state eq "open")  // Add a root condition
+                query.issue.state eq "open"  // Add a root condition
                 // TODO: OR on same relationship currently doesn't work as expected
                 // anyOf {
-                //     this(query.raisedBy.name eq "Alice")
-                //     this(query.raisedBy.name eq "Bob")
+                //     query.raisedBy.name eq "Alice"
+                //     query.raisedBy.name eq "Bob"
                 // }
             }
         }
@@ -479,7 +479,7 @@ class RaisedIssueProperties {
  * With this extension function, users can write:
  * ```kotlin
  * graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
- *     where { this(query.issue.state eq "open") }
+ *     where { query.issue.state eq "open") }
  * }
  * ```
  *
@@ -489,7 +489,7 @@ class RaisedIssueProperties {
  *     RaisedAndAssignedIssue::class.java,
  *     RaisedAndAssignedIssueQueryDsl.INSTANCE
  * ) {
- *     where { this(query.issue.state eq "open") }
+ *     where { query.issue.state eq "open") }
  * }
  * ```
  *

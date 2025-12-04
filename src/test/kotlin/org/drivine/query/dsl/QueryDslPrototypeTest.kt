@@ -55,11 +55,11 @@ class QueryDslPrototypeTest {
         val queryObject = ManualRaisedAndAssignedIssueQuery.INSTANCE
         val spec = GraphQuerySpec(queryObject)
         spec.where {
-            this(query.issue.state eq "open")
-            this(query.issue.id gt 1000)
+            query.issue.state eq "open"
+            query.issue.id gt 1000
         }
         spec.orderBy {
-            this(query.issue.id.asc())
+            query.issue.id.asc()
         }
 
         // Eventually: graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java, queryObject) { ... }

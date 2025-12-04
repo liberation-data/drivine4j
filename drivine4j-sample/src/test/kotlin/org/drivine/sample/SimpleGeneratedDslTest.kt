@@ -3,6 +3,7 @@ package org.drivine.sample
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.query
 import org.drivine.sample.view.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -74,7 +75,7 @@ class SimpleGeneratedDslTest @Autowired constructor(
     fun `filter using manual DSL syntax`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.state eq "open")
+                 query.issue.state eq "open"
             }
         }
         assertEquals(1, results.size)

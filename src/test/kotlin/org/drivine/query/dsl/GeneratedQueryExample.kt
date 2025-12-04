@@ -105,18 +105,18 @@ fun usageExample() {
     val spec = GraphQuerySpec(queryObject)
 
     spec.where {
-        // Root fragment properties
-        this(query.issue.state eq "open")
-        this(query.issue.id gt 1000)
-        this(query.issue.title.startsWith("Implement"))
+        // Root fragment properties - now using context parameters!
+        query.issue.state eq "open"
+        query.issue.id gt 1000
+        query.issue.title.startsWith("Implement")
 
         // Relationship target properties
-        this(query.assignedTo.name eq "Kent Beck")
-        this(query.raisedBy.person.bio.contains("Spring"))
+        query.assignedTo.name eq "Kent Beck"
+        query.raisedBy.person.bio.contains("Spring")
     }
 
     spec.orderBy {
-        this(query.issue.id.desc())
+        query.issue.id.desc()
     }
 }
 

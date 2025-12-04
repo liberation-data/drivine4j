@@ -7,16 +7,17 @@ package org.drivine.query.dsl
  * ```kotlin
  * graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
  *     where {
- *         this(issue.state eq "open")
- *         this(issue.id gt 1000)
- *         // TODO: Relationship filtering
- *         // assignedTo { this(it.name eq "Kent Beck") }
+ *         query.issue.state eq "open"
+ *         query.issue.id gt 1000
  *     }
  *     orderBy {
- *         this(issue.id.asc())
+ *         this(query.issue.id.asc())
  *     }
  * }
  * ```
+ *
+ * With context parameters (Kotlin 2.2+), conditions are automatically registered,
+ * eliminating the need for this() or other wrapper syntax.
  */
 
 /**
@@ -31,22 +32,37 @@ class GraphQuerySpec<T : Any>(private val queryObject: T) {
 
     /**
      * Adds filter conditions using the DSL.
-     * The query object is provided as the receiver, enabling syntax like:
-     * where { query -> this(query.issue.state eq "open") }
-     * or with receiver: where { this(issue.state eq "open") }
+     * With context parameters (Kotlin 2.2+), conditions automatically register themselves.
+     *
+     * Example:
+     * ```kotlin
+     * where {
+     *     query.issue.state eq "open"  // Automatically registered!
+     *     query.issue.id gt 1000
+     * }
+     * ```
      */
-    fun where(block: WhereBuilder<T>.() -> Unit) {
+    fun where(block: context(WhereBuilder<T>) () -> Unit) {
         val builder = WhereBuilder(queryObject)
-        builder.block()
+        block(builder)
         conditions.addAll(builder.conditions)
     }
 
     /**
      * Adds ordering specifications using the DSL.
+     * With context parameters (Kotlin 2.2+), order specifications can be added naturally.
+     *
+     * Example:
+     * ```kotlin
+     * orderBy {
+     *     query.issue.id.asc()      // Automatically registered!
+     *     query.issue.state.desc()
+     * }
+     * ```
      */
-    fun orderBy(block: OrderBuilder<T>.() -> Unit) {
+    fun orderBy(block: context(OrderBuilder<T>) () -> Unit) {
         val builder = OrderBuilder(queryObject)
-        builder.block()
+        block(builder)
         orders.addAll(builder.orders)
     }
 }
@@ -73,7 +89,7 @@ open class WhereBuilder<T : Any>(
      * The query object providing property references.
      * Can be accessed as `query.issue.state` etc.
      */
-    val query: T
+    internal val queryObject: T
 ) {
     internal val conditions = mutableListOf<WhereCondition>()
 
@@ -100,8 +116,8 @@ open class WhereBuilder<T : Any>(
      * ```kotlin
      * where {
      *     anyOf {
-     *         this(query.issue.state eq "open")
-     *         this(query.issue.state eq "reopened")
+     *         query.issue.state eq "open"
+     *         query.issue.state eq "reopened"
      *     }
      * }
      * ```
@@ -111,18 +127,18 @@ open class WhereBuilder<T : Any>(
      * Can be combined with AND conditions:
      * ```kotlin
      * where {
-     *     this(query.issue.locked eq false)  // AND
+     *     query.issue.locked eq false  // AND
      *     anyOf {
-     *         this(query.issue.state eq "open")
-     *         this(query.issue.state eq "reopened")
+     *         query.issue.state eq "open"
+     *         query.issue.state eq "reopened"
      *     }
      * }
      * ```
      * Generates: issue.locked = false AND (issue.state = 'open' OR issue.state = 'reopened')
      */
-    fun anyOf(block: WhereBuilder<T>.() -> Unit) {
-        val orBuilder = WhereBuilder(query)
-        orBuilder.block()
+    fun anyOf(block: context(WhereBuilder<T>) () -> Unit) {
+        val orBuilder = WhereBuilder(queryObject)
+        block(orBuilder)
         if (orBuilder.conditions.isNotEmpty()) {
             conditions.add(WhereCondition.OrCondition(orBuilder.conditions))
         }
@@ -130,13 +146,29 @@ open class WhereBuilder<T : Any>(
 }
 
 /**
+ * Context-aware property to access the query object within a where block.
+ * This is the key to the context parameters DSL - `query` becomes magically available!
+ */
+context(builder: WhereBuilder<T>)
+val <T : Any> query: T
+    get() = builder.queryObject
+
+/**
+ * Context-aware function to create OR conditions within a where block.
+ */
+context(builder: WhereBuilder<T>)
+fun <T : Any> anyOf(block: context(WhereBuilder<T>) () -> Unit) {
+    builder.anyOf(block)
+}
+
+/**
  * Builder for ORDER BY specifications.
  *
- * The query object is available as a property:
+ * With context parameters, the query object is available and order specs auto-register:
  * ```kotlin
  * orderBy {
- *     this(query.issue.id.asc())
- *     this(query.issue.state.desc())
+ *     query.issue.id.asc()       // Automatically registered!
+ *     query.issue.state.desc()
  * }
  * ```
  *
@@ -146,18 +178,26 @@ class OrderBuilder<T : Any>(
     /**
      * The query object providing property references.
      */
-    val query: T
+    internal val queryObject: T
 ) {
     internal val orders = mutableListOf<OrderSpec>()
 
     /**
      * Adds an order specification.
      * Usage: this(query.issue.id.asc())
+     * Note: With context parameters, this is typically not needed as order specs auto-register.
      */
     operator fun invoke(order: OrderSpec) {
         orders.add(order)
     }
 }
+
+/**
+ * Context-aware property to access the query object within an orderBy block.
+ */
+context(builder: OrderBuilder<T>)
+val <T : Any> query: T
+    get() = builder.queryObject
 
 /**
  * Represents a WHERE condition in the query.

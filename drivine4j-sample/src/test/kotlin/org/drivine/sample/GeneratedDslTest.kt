@@ -3,6 +3,8 @@ package org.drivine.sample
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.anyOf
+import org.drivine.query.dsl.query
 import org.drivine.sample.view.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -87,7 +89,7 @@ class GeneratedDslTest @Autowired constructor(
         // The extension function provides type-safe query access with reified types
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.state eq "open")
+                query.issue.state eq "open"
             }
         }
 
@@ -99,7 +101,7 @@ class GeneratedDslTest @Autowired constructor(
     fun `filter by issue id`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.id eq 123)
+                query.issue.id eq 123
             }
         }
 
@@ -111,7 +113,7 @@ class GeneratedDslTest @Autowired constructor(
     fun `filter by person name in nested view`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.raisedBy.person.name eq "Alice Developer")
+                query.raisedBy.person.name eq "Alice Developer"
             }
         }
 
@@ -124,7 +126,7 @@ class GeneratedDslTest @Autowired constructor(
     fun `filter by organization name in deeply nested view`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.raisedBy.worksFor.name eq "Acme Corp")
+                query.raisedBy.worksFor.name eq "Acme Corp"
             }
         }
 
@@ -139,8 +141,8 @@ class GeneratedDslTest @Autowired constructor(
     fun `combine multiple filters with AND`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.state eq "open")
-                this(query.issue.locked eq false)
+                query.issue.state eq "open"
+                query.issue.locked eq false
             }
         }
 
@@ -165,7 +167,7 @@ class GeneratedDslTest @Autowired constructor(
     fun `filter PersonContext by organization`() {
         val results = graphObjectManager.loadAll<PersonContext> {
             where {
-                this(query.worksFor.name eq "Acme Corp")
+                query.worksFor.name eq "Acme Corp"
             }
         }
 
@@ -177,7 +179,7 @@ class GeneratedDslTest @Autowired constructor(
     fun `filter returns empty list when no matches`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.state eq "closed")
+                query.issue.state eq "closed"
             }
         }
 
@@ -188,7 +190,7 @@ class GeneratedDslTest @Autowired constructor(
     fun `filter by title contains specific text`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.title eq "Implement feature X")
+                query.issue.title eq "Implement feature X"
             }
         }
 
@@ -204,8 +206,8 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.issue.state eq "closed")
-                    this(query.issue.locked eq true)
+                    query.issue.state eq "closed"
+                    query.issue.locked eq true
                 }
             }
         }
@@ -219,8 +221,8 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.issue.state eq "open")
-                    this(query.issue.state eq "closed")
+                    query.issue.state eq "open"
+                    query.issue.state eq "closed"
                 }
             }
         }
@@ -235,8 +237,8 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.assignedTo.name eq "Alice Developer")
-                    this(query.assignedTo.name eq "Bob Developer")
+                    query.assignedTo.name eq "Alice Developer"
+                    query.assignedTo.name eq "Bob Developer"
                 }
             }
         }
@@ -251,8 +253,8 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.raisedBy.person.name eq "Alice Developer")
-                    this(query.raisedBy.person.name eq "Bob Developer")
+                    query.raisedBy.person.name eq "Alice Developer"
+                    query.raisedBy.person.name eq "Bob Developer"
                 }
             }
         }
@@ -267,8 +269,8 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.raisedBy.worksFor.name eq "Acme Corp")
-                    this(query.raisedBy.worksFor.name eq "Initech")
+                    query.raisedBy.worksFor.name eq "Acme Corp"
+                    query.raisedBy.worksFor.name eq "Initech"
                 }
             }
         }
@@ -282,10 +284,10 @@ class GeneratedDslTest @Autowired constructor(
     fun `combine AND and OR conditions with nested relationships`() {
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.locked eq false)  // AND
+                query.issue.locked eq false  // AND
                 anyOf {  // OR
-                    this(query.raisedBy.person.name eq "Alice Developer")
-                    this(query.raisedBy.worksFor.name eq "Initech")
+                    query.raisedBy.person.name eq "Alice Developer"
+                    query.raisedBy.worksFor.name eq "Initech"
                 }
             }
         }
@@ -294,7 +296,7 @@ class GeneratedDslTest @Autowired constructor(
         // Alice exists, so this matches
         assertEquals(1, results.size)
         assertEquals(false, results[0].issue.locked)
-        assertEquals("Alice Developer", results[0].raisedBy?.person?.name)
+        assertEquals("Alice Developer", results[0].raisedBy.person.name)
     }
 
     // ===== Creative & Edge Case Tests =====
@@ -304,12 +306,12 @@ class GeneratedDslTest @Autowired constructor(
         // Real-world use case: search for people whose bio contains a keyword
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.raisedBy.person.bio.contains("Engineer"))
+                query.raisedBy.person.bio.contains("Engineer")
             }
         }
 
         assertEquals(1, results.size)
-        assertTrue(results[0].raisedBy?.person?.bio?.contains("Engineer") == true)
+        assertTrue(results[0].raisedBy.person.bio?.contains("Engineer") == true)
     }
 
     @Test
@@ -317,7 +319,7 @@ class GeneratedDslTest @Autowired constructor(
         // Find issues raised by people from orgs starting with "Ac"
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.raisedBy.worksFor.name.startsWith("Ac"))
+                query.raisedBy.worksFor.name.startsWith("Ac")
             }
         }
 
@@ -331,9 +333,9 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.issue.locked eq true)
-                    this(query.raisedBy.person.name eq "Alice Developer")
-                    this(query.raisedBy.worksFor.name eq "Acme Corp")
+                    query.issue.locked eq true
+                    query.raisedBy.person.name eq "Alice Developer"
+                    query.raisedBy.worksFor.name eq "Acme Corp"
                 }
             }
         }
@@ -347,10 +349,10 @@ class GeneratedDslTest @Autowired constructor(
         // Real-world: "Show open issues that are either high priority OR assigned to Alice"
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.state eq "open")  // Must be open
+                query.issue.state eq "open"  // Must be open
                 anyOf {  // AND one of these
-                    this(query.issue.id eq 123)
-                    this(query.assignedTo.name eq "Alice Developer")
+                    query.issue.id eq 123
+                    query.assignedTo.name eq "Alice Developer"
                 }
             }
         }
@@ -364,8 +366,8 @@ class GeneratedDslTest @Autowired constructor(
         // Real-world: Search issues by title keyword + status
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.title.contains("feature"))
-                this(query.issue.state eq "open")
+                query.issue.title.contains("feature")
+                query.issue.state eq "open"
             }
         }
 
@@ -379,9 +381,9 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.raisedBy.worksFor.name eq "Acme Corp")
-                    this(query.raisedBy.worksFor.name eq "Initech")
-                    this(query.raisedBy.worksFor.name eq "Umbrella Corp")
+                    query.raisedBy.worksFor.name eq "Acme Corp"
+                    query.raisedBy.worksFor.name eq "Initech"
+                    query.raisedBy.worksFor.name eq "Umbrella Corp"
                 }
             }
         }
@@ -397,8 +399,8 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.assignedTo.name eq "Alice Developer")
-                    this(query.raisedBy.person.name eq "Alice Developer")
+                    query.assignedTo.name eq "Alice Developer"
+                    query.raisedBy.person.name eq "Alice Developer"
                 }
             }
         }
@@ -413,11 +415,11 @@ class GeneratedDslTest @Autowired constructor(
         // "Show me open, unlocked issues raised by someone at Acme OR assigned to Alice"
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.state eq "open")
-                this(query.issue.locked eq false)
+                query.issue.state eq "open"
+                query.issue.locked eq false
                 anyOf {
-                    this(query.raisedBy.worksFor.name eq "Acme Corp")
-                    this(query.assignedTo.name eq "Alice Developer")
+                    query.raisedBy.worksFor.name eq "Acme Corp"
+                    query.assignedTo.name eq "Alice Developer"
                 }
             }
         }
@@ -432,7 +434,7 @@ class GeneratedDslTest @Autowired constructor(
         // Test string operations on nested views directly
         val results = graphObjectManager.loadAll<PersonContext> {
             where {
-                this(query.person.bio.contains("Senior"))
+                query.person.bio.contains("Senior")
             }
         }
 
@@ -446,9 +448,9 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.issue.title.contains("Implement"))
-                    this(query.issue.body.contains("test"))
-                    this(query.raisedBy.person.bio.contains("Developer"))
+                    query.issue.title.contains("Implement")
+                    query.issue.body.contains("test")
+                    query.raisedBy.person.bio.contains("Developer")
                 }
             }
         }
@@ -463,9 +465,9 @@ class GeneratedDslTest @Autowired constructor(
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
                 anyOf {
-                    this(query.issue.state eq "closed")
-                    this(query.assignedTo.name eq "Nobody")
-                    this(query.raisedBy.worksFor.name eq "NonExistent Corp")
+                    query.issue.state eq "closed"
+                    query.assignedTo.name eq "Nobody"
+                    query.raisedBy.worksFor.name eq "NonExistent Corp"
                 }
             }
         }
@@ -478,11 +480,10 @@ class GeneratedDslTest @Autowired constructor(
         // Edge case: Can we nest OR within OR? (Should work with recursive handling)
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                anyOf {
-                    this(query.issue.state eq "open")
+                anyOf { query.issue.state eq "open"
                     anyOf {
-                        this(query.issue.locked eq true)
-                        this(query.assignedTo.name eq "Alice Developer")
+                        query.issue.locked eq true
+                        query.assignedTo.name eq "Alice Developer"
                     }
                 }
             }
@@ -497,11 +498,11 @@ class GeneratedDslTest @Autowired constructor(
         // Realistic dashboard query: "Show my open issues from my team"
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.issue.state eq "open")
-                this(query.raisedBy.worksFor.name eq "Acme Corp")
+                query.issue.state eq "open"
+                query.raisedBy.worksFor.name eq "Acme Corp"
                 anyOf {
-                    this(query.assignedTo.name eq "Alice Developer")
-                    this(query.issue.title.contains("feature"))
+                    query.assignedTo.name eq "Alice Developer"
+                    query.issue.title.contains("feature")
                 }
             }
         }
@@ -515,8 +516,8 @@ class GeneratedDslTest @Autowired constructor(
         // Edge case: Can we AND multiple conditions on same nested property?
         val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
             where {
-                this(query.raisedBy.person.name eq "Alice Developer")
-                this(query.raisedBy.person.bio.contains("Engineer"))
+                query.raisedBy.person.name eq "Alice Developer"
+                query.raisedBy.person.bio.contains("Engineer")
             }
         }
 

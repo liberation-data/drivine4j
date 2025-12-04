@@ -237,6 +237,7 @@ class QuerySpecification<T> private constructor(
         if (parameters.isEmpty()) {
             sb.append("  parameters: <empty>\n")
         } else {
+            // Old format for readability
             sb.append("  parameters:\n")
             parameters.forEach { (key, value) ->
                 val valueStr = when {
@@ -248,6 +249,38 @@ class QuerySpecification<T> private constructor(
                 }
                 sb.append("    $key = $valueStr\n")
             }
+
+            // New :params format for copy-paste into Neo4j
+            sb.append("  :params ")
+            sb.append("{")
+            sb.append(parameters.entries.joinToString(", ") { (key, value) ->
+                val valueStr = when (value) {
+                    null -> "null"
+                    is String -> "\"${value.replace("\"", "\\\"")}\""
+                    is Number -> value.toString()
+                    is Boolean -> value.toString()
+                    is Collection<*> -> {
+                        "[${value.joinToString(", ") { item ->
+                            when (item) {
+                                is String -> "\"${item.replace("\"", "\\\"")}\""
+                                else -> item.toString()
+                            }
+                        }}]"
+                    }
+                    is Map<*, *> -> {
+                        "{${value.entries.joinToString(", ") { (k, v) ->
+                            val vStr = when (v) {
+                                is String -> "\"${v.replace("\"", "\\\"")}\""
+                                else -> v.toString()
+                            }
+                            "\"$k\": $vStr"
+                        }}}"
+                    }
+                    else -> "\"$value\""
+                }
+                "$key: $valueStr"
+            })
+            sb.append("}\n")
         }
         return sb.toString()
     }
