@@ -42,14 +42,8 @@ dependencies {
 
 // Make generated sources visible to the IDE and compilers
 kotlin {
-    sourceSets {
-        main {
-            kotlin.srcDir("build/generated/ksp/main/kotlin")
-        }
-        test {
-            kotlin.srcDir("build/generated/ksp/main/kotlin")  // Test needs access to main generated code
-        }
-    }
+    // Note: KSP automatically registers generated sources in Gradle 8+
+    // Manual registration is no longer needed and can cause issues in Gradle 9+
     compilerOptions {
         freeCompilerArgs.addAll '-Xcontext-parameters'
     }

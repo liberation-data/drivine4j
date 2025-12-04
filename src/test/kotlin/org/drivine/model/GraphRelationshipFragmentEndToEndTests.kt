@@ -250,7 +250,7 @@ data class TaskAssignment(
 
 @GraphView
 data class TaskWithAssignments(
-    val task: Task,
+    @org.drivine.annotation.Root val task: Task,
     @GraphRelationship(type = "ASSIGNED_TO")
     val assignedTo: List<TaskAssignment>
 )

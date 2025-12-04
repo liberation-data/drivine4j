@@ -206,7 +206,8 @@ class QueryDslGenerator(
     private data class FragmentType(
         val fragmentClass: KSClassDeclaration,
         val needsAliasConstructor: Boolean,
-        val hasDefaultAlias: Boolean = false
+        val hasDefaultAlias: Boolean = false,
+        val rootFieldName: String? = null  // For root fragments, the field name from the GraphView
     )
 
     private fun analyzeGraphViewStructure(graphViewClass: KSClassDeclaration): List<ViewProperty> {
@@ -219,6 +220,11 @@ class QueryDslGenerator(
             // Check if it's a @GraphRelationship
             val graphRelAnnotation = property.annotations.find {
                 it.shortName.asString() == "GraphRelationship"
+            }
+
+            // Check if it's a @Root
+            val rootAnnotation = property.annotations.find {
+                it.shortName.asString() == "Root"
             }
 
             if (graphRelAnnotation != null) {
@@ -238,7 +244,7 @@ class QueryDslGenerator(
                         nestedViewClass = nestedViewClass
                     )
                 )
-            } else {
+            } else if (rootAnnotation != null) {
                 // It's the root fragment
                 properties.add(
                     ViewProperty(
@@ -250,6 +256,7 @@ class QueryDslGenerator(
                     )
                 )
             }
+            // Skip other properties (e.g., delegated properties from interfaces)
         }
 
         return properties
@@ -292,7 +299,8 @@ class QueryDslGenerator(
                     if (!fragmentTypes.containsKey(fragmentName)) {
                         fragmentTypes[fragmentName] = FragmentType(
                             fragmentClass,
-                            needsAliasConstructor = !viewProp.isRootFragment
+                            needsAliasConstructor = !viewProp.isRootFragment,
+                            rootFieldName = if (viewProp.isRootFragment) viewProp.name else null
                         )
                     }
                 }
@@ -322,7 +330,8 @@ class QueryDslGenerator(
                 fragmentClass = fragmentClass,
                 propertiesClassName = propertiesClassName,
                 needsAliasConstructor = fragmentType.needsAliasConstructor,
-                hasDefaultAlias = fragmentType.hasDefaultAlias
+                hasDefaultAlias = fragmentType.hasDefaultAlias,
+                rootFieldName = fragmentType.rootFieldName
             )
         }
     }
@@ -331,7 +340,8 @@ class QueryDslGenerator(
         fragmentClass: KSClassDeclaration,
         propertiesClassName: String,
         needsAliasConstructor: Boolean,
-        hasDefaultAlias: Boolean
+        hasDefaultAlias: Boolean,
+        rootFieldName: String? = null
     ): TypeSpec {
         val classBuilder = TypeSpec.classBuilder(propertiesClassName)
 
@@ -370,7 +380,14 @@ class QueryDslGenerator(
                         .parameterizedBy(propType.toClassName())
             }
 
-            val aliasExpr = if (needsAliasConstructor) "alias" else "\"${fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }}\""
+            // For root fragments, use the field name from the GraphView (e.g., "issue")
+            // Otherwise use the fragment class name (e.g., "issueCore")
+            val aliasExpr = if (needsAliasConstructor) {
+                "alias"
+            } else {
+                val defaultAlias = rootFieldName ?: fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }
+                "\"$defaultAlias\""
+            }
 
             classBuilder.addProperty(
                 PropertySpec.builder(propName, propertyRefType)

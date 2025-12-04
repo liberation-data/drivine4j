@@ -21,7 +21,7 @@ data class TestRelationshipFragment(
 
 @GraphView
 data class TestViewWithRelationshipFragment(
-    val root: TestNode,
+    @org.drivine.annotation.Root val root: TestNode,
     @GraphRelationship(type = "RELATED_TO")
     val related: List<TestRelationshipFragment>
 )

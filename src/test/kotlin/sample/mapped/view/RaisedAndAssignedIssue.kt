@@ -3,12 +3,13 @@ package sample.mapped.view
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
+import org.drivine.annotation.Root
 import sample.mapped.fragment.Issue
 import sample.mapped.fragment.Person
 
 @GraphView
 data class RaisedAndAssignedIssue(
-    val issue: Issue,
+    @Root val issue: Issue,
 
     @GraphRelationship(type = "ASSIGNED_TO", direction = Direction.OUTGOING)
     val assignedTo: List<Person>,
