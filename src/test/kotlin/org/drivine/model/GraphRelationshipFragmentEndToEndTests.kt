@@ -1,9 +1,9 @@
 package org.drivine.model
 
-import org.drivine.annotation.GraphFragment
-import org.drivine.annotation.GraphNodeId
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.drivine.annotation.GraphRelationship
-import org.drivine.annotation.GraphRelationshipFragment
+import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.GraphView
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
@@ -19,7 +19,6 @@ import java.time.Instant
 import java.util.*
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
 
 /**
  * End-to-end tests for @GraphRelationshipFragment.
@@ -223,25 +222,25 @@ class GraphRelationshipFragmentEndToEndTests @Autowired constructor(
 
 // Test domain model
 
-@GraphFragment(labels = ["Task"])
+@NodeFragment(labels = ["Task"])
 data class Task(
-    @GraphNodeId
+    @NodeId
     val uuid: UUID,
     val title: String,
     val description: String,
     val createdBy: String = "rel-fragment-test"
 )
 
-@GraphFragment(labels = ["Developer"])
+@NodeFragment(labels = ["Developer"])
 data class Developer(
-    @GraphNodeId
+    @NodeId
     val uuid: UUID,
     val name: String,
     val email: String,
     val createdBy: String = "rel-fragment-test"
 )
 
-@GraphRelationshipFragment
+@RelationshipFragment
 data class TaskAssignment(
     val assignedAt: Instant,
     val priority: String,

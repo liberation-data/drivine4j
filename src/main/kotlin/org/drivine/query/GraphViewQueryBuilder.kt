@@ -360,7 +360,7 @@ ${returnFields.joinToString(",\n")}
      * Gets labels from a fragment class type.
      */
     private fun getFragmentLabels(fragmentType: Class<*>): List<String> {
-        val annotation = fragmentType.getAnnotation(org.drivine.annotation.GraphFragment::class.java)
+        val annotation = fragmentType.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
         return annotation?.labels?.toList() ?: emptyList()
     }
 
@@ -369,7 +369,7 @@ ${returnFields.joinToString(",\n")}
      */
     private fun getLabelsForType(type: Class<*>): List<String> {
         // Check if it's a GraphFragment
-        val fragmentAnnotation = type.getAnnotation(org.drivine.annotation.GraphFragment::class.java)
+        val fragmentAnnotation = type.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
         if (fragmentAnnotation != null) {
             return fragmentAnnotation.labels.toList()
         }

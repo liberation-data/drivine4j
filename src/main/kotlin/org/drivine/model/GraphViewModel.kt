@@ -1,8 +1,8 @@
 package org.drivine.model
 
-import org.drivine.annotation.GraphFragment
+import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphRelationship
-import org.drivine.annotation.GraphRelationshipFragment
+import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.GraphView
 import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
@@ -56,7 +56,7 @@ data class GraphViewModel(
                     false
                 } else {
                     val returnType = prop.returnType.classifier as? KClass<*>
-                    returnType?.java?.isAnnotationPresent(GraphFragment::class.java) == true
+                    returnType?.java?.isAnnotationPresent(NodeFragment::class.java) == true
                 }
             } ?: throw IllegalArgumentException("No root fragment field found in ${clazz.name}. " +
                     "Expected a field without @GraphRelationship that points to a @GraphFragment class.")
@@ -79,7 +79,7 @@ data class GraphViewModel(
                         val (elementType, isCollection) = extractElementType(prop.returnType.toString(), fieldType)
 
                         // Check if element type is annotated with @GraphRelationshipFragment (relationship object pattern)
-                        val isRelationshipFragment = elementType.isAnnotationPresent(GraphRelationshipFragment::class.java)
+                        val isRelationshipFragment = elementType.isAnnotationPresent(RelationshipFragment::class.java)
 
                         if (isRelationshipFragment) {
                             // Extract relationship fragment metadata
@@ -89,7 +89,7 @@ data class GraphViewModel(
                             // Find the target field - must be annotated with @GraphFragment or @GraphView
                             val targetProperty = fragmentProperties.find { fragProp ->
                                 val targetType = (fragProp.returnType.classifier as? KClass<*>)?.java
-                                targetType?.isAnnotationPresent(GraphFragment::class.java) == true ||
+                                targetType?.isAnnotationPresent(NodeFragment::class.java) == true ||
                                 targetType?.isAnnotationPresent(GraphView::class.java) == true
                             } ?: throw IllegalArgumentException(
                                 "Relationship fragment '${elementType.simpleName}' in field '${prop.name}' " +

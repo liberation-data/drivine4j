@@ -1,19 +1,19 @@
 package org.drivine.model
 
-import org.drivine.annotation.GraphFragment
-import org.drivine.annotation.GraphNodeId
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.drivine.annotation.GraphRelationship
-import org.drivine.annotation.GraphRelationshipFragment
+import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.GraphView
 
-@GraphFragment(labels = ["TestNode"])
+@NodeFragment(labels = ["TestNode"])
 data class TestNode(
-    @GraphNodeId
+    @NodeId
     val id: String,
     val name: String
 )
 
-@GraphRelationshipFragment
+@RelationshipFragment
 data class TestRelationshipFragment(
     val createdAt: String,
     val target: TestNode

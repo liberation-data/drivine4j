@@ -1,6 +1,6 @@
 package org.drivine.model
 
-import org.drivine.annotation.GraphFragment
+import org.drivine.annotation.NodeFragment
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import sample.mapped.fragment.Issue
@@ -129,7 +129,7 @@ class FragmentModelTests {
     @Test
     fun `should return null for nodeIdField when no GraphNodeId annotation present`() {
         // Create a test fragment without @GraphNodeId
-        @GraphFragment(labels = ["TestFragment"])
+        @NodeFragment(labels = ["TestFragment"])
         data class TestFragment(val name: String, val value: Int)
 
         val model = FragmentModel.from(TestFragment::class.java)

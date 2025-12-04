@@ -1,7 +1,6 @@
 package org.drivine.manager
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import org.drivine.annotation.GraphFragment
 import org.drivine.annotation.GraphView
 import org.drivine.model.FragmentModel
 import org.drivine.query.GraphObjectQueryBuilder

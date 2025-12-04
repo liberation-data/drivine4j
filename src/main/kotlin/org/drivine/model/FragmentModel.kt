@@ -1,7 +1,7 @@
 package org.drivine.model
 
-import org.drivine.annotation.GraphFragment
-import org.drivine.annotation.GraphNodeId
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import kotlin.reflect.KClass
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
@@ -51,7 +51,7 @@ data class FragmentModel(
          * @throws IllegalArgumentException if the class is not annotated with @GraphFragment
          */
         fun from(clazz: Class<*>): FragmentModel {
-            val annotation = clazz.getAnnotation(GraphFragment::class.java)
+            val annotation = clazz.getAnnotation(NodeFragment::class.java)
                 ?: throw IllegalArgumentException("Class ${clazz.name} is not annotated with @GraphFragment")
 
             val labels = annotation.labels.toList()
@@ -143,7 +143,7 @@ data class FragmentModel(
             return try {
                 val kClass = clazz.kotlin
                 kClass.memberProperties.find { property ->
-                    property.findAnnotation<GraphNodeId>() != null
+                    property.findAnnotation<NodeId>() != null
                 }?.name
             } catch (e: Exception) {
                 // Fall back to Java reflection
@@ -160,7 +160,7 @@ data class FragmentModel(
             while (currentClass != null && currentClass != Any::class.java) {
                 val field = currentClass.declaredFields
                     .filterNot { it.isSynthetic }
-                    .find { it.isAnnotationPresent(GraphNodeId::class.java) }
+                    .find { it.isAnnotationPresent(NodeId::class.java) }
 
                 if (field != null) {
                     return field.name

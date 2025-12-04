@@ -1,7 +1,7 @@
 package org.drivine.query
 
 import com.fasterxml.jackson.databind.ObjectMapper
-import org.drivine.annotation.GraphFragment
+import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
 import org.drivine.manager.CascadeType
 import org.drivine.model.FragmentModel
@@ -35,7 +35,7 @@ interface GraphObjectMergeBuilder {
             return if (graphClass.isAnnotationPresent(GraphView::class.java)) {
                 val viewModel = GraphViewModel.from(graphClass)
                 GraphViewMergeBuilder(viewModel, objectMapper, sessionManager)
-            } else if (graphClass.isAnnotationPresent(GraphFragment::class.java)) {
+            } else if (graphClass.isAnnotationPresent(NodeFragment::class.java)) {
                 val fragmentModel = FragmentModel.from(graphClass)
                 FragmentMergeBuilderAdapter(fragmentModel, objectMapper, sessionManager)
             } else {

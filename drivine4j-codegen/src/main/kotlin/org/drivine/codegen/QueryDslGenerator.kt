@@ -262,7 +262,7 @@ class QueryDslGenerator(
 
     private fun isGraphFragment(type: KSType): Boolean {
         val decl = type.declaration
-        return decl.annotations.any { it.shortName.asString() == "GraphFragment" }
+        return decl.annotations.any { it.shortName.asString() == "NodeFragment" }
     }
 
     private fun collectFragmentTypes(viewStructure: List<ViewProperty>): List<FragmentType> {

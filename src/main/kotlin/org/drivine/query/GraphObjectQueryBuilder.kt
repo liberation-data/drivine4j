@@ -1,8 +1,7 @@
 package org.drivine.query
 
-import org.drivine.annotation.GraphFragment
+import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
-import org.drivine.model.FragmentModel
 
 /**
  * Base interface for building queries for graph objects (Fragments and Views).
@@ -35,7 +34,7 @@ interface GraphObjectQueryBuilder {
         fun forClass(graphClass: Class<*>): GraphObjectQueryBuilder {
             return if (graphClass.isAnnotationPresent(GraphView::class.java)) {
                 GraphViewQueryBuilder.forView(graphClass)
-            } else if (graphClass.isAnnotationPresent(GraphFragment::class.java)) {
+            } else if (graphClass.isAnnotationPresent(NodeFragment::class.java)) {
                 FragmentQueryBuilder.forFragment(graphClass)
             } else {
                 throw IllegalArgumentException("Class ${graphClass.name} must be annotated with @GraphView or @GraphFragment")

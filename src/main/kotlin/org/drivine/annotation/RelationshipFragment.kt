@@ -34,8 +34,8 @@ package org.drivine.annotation
  * ```
  *
  * @see GraphRelationship
- * @see GraphFragment
+ * @see NodeFragment
  */
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
-annotation class GraphRelationshipFragment
+annotation class RelationshipFragment
