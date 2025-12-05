@@ -17,7 +17,7 @@ class Neo4jTestContainer : Neo4jContainer<Neo4jTestContainer> {
 
         fun useLocalNeo4j(): Boolean {
             return System.getProperty(USE_LOCAL_NEO4J_PROPERTY, "false").toBoolean() ||
-                   System.getenv("USE_LOCAL_NEO4J")?.toBoolean() ?: true
+                   System.getenv("USE_LOCAL_NEO4J")?.toBoolean() ?: false
         }
 
         fun getBoltUrl(): String {

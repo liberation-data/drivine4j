@@ -1,27 +1,36 @@
 # Drivine4j
 
-A Neo4j client library for Java and Kotlin. A typical ORM defines a reusable object model. From this model  
-statements are generated to hydrate to and from the model to the database. This is to address the so-called
-impedance mismatch between the object model and the database. However, there are some drawbacks: 
+[![CI](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml/badge.svg)](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-* Generated work well for the simple cases, but can get out of hand and performance degrades when it's more complex. Debugging these generated statements can be painful. 
-* One model for many use cases is a big ask, the original CRUD cases work well, but more copmlex cases mean the model gets in the way more than helps. 
+A Neo4j client library for Java and Kotlin with two approaches to graph mapping:
 
-These trade-offs might be acceptable if the tool addresses the impedance mismatch between an relational database and programming object model, but with a graph DB this mismatch is really there. 
+1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
+2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL (new in 4.0)
 
-## Drivine Philosophy 
+## Philosophy
 
-Just as we favor composition over inheritance in software development, we prefer composition when mapping results from a complex query. Consider this type: 
+### Composition Over Inheritance
+
+A typical ORM defines a reusable object model. From this model statements are generated to hydrate to and from the model to the database. This addresses the so-called impedance mismatch between the object model and the database. However, there are drawbacks:
+
+* Generated queries work well for simple cases, but can get out of hand and degrade performance when it's more complex. Debugging these generated statements can be painful.
+* One model for many use cases is a big ask - the original CRUD cases work well, but more complex cases mean the model gets in the way more than it helps.
+
+These trade-offs might be acceptable for relational databases, but with graph databases this mismatch doesn't really exist.
+
+Just as we favor composition over inheritance in software development, we prefer composition when mapping results from complex queries. A person can play many roles: sometimes we're here to help them have a great holiday, other times to manage a team, in others they're a person of interest. With Drivine, you compose views as needed:
 
 ```kotlin
-@JsonIgnoreProperties(ignoreUnknown = true)
+@GraphView
 data class HolidayingPerson(
-    val person: Person,
+    @Root val person: Person,
+    @GraphRelationship(type = "BOOKED_HOLIDAY")
     val holidays: List<Holiday>
 )
 ```
 
-A person can play many roles. Sometimes we're here to help them have a great holiday, other times to manage a team, in others they're a person of interest. No worries, we can compose a mapping in Cypher itself: 
+Behind the scenes, Drivine generates efficient Cypher:
 
 ```cypher
 MATCH (person:Person {firstName: $firstName})
@@ -31,20 +40,101 @@ RETURN {
          holidays: holidays
        }
 ```
+
 Composition lets us mix and match as needed.  
 
 
 ## Installation
 
-### Gradle (Kotlin DSL)
+### Core Library
+
+#### Gradle (Kotlin DSL)
 ```kotlin
-implementation("org.drivine:drivine4j:0.0.1-SNAPSHOT")
+dependencies {
+    implementation("org.drivine:drivine4j:0.0.1-SNAPSHOT")
+}
 ```
 
-### Gradle (Groovy)
+#### Gradle (Groovy)
 ```groovy
-implementation 'org.drivine:drivine4j:0.0.1-SNAPSHOT'
+dependencies {
+    implementation 'org.drivine:drivine4j:0.0.1-SNAPSHOT'
+}
 ```
+
+#### Maven
+```xml
+<dependency>
+    <groupId>org.drivine</groupId>
+    <artifactId>drivine4j</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+</dependency>
+```
+
+### Code Generation (For GraphObjectManager with Type-Safe DSL)
+
+If you want to use `GraphObjectManager` with the type-safe query DSL, you need to add the code generation processor.
+
+#### Gradle (Kotlin DSL)
+
+```kotlin
+plugins {
+    id("com.google.devtools.ksp") version "2.2.20-2.0.4"
+    kotlin("jvm") version "2.2.0"
+}
+
+kotlin {
+    compilerOptions {
+        // Required for context parameters DSL
+        freeCompilerArgs.addAll("-Xcontext-parameters")
+    }
+}
+
+dependencies {
+    implementation("org.drivine:drivine4j:0.0.1-SNAPSHOT")
+    ksp("org.drivine:drivine4j-codegen:0.0.1-SNAPSHOT")
+}
+```
+
+#### Maven
+
+```xml
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.jetbrains.kotlin</groupId>
+            <artifactId>kotlin-maven-plugin</artifactId>
+            <version>2.2.0</version>
+            <configuration>
+                <compilerPlugins>
+                    <compilerPlugin>ksp</compilerPlugin>
+                </compilerPlugins>
+                <args>
+                    <!-- Required for context parameters DSL -->
+                    <arg>-Xcontext-parameters</arg>
+                </args>
+            </configuration>
+            <dependencies>
+                <!-- KSP extension for Maven -->
+                <dependency>
+                    <groupId>com.dyescape</groupId>
+                    <artifactId>kotlin-maven-symbol-processing</artifactId>
+                    <version>1.6</version>
+                </dependency>
+
+                <!-- Drivine code generator -->
+                <dependency>
+                    <groupId>org.drivine</groupId>
+                    <artifactId>drivine4j-codegen</artifactId>
+                    <version>0.0.1-SNAPSHOT</version>
+                </dependency>
+            </dependencies>
+        </plugin>
+    </plugins>
+</build>
+```
+
+**Note:** Maven support for KSP uses the third-party [kotlin-maven-symbol-processing](https://github.com/Dyescape/kotlin-maven-symbol-processing) extension.
 
 ## Quick Start
 
@@ -132,7 +222,307 @@ class PersonRepository @Autowired constructor(
 }
 ```
 
-## Core Features
+## GraphObjectManager - Type-Safe Graph Mapping
+
+`GraphObjectManager` provides a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.
+
+### Key Concepts
+
+#### 1. NodeFragment - Mapping Nodes
+
+A `@NodeFragment` represents a single node in the graph:
+
+```kotlin
+@NodeFragment
+data class Person(
+    @NodeId val uuid: String,
+    val name: String,
+    val bio: String?
+)
+
+@NodeFragment
+data class Organization(
+    @NodeId val uuid: String,
+    val name: String
+)
+```
+
+#### 2. RelationshipFragment - Capturing Relationship Properties
+
+A `@RelationshipFragment` captures properties on relationship edges, not just the target node:
+
+```kotlin
+@RelationshipFragment
+data class WorkHistory(
+    val startDate: LocalDate,  // Property on the edge
+    val role: String,           // Property on the edge
+    val target: Organization    // Target node
+)
+```
+
+This is useful for modeling:
+- Employment history (start date, role, organization)
+- Transaction records (timestamp, amount, target account)
+- Audit trails (timestamp, action, target entity)
+- Any relationship with metadata
+
+#### 3. GraphView - Composing Views
+
+A `@GraphView` composes multiple fragments and relationships into a single query result:
+
+```kotlin
+@GraphView
+data class PersonCareer(
+    @Root val person: Person,  // Root fragment
+
+    @GraphRelationship(type = "WORKS_FOR")
+    val employmentHistory: List<WorkHistory>  // Relationship with properties
+)
+```
+
+The `@Root` annotation marks which fragment is the query's starting point.
+
+### Loading Data
+
+#### Load All Instances
+
+```kotlin
+@Component
+class PersonService @Autowired constructor(
+    private val graphObjectManager: GraphObjectManager
+) {
+    fun getAllPeople(): List<PersonCareer> {
+        return graphObjectManager.loadAll(PersonCareer::class.java)
+    }
+}
+```
+
+#### Load by ID
+
+```kotlin
+fun getPerson(uuid: String): PersonCareer? {
+    return graphObjectManager.load(uuid, PersonCareer::class.java)
+}
+```
+
+### Type-Safe Query DSL
+
+The code generator creates a type-safe DSL for each `@GraphView`, giving you IntelliJ autocomplete and compile-time type checking.
+
+#### Basic Filtering
+
+```kotlin
+// Load people whose bio contains "Lead"
+val leads = graphObjectManager.loadAll<PersonCareer> {
+    where {
+        query.person.bio contains "Lead"
+    }
+}
+```
+
+#### Multiple Conditions (AND)
+
+```kotlin
+val results = graphObjectManager.loadAll<PersonCareer> {
+    where {
+        query.person.name eq "Alice Engineer"
+        query.person.bio.isNotNull()
+    }
+}
+// Generates: WHERE person.name = $p0 AND person.bio IS NOT NULL
+```
+
+#### OR Conditions
+
+```kotlin
+val results = graphObjectManager.loadAll<PersonCareer> {
+    where {
+        anyOf {
+            query.person.name eq "Alice"
+            query.person.name eq "Bob"
+        }
+    }
+}
+// Generates: WHERE (person.name = $p0 OR person.name = $p1)
+```
+
+#### Ordering
+
+```kotlin
+val results = graphObjectManager.loadAll<PersonCareer> {
+    where {
+        query.person.bio.isNotNull()
+    }
+    orderBy {
+        query.person.name.asc()
+    }
+}
+```
+
+#### Available Operators
+
+**Comparison:**
+- `eq` - equals (=)
+- `neq` - not equals (<>)
+- `gt` - greater than (>)
+- `gte` - greater than or equal (>=)
+- `lt` - less than (<)
+- `lte` - less than or equal (<=)
+- `in` - IN operator
+
+**String Operations:**
+- `contains` - CONTAINS
+- `startsWith` - STARTS WITH
+- `endsWith` - ENDS WITH
+
+**Null Checking:**
+- `isNull()` - IS NULL
+- `isNotNull()` - IS NOT NULL
+
+**Ordering:**
+- `asc()` - ascending order
+- `desc()` - descending order
+
+### Saving Data
+
+#### Simple Save (Dirty Tracking)
+
+GraphObjectManager tracks loaded objects and only saves changed fields:
+
+```kotlin
+// Load an object
+val person = graphObjectManager.load(uuid, PersonCareer::class.java)!!
+
+// Modify it
+val updated = person.copy(
+    person = person.person.copy(bio = "Updated bio")
+)
+
+// Save - only dirty fields are written!
+graphObjectManager.save(updated)
+```
+
+#### Save with Relationship Changes
+
+```kotlin
+val person = graphObjectManager.load(uuid, PersonCareer::class.java)!!
+
+// Remove all employment history
+val updated = person.copy(employmentHistory = emptyList())
+
+graphObjectManager.save(updated, CascadeType.NONE)
+```
+
+### CASCADE Policies
+
+When saving `@GraphView` objects with modified relationships, `CascadeType` determines what happens to target nodes:
+
+#### CascadeType.NONE (Default - Safest)
+
+Only deletes the relationship, leaves target nodes intact:
+
+```kotlin
+graphObjectManager.save(updated, CascadeType.NONE)
+```
+
+Use when: Target nodes are shared or should persist independently.
+
+#### CascadeType.DELETE_ORPHAN (Safe Deletion)
+
+Deletes relationship and target only if no other relationships exist to the target:
+
+```kotlin
+graphObjectManager.save(updated, CascadeType.DELETE_ORPHAN)
+```
+
+Use when: You want to clean up orphaned nodes but preserve shared ones.
+
+**Example:** Removing a person's employment at a solo startup deletes the startup (orphaned), but removing employment at a company with other employees keeps the company.
+
+#### CascadeType.DELETE_ALL (Destructive)
+
+Always deletes both the relationship and target nodes:
+
+```kotlin
+graphObjectManager.save(updated, CascadeType.DELETE_ALL)
+```
+
+⚠️ **Warning:** Permanently deletes data. Use with caution.
+
+Use when: Target nodes are exclusively owned and should be deleted with the relationship.
+
+### Session and Dirty Tracking
+
+`GraphObjectManager` maintains a session that tracks loaded objects:
+
+1. **On Load**: Takes a snapshot of the object's state
+2. **On Save**: Compares current state to snapshot
+3. **Optimization**: Only writes changed fields (dirty checking)
+
+This means:
+- **Loaded objects**: Optimized saves (only dirty fields)
+- **New objects**: Full saves (all fields written)
+
+### Generated Cypher Examples
+
+#### Simple Load All
+
+```kotlin
+graphObjectManager.loadAll(PersonCareer::class.java)
+```
+
+Generates:
+
+```cypher
+MATCH (person:Person:Mapped)
+
+WITH
+    person {
+        bio: person.bio,
+        name: person.name,
+        uuid: person.uuid
+    } AS person,
+
+    [(person)-[employmentHistory_rel:WORKS_FOR]->(employmentHistory_target:Organization) |
+        {
+            startDate: employmentHistory_rel.startDate,
+            role: employmentHistory_rel.role,
+            target: employmentHistory_target {
+                name: employmentHistory_target.name,
+                uuid: employmentHistory_target.uuid
+            }
+        }
+    ] AS employmentHistory
+
+RETURN {
+    person: person,
+    employmentHistory: employmentHistory
+} AS result
+```
+
+#### Filtered Query
+
+```kotlin
+graphObjectManager.loadAll<PersonCareer> {
+    where {
+        query.person.bio contains "Lead"
+    }
+}
+```
+
+Generates:
+
+```cypher
+MATCH (person:Person:Mapped)
+WHERE person.bio CONTAINS $p0
+
+WITH person { ... } AS person,
+     [...] AS employmentHistory
+
+RETURN { person: person, employmentHistory: employmentHistory } AS result
+```
+
+## Core Features (PersistenceManager)
 
 ### Fluent Query Building
 

@@ -8,6 +8,7 @@ plugins {
 	id 'signing'
 	id 'org.jetbrains.dokka' version '1.9.20'
 	id 'com.gradleup.nmcp' version '0.0.8'
+	id 'jacoco'
 }
 
 group = 'org.drivine'
@@ -67,6 +68,21 @@ kotlin {
 // Use JUnit 5
 tasks.named('test') {
 	useJUnitPlatform()
+	finalizedBy jacocoTestReport // Generate coverage report after tests
+}
+
+// JaCoCo configuration for code coverage
+jacoco {
+	toolVersion = "0.8.12"
+}
+
+jacocoTestReport {
+	dependsOn test
+	reports {
+		xml.required = true
+		html.required = true
+		csv.required = false
+	}
 }
 
 // Ensure we publish a normal library JAR, not the Spring Boot fat jar
