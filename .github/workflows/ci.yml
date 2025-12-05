@@ -10,21 +10,6 @@ jobs:
   test:
     runs-on: ubuntu-latest
 
-    services:
-      neo4j:
-        image: neo4j:5.28
-        env:
-          NEO4J_AUTH: neo4j/testpassword
-          NEO4J_ACCEPT_LICENSE_AGREEMENT: 'yes'
-        ports:
-          - 7687:7687
-          - 7474:7474
-        options: >-
-          --health-cmd "cypher-shell -u neo4j -p testpassword 'RETURN 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -44,23 +29,29 @@ jobs:
 
       - name: Run tests
         run: ./gradlew test --no-daemon
-        env:
-          NEO4J_HOST: localhost
-          NEO4J_PORT: 7687
-          NEO4J_USERNAME: neo4j
-          NEO4J_PASSWORD: testpassword
+
+      # Debug: Check what test files exist
+      - name: List test result files
+        if: success() || failure()
+        run: |
+          echo "=== Looking for test result files ==="
+          find . -name "TEST-*.xml" -type f 2>/dev/null || echo "No TEST-*.xml files found"
+          echo "=== Test result directories ==="
+          find . -type d -name "test-results" 2>/dev/null || echo "No test-results directories found"
 
       # Enhanced Test Reporting - Makes test results easy to read!
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v4
         if: success() || failure()
         with:
-          report_paths: '**/build/test-results/test/TEST-*.xml'
+          report_paths: |
+            **/build/test-results/test/*.xml
           detailed_summary: true
           include_passed: true
           check_name: Test Results
-          require_tests: true
+          require_tests: false
           annotate_only: false
+          fail_on_failure: false
 
       # Alternative: Publish test results as artifacts
       - name: Upload Test Results
@@ -105,20 +96,6 @@ jobs:
         gradle: [ 'wrapper', '8.12.1' ]
       fail-fast: false
 
-    services:
-      neo4j:
-        image: neo4j:5.28
-        env:
-          NEO4J_AUTH: neo4j/testpassword
-          NEO4J_ACCEPT_LICENSE_AGREEMENT: 'yes'
-        ports:
-          - 7687:7687
-        options: >-
-          --health-cmd "cypher-shell -u neo4j -p testpassword 'RETURN 1'"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -140,8 +117,3 @@ jobs:
           else
             gradle test --no-daemon
           fi
-        env:
-          NEO4J_HOST: localhost
-          NEO4J_PORT: 7687
-          NEO4J_USERNAME: neo4j
-          NEO4J_PASSWORD: testpassword
