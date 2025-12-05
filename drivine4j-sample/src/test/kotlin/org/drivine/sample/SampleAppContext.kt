@@ -8,6 +8,7 @@ import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.test.DrivineTestContainer
 import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.*
 
@@ -22,10 +23,10 @@ class SampleAppContext {
     @Profile("!local")
     fun dataSourceMap(): DataSourceMap {
         val neo4jProperties = ConnectionProperties(
-            host = extractHost(Neo4jTestContainer.getBoltUrl()),
-            port = extractPort(Neo4jTestContainer.getBoltUrl()),
-            userName = Neo4jTestContainer.getUsername(),
-            password = Neo4jTestContainer.getPassword(),
+            host = extractHost(DrivineTestContainer.getConnectionUrl()),
+            port = extractPort(DrivineTestContainer.getConnectionUrl()),
+            userName = DrivineTestContainer.getConnectionUsername(),
+            password = DrivineTestContainer.getConnectionPassword(),
             type = DatabaseType.NEO4J,
             databaseName = "neo4j"
         )

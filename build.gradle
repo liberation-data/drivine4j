@@ -51,9 +51,12 @@ dependencies {
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// TestContainers
+	// Testcontainers - provided as an implementation dependency so DrivineTestContainer
+	// is available to users of the library for testing
+	implementation 'org.testcontainers:neo4j:1.19.3'
+
 	testImplementation 'org.testcontainers:testcontainers:1.19.3'
 	testImplementation 'org.testcontainers:junit-jupiter:1.19.3'
-	testImplementation 'org.testcontainers:neo4j:1.19.3'
 
 	// Fix Dokka Jackson compatibility issue
 	dokkaPlugin 'org.jetbrains.dokka:kotlin-as-java-plugin:1.9.20'
