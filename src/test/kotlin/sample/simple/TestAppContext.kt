@@ -1,23 +1,21 @@
 package sample.simple
 
+import org.drivine.autoconfigure.EnableDrivine
 import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseType
-import org.drivine.connection.PropertyProvidedDataSourceMap
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.test.DrivineTestContainer
-import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.*
 
 @Configuration
-@ComponentScan(basePackages = ["org.drivine", "sample"])
-@PropertySource("classpath:application.yaml")
+@EnableDrivine
+@ComponentScan(basePackages = ["sample"])
 @EnableAspectJAutoProxy(proxyTargetClass = true)
-@EnableConfigurationProperties(value = [PropertyProvidedDataSourceMap::class])
-class TestAppContext() {
+class TestAppContext {
 
     @Bean
     @Profile("!local")
@@ -33,11 +31,6 @@ class TestAppContext() {
         return DataSourceMap(mapOf("neo" to neo4jProperties))
     }
 
-    @Bean
-    @Profile("local")
-    fun propertyDataSources(map: PropertyProvidedDataSourceMap): DataSourceMap {
-        return DataSourceMap(map.dataSources)
-    }
 
     @Bean
     fun neoManager(factory: PersistenceManagerFactory): PersistenceManager {

@@ -1,0 +1,72 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id 'org.jetbrains.kotlin.plugin.spring' version '2.2.0'
+    id 'maven-publish'
+}
+
+group = 'org.drivine'
+version = rootProject.version
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Core drivine4j library
+    api project(':')
+
+    // Spring Boot
+    implementation(platform('org.springframework.boot:spring-boot-dependencies:3.5.7'))
+    implementation 'org.springframework.boot:spring-boot-autoconfigure'
+    implementation 'org.springframework:spring-context'
+    implementation 'org.springframework:spring-tx'
+
+    // Jackson for ObjectMapper
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+
+    // Optional: Configuration processor for IDE support
+    annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.addAll '-Xjsr305=strict'
+    }
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+
+            artifactId = 'drivine4j-spring-boot-starter'
+
+            pom {
+                name = 'Drivine4j Spring Boot Starter'
+                description = 'Spring Boot starter for Drivine4j - Auto-configuration for Neo4j graph database access'
+                url = 'https://github.com/liberation-data/drivine4j'
+
+                licenses {
+                    license {
+                        name = 'Apache License 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'jasperblues'
+                        name = 'Jasper Blues'
+                        email = 'jasper@liberation-data.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/liberation-data/drivine4j.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/liberation-data/drivine4j.git'
+                    url = 'https://github.com/liberation-data/drivine4j'
+                }
+            }
+        }
+    }
+}

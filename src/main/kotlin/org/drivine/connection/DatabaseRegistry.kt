@@ -1,17 +1,18 @@
 package org.drivine.connection
 
-import org.springframework.stereotype.Component
+/**
+ * Registry of database connection providers.
+ * Must be configured as a bean in your Spring configuration.
+ */
+class DatabaseRegistry(dataSourceMap: DataSourceMap) {
 
-@Component
-class DatabaseRegistry {
+    private val providers: MutableMap<String, ConnectionProvider> = mutableMapOf()
 
-    constructor(dataSourceMap: DataSourceMap) {
+    init {
         dataSourceMap.dataSources.forEach { (key, value) ->
             withProperties(value).register(key)
         }
     }
-
-    private val providers: MutableMap<String, ConnectionProvider> = mutableMapOf()
 
     fun builder(): ConnectionProviderBuilder {
         return ConnectionProviderBuilder(this)

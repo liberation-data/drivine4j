@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.drivine'
-version = '0.0.2'
+version = '0.0.3'
 
 base {
 	archivesName = 'drivine4j'
@@ -57,6 +57,9 @@ dependencies {
 
 	testImplementation 'org.testcontainers:testcontainers:1.19.3'
 	testImplementation 'org.testcontainers:junit-jupiter:1.19.3'
+
+	// Spring Boot Starter for tests
+	testImplementation project(':drivine4j-spring-boot-starter')
 
 	// Fix Dokka Jackson compatibility issue
 	dokkaPlugin 'org.jetbrains.dokka:kotlin-as-java-plugin:1.9.20'

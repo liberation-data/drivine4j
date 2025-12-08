@@ -3,5 +3,8 @@ rootProject.name = 'drivine4j'
 // Code generation module
 include 'drivine4j-codegen'
 
+// Spring Boot starter module
+include 'drivine4j-spring-boot-starter'
+
 // Sample application demonstrating usage
 include 'drivine4j-sample'

@@ -1,14 +1,14 @@
 package org.drivine.transaction
 
 import org.drivine.connection.DatabaseRegistry
-import org.springframework.beans.factory.annotation.Autowired
-import org.springframework.stereotype.Component
 
-@Component
-class TransactionContextHolder {
-
-    @Autowired
-    lateinit var databaseRegistry: DatabaseRegistry
+/**
+ * Holds transaction context in thread-local storage.
+ * Must be configured as a bean in your Spring configuration.
+ */
+class TransactionContextHolder(
+    val databaseRegistry: DatabaseRegistry
+) {
 
     // ThreadLocal storage for context values
     private val localStorage: ThreadLocal<MutableMap<String, Any>> = ThreadLocal.withInitial { mutableMapOf() }
