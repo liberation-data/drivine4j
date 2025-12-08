@@ -1,7 +1,27 @@
 spring:
   profiles:
     active: test
+  main:
+    banner-mode: off
 
 logging:
   level:
     org.drivine: DEBUG
+
+# Test configuration - set to true to use local Neo4j instead of Testcontainers
+test:
+  neo4j:
+    use-local: false  # Change to 'true' to use your local Neo4j instance
+
+# Test datasource configuration
+# When use-local=true: these settings are used as-is
+# When use-local=false (default): host/port/password are overridden with Testcontainer values
+database:
+  datasources:
+    neo:
+      type: NEO4J
+      host: localhost
+      port: 7687
+      user-name: neo4j
+      password: brahmsian
+      database-name: neo4j

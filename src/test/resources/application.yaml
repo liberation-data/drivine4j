@@ -13,7 +13,25 @@ spring:
     ansi:
       enabled: always
   profiles:
-    active: default  # Change from 'default' to 'local' to use local Neo4j instead of test containers
+    active: test
+
+## Test configuration - set to true to use local Neo4j instead of Testcontainers
+#test:
+#  neo4j:
+#    use-local: true  # Change to 'true' to use your local Neo4j instance
+
+# Test datasource configuration
+# When use-local=true: these settings are used as-is
+# When use-local=false (default): host/port/password are overridden with Testcontainer values
+database:
+  datasources:
+    neo:
+      type: NEO4J
+      host: localhost
+      port: 7687
+      user-name: neo4j
+      password: brahmsian
+      database-name: neo4j
 
 ---
 # Local profile configuration - for using local Neo4j instance
@@ -22,14 +40,14 @@ spring:
     activate:
       on-profile: local
 
-# Data-source below is used then the 'local' config is active
+# Data-source below is used when the 'local' profile is active
 
 database:
-  dataSources:
+  datasources:
     neo:
       type: NEO4J
-      userName: neo4j
+      user-name: neo4j
       password: brahmsian
       host: localhost
       port: 7687
-      databaseName: neo4j
+      database-name: neo4j

@@ -1,14 +1,14 @@
-# Test configuration for Drivine
+# Test configuration for Drivine Sample
 # This configuration is used by @EnableDrivineTestConfig
 
 database:
   datasources:
     neo:
-      type: NEO4J
       host: localhost
       port: 7687
-      user-name: neo4j
+      username: neo4j
       password: brahmsian
+      type: NEO4J
       database-name: neo4j
 
 # The @EnableDrivineTestConfig annotation will:

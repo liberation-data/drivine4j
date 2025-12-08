@@ -92,9 +92,12 @@ class DrivineTestContainer private constructor(imageName: String) : Neo4jContain
         /**
          * Singleton test container instance.
          * Null if using local Neo4j, otherwise a Testcontainer instance.
+         * Lazy initialization to avoid starting container when using local Neo4j.
          */
-        @JvmField
-        val instance: DrivineTestContainer? = if (useLocalNeo4j()) null else createTestContainer()
+        @JvmStatic
+        val instance: DrivineTestContainer? by lazy {
+            if (useLocalNeo4j()) null else createTestContainer()
+        }
 
         /**
          * Check if tests should use a local Neo4j instance instead of Testcontainers.
