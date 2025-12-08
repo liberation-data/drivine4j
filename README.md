@@ -752,28 +752,82 @@ class PersonRepositoryTest @Autowired constructor(
 }
 ```
 
-### With TestContainers
+### Automated Test Configuration (Testcontainers + Local Dev)
+
+Drivine provides `@EnableDrivineTestConfig` for seamless test setup that works in both local development and CI:
+
+**1. Define datasource in `application-test.yml`:**
+
+```yaml
+database:
+  datasources:
+    neo:
+      host: localhost
+      port: 7687
+      username: neo4j
+      password: password
+      type: NEO4J
+      database-name: neo4j
+```
+
+**2. Use `@EnableDrivineTestConfig` in your test configuration:**
 
 ```kotlin
 @Configuration
+@EnableDrivine
+@EnableDrivineTestConfig
+class TestConfig
+```
+
+**3. Control behavior with environment variable:**
+
+```bash
+# Use local Neo4j (for development - fast, inspectable)
+export USE_LOCAL_NEO4J=true
+./gradlew test
+
+# Use Testcontainers (for CI - isolated, default)
+./gradlew test  # USE_LOCAL_NEO4J defaults to false
+```
+
+**What happens automatically:**
+
+- **Local Mode** (`USE_LOCAL_NEO4J=true`): Uses your application-test.yml settings as-is, connects to your local Neo4j
+- **CI Mode** (default): Starts a Neo4j Testcontainer automatically and overrides host/port/password from your properties
+
+**Benefits:**
+- ✅ One configuration works for both local dev and CI
+- ✅ Zero boilerplate - no manual container setup
+- ✅ Fast local development with real Neo4j
+- ✅ Reliable CI with Testcontainers
+- ✅ Easy debugging - set `@Rollback(false)` and inspect your local DB
+
+### Manual TestContainers Setup
+
+If you need more control, you can still configure Testcontainers manually:
+
+```kotlin
+@Configuration
+@EnableDrivine
 class TestConfig {
     @Bean
-    @Profile("!local")
-    fun neo4jContainer(): Neo4jContainer<*> {
-        return Neo4jContainer("neo4j:5.28")
-            .apply { start() }
-    }
-
-    @Bean
-    fun dataSourceMap(container: Neo4jContainer<*>): DataSourceMap {
+    fun dataSourceMap(): DataSourceMap {
         val props = ConnectionProperties(
-            host = container.host,
-            port = container.getMappedPort(7687),
-            username = "neo4j",
-            password = container.adminPassword
+            host = extractHost(DrivineTestContainer.getConnectionUrl()),
+            port = extractPort(DrivineTestContainer.getConnectionUrl()),
+            userName = DrivineTestContainer.getConnectionUsername(),
+            password = DrivineTestContainer.getConnectionPassword(),
+            type = DatabaseType.NEO4J,
+            databaseName = "neo4j"
         )
         return DataSourceMap(mapOf("neo" to props))
     }
+
+    private fun extractHost(boltUrl: String): String =
+        boltUrl.substringAfter("bolt://").substringBefore(":")
+
+    private fun extractPort(boltUrl: String): Int =
+        boltUrl.substringAfter("bolt://").substringAfter(":").toIntOrNull() ?: 7687
 }
 ```
 
