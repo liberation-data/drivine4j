@@ -3,13 +3,15 @@ package org.drivine.manager
 import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
 
 class NonTransactionalPersistenceManager(
     private val connectionProvider: ConnectionProvider,
     override val database: String,
-    override val type: DatabaseType
+    override val type: DatabaseType,
+    private val subtypeRegistry: SubtypeRegistry
 ) : PersistenceManager {
 
     private val logger = LoggerFactory.getLogger(NonTransactionalPersistenceManager::class.java)
@@ -51,4 +53,12 @@ class NonTransactionalPersistenceManager(
 //            throw e
 //        }
 //    }
+
+    override fun registerSubtype(baseClass: Class<*>, name: String, subClass: Class<*>) {
+        subtypeRegistry.register(baseClass, name, subClass)
+    }
+
+    override fun registerSubtypes(baseClass: Class<*>, vararg subtypes: Pair<String, Class<*>>) {
+        subtypeRegistry.register(baseClass, *subtypes)
+    }
 }

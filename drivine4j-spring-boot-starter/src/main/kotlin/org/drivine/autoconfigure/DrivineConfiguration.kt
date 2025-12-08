@@ -28,8 +28,14 @@ class DrivineConfiguration {
 
     @Bean
     @ConditionalOnMissingBean
-    fun databaseRegistry(dataSourceMap: DataSourceMap): DatabaseRegistry {
-        return DatabaseRegistry(dataSourceMap)
+    fun subtypeRegistry(): org.drivine.mapper.SubtypeRegistry {
+        return org.drivine.mapper.SubtypeRegistry()
+    }
+
+    @Bean
+    @ConditionalOnMissingBean
+    fun databaseRegistry(dataSourceMap: DataSourceMap, subtypeRegistry: org.drivine.mapper.SubtypeRegistry): DatabaseRegistry {
+        return DatabaseRegistry(dataSourceMap, subtypeRegistry)
     }
 
     @Bean

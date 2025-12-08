@@ -1,6 +1,7 @@
 package org.drivine.manager
 
 import org.drivine.connection.DatabaseType
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.transaction.TransactionContextHolder
 import org.slf4j.LoggerFactory
@@ -9,7 +10,8 @@ class DelegatingPersistenceManager(
     override val database: String,
     override val type: DatabaseType,
     val contextHolder: TransactionContextHolder,
-    val factory: PersistenceManagerFactory
+    val factory: PersistenceManagerFactory,
+    private val subtypeRegistry: SubtypeRegistry
 ) : PersistenceManager {
 
     private val logger = LoggerFactory.getLogger(DelegatingPersistenceManager::class.java)
@@ -46,5 +48,13 @@ class DelegatingPersistenceManager(
         }
         logger.debug("Using persistence manager: $type")
         return factory.get(database, type)
+    }
+
+    override fun registerSubtype(baseClass: Class<*>, name: String, subClass: Class<*>) {
+        subtypeRegistry.register(baseClass, name, subClass)
+    }
+
+    override fun registerSubtypes(baseClass: Class<*>, vararg subtypes: Pair<String, Class<*>>) {
+        subtypeRegistry.register(baseClass, *subtypes)
     }
 }

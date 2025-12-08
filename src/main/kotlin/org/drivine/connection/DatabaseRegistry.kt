@@ -1,10 +1,15 @@
 package org.drivine.connection
 
+import org.drivine.mapper.SubtypeRegistry
+
 /**
  * Registry of database connection providers.
  * Must be configured as a bean in your Spring configuration.
  */
-class DatabaseRegistry(dataSourceMap: DataSourceMap) {
+class DatabaseRegistry(
+    dataSourceMap: DataSourceMap,
+    val subtypeRegistry: SubtypeRegistry = SubtypeRegistry()
+) {
 
     private val providers: MutableMap<String, ConnectionProvider> = mutableMapOf()
 
@@ -15,7 +20,7 @@ class DatabaseRegistry(dataSourceMap: DataSourceMap) {
     }
 
     fun builder(): ConnectionProviderBuilder {
-        return ConnectionProviderBuilder(this)
+        return ConnectionProviderBuilder(this, subtypeRegistry)
     }
 
     fun connectionProvider(name: String = "default"): ConnectionProvider? {

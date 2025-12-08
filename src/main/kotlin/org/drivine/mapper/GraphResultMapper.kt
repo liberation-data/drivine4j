@@ -2,7 +2,9 @@ package org.drivine.mapper
 
 import org.drivine.query.QuerySpecification
 
-abstract class GraphResultMapper : ResultMapper {
+abstract class GraphResultMapper(
+    protected val subtypeRegistry: SubtypeRegistry? = null
+) : ResultMapper {
 
     override fun <T : Any> mapQueryResults(results: List<Any>, spec: QuerySpecification<T>): List<T> {
         // Get the chain of specs from original to final
@@ -14,7 +16,14 @@ abstract class GraphResultMapper : ResultMapper {
         // Process each spec in the chain
         specChain.forEach { chainSpec ->
             chainSpec.postProcessors.forEach { processor ->
-                results = processor.apply(results)
+                // Inject subtypeRegistry into TransformPostProcessor
+                val processedProcessor = if (processor is TransformPostProcessor<*, *> && subtypeRegistry != null) {
+                    @Suppress("UNCHECKED_CAST")
+                    processor.withSubtypeRegistry(subtypeRegistry) as ResultPostProcessor<Any, Any>
+                } else {
+                    processor
+                }
+                results = processedProcessor.apply(results)
             }
         }
 

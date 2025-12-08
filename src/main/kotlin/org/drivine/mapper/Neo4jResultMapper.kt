@@ -7,7 +7,9 @@ import org.neo4j.driver.internal.value.PointValue
 import org.neo4j.driver.internal.value.RelationshipValue
 import java.util.*
 
-open class Neo4jResultMapper : GraphResultMapper() {
+open class Neo4jResultMapper(
+    subtypeRegistry: SubtypeRegistry? = null
+) : GraphResultMapper(subtypeRegistry) {
 
     override fun keys(record: Any): List<String> {
         val rec = record as Record

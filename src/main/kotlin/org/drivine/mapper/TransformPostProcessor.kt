@@ -5,13 +5,17 @@ import com.fasterxml.jackson.annotation.JsonTypeInfo
 import org.neo4j.driver.internal.value.MapValue
 import org.neo4j.driver.Value
 
-class TransformPostProcessor<S, T>(private val type: Class<T>) : ResultPostProcessor<S, T> {
+class TransformPostProcessor<S, T>(
+    private val type: Class<T>,
+    private val subtypeRegistry: SubtypeRegistry? = null
+) : ResultPostProcessor<S, T> {
 
     private val objectMapper = Neo4jObjectMapper.instance
 
     // Cache for subtype mappings to avoid repeated reflection
     private val subtypeMap: Map<String, Class<*>>? by lazy {
-        buildSubtypeMap(type)
+        // First check the dynamic registry, then fall back to @JsonSubTypes annotation
+        subtypeRegistry?.getSubtypes(type) ?: buildSubtypeMap(type)
     }
 
     override fun apply(results: List<S>): List<T> {
@@ -74,6 +78,14 @@ class TransformPostProcessor<S, T>(private val type: Class<T>) : ResultPostProce
         }
 
         return null
+    }
+
+    /**
+     * Creates a new TransformPostProcessor with the given SubtypeRegistry.
+     * Used internally by the ResultMapper to inject the registry at query time.
+     */
+    fun withSubtypeRegistry(registry: SubtypeRegistry): TransformPostProcessor<S, T> {
+        return TransformPostProcessor(type, registry)
     }
 
     override fun toString(): String = "transform(${type.simpleName})"

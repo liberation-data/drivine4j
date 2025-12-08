@@ -1,6 +1,7 @@
 package org.drivine.connection
 
 import org.drivine.mapper.Neo4jResultMapper
+import org.drivine.mapper.SubtypeRegistry
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
@@ -17,7 +18,8 @@ class Neo4jConnectionProvider(
     private val password: String?,
     private val database: String?,
     private val protocol: String = "bolt",
-    private val config: Map<String, Any>
+    private val config: Map<String, Any>,
+    override val subtypeRegistry: SubtypeRegistry? = null
 ) : ConnectionProvider {
 
     private val driver: Driver = GraphDatabase.driver(
@@ -27,7 +29,7 @@ class Neo4jConnectionProvider(
 
     override fun connect(): Connection {
         val session: Session = driver.session(SessionConfig.forDatabase(database ?: "neo4j"))
-        val connection = Neo4jConnection(session, Neo4jResultMapper())
+        val connection = Neo4jConnection(session, Neo4jResultMapper(subtypeRegistry), subtypeRegistry)
         return connection
     }
 

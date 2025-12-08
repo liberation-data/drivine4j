@@ -59,4 +59,47 @@ interface PersistenceManager {
      * @param spec
      */
 //    fun <T> openCursor(spec: CursorSpecification<T>): Cursor<T>
+
+    /**
+     * Registers a subtype for polymorphic deserialization.
+     * This allows Jackson to correctly deserialize class hierarchies based on Neo4j labels or type properties.
+     *
+     * Example:
+     * ```kotlin
+     * // Define hierarchy
+     * sealed class WebUser {
+     *     abstract val id: String
+     * }
+     * data class RegisteredUser(override val id: String, val email: String) : WebUser()
+     * data class AnonymousUser(override val id: String, val sessionId: String) : WebUser()
+     *
+     * // Register subtypes
+     * manager.registerSubtype(WebUser::class.java, "RegisteredUser", RegisteredUser::class.java)
+     * manager.registerSubtype(WebUser::class.java, "AnonymousUser", AnonymousUser::class.java)
+     *
+     * // Now queries using .transform(WebUser::class.java) will correctly deserialize to subtypes
+     * ```
+     *
+     * @param baseClass The base class or interface
+     * @param name The subtype name (should match Neo4j label or type property)
+     * @param subClass The concrete subtype class
+     */
+    fun registerSubtype(baseClass: Class<*>, name: String, subClass: Class<*>)
+
+    /**
+     * Registers multiple subtypes at once for a base class.
+     *
+     * Example:
+     * ```kotlin
+     * manager.registerSubtypes(
+     *     WebUser::class.java,
+     *     "RegisteredUser" to RegisteredUser::class.java,
+     *     "AnonymousUser" to AnonymousUser::class.java
+     * )
+     * ```
+     *
+     * @param baseClass The base class or interface
+     * @param subtypes Vararg of name-to-class pairs
+     */
+    fun registerSubtypes(baseClass: Class<*>, vararg subtypes: Pair<String, Class<*>>)
 }

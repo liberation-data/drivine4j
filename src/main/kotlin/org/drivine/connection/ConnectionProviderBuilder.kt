@@ -1,9 +1,13 @@
 package org.drivine.connection
 
 import org.drivine.DrivineException
+import org.drivine.mapper.SubtypeRegistry
 import org.slf4j.LoggerFactory
 
-class ConnectionProviderBuilder(private val registry: DatabaseRegistry) {
+class ConnectionProviderBuilder(
+    private val registry: DatabaseRegistry,
+    private val subtypeRegistry: SubtypeRegistry? = null
+) {
     private val logger = LoggerFactory.getLogger(ConnectionProviderBuilder::class.java)
 
     // Common properties
@@ -99,7 +103,8 @@ class ConnectionProviderBuilder(private val registry: DatabaseRegistry) {
                 "maxConnectionPoolSize" to poolMax
             )
                 .filterValues { it != null }
-                .mapValues { it.value as Any }
+                .mapValues { it.value as Any },
+            subtypeRegistry
         )
     }
 

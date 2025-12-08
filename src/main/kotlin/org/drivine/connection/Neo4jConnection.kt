@@ -3,6 +3,7 @@ package org.drivine.connection
 import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.ResultMapper
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.Neo4jSpecCompiler
 import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
@@ -14,7 +15,8 @@ import java.time.Instant
 
 class Neo4jConnection(
     private val session: Session,
-    private val resultMapper: ResultMapper
+    private val resultMapper: ResultMapper,
+    val subtypeRegistry: SubtypeRegistry? = null
 ) : Connection {
 
     private val logger: Logger = LoggerFactory.getLogger(Neo4jConnection::class.java)

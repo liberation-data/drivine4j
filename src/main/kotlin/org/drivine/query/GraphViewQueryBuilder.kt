@@ -121,8 +121,10 @@ ${returnFields.joinToString(",\n")}
             return varName
         }
         val fieldMappings = fields.joinToString(",\n        ") { "$it: $sourceVar.$it" }
+        // Include labels for polymorphic deserialization support
         return """$varName {
-        $fieldMappings
+        $fieldMappings,
+        labels: labels($sourceVar)
     }"""
     }
 
@@ -284,8 +286,10 @@ ${returnFields.joinToString(",\n")}
         // It's a GraphFragment, just project its fields with explicit mapping
         val fields = getFragmentFields(targetType)
         val fieldMappings = fields.joinToString(",\n            ") { "$it: $varName.$it" }
+        // Include labels for polymorphic deserialization support
         return """$varName {
-            $fieldMappings
+            $fieldMappings,
+            labels: labels($varName)
         }"""
     }
 
@@ -341,10 +345,12 @@ ${returnFields.joinToString(",\n")}
                 "$it: ${nestedTargetAlias}.$it"
             }
 
+            // Include labels for polymorphic deserialization support
             val nestedPattern = """[
                 ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |
                 ${nestedTargetAlias} {
-                    $nestedFieldMappings
+                    $nestedFieldMappings,
+                    labels: labels(${nestedTargetAlias})
                 }
             ]"""
 

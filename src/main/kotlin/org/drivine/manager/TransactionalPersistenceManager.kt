@@ -2,6 +2,7 @@ package org.drivine.manager
 
 import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.transaction.DrivineTransactionObject
 import org.drivine.transaction.TransactionContextHolder
@@ -10,7 +11,8 @@ import org.drivine.transaction.TransactionContextHolder
 class TransactionalPersistenceManager(
     private val contextHolder: TransactionContextHolder,
     override val database: String,
-    override val type: DatabaseType
+    override val type: DatabaseType,
+    private val subtypeRegistry: SubtypeRegistry
 ) : PersistenceManager {
 
     private val finderOperations: FinderOperations = FinderOperations(this)
@@ -52,5 +54,13 @@ class TransactionalPersistenceManager(
             )
         }
         return txObject
+    }
+
+    override fun registerSubtype(baseClass: Class<*>, name: String, subClass: Class<*>) {
+        subtypeRegistry.register(baseClass, name, subClass)
+    }
+
+    override fun registerSubtypes(baseClass: Class<*>, vararg subtypes: Pair<String, Class<*>>) {
+        subtypeRegistry.register(baseClass, *subtypes)
     }
 }

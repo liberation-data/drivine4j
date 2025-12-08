@@ -32,6 +32,9 @@ class GraphObjectManager(
      * @return List of graph object instances
      */
     fun <T : Any> loadAll(graphClass: Class<T>): List<T> {
+        // Auto-register subtypes if this is a sealed/abstract class
+        autoRegisterSubtypesIfNeeded(graphClass)
+
         val builder = GraphObjectQueryBuilder.forClass(graphClass)
         val query = builder.buildQuery()
 
@@ -45,6 +48,50 @@ class GraphObjectManager(
         snapshotResults(graphClass, results)
 
         return results
+    }
+
+    /**
+     * Auto-registers subtypes for a class hierarchy based on Neo4j labels.
+     * For sealed classes and classes with @JsonSubTypes, automatically registers all subclasses
+     * using their simple name as the discriminator.
+     * The TransformPostProcessor will use Neo4j labels to determine the concrete type.
+     */
+    private fun autoRegisterSubtypesIfNeeded(graphClass: Class<*>) {
+        val kotlinClass = graphClass.kotlin
+
+        // First, check for Jackson's @JsonSubTypes annotation (works for both Java and Kotlin)
+        val jsonSubTypes = graphClass.getAnnotation(com.fasterxml.jackson.annotation.JsonSubTypes::class.java)
+        if (jsonSubTypes != null) {
+            jsonSubTypes.value.forEach { subType ->
+                persistenceManager.registerSubtype(graphClass, subType.name, subType.value.java)
+            }
+            return
+        }
+
+        // Second, check if this is a Kotlin sealed class
+        if (kotlinClass.isSealed) {
+            kotlinClass.sealedSubclasses.forEach { subclass ->
+                val subclassJava = subclass.java
+
+                // Extract labels from @NodeFragment annotation to use as discriminators
+                val nodeFragment = subclassJava.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
+                if (nodeFragment != null) {
+                    // Register using each label that's NOT in the base class labels
+                    val baseFragment = graphClass.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
+                    val baseLabels = baseFragment?.labels?.toSet() ?: emptySet()
+                    val subLabels = nodeFragment.labels.toSet()
+                    val distinctLabels = subLabels - baseLabels
+
+                    // Register using the distinct labels
+                    distinctLabels.forEach { label ->
+                        persistenceManager.registerSubtype(graphClass, label, subclassJava)
+                    }
+                }
+
+                // Also register using simple class name as fallback
+                persistenceManager.registerSubtype(graphClass, subclass.simpleName ?: subclassJava.simpleName, subclassJava)
+            }
+        }
     }
 
     /**
@@ -83,6 +130,9 @@ class GraphObjectManager(
         queryObject: Q,
         spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
     ): List<T> {
+        // Auto-register subtypes if this is a sealed/abstract class
+        autoRegisterSubtypesIfNeeded(graphClass)
+
         val querySpec = org.drivine.query.dsl.GraphQuerySpec(queryObject)
         querySpec.spec()
 
@@ -133,6 +183,9 @@ class GraphObjectManager(
      * @return The graph object instance, or null if not found
      */
     fun <T : Any> load(id: String, graphClass: Class<T>): T? {
+        // Auto-register subtypes if this is a sealed/abstract class
+        autoRegisterSubtypesIfNeeded(graphClass)
+
         val builder = GraphObjectQueryBuilder.forClass(graphClass)
         val whereClause = builder.buildIdWhereClause("id")
         val query = builder.buildQuery(whereClause)
@@ -155,21 +208,44 @@ class GraphObjectManager(
     /**
      * Takes snapshots of loaded objects for dirty tracking.
      * Delegates to SessionManager to handle the snapshotting details.
+     *
+     * For polymorphic results (when graphClass is abstract/sealed), snapshot each object
+     * using its actual runtime class rather than the query target class.
      */
     private fun <T : Any> snapshotResults(graphClass: Class<T>, results: List<T>) {
         if (results.isEmpty()) return
 
-        // Get the fragment model and root field name (for Views, use root fragment)
-        val (fragmentModel, rootFragmentFieldName) = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-            val viewModel = org.drivine.model.GraphViewModel.from(graphClass)
-            val fragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
-            Pair(fragmentModel, viewModel.rootFragment.fieldName)
-        } else {
-            Pair(FragmentModel.from(graphClass), null)
-        }
+        // Check if the graphClass is abstract or sealed (indicates polymorphic query)
+        val isPolymorphic = graphClass.kotlin.isAbstract || graphClass.kotlin.isSealed
 
-        // Let SessionManager handle the snapshotting
-        sessionManager.snapshotAll(results, fragmentModel, rootFragmentFieldName)
+        if (isPolymorphic) {
+            // Snapshot each object using its actual runtime class
+            results.forEach { obj ->
+                val actualClass = obj.javaClass
+
+                val (fragmentModel, rootFragmentFieldName) = if (actualClass.isAnnotationPresent(GraphView::class.java)) {
+                    val viewModel = org.drivine.model.GraphViewModel.from(actualClass)
+                    val fragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
+                    Pair(fragmentModel, viewModel.rootFragment.fieldName)
+                } else {
+                    Pair(FragmentModel.from(actualClass), null)
+                }
+
+                sessionManager.snapshot(obj, fragmentModel, rootFragmentFieldName)
+            }
+        } else {
+            // Non-polymorphic: use the query target class for all results
+            val (fragmentModel, rootFragmentFieldName) = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
+                val viewModel = org.drivine.model.GraphViewModel.from(graphClass)
+                val fragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
+                Pair(fragmentModel, viewModel.rootFragment.fieldName)
+            } else {
+                Pair(FragmentModel.from(graphClass), null)
+            }
+
+            // Let SessionManager handle the snapshotting
+            sessionManager.snapshotAll(results, fragmentModel, rootFragmentFieldName)
+        }
     }
 
     /**

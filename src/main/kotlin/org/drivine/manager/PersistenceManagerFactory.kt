@@ -52,9 +52,9 @@ class PersistenceManagerFactory(
             ?: throw DrivineException("No database is registered under name: $name")
 
         managers[name] = PersistenceManagerEntry(
-            transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type),
-            nonTransactional = NonTransactionalPersistenceManager(connectionProvider, name, connectionProvider.type),
-            delegating = DelegatingPersistenceManager(name, connectionProvider.type, contextHolder, this)
+            transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type, registry.subtypeRegistry),
+            nonTransactional = NonTransactionalPersistenceManager(connectionProvider, name, connectionProvider.type, registry.subtypeRegistry),
+            delegating = DelegatingPersistenceManager(name, connectionProvider.type, contextHolder, this, registry.subtypeRegistry)
         )
     }
 }

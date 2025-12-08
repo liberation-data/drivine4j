@@ -37,16 +37,31 @@ class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObje
             ""
         }
 
-        // Build field mappings
-        val fieldMappings = fragmentModel.fields.joinToString(",\n    ") {
-            "${it.name}: $nodeAlias.${it.name}"
-        }
+        // Check if this is a polymorphic query (abstract/sealed class)
+        val isPolymorphic = fragmentModel.clazz.kotlin.isAbstract || fragmentModel.clazz.kotlin.isSealed
 
-        val returnClause = """
+        // Include labels for polymorphic deserialization support
+        val returnClause = if (isPolymorphic) {
+            // For polymorphic types, include all properties using .*
+            """
+
+WITH properties($nodeAlias) AS props, labels($nodeAlias) AS lbls
+RETURN props {
+    .*,
+    labels: lbls
+} AS result"""
+        } else {
+            // For concrete types, list specific fields
+            val fieldMappings = fragmentModel.fields.joinToString(",\n    ") {
+                "${it.name}: $nodeAlias.${it.name}"
+            }
+            """
 
 RETURN {
-    $fieldMappings
+    $fieldMappings,
+    labels: labels($nodeAlias)
 } AS result"""
+        }
 
         // Add ORDER BY clause if provided
         val orderBySection = if (orderByClause != null) {
