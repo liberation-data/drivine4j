@@ -850,5 +850,5 @@ Apache License 2.0
 
 ## Links
 
-- GitHub: https://github.com/your-org/drivine4j
-- Issues: https://github.com/your-org/drivine4j/issues
+- GitHub: https://github.com/liberation-data/drivine4j
+- Issues: https://github.com/liberation-data/drivine4j/issues
