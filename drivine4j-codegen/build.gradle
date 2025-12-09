@@ -1,6 +1,10 @@
 plugins {
     id 'org.jetbrains.kotlin.jvm'
+    id 'maven-publish'
 }
+
+group = 'org.drivine'
+version = rootProject.version
 
 repositories {
     mavenCentral()
@@ -34,4 +38,41 @@ kotlin {
 
 test {
     useJUnitPlatform()
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+
+            artifactId = 'drivine4j-codegen'
+
+            pom {
+                name = 'Drivine4j Code Generation'
+                description = 'KSP code generator for Drivine4j - generates type-safe query DSL for GraphView classes'
+                url = 'https://github.com/liberation-data/drivine4j'
+
+                licenses {
+                    license {
+                        name = 'Apache License 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'jasperblues'
+                        name = 'Jasper Blues'
+                        email = 'jasper@liberation-data.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/liberation-data/drivine4j.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/liberation-data/drivine4j.git'
+                    url = 'https://github.com/liberation-data/drivine4j'
+                }
+            }
+        }
+    }
 }

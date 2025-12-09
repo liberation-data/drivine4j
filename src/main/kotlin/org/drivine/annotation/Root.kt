@@ -16,6 +16,6 @@ package org.drivine.annotation
  * )
  * ```
  */
-@Target(AnnotationTarget.PROPERTY)
+@Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class Root

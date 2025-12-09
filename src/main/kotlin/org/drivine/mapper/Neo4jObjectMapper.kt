@@ -38,7 +38,7 @@ object Neo4jObjectMapper {
             // Deserialization configuration - ignore unknown properties for graph evolution
             configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
-            // Serialization configuration - Neo4j-compatible types
+            // Serialization configuration - Neo4j-compatible typesxD
             registerModule(JavaTimeModule())
             disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
 

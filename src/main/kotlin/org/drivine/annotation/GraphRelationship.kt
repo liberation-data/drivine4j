@@ -7,7 +7,7 @@ enum class Direction {
 }
 
 
-@Target(AnnotationTarget.PROPERTY)
+@Target(AnnotationTarget.FIELD, AnnotationTarget.PROPERTY)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class GraphRelationship(
     val type: String,                 // Neo4j rel type, e.g. "HAS_HOLIDAY"

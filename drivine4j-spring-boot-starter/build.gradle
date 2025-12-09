@@ -15,6 +15,10 @@ dependencies {
     // Core drivine4j library
     api project(':')
 
+    // Code generation - users can apply as ksp("org.drivine:drivine4j-codegen")
+    // Making it api scope so users don't need to specify the version
+    api project(':drivine4j-codegen')
+
     // Spring Boot
     implementation(platform('org.springframework.boot:spring-boot-dependencies:3.5.7'))
     implementation 'org.springframework.boot:spring-boot-autoconfigure'
