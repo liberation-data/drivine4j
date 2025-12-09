@@ -1,6 +1,5 @@
 package org.drivine.autoconfigure
 
-import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.manager.GraphObjectManagerFactory
@@ -19,12 +18,6 @@ import org.springframework.transaction.PlatformTransactionManager
  */
 @Configuration
 class DrivineConfiguration {
-
-    @Bean
-    @ConditionalOnMissingBean
-    fun neo4jObjectMapper(): ObjectMapper {
-        return Neo4jObjectMapper.instance
-    }
 
     @Bean
     @ConditionalOnMissingBean
@@ -62,9 +55,8 @@ class DrivineConfiguration {
     @Bean
     @ConditionalOnMissingBean
     fun graphObjectManagerFactory(
-        persistenceManagerFactory: PersistenceManagerFactory,
-        objectMapper: ObjectMapper
+        persistenceManagerFactory: PersistenceManagerFactory
     ): GraphObjectManagerFactory {
-        return GraphObjectManagerFactory(persistenceManagerFactory, objectMapper)
+        return GraphObjectManagerFactory(persistenceManagerFactory, Neo4jObjectMapper.instance)
     }
 }
