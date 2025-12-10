@@ -24,7 +24,18 @@ import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Java test demonstrating @GraphView with @GraphRelationship annotations.
- * This mirrors the Kotlin GraphObjectManagerTests but uses pure Java.
+ * Shows that GraphViews work fully with Java classes at runtime, including:
+ * - Generic collections (List<T>, Set<T>) via Java reflection
+ * - Nested GraphView relationships
+ * - Polymorphic types and enums
+ *
+ * NOTE: The type-safe DSL generation (KSP) only works for Kotlin source files.
+ * For the best experience in Java projects:
+ * - Define @GraphView classes in Kotlin (to get DSL generation)
+ * - Your @NodeFragment classes can be in Java or Kotlin
+ * - Everything works at runtime regardless of language
+ *
+ * See README.md "Java Interoperability" section for details and recommended patterns.
  */
 @SpringBootTest(classes = TestAppContext.class)
 @Transactional

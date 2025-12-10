@@ -82,6 +82,13 @@ dependencies {
 
 If you want to use `GraphObjectManager` with the type-safe query DSL, you need to add the code generation processor.
 
+> **Note for Java Projects:** The code generator (KSP) only processes Kotlin source files. For the best experience:
+> - Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
+> - Your `@NodeFragment` classes can be in Java or Kotlin
+> - At runtime, both Java and Kotlin classes work fully with `GraphObjectManager`
+>
+> See the [Java Interoperability](#java-interoperability) section for details and examples.
+
 #### Gradle (Kotlin DSL)
 
 ```kotlin
@@ -830,6 +837,113 @@ class TestConfig {
         boltUrl.substringAfter("bolt://").substringAfter(":").toIntOrNull() ?: 7687
 }
 ```
+
+## Java Interoperability
+
+Drivine4j provides full runtime support for Java, but with some considerations for the type-safe DSL.
+
+### What Works in Java
+
+✅ **Full Runtime Support:**
+- All `@NodeFragment` classes work in both Java and Kotlin
+- `@GraphView` classes work at runtime in both languages
+- `@RelationshipFragment` classes work in both languages
+- `GraphObjectManager` loading and saving works with Java classes
+- Polymorphic types work with Java classes (using `@JsonSubTypes` or manual registration)
+
+✅ **Java Features:**
+- Generic collections (`List<Person>`) are properly handled using Java reflection
+- Nested `@GraphView` relationships work
+- All annotations (`@Root`, `@GraphRelationship`, `@NodeId`, etc.) work on Java fields
+
+### Type-Safe DSL Limitation
+
+❌ **DSL Generation (KSP limitation):**
+- The code generator only processes **Kotlin source files**
+- Java `@GraphView` classes won't get generated DSL
+- You can still load them, just without the type-safe query builder
+
+### Recommended Pattern for Java Projects
+
+**Best Practice:** Define `@GraphView` classes in Kotlin, everything else can be Java.
+
+```java
+// Java fragments work great!
+@NodeFragment(labels = {"Person"})
+public class Person {
+    @NodeId public UUID uuid;
+    public String name;
+    public String bio;
+}
+
+@NodeFragment(labels = {"Organization"})
+public class Organization {
+    @NodeId public UUID uuid;
+    public String name;
+}
+```
+
+```kotlin
+// Define GraphViews in Kotlin to get DSL generation
+@GraphView
+data class PersonContext(
+    @Root val person: Person,  // Java class!
+    @GraphRelationship(type = "WORKS_FOR")
+    val worksFor: List<Organization>  // Java class!
+)
+```
+
+```java
+// Use from Java with full type-safe DSL support!
+public class PersonService {
+    @Autowired
+    private GraphObjectManager graphObjectManager;
+
+    public List<PersonContext> findByOrganization(String orgName) {
+        return graphObjectManager.loadAll(
+            PersonContext.class,
+            spec -> {
+                spec.where(ctx -> {
+                    ctx.getQuery().getWorksFor().getName().eq(orgName);
+                });
+                return null;
+            }
+        );
+    }
+}
+```
+
+### Alternative: Pure Java Without DSL
+
+If you prefer pure Java, you can still use `GraphObjectManager` without the DSL:
+
+```java
+@GraphView
+public class JavaPersonContext {
+    @Root public Person person;
+
+    @GraphRelationship(type = "WORKS_FOR", direction = Direction.OUTGOING)
+    public List<Organization> worksFor;
+}
+
+// Works at runtime - no DSL, but fully functional
+List<JavaPersonContext> all = graphObjectManager.loadAll(JavaPersonContext.class);
+JavaPersonContext person = graphObjectManager.load(uuid, JavaPersonContext.class);
+```
+
+### Summary
+
+| Feature | Java Support | Notes |
+|---------|-------------|-------|
+| `@NodeFragment` | ✅ Full | Works identically in Java and Kotlin |
+| `@RelationshipFragment` | ✅ Full | Works identically in Java and Kotlin |
+| `@GraphView` runtime | ✅ Full | Loading, saving, polymorphism all work |
+| `@GraphView` DSL generation | ❌ Kotlin only | KSP limitation |
+| Generic collections | ✅ Full | Java reflection handles `List<T>`, `Set<T>` |
+| Nested relationships | ✅ Full | Works with Java classes |
+| Polymorphic types | ✅ Full | Works with `@JsonSubTypes` |
+
+**Recommendation:** Use Kotlin for `@GraphView` definitions to get the type-safe DSL, and use Java for everything else if preferred.
 
 ## Building from Source
 
