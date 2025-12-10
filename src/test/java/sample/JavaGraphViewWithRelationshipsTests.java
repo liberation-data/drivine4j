@@ -397,4 +397,165 @@ public class JavaGraphViewWithRelationshipsTests {
 
         System.out.println("Enum properly deserialized: " + issue.getIssue().getStateReason());
     }
+
+    // ========================================
+    // Simple String-based Filtering (No DSL Required)
+    // ========================================
+
+    @Test
+    public void testSimpleWhereClauseFilteringOnRootProperty() {
+        // Simple WHERE clause - no DSL required!
+        List<JavaIssueWithAssignees> results = graphObjectManager.loadAll(
+            JavaIssueWithAssignees.class,
+            "issue.state = 'open'"
+        );
+
+        System.out.println("Found " + results.size() + " open issues using simple WHERE clause");
+
+        assertFalse(results.isEmpty());
+        results.forEach(issue -> {
+            assertEquals("open", issue.getIssue().getState());
+            System.out.println("  - " + issue.getIssue().getTitle() + " (state: " + issue.getIssue().getState() + ")");
+        });
+    }
+
+    @Test
+    public void testSimpleWhereClauseFilteringOnDirectRelationship() {
+        // Filtering on relationship collections requires EXISTS or ANY in Cypher.
+        // The relationships are bound as arrays in pattern comprehensions.
+        //
+        // Example using EXISTS for relationship filtering:
+        List<JavaIssueWithAssignees> results = graphObjectManager.loadAll(
+            JavaIssueWithAssignees.class,
+            "EXISTS { (issue)-[:ASSIGNED_TO]->(p:Person) WHERE p.name = 'Jasper Blues' }"
+        );
+
+        System.out.println("Found " + results.size() + " issues assigned to Jasper Blues");
+
+        results.forEach(issue -> {
+            boolean hasJasper = issue.getAssignedTo().stream()
+                .anyMatch(p -> "Jasper Blues".equals(p.getName()));
+            assertTrue(hasJasper);
+            System.out.println("  - " + issue.getIssue().getTitle());
+        });
+    }
+
+    @Test
+    public void testSimpleWhereClauseWithMultipleConditions() {
+        // Multiple conditions with AND
+        List<JavaIssueWithAssignees> results = graphObjectManager.loadAll(
+            JavaIssueWithAssignees.class,
+            "issue.state = 'open' AND issue.locked = false"
+        );
+
+        System.out.println("Found " + results.size() + " open, unlocked issues");
+
+        results.forEach(issue -> {
+            assertEquals("open", issue.getIssue().getState());
+            assertFalse(issue.getIssue().isLocked());
+        });
+    }
+
+    @Test
+    public void testSimpleWhereClauseWithContains() {
+        // String contains operation
+        List<JavaIssueWithAssignees> results = graphObjectManager.loadAll(
+            JavaIssueWithAssignees.class,
+            "issue.title CONTAINS 'Java'"
+        );
+
+        System.out.println("Found " + results.size() + " issues with 'Java' in title");
+
+        results.forEach(issue -> {
+            assertTrue(issue.getIssue().getTitle().contains("Java"));
+            System.out.println("  - " + issue.getIssue().getTitle());
+        });
+    }
+
+    @Test
+    public void testSimpleWhereClauseComplexityNoteForNestedGraphViews() {
+        // NOTE: Filtering on nested GraphViews is complex with string-based WHERE clauses.
+        //
+        // For 'raisedBy' (which is a nested GraphView, not a direct relationship),
+        // the generated Cypher creates nested WITH clauses and the variable names
+        // don't map directly to Java property paths.
+        //
+        // For nested GraphView filtering, use Kotlin @GraphView definitions to get
+        // the type-safe DSL which handles this complexity automatically:
+        //
+        // graphObjectManager.loadAll(RaisedAndAssignedIssue.class, spec -> {
+        //     spec.where(ctx -> {
+        //         ctx.getQuery().getRaisedBy().getPerson().getName().eq("Rod Johnson");
+        //     });
+        // });
+        //
+        // Simple string WHERE clauses work best for:
+        // - Root fragment properties: "issue.state = 'open'"
+        // - Direct relationship targets: "assignedTo_target.name = 'Alice'"
+        //
+        // They are NOT recommended for:
+        // - Nested GraphView properties (requires DSL)
+        // - Complex nested relationship hierarchies (requires DSL)
+
+        System.out.println("NOTE: For complex nested filters, use Kotlin GraphViews with DSL instead of string WHERE clauses");
+    }
+
+    @Test
+    public void testSimpleWhereClauseWithIsNull() {
+        // Test IS NULL - create data without bio first
+        UUID personUuid = UUID.randomUUID();
+        persistenceManager.execute(
+            QuerySpecification.withStatement("""
+                CREATE (p:Person:Mapped {
+                    uuid: $uuid,
+                    name: 'John Doe',
+                    createdBy: 'java-graphview-test'
+                })
+                """)
+                .bind(Map.of("uuid", personUuid.toString()))
+        );
+
+        List<JavaPersonContext> results = graphObjectManager.loadAll(
+            JavaPersonContext.class,
+            "person.bio IS NULL"
+        );
+
+        System.out.println("Found " + results.size() + " people with no bio");
+
+        boolean foundJohnDoe = results.stream()
+            .anyMatch(p -> "John Doe".equals(p.getPerson().getName()));
+        assertTrue(foundJohnDoe, "Should find John Doe with null bio");
+    }
+
+    @Test
+    public void testSimpleWhereClauseWithIsNotNull() {
+        // Filter for people with bio
+        List<JavaPersonContext> results = graphObjectManager.loadAll(
+            JavaPersonContext.class,
+            "person.bio IS NOT NULL"
+        );
+
+        System.out.println("Found " + results.size() + " people with bio");
+
+        results.forEach(person -> {
+            assertNotNull(person.getPerson().getBio());
+            System.out.println("  - " + person.getPerson().getName() + ": " + person.getPerson().getBio());
+        });
+    }
+
+    @Test
+    public void testSimpleWhereClauseWithComparison() {
+        // Numeric comparison
+        List<JavaIssueWithAssignees> results = graphObjectManager.loadAll(
+            JavaIssueWithAssignees.class,
+            "issue.id > 1000"
+        );
+
+        System.out.println("Found " + results.size() + " issues with id > 1000");
+
+        results.forEach(issue -> {
+            assertTrue(issue.getIssue().getId() > 1000);
+            System.out.println("  - Issue #" + issue.getIssue().getId() + ": " + issue.getIssue().getTitle());
+        });
+    }
 }

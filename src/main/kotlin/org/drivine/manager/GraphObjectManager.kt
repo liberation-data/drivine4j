@@ -51,6 +51,45 @@ class GraphObjectManager(
     }
 
     /**
+     * Loads instances of a graph object with a simple WHERE clause filter.
+     * This is a Java-friendly alternative to the DSL-based loadAll method.
+     *
+     * Example:
+     * ```java
+     * // Filter by root fragment property
+     * graphObjectManager.loadAll(PersonContext.class, "person.name = 'Alice'");
+     *
+     * // Filter by relationship property
+     * graphObjectManager.loadAll(PersonContext.class, "worksFor.name = 'Acme Corp'");
+     *
+     * // Multiple conditions with AND
+     * graphObjectManager.loadAll(PersonContext.class, "person.name = 'Alice' AND person.bio IS NOT NULL");
+     * ```
+     *
+     * @param graphClass The graph object class to load
+     * @param whereClause Cypher WHERE clause conditions (without the WHERE keyword)
+     * @return List of graph object instances matching the criteria
+     */
+    fun <T : Any> loadAll(graphClass: Class<T>, whereClause: String): List<T> {
+        // Auto-register subtypes if this is a sealed/abstract class
+        autoRegisterSubtypesIfNeeded(graphClass)
+
+        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val query = builder.buildQuery(whereClause, null)
+
+        val results = persistenceManager.query(
+            QuerySpecification
+                .withStatement(query)
+                .transform(graphClass)
+        )
+
+        // Snapshot loaded objects for dirty tracking
+        snapshotResults(graphClass, results)
+
+        return results
+    }
+
+    /**
      * Auto-registers subtypes for a class hierarchy based on Neo4j labels.
      * For sealed classes and classes with @JsonSubTypes, automatically registers all subclasses
      * using their simple name as the discriminator.
