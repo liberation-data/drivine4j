@@ -2,10 +2,21 @@ plugins {
     id 'org.jetbrains.kotlin.jvm'
     id 'org.jetbrains.kotlin.plugin.spring' version '2.2.0'
     id 'maven-publish'
+    id 'com.gradleup.nmcp'
+}
+
+// Apply signing plugin only when needed
+def shouldSign = project.hasProperty('sign') || System.getenv('SIGN') == 'true'
+if (shouldSign) {
+    apply plugin: 'signing'
 }
 
 group = 'org.drivine'
 version = rootProject.version
+
+java {
+    withSourcesJar()
+}
 
 repositories {
     mavenCentral()
@@ -75,5 +86,40 @@ publishing {
                 }
             }
         }
+    }
+}
+
+// Javadoc jar (empty for now - Kotlin projects typically use Dokka)
+tasks.register('javadocJar', Jar) {
+    archiveClassifier = 'javadoc'
+}
+
+// Attach javadoc jar to publication
+publishing.publications.mavenJava.artifact(tasks.named('javadocJar'))
+
+// --- Signing (required for non-SNAPSHOT releases to Maven Central) ---
+if (shouldSign) {
+    signing {
+        required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
+
+        def signingKey = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
+        def signingPassword = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+
+        if (signingKey != null && signingKey.contains('BEGIN PGP')) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        } else {
+            useGpgCmd()
+        }
+
+        sign publishing.publications.mavenJava
+    }
+}
+
+// --- Central Publishing Portal (new Maven Central) ---
+nmcp {
+    publishAllPublications {
+        username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+        password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+        publicationType = "AUTOMATIC"
     }
 }
