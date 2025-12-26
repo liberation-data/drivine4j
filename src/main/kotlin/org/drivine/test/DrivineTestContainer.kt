@@ -151,47 +151,58 @@ class DrivineTestContainer private constructor(imageName: String) : Neo4jContain
             }
         }
 
+        private const val NEO4J_VERSION = "5.26.1"
+        private const val APOC_EXTENDED_VERSION = "5.26.0"
+
         private fun createTestContainer(): DrivineTestContainer {
-            val container = DrivineTestContainer("neo4j:5.26.1-community")
+            val container = DrivineTestContainer("neo4j:$NEO4J_VERSION-community")
                 .withNeo4jConfig("dbms.logs.query.enabled", "INFO")
                 .withNeo4jConfig("dbms.logs.query.parameter_logging_enabled", "true")
                 .withAdminPassword("testpassword")
+                // APOC Core is auto-installed by Neo4j via NEO4J_PLUGINS
+                .withEnv("NEO4J_PLUGINS", "[\"apoc\"]")
+                .withNeo4jConfig("dbms.security.procedures.unrestricted", "apoc.*,gds.*")
 
-            // Try to find and mount APOC if available (optional)
-            try {
-                val apocJar = findApocJar()
-                if (apocJar != null) {
-                    container
-                        .withFileSystemBind(apocJar, "/plugins/apoc-5.26.0.jar")
-                        .withNeo4jConfig("dbms.security.procedures.unrestricted", "apoc.*")
-                        .withEnv("NEO4J_PLUGINS", "[\"apoc\"]")
-                }
-            } catch (e: Exception) {
-                println("APOC not found, continuing without it: ${e.message}")
-            }
+            // Mount APOC Extended from .m2 if available
+            findPluginJar("org.neo4j.procedure", "apoc-extended", APOC_EXTENDED_VERSION)?.let { jarPath ->
+                container.withFileSystemBind(jarPath, "/plugins/apoc-extended-$APOC_EXTENDED_VERSION.jar")
+                println("Mounted APOC Extended from: $jarPath")
+            } ?: println("APOC Extended not found in .m2 - run './gradlew dependencies' to download")
 
             container.start()
             return container
         }
 
-        private fun findApocJar(): String? {
-            // Try different common APOC locations
-            val possiblePaths = listOf(
-                Paths.get(
-                    System.getProperty("user.home"),
-                    ".m2", "repository", "org", "neo4j", "procedure", "apoc",
-                    "5.26.1", "apoc-5.26.1.jar"
-                ),
-                Paths.get(
-                    System.getProperty("user.home"),
-                    ".m2", "repository", "org", "neo4j", "procedure", "apoc-core",
-                    "5.26.1", "apoc-core-5.26.1.jar"
-                )
-            )
+        /**
+         * Find a plugin JAR in the local Maven repository (.m2) or Gradle cache.
+         *
+         * @param groupId Maven group ID (e.g., "org.neo4j.procedure")
+         * @param artifactId Maven artifact ID (e.g., "apoc-extended")
+         * @param version Version (e.g., "5.26.0")
+         * @return Path to the JAR file, or null if not found
+         */
+        private fun findPluginJar(groupId: String, artifactId: String, version: String): String? {
+            val jarName = "$artifactId-$version.jar"
+            val groupPath = groupId.replace('.', '/')
+            val userHome = System.getProperty("user.home")
 
-            return possiblePaths
-                .map { it.toString() }
-                .firstOrNull { Paths.get(it).toFile().exists() }
+            // Check Maven .m2 repository
+            val m2Path = Paths.get(userHome, ".m2", "repository", groupPath, artifactId, version, jarName)
+            if (m2Path.toFile().exists()) {
+                return m2Path.toString()
+            }
+
+            // Check Gradle cache (structure: ~/.gradle/caches/modules-2/files-2.1/{group}/{artifact}/{version}/{hash}/{jar})
+            val gradleCacheBase = Paths.get(userHome, ".gradle", "caches", "modules-2", "files-2.1", groupId, artifactId, version)
+            if (gradleCacheBase.toFile().exists()) {
+                // Search subdirectories for the jar (hash directories)
+                gradleCacheBase.toFile().walkTopDown()
+                    .filter { it.isFile && it.name == jarName }
+                    .firstOrNull()
+                    ?.let { return it.absolutePath }
+            }
+
+            return null
         }
 
         init {

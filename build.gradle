@@ -29,7 +29,15 @@ repositories {
 	mavenCentral()
 }
 
+// Configuration for Neo4j plugins (downloaded to .m2 for testcontainer mounting)
+configurations {
+	neo4jPlugins
+}
+
 dependencies {
+	// Neo4j plugins for test containers - these are server-side plugins, not Java dependencies
+	// They get mounted into the Neo4j container's /plugins directory
+	neo4jPlugins 'org.neo4j.procedure:apoc-extended:5.26.0'
 	implementation 'org.neo4j.driver:neo4j-java-driver:5.28.9'
 
 	// Boot dependencies are useful in tests and samples; publishing will use plain JAR
@@ -98,6 +106,21 @@ tasks.named('bootJar') {
 tasks.named('jar') {
 	enabled = true
 	archiveClassifier.set('')  // Remove '-plain' classifier to make it the main JAR
+}
+
+// Task to download Neo4j plugins to Gradle cache (for DrivineTestContainer)
+tasks.register('downloadNeo4jPlugins') {
+	description = 'Downloads Neo4j plugins (APOC, GDS) to Gradle cache for test containers'
+	doLast {
+		configurations.neo4jPlugins.resolve().each { file ->
+			println "Downloaded: ${file.name} -> ${file.absolutePath}"
+		}
+	}
+}
+
+// Ensure plugins are downloaded before tests run
+tasks.named('test') {
+	dependsOn 'downloadNeo4jPlugins'
 }
 
 // --- Dokka-based javadoc jar for Kotlin ---
