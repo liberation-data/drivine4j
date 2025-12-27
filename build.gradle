@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.drivine'
-version = '0.0.5'
+version = '0.0.8'
 
 base {
 	archivesName = 'drivine4j'
@@ -59,9 +59,9 @@ dependencies {
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// TestContainers
-	// Testcontainers - provided as an implementation dependency so DrivineTestContainer
-	// is available to users of the library for testing
-	implementation 'org.testcontainers:neo4j:1.19.3'
+	// Testcontainers - provided as api dependency so DrivineTestContainer and
+	// @EnableDrivineTestConfig work out-of-the-box for users without additional dependencies
+	api 'org.testcontainers:neo4j:1.19.3'
 
 	testImplementation 'org.testcontainers:testcontainers:1.19.3'
 	testImplementation 'org.testcontainers:junit-jupiter:1.19.3'
