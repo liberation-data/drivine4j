@@ -7,6 +7,8 @@ import org.drivine.model.FragmentModel
  */
 class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObjectQueryBuilder {
 
+    override val nodeAlias: String = "n"
+
     /**
      * Builds a Cypher query to load a GraphFragment.
      *
@@ -77,6 +79,27 @@ RETURN {
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("GraphFragment ${fragmentModel.className} does not have a @GraphNodeId field")
         return "n.$nodeIdField = \$$idParamName"
+    }
+
+    override fun buildDeleteQuery(whereClause: String?): String {
+        if (fragmentModel.labels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for fragment ${fragmentModel.className}. @GraphFragment must specify at least one label.")
+        }
+
+        val labelString = fragmentModel.labels.joinToString(":")
+        val matchClause = "MATCH ($nodeAlias:$labelString)"
+
+        val whereSection = if (whereClause != null) {
+            "\nWHERE $whereClause"
+        } else {
+            ""
+        }
+
+        return """
+            |$matchClause$whereSection
+            |DETACH DELETE $nodeAlias
+            |RETURN count(*) AS deleted
+        """.trimMargin()
     }
 
     companion object {

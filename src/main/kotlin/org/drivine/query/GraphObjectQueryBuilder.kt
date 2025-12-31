@@ -26,6 +26,21 @@ interface GraphObjectQueryBuilder {
      */
     fun buildIdWhereClause(idParamName: String = "id"): String
 
+    /**
+     * Builds a Cypher DELETE query with optional WHERE clause.
+     * Uses DETACH DELETE to also remove all relationships.
+     *
+     * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @return The generated Cypher DELETE query that returns the count of deleted nodes
+     */
+    fun buildDeleteQuery(whereClause: String? = null): String
+
+    /**
+     * Returns the node alias used in queries.
+     * For fragments this is "n", for views this is the root fragment field name.
+     */
+    val nodeAlias: String
+
     companion object {
         /**
          * Creates the appropriate query builder for a graph object class.

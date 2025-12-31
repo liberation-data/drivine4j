@@ -288,6 +288,151 @@ class GraphObjectManager(
     }
 
     /**
+     * Deletes a graph object (GraphView or GraphFragment) from the database by its ID.
+     * Uses DETACH DELETE to also remove all relationships.
+     *
+     * @param id The ID value of the object to delete
+     * @param graphClass The graph object class
+     * @return The number of nodes deleted (0 or 1)
+     */
+    fun <T : Any> delete(id: String, graphClass: Class<T>): Int {
+        return delete(id, graphClass, null)
+    }
+
+    /**
+     * Deletes a graph object (GraphView or GraphFragment) from the database by its ID,
+     * with an additional WHERE clause filter.
+     *
+     * Example:
+     * ```kotlin
+     * // Delete only if state is 'closed'
+     * graphObjectManager.delete(issueUuid, IssueCore::class.java, "issue.state = 'closed'")
+     * ```
+     *
+     * @param id The ID value of the object to delete
+     * @param graphClass The graph object class
+     * @param whereClause Additional WHERE clause conditions (without WHERE keyword)
+     * @return The number of nodes deleted (0 or 1)
+     */
+    fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
+        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val idCondition = builder.buildIdWhereClause("id")
+
+        val fullWhereClause = if (whereClause != null) {
+            "$idCondition AND $whereClause"
+        } else {
+            idCondition
+        }
+
+        val query = builder.buildDeleteQuery(fullWhereClause)
+
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(query)
+                .bind(mapOf("id" to id))
+                .transform(Int::class.java)
+        )
+    }
+
+    /**
+     * Deletes all graph objects (GraphViews or GraphFragments) of a given type from the database.
+     * Uses DETACH DELETE to also remove all relationships.
+     *
+     * WARNING: This will delete ALL nodes matching the labels. Use with caution.
+     *
+     * @param graphClass The graph object class
+     * @return The number of nodes deleted
+     */
+    fun <T : Any> deleteAll(graphClass: Class<T>): Int {
+        return deleteAll(graphClass, null as String?)
+    }
+
+    /**
+     * Deletes graph objects (GraphViews or GraphFragments) matching a WHERE clause filter.
+     * Uses DETACH DELETE to also remove all relationships.
+     *
+     * Example:
+     * ```kotlin
+     * // Delete all closed issues
+     * graphObjectManager.deleteAll(IssueCore::class.java, "n.state = 'closed'")
+     *
+     * // For GraphViews, use the root fragment field name as alias
+     * graphObjectManager.deleteAll(RaisedAndAssignedIssue::class.java, "issue.state = 'closed'")
+     * ```
+     *
+     * @param graphClass The graph object class
+     * @param whereClause WHERE clause conditions (without WHERE keyword)
+     * @return The number of nodes deleted
+     */
+    fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
+        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val query = builder.buildDeleteQuery(whereClause)
+
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(query)
+                .transform(Int::class.java)
+        )
+    }
+
+    /**
+     * Deletes graph objects using a type-safe query DSL.
+     * Supports filtering conditions.
+     *
+     * Example:
+     * ```kotlin
+     * graphObjectManager.deleteAll(
+     *     IssueCore::class.java,
+     *     IssueCoreQueryDsl.INSTANCE
+     * ) {
+     *     where {
+     *         this(query.state eq "closed")
+     *         this(query.locked eq true)
+     *     }
+     * }
+     * ```
+     *
+     * @param graphClass The graph object class to delete
+     * @param queryObject The query object providing property references
+     * @param spec DSL block for building the query
+     * @return The number of nodes deleted
+     */
+    fun <T : Any, Q : Any> deleteAll(
+        graphClass: Class<T>,
+        queryObject: Q,
+        spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
+    ): Int {
+        val querySpec = org.drivine.query.dsl.GraphQuerySpec(queryObject)
+        querySpec.spec()
+
+        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+
+        // Get GraphViewModel if this is a @GraphView (needed for relationship filtering)
+        val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
+            org.drivine.model.GraphViewModel.from(graphClass)
+        } else {
+            null
+        }
+
+        // Build WHERE clause from conditions
+        val whereClause = if (querySpec.conditions.isNotEmpty()) {
+            org.drivine.query.dsl.CypherGenerator.buildWhereClause(querySpec.conditions, viewModel)
+        } else null
+
+        val query = builder.buildDeleteQuery(whereClause)
+
+        // Extract bindings from conditions
+        val bindings = org.drivine.query.dsl.CypherGenerator.extractBindings(querySpec.conditions, viewModel)
+
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(query)
+                .bind(bindings)
+                .transform(Int::class.java)
+        )
+    }
+
+    /**
      * Saves a graph object (GraphView or GraphFragment) to the database.
      *
      * For objects loaded in this session, only dirty fields are written (optimized save).

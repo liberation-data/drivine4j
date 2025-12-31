@@ -10,6 +10,8 @@ import org.drivine.model.GraphViewModel
  */
 class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObjectQueryBuilder {
 
+    override val nodeAlias: String = viewModel.rootFragment.fieldName
+
     /**
      * Builds a Cypher query to load a GraphView with its root fragment and relationships.
      *
@@ -94,6 +96,31 @@ ${returnFields.joinToString(",\n")}
             ?: throw IllegalArgumentException("GraphView root fragment ${rootFragmentModel.fragmentType.name} does not have a @GraphNodeId field")
         val rootFieldName = rootFragmentModel.fieldName
         return "$rootFieldName.$nodeIdField = \$$idParamName"
+    }
+
+    override fun buildDeleteQuery(whereClause: String?): String {
+        val rootFragmentModel = viewModel.rootFragment
+        val rootFieldName = rootFragmentModel.fieldName
+
+        val fragmentLabels = getFragmentLabels(rootFragmentModel.fragmentType)
+        if (fragmentLabels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for root fragment ${rootFragmentModel.fragmentType.name}. @GraphFragment must specify at least one label.")
+        }
+
+        val labelString = fragmentLabels.joinToString(":")
+        val matchClause = "MATCH ($rootFieldName:$labelString)"
+
+        val whereSection = if (whereClause != null) {
+            "\nWHERE $whereClause"
+        } else {
+            ""
+        }
+
+        return """
+            |$matchClause$whereSection
+            |DETACH DELETE $rootFieldName
+            |RETURN count(*) AS deleted
+        """.trimMargin()
     }
 
     /**
