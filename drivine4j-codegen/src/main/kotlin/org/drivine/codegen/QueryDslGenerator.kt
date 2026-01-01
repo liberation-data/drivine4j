@@ -146,7 +146,10 @@ class QueryDslGenerator(
         val relFragmentName = relFragmentClass.simpleName.asString()
         val propertiesClassName = "${relFragmentName}Properties"
 
+        // Implement NodeReference for instanceOf() support
+        val nodeReferenceClass = ClassName("org.drivine.query.dsl", "NodeReference")
         val classBuilder = TypeSpec.classBuilder(propertiesClassName)
+            .addSuperinterface(nodeReferenceClass)
 
         // Add constructor with alias parameter
         classBuilder.primaryConstructor(
@@ -158,6 +161,13 @@ class QueryDslGenerator(
             PropertySpec.builder("alias", String::class)
                 .initializer("alias")
                 .addModifiers(KModifier.PRIVATE)
+                .build()
+        )
+        // Implement NodeReference.nodeAlias
+        classBuilder.addProperty(
+            PropertySpec.builder("nodeAlias", String::class)
+                .addModifiers(KModifier.OVERRIDE)
+                .getter(FunSpec.getterBuilder().addStatement("return alias").build())
                 .build()
         )
 
@@ -202,7 +212,10 @@ class QueryDslGenerator(
         val viewStructure = analyzeGraphViewStructure(viewClass)
         val packageName = viewClass.packageName.asString()
 
+        // Implement NodeReference for instanceOf() support
+        val nodeReferenceClass = ClassName("org.drivine.query.dsl", "NodeReference")
         val classBuilder = TypeSpec.classBuilder(propertiesClassName)
+            .addSuperinterface(nodeReferenceClass)
 
         // Add constructor with alias parameter
         classBuilder.primaryConstructor(
@@ -214,6 +227,13 @@ class QueryDslGenerator(
             PropertySpec.builder("alias", String::class)
                 .initializer("alias")
                 .addModifiers(KModifier.PRIVATE)
+                .build()
+        )
+        // Implement NodeReference.nodeAlias
+        classBuilder.addProperty(
+            PropertySpec.builder("nodeAlias", String::class)
+                .addModifiers(KModifier.OVERRIDE)
+                .getter(FunSpec.getterBuilder().addStatement("return alias").build())
                 .build()
         )
 
@@ -469,7 +489,10 @@ class QueryDslGenerator(
         hasDefaultAlias: Boolean,
         rootFieldName: String? = null
     ): TypeSpec {
+        // Implement NodeReference for instanceOf() support
+        val nodeReferenceClass = ClassName("org.drivine.query.dsl", "NodeReference")
         val classBuilder = TypeSpec.classBuilder(propertiesClassName)
+            .addSuperinterface(nodeReferenceClass)
 
         // Add constructor parameter for alias if needed
         if (needsAliasConstructor) {
@@ -489,6 +512,22 @@ class QueryDslGenerator(
                 PropertySpec.builder("alias", String::class)
                     .initializer("alias")
                     .addModifiers(KModifier.PRIVATE)
+                    .build()
+            )
+            // Implement NodeReference.nodeAlias
+            classBuilder.addProperty(
+                PropertySpec.builder("nodeAlias", String::class)
+                    .addModifiers(KModifier.OVERRIDE)
+                    .getter(FunSpec.getterBuilder().addStatement("return alias").build())
+                    .build()
+            )
+        } else {
+            // For fragments without alias constructor, add a nodeAlias property with the default alias
+            val defaultAlias = rootFieldName ?: fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }
+            classBuilder.addProperty(
+                PropertySpec.builder("nodeAlias", String::class)
+                    .addModifiers(KModifier.OVERRIDE)
+                    .initializer("\"$defaultAlias\"")
                     .build()
             )
         }

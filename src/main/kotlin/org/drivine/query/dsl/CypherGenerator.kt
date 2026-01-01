@@ -38,6 +38,10 @@ object CypherGenerator {
                     paramIndex += condition.targetConditions.size
                     result
                 }
+                is WhereCondition.LabelCondition -> {
+                    // Label conditions don't use parameters
+                    buildLabelCondition(condition)
+                }
                 is WhereCondition.OrCondition -> {
                     val result = buildOrCondition(condition, viewModel, paramIndex)
                     paramIndex += countParameters(condition.conditions)
@@ -45,6 +49,15 @@ object CypherGenerator {
                 }
             }
         }
+    }
+
+    /**
+     * Builds a Cypher condition for a label check.
+     * Example: "webUser:WebUser:Anonymous"
+     */
+    private fun buildLabelCondition(condition: WhereCondition.LabelCondition): String {
+        val labelClause = condition.labels.joinToString(":") { it }
+        return "${condition.alias}:$labelClause"
     }
 
     /**
@@ -91,6 +104,21 @@ object CypherGenerator {
                 }
                 is WhereCondition.RelationshipCondition -> {
                     grouped.add(condition)
+                }
+                is WhereCondition.LabelCondition -> {
+                    // Check if the label condition is for a relationship target
+                    if (condition.alias in relationshipNames) {
+                        // Convert to a RelationshipCondition with label filter
+                        grouped.add(
+                            WhereCondition.RelationshipCondition(
+                                relationshipName = condition.alias,
+                                targetConditions = listOf(condition)
+                            )
+                        )
+                    } else {
+                        // Root fragment label condition - add directly
+                        grouped.add(condition)
+                    }
                 }
                 is WhereCondition.OrCondition -> {
                     // DON'T group conditions within OR - they need to stay separate
@@ -159,6 +187,9 @@ object CypherGenerator {
                     is WhereCondition.RelationshipCondition -> {
                         // Recursively extract bindings from nested conditions
                         extractRecursive(condition.targetConditions)
+                    }
+                    is WhereCondition.LabelCondition -> {
+                        // Label conditions don't have parameters - nothing to extract
                     }
                     is WhereCondition.OrCondition -> {
                         // Recursively extract bindings from OR conditions
@@ -254,6 +285,10 @@ object CypherGenerator {
                     }
                     is WhereCondition.RelationshipCondition -> {
                         throw UnsupportedOperationException("Should not reach here - nested conditions separated")
+                    }
+                    is WhereCondition.LabelCondition -> {
+                        // Label conditions don't use parameters
+                        buildLabelCondition(targetCondition)
                     }
                     is WhereCondition.OrCondition -> {
                         val result = buildOrCondition(targetCondition, viewModel, paramIndex)
@@ -434,6 +469,19 @@ object CypherGenerator {
                     paramIndex += subCondition.targetConditions.size
                     result
                 }
+                is WhereCondition.LabelCondition -> {
+                    // Label conditions don't use parameters
+                    // But if it's for a relationship target, wrap in EXISTS
+                    if (subCondition.alias in relationshipNames) {
+                        val relCondition = WhereCondition.RelationshipCondition(
+                            relationshipName = subCondition.alias,
+                            targetConditions = listOf(subCondition)
+                        )
+                        buildRelationshipCondition(relCondition, viewModel, paramIndex)
+                    } else {
+                        buildLabelCondition(subCondition)
+                    }
+                }
                 is WhereCondition.OrCondition -> {
                     // Nested OR: recursively build it
                     val result = buildOrCondition(subCondition, viewModel, paramIndex)
@@ -454,6 +502,7 @@ object CypherGenerator {
             when (condition) {
                 is WhereCondition.PropertyCondition -> 1
                 is WhereCondition.RelationshipCondition -> condition.targetConditions.size
+                is WhereCondition.LabelCondition -> 0  // Label conditions don't have parameters
                 is WhereCondition.OrCondition -> countParameters(condition.conditions)
             }
         }

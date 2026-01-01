@@ -1,5 +1,69 @@
 package org.drivine.query.dsl
 
+import org.drivine.annotation.NodeFragment
+
+/**
+ * Base interface for generated Properties classes.
+ * Exposes the node alias for use in type-based filtering (instanceOf).
+ *
+ * All generated XxxProperties classes implement this interface,
+ * enabling the DSL to filter by node type:
+ *
+ * ```kotlin
+ * where {
+ *     webUser.instanceOf<AnonymousWebUser>()
+ * }
+ * ```
+ */
+interface NodeReference {
+    /**
+     * The Cypher alias for this node reference.
+     * For example, "webUser" in a relationship target, or "core" for a root fragment.
+     */
+    val nodeAlias: String
+}
+
+/**
+ * Extension function to filter by node type using the @NodeFragment annotation.
+ *
+ * Example:
+ * ```kotlin
+ * where {
+ *     webUser.instanceOf<AnonymousWebUser>()  // Filters to only AnonymousWebUser
+ * }
+ * ```
+ *
+ * This extracts the labels from the @NodeFragment annotation on the type
+ * and generates a Cypher label check: `WHERE webUser:WebUser:Anonymous`
+ *
+ * @param T The NodeFragment subtype to filter by
+ */
+context(builder: WhereBuilder<*>)
+inline fun <reified T : Any> NodeReference.instanceOf() {
+    val labels = extractLabelsFromNodeFragment(T::class.java)
+    require(labels.isNotEmpty()) {
+        "Type ${T::class.simpleName} does not have a @NodeFragment annotation with labels. " +
+        "instanceOf() can only be used with types annotated with @NodeFragment."
+    }
+    builder.conditions.add(
+        WhereCondition.LabelCondition(
+            alias = this.nodeAlias,
+            labels = labels
+        )
+    )
+}
+
+/**
+ * Extracts labels from a @NodeFragment annotation on the given class.
+ *
+ * @param clazz The class to extract labels from
+ * @return List of labels, or empty list if no @NodeFragment annotation found
+ */
+fun extractLabelsFromNodeFragment(clazz: Class<*>): List<String> {
+    val annotation = clazz.getAnnotation(NodeFragment::class.java)
+    return annotation?.labels?.toList() ?: emptyList()
+}
+
 /**
  * Represents a reference to a property in a GraphFragment or GraphView.
  * Enables type-safe property access in the query DSL.

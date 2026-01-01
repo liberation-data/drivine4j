@@ -3,12 +3,17 @@ package org.drivine.sample
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.sample.fragment.AnonymousWebUser
 import org.drivine.sample.fragment.RegisteredWebUser
+import org.drivine.sample.view.AnonymousGuideUser
 import org.drivine.sample.view.GuideUserWithOptionalWebUser
 import org.drivine.sample.view.GuideUserWithPolymorphicWebUser
 import org.drivine.sample.view.loadAll
+import org.drivine.sample.view.core
+import org.drivine.sample.view.webUser
+import org.drivine.query.dsl.instanceOf
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -161,5 +166,116 @@ class LabelPolymorphismTest @Autowired constructor(
                 }
             }
         }
+    }
+
+    // ==================== Approach 1: Subtype-specific View Tests ====================
+
+    @Test
+    fun `approach 1 - specific subtype view only returns matching type`() {
+        // AnonymousGuideUser has webUser: AnonymousWebUser (not WebUser)
+        // This automatically filters to only return guides with anonymous users
+        val results = graphObjectManager.loadAll<AnonymousGuideUser> { }
+
+        // Should only return the guide with anonymous web user
+        assertEquals(1, results.size, "Should only return guides with AnonymousWebUser")
+        assertEquals(guideWithAnonymous, results[0].core.uuid)
+
+        // The webUser is already typed as AnonymousWebUser - no casting needed
+        val webUser: AnonymousWebUser = results[0].webUser
+        assertEquals("token-abc", webUser.anonymousToken)
+        assertEquals("Anon User", webUser.displayName)
+    }
+
+    @Test
+    fun `approach 1 - specific subtype view works with DSL filtering`() {
+        // Combine type-specific view with DSL filtering
+        // Using cleaner DSL syntax: `core.guideProgress` instead of `query.core.guideProgress`
+        val results = graphObjectManager.loadAll<AnonymousGuideUser> {
+            where {
+                core.guideProgress gte 5  // Filter on root fragment property
+            }
+        }
+
+        // Should return the anonymous guide user (progress=10) that matches the filter
+        assertEquals(1, results.size)
+        assertEquals(guideWithAnonymous, results[0].core.uuid)
+        assertEquals(10, results[0].core.guideProgress)
+    }
+
+    @Test
+    fun `approach 1 - specific subtype view with no matches returns empty`() {
+        // If there are no anonymous users matching the criteria, should return empty
+        val results = graphObjectManager.loadAll<AnonymousGuideUser> {
+            where {
+                core.guideProgress gte 100  // No guides have progress >= 100
+            }
+        }
+
+        assertEquals(0, results.size, "Should return empty when no matches")
+    }
+
+    // ==================== Approach 2: DSL instanceOf Extension ====================
+
+    @Test
+    fun `approach 2 - instanceOf filters by subtype at query time`() {
+        // Use instanceOf to filter polymorphic relationship by subtype
+        val results = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where {
+                webUser.instanceOf<AnonymousWebUser>()  // Filter by subtype
+            }
+        }
+
+        // Should only return the guide with anonymous web user
+        assertEquals(1, results.size, "Should only return guides with AnonymousWebUser")
+        assertEquals(guideWithAnonymous, results[0].core.uuid)
+
+        // Verify the webUser is actually an AnonymousWebUser
+        assertTrue(results[0].webUser is AnonymousWebUser)
+        assertEquals("token-abc", (results[0].webUser as AnonymousWebUser).anonymousToken)
+    }
+
+    @Test
+    fun `approach 2 - instanceOf can be combined with other conditions`() {
+        // Combine instanceOf with other property conditions
+        val results = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where {
+                core.guideProgress gte 5
+                webUser.instanceOf<RegisteredWebUser>()  // Filter to registered users
+            }
+        }
+
+        // Should return the guide with registered web user (progress=20)
+        assertEquals(1, results.size)
+        assertEquals(guideWithRegistered, results[0].core.uuid)
+        assertTrue(results[0].webUser is RegisteredWebUser)
+    }
+
+    @Test
+    fun `approach 2 - instanceOf with no matches returns empty`() {
+        // Create a condition that matches no results
+        val results = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where {
+                core.guideProgress gte 100  // No guides have progress >= 100
+                webUser.instanceOf<AnonymousWebUser>()
+            }
+        }
+
+        assertEquals(0, results.size, "Should return empty when no matches")
+    }
+
+    @Test
+    fun `approach 2 - instanceOf inside anyOf for OR conditions`() {
+        // Use instanceOf inside anyOf for OR conditions
+        val results = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where {
+                anyOf {
+                    webUser.instanceOf<AnonymousWebUser>()
+                    webUser.instanceOf<RegisteredWebUser>()
+                }
+            }
+        }
+
+        // Should return both guides (anonymous and registered)
+        assertEquals(2, results.size, "Should return both anonymous and registered guides")
     }
 }

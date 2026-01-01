@@ -95,7 +95,11 @@ open class WhereBuilder<T : Any>(
      */
     val queryObject: T
 ) {
-    internal val conditions = mutableListOf<WhereCondition>()
+    /**
+     * The list of conditions collected by this builder.
+     * Public to allow access from inline extension functions.
+     */
+    val conditions = mutableListOf<WhereCondition>()
 
     /**
      * Adds a single condition.
@@ -205,7 +209,7 @@ val <T : Any> query: T
 
 /**
  * Represents a WHERE condition in the query.
- * Can be a simple property condition, a relationship filter, or an OR condition.
+ * Can be a simple property condition, a relationship filter, a label check, or an OR condition.
  */
 sealed class WhereCondition {
     /**
@@ -225,6 +229,16 @@ sealed class WhereCondition {
     data class RelationshipCondition(
         val relationshipName: String,  // e.g., "assignedTo"
         val targetConditions: List<WhereCondition>
+    ) : WhereCondition()
+
+    /**
+     * Filter by node labels - checks if a node has specific labels.
+     * Example: webUser.instanceOf<AnonymousWebUser>()
+     * Generates: webUser:Anonymous (or webUser:WebUser:Anonymous for multiple labels)
+     */
+    data class LabelCondition(
+        val alias: String,  // e.g., "webUser"
+        val labels: List<String>  // e.g., ["WebUser", "Anonymous"]
     ) : WhereCondition()
 
     /**
