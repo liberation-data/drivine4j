@@ -335,7 +335,8 @@ class GraphViewMergeBuilder(
             val fragment = extractRootFragmentFromObject(actualTargetItem, viewModel)
             Pair(fragment, FragmentModel.from(viewModel.rootFragment.fragmentType))
         } else {
-            Pair(actualTargetItem, FragmentModel.from(targetClass))
+            // IMPORTANT: Use runtime type, not declared type, to get correct labels for polymorphic types
+            Pair(actualTargetItem, FragmentModel.from(actualTargetItem::class.java))
         }
 
         // Convert to map to get properly converted ID values (UUID -> String, etc.)
@@ -499,7 +500,8 @@ class GraphViewMergeBuilder(
                 ))
             } else {
                 // Handle GraphFragment target
-                val targetFragmentModel = FragmentModel.from(targetNodeClass)
+                // IMPORTANT: Use runtime type, not declared type, to get correct labels for polymorphic types
+                val targetFragmentModel = FragmentModel.from(targetNode::class.java)
 
                 // 1. MERGE the target fragment
                 val targetId = sessionManager.extractIdValue(targetNode, targetFragmentModel)?.toString()
@@ -540,7 +542,8 @@ class GraphViewMergeBuilder(
                 ))
             } else {
                 // Handle GraphFragment
-                val targetFragmentModel = FragmentModel.from(targetClass)
+                // IMPORTANT: Use runtime type, not declared type, to get correct labels for polymorphic types
+                val targetFragmentModel = FragmentModel.from(targetItem::class.java)
 
                 // 1. MERGE the target fragment
                 val targetId = sessionManager.extractIdValue(targetItem, targetFragmentModel)?.toString()

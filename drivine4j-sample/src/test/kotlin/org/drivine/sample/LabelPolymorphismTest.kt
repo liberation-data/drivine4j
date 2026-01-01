@@ -3,6 +3,7 @@ package org.drivine.sample
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.drivine.query.transform
 import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.sample.fragment.AnonymousWebUser
@@ -24,6 +25,7 @@ import java.util.*
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -278,4 +280,163 @@ class LabelPolymorphismTest @Autowired constructor(
         // Should return both guides (anonymous and registered)
         assertEquals(2, results.size, "Should return both anonymous and registered guides")
     }
+
+    // ==================== Polymorphic Save Tests ====================
+
+    @Test
+    fun `saving polymorphic relationship uses runtime type labels`() {
+        // Create a new GuideUser with an AnonymousWebUser
+        val guideUuid = UUID.randomUUID()
+        val webUserUuid = UUID.randomUUID()
+
+        // First create the guide user without a web user
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (g:GuideUser {uuid: '$guideUuid', guideProgress: 50, testMarker: 'polymorphic-save-test'})
+                """.trimIndent())
+        )
+
+        // Load the guide user
+        val guide = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where {
+                core.uuid eq guideUuid
+            }
+        }.firstOrNull()
+
+        assertNotNull(guide)
+        assertNull(guide!!.webUser)
+
+        // Create an AnonymousWebUser (subtype of WebUser)
+        val anonymousUser = AnonymousWebUser(
+            uuid = webUserUuid,
+            displayName = "New Anonymous User",
+            anonymousToken = "new-token-xyz"
+        )
+
+        // Save the guide with the new polymorphic relationship
+        val updatedGuide = guide.copy(webUser = anonymousUser)
+        graphObjectManager.save(updatedGuide)
+
+        // Verify the node was created with BOTH WebUser AND Anonymous labels
+        val nodeLabels = persistenceManager.query(
+            QuerySpecification
+                .withStatement("""
+                    MATCH (w {uuid: '$webUserUuid'})
+                    RETURN {labels: labels(w)} as result
+                """.trimIndent())
+                .transform<LabelsResult>()
+        ).firstOrNull()
+
+        assertNotNull(nodeLabels, "WebUser node should exist")
+        assertTrue("WebUser" in nodeLabels!!.labels, "Node should have WebUser label")
+        assertTrue("Anonymous" in nodeLabels.labels, "Node should have Anonymous label (from runtime type)")
+
+        // Also verify we can load it back with instanceOf filter
+        val loadedAnonymous = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where {
+                core.uuid eq guideUuid
+                webUser.instanceOf<AnonymousWebUser>()
+            }
+        }
+
+        assertEquals(1, loadedAnonymous.size, "Should find the guide with anonymous user via instanceOf")
+        assertTrue(loadedAnonymous[0].webUser is AnonymousWebUser)
+        assertEquals("new-token-xyz", (loadedAnonymous[0].webUser as AnonymousWebUser).anonymousToken)
+
+        // Cleanup
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("MATCH (n {testMarker: 'polymorphic-save-test'}) DETACH DELETE n")
+        )
+    }
+
+    @Test
+    fun `saving different polymorphic subtypes creates correct labels`() {
+        // Create guide users
+        val guide1Uuid = UUID.randomUUID()
+        val guide2Uuid = UUID.randomUUID()
+        val anonUserUuid = UUID.randomUUID()
+        val regUserUuid = UUID.randomUUID()
+
+        // Create guide users without web users
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (g1:GuideUser {uuid: '$guide1Uuid', guideProgress: 10, testMarker: 'polymorphic-save-test2'})
+                    CREATE (g2:GuideUser {uuid: '$guide2Uuid', guideProgress: 20, testMarker: 'polymorphic-save-test2'})
+                """.trimIndent())
+        )
+
+        // Load both guides
+        val guides = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where {
+                anyOf {
+                    core.uuid eq guide1Uuid
+                    core.uuid eq guide2Uuid
+                }
+            }
+        }
+        assertEquals(2, guides.size)
+
+        val guide1 = guides.find { it.core.uuid == guide1Uuid }!!
+        val guide2 = guides.find { it.core.uuid == guide2Uuid }!!
+
+        // Save guide1 with AnonymousWebUser
+        val anonUser = AnonymousWebUser(
+            uuid = anonUserUuid,
+            displayName = "Anon",
+            anonymousToken = "anon-token"
+        )
+        graphObjectManager.save(guide1.copy(webUser = anonUser))
+
+        // Save guide2 with RegisteredWebUser
+        val regUser = RegisteredWebUser(
+            uuid = regUserUuid,
+            displayName = "Registered",
+            email = "reg@example.com"
+        )
+        graphObjectManager.save(guide2.copy(webUser = regUser))
+
+        // Verify labels for both nodes
+        val anonLabels = persistenceManager.query(
+            QuerySpecification
+                .withStatement("MATCH (w {uuid: '$anonUserUuid'}) RETURN {labels: labels(w)} as result")
+                .transform<LabelsResult>()
+        ).first()
+
+        val regLabels = persistenceManager.query(
+            QuerySpecification
+                .withStatement("MATCH (w {uuid: '$regUserUuid'}) RETURN {labels: labels(w)} as result")
+                .transform<LabelsResult>()
+        ).first()
+
+        assertTrue("WebUser" in anonLabels.labels && "Anonymous" in anonLabels.labels,
+            "Anonymous user should have WebUser:Anonymous labels")
+        assertTrue("WebUser" in regLabels.labels && "Registered" in regLabels.labels,
+            "Registered user should have WebUser:Registered labels")
+
+        // Verify instanceOf filtering works for both
+        val anonGuides = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where { webUser.instanceOf<AnonymousWebUser>() }
+        }.filter { it.core.uuid == guide1Uuid || it.core.uuid == guide2Uuid }
+
+        val regGuides = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+            where { webUser.instanceOf<RegisteredWebUser>() }
+        }.filter { it.core.uuid == guide1Uuid || it.core.uuid == guide2Uuid }
+
+        assertEquals(1, anonGuides.size, "Should find 1 guide with anonymous user")
+        assertEquals(1, regGuides.size, "Should find 1 guide with registered user")
+        assertEquals(guide1Uuid, anonGuides[0].core.uuid)
+        assertEquals(guide2Uuid, regGuides[0].core.uuid)
+
+        // Cleanup
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("MATCH (n) WHERE n.testMarker IN ['polymorphic-save-test2'] DETACH DELETE n")
+        )
+    }
 }
+
+// Helper class for extracting labels from query result
+data class LabelsResult(val labels: List<String>)

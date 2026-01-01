@@ -177,7 +177,7 @@ object CypherGenerator {
                         if (condition.operator != ComparisonOperator.IS_NULL &&
                             condition.operator != ComparisonOperator.IS_NOT_NULL) {
                             val paramName = generateParamName(condition.propertyPath, paramIndex)
-                            bindings[paramName] = condition.value
+                            bindings[paramName] = convertToNeo4jValue(condition.value)
                             paramIndex++
                         } else {
                             // Still increment index to keep ordering consistent with buildWhereClause
@@ -522,5 +522,17 @@ object CypherGenerator {
      */
     fun resetParamCounter() {
         // No-op: we now use index-based naming
+    }
+
+    /**
+     * Converts a value to a Neo4j-compatible type.
+     * Neo4j driver doesn't support java.util.UUID natively, so we convert it to String.
+     */
+    private fun convertToNeo4jValue(value: Any?): Any? {
+        return when (value) {
+            is java.util.UUID -> value.toString()
+            is Collection<*> -> value.map { convertToNeo4jValue(it) }
+            else -> value
+        }
     }
 }
