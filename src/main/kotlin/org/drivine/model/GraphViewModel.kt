@@ -94,6 +94,9 @@ data class GraphViewModel(
                         // Determine element type and whether it's a collection
                         val (elementType, isCollection) = extractElementType(prop.returnType.toString(), fieldType)
 
+                        // Detect nullability from Kotlin type
+                        val isNullable = prop.returnType.isMarkedNullable
+
                         // Check if element type is annotated with @GraphRelationshipFragment (relationship object pattern)
                         val isRelationshipFragment = elementType.isAnnotationPresent(RelationshipFragment::class.java)
 
@@ -127,6 +130,7 @@ data class GraphViewModel(
                                 fieldType = fieldType,
                                 elementType = elementType,
                                 isCollection = isCollection,
+                                isNullable = isNullable,
                                 isRelationshipFragment = true,
                                 targetFieldName = targetProperty.name,
                                 targetNodeType = targetNodeType,
@@ -140,7 +144,8 @@ data class GraphViewModel(
                                 direction = relationshipAnnotation.direction,
                                 fieldType = fieldType,
                                 elementType = elementType,
-                                isCollection = isCollection
+                                isCollection = isCollection,
+                                isNullable = isNullable
                             )
                         }
                     } else {

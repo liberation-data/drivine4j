@@ -21,6 +21,9 @@ class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObject
      * 3. RETURN the assembled object
      * 4. Optional ORDER BY clause
      *
+     * For non-nullable, non-collection relationships, adds EXISTS checks to the WHERE clause
+     * to filter out root nodes that don't have the required relationships.
+     *
      * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
      * @param orderByClause Optional ORDER BY clause (without the ORDER BY keywords)
      * @return The generated Cypher query
@@ -39,12 +42,9 @@ class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObject
         val labelString = fragmentLabels.joinToString(":")
         val matchClause = "MATCH ($rootFieldName:$labelString)"
 
-        // Build the WHERE clause if provided
-        val whereSection = if (whereClause != null) {
-            "\nWHERE $whereClause"
-        } else {
-            ""
-        }
+        // Build the WHERE clause - combine user-provided clause with EXISTS checks for required relationships
+        val requiredRelationshipChecks = buildRequiredRelationshipChecks(rootFieldName)
+        val whereSection = buildWhereSection(whereClause, requiredRelationshipChecks)
 
         // Build the WITH clause with all projections
         val withSections = mutableListOf<String>()
@@ -142,8 +142,18 @@ ${returnFields.joinToString(",\n")}
     /**
      * Builds a field projection with explicit mapping like:
      * issue {uuid: issue.uuid, id: issue.id, state: issue.state}
+     *
+     * For polymorphic types (null fields), uses .* to capture all properties.
      */
-    private fun buildFragmentProjectionWithMapping(varName: String, sourceVar: String, fields: List<String>): String {
+    private fun buildFragmentProjectionWithMapping(varName: String, sourceVar: String, fields: List<String>?): String {
+        // For polymorphic types, use .* to get all fields
+        if (fields == null) {
+            return """$varName {
+        .*,
+        labels: labels($sourceVar)
+    }"""
+        }
+
         if (fields.isEmpty()) {
             return varName
         }
@@ -157,8 +167,14 @@ ${returnFields.joinToString(",\n")}
 
     /**
      * Gets field names from a FragmentModel.
+     * Returns null for polymorphic (sealed) types to signal that .* should be used.
      */
-    private fun getFragmentFields(fragmentType: Class<*>): List<String> {
+    private fun getFragmentFields(fragmentType: Class<*>): List<String>? {
+        // For sealed classes, return null to signal use of .*
+        if (fragmentType.kotlin.isSealed) {
+            return null
+        }
+
         return try {
             val fragmentModel = FragmentModel.from(fragmentType)
             fragmentModel.fields.map { it.name }
@@ -300,6 +316,7 @@ ${returnFields.joinToString(",\n")}
      * Builds the projection for a relationship target.
      * If it's a GraphFragment, returns the fields projection.
      * If it's a GraphView, recursively builds nested structure.
+     * For polymorphic types (sealed classes), uses .* to capture all properties.
      */
     private fun buildRelationshipProjection(varName: String, targetType: Class<*>): String {
         // Check if it's a GraphView (nested)
@@ -310,8 +327,17 @@ ${returnFields.joinToString(",\n")}
             return buildNestedViewProjection(varName, nestedViewModel)
         }
 
-        // It's a GraphFragment, just project its fields with explicit mapping
+        // It's a GraphFragment, project its fields with explicit mapping
         val fields = getFragmentFields(targetType)
+
+        // For polymorphic types (sealed classes), use .* to get all fields
+        if (fields == null) {
+            return """$varName {
+            .*,
+            labels: labels($varName)
+        }"""
+        }
+
         val fieldMappings = fields.joinToString(",\n            ") { "$it: $varName.$it" }
         // Include labels for polymorphic deserialization support
         return """$varName {
@@ -344,8 +370,11 @@ ${returnFields.joinToString(",\n")}
         // Add the root fragment as a nested object (not flattened)
         val rootFragmentFieldName = nestedViewModel.rootFragment.fieldName
         val rootFragmentFields = getFragmentFields(nestedViewModel.rootFragment.fragmentType)
-        val rootFieldMappings = rootFragmentFields.joinToString(",\n                ") {
-            "$it: $varName.$it"
+        val rootFieldMappings = if (rootFragmentFields == null) {
+            // Polymorphic type - use .*
+            ".*"
+        } else {
+            rootFragmentFields.joinToString(",\n                ") { "$it: $varName.$it" }
         }
         fields.add("$rootFragmentFieldName: {\n                $rootFieldMappings\n            }")
 
@@ -368,8 +397,11 @@ ${returnFields.joinToString(",\n")}
 
             // Get fields for the nested target
             val nestedTargetFields = getFragmentFields(nestedRel.elementType)
-            val nestedFieldMappings = nestedTargetFields.joinToString(",\n                    ") {
-                "$it: ${nestedTargetAlias}.$it"
+            val nestedFieldMappings = if (nestedTargetFields == null) {
+                // Polymorphic type - use .*
+                ".*"
+            } else {
+                nestedTargetFields.joinToString(",\n                    ") { "$it: ${nestedTargetAlias}.$it" }
             }
 
             // Include labels for polymorphic deserialization support
@@ -387,6 +419,61 @@ ${returnFields.joinToString(",\n")}
         return """$varName {
             ${fields.joinToString(",\n            ")}
         }"""
+    }
+
+    /**
+     * Builds EXISTS checks for non-nullable, non-collection relationships.
+     * These ensure the query only returns root nodes that have the required relationships.
+     *
+     * Example output for a non-nullable `webUser: AnonymousWebUserData`:
+     * EXISTS { (core)-[:IS_WEB_USER]->(anon:WebUser:Anonymous) }
+     *
+     * @param rootFieldName The alias for the root node
+     * @return List of EXISTS condition strings, or empty list if no required relationships
+     */
+    private fun buildRequiredRelationshipChecks(rootFieldName: String): List<String> {
+        return viewModel.relationships
+            .filter { rel -> !rel.isNullable && !rel.isCollection }
+            .map { rel ->
+                val direction = when (rel.direction) {
+                    Direction.OUTGOING -> "-[:${rel.type}]->"
+                    Direction.INCOMING -> "<-[:${rel.type}]-"
+                    Direction.UNDIRECTED -> "-[:${rel.type}]-"
+                }
+
+                // Get labels for the target - for relationship fragments, use the target node type
+                val targetType = if (rel.isRelationshipFragment) rel.targetNodeType!! else rel.elementType
+                val targetLabels = getLabelsForType(targetType)
+                val targetLabelString = targetLabels.joinToString(":")
+
+                "EXISTS { ($rootFieldName)${direction}(_:$targetLabelString) }"
+            }
+    }
+
+    /**
+     * Builds the complete WHERE section combining user-provided conditions
+     * and required relationship checks.
+     *
+     * @param userWhereClause User-provided WHERE conditions (may be null)
+     * @param requiredRelChecks EXISTS checks for required relationships
+     * @return The complete WHERE section string (including "WHERE" keyword), or empty string
+     */
+    private fun buildWhereSection(userWhereClause: String?, requiredRelChecks: List<String>): String {
+        val conditions = mutableListOf<String>()
+
+        // Add user-provided conditions first
+        if (userWhereClause != null) {
+            conditions.add(userWhereClause)
+        }
+
+        // Add required relationship checks
+        conditions.addAll(requiredRelChecks)
+
+        return if (conditions.isEmpty()) {
+            ""
+        } else {
+            "\nWHERE " + conditions.joinToString("\n  AND ")
+        }
     }
 
     /**

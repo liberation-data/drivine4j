@@ -387,7 +387,7 @@ class QueryDslGenerator(
                     if (!fragmentTypes.containsKey(fragmentName)) {
                         fragmentTypes[fragmentName] = FragmentType(
                             fragmentClass,
-                            needsAliasConstructor = !viewProp.isRootFragment,
+                            needsAliasConstructor = true,  // Always need alias - root fragments pass their field name
                             rootFieldName = if (viewProp.isRootFragment) viewProp.name else null
                         )
                     }
@@ -544,11 +544,11 @@ class QueryDslGenerator(
                 val fragmentSimpleName = fragmentClass.simpleName.asString()
                 val propertiesClassName = "${fragmentSimpleName}Properties"
 
-                val initializer = if (viewProp.isRootFragment) {
-                    "$propertiesClassName()"
-                } else {
-                    "$propertiesClassName(\"${viewProp.relationshipAlias}\")"
-                }
+                // Always pass the field name as alias - for root fragments, this is the view's field name
+                // (e.g., "core" for `@Root val core: GuideUser`)
+                // For relationships, this is the relationship field name (e.g., "webUser")
+                val alias = viewProp.relationshipAlias ?: viewProp.name
+                val initializer = "$propertiesClassName(\"$alias\")"
 
                 classBuilder.addProperty(
                     PropertySpec.builder(

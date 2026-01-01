@@ -41,6 +41,16 @@ data class RelationshipModel(
     val isCollection: Boolean,
 
     /**
+     * Whether this relationship allows null values.
+     * For Kotlin, detected from type nullability (e.g., Person vs Person?).
+     * For Java, defaults to true (nullable) unless explicitly marked.
+     *
+     * When false (non-nullable, required), the generated query will filter out
+     * root nodes that don't have this relationship, preventing null pointer exceptions.
+     */
+    val isNullable: Boolean = true,
+
+    /**
      * Whether this relationship uses a @GraphRelationshipFragment (rich relationship pattern).
      * If true, the relationship has properties stored on the relationship itself,
      * plus a target field pointing to the target node.

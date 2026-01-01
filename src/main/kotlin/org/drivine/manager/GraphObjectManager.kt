@@ -94,8 +94,25 @@ class GraphObjectManager(
      * For sealed classes and classes with @JsonSubTypes, automatically registers all subclasses
      * using their simple name as the discriminator.
      * The TransformPostProcessor will use Neo4j labels to determine the concrete type.
+     *
+     * For label-based polymorphism, registers using:
+     * 1. Composite key (all labels sorted and comma-joined) - most specific match
+     * 2. Individual distinct labels - fallback matching
+     * 3. Simple class name - final fallback
+     *
+     * For GraphViews, also registers subtypes for relationship target types.
      */
     private fun autoRegisterSubtypesIfNeeded(graphClass: Class<*>) {
+        // Track registered classes to avoid infinite recursion
+        val registeredClasses = mutableSetOf<Class<*>>()
+        autoRegisterSubtypesRecursive(graphClass, registeredClasses)
+    }
+
+    private fun autoRegisterSubtypesRecursive(graphClass: Class<*>, registeredClasses: MutableSet<Class<*>>) {
+        if (!registeredClasses.add(graphClass)) {
+            return // Already processed this class
+        }
+
         val kotlinClass = graphClass.kotlin
 
         // First, check for Jackson's @JsonSubTypes annotation (works for both Java and Kotlin)
@@ -104,24 +121,29 @@ class GraphObjectManager(
             jsonSubTypes.value.forEach { subType ->
                 persistenceManager.registerSubtype(graphClass, subType.name, subType.value.java)
             }
-            return
-        }
-
-        // Second, check if this is a Kotlin sealed class
-        if (kotlinClass.isSealed) {
+            // Don't return - still need to check relationships for GraphViews
+        } else if (kotlinClass.isSealed) {
+            // Register sealed class subtypes
             kotlinClass.sealedSubclasses.forEach { subclass ->
                 val subclassJava = subclass.java
 
                 // Extract labels from @NodeFragment annotation to use as discriminators
                 val nodeFragment = subclassJava.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
                 if (nodeFragment != null) {
-                    // Register using each label that's NOT in the base class labels
+                    val subLabels = nodeFragment.labels.toList()
+
+                    // Register using composite key (all labels sorted and joined)
+                    // This enables matching nodes with multiple labels like ["WebUser", "Anonymous"]
+                    if (subLabels.isNotEmpty()) {
+                        val compositeKey = org.drivine.mapper.SubtypeRegistry.labelsToKey(subLabels)
+                        persistenceManager.registerSubtype(graphClass, compositeKey, subclassJava)
+                    }
+
+                    // Also register using each distinct label (labels not in base class)
                     val baseFragment = graphClass.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
                     val baseLabels = baseFragment?.labels?.toSet() ?: emptySet()
-                    val subLabels = nodeFragment.labels.toSet()
-                    val distinctLabels = subLabels - baseLabels
+                    val distinctLabels = subLabels.toSet() - baseLabels
 
-                    // Register using the distinct labels
                     distinctLabels.forEach { label ->
                         persistenceManager.registerSubtype(graphClass, label, subclassJava)
                     }
@@ -129,6 +151,14 @@ class GraphObjectManager(
 
                 // Also register using simple class name as fallback
                 persistenceManager.registerSubtype(graphClass, subclass.simpleName ?: subclassJava.simpleName, subclassJava)
+            }
+        }
+
+        // For GraphViews, also register subtypes for relationship target types
+        if (graphClass.isAnnotationPresent(GraphView::class.java)) {
+            val viewModel = org.drivine.model.GraphViewModel.from(graphClass)
+            viewModel.relationships.forEach { rel ->
+                autoRegisterSubtypesRecursive(rel.elementType, registeredClasses)
             }
         }
     }
