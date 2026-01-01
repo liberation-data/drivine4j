@@ -256,14 +256,16 @@ class QueryDslGenerator(
         // Generate the main QueryDsl class
         val dslClass = generateQueryDslClass(graphViewClass, viewStructure)
 
-        // Generate extension function
-        val extensionFunction = generateExtensionFunction(graphViewClass)
+        // Generate extension functions
+        val loadAllExtension = generateLoadAllExtensionFunction(graphViewClass)
+        val deleteAllExtension = generateDeleteAllExtensionFunction(graphViewClass)
 
         // Write to file
         val fileSpec = FileSpec.builder(graphViewClassName.packageName, dslClassName)
             .addFileComment("Generated code - do not modify")
             .addType(dslClass)
-            .addFunction(extensionFunction)
+            .addFunction(loadAllExtension)
+            .addFunction(deleteAllExtension)
             .build()
 
         fileSpec.writeTo(
@@ -576,7 +578,7 @@ class QueryDslGenerator(
         return classBuilder.build()
     }
 
-    private fun generateExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
+    private fun generateLoadAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
         val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
@@ -601,6 +603,34 @@ class QueryDslGenerator(
             )
             .returns(List::class.asClassName().parameterizedBy(TypeVariableName("T")))
             .addStatement("return loadAll(T::class.java, $dslClassName.INSTANCE, spec)")
+            .build()
+    }
+
+    private fun generateDeleteAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
+        val graphViewClassName = graphViewClass.toClassName()
+        val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
+        val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
+
+        return FunSpec.builder("deleteAll")
+            .addModifiers(KModifier.INLINE)
+            .receiver(graphObjectManagerClass)
+            .addTypeVariable(
+                TypeVariableName("T", graphViewClassName).copy(reified = true)
+            )
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = graphQuerySpecClass.parameterizedBy(dslClass),
+                        returnType = Unit::class.asClassName()
+                    )
+                ).addModifiers(KModifier.NOINLINE)
+                .build()
+            )
+            .returns(Int::class)
+            .addStatement("return deleteAll(T::class.java, $dslClassName.INSTANCE, spec)")
             .build()
     }
 }

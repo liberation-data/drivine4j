@@ -427,6 +427,86 @@ val updated = person.copy(employmentHistory = emptyList())
 graphObjectManager.save(updated, CascadeType.NONE)
 ```
 
+### Deleting Data
+
+GraphObjectManager provides type-safe methods for deleting graph objects.
+
+#### Delete by ID
+
+```kotlin
+// Delete a single node by UUID
+val deleted = graphObjectManager.delete<Person>(uuid)
+
+// Delete a GraphView's root node (relationships are detached)
+graphObjectManager.delete<RaisedAndAssignedIssue>(issueUuid)
+```
+
+#### Delete with WHERE Clause
+
+```kotlin
+// Delete only if condition is met
+graphObjectManager.delete<Issue>(uuid, "n.state = 'closed'")
+
+// For GraphViews, use the root fragment alias
+graphObjectManager.delete<RaisedAndAssignedIssue>(uuid, "issue.state = 'closed'")
+```
+
+#### Delete All with Filter
+
+```kotlin
+// Delete all matching a condition
+graphObjectManager.deleteAll<Issue>("n.state = 'closed'")
+
+// For GraphViews
+graphObjectManager.deleteAll<RaisedAndAssignedIssue>("issue.locked = true")
+```
+
+#### Type-Safe DSL Delete
+
+The most powerful way - uses generated DSL for compile-time type checking:
+
+```kotlin
+// Delete closed issues
+graphObjectManager.deleteAll<RaisedAndAssignedIssue> {
+    where {
+        query.issue.state eq "closed"
+    }
+}
+
+// Delete with multiple conditions
+graphObjectManager.deleteAll<RaisedAndAssignedIssue> {
+    where {
+        query.issue.state eq "open"
+        query.issue.locked eq true
+    }
+}
+
+// Delete by relationship property
+graphObjectManager.deleteAll<RaisedAndAssignedIssue> {
+    where {
+        query.assignedTo.name eq "Former Employee"
+    }
+}
+
+// Delete all (no filter)
+graphObjectManager.deleteAll<RaisedAndAssignedIssue> { }
+```
+
+#### Delete Behavior
+
+All delete operations use `DETACH DELETE`:
+- Removes the node and all its relationships
+- Related nodes are **not** deleted (only the relationships to them)
+- Returns the count of deleted nodes
+
+```kotlin
+// Delete an issue - persons remain, only ASSIGNED_TO/RAISED_BY relationships removed
+graphObjectManager.delete<RaisedAndAssignedIssue>(issueUuid)
+
+// Verify related nodes still exist
+val person = graphObjectManager.load<Person>(personUuid)  // Still there!
+```
+
 ### CASCADE Policies
 
 When saving `@GraphView` objects with modified relationships, `CascadeType` determines what happens to target nodes:

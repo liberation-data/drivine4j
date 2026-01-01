@@ -41,15 +41,15 @@ class DeleteTests @Autowired constructor(
         createPerson(uuid, "Kent Beck", "TDD pioneer")
 
         // Verify it exists
-        val loaded = graphObjectManager.load(uuid.toString(), Person::class.java)
+        val loaded = graphObjectManager.load<Person>(uuid)
         assertEquals("Kent Beck", loaded?.name)
 
         // Delete it
-        val deleted = graphObjectManager.delete(uuid.toString(), Person::class.java)
+        val deleted = graphObjectManager.delete<Person>(uuid)
         assertEquals(1, deleted)
 
         // Verify it's gone
-        val afterDelete = graphObjectManager.load(uuid.toString(), Person::class.java)
+        val afterDelete = graphObjectManager.load<Person>(uuid)
         assertNull(afterDelete)
     }
 
@@ -57,7 +57,7 @@ class DeleteTests @Autowired constructor(
     fun `delete by ID should return 0 when node does not exist`() {
         val nonExistentUuid = UUID.randomUUID()
 
-        val deleted = graphObjectManager.delete(nonExistentUuid.toString(), Person::class.java)
+        val deleted = graphObjectManager.delete<Person>(nonExistentUuid)
         assertEquals(0, deleted)
     }
 
@@ -67,27 +67,19 @@ class DeleteTests @Autowired constructor(
         createIssue(uuid, 1001, "open", "Test Issue")
 
         // Try to delete with non-matching condition
-        val deleted1 = graphObjectManager.delete(
-            uuid.toString(),
-            Issue::class.java,
-            "n.state = 'closed'"
-        )
+        val deleted1 = graphObjectManager.delete<Issue>(uuid, "n.state = 'closed'")
         assertEquals(0, deleted1)
 
         // Verify it still exists
-        val stillExists = graphObjectManager.load(uuid.toString(), Issue::class.java)
+        val stillExists = graphObjectManager.load<Issue>(uuid)
         assertEquals("open", stillExists?.state)
 
         // Delete with matching condition
-        val deleted2 = graphObjectManager.delete(
-            uuid.toString(),
-            Issue::class.java,
-            "n.state = 'open'"
-        )
+        val deleted2 = graphObjectManager.delete<Issue>(uuid, "n.state = 'open'")
         assertEquals(1, deleted2)
 
         // Verify it's gone
-        val afterDelete = graphObjectManager.load(uuid.toString(), Issue::class.java)
+        val afterDelete = graphObjectManager.load<Issue>(uuid)
         assertNull(afterDelete)
     }
 
@@ -106,7 +98,7 @@ class DeleteTests @Autowired constructor(
         assertEquals(3, beforeCount)
 
         // Delete all (with createdBy filter to not affect other tests)
-        val deleted = graphObjectManager.deleteAll(Person::class.java, "n.createdBy = 'delete-test'")
+        val deleted = graphObjectManager.deleteAll<Person>("n.createdBy = 'delete-test'")
         assertEquals(3, deleted)
 
         // Verify they're all gone
@@ -125,20 +117,17 @@ class DeleteTests @Autowired constructor(
         createIssue(uuid3, 2003, "open", "Open Issue 2")
 
         // Delete only closed issues
-        val deleted = graphObjectManager.deleteAll(
-            Issue::class.java,
-            "n.state = 'closed' AND n.createdBy = 'delete-test'"
-        )
+        val deleted = graphObjectManager.deleteAll<Issue>("n.state = 'closed' AND n.createdBy = 'delete-test'")
         assertEquals(1, deleted)
 
         // Verify open issues still exist
-        val openIssue1 = graphObjectManager.load(uuid1.toString(), Issue::class.java)
-        val openIssue2 = graphObjectManager.load(uuid3.toString(), Issue::class.java)
+        val openIssue1 = graphObjectManager.load<Issue>(uuid1)
+        val openIssue2 = graphObjectManager.load<Issue>(uuid3)
         assertEquals("open", openIssue1?.state)
         assertEquals("open", openIssue2?.state)
 
         // Verify closed issue is gone
-        val closedIssue = graphObjectManager.load(uuid2.toString(), Issue::class.java)
+        val closedIssue = graphObjectManager.load<Issue>(uuid2)
         assertNull(closedIssue)
     }
 
@@ -152,20 +141,20 @@ class DeleteTests @Autowired constructor(
         createIssueWithRelationships(issueUuid, raiserUuid, assigneeUuid)
 
         // Verify it exists via view
-        val loaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        val loaded = graphObjectManager.load<RaisedAndAssignedIssue>(issueUuid)
         assertEquals("Test Issue", loaded?.issue?.title)
 
         // Delete the issue (root node)
-        val deleted = graphObjectManager.delete(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        val deleted = graphObjectManager.delete<RaisedAndAssignedIssue>(issueUuid)
         assertEquals(1, deleted)
 
         // Verify issue is gone
-        val afterDelete = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        val afterDelete = graphObjectManager.load<RaisedAndAssignedIssue>(issueUuid)
         assertNull(afterDelete)
 
         // Verify related persons still exist (DETACH DELETE only removes relationships)
-        val raiser = graphObjectManager.load(raiserUuid.toString(), Person::class.java)
-        val assignee = graphObjectManager.load(assigneeUuid.toString(), Person::class.java)
+        val raiser = graphObjectManager.load<Person>(raiserUuid)
+        val assignee = graphObjectManager.load<Person>(assigneeUuid)
         assertEquals("Martin Fowler", raiser?.name)
         assertEquals("Kent Beck", assignee?.name)
     }
@@ -178,23 +167,15 @@ class DeleteTests @Autowired constructor(
         createIssueWithRelationships(issueUuid, raiserUuid, assigneeUuid, state = "open")
 
         // Try to delete with non-matching condition (using root fragment alias 'issue')
-        val deleted1 = graphObjectManager.delete(
-            issueUuid.toString(),
-            RaisedAndAssignedIssue::class.java,
-            "issue.state = 'closed'"
-        )
+        val deleted1 = graphObjectManager.delete<RaisedAndAssignedIssue>(issueUuid, "issue.state = 'closed'")
         assertEquals(0, deleted1)
 
         // Verify it still exists
-        val stillExists = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        val stillExists = graphObjectManager.load<RaisedAndAssignedIssue>(issueUuid)
         assertEquals("open", stillExists?.issue?.state)
 
         // Delete with matching condition
-        val deleted2 = graphObjectManager.delete(
-            issueUuid.toString(),
-            RaisedAndAssignedIssue::class.java,
-            "issue.state = 'open'"
-        )
+        val deleted2 = graphObjectManager.delete<RaisedAndAssignedIssue>(issueUuid, "issue.state = 'open'")
         assertEquals(1, deleted2)
     }
 
@@ -217,19 +198,16 @@ class DeleteTests @Autowired constructor(
         createRelationships(issue2Uuid, raiserUuid, assigneeUuid)
 
         // Delete all issues (using view's root fragment alias)
-        val deleted = graphObjectManager.deleteAll(
-            RaisedAndAssignedIssue::class.java,
-            "issue.createdBy = 'delete-test'"
-        )
+        val deleted = graphObjectManager.deleteAll<RaisedAndAssignedIssue>("issue.createdBy = 'delete-test'")
         assertEquals(2, deleted)
 
         // Verify issues are gone
-        assertNull(graphObjectManager.load(issue1Uuid.toString(), RaisedAndAssignedIssue::class.java))
-        assertNull(graphObjectManager.load(issue2Uuid.toString(), RaisedAndAssignedIssue::class.java))
+        assertNull(graphObjectManager.load<RaisedAndAssignedIssue>(issue1Uuid))
+        assertNull(graphObjectManager.load<RaisedAndAssignedIssue>(issue2Uuid))
 
         // Verify persons still exist
-        assertEquals("Shared Raiser", graphObjectManager.load(raiserUuid.toString(), Person::class.java)?.name)
-        assertEquals("Shared Assignee", graphObjectManager.load(assigneeUuid.toString(), Person::class.java)?.name)
+        assertEquals("Shared Raiser", graphObjectManager.load<Person>(raiserUuid)?.name)
+        assertEquals("Shared Assignee", graphObjectManager.load<Person>(assigneeUuid)?.name)
     }
 
     @Test
@@ -245,18 +223,17 @@ class DeleteTests @Autowired constructor(
         createRelationshipsRaiserOnly(closedIssueUuid, raiserUuid)
 
         // Delete only closed issues
-        val deleted = graphObjectManager.deleteAll(
-            RaisedAndAssignedIssue::class.java,
+        val deleted = graphObjectManager.deleteAll<RaisedAndAssignedIssue>(
             "issue.state = 'closed' AND issue.createdBy = 'delete-test'"
         )
         assertEquals(1, deleted)
 
         // Verify open issue still exists
-        val openIssue = graphObjectManager.load(openIssueUuid.toString(), Issue::class.java)
+        val openIssue = graphObjectManager.load<Issue>(openIssueUuid)
         assertEquals("open", openIssue?.state)
 
         // Verify closed issue is gone
-        assertNull(graphObjectManager.load(closedIssueUuid.toString(), Issue::class.java))
+        assertNull(graphObjectManager.load<Issue>(closedIssueUuid))
     }
 
     // ==================== Helper Methods ====================
