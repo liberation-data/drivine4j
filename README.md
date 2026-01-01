@@ -329,7 +329,7 @@ The code generator creates a type-safe DSL for each `@GraphView`, giving you Int
 // Load people whose bio contains "Lead"
 val leads = graphObjectManager.loadAll<PersonCareer> {
     where {
-        query.person.bio contains "Lead"
+        person.bio contains "Lead"  // Direct property access!
     }
 }
 ```
@@ -339,8 +339,8 @@ val leads = graphObjectManager.loadAll<PersonCareer> {
 ```kotlin
 val results = graphObjectManager.loadAll<PersonCareer> {
     where {
-        query.person.name eq "Alice Engineer"
-        query.person.bio.isNotNull()
+        person.name eq "Alice Engineer"
+        person.bio.isNotNull()
     }
 }
 // Generates: WHERE person.name = $p0 AND person.bio IS NOT NULL
@@ -352,8 +352,8 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 val results = graphObjectManager.loadAll<PersonCareer> {
     where {
         anyOf {
-            query.person.name eq "Alice"
-            query.person.name eq "Bob"
+            person.name eq "Alice"
+            person.name eq "Bob"
         }
     }
 }
@@ -365,10 +365,10 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 ```kotlin
 val results = graphObjectManager.loadAll<PersonCareer> {
     where {
-        query.person.bio.isNotNull()
+        person.bio.isNotNull()
     }
     orderBy {
-        query.person.name.asc()
+        person.name.asc()
     }
 }
 ```
@@ -469,22 +469,22 @@ The most powerful way - uses generated DSL for compile-time type checking:
 // Delete closed issues
 graphObjectManager.deleteAll<RaisedAndAssignedIssue> {
     where {
-        query.issue.state eq "closed"
+        issue.state eq "closed"
     }
 }
 
 // Delete with multiple conditions
 graphObjectManager.deleteAll<RaisedAndAssignedIssue> {
     where {
-        query.issue.state eq "open"
-        query.issue.locked eq true
+        issue.state eq "open"
+        issue.locked eq true
     }
 }
 
 // Delete by relationship property
 graphObjectManager.deleteAll<RaisedAndAssignedIssue> {
     where {
-        query.assignedTo.name eq "Former Employee"
+        assignedTo.name eq "Former Employee"
     }
 }
 
@@ -599,7 +599,7 @@ RETURN {
 ```kotlin
 graphObjectManager.loadAll<PersonCareer> {
     where {
-        query.person.bio contains "Lead"
+        person.bio contains "Lead"
     }
 }
 ```
@@ -615,6 +615,198 @@ WITH person { ... } AS person,
 
 RETURN { person: person, employmentHistory: employmentHistory } AS result
 ```
+
+### Polymorphic Relationships
+
+Drivine supports polymorphic relationship targets using Kotlin sealed classes with label-based type discrimination. This allows a single relationship to point to different node types.
+
+#### Defining Polymorphic Types
+
+Use a sealed class hierarchy with `@NodeFragment` labels to define polymorphic types:
+
+```kotlin
+// Base sealed class - the "WebUser" label is shared by all subtypes
+@NodeFragment(labels = ["WebUser"])
+sealed class WebUser {
+    abstract val uuid: UUID
+    abstract val displayName: String
+}
+
+// Subtype with additional "Anonymous" label
+@NodeFragment(labels = ["WebUser", "Anonymous"])
+data class AnonymousWebUser(
+    override val uuid: UUID,
+    override val displayName: String,
+    val anonymousToken: String  // Subtype-specific property
+) : WebUser()
+
+// Subtype with additional "Registered" label
+@NodeFragment(labels = ["WebUser", "Registered"])
+data class RegisteredWebUser(
+    override val uuid: UUID,
+    override val displayName: String,
+    val email: String  // Subtype-specific property
+) : WebUser()
+```
+
+In Neo4j, nodes have multiple labels:
+- `(:WebUser:Anonymous {displayName: "Guest", anonymousToken: "abc123"})`
+- `(:WebUser:Registered {displayName: "Alice", email: "alice@example.com"})`
+
+#### Using Polymorphic Relationships
+
+Reference the sealed class in your `@GraphView`:
+
+```kotlin
+@GraphView
+data class GuideUserWithPolymorphicWebUser(
+    @Root val core: GuideUser,
+    @GraphRelationship(type = "IS_WEB_USER", direction = Direction.OUTGOING)
+    val webUser: WebUser?  // Polymorphic - could be Anonymous or Registered
+)
+```
+
+When loading, Drivine automatically deserializes to the correct subtype based on labels:
+
+```kotlin
+val results = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> { }
+
+results.forEach { guide ->
+    when (val user = guide.webUser) {
+        is AnonymousWebUser -> println("Anonymous: ${user.anonymousToken}")
+        is RegisteredWebUser -> println("Registered: ${user.email}")
+        null -> println("No web user")
+    }
+}
+```
+
+#### Filtering Polymorphic Types
+
+There are two approaches to filter by polymorphic subtype:
+
+**Approach 1: Type-Specific View (Compile-Time)**
+
+Create a view that uses the specific subtype:
+
+```kotlin
+@GraphView
+data class AnonymousGuideUser(
+    @Root val core: GuideUser,
+    @GraphRelationship(type = "IS_WEB_USER", direction = Direction.OUTGOING)
+    val webUser: AnonymousWebUser  // Specific type, not WebUser
+)
+
+// Only returns guides with AnonymousWebUser
+val anonymousGuides = graphObjectManager.loadAll<AnonymousGuideUser> { }
+```
+
+The generated query automatically filters by the subtype's labels.
+
+**Approach 2: instanceOf DSL (Runtime)**
+
+Use `instanceOf<T>()` to filter at query time while keeping the polymorphic view:
+
+```kotlin
+import org.drivine.query.dsl.instanceOf
+
+// Filter to only anonymous users
+val results = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+    where {
+        webUser.instanceOf<AnonymousWebUser>()
+    }
+}
+
+// Combine with other conditions
+val activeAnonymous = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+    where {
+        core.guideProgress gte 10
+        webUser.instanceOf<AnonymousWebUser>()
+    }
+}
+
+// Use in OR conditions
+val anonymousOrRegistered = graphObjectManager.loadAll<GuideUserWithPolymorphicWebUser> {
+    where {
+        anyOf {
+            webUser.instanceOf<AnonymousWebUser>()
+            webUser.instanceOf<RegisteredWebUser>()
+        }
+    }
+}
+```
+
+The `instanceOf<T>()` function:
+- Extracts labels from the `@NodeFragment` annotation on type `T`
+- Generates a Cypher label check: `WHERE EXISTS { ... WHERE webUser:WebUser:Anonymous }`
+- Works with `anyOf` for OR conditions
+
+| Approach | When to Use |
+|----------|-------------|
+| Type-specific view | You always want a specific subtype; compile-time type safety |
+| `instanceOf<T>()` | Dynamic filtering; single view for multiple subtypes |
+
+### Required vs Optional Relationships
+
+Drivine distinguishes between required (non-nullable) and optional (nullable) relationships in `@GraphView` classes.
+
+#### Optional Relationships (Nullable)
+
+When a relationship property is nullable, Drivine returns all root nodes, even those without the relationship:
+
+```kotlin
+@GraphView
+data class GuideUserWithOptionalWebUser(
+    @Root val core: GuideUser,
+    @GraphRelationship(type = "IS_WEB_USER", direction = Direction.OUTGOING)
+    val webUser: WebUser?  // Nullable - relationship is optional
+)
+
+// Returns ALL GuideUsers, even those without a WebUser
+val results = graphObjectManager.loadAll<GuideUserWithOptionalWebUser> { }
+results.forEach { guide ->
+    if (guide.webUser != null) {
+        println("Has web user: ${guide.webUser.displayName}")
+    } else {
+        println("No web user")
+    }
+}
+```
+
+#### Required Relationships (Non-Nullable)
+
+When a relationship property is non-nullable, Drivine automatically filters out root nodes that don't have the relationship:
+
+```kotlin
+@GraphView
+data class GuideUserWithRequiredWebUser(
+    @Root val core: GuideUser,
+    @GraphRelationship(type = "IS_WEB_USER", direction = Direction.OUTGOING)
+    val webUser: WebUser  // Non-nullable - relationship is required!
+)
+
+// Only returns GuideUsers that HAVE a WebUser
+val results = graphObjectManager.loadAll<GuideUserWithRequiredWebUser> { }
+// All results guaranteed to have webUser != null
+```
+
+The generated Cypher includes a `WHERE EXISTS` clause:
+
+```cypher
+MATCH (core:GuideUser)
+WHERE EXISTS { (core)-[:IS_WEB_USER]->(:WebUser) }  -- Filters out nodes without relationship
+WITH core, ...
+RETURN { ... }
+```
+
+This prevents `MissingKotlinParameterException` that would occur if a null value was deserialized into a non-nullable property.
+
+#### Summary
+
+| Property Type | Behavior | Use Case |
+|---------------|----------|----------|
+| `val webUser: WebUser?` | Returns all root nodes | Optional relationship, handle null in code |
+| `val webUser: WebUser` | Filters to only nodes with relationship | Required relationship, guaranteed non-null |
+| `val webUsers: List<WebUser>` | Returns all root nodes (empty list if none) | Collection relationships are always safe |
 
 ## Core Features (PersistenceManager)
 
