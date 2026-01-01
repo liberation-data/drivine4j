@@ -88,9 +88,10 @@ class RequiredRelationshipTest @Autowired constructor(
     fun `optional relationship returns all root nodes including those without relationship`() {
         // GuideUserWithOptionalWebUser has nullable webUser
         // Should return ALL 4 GuideUsers
+        // Using cleaner DSL syntax: `core.guideProgress` instead of `query.core.guideProgress`
         val results = graphObjectManager.loadAll<GuideUserWithOptionalWebUser> {
             where {
-                query.core.guideProgress gte 0  // Match all test data
+                core.guideProgress gte 0  // Match all test data
             }
         }
 
@@ -141,9 +142,10 @@ class RequiredRelationshipTest @Autowired constructor(
     @Test
     fun `required relationship combined with DSL where clause`() {
         // Combine required relationship filtering with DSL conditions
+        // Using cleaner DSL syntax: `core.guideProgress` instead of `query.core.guideProgress`
         val results = graphObjectManager.loadAll<GuideUserWithRequiredWebUser> {
             where {
-                query.core.guideProgress gte 15
+                core.guideProgress gte 15
             }
         }
 

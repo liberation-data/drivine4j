@@ -9,6 +9,8 @@ import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.ksp.toClassName
 import com.squareup.kotlinpoet.ksp.writeTo
 
+@OptIn(ExperimentalKotlinPoetApi::class)
+
 /**
  * Generates query DSL classes and extension functions for a @GraphView annotated class.
  *
@@ -260,7 +262,10 @@ class QueryDslGenerator(
         val loadAllExtension = generateLoadAllExtensionFunction(graphViewClass)
         val deleteAllExtension = generateDeleteAllExtensionFunction(graphViewClass)
 
-        // Write to file
+        // Generate context property extensions as raw code (KotlinPoet doesn't support named context params)
+        val contextPropertyExtensionsCode = generateContextPropertyExtensionsCode(graphViewClass, viewStructure)
+
+        // Build the main file content with KotlinPoet
         val fileSpec = FileSpec.builder(graphViewClassName.packageName, dslClassName)
             .addFileComment("Generated code - do not modify")
             .addType(dslClass)
@@ -268,10 +273,19 @@ class QueryDslGenerator(
             .addFunction(deleteAllExtension)
             .build()
 
-        fileSpec.writeTo(
-            codeGenerator = codeGenerator,
-            dependencies = Dependencies(false, graphViewClass.containingFile!!)
+        // Write to file manually so we can append raw code for context property extensions
+        val outputStream = codeGenerator.createNewFile(
+            dependencies = Dependencies(false, graphViewClass.containingFile!!),
+            packageName = graphViewClassName.packageName,
+            fileName = dslClassName
         )
+        outputStream.bufferedWriter().use { writer ->
+            // Write the KotlinPoet-generated content
+            writer.write(fileSpec.toString())
+            // Append the raw context property extensions
+            writer.write("\n")
+            writer.write(contextPropertyExtensionsCode)
+        }
 
         logger.info("Generated $dslClassName at ${graphViewClassName.packageName}.$dslClassName")
     }
@@ -632,5 +646,61 @@ class QueryDslGenerator(
             .returns(Int::class)
             .addStatement("return deleteAll(T::class.java, $dslClassName.INSTANCE, spec)")
             .build()
+    }
+
+    /**
+     * Generates context property extension code for cleaner DSL syntax.
+     * Returns raw Kotlin code since KotlinPoet's contextReceivers() doesn't support named parameters.
+     *
+     * For example, instead of:
+     * ```kotlin
+     * where { query.core.guideProgress gte 0 }
+     * ```
+     *
+     * You can write:
+     * ```kotlin
+     * where { core.guideProgress gte 0 }
+     * ```
+     *
+     * Generates extensions for both WhereBuilder and OrderBuilder contexts.
+     */
+    private fun generateContextPropertyExtensionsCode(
+        graphViewClass: KSClassDeclaration,
+        viewStructure: List<ViewProperty>
+    ): String {
+        val graphViewClassName = graphViewClass.toClassName()
+        val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
+
+        val code = StringBuilder()
+
+        viewStructure.forEach { viewProp ->
+            val propertiesClassName = if (viewProp.isNestedView && viewProp.nestedViewClass != null) {
+                val nestedViewName = viewProp.nestedViewClass.simpleName.asString()
+                "${nestedViewName}Properties"
+            } else {
+                val fragmentClass = viewProp.type.declaration as? KSClassDeclaration ?: return@forEach
+                "${fragmentClass.simpleName.asString()}Properties"
+            }
+
+            // Generate context property for WhereBuilder
+            code.appendLine("""
+context(builder: org.drivine.query.dsl.WhereBuilder<$dslClassName>)
+@Suppress("CONTEXT_RECEIVERS_DEPRECATED")
+public val ${viewProp.name}: $propertiesClassName
+    get() = builder.queryObject.${viewProp.name}
+""".trimIndent())
+            code.appendLine()
+
+            // Generate context property for OrderBuilder
+            code.appendLine("""
+context(builder: org.drivine.query.dsl.OrderBuilder<$dslClassName>)
+@Suppress("CONTEXT_RECEIVERS_DEPRECATED")
+public val ${viewProp.name}: $propertiesClassName
+    get() = builder.queryObject.${viewProp.name}
+""".trimIndent())
+            code.appendLine()
+        }
+
+        return code.toString()
     }
 }

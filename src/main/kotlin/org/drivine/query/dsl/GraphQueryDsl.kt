@@ -3,18 +3,22 @@ package org.drivine.query.dsl
 /**
  * DSL for building type-safe queries for GraphViews and GraphFragments.
  *
- * Example usage:
+ * Example usage with cleaner context parameter syntax:
  * ```kotlin
- * graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
+ * graphObjectManager.loadAll<RaisedAndAssignedIssue> {
  *     where {
- *         query.issue.state eq "open"
- *         query.issue.id gt 1000
+ *         issue.state eq "open"      // Direct property access!
+ *         issue.id gt 1000
  *     }
  *     orderBy {
- *         this(query.issue.id.asc())
+ *         issue.id.asc()             // Direct property access!
  *     }
  * }
  * ```
+ *
+ * The generated context property extensions enable direct property access
+ * (e.g., `issue.state` instead of `query.issue.state`), making the DSL
+ * more natural and concise.
  *
  * With context parameters (Kotlin 2.2+), conditions are automatically registered,
  * eliminating the need for this() or other wrapper syntax.
@@ -89,7 +93,7 @@ open class WhereBuilder<T : Any>(
      * The query object providing property references.
      * Can be accessed as `query.issue.state` etc.
      */
-    internal val queryObject: T
+    val queryObject: T
 ) {
     internal val conditions = mutableListOf<WhereCondition>()
 
@@ -178,7 +182,7 @@ class OrderBuilder<T : Any>(
     /**
      * The query object providing property references.
      */
-    internal val queryObject: T
+    val queryObject: T
 ) {
     internal val orders = mutableListOf<OrderSpec>()
 
