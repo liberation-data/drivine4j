@@ -1,0 +1,113 @@
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id 'com.gradleup.nmcp'
+}
+
+// Apply signing plugin only when needed
+def shouldSign = project.hasProperty('sign') || System.getenv('SIGN') == 'true'
+if (shouldSign) {
+    apply plugin: 'signing'
+}
+
+group = 'org.drivine'
+version = rootProject.version
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Only depend on annotations from root project, not the full implementation
+    compileOnly rootProject
+
+    // JavaPoet for code generation
+    implementation 'com.squareup:javapoet:1.13.0'
+
+    // Testing
+    testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.1'
+    testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.1'
+}
+
+test {
+    useJUnitPlatform()
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+
+            artifactId = 'drivine4j-codegen-java'
+
+            pom {
+                name = 'Drivine4j Java Code Generation'
+                description = 'Java annotation processor for Drivine4j - generates type-safe query DSL for GraphView classes'
+                url = 'https://github.com/liberation-data/drivine4j'
+
+                licenses {
+                    license {
+                        name = 'Apache License 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'jasperblues'
+                        name = 'Jasper Blues'
+                        email = 'jasper@liberation-data.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/liberation-data/drivine4j.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/liberation-data/drivine4j.git'
+                    url = 'https://github.com/liberation-data/drivine4j'
+                }
+            }
+        }
+    }
+}
+
+// Javadoc jar
+tasks.register('javadocJar', Jar) {
+    archiveClassifier = 'javadoc'
+    from javadoc
+}
+
+// Attach javadoc jar to publication
+publishing.publications.mavenJava.artifact(tasks.named('javadocJar'))
+
+// --- Signing (required for non-SNAPSHOT releases to Maven Central) ---
+if (shouldSign) {
+    signing {
+        required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
+
+        def signingKey = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
+        def signingPassword = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+
+        if (signingKey != null && signingKey.contains('BEGIN PGP')) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        } else {
+            useGpgCmd()
+        }
+
+        sign publishing.publications.mavenJava
+    }
+}
+
+// --- Central Publishing Portal (new Maven Central) ---
+nmcp {
+    publishAllPublications {
+        username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+        password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+        publicationType = "AUTOMATIC"
+    }
+}

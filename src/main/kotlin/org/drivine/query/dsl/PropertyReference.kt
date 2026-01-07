@@ -21,6 +21,38 @@ interface NodeReference {
      * For example, "webUser" in a relationship target, or "core" for a root fragment.
      */
     val nodeAlias: String
+
+    /**
+     * Java-friendly instanceOf filter for polymorphic type filtering.
+     *
+     * Filters results to only include nodes that have all labels defined
+     * in the @NodeFragment annotation of the given class.
+     *
+     * Example (Java):
+     * ```java
+     * graphObjectManager.query(GuideUserWithPolymorphicWebUser.class)
+     *     .filterWith(GuideUserWithPolymorphicWebUserQueryDsl.class)
+     *     .where(dsl -> dsl.getWebUser().instanceOf(AnonymousWebUser.class))
+     *     .loadAll();
+     * ```
+     *
+     * @param clazz The @NodeFragment annotated class to filter by
+     * @return PropertyConditionBuilder for use with JavaQueryBuilder
+     * @throws IllegalArgumentException if the class doesn't have a @NodeFragment annotation
+     */
+    fun instanceOf(clazz: Class<*>): PropertyConditionBuilder {
+        val labels = extractLabelsFromNodeFragment(clazz)
+        require(labels.isNotEmpty()) {
+            "Type ${clazz.simpleName} does not have a @NodeFragment annotation with labels. " +
+            "instanceOf() can only be used with types annotated with @NodeFragment."
+        }
+        return PropertyConditionBuilder(
+            WhereCondition.LabelCondition(
+                alias = this.nodeAlias,
+                labels = labels
+            )
+        )
+    }
 }
 
 /**
@@ -70,20 +102,34 @@ fun extractLabelsFromNodeFragment(clazz: Class<*>): List<String> {
  *
  * Example: issue.state where "issue" is the alias and "state" is the property name.
  *
- * With context parameters (Kotlin 2.2+), conditions are automatically registered
- * when used within a where block, eliminating the need for this() or other wrappers.
+ * **Kotlin usage** (with context parameters - conditions auto-register):
+ * ```kotlin
+ * where {
+ *     issue.state eq "open"
+ * }
+ * ```
+ *
+ * **Java usage** (methods return PropertyConditionBuilder):
+ * ```java
+ * graphObjectManager.query(PersonCareer.class)
+ *     .where(q -> q.person().name().eq("Alice"))
+ *     .loadAll();
+ * ```
  */
 open class PropertyReference<T>(
     internal val alias: String,
     internal val propertyName: String
 ) {
+    // ==================== Java-friendly methods (return PropertyConditionBuilder) ====================
+    // These methods return a builder that can be used with JavaQueryBuilder.
+    // They have different signatures than the context parameter versions (Unit vs PropertyConditionBuilder).
+
     /**
      * Equality condition: property = value
-     * Automatically registers itself when used in a where block (via context parameters).
+     * Returns a PropertyConditionBuilder for use with Java query builder.
      */
-    context(builder: WhereBuilder<*>)
-    infix fun eq(value: T?) {
-        builder.conditions.add(
+    fun eq(value: T?): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.EQUALS,
@@ -95,9 +141,8 @@ open class PropertyReference<T>(
     /**
      * Not equals condition: property <> value
      */
-    context(builder: WhereBuilder<*>)
-    infix fun neq(value: T?) {
-        builder.conditions.add(
+    fun neq(value: T?): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.NOT_EQUALS,
@@ -109,9 +154,8 @@ open class PropertyReference<T>(
     /**
      * Greater than condition: property > value
      */
-    context(builder: WhereBuilder<*>)
-    infix fun gt(value: T) {
-        builder.conditions.add(
+    fun gt(value: T): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.GREATER_THAN,
@@ -123,9 +167,8 @@ open class PropertyReference<T>(
     /**
      * Greater than or equal condition: property >= value
      */
-    context(builder: WhereBuilder<*>)
-    infix fun gte(value: T) {
-        builder.conditions.add(
+    fun gte(value: T): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.GREATER_THAN_OR_EQUAL,
@@ -137,9 +180,8 @@ open class PropertyReference<T>(
     /**
      * Less than condition: property < value
      */
-    context(builder: WhereBuilder<*>)
-    infix fun lt(value: T) {
-        builder.conditions.add(
+    fun lt(value: T): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.LESS_THAN,
@@ -151,9 +193,8 @@ open class PropertyReference<T>(
     /**
      * Less than or equal condition: property <= value
      */
-    context(builder: WhereBuilder<*>)
-    infix fun lte(value: T) {
-        builder.conditions.add(
+    fun lte(value: T): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.LESS_THAN_OR_EQUAL,
@@ -165,9 +206,8 @@ open class PropertyReference<T>(
     /**
      * IN condition: property IN [values]
      */
-    context(builder: WhereBuilder<*>)
-    infix fun `in`(values: Collection<T>) {
-        builder.conditions.add(
+    fun isIn(values: Collection<T>): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.IN,
@@ -178,11 +218,9 @@ open class PropertyReference<T>(
 
     /**
      * IS NULL condition: property IS NULL
-     * Checks if the property is null or absent in the graph.
      */
-    context(builder: WhereBuilder<*>)
-    fun isNull() {
-        builder.conditions.add(
+    fun isNull(): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.IS_NULL,
@@ -193,11 +231,9 @@ open class PropertyReference<T>(
 
     /**
      * IS NOT NULL condition: property IS NOT NULL
-     * Checks if the property exists and has a non-null value.
      */
-    context(builder: WhereBuilder<*>)
-    fun isNotNull() {
-        builder.conditions.add(
+    fun isNotNull(): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
                 operator = ComparisonOperator.IS_NOT_NULL,
@@ -208,29 +244,145 @@ open class PropertyReference<T>(
 
     /**
      * Ascending order specification.
-     * When used in an orderBy block with context parameters, automatically registers itself.
      */
-    context(builder: OrderBuilder<*>)
-    fun asc() {
-        builder.orders.add(
-            OrderSpec(
-                propertyPath = "$alias.$propertyName",
-                direction = OrderDirection.ASC
-            )
+    fun asc(): OrderSpec {
+        return OrderSpec(
+            propertyPath = "$alias.$propertyName",
+            direction = OrderDirection.ASC
         )
     }
 
     /**
      * Descending order specification.
-     * When used in an orderBy block with context parameters, automatically registers itself.
+     */
+    fun desc(): OrderSpec {
+        return OrderSpec(
+            propertyPath = "$alias.$propertyName",
+            direction = OrderDirection.DESC
+        )
+    }
+
+    // ==================== Kotlin context parameter methods ====================
+    // These methods auto-register conditions when used within a where/orderBy block.
+    // They have different signatures (take WhereBuilder context, return Unit).
+
+    /**
+     * Equality condition with context parameter (Kotlin DSL).
+     * Automatically registers itself when used in a where block.
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("eqContext")
+    infix fun eq(value: T?) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.EQUALS, value))
+    }
+
+    /**
+     * Not equals condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("neqContext")
+    infix fun neq(value: T?) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.NOT_EQUALS, value))
+    }
+
+    /**
+     * Greater than condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("gtContext")
+    infix fun gt(value: T) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.GREATER_THAN, value))
+    }
+
+    /**
+     * Greater than or equal condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("gteContext")
+    infix fun gte(value: T) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.GREATER_THAN_OR_EQUAL, value))
+    }
+
+    /**
+     * Less than condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("ltContext")
+    infix fun lt(value: T) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.LESS_THAN, value))
+    }
+
+    /**
+     * Less than or equal condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("lteContext")
+    infix fun lte(value: T) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.LESS_THAN_OR_EQUAL, value))
+    }
+
+    /**
+     * IN condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("inContext")
+    infix fun `in`(values: Collection<T>) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.IN, values))
+    }
+
+    /**
+     * IS NULL condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("isNullContext")
+    fun isNull() {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.IS_NULL, null))
+    }
+
+    /**
+     * IS NOT NULL condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("isNotNullContext")
+    fun isNotNull() {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.IS_NOT_NULL, null))
+    }
+
+    /**
+     * Ascending order with context parameter (Kotlin DSL).
      */
     context(builder: OrderBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("ascContext")
+    fun asc() {
+        builder.orders.add(OrderSpec("$alias.$propertyName", OrderDirection.ASC))
+    }
+
+    /**
+     * Descending order with context parameter (Kotlin DSL).
+     */
+    context(builder: OrderBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("descContext")
     fun desc() {
-        builder.orders.add(
-            OrderSpec(
-                propertyPath = "$alias.$propertyName",
-                direction = OrderDirection.DESC
-            )
+        builder.orders.add(OrderSpec("$alias.$propertyName", OrderDirection.DESC))
+    }
+
+    // Helper to create PropertyCondition
+    private fun makePropertyCondition(operator: ComparisonOperator, value: Any?): WhereCondition.PropertyCondition {
+        return WhereCondition.PropertyCondition(
+            propertyPath = "$alias.$propertyName",
+            operator = operator,
+            value = value
         )
     }
 }
@@ -243,12 +395,14 @@ class StringPropertyReference(
     private val stringPropertyName: String
 ) : PropertyReference<String>(stringAlias, stringPropertyName) {
 
+    // ==================== Java-friendly methods ====================
+
     /**
      * CONTAINS condition: property CONTAINS value
+     * Returns PropertyConditionBuilder for Java usage.
      */
-    context(builder: WhereBuilder<*>)
-    infix fun contains(value: String) {
-        builder.conditions.add(
+    fun contains(value: String): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
                 operator = ComparisonOperator.CONTAINS,
@@ -260,9 +414,8 @@ class StringPropertyReference(
     /**
      * STARTS WITH condition: property STARTS WITH value
      */
-    context(builder: WhereBuilder<*>)
-    infix fun startsWith(value: String) {
-        builder.conditions.add(
+    fun startsWith(value: String): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
                 operator = ComparisonOperator.STARTS_WITH,
@@ -274,15 +427,58 @@ class StringPropertyReference(
     /**
      * ENDS WITH condition: property ENDS WITH value
      */
-    context(builder: WhereBuilder<*>)
-    infix fun endsWith(value: String) {
-        builder.conditions.add(
+    fun endsWith(value: String): PropertyConditionBuilder {
+        return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
                 operator = ComparisonOperator.ENDS_WITH,
                 value = value
             )
         )
+    }
+
+    // ==================== Kotlin context parameter methods ====================
+
+    /**
+     * CONTAINS condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("containsContext")
+    infix fun contains(value: String) {
+        builder.conditions.add(WhereCondition.PropertyCondition(
+            propertyPath = "$stringAlias.$stringPropertyName",
+            operator = ComparisonOperator.CONTAINS,
+            value = value
+        ))
+    }
+
+    /**
+     * STARTS WITH condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("startsWithContext")
+    infix fun startsWith(value: String) {
+        builder.conditions.add(WhereCondition.PropertyCondition(
+            propertyPath = "$stringAlias.$stringPropertyName",
+            operator = ComparisonOperator.STARTS_WITH,
+            value = value
+        ))
+    }
+
+    /**
+     * ENDS WITH condition with context parameter (Kotlin DSL).
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("endsWithContext")
+    infix fun endsWith(value: String) {
+        builder.conditions.add(WhereCondition.PropertyCondition(
+            propertyPath = "$stringAlias.$stringPropertyName",
+            operator = ComparisonOperator.ENDS_WITH,
+            value = value
+        ))
     }
 }
 

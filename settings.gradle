@@ -1,7 +1,8 @@
 rootProject.name = 'drivine4j'
 
-// Code generation module
-include 'drivine4j-codegen'
+// Code generation modules
+include 'drivine4j-codegen'        // KSP processor for Kotlin
+include 'drivine4j-codegen-java'   // APT processor for Java
 
 // Spring Boot starter module
 include 'drivine4j-spring-boot-starter'
