@@ -120,3 +120,52 @@ object Neo4jObjectMapper {
 fun ObjectMapper.toMap(value: Any): Map<String, Any?> {
     return this.convertValue(value, Map::class.java) as Map<String, Any?>
 }
+
+/**
+ * Converts a single value to a Neo4j-compatible format.
+ *
+ * This function handles type conversions for values that Neo4j's driver doesn't support directly:
+ * - Instant → ZonedDateTime (at UTC)
+ * - UUID → String
+ * - Enum → String (enum name)
+ * - Date → ZonedDateTime (at UTC)
+ * - Collections are recursively converted
+ * - Maps are recursively converted
+ * - Complex objects are converted via Jackson toMap()
+ *
+ * Primitives (String, Number, Boolean) and Neo4j-native temporal types
+ * (ZonedDateTime, LocalDate, LocalDateTime) pass through unchanged.
+ */
+fun ObjectMapper.convertValueForNeo4j(value: Any?): Any? {
+    if (value == null) return null
+    return when (value) {
+        // Primitives that Neo4j supports directly
+        is String, is Number, is Boolean -> value
+        // Convert Instant to ZonedDateTime (Neo4j doesn't support Instant)
+        is Instant -> value.atZone(ZoneId.of("UTC"))
+        // Convert UUID to String
+        is UUID -> value.toString()
+        // Convert Enum to String
+        is Enum<*> -> value.name
+        // Convert legacy Date to ZonedDateTime
+        is Date -> value.toInstant().atZone(ZoneId.of("UTC"))
+        // Keep ZonedDateTime, LocalDate, LocalDateTime as-is (Neo4j supports them)
+        is ZonedDateTime, is java.time.LocalDate, is java.time.LocalDateTime, is java.time.LocalTime -> value
+        // Recursively handle collections
+        is Collection<*> -> value.map { convertValueForNeo4j(it) }
+        // Handle arrays (convert to list and recursively process)
+        is Array<*> -> value.map { convertValueForNeo4j(it) }
+        is IntArray -> value.toList()
+        is LongArray -> value.toList()
+        is DoubleArray -> value.toList()
+        is FloatArray -> value.toList()
+        is BooleanArray -> value.toList()
+        is ByteArray -> value.toList()
+        is ShortArray -> value.toList()
+        is CharArray -> value.toList()
+        // Recursively handle maps
+        is Map<*, *> -> value.mapValues { (_, v) -> convertValueForNeo4j(v) }
+        // For complex objects, use Jackson toMap() then recursively convert
+        else -> toMap(value).mapValues { (_, v) -> convertValueForNeo4j(v) }
+    }
+}

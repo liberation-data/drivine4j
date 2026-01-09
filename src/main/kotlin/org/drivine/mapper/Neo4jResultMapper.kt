@@ -33,7 +33,7 @@ open class Neo4jResultMapper(
             is Record -> toNative(recordToNative(value))
             is Value -> when {
                 value.hasType(org.neo4j.driver.types.TypeSystem.getDefault().INTEGER()) -> value.asLong()
-                else -> value
+                else -> value.asObject()  // Convert all other Neo4j Values to native Java types
             }
             else -> value
         }

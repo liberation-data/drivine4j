@@ -1110,32 +1110,196 @@ class TestConfig {
 }
 ```
 
+## Java Query DSL
+
+Drivine4j provides a fluent, type-safe query API for Java that mirrors the Kotlin DSL capabilities.
+
+### Basic Usage
+
+```java
+import org.drivine.query.dsl.JavaQueryBuilderKt;
+
+List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
+    .query(graphObjectManager, RaisedAndAssignedIssue.class)
+    .filterWith(RaisedAndAssignedIssueQueryDsl.class)
+    .where(dsl -> dsl.getIssue().getState().eq("open"))
+    .loadAll();
+```
+
+The pattern is:
+1. `query(graphObjectManager, GraphViewClass)` - Start a query
+2. `filterWith(QueryDslClass)` - Specify the generated DSL for type-safe filtering
+3. Chain `where()`, `whereAny()`, `orderBy()` as needed
+4. Terminate with `loadAll()`, `loadFirst()`, or `deleteAll()`
+
+### Available Operators
+
+**Comparison:**
+```java
+.where(dsl -> dsl.getIssue().getId().eq(100L))      // equals
+.where(dsl -> dsl.getIssue().getId().neq(100L))     // not equals
+.where(dsl -> dsl.getIssue().getId().gt(100L))      // greater than
+.where(dsl -> dsl.getIssue().getId().gte(100L))     // greater than or equal
+.where(dsl -> dsl.getIssue().getId().lt(100L))      // less than
+.where(dsl -> dsl.getIssue().getId().lte(100L))     // less than or equal
+```
+
+**String Operations:**
+```java
+.where(dsl -> dsl.getIssue().getTitle().contains("Bug"))
+.where(dsl -> dsl.getIssue().getTitle().startsWith("Feature"))
+.where(dsl -> dsl.getIssue().getTitle().endsWith("needed"))
+```
+
+**Null Checks:**
+```java
+.where(dsl -> dsl.getIssue().getBody().isNull())
+.where(dsl -> dsl.getIssue().getBody().isNotNull())
+```
+
+**Collections:**
+```java
+.where(dsl -> dsl.getIssue().getState().isIn(Arrays.asList("open", "reopened")))
+```
+
+### Multiple Conditions (AND)
+
+Chain multiple `where()` calls for AND logic:
+
+```java
+List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
+    .query(graphObjectManager, RaisedAndAssignedIssue.class)
+    .filterWith(RaisedAndAssignedIssueQueryDsl.class)
+    .where(dsl -> dsl.getIssue().getState().eq("open"))
+    .where(dsl -> dsl.getIssue().getLocked().eq(false))
+    .where(dsl -> dsl.getIssue().getId().gte(100L))
+    .loadAll();
+// WHERE issue.state = 'open' AND issue.locked = false AND issue.id >= 100
+```
+
+### OR Conditions
+
+Use `whereAny()` for OR logic:
+
+```java
+List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
+    .query(graphObjectManager, RaisedAndAssignedIssue.class)
+    .filterWith(RaisedAndAssignedIssueQueryDsl.class)
+    .whereAny(dsl -> Arrays.asList(
+        dsl.getIssue().getState().eq("open"),
+        dsl.getIssue().getState().eq("reopened")
+    ))
+    .loadAll();
+// WHERE (issue.state = 'open' OR issue.state = 'reopened')
+```
+
+Combine AND and OR:
+
+```java
+// locked=false AND (state='open' OR state='reopened')
+List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
+    .query(graphObjectManager, RaisedAndAssignedIssue.class)
+    .filterWith(RaisedAndAssignedIssueQueryDsl.class)
+    .where(dsl -> dsl.getIssue().getLocked().eq(false))
+    .whereAny(dsl -> Arrays.asList(
+        dsl.getIssue().getState().eq("open"),
+        dsl.getIssue().getState().eq("reopened")
+    ))
+    .loadAll();
+```
+
+### Ordering
+
+```java
+List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
+    .query(graphObjectManager, RaisedAndAssignedIssue.class)
+    .filterWith(RaisedAndAssignedIssueQueryDsl.class)
+    .where(dsl -> dsl.getIssue().getState().eq("open"))
+    .orderBy(dsl -> dsl.getIssue().getId().desc())
+    .loadAll();
+```
+
+### Load First
+
+Get only the first matching result:
+
+```java
+RaisedAndAssignedIssue result = JavaQueryBuilderKt
+    .query(graphObjectManager, RaisedAndAssignedIssue.class)
+    .filterWith(RaisedAndAssignedIssueQueryDsl.class)
+    .where(dsl -> dsl.getIssue().getState().eq("open"))
+    .orderBy(dsl -> dsl.getIssue().getId().desc())
+    .loadFirst();  // Returns null if no matches
+```
+
+### Polymorphic Filtering with instanceOf
+
+Filter by `@NodeFragment` subtype using `instanceOf()`:
+
+```java
+import org.drivine.sample.fragment.AnonymousWebUser;
+import org.drivine.sample.fragment.RegisteredWebUser;
+
+// Filter to only anonymous web users
+List<GuideUserWithPolymorphicWebUser> results = JavaQueryBuilderKt
+    .query(graphObjectManager, GuideUserWithPolymorphicWebUser.class)
+    .filterWith(GuideUserWithPolymorphicWebUserQueryDsl.class)
+    .where(dsl -> dsl.getWebUser().instanceOf(AnonymousWebUser.class))
+    .loadAll();
+
+// Combine with other conditions
+List<GuideUserWithPolymorphicWebUser> activeAnonymous = JavaQueryBuilderKt
+    .query(graphObjectManager, GuideUserWithPolymorphicWebUser.class)
+    .filterWith(GuideUserWithPolymorphicWebUserQueryDsl.class)
+    .where(dsl -> dsl.getCore().getGuideProgress().gte(10))
+    .where(dsl -> dsl.getWebUser().instanceOf(AnonymousWebUser.class))
+    .loadAll();
+
+// Use in OR conditions
+List<GuideUserWithPolymorphicWebUser> allUsers = JavaQueryBuilderKt
+    .query(graphObjectManager, GuideUserWithPolymorphicWebUser.class)
+    .filterWith(GuideUserWithPolymorphicWebUserQueryDsl.class)
+    .whereAny(dsl -> Arrays.asList(
+        dsl.getWebUser().instanceOf(AnonymousWebUser.class),
+        dsl.getWebUser().instanceOf(RegisteredWebUser.class)
+    ))
+    .loadAll();
+```
+
+### Delete with DSL
+
+```java
+int deleted = JavaQueryBuilderKt
+    .query(graphObjectManager, RaisedAndAssignedIssue.class)
+    .filterWith(RaisedAndAssignedIssueQueryDsl.class)
+    .where(dsl -> dsl.getIssue().getState().eq("closed"))
+    .deleteAll();
+```
+
+### Java DSL Summary
+
+| Operation | Example |
+|-----------|---------|
+| Equality | `.eq("value")`, `.neq("value")` |
+| Comparison | `.gt(n)`, `.gte(n)`, `.lt(n)`, `.lte(n)` |
+| Strings | `.contains("x")`, `.startsWith("x")`, `.endsWith("x")` |
+| Null | `.isNull()`, `.isNotNull()` |
+| Collections | `.isIn(Arrays.asList(...))` |
+| Type filter | `.instanceOf(SubtypeClass.class)` |
+| AND | Chain multiple `.where()` |
+| OR | `.whereAny(dsl -> Arrays.asList(...))` |
+| Order | `.orderBy(dsl -> dsl.getProp().asc())` |
+
 ## Java Interoperability
 
-Drivine4j provides full runtime support for Java, but with some considerations for the type-safe DSL.
+### DSL Generation Note
 
-### What Works in Java
+The code generator (KSP) only processes **Kotlin source files**. For the best experience:
+- Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
+- Your `@NodeFragment` classes can be in Java or Kotlin
+- At runtime, both Java and Kotlin classes work fully with `GraphObjectManager`
 
-✅ **Full Runtime Support:**
-- All `@NodeFragment` classes work in both Java and Kotlin
-- `@GraphView` classes work at runtime in both languages
-- `@RelationshipFragment` classes work in both languages
-- `GraphObjectManager` loading and saving works with Java classes
-- Polymorphic types work with Java classes (using `@JsonSubTypes` or manual registration)
-
-✅ **Java Features:**
-- Generic collections (`List<Person>`) are properly handled using Java reflection
-- Nested `@GraphView` relationships work
-- All annotations (`@Root`, `@GraphRelationship`, `@NodeId`, etc.) work on Java fields
-
-### Type-Safe DSL Limitation
-
-❌ **DSL Generation (KSP limitation):**
-- The code generator only processes **Kotlin source files**
-- Java `@GraphView` classes won't get generated DSL
-- You can still load them, just without the type-safe query builder
-
-### Recommended Pattern for Java Projects
+### Recommended Pattern
 
 **Best Practice:** Define `@GraphView` classes in Kotlin, everything else can be Java.
 
@@ -1147,60 +1311,25 @@ public class Person {
     public String name;
     public String bio;
 }
-
-@NodeFragment(labels = {"Organization"})
-public class Organization {
-    @NodeId public UUID uuid;
-    public String name;
-}
 ```
 
 ```kotlin
 // Define GraphViews in Kotlin to get DSL generation
 @GraphView
 data class PersonContext(
-    @Root val person: Person,  // Java class!
+    @Root val person: Person,  // References Java class!
     @GraphRelationship(type = "WORKS_FOR")
-    val worksFor: List<Organization>  // Java class!
+    val worksFor: List<Organization>
 )
 ```
 
 ```java
-// Use from Java with full type-safe DSL support!
-public class PersonService {
-    @Autowired
-    private GraphObjectManager graphObjectManager;
-
-    public List<PersonContext> findByOrganization(String orgName) {
-        return graphObjectManager.loadAll(
-            PersonContext.class,
-            spec -> {
-                spec.where(ctx -> {
-                    ctx.getQuery().getWorksFor().getName().eq(orgName);
-                });
-                return null;
-            }
-        );
-    }
-}
-```
-
-### Alternative: Pure Java Without DSL
-
-If you prefer pure Java, you can still use `GraphObjectManager` without the DSL:
-
-```java
-@GraphView
-public class JavaPersonContext {
-    @Root public Person person;
-
-    @GraphRelationship(type = "WORKS_FOR", direction = Direction.OUTGOING)
-    public List<Organization> worksFor;
-}
-
-// Works at runtime - no DSL, but fully functional
-List<JavaPersonContext> all = graphObjectManager.loadAll(JavaPersonContext.class);
-JavaPersonContext person = graphObjectManager.load(uuid, JavaPersonContext.class);
+// Use from Java with the fluent DSL API
+List<PersonContext> results = JavaQueryBuilderKt
+    .query(graphObjectManager, PersonContext.class)
+    .filterWith(PersonContextQueryDsl.class)
+    .where(dsl -> dsl.getPerson().getName().contains("Alice"))
+    .loadAll();
 ```
 
 ### Summary
@@ -1210,12 +1339,11 @@ JavaPersonContext person = graphObjectManager.load(uuid, JavaPersonContext.class
 | `@NodeFragment` | ✅ Full | Works identically in Java and Kotlin |
 | `@RelationshipFragment` | ✅ Full | Works identically in Java and Kotlin |
 | `@GraphView` runtime | ✅ Full | Loading, saving, polymorphism all work |
-| `@GraphView` DSL generation | ❌ Kotlin only | KSP limitation |
+| Type-safe DSL | ✅ Full | Use `filterWith()` API from Java |
+| `instanceOf()` | ✅ Full | Filter by `@NodeFragment` subtype |
+| DSL generation | ⚠️ Kotlin only | Define `@GraphView` in Kotlin |
 | Generic collections | ✅ Full | Java reflection handles `List<T>`, `Set<T>` |
-| Nested relationships | ✅ Full | Works with Java classes |
-| Polymorphic types | ✅ Full | Works with `@JsonSubTypes` |
-
-**Recommendation:** Use Kotlin for `@GraphView` definitions to get the type-safe DSL, and use Java for everything else if preferred.
+| Polymorphic types | ✅ Full | Works with sealed classes or `@JsonSubTypes` |
 
 ## Building from Source
 

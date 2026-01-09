@@ -2,6 +2,7 @@ package org.drivine.query
 
 import org.drivine.mapper.*
 import org.drivine.mapper.toMap
+import org.drivine.mapper.convertValueForNeo4j
 
 class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
@@ -25,8 +26,31 @@ class QuerySpecification<T> private constructor(
         }
     }
 
+    /**
+     * Binds a map of parameters with automatic Neo4j type conversion.
+     *
+     * Values are converted to Neo4j-compatible types:
+     * - Instant → ZonedDateTime (at UTC)
+     * - UUID → String
+     * - Enum → String (enum name)
+     * - Date → ZonedDateTime (at UTC)
+     * - Collections and Maps are recursively converted
+     * - Primitives (String, Number, Boolean) pass through unchanged
+     *
+     * Example:
+     * ```kotlin
+     * QuerySpecification
+     *     .withStatement("CREATE (n:Node {createdAt: \$createdAt, id: \$id})")
+     *     .bind(mapOf(
+     *         "createdAt" to Instant.now(),  // Converted to ZonedDateTime
+     *         "id" to UUID.randomUUID()      // Converted to String
+     *     ))
+     * ```
+     */
     fun bind(parameters: Map<String, Any?>): QuerySpecification<T> {
-        this.parameters = parameters
+        this.parameters = parameters.mapValues { (_, value) ->
+            Neo4jObjectMapper.instance.convertValueForNeo4j(value)
+        }
         return this
     }
 
