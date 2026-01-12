@@ -3,6 +3,7 @@ package org.drivine.query
 import org.junit.jupiter.api.Test
 import sample.mapped.view.ParentViewWithNestedList
 import sample.mapped.view.RaisedAndAssignedIssue
+import sample.mapped.view.TopLevelWithNestedGraphViews
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -177,6 +178,47 @@ class GraphViewQueryBuilderTests {
         assertFalse(
             query.contains("][0] AS assignees"),
             "Collection relationship 'assignees' should NOT use [0] index"
+        )
+    }
+
+    @Test
+    fun `should correctly project deeply nested GraphViews with their Root fragments`() {
+        // This test verifies that when a GraphView (Level 2) inside a List has a relationship
+        // to another GraphView (Level 3), the Level 3 GraphView's @Root fragment is correctly
+        // projected - not just .* but the full structure with person: { fields... }
+        //
+        // Bug: When buildNestedViewProjection processes relationships, it used getFragmentFields()
+        // which fails for GraphView targets, falling back to .* which doesn't include the
+        // GraphView's @Root structure. This causes the @Root property to be null during deserialization.
+        val builder = GraphViewQueryBuilder.forView(TopLevelWithNestedGraphViews::class)
+        val query = builder.buildQuery()
+
+        println("Generated query for deeply nested GraphView check:")
+        println(query)
+
+        // Level 3 (DeeplyNestedView) has @Root val person: Person
+        // When nested inside Level 2's raisedBy relationship, it should have:
+        // raisedBy: { person: { uuid: ..., name: ..., bio: ... }, employer: [...] }
+        // NOT just: raisedBy: { .*, labels: ... }
+
+        // Verify that the Level 3 GraphView's @Root fragment (person) is explicitly projected
+        // The pattern should include "person:" with field mappings, not just .*
+        assertTrue(
+            query.contains("raisedBy") && query.contains(Regex("""person:\s*\{""")),
+            "Deeply nested GraphView (DeeplyNestedView) should have its @Root 'person' fragment explicitly projected"
+        )
+
+        // Verify the person fields are mapped (not just .*)
+        // DeeplyNestedView.person is of type Person which has uuid, name, bio fields
+        assertTrue(
+            query.contains(Regex("""person:\s*\{\s*\w+:""")),
+            "The @Root 'person' block should contain explicit field mappings, not just .*"
+        )
+
+        // Verify Level 3's relationship (employer) is also present
+        assertTrue(
+            query.contains("employer:"),
+            "Deeply nested GraphView should also include its relationships (employer)"
         )
     }
 }

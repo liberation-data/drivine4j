@@ -398,24 +398,16 @@ ${returnFields.joinToString(",\n")}
             // Derive the target alias for the nested relationship
             val nestedTargetAlias = nestedRel.deriveTargetAlias()
 
-            // Get fields for the nested target
-            val nestedTargetFields = getFragmentFields(nestedRel.elementType)
-            val nestedFieldMappings = if (nestedTargetFields == null) {
-                // Polymorphic type - use .*
-                ".*"
-            } else {
-                nestedTargetFields.joinToString(",\n                    ") { "$it: ${nestedTargetAlias}.$it" }
-            }
+            // Build projection for the nested target - this handles both GraphView and fragment targets
+            // For GraphView targets, it recursively builds the full structure (root + relationships)
+            // For fragment targets, it builds field mappings
+            val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType)
 
-            // Include labels for polymorphic deserialization support
             // Use [0] suffix for single-object relationships to return object instead of array
             val arrayAccessSuffix = if (nestedRel.isCollection) "" else "[0]"
             val nestedPattern = """[
                 ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |
-                ${nestedTargetAlias} {
-                    $nestedFieldMappings,
-                    labels: labels(${nestedTargetAlias})
-                }
+                $nestedProjection
             ]$arrayAccessSuffix"""
 
             fields.add("\n            ${nestedRel.fieldName}: $nestedPattern")
