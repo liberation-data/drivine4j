@@ -67,39 +67,59 @@ class QueryDslGenerator(
     }
 
     private fun generateSharedPropertiesFile(fragmentTypes: List<FragmentType>) {
-        if (fragmentTypes.isEmpty()) return
+        // Group fragment types by their source package
+        val fragmentsByPackage = fragmentTypes.groupBy { it.fragmentClass.packageName.asString() }
 
-        val firstViewPackage = graphViewClasses.first().packageName.asString()
-        val propertiesClasses = generatePropertiesClasses(fragmentTypes)
+        // Group nested view Properties by their source package
+        val nestedViewPropertiesByPackage = collectNestedViewPropertiesClasses()
 
-        // Also generate Properties classes for nested @GraphView types
-        val nestedViewProperties = generateNestedViewPropertiesClasses()
+        // Group RelationshipFragment Properties by their source package
+        val relationshipFragmentPropertiesByPackage = collectRelationshipFragmentPropertiesClasses()
 
-        // Also generate Properties classes for RelationshipFragments
-        val relationshipFragmentProperties = generateRelationshipFragmentPropertiesClasses()
+        // Collect all unique packages that need GeneratedProperties files
+        val allPackages = (fragmentsByPackage.keys + nestedViewPropertiesByPackage.keys +
+                         relationshipFragmentPropertiesByPackage.keys).toSet()
 
-        val fileSpec = FileSpec.builder(firstViewPackage, "GeneratedProperties")
-            .addFileComment("Generated code - do not modify")
-            .apply {
-                propertiesClasses.forEach { addType(it) }
-                nestedViewProperties.forEach { addType(it) }
-                relationshipFragmentProperties.forEach { addType(it) }
+        if (allPackages.isEmpty()) return
+
+        allPackages.forEach { packageName ->
+            val fragmentTypesForPackage = fragmentsByPackage[packageName] ?: emptyList()
+            val propertiesClasses = generatePropertiesClasses(fragmentTypesForPackage)
+            val nestedViewProperties = nestedViewPropertiesByPackage[packageName] ?: emptyList()
+            val relationshipFragmentProperties = relationshipFragmentPropertiesByPackage[packageName] ?: emptyList()
+
+            // Skip empty packages
+            if (propertiesClasses.isEmpty() && nestedViewProperties.isEmpty() && relationshipFragmentProperties.isEmpty()) {
+                return@forEach
             }
-            .build()
 
-        fileSpec.writeTo(
-            codeGenerator = codeGenerator,
-            dependencies = Dependencies(
-                aggregating = true,
-                sources = graphViewClasses.mapNotNull { it.containingFile }.toTypedArray()
+            val fileSpec = FileSpec.builder(packageName, "GeneratedProperties")
+                .addFileComment("Generated code - do not modify")
+                .apply {
+                    propertiesClasses.forEach { addType(it) }
+                    nestedViewProperties.forEach { addType(it) }
+                    relationshipFragmentProperties.forEach { addType(it) }
+                }
+                .build()
+
+            fileSpec.writeTo(
+                codeGenerator = codeGenerator,
+                dependencies = Dependencies(
+                    aggregating = true,
+                    sources = graphViewClasses.mapNotNull { it.containingFile }.toTypedArray()
+                )
             )
-        )
 
-        logger.info("Generated shared properties at $firstViewPackage.GeneratedProperties")
+            logger.info("Generated shared properties at $packageName.GeneratedProperties")
+        }
     }
 
-    private fun generateNestedViewPropertiesClasses(): List<TypeSpec> {
-        val result = mutableListOf<TypeSpec>()
+    /**
+     * Collects nested view Properties classes grouped by their source package.
+     * Returns a map of package name to list of TypeSpec for Properties classes.
+     */
+    private fun collectNestedViewPropertiesClasses(): Map<String, List<TypeSpec>> {
+        val result = mutableMapOf<String, MutableList<TypeSpec>>()
         val processed = mutableSetOf<String>()
 
         // Find all nested views across all graph views
@@ -110,7 +130,9 @@ class QueryDslGenerator(
                     val key = viewProp.nestedViewClass.qualifiedName?.asString() ?: return@forEach
                     if (!processed.contains(key)) {
                         processed.add(key)
-                        result.add(generateViewPropertiesClass(viewProp.nestedViewClass))
+                        val packageName = viewProp.nestedViewClass.packageName.asString()
+                        result.getOrPut(packageName) { mutableListOf() }
+                            .add(generateViewPropertiesClass(viewProp.nestedViewClass))
                     }
                 }
             }
@@ -119,8 +141,12 @@ class QueryDslGenerator(
         return result
     }
 
-    private fun generateRelationshipFragmentPropertiesClasses(): List<TypeSpec> {
-        val result = mutableListOf<TypeSpec>()
+    /**
+     * Collects RelationshipFragment Properties classes grouped by their source package.
+     * Returns a map of package name to list of TypeSpec for Properties classes.
+     */
+    private fun collectRelationshipFragmentPropertiesClasses(): Map<String, List<TypeSpec>> {
+        val result = mutableMapOf<String, MutableList<TypeSpec>>()
         val processed = mutableSetOf<String>()
 
         // Find all RelationshipFragments across all graph views
@@ -133,7 +159,9 @@ class QueryDslGenerator(
                     val key = relFragmentClass.qualifiedName?.asString() ?: return@forEach
                     if (!processed.contains(key)) {
                         processed.add(key)
-                        result.add(generateRelationshipFragmentPropertiesClass(relFragmentClass))
+                        val packageName = relFragmentClass.packageName.asString()
+                        result.getOrPut(packageName) { mutableListOf() }
+                            .add(generateRelationshipFragmentPropertiesClass(relFragmentClass))
                     }
                 }
             }
@@ -210,7 +238,6 @@ class QueryDslGenerator(
         val viewName = viewClass.simpleName.asString()
         val propertiesClassName = "${viewName}Properties"
         val viewStructure = analyzeGraphViewStructure(viewClass)
-        val packageName = viewClass.packageName.asString()
 
         // Implement NodeReference for instanceOf() support
         val nodeReferenceClass = ClassName("org.drivine.query.dsl", "NodeReference")
@@ -242,26 +269,24 @@ class QueryDslGenerator(
             val fragmentClass = viewProp.type.declaration as? KSClassDeclaration ?: return@forEach
             val fragmentSimpleName = fragmentClass.simpleName.asString()
             val propPropertiesClassName = "${fragmentSimpleName}Properties"
+            // Properties class is generated in the fragment's package
+            val fragmentPackage = fragmentClass.packageName.asString()
 
             if (viewProp.isRootFragment) {
                 // Root fragment uses the same alias as the view
+                val propClassName = ClassName(fragmentPackage, propPropertiesClassName)
                 classBuilder.addProperty(
-                    PropertySpec.builder(
-                        viewProp.name,
-                        ClassName(packageName, propPropertiesClassName)
-                    )
-                        .initializer("$propPropertiesClassName(alias)")
+                    PropertySpec.builder(viewProp.name, propClassName)
+                        .initializer("%T(alias)", propClassName)
                         .build()
                 )
             } else if (viewProp.isRelationship) {
                 // Relationship uses composite alias
                 val relationshipAlias = "\${alias}_${viewProp.name}"
+                val propClassName = ClassName(fragmentPackage, propPropertiesClassName)
                 classBuilder.addProperty(
-                    PropertySpec.builder(
-                        viewProp.name,
-                        ClassName(packageName, propPropertiesClassName)
-                    )
-                        .initializer("$propPropertiesClassName(\"$relationshipAlias\")")
+                    PropertySpec.builder(viewProp.name, propClassName)
+                        .initializer("%T(\"$relationshipAlias\")", propClassName)
                         .build()
                 )
             }
@@ -582,13 +607,15 @@ class QueryDslGenerator(
                 // This allows query.raisedBy.person.name instead of query.raisedBy_person.name
                 val nestedViewName = viewProp.nestedViewClass.simpleName.asString()
                 val propertiesClassName = "${nestedViewName}Properties"
+                // Properties class is generated in the nested view's package
+                val propertiesPackage = viewProp.nestedViewClass.packageName.asString()
 
                 classBuilder.addProperty(
                     PropertySpec.builder(
                         viewProp.name,
-                        ClassName(graphViewClassName.packageName, propertiesClassName)
+                        ClassName(propertiesPackage, propertiesClassName)
                     )
-                        .initializer("$propertiesClassName(\"${viewProp.relationshipAlias}\")")
+                        .initializer("%T(\"${viewProp.relationshipAlias}\")", ClassName(propertiesPackage, propertiesClassName))
                         .build()
                 )
             } else {
@@ -596,19 +623,20 @@ class QueryDslGenerator(
                 val fragmentClass = viewProp.type.declaration as? KSClassDeclaration ?: return@forEach
                 val fragmentSimpleName = fragmentClass.simpleName.asString()
                 val propertiesClassName = "${fragmentSimpleName}Properties"
+                // Properties class is generated in the fragment's package
+                val propertiesPackage = fragmentClass.packageName.asString()
 
                 // Always pass the field name as alias - for root fragments, this is the view's field name
                 // (e.g., "core" for `@Root val core: GuideUser`)
                 // For relationships, this is the relationship field name (e.g., "webUser")
                 val alias = viewProp.relationshipAlias ?: viewProp.name
-                val initializer = "$propertiesClassName(\"$alias\")"
 
                 classBuilder.addProperty(
                     PropertySpec.builder(
                         viewProp.name,
-                        ClassName(graphViewClassName.packageName, propertiesClassName)
+                        ClassName(propertiesPackage, propertiesClassName)
                     )
-                        .initializer(initializer)
+                        .initializer("%T(\"$alias\")", ClassName(propertiesPackage, propertiesClassName))
                         .build()
                 )
             }
@@ -713,19 +741,22 @@ class QueryDslGenerator(
         val code = StringBuilder()
 
         viewStructure.forEach { viewProp ->
-            val propertiesClassName = if (viewProp.isNestedView && viewProp.nestedViewClass != null) {
+            // Get the fully qualified Properties class name
+            val fullyQualifiedPropertiesClassName = if (viewProp.isNestedView && viewProp.nestedViewClass != null) {
+                val nestedViewPackage = viewProp.nestedViewClass.packageName.asString()
                 val nestedViewName = viewProp.nestedViewClass.simpleName.asString()
-                "${nestedViewName}Properties"
+                "$nestedViewPackage.${nestedViewName}Properties"
             } else {
                 val fragmentClass = viewProp.type.declaration as? KSClassDeclaration ?: return@forEach
-                "${fragmentClass.simpleName.asString()}Properties"
+                val fragmentPackage = fragmentClass.packageName.asString()
+                "$fragmentPackage.${fragmentClass.simpleName.asString()}Properties"
             }
 
             // Generate context property for WhereBuilder
             code.appendLine("""
 context(builder: org.drivine.query.dsl.WhereBuilder<$dslClassName>)
 @Suppress("CONTEXT_RECEIVERS_DEPRECATED")
-public val ${viewProp.name}: $propertiesClassName
+public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
     get() = builder.queryObject.${viewProp.name}
 """.trimIndent())
             code.appendLine()
@@ -734,7 +765,7 @@ public val ${viewProp.name}: $propertiesClassName
             code.appendLine("""
 context(builder: org.drivine.query.dsl.OrderBuilder<$dslClassName>)
 @Suppress("CONTEXT_RECEIVERS_DEPRECATED")
-public val ${viewProp.name}: $propertiesClassName
+public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
     get() = builder.queryObject.${viewProp.name}
 """.trimIndent())
             code.appendLine()
