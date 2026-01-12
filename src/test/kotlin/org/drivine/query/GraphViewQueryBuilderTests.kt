@@ -100,4 +100,48 @@ class GraphViewQueryBuilderTests {
         assertTrue(query.contains("name: worksFor.name"))
         assertTrue(query.contains("uuid: worksFor.uuid"))
     }
+
+    @Test
+    fun `should not generate trailing commas in nested projections`() {
+        // This test prevents regression of the trailing comma bug that occurred when
+        // getFragmentFields() returned an empty list instead of null, causing
+        // joinToString() to produce "" and leaving trailing commas in the Cypher
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val query = builder.buildQuery()
+
+        println("Generated query for trailing comma check:")
+        println(query)
+
+        // Check for invalid trailing comma patterns in Cypher
+        // Pattern 1: Opening brace followed immediately by comma (no content)
+        // This catches: "{ ," or "{\n    ,"
+        val openBraceComma = Regex("""\{\s*,""")
+        val match1 = openBraceComma.find(query)
+        if (match1 != null) {
+            println("Found invalid pattern '{ ,' at: ${match1.value}")
+        }
+        assertTrue(match1 == null, "Query contains '{ ,' pattern indicating empty first field")
+
+        // Pattern 2: Comma followed immediately by closing brace (trailing comma at end)
+        // This catches: ", }" or ",\n    }"
+        val commaCloseBrace = Regex(""",\s*\}""")
+        val match2 = commaCloseBrace.find(query)
+        if (match2 != null) {
+            println("Found invalid pattern ', }' at: ${match2.value}")
+        }
+        assertTrue(match2 == null, "Query contains ', }' pattern indicating trailing comma")
+
+        // Verify that nested object blocks have actual content
+        // The person: block in PersonContext should have field mappings, not be empty
+        assertTrue(
+            query.contains(Regex("""person:\s*\{\s*\w+:""")),
+            "Nested person block should contain field mappings"
+        )
+
+        // Verify the worksFor nested relationship has field content
+        assertTrue(
+            query.contains(Regex("""worksFor\s*\{\s*\w+:""")),
+            "Nested worksFor block should contain field mappings"
+        )
+    }
 }

@@ -167,7 +167,7 @@ ${returnFields.joinToString(",\n")}
 
     /**
      * Gets field names from a FragmentModel.
-     * Returns null for polymorphic (sealed) types to signal that .* should be used.
+     * Returns null for polymorphic (sealed) types or on error to signal that .* should be used.
      */
     private fun getFragmentFields(fragmentType: Class<*>): List<String>? {
         // For sealed classes, return null to signal use of .*
@@ -177,9 +177,12 @@ ${returnFields.joinToString(",\n")}
 
         return try {
             val fragmentModel = FragmentModel.from(fragmentType)
-            fragmentModel.fields.map { it.name }
+            val fields = fragmentModel.fields.map { it.name }
+            // Return null if no fields found, to signal use of .*
+            fields.ifEmpty { null }
         } catch (e: Exception) {
-            emptyList()
+            // On error, return null to signal use of .* (safe fallback)
+            null
         }
     }
 

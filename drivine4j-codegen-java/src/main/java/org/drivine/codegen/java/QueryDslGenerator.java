@@ -234,7 +234,9 @@ public class QueryDslGenerator {
 
             String propTypeName = typeElement.getSimpleName().toString();
             String propertiesClassName = propTypeName + "Properties";
-            ClassName propertiesType = ClassName.get(packageName, propertiesClassName);
+            // Use the fragment's package, not the GraphView's package
+            String propertiesPackage = getPackageName(typeElement);
+            ClassName propertiesType = ClassName.get(propertiesPackage, propertiesClassName);
 
             // Add field
             classBuilder.addField(FieldSpec.builder(propertiesType, prop.name)
@@ -246,7 +248,6 @@ public class QueryDslGenerator {
         MethodSpec.Builder constructorBuilder = MethodSpec.constructorBuilder()
             .addModifiers(Modifier.PUBLIC);
 
-        StringBuilder initCode = new StringBuilder();
         for (ViewProperty prop : structure) {
             TypeElement typeElement = prop.nestedViewClass != null ?
                 prop.nestedViewClass : getTypeElement(prop.type);
@@ -254,9 +255,12 @@ public class QueryDslGenerator {
 
             String propTypeName = typeElement.getSimpleName().toString();
             String propertiesClassName = propTypeName + "Properties";
+            // Use the fragment's package, not the GraphView's package
+            String propertiesPackage = getPackageName(typeElement);
+            ClassName propertiesType = ClassName.get(propertiesPackage, propertiesClassName);
 
-            constructorBuilder.addStatement("this.$N = new $L($S)",
-                prop.name, propertiesClassName, prop.name);
+            constructorBuilder.addStatement("this.$N = new $T($S)",
+                prop.name, propertiesType, prop.name);
         }
 
         classBuilder.addMethod(constructorBuilder.build());
