@@ -408,13 +408,15 @@ ${returnFields.joinToString(",\n")}
             }
 
             // Include labels for polymorphic deserialization support
+            // Use [0] suffix for single-object relationships to return object instead of array
+            val arrayAccessSuffix = if (nestedRel.isCollection) "" else "[0]"
             val nestedPattern = """[
                 ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |
                 ${nestedTargetAlias} {
                     $nestedFieldMappings,
                     labels: labels(${nestedTargetAlias})
                 }
-            ]"""
+            ]$arrayAccessSuffix"""
 
             fields.add("\n            ${nestedRel.fieldName}: $nestedPattern")
         }

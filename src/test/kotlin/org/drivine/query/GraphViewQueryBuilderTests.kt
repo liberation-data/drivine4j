@@ -1,7 +1,9 @@
 package org.drivine.query
 
 import org.junit.jupiter.api.Test
+import sample.mapped.view.ParentViewWithNestedList
 import sample.mapped.view.RaisedAndAssignedIssue
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class GraphViewQueryBuilderTests {
@@ -142,6 +144,39 @@ class GraphViewQueryBuilderTests {
         assertTrue(
             query.contains(Regex("""worksFor\s*\{\s*\w+:""")),
             "Nested worksFor block should contain field mappings"
+        )
+    }
+
+    @Test
+    fun `should use index 0 for single relationships inside nested GraphViews`() {
+        // This test verifies that single-object relationships within nested GraphViews
+        // use [0] to return an object instead of an array.
+        // Bug: When loading a GraphView with List<NestedGraphView>, where NestedGraphView
+        // has single relationships, those relationships were returned as arrays causing
+        // deserialization errors like:
+        // "Cannot deserialize value of type X from Array value (token JsonToken.START_ARRAY)"
+        val builder = GraphViewQueryBuilder.forView(ParentViewWithNestedList::class)
+        val query = builder.buildQuery()
+
+        println("Generated query for nested single relationship check:")
+        println(query)
+
+        // The nested GraphView (NestedViewWithSingleRelationship) has a single
+        // relationship: primaryEmployer: Organization?
+        // This should use [0] to return an object, not an array
+
+        // Verify the primaryEmployer pattern uses [0] for single-object access
+        // Pattern should be: ][0] for single relationships inside nested views
+        assertTrue(
+            query.contains("primaryEmployer:") && query.contains(Regex("""\]\[0\]""")),
+            "Single relationship 'primaryEmployer' inside nested GraphView should use [0] index"
+        )
+
+        // Also verify collection relationships DON'T use [0]
+        // The outer assignees is a List, so it should NOT have [0]
+        assertFalse(
+            query.contains("][0] AS assignees"),
+            "Collection relationship 'assignees' should NOT use [0] index"
         )
     }
 }
