@@ -302,14 +302,13 @@ class GraphViewSaveTests @Autowired constructor(
     }
 
     @Test
-    fun `should handle private backing field with withAssignee copy method`() {
+    fun `should handle lazy sorted property pattern`() {
         // This test verifies the pattern:
-        //   @GraphRelationship(...) private val _assignees: List<AssigneeWithContext>
-        //   val assignees: List<AssigneeWithContext> by lazy { _assignees.sortedBy { ... } }
-        //   fun withAssignee(a: AssigneeWithContext) = copy(_assignees = _assignees + a)
+        //   @GraphRelationship(...) val assignees: List<AssigneeWithContext>
+        //   @get:JsonIgnore val sortedAssignees: List<AssigneeWithContext> by lazy { assignees.sortedBy { ... } }
         //
-        // The issue is that Jackson may struggle with private backing fields when
-        // deserializing, especially after save/reload cycles.
+        // The raw data is stored in 'assignees', and 'sortedAssignees' provides cached sorted access.
+        // Drivine's ObjectMapper auto-ignores the $delegate backing field for lazy properties.
 
         val issueUuid = UUID.randomUUID()
         val assignee1Uuid = UUID.randomUUID()
@@ -362,7 +361,7 @@ class GraphViewSaveTests @Autowired constructor(
         val newPerson = Person(
             uuid = assignee2Uuid,
             name = "Alice Second",
-            bio = "Second assignee added via withAssignee"
+            bio = "Second assignee added via copy"
         )
         val newOrg = Organization(
             uuid = org2Uuid,
@@ -373,10 +372,10 @@ class GraphViewSaveTests @Autowired constructor(
             employer = newOrg
         )
 
-        // Use the withAssignee() copy method to add the new assignee
-        val modified = loaded.withAssignee(newAssignee)
+        // Use the standard copy() method to add the new assignee
+        val modified = loaded.copy(assignees = loaded.assignees + newAssignee)
 
-        // Verify the in-memory copy has both assignees
+        // Verify the in-memory copy has both assignees (raw, unsorted)
         assertEquals(2, modified.assignees.size, "Modified copy should have two assignees")
 
         // Save the modified GraphView
@@ -387,20 +386,21 @@ class GraphViewSaveTests @Autowired constructor(
         assertNotNull(reloaded, "Should reload IssueWithSortedAssignees after save")
         assertEquals(2, reloaded.assignees.size, "Reloaded should have two assignees")
 
-        // Verify the lazy sorted property works - Alice should come before Zara alphabetically
-        assertEquals("Alice Second", reloaded.assignees[0].person.name, "First assignee should be Alice (sorted)")
-        assertEquals("Zara First", reloaded.assignees[1].person.name, "Second assignee should be Zara (sorted)")
+        // Verify the lazy sortedAssignees property works - Alice should come before Zara alphabetically
+        assertEquals("Alice Second", reloaded.sortedAssignees[0].person.name, "First assignee should be Alice (sorted)")
+        assertEquals("Zara First", reloaded.sortedAssignees[1].person.name, "Second assignee should be Zara (sorted)")
 
         // Verify nested relationships are preserved
-        val aliceAssignee = reloaded.assignees.find { it.person.name == "Alice Second" }
+        val aliceAssignee = reloaded.sortedAssignees.find { it.person.name == "Alice Second" }
         assertNotNull(aliceAssignee?.employer, "Alice should have employer relationship")
         assertEquals("Org Two", aliceAssignee?.employer?.name)
 
-        val zaraAssignee = reloaded.assignees.find { it.person.name == "Zara First" }
+        val zaraAssignee = reloaded.sortedAssignees.find { it.person.name == "Zara First" }
         assertNotNull(zaraAssignee?.employer, "Zara should have employer relationship")
         assertEquals("Org One", zaraAssignee?.employer?.name)
 
-        println("Successfully saved and reloaded IssueWithSortedAssignees with private backing field pattern")
-        println("Assignees (sorted by name): ${reloaded.assignees.map { it.person.name }}")
+        println("Successfully saved and reloaded IssueWithSortedAssignees with lazy sorted property pattern")
+        println("Raw assignees: ${reloaded.assignees.map { it.person.name }}")
+        println("Sorted assignees: ${reloaded.sortedAssignees.map { it.person.name }}")
     }
 }

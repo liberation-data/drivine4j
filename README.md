@@ -416,16 +416,40 @@ val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
 
 #### Client-Side Sorting Alternative
 
-If you don't have APOC Extended installed, or need complex sort logic (multiple fields, custom comparators), use client-side sorting:
+If you don't have APOC Extended installed, or need complex sort logic (multiple fields, custom comparators), use client-side sorting.
+
+**Simplest approach - method (zero annotations):**
 
 ```kotlin
-val timeline = graphObjectManager.load<ThreadTimeline>(threadId)
-val sortedTurns = timeline?.turns?.sortedBy { it.turn.createdAt }
+@GraphView
+data class IssueWithAssignees(
+    @Root val issue: Issue,
+    @GraphRelationship(type = "ASSIGNED_TO")
+    val assignees: List<AssigneeWithContext>
+) {
+    fun sortedAssignees() = assignees.sortedBy { it.person.name }
+}
 ```
 
-**Tip:** If using UUIDv7 for IDs, `sortedBy { it.messageId }` gives chronological order since UUIDv7 strings are lexicographically time-ordered.
+**Cached approach - lazy property:**
 
-For a reusable pattern that keeps GraphViews immutable, see the private backing field approach documented in `SortedNestedCollectionViews.kt`.
+```kotlin
+@GraphView
+data class IssueWithAssignees(
+    @Root val issue: Issue,
+    @GraphRelationship(type = "ASSIGNED_TO")
+    val assignees: List<AssigneeWithContext>
+) {
+    @get:JsonIgnore
+    val sortedAssignees: List<AssigneeWithContext> by lazy {
+        assignees.sortedBy { it.person.name }
+    }
+}
+```
+
+Note: Drivine's ObjectMapper auto-ignores Kotlin delegate backing fields (`*$delegate`), so you only need `@get:JsonIgnore` on the lazy property.
+
+**Tip:** If using UUIDv7 for IDs, `sortedBy { it.messageId }` gives chronological order since UUIDv7 strings are lexicographically time-ordered.
 
 #### Available Operators
 

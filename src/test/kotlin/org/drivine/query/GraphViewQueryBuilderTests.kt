@@ -224,33 +224,32 @@ class GraphViewQueryBuilderTests {
     }
 
     @Test
-    fun `should handle private backing field with lazy sorted public property`() {
-        // This test verifies that the pattern of using a private backing field
-        // with a lazy public property for sorted access works correctly.
+    fun `should handle lazy sorted public property pattern`() {
+        // This test verifies that the pattern of using a public data property
+        // with a lazy sorted accessor works correctly.
         //
         // Pattern:
-        //   @GraphRelationship(...) private val _items: List<T>
-        //   val items: List<T> by lazy { _items.sortedBy { ... } }
+        //   @GraphRelationship(...) val assignees: List<T>
+        //   @get:JsonIgnore val sortedAssignees: List<T> by lazy { assignees.sortedBy { ... } }
         //
-        // The query should use the backing field name (_assignees) since that's
-        // what's annotated with @GraphRelationship
+        // The query uses the annotated property name (assignees), and the lazy
+        // property (sortedAssignees) is ignored by Jackson via @get:JsonIgnore.
         val builder = GraphViewQueryBuilder.forView(IssueWithSortedAssignees::class)
         val query = builder.buildQuery()
 
-        println("Generated query for private backing field pattern:")
+        println("Generated query for lazy sorted property pattern:")
         println(query)
 
-        // Verify the query uses the backing field name (_assignees)
-        // The underscore prefix should be preserved in the query
+        // Verify the query uses the property name (assignees)
         assertTrue(
-            query.contains("_assignees"),
-            "Query should reference the private backing field '_assignees'"
+            query.contains("assignees"),
+            "Query should reference the 'assignees' property"
         )
 
         // Verify it's treated as a collection (no [0] suffix)
         assertFalse(
-            query.contains("][0] AS _assignees"),
-            "Backing field '_assignees' is a List and should NOT use [0] index"
+            query.contains("][0] AS assignees"),
+            "Property 'assignees' is a List and should NOT use [0] index"
         )
 
         // Verify the nested GraphView (AssigneeWithContext) is properly projected

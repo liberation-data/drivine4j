@@ -5,6 +5,7 @@ import com.fasterxml.jackson.annotation.JsonInclude
 import com.fasterxml.jackson.annotation.PropertyAccessor
 import com.fasterxml.jackson.core.JsonGenerator
 import com.fasterxml.jackson.databind.*
+import com.fasterxml.jackson.databind.introspect.AnnotationIntrospectorPair
 import com.fasterxml.jackson.databind.module.SimpleModule
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -50,6 +51,16 @@ object Neo4jObjectMapper {
             // Use custom visibility checker that makes private fields with Drivine annotations visible.
             // This allows the private backing field pattern with explicit Jackson annotations.
             setVisibility(visibilityChecker.withDrivineAnnotationSupport())
+
+            // Add custom annotation introspector to auto-ignore Kotlin delegate backing fields.
+            // This eliminates the need for @JsonIgnoreProperties("prop$delegate") on classes
+            // that use lazy properties or other Kotlin delegates.
+            setAnnotationIntrospector(
+                AnnotationIntrospectorPair.pair(
+                    DrivineAnnotationIntrospector(),
+                    serializationConfig.annotationIntrospector
+                )
+            )
 
             // Register custom serializers for Neo4j-specific conversions
             registerModule(SimpleModule().apply {

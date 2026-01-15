@@ -8,6 +8,7 @@ import sample.mapped.fragment.IssueStateReason
 import sample.mapped.fragment.Organization
 import sample.mapped.fragment.Person
 import java.util.UUID
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class RaisedAndAssignedIssueSerializationTests {
@@ -91,7 +92,7 @@ class RaisedAndAssignedIssueSerializationTests {
     }
 
     @Test
-    fun `should serialize IssueWithSortedAssignees including private backing field`() {
+    fun `should serialize IssueWithSortedAssignees with assignees field`() {
         val mapper = Neo4jObjectMapper.instance
 
         val issue = Issue(
@@ -100,7 +101,7 @@ class RaisedAndAssignedIssueSerializationTests {
             state = "open",
             stateReason = IssueStateReason.REOPENED,
             title = "Test Issue",
-            body = "Testing private backing field",
+            body = "Testing lazy sorted property pattern",
             locked = false
         )
 
@@ -116,14 +117,16 @@ class RaisedAndAssignedIssueSerializationTests {
             )
         )
 
-        // Use positional argument since _assignees is private
         val issueWithSortedAssignees = IssueWithSortedAssignees(issue, listOf(assignee))
 
         val json = mapper.writeValueAsString(issueWithSortedAssignees)
         println("Serialized IssueWithSortedAssignees: $json")
 
-        // Verify the private backing field is included in serialization
-        assertTrue(json.contains("_assignees"), "JSON should contain private _assignees field")
+        // Verify the assignees field is included in serialization
+        assertTrue(json.contains("\"assignees\""), "JSON should contain assignees field")
+        // Verify the lazy sortedAssignees and its $delegate backing field are NOT in the JSON
+        assertFalse(json.contains("sortedAssignees"), "JSON should NOT contain sortedAssignees (lazy property)")
+        assertFalse(json.contains("\$delegate"), "JSON should NOT contain delegate backing fields")
     }
 
     @Test

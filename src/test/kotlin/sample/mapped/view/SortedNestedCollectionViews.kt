@@ -1,8 +1,6 @@
 package sample.mapped.view
 
 import com.fasterxml.jackson.annotation.JsonIgnore
-import com.fasterxml.jackson.annotation.JsonIgnoreProperties
-import com.fasterxml.jackson.annotation.JsonProperty
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
@@ -22,7 +20,7 @@ data class AssigneeWithContext(
 )
 
 /**
- * Example: CLIENT-SIDE SORTING with private backing field pattern.
+ * Example: CLIENT-SIDE SORTING with cached lazy property.
  *
  * This pattern allows in-memory sorting of nested collections while keeping
  * the GraphView immutable and compatible with Jackson deserialization.
@@ -31,6 +29,7 @@ data class AssigneeWithContext(
  * - Complex sort logic (multiple fields, custom comparators)
  * - No APOC dependency required
  * - Small collections where client-side sorting is acceptable
+ * - You want to cache the sorted result (sorted once on first access)
  *
  * ## Alternative: DATABASE-SIDE SORTING with APOC
  * For simpler sorts on larger collections, use the DSL:
@@ -41,33 +40,32 @@ data class AssigneeWithContext(
  *     }
  * }
  * ```
- * Database-side sorting requires APOC but avoids transferring unsorted data.
+ * Database-side sorting requires APOC Extended but avoids transferring unsorted data.
  *
- * ## How this pattern works:
- * - Private backing field `_assignees` receives the unsorted list from Neo4j
- * - Public `assignees` property provides sorted access via lazy evaluation
+ * ## Simplest alternative: uncached method
+ * If caching isn't needed, just add a method (zero annotations required):
+ * ```kotlin
+ * fun sortedAssignees() = assignees.sortedBy { it.person.name }
+ * ```
  *
- * ## Required Jackson annotations:
- * - `@field:JsonProperty("_assignees")` - ensures the private field is serialized with correct name
+ * ## How the cached pattern works:
+ * - `assignees` is the raw data from Neo4j (natural property name)
+ * - `sortedAssignees` is a lazy property that caches the sorted result
+ * - Drivine's ObjectMapper auto-ignores Kotlin delegate backing fields (`*$delegate`)
+ *
+ * ## Required Jackson annotation:
  * - `@get:JsonIgnore` - prevents the lazy property getter from being serialized
- * - `@JsonIgnoreProperties("assignees$delegate")` - ignores Kotlin's lazy delegate backing field
  */
 @GraphView
-@JsonIgnoreProperties("assignees\$delegate")
 data class IssueWithSortedAssignees(
     @Root val issue: Issue,
 
     @GraphRelationship(type = "ASSIGNED_TO", direction = Direction.OUTGOING)
-    @field:JsonProperty("_assignees")
-    private val _assignees: List<AssigneeWithContext>
+    val assignees: List<AssigneeWithContext>
 ) {
-    /** Assignees sorted by name. Sorted once on first access. */
+    /** Assignees sorted by name. Sorted once on first access, then cached. */
     @get:JsonIgnore
-    val assignees: List<AssigneeWithContext> by lazy {
-        _assignees.sortedBy { it.person.name }
+    val sortedAssignees: List<AssigneeWithContext> by lazy {
+        assignees.sortedBy { it.person.name }
     }
-
-    /** Returns a copy with an additional assignee. */
-    fun withAssignee(assignee: AssigneeWithContext): IssueWithSortedAssignees =
-        copy(_assignees = _assignees + assignee)
 }
