@@ -12,6 +12,8 @@ import sample.mapped.fragment.Issue
 import sample.mapped.fragment.IssueStateReason
 import sample.mapped.fragment.Organization
 import sample.mapped.fragment.Person
+import sample.mapped.view.AssigneeWithContext
+import sample.mapped.view.IssueWithSortedAssignees
 import sample.mapped.view.PersonContext
 import sample.mapped.view.RaisedAndAssignedIssue
 import sample.simple.TestAppContext
@@ -297,5 +299,108 @@ class GraphViewSaveTests @Autowired constructor(
         assertNotNull(reloaded)
         assertEquals("Updated Title", reloaded.issue.title)
         assertEquals("Original Body", reloaded.issue.body) // Body unchanged
+    }
+
+    @Test
+    fun `should handle private backing field with withAssignee copy method`() {
+        // This test verifies the pattern:
+        //   @GraphRelationship(...) private val _assignees: List<AssigneeWithContext>
+        //   val assignees: List<AssigneeWithContext> by lazy { _assignees.sortedBy { ... } }
+        //   fun withAssignee(a: AssigneeWithContext) = copy(_assignees = _assignees + a)
+        //
+        // The issue is that Jackson may struggle with private backing fields when
+        // deserializing, especially after save/reload cycles.
+
+        val issueUuid = UUID.randomUUID()
+        val assignee1Uuid = UUID.randomUUID()
+        val assignee2Uuid = UUID.randomUUID()
+        val org1Uuid = UUID.randomUUID()
+        val org2Uuid = UUID.randomUUID()
+
+        // Create initial test data with one assignee
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (issue:Issue {
+                        uuid: ${'$'}issueUuid,
+                        id: 3001,
+                        title: 'Test Issue With Sorted Assignees',
+                        body: 'Testing private backing field pattern',
+                        state: 'open',
+                        stateReason: 'REOPENED',
+                        locked: false,
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (assignee1:Person:Mapped {
+                        uuid: ${'$'}assignee1Uuid,
+                        name: 'Zara First',
+                        bio: 'First assignee',
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (org1:Organization {
+                        uuid: ${'$'}org1Uuid,
+                        name: 'Org One',
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (assignee1)-[:WORKS_FOR]->(org1)
+                    CREATE (issue)-[:ASSIGNED_TO]->(assignee1)
+                """.trimIndent())
+                .bind(mapOf(
+                    "issueUuid" to issueUuid.toString(),
+                    "assignee1Uuid" to assignee1Uuid.toString(),
+                    "org1Uuid" to org1Uuid.toString()
+                ))
+        )
+
+        // Load the GraphView with private backing field
+        val loaded = graphObjectManager.load(issueUuid.toString(), IssueWithSortedAssignees::class.java)
+        assertNotNull(loaded, "Should load IssueWithSortedAssignees")
+        assertEquals(1, loaded.assignees.size, "Should have one assignee initially")
+        assertEquals("Zara First", loaded.assignees.first().person.name)
+
+        // Create a new assignee to add via the copy method
+        val newPerson = Person(
+            uuid = assignee2Uuid,
+            name = "Alice Second",
+            bio = "Second assignee added via withAssignee"
+        )
+        val newOrg = Organization(
+            uuid = org2Uuid,
+            name = "Org Two"
+        )
+        val newAssignee = AssigneeWithContext(
+            person = newPerson,
+            employer = newOrg
+        )
+
+        // Use the withAssignee() copy method to add the new assignee
+        val modified = loaded.withAssignee(newAssignee)
+
+        // Verify the in-memory copy has both assignees
+        assertEquals(2, modified.assignees.size, "Modified copy should have two assignees")
+
+        // Save the modified GraphView
+        graphObjectManager.save(modified)
+
+        // Reload and verify the data persisted correctly
+        val reloaded = graphObjectManager.load(issueUuid.toString(), IssueWithSortedAssignees::class.java)
+        assertNotNull(reloaded, "Should reload IssueWithSortedAssignees after save")
+        assertEquals(2, reloaded.assignees.size, "Reloaded should have two assignees")
+
+        // Verify the lazy sorted property works - Alice should come before Zara alphabetically
+        assertEquals("Alice Second", reloaded.assignees[0].person.name, "First assignee should be Alice (sorted)")
+        assertEquals("Zara First", reloaded.assignees[1].person.name, "Second assignee should be Zara (sorted)")
+
+        // Verify nested relationships are preserved
+        val aliceAssignee = reloaded.assignees.find { it.person.name == "Alice Second" }
+        assertNotNull(aliceAssignee?.employer, "Alice should have employer relationship")
+        assertEquals("Org Two", aliceAssignee?.employer?.name)
+
+        val zaraAssignee = reloaded.assignees.find { it.person.name == "Zara First" }
+        assertNotNull(zaraAssignee?.employer, "Zara should have employer relationship")
+        assertEquals("Org One", zaraAssignee?.employer?.name)
+
+        println("Successfully saved and reloaded IssueWithSortedAssignees with private backing field pattern")
+        println("Assignees (sorted by name): ${reloaded.assignees.map { it.person.name }}")
     }
 }

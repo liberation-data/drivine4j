@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import org.junit.jupiter.api.Test
+import sample.mapped.view.IssueWithSortedAssignees
 import sample.mapped.view.ParentViewWithNestedList
 import sample.mapped.view.RaisedAndAssignedIssue
 import sample.mapped.view.TopLevelWithNestedGraphViews
@@ -219,6 +220,172 @@ class GraphViewQueryBuilderTests {
         assertTrue(
             query.contains("employer:"),
             "Deeply nested GraphView should also include its relationships (employer)"
+        )
+    }
+
+    @Test
+    fun `should handle private backing field with lazy sorted public property`() {
+        // This test verifies that the pattern of using a private backing field
+        // with a lazy public property for sorted access works correctly.
+        //
+        // Pattern:
+        //   @GraphRelationship(...) private val _items: List<T>
+        //   val items: List<T> by lazy { _items.sortedBy { ... } }
+        //
+        // The query should use the backing field name (_assignees) since that's
+        // what's annotated with @GraphRelationship
+        val builder = GraphViewQueryBuilder.forView(IssueWithSortedAssignees::class)
+        val query = builder.buildQuery()
+
+        println("Generated query for private backing field pattern:")
+        println(query)
+
+        // Verify the query uses the backing field name (_assignees)
+        // The underscore prefix should be preserved in the query
+        assertTrue(
+            query.contains("_assignees"),
+            "Query should reference the private backing field '_assignees'"
+        )
+
+        // Verify it's treated as a collection (no [0] suffix)
+        assertFalse(
+            query.contains("][0] AS _assignees"),
+            "Backing field '_assignees' is a List and should NOT use [0] index"
+        )
+
+        // Verify the nested GraphView (AssigneeWithContext) is properly projected
+        assertTrue(
+            query.contains("person:"),
+            "Nested AssigneeWithContext should have its @Root 'person' projected"
+        )
+
+        // Verify the nested relationship (employer) is present
+        assertTrue(
+            query.contains("employer:"),
+            "Nested AssigneeWithContext should include its 'employer' relationship"
+        )
+    }
+
+    @Test
+    fun `should wrap direct relationship collection with apoc sortMaps when sorted`() {
+        // Test that sorting a direct collection relationship wraps with apoc.coll.sortMaps()
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+
+        val collectionSorts = listOf(
+            org.drivine.query.dsl.CollectionSortSpec(
+                relationshipPath = "assignedTo",
+                propertyName = "name",
+                ascending = true
+            )
+        )
+
+        val query = builder.buildQuery(null, null, collectionSorts)
+
+        println("Generated query with direct relationship sort:")
+        println(query)
+
+        // Verify apoc.coll.sortMaps wraps the assignedTo collection
+        assertTrue(
+            query.contains("apoc.coll.sortMaps("),
+            "Query should wrap collection with apoc.coll.sortMaps"
+        )
+        assertTrue(
+            query.contains("'name')"),
+            "Sort should specify property 'name'"
+        )
+        // For ascending, should be wrapped with Cypher's built-in reverse()
+        assertTrue(
+            query.contains("reverse(apoc.coll.sortMaps("),
+            "Ascending sort should be wrapped with reverse()"
+        )
+        assertTrue(
+            query.contains("AS assignedTo"),
+            "APOC wrapping should be applied to assignedTo collection"
+        )
+    }
+
+    @Test
+    fun `should wrap nested relationship collection with apoc sortMaps when sorted`() {
+        // Test that sorting a nested collection relationship (raisedBy_worksFor) wraps correctly
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+
+        val collectionSorts = listOf(
+            org.drivine.query.dsl.CollectionSortSpec(
+                relationshipPath = "raisedBy_worksFor",
+                propertyName = "name",
+                ascending = false
+            )
+        )
+
+        val query = builder.buildQuery(null, null, collectionSorts)
+
+        println("Generated query with nested relationship sort:")
+        println(query)
+
+        // Verify apoc.coll.sortMaps wraps the nested worksFor collection
+        assertTrue(
+            query.contains("apoc.coll.sortMaps("),
+            "Query should wrap nested collection with apoc.coll.sortMaps"
+        )
+        assertTrue(
+            query.contains("'name')"),
+            "Sort should specify property 'name'"
+        )
+        // For descending, should NOT be wrapped with reverse()
+        assertFalse(
+            query.contains("worksFor: reverse("),
+            "Descending sort should NOT use reverse()"
+        )
+        // The wrapped pattern should be inside the raisedBy projection for worksFor
+        assertTrue(
+            query.contains("worksFor: apoc.coll.sortMaps("),
+            "APOC wrapping should be applied to nested worksFor collection inside raisedBy"
+        )
+    }
+
+    @Test
+    fun `should not wrap collection when no sort is specified`() {
+        // Test that collections are NOT wrapped when there's no sort
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+
+        val query = builder.buildQuery(null, null, emptyList())
+
+        println("Generated query without collection sort:")
+        println(query)
+
+        // Verify apoc.coll.sortMaps is NOT present
+        assertFalse(
+            query.contains("apoc.coll.sortMaps"),
+            "Query should NOT contain apoc.coll.sortMaps when no sort is specified"
+        )
+    }
+
+    @Test
+    fun `should keep root ORDER BY separate from collection sorts`() {
+        // Test that root-level ORDER BY and collection sorts work together
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+
+        val collectionSorts = listOf(
+            org.drivine.query.dsl.CollectionSortSpec(
+                relationshipPath = "assignedTo",
+                propertyName = "name",
+                ascending = true
+            )
+        )
+
+        val query = builder.buildQuery(null, "issue.id ASC", collectionSorts)
+
+        println("Generated query with both root ORDER BY and collection sort:")
+        println(query)
+
+        // Verify both are present
+        assertTrue(
+            query.contains("ORDER BY issue.id ASC"),
+            "Query should include root ORDER BY clause"
+        )
+        assertTrue(
+            query.contains("apoc.coll.sortMaps("),
+            "Query should also include collection sort wrapping"
         )
     }
 }

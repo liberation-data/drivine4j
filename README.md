@@ -373,6 +373,60 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 }
 ```
 
+#### Ordering Nested Collections (Database-Side with APOC)
+
+The DSL supports sorting nested relationship collections directly in the database using APOC Extended's `apoc.coll.sortMaps()` function.
+
+**Direct Relationship Sorting:**
+
+```kotlin
+// Sort assignees by name within each issue
+val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+    where {
+        issue.state eq "open"
+    }
+    orderBy {
+        issue.id.desc()           // Root ordering (uses index)
+        assignedTo.name.asc()     // Collection sorting (uses APOC)
+    }
+}
+// Each issue's assignedTo list is sorted by name ascending
+```
+
+**Nested Relationship Sorting:**
+
+```kotlin
+// Sort nested worksFor organizations within raisedBy
+val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
+    orderBy {
+        raisedBy.worksFor.name.desc()  // Sort organizations by name descending
+    }
+}
+```
+
+**How it works:**
+- Root-level ordering (e.g., `issue.id.desc()`) uses Cypher's `ORDER BY`, which can utilize indexes
+- Collection sorting (e.g., `assignedTo.name.asc()`) wraps the collection with `apoc.coll.sortMaps()`
+- Both can be combined in a single query
+
+**Requirements:**
+- Collection sorting requires **APOC Extended** plugin (not APOC Core)
+- APOC Extended version must match your Neo4j version (e.g., Neo4j 5.26 → APOC Extended 5.26.x)
+- Download from: https://github.com/neo4j-contrib/neo4j-apoc-procedures/releases
+
+#### Client-Side Sorting Alternative
+
+If you don't have APOC Extended installed, or need complex sort logic (multiple fields, custom comparators), use client-side sorting:
+
+```kotlin
+val timeline = graphObjectManager.load<ThreadTimeline>(threadId)
+val sortedTurns = timeline?.turns?.sortedBy { it.turn.createdAt }
+```
+
+**Tip:** If using UUIDv7 for IDs, `sortedBy { it.messageId }` gives chronological order since UUIDv7 strings are lexicographically time-ordered.
+
+For a reusable pattern that keeps GraphViews immutable, see the private backing field approach documented in `SortedNestedCollectionViews.kt`.
+
 #### Available Operators
 
 **Comparison:**

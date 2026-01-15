@@ -43,6 +43,8 @@ class QueryDslEndToEndTests @Autowired constructor(
         val raiser2Uuid = UUID.randomUUID()
         val assignee1Uuid = UUID.randomUUID()
         val assignee2Uuid = UUID.randomUUID()
+        val org1Uuid = UUID.randomUUID()
+        val org2Uuid = UUID.randomUUID()
 
         val query = """
             CREATE (issue1:Issue {
@@ -106,6 +108,19 @@ class QueryDslEndToEndTests @Autowired constructor(
             CREATE (issue3)-[:RAISED_BY]->(raiser1)
             CREATE (issue3)-[:ASSIGNED_TO]->(assignee1)
             CREATE (issue3)-[:ASSIGNED_TO]->(assignee2)
+            CREATE (org1:Organization {
+                uuid: ${'$'}org1Uuid,
+                name: 'Acme Corp',
+                createdBy: 'query-dsl-test'
+            })
+            CREATE (org2:Organization {
+                uuid: ${'$'}org2Uuid,
+                name: 'Beta Inc',
+                createdBy: 'query-dsl-test'
+            })
+            CREATE (raiser1)-[:WORKS_FOR]->(org1)
+            CREATE (raiser1)-[:WORKS_FOR]->(org2)
+            CREATE (raiser2)-[:WORKS_FOR]->(org2)
         """.trimIndent()
 
         persistenceManager.execute(
@@ -118,7 +133,9 @@ class QueryDslEndToEndTests @Autowired constructor(
                     "raiser1Uuid" to raiser1Uuid.toString(),
                     "raiser2Uuid" to raiser2Uuid.toString(),
                     "assignee1Uuid" to assignee1Uuid.toString(),
-                    "assignee2Uuid" to assignee2Uuid.toString()
+                    "assignee2Uuid" to assignee2Uuid.toString(),
+                    "org1Uuid" to org1Uuid.toString(),
+                    "org2Uuid" to org2Uuid.toString()
                 ))
         )
     }
@@ -409,6 +426,136 @@ class QueryDslEndToEndTests @Autowired constructor(
         // Should return 2 open issues
         assertEquals(2, results.size)
     }
+
+    // =========================================================================
+    // COLLECTION SORTING TESTS (APOC-based deep sorting)
+    // =========================================================================
+    // These tests verify that orderBy on relationship collections uses
+    // apoc.coll.sortMaps() to sort within Neo4j rather than client-side.
+    // =========================================================================
+
+    @Test
+    fun `should sort direct relationship collection by name ascending`() {
+        // Issue 1003 has two assignees: Charlie and Diana
+        // When sorted by name ascending, should return [Charlie, Diana]
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                query.issue.id eq 1003
+            }
+            orderBy {
+                query.assignedTo.name.asc()
+            }
+        }
+
+        assertEquals(1, results.size)
+        val issue = results[0]
+        assertEquals(2, issue.assignedTo.size)
+        // Verify sorted by name ascending: Charlie < Diana
+        assertEquals("Charlie", issue.assignedTo[0].name)
+        assertEquals("Diana", issue.assignedTo[1].name)
+    }
+
+    @Test
+    fun `should sort direct relationship collection by name descending`() {
+        // Issue 1003 has two assignees: Charlie and Diana
+        // When sorted by name descending, should return [Diana, Charlie]
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                query.issue.id eq 1003
+            }
+            orderBy {
+                query.assignedTo.name.desc()
+            }
+        }
+
+        assertEquals(1, results.size)
+        val issue = results[0]
+        assertEquals(2, issue.assignedTo.size)
+        // Verify sorted by name descending: Diana > Charlie
+        assertEquals("Diana", issue.assignedTo[0].name)
+        assertEquals("Charlie", issue.assignedTo[1].name)
+    }
+
+    @Test
+    fun `should sort nested relationship collection by name ascending`() {
+        // Issues 1001 and 1003 are raised by Alice who works for [Acme Corp, Beta Inc]
+        // When sorted by worksFor.name ascending, should return [Acme Corp, Beta Inc]
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                query.issue.id eq 1001
+            }
+            orderBy {
+                query.raisedBy.worksFor.name.asc()
+            }
+        }
+
+        assertEquals(1, results.size)
+        val issue = results[0]
+        assertEquals(2, issue.raisedBy.worksFor.size)
+        // Verify sorted by name ascending: Acme Corp < Beta Inc
+        assertEquals("Acme Corp", issue.raisedBy.worksFor[0].name)
+        assertEquals("Beta Inc", issue.raisedBy.worksFor[1].name)
+    }
+
+    @Test
+    fun `should sort nested relationship collection by name descending`() {
+        // Issues 1001 and 1003 are raised by Alice who works for [Acme Corp, Beta Inc]
+        // When sorted by worksFor.name descending, should return [Beta Inc, Acme Corp]
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                query.issue.id eq 1001
+            }
+            orderBy {
+                query.raisedBy.worksFor.name.desc()
+            }
+        }
+
+        assertEquals(1, results.size)
+        val issue = results[0]
+        assertEquals(2, issue.raisedBy.worksFor.size)
+        // Verify sorted by name descending: Beta Inc > Acme Corp
+        assertEquals("Beta Inc", issue.raisedBy.worksFor[0].name)
+        assertEquals("Acme Corp", issue.raisedBy.worksFor[1].name)
+    }
+
+    @Test
+    fun `should combine root ordering with collection sorting`() {
+        // This tests that root ORDER BY (for result ordering) works alongside
+        // collection sorting (APOC for nested collections)
+        val results = graphObjectManager.loadAll(
+            RaisedAndAssignedIssue::class.java,
+            RaisedAndAssignedIssueQueryDsl.INSTANCE
+        ) {
+            where {
+                query.issue.state eq "open"
+            }
+            orderBy {
+                query.issue.id.desc()  // Root ordering: 1003, 1001
+                query.assignedTo.name.asc()  // Collection sorting within each issue
+            }
+        }
+
+        assertEquals(2, results.size)
+        // First issue should be 1003 (higher id due to desc)
+        assertEquals(1003, results[0].issue.id)
+        // Issue 1003's assignees should be sorted: Charlie, Diana
+        assertEquals("Charlie", results[0].assignedTo[0].name)
+        assertEquals("Diana", results[0].assignedTo[1].name)
+        // Second issue should be 1001
+        assertEquals(1001, results[1].issue.id)
+    }
 }
 
 /**
@@ -419,9 +566,8 @@ class QueryDslEndToEndTests @Autowired constructor(
 class RaisedAndAssignedIssueQueryDsl {
     val issue = RaisedIssueProperties()
     // For relationship filtering - codegen will generate these
-    // Currently using PersonProperties from GeneratedQueryExample.kt
     val assignedTo = PersonProperties("assignedTo")
-    val raisedBy = PersonProperties("raisedBy")
+    val raisedBy = PersonContextProperties("raisedBy")
 
     companion object {
         // Singleton instance for convenience

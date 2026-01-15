@@ -4,6 +4,7 @@ import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.query.dsl.CollectionSortSpec
 
 /**
  * Builds Cypher queries for GraphView classes.
@@ -11,6 +12,12 @@ import org.drivine.model.GraphViewModel
 class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObjectQueryBuilder {
 
     override val nodeAlias: String = viewModel.rootFragment.fieldName
+
+    /**
+     * Current collection sorts for this query build operation.
+     * Stored as instance variable to avoid threading through many method calls.
+     */
+    private var currentCollectionSorts: List<CollectionSortSpec> = emptyList()
 
     /**
      * Builds a Cypher query to load a GraphView with its root fragment and relationships.
@@ -87,6 +94,77 @@ ${returnFields.joinToString(",\n")}
         }
 
         return matchClause + whereSection + withClause + returnClause + orderBySection
+    }
+
+    /**
+     * Builds a Cypher query with collection sorts using apoc.coll.sortMaps().
+     *
+     * Collection sorts are applied to relationship collections, enabling sorting like:
+     * - `assignedTo.name` - sort the assignedTo collection by name
+     * - `raisedBy_worksFor.name` - sort the nested worksFor collection inside raisedBy by name
+     *
+     * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @param orderByClause Optional ORDER BY clause (without the ORDER BY keywords)
+     * @param collectionSorts List of collection sort specifications
+     * @return The generated Cypher query
+     */
+    override fun buildQuery(
+        whereClause: String?,
+        orderByClause: String?,
+        collectionSorts: List<CollectionSortSpec>
+    ): String {
+        // Store collection sorts for use in pattern generation methods
+        currentCollectionSorts = collectionSorts
+        try {
+            return buildQuery(whereClause, orderByClause)
+        } finally {
+            // Clear to avoid affecting subsequent calls
+            currentCollectionSorts = emptyList()
+        }
+    }
+
+    /**
+     * Finds a collection sort spec for a direct relationship (e.g., "assignedTo").
+     */
+    private fun findSortForRelationship(relationshipName: String): CollectionSortSpec? {
+        return currentCollectionSorts.find {
+            !it.isNested() && it.relationshipPath == relationshipName
+        }
+    }
+
+    /**
+     * Finds a collection sort spec for a nested relationship (e.g., "worksFor" inside "raisedBy").
+     */
+    private fun findSortForNestedRelationship(parentAlias: String, nestedRelationshipName: String): CollectionSortSpec? {
+        return currentCollectionSorts.find { sort ->
+            sort.isNested() &&
+            sort.parentRelationship() == parentAlias &&
+            sort.nestedRelationship() == nestedRelationshipName
+        }
+    }
+
+    /**
+     * Wraps a list comprehension with apoc.coll.sortMaps() if a sort is specified.
+     *
+     * Note: apoc.coll.sortMaps(list, prop) sorts in DESCENDING order by default.
+     * For ascending order, we wrap with the Cypher built-in reverse() function.
+     *
+     * @param listComprehension The Cypher list comprehension (e.g., "[(...) | ...]")
+     * @param sort The sort specification, or null if no sorting needed
+     * @return The original comprehension, or wrapped with apoc.coll.sortMaps()
+     */
+    private fun wrapWithSortIfNeeded(listComprehension: String, sort: CollectionSortSpec?): String {
+        if (sort == null) return listComprehension
+
+        // apoc.coll.sortMaps sorts in DESCENDING order by default
+        val sortedExpr = "apoc.coll.sortMaps($listComprehension, '${sort.propertyName}')"
+
+        // For ascending order, reverse the descending result using Cypher's built-in reverse()
+        return if (sort.ascending) {
+            "reverse($sortedExpr)"
+        } else {
+            sortedExpr
+        }
     }
 
     override fun buildIdWhereClause(idParamName: String): String {
@@ -239,7 +317,10 @@ ${returnFields.joinToString(",\n")}
 
         val pattern = if (rel.isCollection) {
             // Collection: use pattern comprehension
-            "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ] AS $targetAlias"
+            val listComprehension = "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ]"
+            // Check if there's a sort for this collection
+            val sort = findSortForRelationship(targetAlias)
+            "${wrapWithSortIfNeeded(listComprehension, sort)} AS $targetAlias"
         } else {
             // Single: use [pattern][0] to get the first element
             "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ][0] AS $targetAlias"
@@ -404,13 +485,24 @@ ${returnFields.joinToString(",\n")}
             val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType)
 
             // Use [0] suffix for single-object relationships to return object instead of array
-            val arrayAccessSuffix = if (nestedRel.isCollection) "" else "[0]"
-            val nestedPattern = """[
+            if (nestedRel.isCollection) {
+                // Collection: check if there's a sort for this nested relationship
+                val listComprehension = """[
                 ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |
                 $nestedProjection
-            ]$arrayAccessSuffix"""
-
-            fields.add("\n            ${nestedRel.fieldName}: $nestedPattern")
+            ]"""
+                // Check for nested sort (e.g., "raisedBy_worksFor" where varName is "raisedBy")
+                val sort = findSortForNestedRelationship(varName, nestedRel.fieldName)
+                val wrappedPattern = wrapWithSortIfNeeded(listComprehension, sort)
+                fields.add("\n            ${nestedRel.fieldName}: $wrappedPattern")
+            } else {
+                // Single: use [0] suffix
+                val nestedPattern = """[
+                ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |
+                $nestedProjection
+            ][0]"""
+                fields.add("\n            ${nestedRel.fieldName}: $nestedPattern")
+            }
         }
 
         return """$varName {

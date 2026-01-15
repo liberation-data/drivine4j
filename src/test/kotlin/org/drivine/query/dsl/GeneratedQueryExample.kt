@@ -65,11 +65,22 @@ class PersonProperties(private val alias: String) {
  * Note: This would recursively generate property references for nested views too!
  */
 class PersonContextProperties(private val alias: String) {
-    // PersonContext has a 'person' root fragment
-    val person = PersonProperties(alias)  // Reuse PersonProperties
+    // PersonContext has a 'person' root fragment - delegate properties
+    val name = StringPropertyReference(alias, "name")
+    val bio = StringPropertyReference(alias, "bio")
+    val uuid = PropertyReference<UUID>(alias, "uuid")
 
     // PersonContext has a 'worksFor' relationship to Organization
-    // val worksFor = OrganizationProperties("${alias}_worksFor")
+    // For nested relationships, the alias becomes parentAlias_childRelationship
+    val worksFor = OrganizationProperties("${alias}_worksFor")
+}
+
+/**
+ * Generated for the Organization fragment.
+ */
+class OrganizationProperties(private val alias: String) {
+    val uuid = PropertyReference<UUID>(alias, "uuid")
+    val name = StringPropertyReference(alias, "name")
 }
 
 /**
@@ -112,7 +123,7 @@ fun usageExample() {
 
         // Relationship target properties
         query.assignedTo.name eq "Kent Beck"
-        query.raisedBy.person.bio.contains("Spring")
+        query.raisedBy.bio.contains("Spring")
     }
 
     spec.orderBy {

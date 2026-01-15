@@ -281,3 +281,41 @@ enum class OrderDirection {
     ASC,
     DESC
 }
+
+/**
+ * Represents a sort specification for a collection (relationship).
+ * Used to wrap list comprehensions with apoc.coll.sortMaps().
+ *
+ * @param relationshipPath The path to the relationship, e.g., "assignedTo" or "raisedBy_worksFor"
+ * @param propertyName The property to sort by, e.g., "name"
+ * @param ascending True for ascending, false for descending
+ */
+data class CollectionSortSpec(
+    val relationshipPath: String,
+    val propertyName: String,
+    val ascending: Boolean
+) {
+    /**
+     * Returns true if this is a nested collection sort (e.g., "raisedBy_worksFor").
+     */
+    fun isNested(): Boolean = relationshipPath.contains("_")
+
+    /**
+     * For nested sorts, returns the parent relationship name (e.g., "raisedBy" from "raisedBy_worksFor").
+     */
+    fun parentRelationship(): String? = if (isNested()) relationshipPath.substringBefore("_") else null
+
+    /**
+     * For nested sorts, returns the nested relationship name (e.g., "worksFor" from "raisedBy_worksFor").
+     */
+    fun nestedRelationship(): String? = if (isNested()) relationshipPath.substringAfter("_") else null
+}
+
+/**
+ * Result of processing order specifications.
+ * Separates root-level ORDER BY from collection sorts that need apoc.coll.sortMaps().
+ */
+data class OrderClauseResult(
+    val orderByClause: String?,
+    val collectionSorts: List<CollectionSortSpec>
+)

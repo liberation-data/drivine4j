@@ -1,8 +1,9 @@
 package org.drivine.mapper
 
+import com.fasterxml.jackson.annotation.JsonAutoDetect
 import com.fasterxml.jackson.annotation.JsonInclude
+import com.fasterxml.jackson.annotation.PropertyAccessor
 import com.fasterxml.jackson.core.JsonGenerator
-import com.fasterxml.jackson.core.JsonParser
 import com.fasterxml.jackson.databind.*
 import com.fasterxml.jackson.databind.module.SimpleModule
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
@@ -38,13 +39,17 @@ object Neo4jObjectMapper {
             // Deserialization configuration - ignore unknown properties for graph evolution
             configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false)
 
-            // Serialization configuration - Neo4j-compatible typesxD
+            // Serialization configuration - Neo4j-compatible types
             registerModule(JavaTimeModule())
             disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS)
 
             // Include null values when serializing (allows explicitly removing properties)
             // Users can exclude nulls on specific properties with @JsonInclude(JsonInclude.Include.NON_NULL)
             setSerializationInclusion(JsonInclude.Include.ALWAYS)
+
+            // Use custom visibility checker that makes private fields with Drivine annotations visible.
+            // This allows the private backing field pattern with explicit Jackson annotations.
+            setVisibility(visibilityChecker.withDrivineAnnotationSupport())
 
             // Register custom serializers for Neo4j-specific conversions
             registerModule(SimpleModule().apply {

@@ -2,6 +2,7 @@ package org.drivine.query
 
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
+import org.drivine.query.dsl.CollectionSortSpec
 
 /**
  * Base interface for building queries for graph objects (Fragments and Views).
@@ -15,6 +16,23 @@ interface GraphObjectQueryBuilder {
      * @return The generated Cypher query
      */
     fun buildQuery(whereClause: String? = null, orderByClause: String? = null): String
+
+    /**
+     * Builds a Cypher query with optional WHERE, ORDER BY, and collection sort specifications.
+     *
+     * Collection sorts are applied using apoc.coll.sortMaps() to sort relationship collections
+     * by nested properties. This enables sorting like `assignedTo.name` or `raisedBy_worksFor.name`.
+     *
+     * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @param orderByClause Optional ORDER BY clause (without the ORDER BY keywords)
+     * @param collectionSorts List of collection sort specifications for relationship collections
+     * @return The generated Cypher query
+     */
+    fun buildQuery(
+        whereClause: String? = null,
+        orderByClause: String? = null,
+        collectionSorts: List<CollectionSortSpec> = emptyList()
+    ): String = buildQuery(whereClause, orderByClause)  // Default: ignore collection sorts
 
     /**
      * Builds a WHERE clause for loading by ID.

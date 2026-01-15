@@ -149,9 +149,52 @@ object CypherGenerator {
      * @return Cypher ORDER BY clause (without the ORDER BY keywords)
      */
     fun buildOrderByClause(orders: List<OrderSpec>): String {
-        return orders.joinToString(", ") { order ->
-            "${order.propertyPath} ${order.direction.name}"
+        val result = processOrders(orders)
+        return result.orderByClause ?: ""
+    }
+
+    /**
+     * Processes order specifications and separates root-level ORDER BY from collection sorts.
+     *
+     * Root-level orders (e.g., "issue.id") go to the ORDER BY clause.
+     * Collection orders (e.g., "assignedTo.name" or "raisedBy_worksFor.name") are converted
+     * to CollectionSortSpec for wrapping with apoc.coll.sortMaps().
+     *
+     * @param orders List of order specifications
+     * @param relationshipNames Set of relationship field names (to distinguish collection sorts)
+     * @return OrderClauseResult with separate ORDER BY clause and collection sorts
+     */
+    fun processOrders(orders: List<OrderSpec>, relationshipNames: Set<String> = emptySet()): OrderClauseResult {
+        val rootOrders = mutableListOf<OrderSpec>()
+        val collectionSorts = mutableListOf<CollectionSortSpec>()
+
+        orders.forEach { order ->
+            val alias = order.propertyPath.substringBefore(".")
+            val propertyName = order.propertyPath.substringAfter(".")
+
+            // Check if this is a collection sort (relationship alias or nested relationship)
+            val isCollectionSort = alias in relationshipNames || alias.contains("_")
+
+            if (isCollectionSort) {
+                collectionSorts.add(
+                    CollectionSortSpec(
+                        relationshipPath = alias,
+                        propertyName = propertyName,
+                        ascending = order.direction == OrderDirection.ASC
+                    )
+                )
+            } else {
+                rootOrders.add(order)
+            }
         }
+
+        val orderByClause = if (rootOrders.isNotEmpty()) {
+            rootOrders.joinToString(", ") { "${it.propertyPath} ${it.direction.name}" }
+        } else {
+            null
+        }
+
+        return OrderClauseResult(orderByClause, collectionSorts)
     }
 
     /**

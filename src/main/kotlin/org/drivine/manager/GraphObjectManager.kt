@@ -219,13 +219,16 @@ class GraphObjectManager(
             org.drivine.query.dsl.CypherGenerator.buildWhereClause(querySpec.conditions, viewModel)
         } else null
 
-        // Build ORDER BY clause from orders
-        val orderByClause = if (querySpec.orders.isNotEmpty()) {
-            org.drivine.query.dsl.CypherGenerator.buildOrderByClause(querySpec.orders)
-        } else null
+        // Process ORDER BY clause - separate root orders from collection sorts
+        val relationshipNames = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
+        val orderResult = if (querySpec.orders.isNotEmpty()) {
+            org.drivine.query.dsl.CypherGenerator.processOrders(querySpec.orders, relationshipNames)
+        } else {
+            org.drivine.query.dsl.OrderClauseResult(null, emptyList())
+        }
 
-        // Build the complete query
-        val query = builder.buildQuery(whereClause, orderByClause)
+        // Build the complete query with collection sorts for APOC wrapping
+        val query = builder.buildQuery(whereClause, orderResult.orderByClause, orderResult.collectionSorts)
 
         // Extract bindings from conditions (pass viewModel to ensure same ordering as buildWhereClause)
         val bindings = org.drivine.query.dsl.CypherGenerator.extractBindings(querySpec.conditions, viewModel)
