@@ -414,11 +414,49 @@ val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
 - APOC Extended version must match your Neo4j version (e.g., Neo4j 5.26 → APOC Extended 5.26.x)
 - Download from: https://github.com/neo4j-contrib/neo4j-apoc-procedures/releases
 
-#### Client-Side Sorting Alternative
+#### Client-Side Sorting with @SortedBy
 
-If you don't have APOC Extended installed, or need complex sort logic (multiple fields, custom comparators), use client-side sorting.
+For declarative client-side sorting without APOC, use the `@SortedBy` annotation on relationship fields:
 
-**Simplest approach - method (zero annotations):**
+```kotlin
+@GraphView
+data class ProjectWithContributors(
+    @Root val project: Project,
+    @GraphRelationship(type = "HAS_CONTRIBUTOR", direction = Direction.OUTGOING)
+    @SortedBy("name")  // Sort by contributor name ascending
+    val contributors: List<Contributor>
+)
+
+// Descending order
+@GraphView
+data class ProjectWithContributorsSortedDesc(
+    @Root val project: Project,
+    @GraphRelationship(type = "HAS_CONTRIBUTOR", direction = Direction.OUTGOING)
+    @SortedBy("name", ascending = false)  // Sort descending
+    val contributors: List<Contributor>
+)
+
+// Nested property paths (for nested GraphView relationships)
+@GraphView
+data class ProjectWithNestedSort(
+    @Root val project: Project,
+    @GraphRelationship(type = "HAS_CONTRIBUTOR", direction = Direction.OUTGOING)
+    @SortedBy("contributor.name")  // Sort by nested property
+    val contributors: List<ContributorWithTasks>
+)
+```
+
+The `@SortedBy` annotation:
+- Sorts the collection automatically after deserialization
+- Supports dot notation for nested property paths (e.g., `"person.name"`)
+- Works with any `Comparable` property type
+- Handles nulls gracefully (sorted to end)
+
+#### Manual Client-Side Sorting
+
+For more complex sort logic (multiple fields, custom comparators), use manual approaches:
+
+**Simple method (zero annotations):**
 
 ```kotlin
 @GraphView
@@ -431,7 +469,7 @@ data class IssueWithAssignees(
 }
 ```
 
-**Cached approach - lazy property:**
+**Cached lazy property:**
 
 ```kotlin
 @GraphView
@@ -696,9 +734,9 @@ RETURN { person: person, employmentHistory: employmentHistory } AS result
 
 ### Polymorphic Relationships
 
-Drivine supports polymorphic relationship targets using Kotlin sealed classes with label-based type discrimination. This allows a single relationship to point to different node types.
+Drivine supports polymorphic relationship targets using label-based type discrimination. This allows a single relationship to point to different node types. You can define polymorphic types using either **sealed classes** or **interfaces**.
 
-#### Defining Polymorphic Types
+#### Defining Polymorphic Types with Sealed Classes
 
 Use a sealed class hierarchy with `@NodeFragment` labels to define polymorphic types:
 
@@ -730,6 +768,52 @@ data class RegisteredWebUser(
 In Neo4j, nodes have multiple labels:
 - `(:WebUser:Anonymous {displayName: "Guest", anonymousToken: "abc123"})`
 - `(:WebUser:Registered {displayName: "Alice", email: "alice@example.com"})`
+
+#### Defining Polymorphic Types with Interfaces
+
+For library-friendly polymorphism where implementations may be defined outside your codebase, use interfaces with `@JsonSubTypes`:
+
+```kotlin
+// Interface with @NodeFragment - defines the base label
+@NodeFragment(labels = ["Notifiable"])
+@JsonSubTypes(
+    JsonSubTypes.Type(value = EmailNotifiable::class, name = "Email,Notifiable"),
+    JsonSubTypes.Type(value = SmsNotifiable::class, name = "Sms,Notifiable")
+)
+interface Notifiable {
+    val uuid: UUID
+    val contactInfo: String
+}
+
+// Implementation with its own labels
+@NodeFragment(labels = ["Notifiable", "Email"])
+data class EmailNotifiable(
+    override val uuid: UUID,
+    override val contactInfo: String,
+    val emailVerified: Boolean
+) : Notifiable
+
+@NodeFragment(labels = ["Notifiable", "Sms"])
+data class SmsNotifiable(
+    override val uuid: UUID,
+    override val contactInfo: String,
+    val phoneRegion: String
+) : Notifiable
+```
+
+The `@JsonSubTypes` annotation maps Neo4j labels to implementations:
+- `name` is a comma-separated list of labels (sorted alphabetically)
+- Drivine matches labels from Neo4j to find the correct implementation
+
+**Use interfaces when:**
+- Implementations may be defined in different modules/libraries
+- You want to allow external extensions
+- The type hierarchy isn't known at compile time
+
+**Use sealed classes when:**
+- All subtypes are defined in your codebase
+- You want exhaustive `when` checking in Kotlin
+- Subtypes are automatically discovered (no `@JsonSubTypes` needed)
 
 #### Using Polymorphic Relationships
 
