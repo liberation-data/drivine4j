@@ -76,7 +76,22 @@ data class RelationshipModel(
      * These are the fields on the relationship itself (not the target node).
      * Empty list for direct target references.
      */
-    val relationshipProperties: List<String> = emptyList()
+    val relationshipProperties: List<String> = emptyList(),
+
+    /**
+     * Client-side sorting property path.
+     * When specified, the collection will be sorted after deserialization.
+     * Supports nested property paths using dot notation (e.g., "person.name").
+     * Null if no client-side sorting is configured.
+     */
+    val sortBy: String? = null,
+
+    /**
+     * Sort direction for client-side sorting.
+     * True for ascending (default), false for descending.
+     * Only used when sortBy is not null.
+     */
+    val sortAscending: Boolean = true
 ) {
     /**
      * Returns the field name to use as the target alias in queries.

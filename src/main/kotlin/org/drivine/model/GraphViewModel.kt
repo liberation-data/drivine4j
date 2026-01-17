@@ -5,6 +5,7 @@ import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.Root
+import org.drivine.annotation.SortedBy
 import java.lang.reflect.Field
 import java.lang.reflect.ParameterizedType
 import kotlin.reflect.KClass
@@ -100,6 +101,9 @@ data class GraphViewModel(
                         // Check if element type is annotated with @GraphRelationshipFragment (relationship object pattern)
                         val isRelationshipFragment = elementType.isAnnotationPresent(RelationshipFragment::class.java)
 
+                        // Check for @SortedBy annotation (client-side sorting)
+                        val sortedByAnnotation = prop.findAnnotation<SortedBy>()
+
                         if (isRelationshipFragment) {
                             // Extract relationship fragment metadata
                             val fragmentKClass = elementType.kotlin
@@ -134,7 +138,9 @@ data class GraphViewModel(
                                 isRelationshipFragment = true,
                                 targetFieldName = targetProperty.name,
                                 targetNodeType = targetNodeType,
-                                relationshipProperties = relationshipProperties
+                                relationshipProperties = relationshipProperties,
+                                sortBy = sortedByAnnotation?.property,
+                                sortAscending = sortedByAnnotation?.ascending ?: true
                             )
                         } else {
                             // Direct target reference (existing behavior)
@@ -145,7 +151,9 @@ data class GraphViewModel(
                                 fieldType = fieldType,
                                 elementType = elementType,
                                 isCollection = isCollection,
-                                isNullable = isNullable
+                                isNullable = isNullable,
+                                sortBy = sortedByAnnotation?.property,
+                                sortAscending = sortedByAnnotation?.ascending ?: true
                             )
                         }
                     } else {
@@ -179,22 +187,75 @@ data class GraphViewModel(
 
             if (isCollection) {
                 // Try to extract the generic parameter
-                try {
-                    // Parse from type string like "kotlin.collections.List<sample.mapped.fragment.Person>"
-                    val genericStart = typeString.indexOf('<')
-                    val genericEnd = typeString.lastIndexOf('>')
-                    if (genericStart > 0 && genericEnd > genericStart) {
-                        val elementTypeName = typeString.substring(genericStart + 1, genericEnd)
-                        val elementClass = Class.forName(elementTypeName)
+                val genericStart = typeString.indexOf('<')
+                val genericEnd = typeString.lastIndexOf('>')
+                if (genericStart > 0 && genericEnd > genericStart) {
+                    val elementTypeName = typeString.substring(genericStart + 1, genericEnd)
+                    val elementClass = resolveClassName(elementTypeName)
+                    if (elementClass != null) {
                         return Pair(elementClass, true)
                     }
-                } catch (e: ClassNotFoundException) {
-                    // Fall back to Any if we can't find the class
                 }
                 return Pair(Any::class.java, true)
             }
 
             return Pair(fieldType, false)
+        }
+
+        /**
+         * Resolves a class name to a Class object, handling both top-level and inner classes.
+         * Kotlin uses '.' for nested classes, but JVM uses '$'.
+         * For example: "org.example.Outer.Inner" needs to become "org.example.Outer$Inner"
+         *
+         * @param className The class name from Kotlin reflection (using '.' for nested classes)
+         * @return The Class object, or null if not found
+         */
+        private fun resolveClassName(className: String): Class<*>? {
+            // First, try the name as-is (works for top-level classes)
+            try {
+                return Class.forName(className)
+            } catch (e: ClassNotFoundException) {
+                // Continue to try inner class resolution
+            }
+
+            // For inner classes, progressively replace '.' with '$' from right to left
+            // Package names are lowercase, class names start with uppercase
+            // So we look for '.' followed by uppercase letter and replace those with '$'
+            val parts = className.split(".")
+            if (parts.size < 2) return null
+
+            // Find where package ends and class names begin
+            // Assume package parts are lowercase, class names are uppercase
+            val firstClassIndex = parts.indexOfFirst { it.isNotEmpty() && it[0].isUpperCase() }
+            if (firstClassIndex < 0) return null
+
+            // Try different combinations of '$' for nested classes
+            for (dollarCount in 1 until (parts.size - firstClassIndex)) {
+                val packagePart = parts.take(firstClassIndex).joinToString(".")
+                val classParts = parts.drop(firstClassIndex)
+
+                // Split class parts: first (dollarCount) separators become '$', rest stay '.'
+                val classNameWithDollars = buildString {
+                    classParts.forEachIndexed { index, part ->
+                        if (index > 0) {
+                            // Use '$' for inner classes (from the end)
+                            append(if (index >= classParts.size - dollarCount) "$" else ".")
+                        }
+                        append(part)
+                    }
+                }
+
+                val fullName = if (packagePart.isEmpty()) classNameWithDollars
+                               else "$packagePart.$classNameWithDollars"
+
+                try {
+                    return Class.forName(fullName)
+                } catch (e: ClassNotFoundException) {
+                    // Try next combination
+                }
+            }
+
+            return null
         }
 
         /**
@@ -266,6 +327,9 @@ data class GraphViewModel(
                         // Check if element type is annotated with @GraphRelationshipFragment
                         val isRelationshipFragment = elementType.isAnnotationPresent(RelationshipFragment::class.java)
 
+                        // Check for @SortedBy annotation (client-side sorting)
+                        val sortedByAnnotation = field.getAnnotation(SortedBy::class.java)
+
                         if (isRelationshipFragment) {
                             // Extract relationship fragment metadata using Java reflection
                             val fragmentFields = elementType.declaredFields.filter { !it.isSynthetic }
@@ -298,7 +362,9 @@ data class GraphViewModel(
                                 isRelationshipFragment = true,
                                 targetFieldName = targetField.name,
                                 targetNodeType = targetNodeType,
-                                relationshipProperties = relationshipProperties
+                                relationshipProperties = relationshipProperties,
+                                sortBy = sortedByAnnotation?.property,
+                                sortAscending = sortedByAnnotation?.ascending ?: true
                             )
                         } else {
                             // Direct target reference
@@ -308,7 +374,9 @@ data class GraphViewModel(
                                 direction = relationshipAnnotation.direction,
                                 fieldType = fieldType,
                                 elementType = elementType,
-                                isCollection = isCollection
+                                isCollection = isCollection,
+                                sortBy = sortedByAnnotation?.property,
+                                sortAscending = sortedByAnnotation?.ascending ?: true
                             )
                         }
                     } else {

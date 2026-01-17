@@ -1,11 +1,28 @@
 package org.drivine.manager
 
+import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.GraphView
+import org.drivine.annotation.NodeFragment
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
+import org.drivine.model.GraphViewModel
+import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.CypherGenerator
+import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.OrderClauseResult
 import org.drivine.session.SessionManager
+
+/**
+ * Context for DSL-based queries containing the resolved view model, WHERE clause, and bindings.
+ */
+private data class QueryContext(
+    val viewModel: GraphViewModel?,
+    val whereClause: String?,
+    val bindings: Map<String, Any?>
+)
 
 /**
  * Manager for working with graph objects (GraphViews and GraphFragments).
@@ -116,7 +133,7 @@ class GraphObjectManager(
         val kotlinClass = graphClass.kotlin
 
         // First, check for Jackson's @JsonSubTypes annotation (works for both Java and Kotlin)
-        val jsonSubTypes = graphClass.getAnnotation(com.fasterxml.jackson.annotation.JsonSubTypes::class.java)
+        val jsonSubTypes = graphClass.getAnnotation(JsonSubTypes::class.java)
         if (jsonSubTypes != null) {
             jsonSubTypes.value.forEach { subType ->
                 persistenceManager.registerSubtype(graphClass, subType.name, subType.value.java)
@@ -128,19 +145,19 @@ class GraphObjectManager(
                 val subclassJava = subclass.java
 
                 // Extract labels from @NodeFragment annotation to use as discriminators
-                val nodeFragment = subclassJava.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
+                val nodeFragment = subclassJava.getAnnotation(NodeFragment::class.java)
                 if (nodeFragment != null) {
                     val subLabels = nodeFragment.labels.toList()
 
                     // Register using composite key (all labels sorted and joined)
                     // This enables matching nodes with multiple labels like ["WebUser", "Anonymous"]
                     if (subLabels.isNotEmpty()) {
-                        val compositeKey = org.drivine.mapper.SubtypeRegistry.labelsToKey(subLabels)
+                        val compositeKey = SubtypeRegistry.labelsToKey(subLabels)
                         persistenceManager.registerSubtype(graphClass, compositeKey, subclassJava)
                     }
 
                     // Also register using each distinct label (labels not in base class)
-                    val baseFragment = graphClass.getAnnotation(org.drivine.annotation.NodeFragment::class.java)
+                    val baseFragment = graphClass.getAnnotation(NodeFragment::class.java)
                     val baseLabels = baseFragment?.labels?.toSet() ?: emptySet()
                     val distinctLabels = subLabels.toSet() - baseLabels
 
@@ -156,7 +173,7 @@ class GraphObjectManager(
 
         // For GraphViews, also register subtypes for relationship target types
         if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-            val viewModel = org.drivine.model.GraphViewModel.from(graphClass)
+            val viewModel = GraphViewModel.from(graphClass)
             viewModel.relationships.forEach { rel ->
                 autoRegisterSubtypesRecursive(rel.elementType, registeredClasses)
             }
@@ -197,46 +214,32 @@ class GraphObjectManager(
     fun <T : Any, Q : Any> loadAll(
         graphClass: Class<T>,
         queryObject: Q,
-        spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
+        spec: GraphQuerySpec<Q>.() -> Unit
     ): List<T> {
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val querySpec = org.drivine.query.dsl.GraphQuerySpec(queryObject)
+        val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass)
-
-        // Get GraphViewModel if this is a @GraphView (needed for relationship filtering)
-        val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-            org.drivine.model.GraphViewModel.from(graphClass)
-        } else {
-            null
-        }
-
-        // Build WHERE clause from conditions
-        val whereClause = if (querySpec.conditions.isNotEmpty()) {
-            org.drivine.query.dsl.CypherGenerator.buildWhereClause(querySpec.conditions, viewModel)
-        } else null
+        val ctx = buildQueryContext(graphClass, querySpec)
 
         // Process ORDER BY clause - separate root orders from collection sorts
-        val relationshipNames = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
+        val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
         val orderResult = if (querySpec.orders.isNotEmpty()) {
-            org.drivine.query.dsl.CypherGenerator.processOrders(querySpec.orders, relationshipNames)
+            CypherGenerator.processOrders(querySpec.orders, relationshipNames)
         } else {
-            org.drivine.query.dsl.OrderClauseResult(null, emptyList())
+            OrderClauseResult(null, emptyList())
         }
 
         // Build the complete query with collection sorts for APOC wrapping
-        val query = builder.buildQuery(whereClause, orderResult.orderByClause, orderResult.collectionSorts)
-
-        // Extract bindings from conditions (pass viewModel to ensure same ordering as buildWhereClause)
-        val bindings = org.drivine.query.dsl.CypherGenerator.extractBindings(querySpec.conditions, viewModel)
+        val query = builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts)
 
         val results = persistenceManager.query(
             QuerySpecification
                 .withStatement(query)
-                .bind(bindings)
+                .bind(ctx.bindings)
                 .transform(graphClass)
         )
 
@@ -278,6 +281,41 @@ class GraphObjectManager(
     }
 
     /**
+     * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.
+     */
+    private fun <Q : Any> buildQueryContext(
+        graphClass: Class<*>,
+        querySpec: GraphQuerySpec<Q>
+    ): QueryContext {
+        val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
+            GraphViewModel.from(graphClass)
+        } else {
+            null
+        }
+
+        val whereClause = if (querySpec.conditions.isNotEmpty()) {
+            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel)
+        } else null
+
+        val bindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
+
+        return QueryContext(viewModel, whereClause, bindings)
+    }
+
+    /**
+     * Extracts fragment model and root field name for snapshotting.
+     */
+    private fun extractSnapshotMetadata(clazz: Class<*>): Pair<FragmentModel, String?> {
+        return if (clazz.isAnnotationPresent(GraphView::class.java)) {
+            val viewModel = GraphViewModel.from(clazz)
+            val fragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
+            Pair(fragmentModel, viewModel.rootFragment.fieldName)
+        } else {
+            Pair(FragmentModel.from(clazz), null)
+        }
+    }
+
+    /**
      * Takes snapshots of loaded objects for dirty tracking.
      * Delegates to SessionManager to handle the snapshotting details.
      *
@@ -293,29 +331,12 @@ class GraphObjectManager(
         if (isPolymorphic) {
             // Snapshot each object using its actual runtime class
             results.forEach { obj ->
-                val actualClass = obj.javaClass
-
-                val (fragmentModel, rootFragmentFieldName) = if (actualClass.isAnnotationPresent(GraphView::class.java)) {
-                    val viewModel = org.drivine.model.GraphViewModel.from(actualClass)
-                    val fragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
-                    Pair(fragmentModel, viewModel.rootFragment.fieldName)
-                } else {
-                    Pair(FragmentModel.from(actualClass), null)
-                }
-
+                val (fragmentModel, rootFragmentFieldName) = extractSnapshotMetadata(obj.javaClass)
                 sessionManager.snapshot(obj, fragmentModel, rootFragmentFieldName)
             }
         } else {
             // Non-polymorphic: use the query target class for all results
-            val (fragmentModel, rootFragmentFieldName) = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-                val viewModel = org.drivine.model.GraphViewModel.from(graphClass)
-                val fragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
-                Pair(fragmentModel, viewModel.rootFragment.fieldName)
-            } else {
-                Pair(FragmentModel.from(graphClass), null)
-            }
-
-            // Let SessionManager handle the snapshotting
+            val (fragmentModel, rootFragmentFieldName) = extractSnapshotMetadata(graphClass)
             sessionManager.snapshotAll(results, fragmentModel, rootFragmentFieldName)
         }
     }
@@ -433,34 +454,19 @@ class GraphObjectManager(
     fun <T : Any, Q : Any> deleteAll(
         graphClass: Class<T>,
         queryObject: Q,
-        spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
+        spec: GraphQuerySpec<Q>.() -> Unit
     ): Int {
-        val querySpec = org.drivine.query.dsl.GraphQuerySpec(queryObject)
+        val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass)
-
-        // Get GraphViewModel if this is a @GraphView (needed for relationship filtering)
-        val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-            org.drivine.model.GraphViewModel.from(graphClass)
-        } else {
-            null
-        }
-
-        // Build WHERE clause from conditions
-        val whereClause = if (querySpec.conditions.isNotEmpty()) {
-            org.drivine.query.dsl.CypherGenerator.buildWhereClause(querySpec.conditions, viewModel)
-        } else null
-
-        val query = builder.buildDeleteQuery(whereClause)
-
-        // Extract bindings from conditions
-        val bindings = org.drivine.query.dsl.CypherGenerator.extractBindings(querySpec.conditions, viewModel)
+        val ctx = buildQueryContext(graphClass, querySpec)
+        val query = builder.buildDeleteQuery(ctx.whereClause)
 
         return persistenceManager.getOne(
             QuerySpecification
                 .withStatement(query)
-                .bind(bindings)
+                .bind(ctx.bindings)
                 .transform(Int::class.java)
         )
     }
@@ -487,7 +493,7 @@ class GraphObjectManager(
         val graphClass = obj.javaClass
 
         // Build merge statements using polymorphic builder
-        val mergeBuilder = org.drivine.query.GraphObjectMergeBuilder.forClass(
+        val mergeBuilder = GraphObjectMergeBuilder.forClass(
             graphClass,
             objectMapper,
             sessionManager

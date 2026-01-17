@@ -245,11 +245,17 @@ ${returnFields.joinToString(",\n")}
 
     /**
      * Gets field names from a FragmentModel.
-     * Returns null for polymorphic (sealed) types or on error to signal that .* should be used.
+     * Returns null for polymorphic types (sealed classes or interfaces) to signal that .* should be used.
      */
     private fun getFragmentFields(fragmentType: Class<*>): List<String>? {
         // For sealed classes, return null to signal use of .*
         if (fragmentType.kotlin.isSealed) {
+            return null
+        }
+
+        // For interfaces with @NodeFragment, return null to signal use of .*
+        // since we don't know which concrete implementation will be returned
+        if (fragmentType.isInterface) {
             return null
         }
 
