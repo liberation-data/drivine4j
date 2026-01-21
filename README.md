@@ -771,49 +771,65 @@ In Neo4j, nodes have multiple labels:
 
 #### Defining Polymorphic Types with Interfaces
 
-For library-friendly polymorphism where implementations may be defined outside your codebase, use interfaces with `@JsonSubTypes`:
+For library-friendly polymorphism where implementations are defined externally by consumers, use interfaces with runtime registration.
+
+The library defines the interface:
 
 ```kotlin
-// Interface with @NodeFragment - defines the base label
-@NodeFragment(labels = ["Notifiable"])
-@JsonSubTypes(
-    JsonSubTypes.Type(value = EmailNotifiable::class, name = "Email,Notifiable"),
-    JsonSubTypes.Type(value = SmsNotifiable::class, name = "Sms,Notifiable")
-)
-interface Notifiable {
-    val uuid: UUID
-    val contactInfo: String
+// Library code - interface with @NodeFragment
+@NodeFragment(labels = ["SessionUser"])
+interface SessionUser {
+    @get:NodeId  // Required for Drivine change detection during save
+    val id: String
+    val displayName: String
 }
 
-// Implementation with its own labels
-@NodeFragment(labels = ["Notifiable", "Email"])
-data class EmailNotifiable(
-    override val uuid: UUID,
-    override val contactInfo: String,
-    val emailVerified: Boolean
-) : Notifiable
-
-@NodeFragment(labels = ["Notifiable", "Sms"])
-data class SmsNotifiable(
-    override val uuid: UUID,
-    override val contactInfo: String,
-    val phoneRegion: String
-) : Notifiable
+// Library's GraphView uses the interface
+@GraphView
+data class StoredSession(
+    @Root val session: SessionData,
+    @GraphRelationship(type = "OWNED_BY", direction = Direction.OUTGOING)
+    val owner: SessionUser  // Interface type
+)
 ```
 
-The `@JsonSubTypes` annotation maps Neo4j labels to implementations:
-- `name` is a comma-separated list of labels (sorted alphabetically)
-- Drivine matches labels from Neo4j to find the correct implementation
+Consumers implement the interface and register at startup:
+
+```kotlin
+// Consumer's implementation
+@NodeFragment(labels = ["SessionUser", "AppUser"])
+data class AppUser(
+    @NodeId override val id: String,
+    override val displayName: String,
+    val email: String  // Consumer's custom fields
+) : SessionUser
+
+// Register in configuration (handles both Drivine and Jackson)
+@Bean
+fun persistenceManager(factory: PersistenceManagerFactory): PersistenceManager {
+    val pm = factory.get("neo")
+    pm.registerSubtype(
+        SessionUser::class.java,
+        "AppUser|SessionUser",  // Composite label key (sorted alphabetically, pipe-separated)
+        AppUser::class.java
+    )
+    return pm
+}
+```
+
+The `registerSubtype()` call configures both:
+- Drivine's label-based polymorphism for loading
+- Jackson's abstract type mapping for save operations
 
 **Use interfaces when:**
-- Implementations may be defined in different modules/libraries
+- Implementations are defined in different modules/libraries
 - You want to allow external extensions
 - The type hierarchy isn't known at compile time
 
 **Use sealed classes when:**
 - All subtypes are defined in your codebase
 - You want exhaustive `when` checking in Kotlin
-- Subtypes are automatically discovered (no `@JsonSubTypes` needed)
+- Subtypes are automatically discovered (no registration needed)
 
 #### Using Polymorphic Relationships
 
