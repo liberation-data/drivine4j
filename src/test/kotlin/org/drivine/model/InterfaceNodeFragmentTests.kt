@@ -37,9 +37,11 @@ class InterfaceNodeFragmentTests {
     /**
      * Interface that library consumers implement for their User type.
      * The @NodeFragment defines the base label used in queries.
+     * @NodeId on the interface ensures save operations can detect changes.
      */
     @NodeFragment(labels = ["User"])
     interface ThreadOwner {
+        @get:NodeId
         val uuid: UUID
         val displayName: String
     }
@@ -213,5 +215,61 @@ class InterfaceNodeFragmentE2ETests @Autowired constructor(
         println("Successfully loaded ThreadTimeline with owner: ${timeline.owner}")
         println("Owner type: ${timeline.owner::class.simpleName}")
         println("Guide progress: ${guideUser.guideProgress}")
+    }
+
+    @Test
+    fun `should save ThreadTimeline after loading - verifies Jackson abstract type mapping`() {
+        val threadUuid = UUID.randomUUID()
+        val ownerUuid = UUID.randomUUID()
+
+        // Create test data
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (t:Thread {
+                        uuid: ${'$'}threadUuid,
+                        title: 'Original Title',
+                        createdBy: 'interface-test'
+                    })
+                    CREATE (u:User:GuideUser {
+                        uuid: ${'$'}ownerUuid,
+                        displayName: 'Test User',
+                        guideProgress: 42,
+                        createdBy: 'interface-test'
+                    })
+                    CREATE (t)-[:OWNED_BY]->(u)
+                """.trimIndent())
+                .bind(mapOf(
+                    "threadUuid" to threadUuid.toString(),
+                    "ownerUuid" to ownerUuid.toString()
+                ))
+        )
+
+        // Load the timeline
+        val timeline = graphObjectManager.load(
+            threadUuid.toString(),
+            InterfaceNodeFragmentTests.ThreadTimeline::class.java
+        )
+        assertNotNull(timeline)
+
+        // Modify and save - this exercises SessionManager.getSnapshot() which needs
+        // Jackson to deserialize the interface type (ThreadOwner) to the concrete type (GuideUser)
+        val updatedTimeline = timeline.copy(
+            thread = timeline.thread.copy(title = "Updated Title")
+        )
+
+        // This should NOT throw: "Cannot construct instance of ThreadOwner (no Creators, like default constructor, exist)"
+        graphObjectManager.save(updatedTimeline)
+
+        // Verify the change was persisted
+        val reloaded = graphObjectManager.load(
+            threadUuid.toString(),
+            InterfaceNodeFragmentTests.ThreadTimeline::class.java
+        )
+        assertNotNull(reloaded)
+        assertEquals("Updated Title", reloaded.thread.title)
+        assertEquals("Test User", reloaded.owner.displayName)
+
+        println("Successfully saved and reloaded ThreadTimeline with interface-typed owner")
     }
 }

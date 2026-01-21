@@ -137,13 +137,17 @@ data class FragmentModel(
         /**
          * Finds the field annotated with @GraphNodeId.
          * Returns the field name if found, null otherwise.
+         * Checks both property-level annotations and getter-level annotations (@get:NodeId).
          */
         private fun findNodeIdField(clazz: Class<*>): String? {
             // Try Kotlin reflection first
             return try {
                 val kClass = clazz.kotlin
                 kClass.memberProperties.find { property ->
-                    property.findAnnotation<NodeId>() != null
+                    // Check property-level annotation first
+                    property.findAnnotation<NodeId>() != null ||
+                        // Also check getter annotation (for @get:NodeId on interface properties)
+                        property.getter.findAnnotation<NodeId>() != null
                 }?.name
             } catch (e: Exception) {
                 // Fall back to Java reflection

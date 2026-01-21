@@ -1,5 +1,6 @@
 package org.drivine.mapper
 
+import com.fasterxml.jackson.databind.module.SimpleModule
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -16,8 +17,15 @@ class SubtypeRegistry {
     // Map from base class to (subtype name -> subtype class)
     private val registry = ConcurrentHashMap<Class<*>, MutableMap<String, Class<*>>>()
 
+    // Tracks which base->subclass mappings have been registered with Jackson (to avoid duplicates)
+    private val jacksonMappings = ConcurrentHashMap.newKeySet<String>()
+
     /**
      * Registers a subtype for a base class using a single label/name.
+     *
+     * Also registers the abstract type mapping with Jackson's ObjectMapper to enable
+     * deserialization of the interface/abstract type to the concrete implementation.
+     * This is needed for SessionManager.getSnapshot() which uses Jackson's treeToValue().
      *
      * @param baseClass The base class
      * @param name The subtype name (used to match Neo4j labels or type properties)
@@ -25,12 +33,17 @@ class SubtypeRegistry {
      */
     fun register(baseClass: Class<*>, name: String, subClass: Class<*>) {
         registry.computeIfAbsent(baseClass) { ConcurrentHashMap() }[name] = subClass
+
+        // Also register with Jackson for abstract type mapping (needed for snapshot deserialization)
+        registerWithJackson(baseClass, subClass)
     }
 
     /**
      * Registers a subtype for a base class using multiple labels.
      * Labels are sorted alphabetically and joined with comma to create
      * a composite key for matching.
+     *
+     * Also registers the abstract type mapping with Jackson's ObjectMapper.
      *
      * Example:
      * ```kotlin
@@ -47,10 +60,15 @@ class SubtypeRegistry {
     fun registerWithLabels(baseClass: Class<*>, labels: List<String>, subClass: Class<*>) {
         val compositeKey = labelsToKey(labels)
         registry.computeIfAbsent(baseClass) { ConcurrentHashMap() }[compositeKey] = subClass
+
+        // Also register with Jackson for abstract type mapping
+        registerWithJackson(baseClass, subClass)
     }
 
     /**
      * Registers multiple subtypes for a base class.
+     *
+     * Also registers abstract type mappings with Jackson's ObjectMapper for each subtype.
      *
      * @param baseClass The base class
      * @param subtypes Pairs of name to subtype class
@@ -59,6 +77,8 @@ class SubtypeRegistry {
         val subtypeMap = registry.computeIfAbsent(baseClass) { ConcurrentHashMap() }
         subtypes.forEach { (name, subClass) ->
             subtypeMap[name] = subClass
+            // Also register with Jackson for abstract type mapping
+            registerWithJackson(baseClass, subClass)
         }
     }
 
@@ -108,6 +128,34 @@ class SubtypeRegistry {
      */
     fun clear() {
         registry.clear()
+    }
+
+    /**
+     * Registers an abstract type mapping with Jackson's ObjectMapper.
+     * This enables Jackson to deserialize the abstract/interface type to the concrete implementation
+     * when using treeToValue() in SessionManager.getSnapshot().
+     *
+     * Only registers if the base class is actually abstract (interface or abstract class),
+     * as Jackson's addAbstractTypeMapping() requires an abstract base type.
+     *
+     * Uses a set to track already-registered mappings to avoid redundant module registrations.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun registerWithJackson(baseClass: Class<*>, subClass: Class<*>) {
+        // Only register with Jackson if base class is abstract (interface or abstract class)
+        if (!baseClass.isInterface && !java.lang.reflect.Modifier.isAbstract(baseClass.modifiers)) {
+            return
+        }
+
+        val mappingKey = "${baseClass.name}->${subClass.name}"
+        if (jacksonMappings.add(mappingKey)) {
+            Neo4jObjectMapper.instance.registerModule(
+                SimpleModule().addAbstractTypeMapping(
+                    baseClass as Class<Any>,
+                    subClass as Class<Any>
+                )
+            )
+        }
     }
 
     companion object {
