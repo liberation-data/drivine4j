@@ -1,6 +1,7 @@
 package org.drivine.manager
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.mapper.SubtypeRegistry
 import org.drivine.session.SessionManager
 
 /**
@@ -10,7 +11,8 @@ import org.drivine.session.SessionManager
  */
 class GraphObjectManagerFactory(
     private val persistenceManagerFactory: PersistenceManagerFactory,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val subtypeRegistry: SubtypeRegistry
 ) {
     private val managers: MutableMap<String, GraphObjectManager> = mutableMapOf()
 
@@ -25,7 +27,7 @@ class GraphObjectManagerFactory(
         if (!managers.containsKey(key)) {
             val persistenceManager = persistenceManagerFactory.get(database, type)
             val sessionManager = SessionManager(objectMapper)
-            managers[key] = GraphObjectManager(persistenceManager, sessionManager, objectMapper)
+            managers[key] = GraphObjectManager(persistenceManager, sessionManager, objectMapper, subtypeRegistry)
         }
         return managers[key]!!
     }

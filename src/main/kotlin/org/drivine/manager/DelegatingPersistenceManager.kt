@@ -50,11 +50,7 @@ class DelegatingPersistenceManager(
         return factory.get(database, type)
     }
 
-    override fun registerSubtype(baseClass: Class<*>, name: String, subClass: Class<*>) {
-        subtypeRegistry.register(baseClass, name, subClass)
-    }
-
-    override fun registerSubtypes(baseClass: Class<*>, vararg subtypes: Pair<String, Class<*>>) {
-        subtypeRegistry.register(baseClass, *subtypes)
+    override fun registerSubtype(baseClass: Class<*>, labels: List<String>, subClass: Class<*>) {
+        subtypeRegistry.registerWithLabels(baseClass, labels, subClass)
     }
 }

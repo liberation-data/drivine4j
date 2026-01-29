@@ -62,44 +62,36 @@ interface PersistenceManager {
 
     /**
      * Registers a subtype for polymorphic deserialization.
-     * This allows Jackson to correctly deserialize class hierarchies based on Neo4j labels or type properties.
+     * This allows Jackson to correctly deserialize class hierarchies based on Neo4j labels.
      *
      * Example:
      * ```kotlin
      * // Define hierarchy
-     * sealed class WebUser {
-     *     abstract val id: String
+     * interface SessionUser {
+     *     val id: String
+     *     val displayName: String
      * }
-     * data class RegisteredUser(override val id: String, val email: String) : WebUser()
-     * data class AnonymousUser(override val id: String, val sessionId: String) : WebUser()
      *
-     * // Register subtypes
-     * manager.registerSubtype(WebUser::class.java, "RegisteredUser", RegisteredUser::class.java)
-     * manager.registerSubtype(WebUser::class.java, "AnonymousUser", AnonymousUser::class.java)
+     * @NodeFragment(labels = ["SessionUser", "GuideUser"])
+     * data class GuideUser(
+     *     override val id: String,
+     *     override val displayName: String,
+     *     val guideProgress: Int
+     * ) : SessionUser
      *
-     * // Now queries using .transform(WebUser::class.java) will correctly deserialize to subtypes
+     * // Register subtype with its Neo4j labels
+     * manager.registerSubtype(
+     *     SessionUser::class.java,
+     *     listOf("SessionUser", "GuideUser"),
+     *     GuideUser::class.java
+     * )
+     *
+     * // Now queries using .transform(SessionUser::class.java) will correctly deserialize to GuideUser
      * ```
      *
      * @param baseClass The base class or interface
-     * @param name The subtype name (should match Neo4j label or type property)
+     * @param labels The Neo4j labels that identify this subtype (order doesn't matter)
      * @param subClass The concrete subtype class
      */
-    fun registerSubtype(baseClass: Class<*>, name: String, subClass: Class<*>)
-
-    /**
-     * Registers multiple subtypes at once for a base class.
-     *
-     * Example:
-     * ```kotlin
-     * manager.registerSubtypes(
-     *     WebUser::class.java,
-     *     "RegisteredUser" to RegisteredUser::class.java,
-     *     "AnonymousUser" to AnonymousUser::class.java
-     * )
-     * ```
-     *
-     * @param baseClass The base class or interface
-     * @param subtypes Vararg of name-to-class pairs
-     */
-    fun registerSubtypes(baseClass: Class<*>, vararg subtypes: Pair<String, Class<*>>)
+    fun registerSubtype(baseClass: Class<*>, labels: List<String>, subClass: Class<*>)
 }

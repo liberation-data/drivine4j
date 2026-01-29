@@ -203,10 +203,15 @@ class GraphObjectManagerSubtypeTests @Autowired constructor(
     @Test
     fun `Manual subtype registration via PersistenceManager`() {
         // Manually register subtypes (useful for non-sealed classes)
-        persistenceManager.registerSubtypes(
+        persistenceManager.registerSubtype(
             ManualVehicle::class.java,
-            "Car" to ManualCar::class.java,
-            "Truck" to ManualTruck::class.java
+            listOf("Vehicle", "Car"),
+            ManualCar::class.java
+        )
+        persistenceManager.registerSubtype(
+            ManualVehicle::class.java,
+            listOf("Vehicle", "Truck"),
+            ManualTruck::class.java
         )
 
         // Now query using PersistenceManager (not GraphObjectManager)

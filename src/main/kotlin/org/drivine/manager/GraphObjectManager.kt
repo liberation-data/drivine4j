@@ -33,7 +33,8 @@ private data class QueryContext(
 class GraphObjectManager(
     private val persistenceManager: PersistenceManager,
     private val sessionManager: SessionManager,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val subtypeRegistry: SubtypeRegistry
 ) {
     /**
      * The name of the database this manager is connected to.
@@ -136,7 +137,7 @@ class GraphObjectManager(
         val jsonSubTypes = graphClass.getAnnotation(JsonSubTypes::class.java)
         if (jsonSubTypes != null) {
             jsonSubTypes.value.forEach { subType ->
-                persistenceManager.registerSubtype(graphClass, subType.name, subType.value.java)
+                subtypeRegistry.register(graphClass, subType.name, subType.value.java)
             }
             // Don't return - still need to check relationships for GraphViews
         } else if (kotlinClass.isSealed) {
@@ -152,8 +153,7 @@ class GraphObjectManager(
                     // Register using composite key (all labels sorted and joined)
                     // This enables matching nodes with multiple labels like ["WebUser", "Anonymous"]
                     if (subLabels.isNotEmpty()) {
-                        val compositeKey = SubtypeRegistry.labelsToKey(subLabels)
-                        persistenceManager.registerSubtype(graphClass, compositeKey, subclassJava)
+                        subtypeRegistry.registerWithLabels(graphClass, subLabels, subclassJava)
                     }
 
                     // Also register using each distinct label (labels not in base class)
@@ -162,12 +162,12 @@ class GraphObjectManager(
                     val distinctLabels = subLabels.toSet() - baseLabels
 
                     distinctLabels.forEach { label ->
-                        persistenceManager.registerSubtype(graphClass, label, subclassJava)
+                        subtypeRegistry.register(graphClass, label, subclassJava)
                     }
                 }
 
                 // Also register using simple class name as fallback
-                persistenceManager.registerSubtype(graphClass, subclass.simpleName ?: subclassJava.simpleName, subclassJava)
+                subtypeRegistry.register(graphClass, subclass.simpleName ?: subclassJava.simpleName, subclassJava)
             }
         }
 

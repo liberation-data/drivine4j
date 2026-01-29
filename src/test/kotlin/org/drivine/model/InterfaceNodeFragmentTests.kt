@@ -152,13 +152,7 @@ class InterfaceNodeFragmentE2ETests @Autowired constructor(
         // This is what a library consumer would do in their configuration
         persistenceManager.registerSubtype(
             InterfaceNodeFragmentTests.ThreadOwner::class.java,
-            "GuideUser",
-            InterfaceNodeFragmentTests.GuideUser::class.java
-        )
-        // Also register with composite label key
-        persistenceManager.registerSubtype(
-            InterfaceNodeFragmentTests.ThreadOwner::class.java,
-            "User|GuideUser",  // Composite key format
+            listOf("User", "GuideUser"),
             InterfaceNodeFragmentTests.GuideUser::class.java
         )
     }

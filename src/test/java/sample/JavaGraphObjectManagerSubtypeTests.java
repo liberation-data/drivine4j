@@ -1,7 +1,6 @@
 package sample;
 
 import com.fasterxml.jackson.annotation.JsonSubTypes;
-import kotlin.Pair;
 import org.drivine.annotation.NodeFragment;
 import org.drivine.annotation.NodeId;
 import org.drivine.manager.GraphObjectManager;
@@ -227,10 +226,15 @@ public class JavaGraphObjectManagerSubtypeTests {
     @Test
     public void testManualSubtypeRegistrationViaPersistenceManager() {
         // Manually register subtypes (useful for non-sealed classes)
-        persistenceManager.registerSubtypes(
+        persistenceManager.registerSubtype(
             ManualVehicle.class,
-            new Pair<>("Car", ManualCar.class),
-            new Pair<>("Truck", ManualTruck.class)
+            Arrays.asList("Vehicle", "Car"),
+            ManualCar.class
+        );
+        persistenceManager.registerSubtype(
+            ManualVehicle.class,
+            Arrays.asList("Vehicle", "Truck"),
+            ManualTruck.class
         );
 
         // Now query using PersistenceManager (not GraphObjectManager)

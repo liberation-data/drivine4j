@@ -55,8 +55,9 @@ class DrivineConfiguration {
     @Bean
     @ConditionalOnMissingBean
     fun graphObjectManagerFactory(
-        persistenceManagerFactory: PersistenceManagerFactory
+        persistenceManagerFactory: PersistenceManagerFactory,
+        subtypeRegistry: org.drivine.mapper.SubtypeRegistry
     ): GraphObjectManagerFactory {
-        return GraphObjectManagerFactory(persistenceManagerFactory, Neo4jObjectMapper.instance)
+        return GraphObjectManagerFactory(persistenceManagerFactory, Neo4jObjectMapper.instance, subtypeRegistry)
     }
 }
