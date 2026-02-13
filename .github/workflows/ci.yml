@@ -24,6 +24,10 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      # Docker 29+ raised minimum API version to 1.44; Testcontainers 1.x defaults to 1.32
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+
       - name: Build with Gradle
         run: ./gradlew build --no-daemon
 
@@ -108,6 +112,10 @@ jobs:
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
+
+      # Docker 29+ raised minimum API version to 1.44; Testcontainers 1.x defaults to 1.32
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
 
       - name: Test with Gradle wrapper
         run: ./gradlew test --no-daemon
