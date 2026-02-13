@@ -425,4 +425,78 @@ class DemoTest @Autowired constructor(
         // Try: query.person.namee (will not compile)
         // Try: query.person.nonExistentField (will not compile)
     }
+
+    // ============================================================================
+    // DEMO 6: Save Idempotency (MERGE semantics)
+    // ============================================================================
+
+    @Test
+    fun `save is idempotent - repeated saves do not create duplicate nodes`() {
+        val orgId = UUID.randomUUID()
+        val org = Organization(uuid = orgId, name = "Idempotent Corp")
+
+        // Save the same fragment multiple times
+        repeat(5) {
+            graphObjectManager.save(org, CascadeType.NONE)
+        }
+
+        // Should produce exactly 1 node, not 5
+        val count = persistenceManager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (o:Organization {uuid: \$uuid}) RETURN count(o)")
+                .bind(mapOf("uuid" to orgId.toString()))
+                .transform(Int::class.java)
+        )
+        assertEquals(1, count, "Repeated saves should not create duplicate nodes")
+    }
+
+    @Test
+    fun `save is idempotent - repeated saves update properties in place`() {
+        val personId = UUID.randomUUID()
+
+        // Save initial version
+        graphObjectManager.save(Person(uuid = personId, name = "Original Name", bio = "v1"), CascadeType.NONE)
+
+        // Save updated version with same ID
+        graphObjectManager.save(Person(uuid = personId, name = "Updated Name", bio = "v2"), CascadeType.NONE)
+
+        // Should still be exactly 1 node with the updated values
+        val results = graphObjectManager.loadAll(Person::class.java, "n.uuid = '${personId}'")
+        assertEquals(1, results.size, "Save with same ID should update, not duplicate")
+        assertEquals("Updated Name", results[0].name)
+        assertEquals("v2", results[0].bio)
+    }
+
+    @Test
+    fun `save GraphView is idempotent - repeated saves do not duplicate root or relationships`() {
+        // Load an existing PersonCareer view
+        val career = graphObjectManager.loadAll<PersonCareer> {
+            where {
+                query.person.name eq "Alice Engineer"
+            }
+        }.first()
+
+        // Save it multiple times without changes
+        repeat(3) {
+            graphObjectManager.save(career, CascadeType.NONE)
+        }
+
+        // Should still be exactly 1 Alice
+        val aliceCount = persistenceManager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (p:Person:Mapped {uuid: \$uuid}) RETURN count(p)")
+                .bind(mapOf("uuid" to alice.toString()))
+                .transform(Int::class.java)
+        )
+        assertEquals(1, aliceCount, "Repeated GraphView saves should not duplicate root fragment")
+
+        // Should still have exactly 1 WORKS_FOR relationship from Alice
+        val relCount = persistenceManager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (p:Person:Mapped {uuid: \$uuid})-[r:WORKS_FOR]->() RETURN count(r)")
+                .bind(mapOf("uuid" to alice.toString()))
+                .transform(Int::class.java)
+        )
+        assertEquals(1, relCount, "Repeated GraphView saves should not duplicate relationships")
+    }
 }

@@ -37,7 +37,7 @@ class DrivineTransactionManager(
 
     override fun isExistingTransaction(transaction: Any): Boolean {
         val txObject = transaction as DrivineTransactionObject
-        return txObject.hasActiveConnections()
+        return contextHolder.currentTransaction === txObject
     }
 
     override fun doBegin(transaction: Any, definition: TransactionDefinition) {

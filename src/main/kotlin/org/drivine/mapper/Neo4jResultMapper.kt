@@ -3,6 +3,7 @@ package org.drivine.mapper
 import org.neo4j.driver.Record
 import org.neo4j.driver.Value
 import org.neo4j.driver.internal.value.NodeValue
+import org.neo4j.driver.internal.value.NullValue
 import org.neo4j.driver.internal.value.PointValue
 import org.neo4j.driver.internal.value.RelationshipValue
 import java.util.*
@@ -21,19 +22,20 @@ open class Neo4jResultMapper(
         return rec.get(index)
     }
 
-    override fun toNative(value: Any): Any {
+    override fun toNative(value: Any): Any? {
         return when (value) {
+            is NullValue -> null
             is NodeValue -> toNative(value.asMap())
             is RelationshipValue -> toNative(value.asMap())
             is PointValue -> value
-            is org.neo4j.driver.types.IsoDuration -> value // If handling durations explicitly
+            is org.neo4j.driver.types.IsoDuration -> value
             is Date -> value
             is List<*> -> value.map { it?.let { it1 -> toNative(it1) } }
             is Map<*, *> -> value.mapValues { it.value?.let { it1 -> toNative(it1) } }
             is Record -> toNative(recordToNative(value))
             is Value -> when {
                 value.hasType(org.neo4j.driver.types.TypeSystem.getDefault().INTEGER()) -> value.asLong()
-                else -> value.asObject()  // Convert all other Neo4j Values to native Java types
+                else -> value.asObject()
             }
             else -> value
         }
@@ -42,7 +44,7 @@ open class Neo4jResultMapper(
     private fun recordToNative(rec: Record): Map<String, Any?> {
         val out = mutableMapOf<String, Any?>()
         rec.keys().forEachIndexed { index, key ->
-            out[key] = rec.get(index).asObject() // Converts Neo4j Value to a native type
+            out[key] = rec.get(index).asObject()
         }
         return out
     }

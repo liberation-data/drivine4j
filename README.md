@@ -236,6 +236,40 @@ class PersonRepository @Autowired constructor(
 }
 ```
 
+### Important: RETURN Clause Best Practices
+
+When using `PersistenceManager` with Cypher queries, always return a **single map** or **scalar value** -- not multiple columns. This ensures correct mapping with `.transform()` and avoids issues with NULL values.
+
+```cypher
+-- WRONG: Multiple columns -- hard to map, NULL values cause errors
+RETURN a.name, a.age, b.title
+
+-- CORRECT: Return a single map
+RETURN { name: a.name, age: a.age, title: b.title } AS result
+
+-- CORRECT: Return a single property map
+RETURN properties(p)
+
+-- CORRECT: Return a scalar value
+RETURN count(p) AS total
+```
+
+If you need to aggregate across multiple nodes, compose the result into a single map in your `RETURN` clause:
+
+```cypher
+MATCH (p:Proposition)-[:HAS_MENTION]->(m:Mention)
+WITH m.type AS entityType, m.name AS name, count(p) AS mentionCount
+ORDER BY mentionCount DESC
+LIMIT 30
+RETURN {
+  entityType: entityType,
+  name: name,
+  mentionCount: mentionCount
+} AS result
+```
+
+This way `.transform(MyDto::class.java)` can map the result directly to a data class.
+
 ## GraphObjectManager - Type-Safe Graph Mapping
 
 `GraphObjectManager` provides a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.

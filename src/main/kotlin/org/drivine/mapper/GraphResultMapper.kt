@@ -1,17 +1,22 @@
 package org.drivine.mapper
 
 import org.drivine.query.QuerySpecification
+import org.slf4j.LoggerFactory
 
 abstract class GraphResultMapper(
     protected val subtypeRegistry: SubtypeRegistry? = null
 ) : ResultMapper {
+
+    private val logger = LoggerFactory.getLogger(GraphResultMapper::class.java)
+    private var multiColumnWarningLogged = false
 
     override fun <T : Any> mapQueryResults(results: List<Any>, spec: QuerySpecification<T>): List<T> {
         // Get the chain of specs from original to final
         val specChain = getSpecChain(spec)
 
         // Start with mapToNative only on the first (original) spec
-        var results: List<Any> = mapToNative(results)
+        @Suppress("UNCHECKED_CAST")
+        var results: List<Any> = mapToNative(results) as List<Any>
 
         // Process each spec in the chain
         specChain.forEach { chainSpec ->
@@ -44,12 +49,20 @@ abstract class GraphResultMapper(
         return chain
     }
 
-    private fun mapToNative(records: List<Any>): List<Any> {
+    private fun mapToNative(records: List<Any>): List<Any?> {
         return records.map { record ->
             val keys = keys(record)
             if (keys.size == 1) {
                 toNative(itemAtIndex(record, 0))
             } else {
+                if (!multiColumnWarningLogged) {
+                    multiColumnWarningLogged = true
+                    logger.warn(
+                        "Query returned {} columns ({}). When using PersistenceManager, prefer returning a " +
+                        "single map or scalar value. For example: RETURN {{ key1: val1, key2: val2 }} AS result",
+                        keys.size, keys.joinToString()
+                    )
+                }
                 keys.indices.map { index -> toNative(itemAtIndex(record, index)) }
             }
         }
@@ -59,5 +72,5 @@ abstract class GraphResultMapper(
 
     abstract fun itemAtIndex(record: Any, index: Int): Any
 
-    abstract fun toNative(value: Any): Any
+    abstract fun toNative(value: Any): Any?
 }
