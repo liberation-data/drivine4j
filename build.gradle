@@ -61,10 +61,10 @@ dependencies {
 	// TestContainers
 	// Testcontainers - provided as api dependency so DrivineTestContainer and
 	// @EnableDrivineTestConfig work out-of-the-box for users without additional dependencies
-	api 'org.testcontainers:neo4j:1.19.3'
+	api 'org.testcontainers:neo4j:1.21.4'
 
-	testImplementation 'org.testcontainers:testcontainers:1.19.3'
-	testImplementation 'org.testcontainers:junit-jupiter:1.19.3'
+	testImplementation 'org.testcontainers:testcontainers:1.21.4'
+	testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
 
 	// Spring Boot Starter for tests
 	testImplementation project(':drivine4j-spring-boot-starter')

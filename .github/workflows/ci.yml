@@ -93,7 +93,6 @@ jobs:
     strategy:
       matrix:
         java: [ '21' ]
-        gradle: [ 'wrapper', '8.12.1' ]
       fail-fast: false
 
     steps:
@@ -110,10 +109,5 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Test with Gradle ${{ matrix.gradle }}
-        run: |
-          if [ "${{ matrix.gradle }}" = "wrapper" ]; then
-            ./gradlew test --no-daemon
-          else
-            gradle test --no-daemon
-          fi
+      - name: Test with Gradle wrapper
+        run: ./gradlew test --no-daemon
