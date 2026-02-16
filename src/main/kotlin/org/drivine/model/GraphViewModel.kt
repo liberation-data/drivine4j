@@ -15,6 +15,10 @@ import kotlin.reflect.full.memberProperties
 /**
  * Represents metadata about a class annotated with @GraphView.
  * A GraphView combines a root fragment with one or more relationships.
+ *
+ * TODO: Refactor the companion object's from() methods. The Kotlin and Java reflection
+ *  paths share significant logic (relationship fragment detection, recursive detection,
+ *  model construction) that should be extracted into shared helpers.
  */
 data class GraphViewModel(
     /**
@@ -144,6 +148,10 @@ data class GraphViewModel(
                             )
                         } else {
                             // Direct target reference (existing behavior)
+                            // Detect self-referential recursive relationships
+                            val isRecursive = elementType.isAnnotationPresent(GraphView::class.java) &&
+                                elementType == clazz
+
                             RelationshipModel(
                                 fieldName = prop.name,
                                 type = relationshipAnnotation.type,
@@ -153,7 +161,9 @@ data class GraphViewModel(
                                 isCollection = isCollection,
                                 isNullable = isNullable,
                                 sortBy = sortedByAnnotation?.property,
-                                sortAscending = sortedByAnnotation?.ascending ?: true
+                                sortAscending = sortedByAnnotation?.ascending ?: true,
+                                maxDepth = relationshipAnnotation.maxDepth,
+                                isRecursive = isRecursive
                             )
                         }
                     } else {
@@ -368,6 +378,10 @@ data class GraphViewModel(
                             )
                         } else {
                             // Direct target reference
+                            // Detect self-referential recursive relationships
+                            val isRecursive = elementType.isAnnotationPresent(GraphView::class.java) &&
+                                elementType == clazz
+
                             RelationshipModel(
                                 fieldName = field.name,
                                 type = relationshipAnnotation.type,
@@ -376,7 +390,9 @@ data class GraphViewModel(
                                 elementType = elementType,
                                 isCollection = isCollection,
                                 sortBy = sortedByAnnotation?.property,
-                                sortAscending = sortedByAnnotation?.ascending ?: true
+                                sortAscending = sortedByAnnotation?.ascending ?: true,
+                                maxDepth = relationshipAnnotation.maxDepth,
+                                isRecursive = isRecursive
                             )
                         }
                     } else {

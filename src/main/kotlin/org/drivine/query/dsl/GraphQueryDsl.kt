@@ -33,6 +33,25 @@ package org.drivine.query.dsl
 class GraphQuerySpec<T : Any>(private val queryObject: T) {
     internal val conditions = mutableListOf<WhereCondition>()
     internal val orders = mutableListOf<OrderSpec>()
+    internal val depthOverrides = mutableMapOf<String, Int>()
+
+    /**
+     * Overrides the expansion depth for a recursive relationship at query time.
+     * This takes precedence over the maxDepth declared on the @GraphRelationship annotation.
+     *
+     * Example:
+     * ```kotlin
+     * graphObjectManager.loadAll<LocationHierarchy> {
+     *     depth("subLocations", 5)  // Override annotation's maxDepth
+     * }
+     * ```
+     *
+     * @param relationshipName The field name of the recursive relationship
+     * @param maxDepth The maximum expansion depth (0 = don't expand)
+     */
+    fun depth(relationshipName: String, maxDepth: Int) {
+        depthOverrides[relationshipName] = maxDepth
+    }
 
     /**
      * Adds filter conditions using the DSL.

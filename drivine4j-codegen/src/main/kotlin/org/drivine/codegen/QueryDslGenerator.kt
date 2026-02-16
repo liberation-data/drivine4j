@@ -122,9 +122,8 @@ class QueryDslGenerator(
         val result = mutableMapOf<String, MutableList<TypeSpec>>()
         val processed = mutableSetOf<String>()
 
-        // Find all nested views across all graph views
-        graphViewClasses.forEach { graphViewClass ->
-            val viewStructure = analyzeGraphViewStructure(graphViewClass)
+        fun processViewClass(viewClass: KSClassDeclaration) {
+            val viewStructure = analyzeGraphViewStructure(viewClass)
             viewStructure.forEach { viewProp ->
                 if (viewProp.isNestedView && viewProp.nestedViewClass != null) {
                     val key = viewProp.nestedViewClass.qualifiedName?.asString() ?: return@forEach
@@ -133,10 +132,15 @@ class QueryDslGenerator(
                         val packageName = viewProp.nestedViewClass.packageName.asString()
                         result.getOrPut(packageName) { mutableListOf() }
                             .add(generateViewPropertiesClass(viewProp.nestedViewClass))
+                        // Recurse into sub-views (processed set prevents infinite loops)
+                        processViewClass(viewProp.nestedViewClass)
                     }
                 }
             }
         }
+
+        // Find all nested views across all graph views
+        graphViewClasses.forEach { graphViewClass -> processViewClass(graphViewClass) }
 
         return result
     }
@@ -419,7 +423,10 @@ class QueryDslGenerator(
         return decl.annotations.any { it.shortName.asString() == "RelationshipFragment" }
     }
 
-    private fun collectFragmentTypes(viewStructure: List<ViewProperty>): List<FragmentType> {
+    private fun collectFragmentTypes(
+        viewStructure: List<ViewProperty>,
+        visited: MutableSet<String> = mutableSetOf()
+    ): List<FragmentType> {
         val fragmentTypes = mutableMapOf<String, FragmentType>()
 
         viewStructure.forEach { viewProp ->
@@ -428,9 +435,13 @@ class QueryDslGenerator(
                 // This allows query.raisedBy.person.name instead of query.raisedBy_person.name
                 val nestedViewClass = viewProp.type.declaration as? KSClassDeclaration
                 if (nestedViewClass != null) {
+                    val nestedKey = nestedViewClass.qualifiedName?.asString() ?: return@forEach
+                    // Guard against recursive/self-referential @GraphView types
+                    if (visited.contains(nestedKey)) return@forEach
+                    visited.add(nestedKey)
                     // Collect fragment types from the nested view recursively
                     val nestedStructure = analyzeGraphViewStructure(nestedViewClass)
-                    val nestedFragments = collectFragmentTypes(nestedStructure)
+                    val nestedFragments = collectFragmentTypes(nestedStructure, visited)
                     nestedFragments.forEach { fragmentType ->
                         val key = fragmentType.fragmentClass.simpleName.asString()
                         if (!fragmentTypes.containsKey(key)) {

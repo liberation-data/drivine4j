@@ -91,7 +91,23 @@ data class RelationshipModel(
      * True for ascending (default), false for descending.
      * Only used when sortBy is not null.
      */
-    val sortAscending: Boolean = true
+    val sortAscending: Boolean = true,
+
+    /**
+     * Maximum depth for recursive relationship expansion.
+     * For non-recursive relationships, this is 1 (single hop).
+     * For recursive relationships (self-referential @GraphView targets),
+     * this controls how many levels deep the pattern comprehension nests.
+     * 0 means "don't expand" (emit [] or null).
+     */
+    val maxDepth: Int = 1,
+
+    /**
+     * Whether this relationship is self-referential (the element type is
+     * the same as the declaring @GraphView class).
+     * Detected during GraphViewModel construction.
+     */
+    val isRecursive: Boolean = false
 ) {
     /**
      * Returns the field name to use as the target alias in queries.
@@ -107,5 +123,14 @@ data class RelationshipModel(
      */
     fun deriveRelationshipAlias(rootAlias: String): String {
         return "${rootAlias}_${fieldName}"
+    }
+
+    /**
+     * Derives a unique target alias for a specific recursion depth.
+     * Format: {fieldName}_d{depth}
+     * Used to avoid Cypher variable collisions in nested pattern comprehensions.
+     */
+    fun deriveTargetAliasAtDepth(depth: Int): String {
+        return "${fieldName}_d${depth}"
     }
 }

@@ -330,6 +330,106 @@ data class PersonCareer(
 
 The `@Root` annotation marks which fragment is the query's starting point.
 
+#### 4. Recursive Relationships - Hierarchies & Ontologies
+
+Graph databases excel at recursive structures — ontologies, org charts, location hierarchies. Drivine supports self-referential `@GraphView` classes where a relationship targets its own type, expanding to a configurable depth using nested pattern comprehensions.
+
+**Define a recursive view:**
+
+```kotlin
+@NodeFragment(labels = ["Location"])
+data class Location(
+    @NodeId val uuid: UUID,
+    val name: String,
+    val type: String
+)
+
+@GraphView
+data class LocationHierarchy(
+    val location: Location,
+    @GraphRelationship(type = "HAS_LOCATION", direction = Direction.OUTGOING, maxDepth = 3)
+    val subLocations: List<LocationHierarchy>  // Self-referential!
+)
+```
+
+`maxDepth = 3` means Drivine expands 3 levels deep. Loading a continent produces:
+
+```
+Europe (continent)
+├── Western Europe (region)
+│   ├── France (country) → subLocations: []
+│   ├── Germany (country) → subLocations: []
+│   └── ...
+├── Northern Europe (region)
+│   ├── Sweden (country) → subLocations: []
+│   └── ...
+└── ...
+```
+
+At the terminal depth, collections become `[]` and nullable singles become `null`.
+
+**Generated Cypher** (abbreviated):
+
+```cypher
+MATCH (location:Location)
+WITH
+    location { name: location.name, type: location.type, uuid: location.uuid } AS location,
+    [(location)-[:HAS_LOCATION]->(sub_d1:Location) |
+        sub_d1 {
+            location: { name: sub_d1.name, type: sub_d1.type, uuid: sub_d1.uuid },
+            subLocations: [(sub_d1)-[:HAS_LOCATION]->(sub_d2:Location) |
+                sub_d2 {
+                    location: { name: sub_d2.name, ... },
+                    subLocations: [(sub_d2)-[:HAS_LOCATION]->(sub_d3:Location) |
+                        sub_d3 { location: { ... }, subLocations: [] }
+                    ]
+                }
+            ]
+        }
+    ] AS subLocations
+RETURN { location: location, subLocations: subLocations } AS result
+```
+
+**Traversing upward** — create a different view with `Direction.INCOMING`:
+
+```kotlin
+@GraphView
+data class LocationAncestry(
+    val location: Location,
+    @GraphRelationship(type = "HAS_LOCATION", direction = Direction.INCOMING, maxDepth = 3)
+    val parent: LocationAncestry?  // Nullable single — each location has at most one parent
+)
+```
+
+Loading "France" returns France → Western Europe → Europe → (terminated).
+
+**Query-time depth override:**
+
+```kotlin
+graphObjectManager.loadAll<LocationHierarchy> {
+    depth("subLocations", 5)  // Override annotation's maxDepth=3 to 5
+    where { query.location.type eq "continent" }
+}
+```
+
+**Chain cycles** (A → B → A) are also supported. When a relationship targets a `@GraphView` that forms a cycle through other types, Drivine tracks visit counts and terminates at `maxDepth`:
+
+```kotlin
+@GraphView
+data class PersonOrgView(
+    val person: Person,
+    @GraphRelationship(type = "WORKS_FOR", direction = Direction.OUTGOING)
+    val employer: OrgPersonView?
+)
+
+@GraphView
+data class OrgPersonView(
+    val org: Organization,
+    @GraphRelationship(type = "EMPLOYS", direction = Direction.OUTGOING, maxDepth = 2)
+    val employees: List<PersonOrgView>
+)
+```
+
 ### Loading Data
 
 #### Load All Instances

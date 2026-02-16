@@ -9,6 +9,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.GraphObjectQueryBuilder
+import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
@@ -233,8 +234,12 @@ class GraphObjectManager(
             OrderClauseResult(null, emptyList())
         }
 
-        // Build the complete query with collection sorts for APOC wrapping
-        val query = builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts)
+        // Build the complete query with collection sorts and depth overrides
+        val query = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
+            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides)
+        } else {
+            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts)
+        }
 
         val results = persistenceManager.query(
             QuerySpecification

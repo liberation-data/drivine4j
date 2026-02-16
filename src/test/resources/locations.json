@@ -1,0 +1,239 @@
+{
+  "Africa": {
+    "Northern Africa": {
+      "Algeria": {},
+      "Egypt": {},
+      "Libya": {},
+      "Morocco": {},
+      "Tunisia": {}
+    },
+    "Western Africa": {
+      "Benin": {},
+      "Burkina Faso": {},
+      "Cape Verde": {},
+      "Ivory Coast (Côte d'Ivoire)": {},
+      "Gambia": {},
+      "Ghana": {},
+      "Guinea": {},
+      "Guinea-Bissau": {},
+      "Liberia": {},
+      "Mali": {},
+      "Mauritania": {},
+      "Niger": {},
+      "Nigeria": {},
+      "Senegal": {},
+      "Sierra Leone": {},
+      "Togo": {}
+    },
+    "Eastern Africa": {
+      "Djibouti": {},
+      "Eritrea": {},
+      "Ethiopia": {},
+      "Kenya": {},
+      "Madagascar": {},
+      "Malawi": {},
+      "Mauritius": {},
+      "Mozambique": {},
+      "Rwanda": {},
+      "Somalia": {},
+      "Uganda": {},
+      "Zambia": {},
+      "Zimbabwe": {},
+      "Tanzania": {}
+    },
+    "Southern Africa": {
+      "Botswana": {},
+      "Lesotho": {},
+      "Namibia": {},
+      "South Africa": {},
+      "Swaziland": {}
+    },
+    "Central Africa": {
+      "Angola": {},
+      "Cameroon": {},
+      "Chad": {},
+      "DR Congo": {},
+      "Republic of Congo": {},
+      "Equatorial Guinea": {},
+      "Gabon": {}
+    }
+  },
+  "America": {
+    "North America": {
+      "Canada": {},
+      "United States": {},
+      "Mexico": {}
+    },
+    "Central America": {
+      "Belize": {},
+      "Costa Rica": {},
+      "El Salvador": {},
+      "Guatemala": {},
+      "Honduras": {},
+      "Nicaragua": {},
+      "Panama": {}
+    },
+    "South America": {
+      "Argentina": {},
+      "Bolivia": {},
+      "Brazil": {},
+      "Chile": {},
+      "Colombia": {},
+      "Ecuador": {},
+      "Guyana": {},
+      "Paraguay": {},
+      "Peru": {},
+      "Suriname": {},
+      "Uruguay": {},
+      "Venezuela": {}
+    },
+    "Caribbean": {
+      "Antigua and Barbuda": {},
+      "Bahamas": {},
+      "Barbados": {},
+      "Cuba": {},
+      "Dominica": {},
+      "Dominican Republic": {},
+      "Grenada": {},
+      "Haiti": {},
+      "Jamaica": {},
+      "Saint Kitts and Nevis": {},
+      "Saint Lucia": {},
+      "Saint Vincent and the Grenadines": {},
+      "Trinidad and Tobago": {},
+      "Bermuda": {},
+      "Cayman Islands": {},
+      "Puerto Rico": {}
+    }
+  },
+  "Asia": {
+    "East Asia": {
+      "China": {},
+      "Japan": {},
+      "Mongolia": {},
+      "North Korea": {},
+      "South Korea": {}
+    },
+    "Southeast Asia": {
+      "Cambodia": {},
+      "Indonesia": {},
+      "Laos": {},
+      "Malaysia": {},
+      "Philippines": {},
+      "Thailand": {},
+      "Vietnam": {},
+      "Taiwan": {},
+      "Hong Kong": {},
+      "Singapore": {},
+      "Myanmar": {}
+    },
+    "South Asia": {
+      "Bangladesh": {},
+      "Bhutan": {},
+      "India": {},
+      "Nepal": {},
+      "Pakistan": {},
+      "Sri Lanka": {}
+    },
+    "Middle East": {
+      "Bahrain": {},
+      "Iran": {},
+      "Iraq": {},
+      "Israel": {},
+      "Jordan": {},
+      "Kuwait": {},
+      "Lebanon": {},
+      "Oman": {},
+      "Palestine": {},
+      "Qatar": {},
+      "Saudi Arabia": {},
+      "Syria": {},
+      "Turkey": {},
+      "United Arab Emirates": {},
+      "Yemen": {}
+    },
+    "Central Asia": {
+      "Kazakhstan": {},
+      "Kyrgyzstan": {},
+      "Tajikistan": {},
+      "Turkmenistan": {},
+      "Uzbekistan": {}
+    }
+  },
+  "Europe": {
+    "Eastern Europe": {
+      "Belarus": {},
+      "Bulgaria": {},
+      "Czech Republic": {},
+      "Hungary": {},
+      "Moldova": {},
+      "Poland": {},
+      "Romania": {},
+      "Russia": {},
+      "Slovakia": {},
+      "Ukraine": {}
+    },
+    "Northern Europe": {
+      "Denmark": {},
+      "Estonia": {},
+      "Finland": {},
+      "Iceland": {},
+      "Ireland": {},
+      "Latvia": {},
+      "Lithuania": {},
+      "Norway": {},
+      "Sweden": {},
+      "United Kingdom": {}
+    },
+    "Southern Europe": {
+      "Albania": {},
+      "Andorra": {},
+      "Bosnia and Herzegovina": {},
+      "Croatia": {},
+      "Cyprus": {},
+      "Greece": {},
+      "Italy": {},
+      "Malta": {},
+      "Montenegro": {},
+      "Portugal": {},
+      "Serbia": {},
+      "Slovenia": {},
+      "Spain": {}
+    },
+    "Western Europe": {
+      "Austria": {},
+      "Belgium": {},
+      "France": {},
+      "Germany": {},
+      "Liechtenstein": {},
+      "Luxembourg": {},
+      "Monaco": {},
+      "Netherlands": {},
+      "Switzerland": {},
+      "Jersey": {}
+    }
+  },
+  "Oceania": {
+    "Australia and New Zealand": {
+      "Australia": {},
+      "New Zealand": {}
+    },
+    "Melanesia": {
+      "Fiji": {},
+      "Papua New Guinea": {},
+      "Solomon Islands": {},
+      "Vanuatu": {}
+    },
+    "Micronesia": {
+      "Kiribati": {},
+      "Marshall Islands": {},
+      "Nauru": {},
+      "Palau": {}
+    },
+    "Polynesia": {
+      "Samoa": {},
+      "Tonga": {},
+      "Tuvalu": {}
+    }
+  }
+}
