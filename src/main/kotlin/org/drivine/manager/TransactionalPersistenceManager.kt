@@ -20,13 +20,21 @@ class TransactionalPersistenceManager(
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
-        return connection.query(spec)
+        return try {
+            connection.query(spec)
+        } catch (e: Exception) {
+            throw DrivineException.withRootCause(e, spec)
+        }
     }
 
     override fun execute(spec: QuerySpecification<*>) {
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
-        connection.query(spec as QuerySpecification<Any>)
+        try {
+            connection.query(spec as QuerySpecification<Any>)
+        } catch (e: Exception) {
+            throw DrivineException.withRootCause(e, spec)
+        }
     }
 
     override fun <T: Any> getOne(spec: QuerySpecification<T>): T {
