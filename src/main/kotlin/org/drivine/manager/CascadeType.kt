@@ -28,5 +28,14 @@ enum class CascadeType {
      * Safe option - only deletes if the target becomes orphaned (no incoming or outgoing relationships).
      * Uses a two-step Cypher query: DELETE relationship, then DELETE target WHERE NOT EXISTS relationships.
      */
-    DELETE_ORPHAN
+    DELETE_ORPHAN,
+
+    /**
+     * Preserve all existing relationships — only add new ones, never remove.
+     *
+     * Use for append-only patterns where the save contains a subset of the full
+     * relationship set (e.g., adding a single message to a session without loading
+     * all existing messages). Snapshot-detected removals are silently skipped.
+     */
+    PRESERVE
 }

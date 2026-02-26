@@ -13,6 +13,7 @@ import sample.simple.TestAppContext
 import java.util.*
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 @SpringBootTest(classes = [TestAppContext::class])
 @Transactional
@@ -390,5 +391,143 @@ class CascadeDeleteTests @Autowired constructor(
                 .transform<Int>()
         )
         assertEquals(1, personCount)
+    }
+
+    @Test
+    fun `CASCADE PRESERVE should skip removals and keep all existing relationships`() {
+        // Create issue with two assignees
+        val issueUuid = UUID.randomUUID()
+        val raiserUuid = UUID.randomUUID()
+        val assignee1Uuid = UUID.randomUUID()
+        val assignee2Uuid = UUID.randomUUID()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (issue:Issue {
+                        uuid: ${'$'}issueUuid,
+                        id: 3007,
+                        title: 'Test Issue',
+                        body: 'Body text',
+                        state: 'open',
+                        stateReason: 'REOPENED',
+                        locked: false,
+                        createdBy: 'cascade-test'
+                    })
+                    CREATE (raiser:Person:Mapped {
+                        uuid: ${'$'}raiserUuid,
+                        name: 'Martin Fowler',
+                        bio: 'Refactoring author',
+                        createdBy: 'cascade-test'
+                    })
+                    CREATE (assignee1:Person:Mapped {
+                        uuid: ${'$'}assignee1Uuid,
+                        name: 'Kent Beck',
+                        bio: 'TDD pioneer',
+                        createdBy: 'cascade-test'
+                    })
+                    CREATE (assignee2:Person:Mapped {
+                        uuid: ${'$'}assignee2Uuid,
+                        name: 'Ward Cunningham',
+                        bio: 'Wiki inventor',
+                        createdBy: 'cascade-test'
+                    })
+                    CREATE (issue)-[:RAISED_BY]->(raiser)
+                    CREATE (issue)-[:ASSIGNED_TO]->(assignee1)
+                    CREATE (issue)-[:ASSIGNED_TO]->(assignee2)
+                """.trimIndent())
+                .bind(mapOf(
+                    "issueUuid" to issueUuid.toString(),
+                    "raiserUuid" to raiserUuid.toString(),
+                    "assignee1Uuid" to assignee1Uuid.toString(),
+                    "assignee2Uuid" to assignee2Uuid.toString()
+                ))
+        )
+
+        // Load and remove both assignees from the in-memory object
+        val loaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(loaded)
+        assertEquals(2, loaded.assignedTo.size)
+
+        val modified = loaded.copy(assignedTo = emptyList())
+
+        // Save with CASCADE PRESERVE — removals should be silently skipped
+        graphObjectManager.save(modified, CascadeType.PRESERVE)
+
+        // Verify both relationships still exist in the database
+        val reloaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(reloaded)
+        assertEquals(2, reloaded.assignedTo.size)
+        assertTrue(reloaded.assignedTo.any { it.name == "Kent Beck" })
+        assertTrue(reloaded.assignedTo.any { it.name == "Ward Cunningham" })
+    }
+
+    @Test
+    fun `CASCADE PRESERVE should still allow adding new relationships`() {
+        // Create issue with one assignee
+        val issueUuid = UUID.randomUUID()
+        val raiserUuid = UUID.randomUUID()
+        val assignee1Uuid = UUID.randomUUID()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (issue:Issue {
+                        uuid: ${'$'}issueUuid,
+                        id: 3008,
+                        title: 'Test Issue',
+                        body: 'Body text',
+                        state: 'open',
+                        stateReason: 'REOPENED',
+                        locked: false,
+                        createdBy: 'cascade-test'
+                    })
+                    CREATE (raiser:Person:Mapped {
+                        uuid: ${'$'}raiserUuid,
+                        name: 'Martin Fowler',
+                        bio: 'Refactoring author',
+                        createdBy: 'cascade-test'
+                    })
+                    CREATE (assignee1:Person:Mapped {
+                        uuid: ${'$'}assignee1Uuid,
+                        name: 'Kent Beck',
+                        bio: 'TDD pioneer',
+                        createdBy: 'cascade-test'
+                    })
+                    CREATE (issue)-[:RAISED_BY]->(raiser)
+                    CREATE (issue)-[:ASSIGNED_TO]->(assignee1)
+                """.trimIndent())
+                .bind(mapOf(
+                    "issueUuid" to issueUuid.toString(),
+                    "raiserUuid" to raiserUuid.toString(),
+                    "assignee1Uuid" to assignee1Uuid.toString()
+                ))
+        )
+
+        // Load, drop existing assignee, add a new one
+        val loaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(loaded)
+        assertEquals(1, loaded.assignedTo.size)
+
+        val newAssigneeUuid = UUID.randomUUID()
+        val newAssignee = sample.mapped.fragment.Person(
+            uuid = newAssigneeUuid,
+            name = "Ward Cunningham",
+            bio = "Wiki inventor"
+        )
+
+        // Replace list with only the new assignee (drops Kent Beck from in-memory)
+        val modified = loaded.copy(assignedTo = listOf(newAssignee))
+
+        // Save with CASCADE PRESERVE — the removal of Kent Beck should be skipped,
+        // but the addition of Ward Cunningham should still happen
+        graphObjectManager.save(modified, CascadeType.PRESERVE)
+
+        // Verify BOTH assignees exist: the original was preserved, and the new one was added
+        val reloaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(reloaded)
+        assertEquals(2, reloaded.assignedTo.size)
+        assertTrue(reloaded.assignedTo.any { it.name == "Kent Beck" }, "Original assignee should be preserved")
+        assertTrue(reloaded.assignedTo.any { it.name == "Ward Cunningham" }, "New assignee should be added")
     }
 }

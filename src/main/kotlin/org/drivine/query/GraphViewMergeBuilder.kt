@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.annotation.Direction
 import org.drivine.manager.CascadeType
 import org.drivine.mapper.toMap
 import org.drivine.model.GraphViewModel
@@ -125,9 +126,11 @@ class GraphViewMergeBuilder(
             Pair(currentItems, emptyList())
         }
 
-        // Generate statements for removed relationships
-        removed.forEach { removedItem ->
-            statements.add(buildDeleteRelationshipStatement(rootFragment, rootFragmentModel, removedItem, relModel, cascade))
+        // Generate statements for removed relationships (skip for PRESERVE — append-only mode)
+        if (cascade != CascadeType.PRESERVE) {
+            removed.forEach { removedItem ->
+                statements.add(buildDeleteRelationshipStatement(rootFragment, rootFragmentModel, removedItem, relModel, cascade))
+            }
         }
 
         // Generate statements for added relationships
@@ -395,6 +398,10 @@ class GraphViewMergeBuilder(
                         DELETE target
                     """.trimIndent()
                 }
+            }
+            CascadeType.PRESERVE -> {
+                // Should never be reached — PRESERVE removals are filtered upstream
+                throw IllegalStateException("PRESERVE cascade should not generate delete statements")
             }
         }
 
