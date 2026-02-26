@@ -13,5 +13,6 @@ import java.time.LocalDate
 data class WorkHistory(
     val startDate: LocalDate,
     val role: String,
+    val tags: List<String>? = null,
     val target: Organization
 )

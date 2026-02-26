@@ -7,6 +7,7 @@ import com.google.devtools.ksp.symbol.*
 import com.squareup.kotlinpoet.*
 import com.squareup.kotlinpoet.ParameterizedTypeName.Companion.parameterizedBy
 import com.squareup.kotlinpoet.ksp.toClassName
+import com.squareup.kotlinpoet.ksp.toTypeName
 import com.squareup.kotlinpoet.ksp.writeTo
 
 @OptIn(ExperimentalKotlinPoetApi::class)
@@ -219,7 +220,7 @@ class QueryDslGenerator(
                     ClassName("org.drivine.query.dsl", "StringPropertyReference")
                 else ->
                     ClassName("org.drivine.query.dsl", "PropertyReference")
-                        .parameterizedBy(propType.toClassName())
+                        .parameterizedBy(propType.toTypeName().copy(nullable = false))
             }
 
             classBuilder.addProperty(
@@ -578,7 +579,7 @@ class QueryDslGenerator(
                     ClassName("org.drivine.query.dsl", "StringPropertyReference")
                 else ->
                     ClassName("org.drivine.query.dsl", "PropertyReference")
-                        .parameterizedBy(propType.toClassName())
+                        .parameterizedBy(propType.toTypeName().copy(nullable = false))
             }
 
             // For root fragments, use the field name from the GraphView (e.g., "issue")

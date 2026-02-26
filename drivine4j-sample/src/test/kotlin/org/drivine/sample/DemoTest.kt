@@ -90,7 +90,8 @@ class DemoTest @Autowired constructor(
                 })
                 CREATE (alice)-[:WORKS_FOR {
                     startDate: date('2023-01-15'),
-                    role: 'Senior Engineer'
+                    role: 'Senior Engineer',
+                    tags: ['backend', 'senior']
                 }]->(acme)
 
                 CREATE (bob:Person:Mapped {
@@ -101,7 +102,8 @@ class DemoTest @Autowired constructor(
                 })
                 CREATE (bob)-[:WORKS_FOR {
                     startDate: date('2022-06-01'),
-                    role: 'Lead Designer'
+                    role: 'Lead Designer',
+                    tags: ['design', 'ux']
                 }]->(acme)
 
                 CREATE (carol:Person:Mapped {
@@ -112,7 +114,8 @@ class DemoTest @Autowired constructor(
                 })
                 CREATE (carol)-[:WORKS_FOR {
                     startDate: date('2021-03-10'),
-                    role: 'CEO'
+                    role: 'CEO',
+                    tags: ['leadership', 'founder']
                 }]->(startup)
                 """.trimIndent()
             )
@@ -424,6 +427,27 @@ class DemoTest @Autowired constructor(
         // The DSL is type-safe - you get compile errors if you typo properties!
         // Try: query.person.namee (will not compile)
         // Try: query.person.nonExistentField (will not compile)
+    }
+
+    @Test
+    fun `demo - parameterized type property on RelationshipFragment`() {
+        // WorkHistory.tags is List<String> — a parameterized type.
+        // The generated DSL must emit PropertyReference<List<String>> (not raw List).
+        // This test verifies the codegen round-trip: KSP generation → compilation → load.
+        val aliceCareer = graphObjectManager.load(alice.toString(), PersonCareer::class.java)
+        assertNotNull(aliceCareer)
+
+        val employment = aliceCareer.employmentHistory[0]
+        assertEquals(listOf("backend", "senior"), employment.tags)
+
+        // Also verify via the generated loadAll DSL (forces the generated code to compile & run)
+        val results = graphObjectManager.loadAll<PersonCareer> {
+            where {
+                query.person.name eq "Alice Engineer"
+            }
+        }
+        assertEquals(1, results.size)
+        assertEquals(listOf("backend", "senior"), results[0].employmentHistory[0].tags)
     }
 
     // ============================================================================
