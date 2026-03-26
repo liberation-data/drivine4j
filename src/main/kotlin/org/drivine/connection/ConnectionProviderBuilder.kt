@@ -47,6 +47,7 @@ class ConnectionProviderBuilder(
         properties.host.let { host(it) }
         properties.port?.let { port(it) }
         properties.databaseName?.let { databaseName(it) }
+        properties.protocol?.let { protocol(it) }
         return this
     }
 

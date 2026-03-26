@@ -3,12 +3,13 @@ package org.drivine.connection
 import org.drivine.mapper.Neo4jResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.neo4j.driver.AuthTokens
+import org.neo4j.driver.Config
 import org.neo4j.driver.Driver
 import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.Session
 import org.neo4j.driver.SessionConfig
+import java.util.concurrent.TimeUnit
 
-// TODO: Config options are not being handled
 class Neo4jConnectionProvider(
     override val name: String,
     override val type: DatabaseType,
@@ -24,7 +25,15 @@ class Neo4jConnectionProvider(
 
     private val driver: Driver = GraphDatabase.driver(
         "$protocol://$host:$port",
-        AuthTokens.basic(user, password ?: "")
+        AuthTokens.basic(user, password ?: ""),
+        Config.builder().apply {
+            (config["connectionTimeout"] as? Int)?.let {
+                withConnectionTimeout(it.toLong(), TimeUnit.MILLISECONDS)
+            }
+            (config["maxConnectionPoolSize"] as? Int)?.let {
+                withMaxConnectionPoolSize(it)
+            }
+        }.build()
     )
 
     override fun connect(): Connection {
