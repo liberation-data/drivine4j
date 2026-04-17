@@ -51,10 +51,11 @@ class PersistenceManagerFactory(
         val connectionProvider = registry.connectionProvider(name)
             ?: throw DrivineException("No database is registered under name: $name")
 
+        val strategy = connectionProvider.collectionSortStrategy
         managers[name] = PersistenceManagerEntry(
-            transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type, registry.subtypeRegistry),
+            transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type, registry.subtypeRegistry, strategy),
             nonTransactional = NonTransactionalPersistenceManager(connectionProvider, name, connectionProvider.type, registry.subtypeRegistry),
-            delegating = DelegatingPersistenceManager(name, connectionProvider.type, contextHolder, this, registry.subtypeRegistry)
+            delegating = DelegatingPersistenceManager(name, connectionProvider.type, contextHolder, this, registry.subtypeRegistry, strategy)
         )
     }
 }

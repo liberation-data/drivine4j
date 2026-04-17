@@ -5,6 +5,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.annotation.Rollback
@@ -483,6 +484,11 @@ class QueryDslEndToEndTests @Autowired constructor(
     }
 
     @Test
+    @DisabledIfEnvironmentVariable(
+        named = "DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY",
+        matches = "CALL_SUBQUERY",
+        disabledReason = "CALL_SUBQUERY does not support nested collection sorts"
+    )
     fun `should sort nested relationship collection by name ascending`() {
         // Issues 1001 and 1003 are raised by Alice who works for [Acme Corp, Beta Inc]
         // When sorted by worksFor.name ascending, should return [Acme Corp, Beta Inc]
@@ -507,6 +513,11 @@ class QueryDslEndToEndTests @Autowired constructor(
     }
 
     @Test
+    @DisabledIfEnvironmentVariable(
+        named = "DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY",
+        matches = "CALL_SUBQUERY",
+        disabledReason = "CALL_SUBQUERY does not support nested collection sorts"
+    )
     fun `should sort nested relationship collection by name descending`() {
         // Issues 1001 and 1003 are raised by Alice who works for [Acme Corp, Beta Inc]
         // When sorted by worksFor.name descending, should return [Beta Inc, Acme Corp]

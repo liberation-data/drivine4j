@@ -3,6 +3,7 @@ package org.drivine.manager
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sort.CollectionSortStrategy
 import org.drivine.transaction.TransactionContextHolder
 import org.slf4j.LoggerFactory
 
@@ -11,7 +12,8 @@ class DelegatingPersistenceManager(
     override val type: DatabaseType,
     val contextHolder: TransactionContextHolder,
     val factory: PersistenceManagerFactory,
-    private val subtypeRegistry: SubtypeRegistry
+    private val subtypeRegistry: SubtypeRegistry,
+    override val collectionSortStrategy: CollectionSortStrategy,
 ) : PersistenceManager {
 
     private val logger = LoggerFactory.getLogger(DelegatingPersistenceManager::class.java)
@@ -46,7 +48,7 @@ class DelegatingPersistenceManager(
         } else {
             PersistenceManagerType.NON_TRANSACTIONAL
         }
-        logger.debug("Using persistence manager: $type")
+        logger.trace("Using persistence manager: $type")
         return factory.get(database, type)
     }
 

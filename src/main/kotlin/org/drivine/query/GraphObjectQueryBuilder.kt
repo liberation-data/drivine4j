@@ -3,6 +3,7 @@ package org.drivine.query
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.sort.CollectionSortEmitter
 
 /**
  * Base interface for building queries for graph objects (Fragments and Views).
@@ -60,13 +61,9 @@ interface GraphObjectQueryBuilder {
     val nodeAlias: String
 
     companion object {
-        /**
-         * Creates the appropriate query builder for a graph object class.
-         * Detects whether it's a GraphFragment or GraphView and returns the correct builder.
-         */
-        fun forClass(graphClass: Class<*>): GraphObjectQueryBuilder {
+        fun forClass(graphClass: Class<*>, sortEmitter: CollectionSortEmitter): GraphObjectQueryBuilder {
             return if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-                GraphViewQueryBuilder.forView(graphClass)
+                GraphViewQueryBuilder.forView(graphClass, sortEmitter)
             } else if (graphClass.isAnnotationPresent(NodeFragment::class.java)) {
                 FragmentQueryBuilder.forFragment(graphClass)
             } else {
@@ -74,11 +71,8 @@ interface GraphObjectQueryBuilder {
             }
         }
 
-        /**
-         * Creates the appropriate query builder for a graph object class using KClass.
-         */
-        fun forClass(graphClass: kotlin.reflect.KClass<*>): GraphObjectQueryBuilder {
-            return forClass(graphClass.java)
+        fun forClass(graphClass: kotlin.reflect.KClass<*>, sortEmitter: CollectionSortEmitter): GraphObjectQueryBuilder {
+            return forClass(graphClass.java, sortEmitter)
         }
     }
 }

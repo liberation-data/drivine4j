@@ -1,5 +1,6 @@
 package org.drivine.query
 
+import org.drivine.query.sort.ApocSortMapsEmitter
 import org.junit.jupiter.api.Test
 import sample.mapped.view.IssueWithSortedAssignees
 import sample.mapped.view.ParentViewWithNestedList
@@ -12,7 +13,7 @@ class GraphViewQueryBuilderTests {
 
     @Test
     fun `should generate query for RaisedAndAssignedIssue`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query:")
@@ -58,7 +59,7 @@ class GraphViewQueryBuilderTests {
 
     @Test
     fun `should generate query with WHERE clause`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
         val query = builder.buildQuery("issue.uuid = \$uuid")
 
         println("Generated query with WHERE:")
@@ -70,7 +71,7 @@ class GraphViewQueryBuilderTests {
 
     @Test
     fun `should handle collection relationships correctly`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         // assignedTo is a List, so it should use pattern comprehension without [0]
@@ -81,7 +82,7 @@ class GraphViewQueryBuilderTests {
 
     @Test
     fun `should handle single relationships correctly`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         // raisedBy is a single PersonContext, so it should use [0] to get first element
@@ -92,7 +93,7 @@ class GraphViewQueryBuilderTests {
 
     @Test
     fun `should recursively handle nested GraphViews`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for nested GraphView check:")
@@ -110,7 +111,7 @@ class GraphViewQueryBuilderTests {
         // This test prevents regression of the trailing comma bug that occurred when
         // getFragmentFields() returned an empty list instead of null, causing
         // joinToString() to produce "" and leaving trailing commas in the Cypher
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for trailing comma check:")
@@ -157,7 +158,7 @@ class GraphViewQueryBuilderTests {
         // has single relationships, those relationships were returned as arrays causing
         // deserialization errors like:
         // "Cannot deserialize value of type X from Array value (token JsonToken.START_ARRAY)"
-        val builder = GraphViewQueryBuilder.forView(ParentViewWithNestedList::class)
+        val builder = GraphViewQueryBuilder.forView(ParentViewWithNestedList::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for nested single relationship check:")
@@ -191,7 +192,7 @@ class GraphViewQueryBuilderTests {
         // Bug: When buildNestedViewProjection processes relationships, it used getFragmentFields()
         // which fails for GraphView targets, falling back to .* which doesn't include the
         // GraphView's @Root structure. This causes the @Root property to be null during deserialization.
-        val builder = GraphViewQueryBuilder.forView(TopLevelWithNestedGraphViews::class)
+        val builder = GraphViewQueryBuilder.forView(TopLevelWithNestedGraphViews::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for deeply nested GraphView check:")
@@ -234,7 +235,7 @@ class GraphViewQueryBuilderTests {
         //
         // The query uses the annotated property name (assignees), and the lazy
         // property (sortedAssignees) is ignored by Jackson via @get:JsonIgnore.
-        val builder = GraphViewQueryBuilder.forView(IssueWithSortedAssignees::class)
+        val builder = GraphViewQueryBuilder.forView(IssueWithSortedAssignees::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for lazy sorted property pattern:")
@@ -268,7 +269,7 @@ class GraphViewQueryBuilderTests {
     @Test
     fun `should wrap direct relationship collection with apoc sortMaps when sorted`() {
         // Test that sorting a direct collection relationship wraps with apoc.coll.sortMaps()
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
 
         val collectionSorts = listOf(
             org.drivine.query.dsl.CollectionSortSpec(
@@ -306,7 +307,7 @@ class GraphViewQueryBuilderTests {
     @Test
     fun `should wrap nested relationship collection with apoc sortMaps when sorted`() {
         // Test that sorting a nested collection relationship (raisedBy_worksFor) wraps correctly
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
 
         val collectionSorts = listOf(
             org.drivine.query.dsl.CollectionSortSpec(
@@ -345,7 +346,7 @@ class GraphViewQueryBuilderTests {
     @Test
     fun `should not wrap collection when no sort is specified`() {
         // Test that collections are NOT wrapped when there's no sort
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
 
         val query = builder.buildQuery(null, null, emptyList())
 
@@ -362,7 +363,7 @@ class GraphViewQueryBuilderTests {
     @Test
     fun `should keep root ORDER BY separate from collection sorts`() {
         // Test that root-level ORDER BY and collection sorts work together
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
 
         val collectionSorts = listOf(
             org.drivine.query.dsl.CollectionSortSpec(

@@ -1,6 +1,7 @@
 package org.drivine.connection
 
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.sort.CollectionSortStrategy
 
 interface ConnectionProvider {
     /**
@@ -18,6 +19,13 @@ interface ConnectionProvider {
      * Can be null if no subtypes are registered.
      */
     val subtypeRegistry: SubtypeRegistry?
+
+    /**
+     * Strategy for emitting Cypher that sorts relationship collections.
+     * Engine implementations pick a portable default; users may override.
+     */
+    val collectionSortStrategy: CollectionSortStrategy
+        get() = CollectionSortStrategy.CALL_SUBQUERY
 
     /**
      * Connect to the database and return the connection.

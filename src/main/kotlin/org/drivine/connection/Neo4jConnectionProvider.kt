@@ -2,6 +2,7 @@ package org.drivine.connection
 
 import org.drivine.mapper.Neo4jResultMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.sort.CollectionSortStrategy
 import org.neo4j.driver.AuthTokens
 import org.neo4j.driver.Config
 import org.neo4j.driver.Driver
@@ -20,7 +21,8 @@ class Neo4jConnectionProvider(
     private val database: String?,
     private val protocol: String = "bolt",
     private val config: Map<String, Any>,
-    override val subtypeRegistry: SubtypeRegistry? = null
+    override val subtypeRegistry: SubtypeRegistry? = null,
+    override val collectionSortStrategy: CollectionSortStrategy = CollectionSortStrategy.APOC_SORT_MAPS,
 ) : ConnectionProvider {
 
     private val driver: Driver = GraphDatabase.driver(

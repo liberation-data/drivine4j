@@ -1,5 +1,7 @@
 package org.drivine.connection
 
+import org.drivine.query.sort.CollectionSortStrategy
+
 data class ConnectionProperties(
     val type: DatabaseType,
     val host: String,
@@ -11,5 +13,6 @@ data class ConnectionProperties(
     val poolMax: Int? = null,
     val databaseName: String? = null,
     val defaultGraphPath: String? = null,
-    val protocol: String? = null
+    val protocol: String? = null,
+    val collectionSortStrategy: CollectionSortStrategy? = null,
 ) {}

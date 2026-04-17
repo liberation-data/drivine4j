@@ -1,5 +1,6 @@
 package org.drivine.query
 
+import org.drivine.query.sort.ApocSortMapsEmitter
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
@@ -22,7 +23,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should generate 3-level nested pattern comprehensions for LocationHierarchy`() {
-        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class)
+        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for LocationHierarchy (maxDepth=3):")
@@ -52,7 +53,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should have root fragment projected as nested object at each depth`() {
-        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class)
+        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         // Each depth level should have the root fragment as a nested object
@@ -67,7 +68,7 @@ class GraphViewQueryBuilderRecursiveTests {
     @Test
     fun `should generate exactly one level for maxDepth 1`() {
         // LocationHierarchyShallow has maxDepth=1
-        val builder = GraphViewQueryBuilder.forView(LocationHierarchyShallow::class)
+        val builder = GraphViewQueryBuilder.forView(LocationHierarchyShallow::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for LocationHierarchyShallow (maxDepth=1):")
@@ -85,7 +86,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should produce empty list for maxDepth 0`() {
-        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class)
+        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class, ApocSortMapsEmitter())
         val query = builder.buildQuery(null, null, emptyList(), mapOf("subLocations" to 0))
 
         println("Generated query with maxDepth=0 override:")
@@ -98,7 +99,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should override annotation maxDepth with query-time depth`() {
-        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class)
+        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class, ApocSortMapsEmitter())
         // Annotation says maxDepth=3, override to 2
         val query = builder.buildQuery(null, null, emptyList(), mapOf("subLocations" to 2))
 
@@ -113,7 +114,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should combine WHERE clause with recursive patterns`() {
-        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class)
+        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class, ApocSortMapsEmitter())
         val query = builder.buildQuery("location.type = \$type")
 
         println("Generated query with WHERE clause:")
@@ -126,7 +127,7 @@ class GraphViewQueryBuilderRecursiveTests {
     @Test
     fun `should handle recursive relationship with non-recursive siblings`() {
         // LocationWithLandmarks has both a recursive subLocations and a non-recursive landmarks
-        val builder = GraphViewQueryBuilder.forView(LocationWithLandmarks::class)
+        val builder = GraphViewQueryBuilder.forView(LocationWithLandmarks::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for LocationWithLandmarks:")
@@ -142,7 +143,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should not produce trailing commas in recursive projections`() {
-        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class)
+        val builder = GraphViewQueryBuilder.forView(LocationHierarchy::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         // Check for invalid trailing comma patterns
@@ -160,7 +161,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should detect chain cycle and terminate with default maxDepth`() {
-        val builder = GraphViewQueryBuilder.forView(PersonOrgView::class)
+        val builder = GraphViewQueryBuilder.forView(PersonOrgView::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         println("Generated query for chain cycle PersonOrgView → OrgPersonView → PersonOrgView:")
@@ -186,7 +187,7 @@ class GraphViewQueryBuilderRecursiveTests {
 
     @Test
     fun `should support chain cycle with depth override`() {
-        val builder = GraphViewQueryBuilder.forView(PersonOrgView::class)
+        val builder = GraphViewQueryBuilder.forView(PersonOrgView::class, ApocSortMapsEmitter())
         // Override the employees relationship to maxDepth=1 (single traversal)
         val query = builder.buildQuery(null, null, emptyList(), mapOf("employees" to 1))
 
@@ -204,7 +205,7 @@ class GraphViewQueryBuilderRecursiveTests {
     @Test
     fun `should not affect non-recursive views`() {
         // RaisedAndAssignedIssue is non-recursive, should work exactly as before
-        val builder = GraphViewQueryBuilder.forView(sample.mapped.view.RaisedAndAssignedIssue::class)
+        val builder = GraphViewQueryBuilder.forView(sample.mapped.view.RaisedAndAssignedIssue::class, ApocSortMapsEmitter())
         val query = builder.buildQuery()
 
         // Verify existing behavior is preserved

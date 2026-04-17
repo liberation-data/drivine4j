@@ -9,6 +9,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        collection-sort-strategy: [ APOC_SORT_MAPS, CALL_SUBQUERY ]
+      fail-fast: false
+
+    name: test (${{ matrix.collection-sort-strategy }})
 
     steps:
       - name: Checkout code
@@ -33,6 +39,8 @@ jobs:
 
       - name: Run tests
         run: ./gradlew test --no-daemon
+        env:
+          DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY: ${{ matrix.collection-sort-strategy }}
 
       # Debug: Check what test files exist
       - name: List test result files
@@ -52,7 +60,7 @@ jobs:
             **/build/test-results/test/*.xml
           detailed_summary: true
           include_passed: true
-          check_name: Test Results
+          check_name: Test Results (${{ matrix.collection-sort-strategy }})
           require_tests: false
           annotate_only: false
           fail_on_failure: false
@@ -62,7 +70,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-results
+          name: test-results-${{ matrix.collection-sort-strategy }}
           path: |
             **/build/test-results/test/
             **/build/reports/tests/test/
@@ -73,7 +81,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-report-html
+          name: test-report-html-${{ matrix.collection-sort-strategy }}
           path: '**/build/reports/tests/test/'
           retention-days: 30
 
@@ -87,7 +95,7 @@ jobs:
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: coverage-report
+          name: coverage-report-${{ matrix.collection-sort-strategy }}
           path: '**/build/reports/jacoco/test/'
           retention-days: 30
         continue-on-error: true

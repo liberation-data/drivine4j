@@ -2,6 +2,7 @@ package org.drivine.connection
 
 import org.drivine.DrivineException
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.sort.CollectionSortStrategy
 import org.slf4j.LoggerFactory
 
 class ConnectionProviderBuilder(
@@ -25,6 +26,8 @@ class ConnectionProviderBuilder(
     private var name: String? = null
     private var defaultGraphPath: String? = null
 
+    private var collectionSortStrategy: CollectionSortStrategy? = null
+
     fun withType(type: DatabaseType): ConnectionProviderBuilder {
         requireNotNull(type) { "Database type argument is required" }
         this.type = type
@@ -40,6 +43,10 @@ class ConnectionProviderBuilder(
     fun databaseName(name: String): ConnectionProviderBuilder = apply { this.name = name }
     fun defaultGraphPath(path: String): ConnectionProviderBuilder = apply { this.defaultGraphPath = path }
 
+    fun collectionSortStrategy(strategy: CollectionSortStrategy): ConnectionProviderBuilder = apply {
+        this.collectionSortStrategy = strategy
+    }
+
     fun withProperties(properties: ConnectionProperties): ConnectionProviderBuilder {
         properties.type.let { withType(it) }
         properties.userName?.let {userName(it) }
@@ -48,6 +55,7 @@ class ConnectionProviderBuilder(
         properties.port?.let { port(it) }
         properties.databaseName?.let { databaseName(it) }
         properties.protocol?.let { protocol(it) }
+        properties.collectionSortStrategy?.let { collectionSortStrategy(it) }
         return this
     }
 
@@ -98,14 +106,22 @@ class ConnectionProviderBuilder(
         }
 
         return Neo4jConnectionProvider(
-            name, type!!, host!!, resolvedPort, userName!!, password, this.name, protocol!!,
-            mapOf(
+            name = name,
+            type = type!!,
+            host = host!!,
+            port = resolvedPort,
+            user = userName!!,
+            password = password,
+            database = this.name,
+            protocol = protocol!!,
+            config = mapOf(
                 "connectionTimeout" to connectionTimeout,
                 "maxConnectionPoolSize" to poolMax
             )
                 .filterValues { it != null }
                 .mapValues { it.value as Any },
-            subtypeRegistry
+            subtypeRegistry = subtypeRegistry,
+            collectionSortStrategy = collectionSortStrategy ?: CollectionSortStrategy.APOC_SORT_MAPS,
         )
     }
 

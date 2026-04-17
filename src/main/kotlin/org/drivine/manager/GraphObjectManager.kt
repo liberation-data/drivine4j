@@ -14,6 +14,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
+import org.drivine.query.sort.CollectionSortEmitter
 import org.drivine.session.SessionManager
 
 /**
@@ -43,6 +44,9 @@ class GraphObjectManager(
     val database: String
         get() = persistenceManager.database
 
+    private val sortEmitter: CollectionSortEmitter =
+        persistenceManager.collectionSortStrategy.emitter()
+
     /**
      * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
      * Loaded objects are automatically added to the session for dirty tracking.
@@ -54,7 +58,7 @@ class GraphObjectManager(
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
         val query = builder.buildQuery()
 
         val results = persistenceManager.query(
@@ -93,7 +97,7 @@ class GraphObjectManager(
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
         val query = builder.buildQuery(whereClause, null)
 
         val results = persistenceManager.query(
@@ -223,7 +227,7 @@ class GraphObjectManager(
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
         val ctx = buildQueryContext(graphClass, querySpec)
 
         // Process ORDER BY clause - separate root orders from collection sorts
@@ -266,7 +270,7 @@ class GraphObjectManager(
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
         val whereClause = builder.buildIdWhereClause("id")
         val query = builder.buildQuery(whereClause)
 
@@ -374,7 +378,7 @@ class GraphObjectManager(
      * @return The number of nodes deleted (0 or 1)
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
-        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
         val idCondition = builder.buildIdWhereClause("id")
 
         val fullWhereClause = if (whereClause != null) {
@@ -424,7 +428,7 @@ class GraphObjectManager(
      * @return The number of nodes deleted
      */
     fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
-        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
         val query = builder.buildDeleteQuery(whereClause)
 
         return persistenceManager.getOne(
@@ -464,7 +468,7 @@ class GraphObjectManager(
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
         val ctx = buildQueryContext(graphClass, querySpec)
         val query = builder.buildDeleteQuery(ctx.whereClause)
 

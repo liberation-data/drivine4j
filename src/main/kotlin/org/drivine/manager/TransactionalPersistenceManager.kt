@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sort.CollectionSortStrategy
 import org.drivine.transaction.DrivineTransactionObject
 import org.drivine.transaction.TransactionContextHolder
 
@@ -12,7 +13,8 @@ class TransactionalPersistenceManager(
     private val contextHolder: TransactionContextHolder,
     override val database: String,
     override val type: DatabaseType,
-    private val subtypeRegistry: SubtypeRegistry
+    private val subtypeRegistry: SubtypeRegistry,
+    override val collectionSortStrategy: CollectionSortStrategy,
 ) : PersistenceManager {
 
     private val finderOperations: FinderOperations = FinderOperations(this)

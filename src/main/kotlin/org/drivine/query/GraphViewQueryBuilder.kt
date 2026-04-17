@@ -6,6 +6,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.sort.*
 
 /**
  * Builds Cypher queries for GraphView classes.
@@ -15,7 +16,10 @@ import org.drivine.query.dsl.CollectionSortSpec
  * depth. Chain cycles (A → B → C → A) are detected via a visit counter and terminated
  * based on the closing relationship's maxDepth.
  */
-class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObjectQueryBuilder {
+class GraphViewQueryBuilder(
+    private val viewModel: GraphViewModel,
+    private val sortEmitter: CollectionSortEmitter,
+) : GraphObjectQueryBuilder {
 
     override val nodeAlias: String = viewModel.rootFragment.fieldName
 
@@ -24,6 +28,12 @@ class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObject
      * Stored as instance variable to avoid threading through many method calls.
      */
     private var currentCollectionSorts: List<CollectionSortSpec> = emptyList()
+
+    /**
+     * Accumulated CALL { } prologs for the current query build (CALL_SUBQUERY strategy only).
+     * These are emitted between MATCH/WHERE and WITH.
+     */
+    private val currentPrologs: MutableList<String> = mutableListOf()
 
     /**
      * Current depth overrides for recursive relationships.
@@ -85,6 +95,13 @@ class GraphViewQueryBuilder(private val viewModel: GraphViewModel) : GraphObject
             withSections.add("    $comment\n    $projection")
         }
 
+        // Insert CALL { } prologs (if any) between MATCH/WHERE and WITH
+        val prologSection = if (currentPrologs.isNotEmpty()) {
+            "\n" + currentPrologs.joinToString("\n")
+        } else {
+            ""
+        }
+
         val withClause = "\n\nWITH\n" + withSections.joinToString(",\n\n")
 
         // Build the RETURN clause
@@ -108,7 +125,7 @@ ${returnFields.joinToString(",\n")}
             ""
         }
 
-        return matchClause + whereSection + withClause + returnClause + orderBySection
+        return matchClause + whereSection + prologSection + withClause + returnClause + orderBySection
     }
 
     /**
@@ -130,23 +147,15 @@ ${returnFields.joinToString(",\n")}
     ): String {
         // Store collection sorts for use in pattern generation methods
         currentCollectionSorts = collectionSorts
+        currentPrologs.clear()
         try {
             return buildQuery(whereClause, orderByClause)
         } finally {
-            // Clear to avoid affecting subsequent calls
             currentCollectionSorts = emptyList()
+            currentPrologs.clear()
         }
     }
 
-    /**
-     * Builds a Cypher query with collection sorts and depth overrides.
-     *
-     * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
-     * @param orderByClause Optional ORDER BY clause (without the ORDER BY keywords)
-     * @param collectionSorts List of collection sort specifications
-     * @param depthOverrides Map of relationship field names to depth overrides
-     * @return The generated Cypher query
-     */
     fun buildQuery(
         whereClause: String?,
         orderByClause: String?,
@@ -155,11 +164,13 @@ ${returnFields.joinToString(",\n")}
     ): String {
         currentCollectionSorts = collectionSorts
         currentDepthOverrides = depthOverrides
+        currentPrologs.clear()
         try {
             return buildQuery(whereClause, orderByClause)
         } finally {
             currentCollectionSorts = emptyList()
             currentDepthOverrides = emptyMap()
+            currentPrologs.clear()
         }
     }
 
@@ -184,27 +195,45 @@ ${returnFields.joinToString(",\n")}
     }
 
     /**
-     * Wraps a list comprehension with apoc.coll.sortMaps() if a sort is specified.
+     * Wraps a list comprehension with a sort expression if a sort is specified.
+     * Delegates to the configured [sortEmitter] for nested sorts (inline expression wraps).
      *
-     * Note: apoc.coll.sortMaps(list, prop) sorts in DESCENDING order by default.
-     * For ascending order, we wrap with the Cypher built-in reverse() function.
-     *
-     * @param listComprehension The Cypher list comprehension (e.g., "[(...) | ...]")
-     * @param sort The sort specification, or null if no sorting needed
-     * @return The original comprehension, or wrapped with apoc.coll.sortMaps()
+     * For top-level sorts with CALL_SUBQUERY strategy, use [emitTopLevelSort] instead —
+     * this method is only for nested/recursive sorts.
      */
-    private fun wrapWithSortIfNeeded(listComprehension: String, sort: CollectionSortSpec?): String {
+    private fun wrapWithNestedSortIfNeeded(listComprehension: String, sort: CollectionSortSpec?): String {
         if (sort == null) return listComprehension
+        return sortEmitter.emitNested(NestedSortContext(listComprehension, sort))
+    }
 
-        // apoc.coll.sortMaps sorts in DESCENDING order by default
-        val sortedExpr = "apoc.coll.sortMaps($listComprehension, '${sort.propertyName}')"
+    /**
+     * Emits a top-level sorted collection. For APOC, returns an inline-wrapped expression.
+     * For CALL, accumulates a prolog and returns the variable reference.
+     *
+     * @return The expression to use in the WITH clause (either the wrapped comprehension or a variable name)
+     */
+    private fun emitTopLevelSort(
+        rootFieldName: String,
+        rel: RelationshipModel,
+        targetAlias: String,
+        projection: String,
+        sort: CollectionSortSpec,
+    ): String {
+        val direction = buildDirectionString(rel)
+        val targetLabels = getLabelsForType(rel.elementType)
+        val targetLabelString = targetLabels.joinToString(":")
 
-        // For ascending order, reverse the descending result using Cypher's built-in reverse()
-        return if (sort.ascending) {
-            "reverse($sortedExpr)"
-        } else {
-            sortedExpr
-        }
+        val ctx = TopLevelSortContext(
+            rootAlias = rootFieldName,
+            direction = direction,
+            targetAlias = targetAlias,
+            targetLabelString = targetLabelString,
+            projection = projection,
+            sort = sort,
+        )
+        val emission = sortEmitter.emitTopLevel(ctx)
+        emission.prolog?.let { currentPrologs.add(it) }
+        return emission.projectionExpression
     }
 
     override fun buildIdWhereClause(idParamName: String): String {
@@ -379,13 +408,14 @@ ${returnFields.joinToString(",\n")}
         val projection = buildRelationshipProjection(targetAlias, rel.elementType, visitCounts)
 
         val pattern = if (rel.isCollection) {
-            // Collection: use pattern comprehension
-            val listComprehension = "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ]"
-            // Check if there's a sort for this collection
             val sort = findSortForRelationship(targetAlias)
-            "${wrapWithSortIfNeeded(listComprehension, sort)} AS $targetAlias"
+            if (sort != null) {
+                val expr = emitTopLevelSort(rootFieldName, rel, targetAlias, projection, sort)
+                "$expr AS $targetAlias"
+            } else {
+                "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ] AS $targetAlias"
+            }
         } else {
-            // Single: use [pattern][0] to get the first element
             "[($rootFieldName)${direction}($targetAlias:$targetLabelString) |\n        $projection\n    ][0] AS $targetAlias"
         }
 
@@ -494,7 +524,12 @@ ${returnFields.joinToString(",\n")}
 
         return if (rel.isCollection) {
             val sort = findSortForRelationship(targetAlias)
-            "${wrapWithSortIfNeeded(pattern, sort)} AS $targetAlias"
+            if (sort != null) {
+                val expr = emitTopLevelSort(rootFieldName, rel, targetAlias, pattern, sort)
+                "$expr AS $targetAlias"
+            } else {
+                "$pattern AS $targetAlias"
+            }
         } else {
             "$pattern[0] AS $targetAlias"
         }
@@ -680,7 +715,7 @@ ${returnFields.joinToString(",\n")}
             ]"""
                 // Check for nested sort (e.g., "raisedBy_worksFor" where varName is "raisedBy")
                 val sort = findSortForNestedRelationship(varName, nestedRel.fieldName)
-                val wrappedPattern = wrapWithSortIfNeeded(listComprehension, sort)
+                val wrappedPattern = wrapWithNestedSortIfNeeded(listComprehension, sort)
                 fields.add("\n            ${nestedRel.fieldName}: $wrappedPattern")
             } else {
                 // Single: use [0] suffix
@@ -774,19 +809,13 @@ ${returnFields.joinToString(",\n")}
     }
 
     companion object {
-        /**
-         * Creates a query builder for a GraphView class.
-         */
-        fun forView(viewClass: Class<*>): GraphViewQueryBuilder {
+        fun forView(viewClass: Class<*>, sortEmitter: CollectionSortEmitter): GraphViewQueryBuilder {
             val viewModel = GraphViewModel.from(viewClass)
-            return GraphViewQueryBuilder(viewModel)
+            return GraphViewQueryBuilder(viewModel, sortEmitter)
         }
 
-        /**
-         * Creates a query builder for a GraphView class using KClass.
-         */
-        fun forView(viewClass: kotlin.reflect.KClass<*>): GraphViewQueryBuilder {
-            return forView(viewClass.java)
+        fun forView(viewClass: kotlin.reflect.KClass<*>, sortEmitter: CollectionSortEmitter): GraphViewQueryBuilder {
+            return forView(viewClass.java, sortEmitter)
         }
     }
 }
