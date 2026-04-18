@@ -8,17 +8,16 @@ logging:
   level:
     org.drivine: DEBUG
 
-# Test configuration - set to true to use local Neo4j instead of Testcontainers
+# Test configuration - set to true to use local instance instead of Testcontainers
 test:
   neo4j:
-    use-local: false  # Change to 'true' to use your local Neo4j instance
+    use-local: false
 
-# Test datasource configuration
-# When use-local=true: these settings are used as-is
-# When use-local=false (default): host/port/password are overridden with Testcontainer values
+# Default datasource: Neo4j via Testcontainers
+# For FalkorDB: change type to FALKORDB, host/port to 6379, add database-name
 database:
   datasources:
-    neo:
+    graph:
       type: NEO4J
       host: localhost
       port: 7687

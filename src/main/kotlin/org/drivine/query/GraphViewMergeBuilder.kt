@@ -394,7 +394,7 @@ class GraphViewMergeBuilder(
                         MATCH (root)-[r:${relModel.type}]->(target)
                         DELETE r
                         WITH target
-                        WHERE NOT EXISTS((target)<-[]-()) AND NOT EXISTS((target)-[]-())
+                        WHERE NOT (target)<-[]-() AND NOT (target)-[]-()
                         DELETE target
                     """.trimIndent()
                 }
@@ -454,7 +454,7 @@ class GraphViewMergeBuilder(
             MATCH (root)-[r:$relType]->(target)
             DELETE r
             WITH target
-            WHERE NOT EXISTS((target)<-[]-()) AND NOT EXISTS((target)-[]-())
+            WHERE NOT (target)<-[]-() AND NOT (target)-[]-()
             DETACH DELETE target
         """.trimIndent()
     }

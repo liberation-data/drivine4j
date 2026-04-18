@@ -6,6 +6,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.grammar.*
 import org.drivine.query.sort.*
 
 /**
@@ -18,8 +19,10 @@ import org.drivine.query.sort.*
  */
 class GraphViewQueryBuilder(
     private val viewModel: GraphViewModel,
-    private val sortEmitter: CollectionSortEmitter,
+    private val grammar: CypherGrammar,
 ) : GraphObjectQueryBuilder {
+
+    private val sortEmitter: CollectionSortEmitter = grammar.collectionSortEmitter
 
     override val nodeAlias: String = viewModel.rootFragment.fieldName
 
@@ -30,10 +33,16 @@ class GraphViewQueryBuilder(
     private var currentCollectionSorts: List<CollectionSortSpec> = emptyList()
 
     /**
-     * Accumulated CALL { } prologs for the current query build (CALL_SUBQUERY strategy only).
-     * These are emitted between MATCH/WHERE and WITH.
+     * Accumulated CALL { } prologs for the current query build.
+     * Emitted between MATCH and WHERE.
      */
     private val currentPrologs: MutableList<String> = mutableListOf()
+
+    /**
+     * Bridge variables from filter prologs that need a WITH clause between CALL and WHERE.
+     * E.g. CALL { ... RETURN count(*) AS _ec0 } WITH rootAlias, _ec0 WHERE _ec0 > 0
+     */
+    private val currentBridgeVariables: MutableList<String> = mutableListOf()
 
     /**
      * Current depth overrides for recursive relationships.
@@ -95,9 +104,17 @@ class GraphViewQueryBuilder(
             withSections.add("    $comment\n    $projection")
         }
 
-        // Insert CALL { } prologs (if any) between MATCH/WHERE and WITH
+        // Insert CALL { } prologs between MATCH and WHERE.
+        // If bridge variables exist (from filtered existence checks on openCypher),
+        // emit a WITH clause to carry them into WHERE scope.
         val prologSection = if (currentPrologs.isNotEmpty()) {
-            "\n" + currentPrologs.joinToString("\n")
+            val prologs = "\n" + currentPrologs.joinToString("\n")
+            if (currentBridgeVariables.isNotEmpty()) {
+                val bridgeWith = "\nWITH $rootFieldName, ${currentBridgeVariables.joinToString(", ")}"
+                "$prologs$bridgeWith"
+            } else {
+                prologs
+            }
         } else {
             ""
         }
@@ -125,7 +142,7 @@ ${returnFields.joinToString(",\n")}
             ""
         }
 
-        return matchClause + whereSection + prologSection + withClause + returnClause + orderBySection
+        return matchClause + prologSection + whereSection + withClause + returnClause + orderBySection
     }
 
     /**
@@ -143,16 +160,21 @@ ${returnFields.joinToString(",\n")}
     override fun buildQuery(
         whereClause: String?,
         orderByClause: String?,
-        collectionSorts: List<CollectionSortSpec>
+        collectionSorts: List<CollectionSortSpec>,
+        externalPrologs: List<String>,
+        externalBridgeVars: List<String>,
     ): String {
-        // Store collection sorts for use in pattern generation methods
         currentCollectionSorts = collectionSorts
         currentPrologs.clear()
+        currentPrologs.addAll(externalPrologs)
+        currentBridgeVariables.clear()
+        currentBridgeVariables.addAll(externalBridgeVars)
         try {
             return buildQuery(whereClause, orderByClause)
         } finally {
             currentCollectionSorts = emptyList()
             currentPrologs.clear()
+            currentBridgeVariables.clear()
         }
     }
 
@@ -160,17 +182,23 @@ ${returnFields.joinToString(",\n")}
         whereClause: String?,
         orderByClause: String?,
         collectionSorts: List<CollectionSortSpec>,
-        depthOverrides: Map<String, Int>
+        depthOverrides: Map<String, Int>,
+        externalPrologs: List<String> = emptyList(),
+        externalBridgeVars: List<String> = emptyList(),
     ): String {
         currentCollectionSorts = collectionSorts
         currentDepthOverrides = depthOverrides
         currentPrologs.clear()
+        currentPrologs.addAll(externalPrologs)
+        currentBridgeVariables.clear()
+        currentBridgeVariables.addAll(externalBridgeVars)
         try {
             return buildQuery(whereClause, orderByClause)
         } finally {
             currentCollectionSorts = emptyList()
             currentDepthOverrides = emptyMap()
             currentPrologs.clear()
+            currentBridgeVariables.clear()
         }
     }
 
@@ -245,7 +273,7 @@ ${returnFields.joinToString(",\n")}
         return "$rootFieldName.$nodeIdField = \$$idParamName"
     }
 
-    override fun buildDeleteQuery(whereClause: String?): String {
+    override fun buildDeleteQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String {
         val rootFragmentModel = viewModel.rootFragment
         val rootFieldName = rootFragmentModel.fieldName
 
@@ -257,6 +285,17 @@ ${returnFields.joinToString(",\n")}
         val labelString = fragmentLabels.joinToString(":")
         val matchClause = "MATCH ($rootFieldName:$labelString)"
 
+        val prologSection = if (prologs.isNotEmpty()) {
+            val prologBlock = "\n" + prologs.joinToString("\n")
+            if (bridgeVariables.isNotEmpty()) {
+                "$prologBlock\nWITH $rootFieldName, ${bridgeVariables.joinToString(", ")}"
+            } else {
+                prologBlock
+            }
+        } else {
+            ""
+        }
+
         val whereSection = if (whereClause != null) {
             "\nWHERE $whereClause"
         } else {
@@ -264,7 +303,7 @@ ${returnFields.joinToString(",\n")}
         }
 
         return """
-            |$matchClause$whereSection
+            |$matchClause$prologSection$whereSection
             |DETACH DELETE $rootFieldName
             |RETURN count(*) AS deleted
         """.trimMargin()
@@ -404,6 +443,17 @@ ${returnFields.joinToString(",\n")}
             }
         }
 
+        // Delegate nested GraphView projection to the grammar's projector
+        if (isGraphView) {
+            val projectorResult = tryNestedViewProjector(rootFieldName, rel, targetAlias, direction, targetLabelString)
+            if (projectorResult != null) {
+                projectorResult.prolog?.let { currentPrologs.add(it) }
+                currentBridgeVariables.addAll(projectorResult.bridgeVariables)
+                return projectorResult.expression
+            }
+            // If projector returns null (InlineNestedViewProjector), fall through to inline logic
+        }
+
         // Build the projection for this relationship
         val projection = buildRelationshipProjection(targetAlias, rel.elementType, visitCounts)
 
@@ -420,6 +470,53 @@ ${returnFields.joinToString(",\n")}
         }
 
         return pattern
+    }
+
+    /**
+     * Tries the grammar's nested view projector. Returns null if the projector
+     * signals inline mode (Neo4j), otherwise returns the projection result.
+     */
+    private fun tryNestedViewProjector(
+        rootFieldName: String,
+        rel: RelationshipModel,
+        targetAlias: String,
+        direction: String,
+        targetLabelString: String,
+    ): NestedViewProjection? {
+        val nestedViewModel = GraphViewModel.from(rel.elementType)
+
+        val ctx = NestedViewContext(
+            rootFieldName = rootFieldName,
+            rel = rel,
+            targetAlias = targetAlias,
+            direction = direction,
+            targetLabelString = targetLabelString,
+            nestedViewModel = nestedViewModel,
+            rootFragmentFields = getFragmentFields(nestedViewModel.rootFragment.fragmentType),
+            rootFragmentFieldName = nestedViewModel.rootFragment.fieldName,
+            nestedRelationships = nestedViewModel.relationships.map { nestedRel ->
+                val nestedAlias = nestedRel.deriveTargetAlias()
+                val nestedLabels = getLabelsForType(nestedRel.elementType)
+                val nestedFields = getFragmentFields(nestedRel.elementType)
+                val projection = if (nestedFields == null) {
+                    "$nestedAlias { .*, labels: labels($nestedAlias) }"
+                } else {
+                    val fieldMappings = nestedFields.joinToString(", ") { "$it: $nestedAlias.$it" }
+                    "$nestedAlias { $fieldMappings, labels: labels($nestedAlias) }"
+                }
+                NestedRelInfo(
+                    fieldName = nestedRel.fieldName,
+                    alias = nestedAlias,
+                    direction = buildDirectionString(nestedRel),
+                    labelString = nestedLabels.joinToString(":"),
+                    projection = projection,
+                    isCollection = nestedRel.isCollection,
+                )
+            }
+        )
+
+        val result = grammar.nestedViewProjector.project(ctx)
+        return if (result.expression == InlineNestedViewProjector.INLINE_MARKER) null else result
     }
 
     /**
@@ -750,7 +847,7 @@ ${returnFields.joinToString(",\n")}
                 val targetLabels = getLabelsForType(targetType)
                 val targetLabelString = targetLabels.joinToString(":")
 
-                "EXISTS { ($rootFieldName)${direction}(_:$targetLabelString) }"
+                grammar.existenceCheck(rootFieldName, direction, targetLabelString)
             }
     }
 
@@ -809,13 +906,13 @@ ${returnFields.joinToString(",\n")}
     }
 
     companion object {
-        fun forView(viewClass: Class<*>, sortEmitter: CollectionSortEmitter): GraphViewQueryBuilder {
+        fun forView(viewClass: Class<*>, grammar: CypherGrammar): GraphViewQueryBuilder {
             val viewModel = GraphViewModel.from(viewClass)
-            return GraphViewQueryBuilder(viewModel, sortEmitter)
+            return GraphViewQueryBuilder(viewModel, grammar)
         }
 
-        fun forView(viewClass: kotlin.reflect.KClass<*>, sortEmitter: CollectionSortEmitter): GraphViewQueryBuilder {
-            return forView(viewClass.java, sortEmitter)
+        fun forView(viewClass: kotlin.reflect.KClass<*>, grammar: CypherGrammar): GraphViewQueryBuilder {
+            return forView(viewClass.java, grammar)
         }
     }
 }

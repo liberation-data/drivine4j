@@ -1,6 +1,6 @@
 package org.drivine.model
 
-import org.drivine.query.sort.ApocSortMapsEmitter
+import org.drivine.query.grammar.CypherDialect
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
@@ -97,7 +97,7 @@ class InterfaceNodeFragmentTests {
         // This is the key test - can we generate a query when the relationship
         // target is an interface type?
 
-        val builder = GraphViewQueryBuilder.forView(ThreadTimeline::class, ApocSortMapsEmitter())
+        val builder = GraphViewQueryBuilder.forView(ThreadTimeline::class, CypherDialect.NEO4J_5.grammar())
         val query = builder.buildQuery()
 
         println("Generated query for ThreadTimeline:")

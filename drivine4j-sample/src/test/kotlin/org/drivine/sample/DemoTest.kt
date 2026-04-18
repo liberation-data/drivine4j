@@ -1,5 +1,7 @@
 package org.drivine.sample
 
+import org.drivine.connection.DatabaseType
+import org.drivine.test.TestCleanup
 import org.drivine.manager.CascadeType
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
@@ -8,6 +10,7 @@ import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.sample.fragment.*
 import org.drivine.sample.view.*
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -46,10 +49,7 @@ class DemoTest @Autowired constructor(
 
     @BeforeEach
     fun setupTestData() {
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement("MATCH (n) WHERE n.createdBy = 'demo-test' DETACH DELETE n")
-        )
+        TestCleanup.beforeEach(persistenceManager, "demo-test")
 
         acmeCorpId = UUID.randomUUID()
         startupIncId = UUID.randomUUID()
@@ -316,12 +316,17 @@ class DemoTest @Autowired constructor(
         assertNotNull(startupStillExists)
     }
 
+    // TODO: Restore when FalkorDB fixes DELETE visibility in same query (FalkorDB/FalkorDB#1890)
     @Test
     fun `demo - CASCADE DELETE_ORPHAN - removes only orphaned nodes`() {
+        Assumptions.assumeTrue(
+            persistenceManager.type != DatabaseType.FALKORDB,
+            "CASCADE DELETE_ORPHAN not supported on FalkorDB (FalkorDB/FalkorDB#1890)"
+        )
+
         val aliceId = UUID.randomUUID()
         val soloOrgId = UUID.randomUUID()
 
-        // Create a person with exclusive relationship to an org (no one else works there)
         persistenceManager.execute(
             QuerySpecification.withStatement(
                 """
@@ -344,20 +349,67 @@ class DemoTest @Autowired constructor(
             )
         )
 
-        // Load and remove the relationship
         val career = graphObjectManager.load(aliceId.toString(), PersonCareer::class.java)!!
         val updated = career.copy(employmentHistory = emptyList())
-
-        // Save with DELETE_ORPHAN - deletes org since no other relationships exist
         graphObjectManager.save(updated, CascadeType.DELETE_ORPHAN)
 
-        // Solo Org is GONE (was orphaned)
         val orgExists = graphObjectManager.load(soloOrgId.toString(), Organization::class.java)
         assertNull(orgExists)
 
-        // But Acme Corp STILL EXISTS (Alice and Bob both reference it)
         val acmeExists = graphObjectManager.load(acmeCorpId.toString(), Organization::class.java)
         assertNotNull(acmeExists)
+    }
+
+    /**
+     * Canary test: verifies FalkorDB still has the DELETE visibility bug (FalkorDB/FalkorDB#1890).
+     * When this test FAILS, FalkorDB has fixed the bug — remove this canary and
+     * re-enable CASCADE DELETE_ORPHAN support in OpenCypherGrammar.supportsOrphanDelete.
+     */
+    @Test
+    fun `canary - FalkorDB 1890 - DELETE not visible to subsequent WHERE pattern predicate`() {
+        Assumptions.assumeTrue(
+            persistenceManager.type == DatabaseType.FALKORDB,
+            "Canary only runs on FalkorDB"
+        )
+
+        // Setup: A -[:R]-> B (B's only relationship)
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                """
+                CREATE (:CanaryA {id: 'canary-1890', createdBy: 'demo-test'})
+                    -[:CANARY_REL]->
+                    (:CanaryB {id: 'canary-1890', createdBy: 'demo-test'})
+                """.trimIndent()
+            )
+        )
+
+        // Attempt the pattern that fails: delete rel, then check orphan in same query
+        persistenceManager.execute(
+            QuerySpecification.withStatement(
+                """
+                MATCH (a:CanaryA {id: 'canary-1890'})-[r:CANARY_REL]->(b:CanaryB)
+                DELETE r
+                WITH b
+                WHERE NOT (b)<-[]-() AND NOT (b)-[]-()
+                DELETE b
+                """.trimIndent()
+            )
+        )
+
+        // If FalkorDB STILL has the bug, B survives (delete didn't persist)
+        val bSurvived = persistenceManager.query(
+            QuerySpecification
+                .withStatement("MATCH (b:CanaryB {id: 'canary-1890'}) RETURN b.id")
+                .transform(String::class.java)
+        )
+
+        // This assertion will FAIL when FalkorDB fixes the bug — that's the signal
+        assertTrue(bSurvived.isNotEmpty(), """
+            FalkorDB/FalkorDB#1890 appears to be FIXED!
+            The canary node was correctly deleted, meaning DELETE is now visible
+            to subsequent WHERE pattern predicates in the same query.
+            ACTION: Remove this canary test and set OpenCypherGrammar.supportsOrphanDelete = true.
+        """.trimIndent())
     }
 
     @Test

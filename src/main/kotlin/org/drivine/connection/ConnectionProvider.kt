@@ -1,39 +1,28 @@
 package org.drivine.connection
 
 import org.drivine.mapper.SubtypeRegistry
-import org.drivine.query.sort.CollectionSortStrategy
+import org.drivine.query.grammar.CypherDialect
+import org.drivine.query.grammar.CypherGrammar
 
 interface ConnectionProvider {
-    /**
-     * Name of the database for which connections will be provided.
-     */
     val name: String
-
-    /**
-     * Type of database for which connections will be provided.
-     */
     val type: DatabaseType
-
-    /**
-     * SubtypeRegistry for polymorphic deserialization.
-     * Can be null if no subtypes are registered.
-     */
     val subtypeRegistry: SubtypeRegistry?
 
     /**
-     * Strategy for emitting Cypher that sorts relationship collections.
-     * Engine implementations pick a portable default; users may override.
+     * Cypher dialect for this engine. Controls query syntax generation
+     * (existence checks, collection sort emission, etc.).
      */
-    val collectionSortStrategy: CollectionSortStrategy
-        get() = CollectionSortStrategy.CALL_SUBQUERY
+    val cypherDialect: CypherDialect
+        get() = CypherDialect.OPEN_CYPHER
 
     /**
-     * Connect to the database and return the connection.
+     * Resolved grammar from the dialect. Override to customize the sort emitter
+     * while keeping other dialect behaviors.
      */
+    val grammar: CypherGrammar
+        get() = cypherDialect.grammar()
+
     fun connect(): Connection
-
-    /**
-     * End the connection and perform cleanup.
-     */
     fun end()
 }

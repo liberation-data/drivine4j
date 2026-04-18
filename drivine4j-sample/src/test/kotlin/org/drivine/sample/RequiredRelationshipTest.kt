@@ -4,6 +4,7 @@ import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.query
+import org.drivine.test.TestCleanup
 import org.drivine.sample.view.*
 import org.drivine.sample.view.loadAll
 import org.junit.jupiter.api.BeforeEach
@@ -43,10 +44,7 @@ class RequiredRelationshipTest @Autowired constructor(
     @BeforeEach
     fun setupTestData() {
         // Clean up previous test data
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement("MATCH (n) WHERE n.testMarker = 'required-rel-test' DETACH DELETE n")
-        )
+        TestCleanup.beforeEach(persistenceManager, "testMarker", "required-rel-test")
 
         guideWithWebUser = UUID.randomUUID()
         guideWithAnonymous = UUID.randomUUID()

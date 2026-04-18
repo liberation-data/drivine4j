@@ -3,6 +3,7 @@ package org.drivine.sample
 import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.drivine.test.TestCleanup
 import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.sample.view.*
@@ -33,10 +34,7 @@ class GeneratedDslTest @Autowired constructor(
 
     @BeforeEach
     fun setupTestData() {
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement("MATCH (n) WHERE n.createdBy = 'dsl-test' DETACH DELETE n")
-        )
+        TestCleanup.beforeEach(persistenceManager, "dsl-test")
 
         val issueUuid = UUID.randomUUID()
         val personUuid = UUID.randomUUID()

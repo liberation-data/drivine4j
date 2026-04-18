@@ -2,14 +2,13 @@
 # This configuration is used by @EnableDrivineTestConfig
 
 database:
-  datasources:
-    neo:
-      host: localhost
-      port: 7687
-      username: neo4j
-      password: brahmsian
-      type: NEO4J
-      database-name: neo4j
+  database:
+    datasources:
+      graph:
+        type: FALKORDB
+        host: localhost
+        port: 6379
+        database-name: testgraph
 
 # The @EnableDrivineTestConfig annotation will:
 # - Use these settings as-is when USE_LOCAL_NEO4J=true

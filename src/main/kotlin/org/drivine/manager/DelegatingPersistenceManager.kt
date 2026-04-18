@@ -3,7 +3,7 @@ package org.drivine.manager
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
-import org.drivine.query.sort.CollectionSortStrategy
+import org.drivine.query.grammar.CypherGrammar
 import org.drivine.transaction.TransactionContextHolder
 import org.slf4j.LoggerFactory
 
@@ -13,7 +13,7 @@ class DelegatingPersistenceManager(
     val contextHolder: TransactionContextHolder,
     val factory: PersistenceManagerFactory,
     private val subtypeRegistry: SubtypeRegistry,
-    override val collectionSortStrategy: CollectionSortStrategy,
+    override val grammar: CypherGrammar,
 ) : PersistenceManager {
 
     private val logger = LoggerFactory.getLogger(DelegatingPersistenceManager::class.java)

@@ -1,6 +1,10 @@
 package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
+import org.drivine.query.grammar.CypherGrammar
+import org.drivine.query.grammar.Neo4j5Grammar
+import org.drivine.query.grammar.OpenCypherGrammar
+import org.drivine.query.sort.ApocSortMapsEmitter
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -17,16 +21,21 @@ object CypherGenerator {
      * @param viewModel Optional GraphViewModel for relationship metadata (needed for relationship filtering)
      * @return Cypher WHERE clause (without the WHERE keyword)
      */
-    fun buildWhereClause(conditions: List<WhereCondition>, viewModel: GraphViewModel? = null): String {
-        // Group property conditions by alias to detect relationship filters
+    fun buildWhereClause(
+        conditions: List<WhereCondition>,
+        viewModel: GraphViewModel? = null,
+        grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter())
+    ): WhereClauseResult {
         val grouped = groupConditionsByAlias(conditions, viewModel)
+        val prologs = mutableListOf<String>()
+        val bridgeVars = mutableListOf<String>()
+        val ecCounter = AtomicInteger(0)
 
         var paramIndex = 0
-        return grouped.joinToString(" AND ") { condition ->
+        val whereClause = grouped.joinToString(" AND ") { condition ->
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
                     val result = buildPropertyCondition(condition, paramIndex)
-                    // Only increment if this operator uses a parameter
                     if (condition.operator != ComparisonOperator.IS_NULL &&
                         condition.operator != ComparisonOperator.IS_NOT_NULL) {
                         paramIndex++
@@ -34,21 +43,26 @@ object CypherGenerator {
                     result
                 }
                 is WhereCondition.RelationshipCondition -> {
-                    val result = buildRelationshipCondition(condition, viewModel, paramIndex)
+                    val result = buildRelationshipCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
                     paramIndex += condition.targetConditions.size
                     result
                 }
                 is WhereCondition.LabelCondition -> {
-                    // Label conditions don't use parameters
                     buildLabelCondition(condition)
                 }
                 is WhereCondition.OrCondition -> {
-                    val result = buildOrCondition(condition, viewModel, paramIndex)
+                    val result = buildOrCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
                     paramIndex += countParameters(condition.conditions)
                     result
                 }
             }
         }
+
+        return WhereClauseResult(
+            whereClause = whereClause.ifEmpty { null },
+            prologs = prologs,
+            bridgeVariables = bridgeVars,
+        )
     }
 
     /**
@@ -286,7 +300,11 @@ object CypherGenerator {
     private fun buildRelationshipCondition(
         condition: WhereCondition.RelationshipCondition,
         viewModel: GraphViewModel?,
-        startIndex: Int
+        startIndex: Int,
+        grammar: CypherGrammar,
+        ecCounter: AtomicInteger = AtomicInteger(0),
+        prologs: MutableList<String> = mutableListOf(),
+        bridgeVars: MutableList<String> = mutableListOf(),
     ): String {
         requireNotNull(viewModel) {
             "GraphViewModel is required for relationship filtering. " +
@@ -334,7 +352,7 @@ object CypherGenerator {
                         buildLabelCondition(targetCondition)
                     }
                     is WhereCondition.OrCondition -> {
-                        val result = buildOrCondition(targetCondition, viewModel, paramIndex)
+                        val result = buildOrCondition(targetCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
                         paramIndex += countParameters(targetCondition.conditions)
                         result
                     }
@@ -345,26 +363,73 @@ object CypherGenerator {
             ""
         }
 
-        // Build nested EXISTS patterns for nested relationships
-        val nestedPatterns = if (nestedConditions.isNotEmpty()) {
-            // Check if the target is a @GraphView
+        // Build nested relationship conditions
+        // For openCypher: flatten into compound MATCH pattern (no nested EXISTS)
+        // For Neo4j: nest EXISTS { } inside EXISTS { }
+        val nestedWhere = if (nestedConditions.isNotEmpty()) {
             val targetViewModel = try {
                 GraphViewModel.from(relationship.elementType)
             } catch (e: Exception) {
-                null  // Not a GraphView, can't have nested relationships
+                null
             }
 
             if (targetViewModel != null) {
                 var paramIndex = startIndex + directConditions.size
-                nestedConditions.entries.joinToString(" AND ") { (nestedRelName, nestedConds) ->
-                    buildNestedRelationshipCondition(
-                        parentAlias = targetAlias,
-                        nestedRelationshipName = nestedRelName,
-                        conditions = nestedConds,
-                        targetViewModel = targetViewModel,
-                        startIndex = paramIndex
-                    ).also {
-                        paramIndex += nestedConds.size
+
+                if (grammar is OpenCypherGrammar) {
+                    // Flatten: extend the relationship pattern with nested hops
+                    // and add all conditions to a single WHERE
+                    val compoundParts = mutableListOf<String>()
+                    val nestedWhereClauses = mutableListOf<String>()
+
+                    nestedConditions.entries.forEach { (nestedRelName, nestedConds) ->
+                        val nestedRel = targetViewModel.relationships.find { it.fieldName == nestedRelName }
+                            ?: throw IllegalArgumentException("Nested relationship '$nestedRelName' not found")
+
+                        val nestedAlias = "${targetAlias}_${nestedRelName}"
+                        val nestedDirection = when (nestedRel.direction) {
+                            org.drivine.annotation.Direction.OUTGOING -> "-[:${nestedRel.type}]->"
+                            org.drivine.annotation.Direction.INCOMING -> "<-[:${nestedRel.type}]-"
+                            org.drivine.annotation.Direction.UNDIRECTED -> "-[:${nestedRel.type}]-"
+                        }
+                        compoundParts.add("${nestedDirection}($nestedAlias)")
+
+                        nestedConds.forEach { cond ->
+                            nestedWhereClauses.add(buildPropertyCondition(cond, paramIndex))
+                            paramIndex++
+                        }
+                    }
+
+                    // Build compound pattern: (rootAlias)-[:REL]->(target)-[:NESTED_REL]->(nestedTarget)
+                    val compoundPattern = relationshipPattern + compoundParts.joinToString("")
+                    val allConditions = mutableListOf<String>()
+                    if (directWhere.isNotEmpty()) allConditions.add(directWhere.removePrefix(" WHERE "))
+                    allConditions.addAll(nestedWhereClauses)
+
+                    val result = grammar.filteredExistenceCheck(
+                        compoundPattern,
+                        allConditions.joinToString(" AND "),
+                        ecCounter.getAndIncrement()
+                    )
+                    result.prolog?.let { prologs.add(it) }
+                    bridgeVars.addAll(result.bridgeVariables)
+                    return result.inlineCondition
+                } else {
+                    // Neo4j: use nested EXISTS { } (original behavior)
+                    nestedConditions.entries.joinToString(" AND ") { (nestedRelName, nestedConds) ->
+                        buildNestedRelationshipCondition(
+                            parentAlias = targetAlias,
+                            nestedRelationshipName = nestedRelName,
+                            conditions = nestedConds,
+                            targetViewModel = targetViewModel,
+                            startIndex = paramIndex,
+                            grammar = grammar,
+                            ecCounter = ecCounter,
+                            prologs = prologs,
+                            bridgeVars = bridgeVars,
+                        ).also {
+                            paramIndex += nestedConds.size
+                        }
                     }
                 }
             } else {
@@ -377,16 +442,31 @@ object CypherGenerator {
             ""
         }
 
-        // Combine direct and nested WHERE clauses
+        // Combine direct and nested WHERE clauses (Neo4j path only — openCypher returns early above)
         val combinedWhere = when {
-            directWhere.isNotEmpty() && nestedPatterns.isNotEmpty() -> "$directWhere AND $nestedPatterns"
+            directWhere.isNotEmpty() && nestedWhere.isNotEmpty() -> "$directWhere AND $nestedWhere"
             directWhere.isNotEmpty() -> directWhere
-            nestedPatterns.isNotEmpty() -> " WHERE $nestedPatterns"
+            nestedWhere.isNotEmpty() -> " WHERE $nestedWhere"
             else -> ""
         }
 
-        // Neo4j 5+ uses EXISTS { pattern WHERE conditions }
-        return "EXISTS { $relationshipPattern$combinedWhere }"
+        if (combinedWhere.isNotEmpty()) {
+            val result = grammar.filteredExistenceCheck(
+                relationshipPattern,
+                combinedWhere.removePrefix(" WHERE "),
+                ecCounter.getAndIncrement()
+            )
+            result.prolog?.let { prologs.add(it) }
+            bridgeVars.addAll(result.bridgeVariables)
+            return result.inlineCondition
+        } else {
+            val direction = when (relationship.direction) {
+                org.drivine.annotation.Direction.OUTGOING -> "-[:${relationship.type}]->"
+                org.drivine.annotation.Direction.INCOMING -> "<-[:${relationship.type}]-"
+                org.drivine.annotation.Direction.UNDIRECTED -> "-[:${relationship.type}]-"
+            }
+            return grammar.existenceCheck(rootAlias, direction, "")
+        }
     }
 
     /**
@@ -440,7 +520,11 @@ object CypherGenerator {
         nestedRelationshipName: String,
         conditions: List<WhereCondition.PropertyCondition>,
         targetViewModel: GraphViewModel,
-        startIndex: Int
+        startIndex: Int,
+        grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter()),
+        ecCounter: AtomicInteger = AtomicInteger(0),
+        prologs: MutableList<String> = mutableListOf(),
+        bridgeVars: MutableList<String> = mutableListOf(),
     ): String {
         // Find the nested relationship in the target view model
         val nestedRel = targetViewModel.relationships.find { it.fieldName == nestedRelationshipName }
@@ -465,7 +549,10 @@ object CypherGenerator {
             }
         }
 
-        return "EXISTS { $relationshipPattern WHERE $whereClauses }"
+        val result = grammar.filteredExistenceCheck(relationshipPattern, whereClauses, ecCounter.getAndIncrement())
+        result.prolog?.let { prologs.add(it) }
+        bridgeVars.addAll(result.bridgeVariables)
+        return result.inlineCondition
     }
 
     /**
@@ -477,7 +564,11 @@ object CypherGenerator {
     private fun buildOrCondition(
         condition: WhereCondition.OrCondition,
         viewModel: GraphViewModel?,
-        startIndex: Int
+        startIndex: Int,
+        grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter()),
+        ecCounter: AtomicInteger = AtomicInteger(0),
+        prologs: MutableList<String> = mutableListOf(),
+        bridgeVars: MutableList<String> = mutableListOf(),
     ): String {
         // First, group PropertyConditions that refer to relationships
         // But keep them separate - each OR branch gets its own EXISTS
@@ -497,37 +588,33 @@ object CypherGenerator {
                             relationshipName = baseAlias,
                             targetConditions = listOf(subCondition)
                         )
-                        val result = buildRelationshipCondition(relCondition, viewModel, paramIndex)
+                        val result = buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
                         paramIndex++
                         result
                     } else {
-                        // Root property
                         val result = buildPropertyCondition(subCondition, paramIndex)
                         paramIndex++
                         result
                     }
                 }
                 is WhereCondition.RelationshipCondition -> {
-                    val result = buildRelationshipCondition(subCondition, viewModel, paramIndex)
+                    val result = buildRelationshipCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
                     paramIndex += subCondition.targetConditions.size
                     result
                 }
                 is WhereCondition.LabelCondition -> {
-                    // Label conditions don't use parameters
-                    // But if it's for a relationship target, wrap in EXISTS
                     if (subCondition.alias in relationshipNames) {
                         val relCondition = WhereCondition.RelationshipCondition(
                             relationshipName = subCondition.alias,
                             targetConditions = listOf(subCondition)
                         )
-                        buildRelationshipCondition(relCondition, viewModel, paramIndex)
+                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
                     } else {
                         buildLabelCondition(subCondition)
                     }
                 }
                 is WhereCondition.OrCondition -> {
-                    // Nested OR: recursively build it
-                    val result = buildOrCondition(subCondition, viewModel, paramIndex)
+                    val result = buildOrCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
                     paramIndex += countParameters(subCondition.conditions)
                     result
                 }

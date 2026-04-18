@@ -14,7 +14,6 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
-import org.drivine.query.sort.CollectionSortEmitter
 import org.drivine.session.SessionManager
 
 /**
@@ -23,7 +22,9 @@ import org.drivine.session.SessionManager
 private data class QueryContext(
     val viewModel: GraphViewModel?,
     val whereClause: String?,
-    val bindings: Map<String, Any?>
+    val bindings: Map<String, Any?>,
+    val prologs: List<String> = emptyList(),
+    val bridgeVariables: List<String> = emptyList(),
 )
 
 /**
@@ -44,8 +45,7 @@ class GraphObjectManager(
     val database: String
         get() = persistenceManager.database
 
-    private val sortEmitter: CollectionSortEmitter =
-        persistenceManager.collectionSortStrategy.emitter()
+    private val grammar = persistenceManager.grammar
 
     /**
      * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
@@ -58,7 +58,7 @@ class GraphObjectManager(
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val query = builder.buildQuery()
 
         val results = persistenceManager.query(
@@ -97,7 +97,7 @@ class GraphObjectManager(
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val query = builder.buildQuery(whereClause, null)
 
         val results = persistenceManager.query(
@@ -227,7 +227,7 @@ class GraphObjectManager(
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val ctx = buildQueryContext(graphClass, querySpec)
 
         // Process ORDER BY clause - separate root orders from collection sorts
@@ -238,11 +238,10 @@ class GraphObjectManager(
             OrderClauseResult(null, emptyList())
         }
 
-        // Build the complete query with collection sorts and depth overrides
         val query = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides)
+            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
         } else {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts)
+            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
         }
 
         val results = persistenceManager.query(
@@ -270,7 +269,7 @@ class GraphObjectManager(
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val whereClause = builder.buildIdWhereClause("id")
         val query = builder.buildQuery(whereClause)
 
@@ -302,13 +301,17 @@ class GraphObjectManager(
             null
         }
 
-        val whereClause = if (querySpec.conditions.isNotEmpty()) {
-            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel)
+        val whereResult = if (querySpec.conditions.isNotEmpty()) {
+            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar)
         } else null
 
         val bindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
 
-        return QueryContext(viewModel, whereClause, bindings)
+        return QueryContext(
+            viewModel, whereResult?.whereClause, bindings,
+            whereResult?.prologs ?: emptyList(),
+            whereResult?.bridgeVariables ?: emptyList()
+        )
     }
 
     /**
@@ -378,7 +381,7 @@ class GraphObjectManager(
      * @return The number of nodes deleted (0 or 1)
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val idCondition = builder.buildIdWhereClause("id")
 
         val fullWhereClause = if (whereClause != null) {
@@ -428,7 +431,7 @@ class GraphObjectManager(
      * @return The number of nodes deleted
      */
     fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val query = builder.buildDeleteQuery(whereClause)
 
         return persistenceManager.getOne(
@@ -468,9 +471,9 @@ class GraphObjectManager(
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, sortEmitter)
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val ctx = buildQueryContext(graphClass, querySpec)
-        val query = builder.buildDeleteQuery(ctx.whereClause)
+        val query = builder.buildDeleteQuery(ctx.whereClause, ctx.prologs, ctx.bridgeVariables)
 
         return persistenceManager.getOne(
             QuerySpecification
@@ -499,9 +502,9 @@ class GraphObjectManager(
      * @return The saved object
      */
     fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE): T {
+        validateCascadeSupport(cascade)
         val graphClass = obj.javaClass
 
-        // Build merge statements using polymorphic builder
         val mergeBuilder = GraphObjectMergeBuilder.forClass(
             graphClass,
             objectMapper,
@@ -522,5 +525,16 @@ class GraphObjectManager(
         snapshotResults(graphClass, listOf(obj))
 
         return obj
+    }
+
+    private fun validateCascadeSupport(cascade: CascadeType) {
+        if (cascade == CascadeType.DELETE_ORPHAN && !grammar.supportsOrphanDelete) {
+            throw UnsupportedOperationException(
+                "CASCADE DELETE_ORPHAN is not supported on this database. " +
+                "FalkorDB does not correctly handle DELETE followed by a pattern " +
+                "predicate in the same query (see FalkorDB/FalkorDB#1890). " +
+                "Use CASCADE DELETE_ALL or CASCADE NONE instead."
+            )
+        }
     }
 }

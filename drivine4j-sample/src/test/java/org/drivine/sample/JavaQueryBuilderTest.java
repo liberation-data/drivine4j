@@ -4,6 +4,7 @@ import org.drivine.manager.GraphObjectManager;
 import org.drivine.manager.PersistenceManager;
 import org.drivine.query.QuerySpecification;
 import org.drivine.query.dsl.JavaQueryBuilderKt;
+import org.drivine.test.TestCleanup;
 import org.drivine.sample.view.RaisedAndAssignedIssue;
 import org.drivine.sample.view.RaisedAndAssignedIssueQueryDsl;
 import org.junit.jupiter.api.BeforeEach;
@@ -44,11 +45,7 @@ public class JavaQueryBuilderTest {
     @BeforeEach
     void setupTestData() {
         // Clean up previous test data
-        persistenceManager.execute(
-            QuerySpecification.withStatement(
-                "MATCH (n) WHERE n.testMarker = 'java-builder-test' DETACH DELETE n"
-            )
-        );
+        TestCleanup.INSTANCE.beforeEach(persistenceManager, "testMarker", "java-builder-test");
 
         UUID issue1Uuid = UUID.randomUUID();
         UUID issue2Uuid = UUID.randomUUID();

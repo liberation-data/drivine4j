@@ -1,6 +1,6 @@
 package org.drivine.connection
 
-import org.drivine.query.sort.CollectionSortStrategy
+import org.drivine.query.grammar.CypherDialect
 
 data class ConnectionProperties(
     val type: DatabaseType,
@@ -14,5 +14,6 @@ data class ConnectionProperties(
     val databaseName: String? = null,
     val defaultGraphPath: String? = null,
     val protocol: String? = null,
-    val collectionSortStrategy: CollectionSortStrategy? = null,
+    val cypherDialect: CypherDialect? = null,
+    val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
 ) {}

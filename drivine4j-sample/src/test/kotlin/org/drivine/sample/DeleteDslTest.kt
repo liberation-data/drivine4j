@@ -7,6 +7,7 @@ import org.drivine.manager.deleteAll
 import org.drivine.manager.load
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.query
+import org.drivine.test.TestCleanup
 import org.drivine.sample.fragment.IssueCore
 import org.drivine.sample.fragment.Person
 import org.drivine.sample.view.*
@@ -42,10 +43,7 @@ class DeleteDslTest @Autowired constructor(
 
     @BeforeEach
     fun setupTestData() {
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement("MATCH (n) WHERE n.createdBy = 'delete-dsl-test' DETACH DELETE n")
-        )
+        TestCleanup.beforeEach(persistenceManager, "delete-dsl-test")
 
         openIssue1Uuid = UUID.randomUUID()
         openIssue2Uuid = UUID.randomUUID()

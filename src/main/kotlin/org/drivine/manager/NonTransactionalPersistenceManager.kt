@@ -5,7 +5,7 @@ import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
-import org.drivine.query.sort.CollectionSortStrategy
+import org.drivine.query.grammar.CypherGrammar
 import org.slf4j.LoggerFactory
 
 class NonTransactionalPersistenceManager(
@@ -15,8 +15,8 @@ class NonTransactionalPersistenceManager(
     private val subtypeRegistry: SubtypeRegistry
 ) : PersistenceManager {
 
-    override val collectionSortStrategy: CollectionSortStrategy
-        get() = connectionProvider.collectionSortStrategy
+    override val grammar: CypherGrammar
+        get() = connectionProvider.grammar
 
     private val logger = LoggerFactory.getLogger(NonTransactionalPersistenceManager::class.java)
     private val finderOperations = FinderOperations(this)

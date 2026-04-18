@@ -100,6 +100,76 @@ jobs:
           retention-days: 30
         continue-on-error: true
 
+  test-falkordb:
+    runs-on: ubuntu-latest
+    name: test (FalkorDB)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+
+      - name: Configure sample module for FalkorDB
+        run: |
+          cat > drivine4j-sample/src/test/resources/application.yaml << 'EOF'
+          spring:
+            profiles:
+              active: test
+            main:
+              banner-mode: off
+          logging:
+            level:
+              org.drivine: DEBUG
+          database:
+            datasources:
+              graph:
+                type: FALKORDB
+                host: localhost
+                port: 6379
+                database-name: testgraph
+          EOF
+
+      - name: Build with Gradle
+        run: ./gradlew build --no-daemon
+
+      - name: Run all tests
+        run: ./gradlew test --no-daemon
+
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v4
+        if: success() || failure()
+        with:
+          report_paths: |
+            **/build/test-results/test/*.xml
+          detailed_summary: true
+          include_passed: true
+          check_name: Test Results (FalkorDB)
+          require_tests: false
+          annotate_only: false
+          fail_on_failure: false
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-FALKORDB
+          path: |
+            **/build/test-results/test/
+            **/build/reports/tests/test/
+          retention-days: 30
+
   build-matrix:
     runs-on: ubuntu-latest
     strategy:

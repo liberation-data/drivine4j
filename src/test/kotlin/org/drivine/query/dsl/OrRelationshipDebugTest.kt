@@ -24,12 +24,12 @@ class OrRelationshipDebugTest {
             )
         )
 
-        val whereClause = CypherGenerator.buildWhereClause(conditions, viewModel)
-        println("Generated WHERE clause: $whereClause")
+        val whereResult = CypherGenerator.buildWhereClause(conditions, viewModel)
+        println("Generated WHERE clause: ${whereResult.whereClause}")
 
         // Should generate: (EXISTS { ... } OR EXISTS { ... })
-        assertTrue(whereClause.contains("EXISTS"), "Should contain EXISTS")
-        assertTrue(whereClause.contains("OR"), "Should contain OR")
+        assertTrue(whereResult.whereClause!!.contains("EXISTS"), "Should contain EXISTS")
+        assertTrue(whereResult.whereClause!!.contains("OR"), "Should contain OR")
 
         val bindings = CypherGenerator.extractBindings(conditions, viewModel)
         println("Bindings: $bindings")

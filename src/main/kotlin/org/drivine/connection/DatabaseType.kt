@@ -4,7 +4,8 @@ enum class DatabaseType(val value: String) {
     AGENS_GRAPH("AGENS_GRAPH"),
     NEO4J("NEO4J"),
     POSTGRES("POSTGRES"),
-    NEPTUNE("NEPTUNE");
+    NEPTUNE("NEPTUNE"),
+    FALKORDB("FALKORDB");
 
     companion object {
         fun fromValue(value: String): DatabaseType? {

@@ -4,26 +4,18 @@ package org.drivine.manager
 //import drivine.cursor.CursorSpecification
 import org.drivine.connection.DatabaseType
 import org.drivine.query.QuerySpecification
-import org.drivine.query.sort.CollectionSortStrategy
+import org.drivine.query.grammar.CypherGrammar
 import java.util.*
 
 interface PersistenceManager {
 
-    /**
-     * Unique name of the database, as provided when it was enrolled in the DatabaseRegistry.
-     */
     val database: String
-
-    /**
-     * Type of the database, as provided when it was enrolled in the DatabaseRegistry.
-     */
     val type: DatabaseType
 
     /**
-     * Strategy for emitting Cypher that sorts relationship collections, as configured
-     * on the database's ConnectionProvider.
+     * Cypher grammar for this database, controlling dialect-specific query generation.
      */
-    val collectionSortStrategy: CollectionSortStrategy
+    val grammar: CypherGrammar
 
     /**
      * Queries for a set of results according to the supplied specification.

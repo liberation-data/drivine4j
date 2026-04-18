@@ -5,6 +5,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.query
 import org.drivine.sample.view.*
+import org.drivine.test.TestCleanup
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -27,10 +28,7 @@ class SimpleGeneratedDslTest @Autowired constructor(
 
     @BeforeEach
     fun setupTestData() {
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement("MATCH (n) WHERE n.createdBy = 'simple-test' DETACH DELETE n")
-        )
+        TestCleanup.beforeEach(persistenceManager, "simple-test")
 
         val issueUuid = UUID.randomUUID()
         val personUuid = UUID.randomUUID()

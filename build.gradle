@@ -66,8 +66,8 @@ dependencies {
 	testImplementation 'org.testcontainers:testcontainers:1.21.4'
 	testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
 
-	// FalkorDB probe test
-	testImplementation 'redis.clients:jedis:5.2.0'
+	// FalkorDB driver
+	implementation 'com.falkordb:jfalkordb:0.7.0'
 
 	// Spring Boot Starter for tests
 	testImplementation project(':drivine4j-spring-boot-starter')

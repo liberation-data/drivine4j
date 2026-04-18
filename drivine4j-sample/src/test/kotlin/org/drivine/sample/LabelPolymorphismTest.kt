@@ -4,6 +4,7 @@ import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
+import org.drivine.test.TestCleanup
 import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.sample.fragment.AnonymousWebUser
@@ -52,10 +53,7 @@ class LabelPolymorphismTest @Autowired constructor(
     @BeforeEach
     fun setupTestData() {
         // Clean up previous test data
-        persistenceManager.execute(
-            QuerySpecification
-                .withStatement("MATCH (n) WHERE n.testMarker = 'polymorphism-test' DETACH DELETE n")
-        )
+        TestCleanup.beforeEach(persistenceManager, "testMarker", "polymorphism-test")
 
         guideWithAnonymous = UUID.randomUUID()
         guideWithRegistered = UUID.randomUUID()

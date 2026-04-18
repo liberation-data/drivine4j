@@ -3,7 +3,7 @@ package org.drivine.query
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
 import org.drivine.query.dsl.CollectionSortSpec
-import org.drivine.query.sort.CollectionSortEmitter
+import org.drivine.query.grammar.CypherGrammar
 
 /**
  * Base interface for building queries for graph objects (Fragments and Views).
@@ -32,8 +32,10 @@ interface GraphObjectQueryBuilder {
     fun buildQuery(
         whereClause: String? = null,
         orderByClause: String? = null,
-        collectionSorts: List<CollectionSortSpec> = emptyList()
-    ): String = buildQuery(whereClause, orderByClause)  // Default: ignore collection sorts
+        collectionSorts: List<CollectionSortSpec> = emptyList(),
+        externalPrologs: List<String> = emptyList(),
+        externalBridgeVars: List<String> = emptyList(),
+    ): String = buildQuery(whereClause, orderByClause)
 
     /**
      * Builds a WHERE clause for loading by ID.
@@ -52,7 +54,11 @@ interface GraphObjectQueryBuilder {
      * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
      * @return The generated Cypher DELETE query that returns the count of deleted nodes
      */
-    fun buildDeleteQuery(whereClause: String? = null): String
+    fun buildDeleteQuery(
+        whereClause: String? = null,
+        prologs: List<String> = emptyList(),
+        bridgeVariables: List<String> = emptyList(),
+    ): String
 
     /**
      * Returns the node alias used in queries.
@@ -61,9 +67,9 @@ interface GraphObjectQueryBuilder {
     val nodeAlias: String
 
     companion object {
-        fun forClass(graphClass: Class<*>, sortEmitter: CollectionSortEmitter): GraphObjectQueryBuilder {
+        fun forClass(graphClass: Class<*>, grammar: CypherGrammar): GraphObjectQueryBuilder {
             return if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-                GraphViewQueryBuilder.forView(graphClass, sortEmitter)
+                GraphViewQueryBuilder.forView(graphClass, grammar)
             } else if (graphClass.isAnnotationPresent(NodeFragment::class.java)) {
                 FragmentQueryBuilder.forFragment(graphClass)
             } else {
@@ -71,8 +77,8 @@ interface GraphObjectQueryBuilder {
             }
         }
 
-        fun forClass(graphClass: kotlin.reflect.KClass<*>, sortEmitter: CollectionSortEmitter): GraphObjectQueryBuilder {
-            return forClass(graphClass.java, sortEmitter)
+        fun forClass(graphClass: kotlin.reflect.KClass<*>, grammar: CypherGrammar): GraphObjectQueryBuilder {
+            return forClass(graphClass.java, grammar)
         }
     }
 }

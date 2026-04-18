@@ -4,6 +4,7 @@ import org.drivine.manager.GraphObjectManager;
 import org.drivine.manager.PersistenceManager;
 import org.drivine.query.QuerySpecification;
 import org.drivine.query.dsl.JavaQueryBuilderKt;
+import org.drivine.test.TestCleanup;
 import org.drivine.sample.fragment.AnonymousWebUser;
 import org.drivine.sample.fragment.RegisteredWebUser;
 import org.drivine.sample.view.GuideUserWithPolymorphicWebUser;
@@ -44,11 +45,7 @@ public class JavaInstanceOfTest {
     @BeforeEach
     void setupTestData() {
         // Clean up previous test data
-        persistenceManager.execute(
-            QuerySpecification.withStatement(
-                "MATCH (n) WHERE n.testMarker = 'java-instanceof-test' DETACH DELETE n"
-            )
-        );
+        TestCleanup.INSTANCE.beforeEach(persistenceManager, "testMarker", "java-instanceof-test");
 
         guideWithAnonymous = UUID.randomUUID();
         guideWithRegistered = UUID.randomUUID();

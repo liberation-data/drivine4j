@@ -1,5 +1,6 @@
 package sample.simple
 
+import org.springframework.beans.factory.annotation.Value
 import org.drivine.autoconfigure.EnableDrivine
 import org.drivine.autoconfigure.EnableDrivineTestConfig
 import org.drivine.manager.GraphObjectManager
@@ -16,12 +17,18 @@ import org.springframework.context.annotation.*
 class TestAppContext {
 
     @Bean
-    fun neoManager(factory: PersistenceManagerFactory): PersistenceManager {
-        return factory.get("neo")
+    fun persistenceManager(
+        factory: PersistenceManagerFactory,
+        @Value("\${drivine.default-datasource:#{null}}") datasource: String?
+    ): PersistenceManager {
+        return factory.get(datasource ?: "default")
     }
 
     @Bean
-    fun neoGraphObjectManager(factory: GraphObjectManagerFactory): GraphObjectManager {
-        return factory.get("neo")
+    fun graphObjectManager(
+        factory: GraphObjectManagerFactory,
+        @Value("\${drivine.default-datasource:#{null}}") datasource: String?
+    ): GraphObjectManager {
+        return factory.get(datasource ?: "default")
     }
 }

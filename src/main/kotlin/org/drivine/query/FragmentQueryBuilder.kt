@@ -81,7 +81,7 @@ RETURN {
         return "n.$nodeIdField = \$$idParamName"
     }
 
-    override fun buildDeleteQuery(whereClause: String?): String {
+    override fun buildDeleteQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String {
         if (fragmentModel.labels.isEmpty()) {
             throw IllegalArgumentException("No labels defined for fragment ${fragmentModel.className}. @GraphFragment must specify at least one label.")
         }

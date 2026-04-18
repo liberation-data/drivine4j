@@ -1,7 +1,10 @@
 package org.drivine.autoconfigure
 
+import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseType
 import org.drivine.test.DrivineTestContainer
+import org.drivine.test.FalkorDbTestContainer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
@@ -10,22 +13,19 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.context.annotation.Primary
 
 /**
- * Test configuration that automatically handles Testcontainers vs local Neo4j switching.
+ * Test configuration that automatically handles Testcontainers vs local instance switching
+ * for all supported database types.
  *
- * This configuration:
- * 1. Loads datasource properties from application.yaml (test profile) or application-test.yml
- * 2. Checks test.neo4j.use-local property (supports system property, environment variable, or Spring property)
- * 3. If false (default): Starts Testcontainer and overrides host/port/password
- * 4. If true: Uses properties as-is for local Neo4j
- * 5. Creates DataSourceMap bean for DatabaseRegistry
+ * For each datasource in the configuration, detects the type and starts the appropriate
+ * Testcontainer (unless use-local is set for that database type).
  *
- * To use local Neo4j, set one of:
- * - System property: -Dtest.neo4j.use-local=true
- * - Environment variable: USE_LOCAL_NEO4J=true
- * - Spring property in application.yaml:
- *   test:
- *     neo4j:
- *       use-local: true
+ * ## Neo4j
+ * - `test.neo4j.use-local=true` or `USE_LOCAL_NEO4J=true` → uses local instance
+ * - Otherwise starts a Neo4j Testcontainer
+ *
+ * ## FalkorDB
+ * - `test.falkordb.use-local=true` or `USE_LOCAL_FALKORDB=true` → uses local instance
+ * - Otherwise starts a FalkorDB Testcontainer
  */
 @Configuration
 class DrivineTestConfiguration {
@@ -37,43 +37,61 @@ class DrivineTestConfiguration {
     @ConditionalOnMissingBean
     fun dataSourceMap(
         properties: DrivineProperties,
-        @Value("\${test.neo4j.use-local:#{null}}") useLocalFromSpring: String?
+        @Value("\${test.neo4j.use-local:#{null}}") useLocalNeo4jFromSpring: String?,
+        @Value("\${test.falkordb.use-local:#{null}}") useLocalFalkorFromSpring: String?
     ): DataSourceMap {
         val datasources = properties.datasources.toMutableMap()
 
-        // Check if we should use local Neo4j - check multiple sources in order of precedence:
-        // 1. Spring property (test.neo4j.use-local)
-        // 2. Environment variable (USE_LOCAL_NEO4J)
-        val useLocal = useLocalFromSpring?.toBoolean()
-            ?: System.getenv("USE_LOCAL_NEO4J")?.toBoolean()
-            ?: false
+        datasources.forEach { (name, props) ->
+            when (props.type) {
+                DatabaseType.NEO4J -> {
+                    val useLocal = useLocalNeo4jFromSpring?.toBoolean()
+                        ?: System.getenv("USE_LOCAL_NEO4J")?.toBoolean()
+                        ?: false
 
-        log.info("Drivine Test Config: use-local=$useLocal (Spring=${useLocalFromSpring}, env=${System.getenv("USE_LOCAL_NEO4J")})")
+                    log.info("Drivine Test Config [$name]: Neo4j use-local=$useLocal")
 
-        if (!useLocal) {
-            log.info("Starting Neo4j Testcontainer...")
-            // Start Testcontainer and override connection settings
-            datasources.forEach { (name, props) ->
-                datasources[name] = props.copy(
-                    host = extractHost(DrivineTestContainer.getConnectionUrl()),
-                    port = extractPort(DrivineTestContainer.getConnectionUrl()),
-                    password = DrivineTestContainer.getConnectionPassword()
-                    // Keep username, type, database-name from properties
-                )
+                    if (!useLocal) {
+                        log.info("Starting Neo4j Testcontainer...")
+                        datasources[name] = props.copy(
+                            host = extractHost(DrivineTestContainer.getConnectionUrl()),
+                            port = extractPort(DrivineTestContainer.getConnectionUrl()),
+                            password = DrivineTestContainer.getConnectionPassword()
+                        )
+                    }
+                }
+
+                DatabaseType.FALKORDB -> {
+                    val useLocal = useLocalFalkorFromSpring?.toBoolean()
+                        ?: System.getenv("USE_LOCAL_FALKORDB")?.toBoolean()
+                        ?: false
+
+                    log.info("Drivine Test Config [$name]: FalkorDB use-local=$useLocal")
+
+                    if (!useLocal) {
+                        log.info("Starting FalkorDB Testcontainer...")
+                        datasources[name] = props.copy(
+                            host = FalkorDbTestContainer.getConnectionHost(),
+                            port = FalkorDbTestContainer.getConnectionPort(),
+                        )
+                    }
+                }
+
+                else -> {
+                    log.info("Drivine Test Config [$name]: ${props.type} — no testcontainer support, using properties as-is")
+                }
             }
-        } else {
-            log.info("Using local Neo4j with datasource properties as-is")
         }
 
         return DataSourceMap(datasources)
     }
 
     private fun extractHost(boltUrl: String): String {
-        return boltUrl.substringAfter("bolt://").substringBefore(":")
+        return boltUrl.substringAfter("://").substringBefore(":")
     }
 
     private fun extractPort(boltUrl: String): Int {
-        val portPart = boltUrl.substringAfter("bolt://").substringAfter(":")
+        val portPart = boltUrl.substringAfter("://").substringAfter(":")
         return try {
             if (portPart.contains("/")) {
                 portPart.substringBefore("/").toInt()
