@@ -76,6 +76,7 @@ class DemoTest @Autowired constructor(
         )
 
         // Create people with employment history (RelationshipFragment properties!)
+        // Dates as strings, no list literals — Neptune Bolt doesn't support date() or list params
         persistenceManager.execute(
             QuerySpecification.withStatement(
                 """
@@ -89,9 +90,9 @@ class DemoTest @Autowired constructor(
                     createdBy: 'demo-test'
                 })
                 CREATE (alice)-[:WORKS_FOR {
-                    startDate: date('2023-01-15'),
+                    startDate: '2023-01-15',
                     role: 'Senior Engineer',
-                    tags: ['backend', 'senior']
+                    tags: ${'$'}aliceTags
                 }]->(acme)
 
                 CREATE (bob:Person:Mapped {
@@ -101,9 +102,9 @@ class DemoTest @Autowired constructor(
                     createdBy: 'demo-test'
                 })
                 CREATE (bob)-[:WORKS_FOR {
-                    startDate: date('2022-06-01'),
+                    startDate: '2022-06-01',
                     role: 'Lead Designer',
-                    tags: ['design', 'ux']
+                    tags: ${'$'}bobTags
                 }]->(acme)
 
                 CREATE (carol:Person:Mapped {
@@ -113,12 +114,16 @@ class DemoTest @Autowired constructor(
                     createdBy: 'demo-test'
                 })
                 CREATE (carol)-[:WORKS_FOR {
-                    startDate: date('2021-03-10'),
+                    startDate: '2021-03-10',
                     role: 'CEO',
-                    tags: ['leadership', 'founder']
+                    tags: ${'$'}carolTags
                 }]->(startup)
                 """.trimIndent()
-            )
+            ).bind(mapOf(
+                "aliceTags" to """["backend","senior"]""",
+                "bobTags" to """["design","ux"]""",
+                "carolTags" to """["leadership","founder"]"""
+            ))
         )
     }
 
@@ -342,11 +347,11 @@ class DemoTest @Autowired constructor(
                     createdBy: 'demo-test'
                 })
                 CREATE (p)-[:WORKS_FOR {
-                    startDate: date('2024-01-01'),
+                    startDate: ${'$'}startDate,
                     role: 'Everything'
                 }]->(o)
                 """.trimIndent()
-            )
+            ).bind(mapOf("startDate" to "2024-01-01"))
         )
 
         val career = graphObjectManager.load(aliceId.toString(), PersonCareer::class.java)!!
@@ -433,11 +438,11 @@ class DemoTest @Autowired constructor(
                     createdBy: 'demo-test'
                 })
                 CREATE (p)-[:WORKS_FOR {
-                    startDate: date('2024-01-01'),
+                    startDate: ${'$'}startDate,
                     role: 'Temp Role'
                 }]->(o)
                 """.trimIndent()
-            )
+            ).bind(mapOf("startDate" to "2024-01-01"))
         )
 
         // Load and clear relationships

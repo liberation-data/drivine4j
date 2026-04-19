@@ -24,6 +24,7 @@ class ConnectionProviderBuilder(
     private var defaultGraphPath: String? = null
     private var cypherDialect: CypherDialect? = null
     private var falkorDbTransactionMode: FalkorDbTransactionMode? = null
+    private var region: String? = null
 
     fun withType(type: DatabaseType): ConnectionProviderBuilder = apply { this.type = type }
     fun host(host: String): ConnectionProviderBuilder = apply { this.host = host }
@@ -46,6 +47,7 @@ class ConnectionProviderBuilder(
         properties.protocol?.let { protocol(it) }
         properties.cypherDialect?.let { cypherDialect(it) }
         properties.falkorDbTransactionMode?.let { falkorDbTransactionMode = it }
+        properties.region?.let { region = it }
         return this
     }
 
@@ -55,6 +57,7 @@ class ConnectionProviderBuilder(
 
         val provider = when (type) {
             DatabaseType.NEO4J -> buildNeo4jProvider(name)
+            DatabaseType.NEPTUNE -> buildNeptuneProvider(name)
             DatabaseType.FALKORDB -> buildFalkorDbProvider(name)
             else -> throw DrivineException("Type $type is not supported by ConnectionProviderBuilder")
         }
@@ -65,7 +68,7 @@ class ConnectionProviderBuilder(
 
     private fun buildNeo4jProvider(name: String): ConnectionProvider {
         if (protocol == null) protocol = "bolt"
-        requireNotNull(userName) { "Neo4j requires a username" }
+        requireNotNull(userName) { "Neo4j requires a username (use type: NEPTUNE for Amazon Neptune)" }
         if (idleTimeout != null) logger.warn("idleTimeout is not supported by Neo4j")
 
         val resolvedPort = port ?: 7687
@@ -89,13 +92,40 @@ class ConnectionProviderBuilder(
         )
     }
 
+    private fun buildNeptuneProvider(name: String): ConnectionProvider {
+        if (protocol == null) protocol = "bolt"
+        if (idleTimeout != null) logger.warn("idleTimeout is not supported by Neptune")
+
+        val resolvedPort = port ?: 8182
+        if (resolvedPort != 8182) logger.warn("$resolvedPort is a non-standard port for Neptune")
+
+        // Neptune uses Bolt via the Neo4j driver — no username/password (IAM auth handled separately)
+        return Neo4jConnectionProvider(
+            name = name,
+            type = type!!,
+            host = host!!,
+            port = resolvedPort,
+            user = userName,  // null for tunnel, SigV4 token for public endpoint
+            password = password,
+            database = null,  // Neptune doesn't use named databases
+            protocol = protocol!!,
+            config = mapOf(
+                "connectionTimeout" to connectionTimeout,
+                "maxConnectionPoolSize" to poolMax,
+                "region" to (region ?: System.getenv("AWS_REGION") ?: "us-east-1"),
+            ).filterValues { it != null }.mapValues { it.value as Any },
+            subtypeRegistry = subtypeRegistry,
+            cypherDialect = cypherDialect ?: CypherDialect.NEPTUNE,
+        )
+    }
+
     private fun buildFalkorDbProvider(name: String): ConnectionProvider {
         val resolvedPort = port ?: 6379
         if (resolvedPort != 6379) logger.warn("$resolvedPort is a non-standard port for FalkorDB")
 
-        val resolvedDialect = cypherDialect ?: CypherDialect.OPEN_CYPHER
+        val resolvedDialect = cypherDialect ?: CypherDialect.FALKORDB
         if (resolvedDialect == CypherDialect.NEO4J_4 || resolvedDialect == CypherDialect.NEO4J_5) {
-            throw DrivineException("FalkorDB does not support $resolvedDialect. Use OPEN_CYPHER instead.")
+            throw DrivineException("FalkorDB does not support $resolvedDialect. Use FALKORDB instead.")
         }
 
         return FalkorDbConnectionProvider(

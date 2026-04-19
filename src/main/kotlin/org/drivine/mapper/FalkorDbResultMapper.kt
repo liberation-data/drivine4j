@@ -6,9 +6,8 @@ import com.falkordb.graph_entities.Node
 import com.falkordb.graph_entities.Path
 import com.falkordb.graph_entities.Point
 import com.falkordb.graph_entities.Property
-
 class FalkorDbResultMapper(
-    subtypeRegistry: SubtypeRegistry? = null
+    subtypeRegistry: SubtypeRegistry? = null,
 ) : GraphResultMapper(subtypeRegistry) {
 
     override fun keys(record: Any): List<String> {

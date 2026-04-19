@@ -25,15 +25,31 @@ enum class CypherDialect {
     NEO4J_4,
 
     /**
-     * Standard openCypher — FalkorDB, Neptune, and other openCypher-compatible engines.
-     * Uses inline pattern predicates for existence checks, `CALL { }` for collection sorting.
-     * No APOC support.
+     * Base openCypher dialect. Inline pattern predicates, CALL subquery for
+     * filtered existence (no EXISTS { }). Use this as a starting point for
+     * new openCypher-compatible engines.
      */
-    OPEN_CYPHER;
+    OPEN_CYPHER,
+
+    /**
+     * FalkorDB — openCypher with known limitations:
+     * - Nested pattern comprehensions return NULL (FalkorDB/FalkorDB#1888)
+     * - No CASCADE DELETE_ORPHAN (FalkorDB/FalkorDB#1890)
+     */
+    FALKORDB,
+
+    /**
+     * Amazon Neptune — openCypher with:
+     * - Working nested pattern comprehensions and orphan delete
+     * - Built-in `collSortMaps` / `collSortNodes` functions
+     */
+    NEPTUNE;
 
     fun grammar(sortEmitterOverride: CollectionSortEmitter? = null): CypherGrammar = when (this) {
         NEO4J_5 -> Neo4j5Grammar(sortEmitterOverride ?: ApocSortMapsEmitter())
         NEO4J_4 -> Neo4j4Grammar(sortEmitterOverride ?: ApocSortMapsEmitter())
         OPEN_CYPHER -> OpenCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
+        FALKORDB -> FalkorDbCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
+        NEPTUNE -> NeptuneCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
     }
 }

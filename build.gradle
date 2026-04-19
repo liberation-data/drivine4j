@@ -69,6 +69,14 @@ dependencies {
 	// FalkorDB driver
 	implementation 'com.falkordb:jfalkordb:0.7.0'
 
+	// Neptune IAM SigV4 authentication — optional, users bring their own AWS SDK
+	compileOnly 'software.amazon.awssdk:auth:2.31.3'
+	compileOnly 'software.amazon.awssdk:regions:2.31.3'
+	compileOnly 'software.amazon.awssdk:http-client-spi:2.31.3'
+	testImplementation 'software.amazon.awssdk:auth:2.31.3'
+	testImplementation 'software.amazon.awssdk:regions:2.31.3'
+	testImplementation 'software.amazon.awssdk:http-client-spi:2.31.3'
+
 	// Spring Boot Starter for tests
 	testImplementation project(':drivine4j-spring-boot-starter')
 

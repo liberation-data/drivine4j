@@ -22,7 +22,7 @@ import kotlin.reflect.full.primaryConstructor
  */
 class TransformPostProcessor<S, T>(
     private val type: Class<T>,
-    private val subtypeRegistry: SubtypeRegistry? = null
+    private val subtypeRegistry: SubtypeRegistry? = null,
 ) : ResultPostProcessor<S, T> {
 
     private val objectMapper = Neo4jObjectMapper.instance

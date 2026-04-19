@@ -62,6 +62,9 @@ object Neo4jObjectMapper {
                 )
             )
 
+            // @JsonPacked support — serialize/deserialize collections as JSON strings
+            registerModule(JsonPackedModule())
+
             // Register custom serializers for Neo4j-specific conversions
             registerModule(SimpleModule().apply {
                 // Enum -> String serializer
@@ -82,7 +85,7 @@ object Neo4jObjectMapper {
     /**
      * Serializes Enum values to their string names for Neo4j compatibility.
      */
-    private class EnumToStringSerializer : JsonSerializer<Enum<*>>() {
+    internal class EnumToStringSerializer : JsonSerializer<Enum<*>>() {
         override fun serialize(value: Enum<*>, gen: JsonGenerator, serializers: SerializerProvider) {
             gen.writeString(value.name)
         }
@@ -91,7 +94,7 @@ object Neo4jObjectMapper {
     /**
      * Serializes UUID to String for Neo4j compatibility.
      */
-    private class UuidToStringSerializer : JsonSerializer<UUID>() {
+    internal class UuidToStringSerializer : JsonSerializer<UUID>() {
         override fun serialize(value: UUID, gen: JsonGenerator, serializers: SerializerProvider) {
             gen.writeString(value.toString())
         }
@@ -101,7 +104,7 @@ object Neo4jObjectMapper {
      * Serializes Instant to ZonedDateTime at UTC for Neo4j compatibility.
      * Neo4j's driver supports ZonedDateTime but not Instant directly.
      */
-    private class InstantToZonedDateTimeSerializer : JsonSerializer<Instant>() {
+    internal class InstantToZonedDateTimeSerializer : JsonSerializer<Instant>() {
         override fun serialize(value: Instant, gen: JsonGenerator, serializers: SerializerProvider) {
             val zonedDateTime = value.atZone(ZoneId.of("UTC"))
             gen.writeObject(zonedDateTime)
@@ -111,7 +114,7 @@ object Neo4jObjectMapper {
     /**
      * Serializes legacy java.util.Date to ZonedDateTime at UTC for Neo4j compatibility.
      */
-    private class DateToZonedDateTimeSerializer : JsonSerializer<Date>() {
+    internal class DateToZonedDateTimeSerializer : JsonSerializer<Date>() {
         override fun serialize(value: Date, gen: JsonGenerator, serializers: SerializerProvider) {
             val zonedDateTime = value.toInstant().atZone(ZoneId.of("UTC"))
             gen.writeObject(zonedDateTime)

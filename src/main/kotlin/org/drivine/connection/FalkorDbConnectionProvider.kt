@@ -14,7 +14,7 @@ class FalkorDbConnectionProvider(
     private val graphName: String,
     private val transactionMode: FalkorDbTransactionMode = FalkorDbTransactionMode.WARN,
     override val subtypeRegistry: SubtypeRegistry? = null,
-    override val cypherDialect: CypherDialect = CypherDialect.OPEN_CYPHER,
+    override val cypherDialect: CypherDialect = CypherDialect.FALKORDB,
 ) : ConnectionProvider {
 
     override val type: DatabaseType = DatabaseType.FALKORDB

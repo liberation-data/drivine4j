@@ -1,7 +1,9 @@
 package org.drivine.mapper
 
+import com.fasterxml.jackson.databind.introspect.Annotated
 import com.fasterxml.jackson.databind.introspect.AnnotatedMember
 import com.fasterxml.jackson.databind.introspect.NopAnnotationIntrospector
+import org.drivine.annotation.JsonPacked
 
 /**
  * Custom AnnotationIntrospector that auto-ignores Kotlin delegate backing fields.
@@ -43,5 +45,17 @@ class DrivineAnnotationIntrospector : NopAnnotationIntrospector() {
             return true
         }
         return false
+    }
+
+    /**
+     * Returns a custom deserializer for @JsonPacked fields.
+     * This tells Jackson to use [JsonPackedDeserializer] which handles
+     * both JSON strings and native arrays as input.
+     */
+    override fun findDeserializer(a: Annotated): Any? {
+        if (a.hasAnnotation(JsonPacked::class.java)) {
+            return JsonPackedDeserializer::class.java
+        }
+        return null
     }
 }

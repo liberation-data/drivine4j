@@ -8,19 +8,14 @@ logging:
   level:
     org.drivine: DEBUG
 
-# Test configuration - set to true to use local instance instead of Testcontainers
 test:
   neo4j:
-    use-local: false
+    use-local: true
 
-# Default datasource: Neo4j via Testcontainers
-# For FalkorDB: change type to FALKORDB, host/port to 6379, add database-name
 database:
   datasources:
     graph:
-      type: NEO4J
-      host: localhost
-      port: 7687
-      user-name: neo4j
-      password: brahmsian
-      database-name: neo4j
+      type: NEPTUNE
+      host: drivine-test.cluster-cchissy84hz0.us-east-1.neptune.amazonaws.com
+      port: 8182
+      region: us-east-1

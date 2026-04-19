@@ -16,4 +16,5 @@ data class ConnectionProperties(
     val protocol: String? = null,
     val cypherDialect: CypherDialect? = null,
     val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
+    val region: String? = null,
 ) {}

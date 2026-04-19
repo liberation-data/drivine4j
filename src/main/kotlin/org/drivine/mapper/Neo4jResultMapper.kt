@@ -9,7 +9,7 @@ import org.neo4j.driver.internal.value.RelationshipValue
 import java.util.*
 
 open class Neo4jResultMapper(
-    subtypeRegistry: SubtypeRegistry? = null
+    subtypeRegistry: SubtypeRegistry? = null,
 ) : GraphResultMapper(subtypeRegistry) {
 
     override fun keys(record: Any): List<String> {

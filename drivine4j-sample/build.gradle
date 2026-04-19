@@ -36,6 +36,11 @@ dependencies {
     testImplementation 'org.testcontainers:neo4j:1.21.4'
     testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
 
+    // Neptune IAM SigV4 auth
+    testImplementation 'software.amazon.awssdk:auth:2.31.3'
+    testImplementation 'software.amazon.awssdk:regions:2.31.3'
+    testImplementation 'software.amazon.awssdk:http-client-spi:2.31.3'
+
     // Testing - versions managed by Spring Boot BOM
     testImplementation 'org.junit.jupiter:junit-jupiter-api'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'

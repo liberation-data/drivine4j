@@ -16,7 +16,7 @@ import java.time.Instant
 class Neo4jConnection(
     private val session: Session,
     private val resultMapper: ResultMapper,
-    val subtypeRegistry: SubtypeRegistry? = null
+    val subtypeRegistry: SubtypeRegistry? = null,
 ) : Connection {
 
     private val logger: Logger = LoggerFactory.getLogger(Neo4jConnection::class.java)
@@ -67,4 +67,5 @@ class Neo4jConnection(
         err?.let { logger.warn("Closing session with error: $it") }
         session.close()
     }
+
 }

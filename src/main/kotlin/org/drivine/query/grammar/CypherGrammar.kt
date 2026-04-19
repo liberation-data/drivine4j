@@ -35,6 +35,7 @@ interface CypherGrammar {
     val supportsOrphanDelete: Boolean
         get() = true
 
+
     /**
      * Generates a WHERE-clause condition asserting that a relationship exists.
      * Used for non-nullable single relationships in GraphView queries.
@@ -84,20 +85,13 @@ class Neo4j4Grammar(
 }
 
 /**
- * Standard openCypher — FalkorDB, Neptune, and other openCypher engines.
- * Uses inline pattern predicate (the pattern itself is truthy in WHERE context).
+ * Base openCypher grammar — shared by FalkorDB, Neptune, and other openCypher engines.
+ * Uses inline pattern predicates and CALL subquery prologs for filtered existence.
+ * Subclass and override for engine-specific capabilities and quirks.
  */
-/**
- * Standard openCypher — FalkorDB, Neptune, and other openCypher engines.
- * Uses inline pattern predicate (the pattern itself is truthy in WHERE context).
- * Filtered existence uses OPTIONAL MATCH + null check pattern in a subquery,
- * or for simple cases, a pattern comprehension with size check.
- */
-class OpenCypherGrammar(
+open class OpenCypherGrammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
-    override val nestedViewProjector: NestedViewProjector = CallSubqueryNestedViewProjector()
-    override val supportsOrphanDelete: Boolean = false
 
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
         "($rootAlias)$direction(:$targetLabels)"
@@ -105,7 +99,6 @@ class OpenCypherGrammar(
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int): FilteredExistenceResult {
         val countVar = "_ec$uniqueId"
         val rootAlias = relationshipPattern.substringAfter("(").substringBefore(")")
-        // Use count(targetAlias) not count(*) — OPTIONAL MATCH null rows make count(*) return 1
         val targetAlias = relationshipPattern.substringAfterLast("(").substringBefore(")")
         val prolog = "CALL {\n    WITH $rootAlias\n    OPTIONAL MATCH $relationshipPattern WHERE $whereClause\n    RETURN count($targetAlias) AS $countVar\n}"
         return FilteredExistenceResult(
@@ -114,4 +107,17 @@ class OpenCypherGrammar(
             bridgeVariables = listOf(countVar),
         )
     }
+}
+
+/**
+ * FalkorDB — openCypher with known limitations:
+ * - Nested pattern comprehensions return NULL (FalkorDB/FalkorDB#1888)
+ * - CASCADE DELETE_ORPHAN not supported (FalkorDB/FalkorDB#1890)
+ * - collect() on null produces {key: NULL} instead of skipping (FalkorDB/FalkorDB#1889)
+ */
+class FalkorDbCypherGrammar(
+    collectionSortEmitter: CollectionSortEmitter
+) : OpenCypherGrammar(collectionSortEmitter) {
+    override val nestedViewProjector: NestedViewProjector = CallSubqueryNestedViewProjector()
+    override val supportsOrphanDelete: Boolean = false
 }

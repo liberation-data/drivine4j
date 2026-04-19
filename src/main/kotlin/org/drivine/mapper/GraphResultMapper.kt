@@ -4,7 +4,7 @@ import org.drivine.query.QuerySpecification
 import org.slf4j.LoggerFactory
 
 abstract class GraphResultMapper(
-    protected val subtypeRegistry: SubtypeRegistry? = null
+    protected val subtypeRegistry: SubtypeRegistry? = null,
 ) : ResultMapper {
 
     private val logger = LoggerFactory.getLogger(GraphResultMapper::class.java)

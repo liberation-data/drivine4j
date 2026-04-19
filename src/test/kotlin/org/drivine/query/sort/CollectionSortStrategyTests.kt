@@ -55,16 +55,16 @@ class CollectionSortStrategyTests {
     }
 
     // =========================================================================
-    // OPEN_CYPHER dialect — CALL subquery sort + inline pattern predicate
+    // FALKORDB dialect — CALL subquery sort + inline pattern predicate
     // =========================================================================
 
     @Test
-    fun `OPEN_CYPHER - top-level sort emits CALL subquery prolog`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.OPEN_CYPHER.grammar())
+    fun `FALKORDB - top-level sort emits CALL subquery prolog`() {
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.FALKORDB.grammar())
         val sort = CollectionSortSpec("assignedTo", "name", ascending = true)
         val query = builder.buildQuery(null, null, listOf(sort))
 
-        println("OPEN_CYPHER top-level:\n$query\n")
+        println("FALKORDB top-level:\n$query\n")
         assertContains(query, "CALL {")
         assertContains(query, "ORDER BY")
         assertContains(query, "collect(")
@@ -72,8 +72,8 @@ class CollectionSortStrategyTests {
     }
 
     @Test
-    fun `OPEN_CYPHER - descending sort emits DESC`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.OPEN_CYPHER.grammar())
+    fun `FALKORDB - descending sort emits DESC`() {
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.FALKORDB.grammar())
         val sort = CollectionSortSpec("assignedTo", "name", ascending = false)
         val query = builder.buildQuery(null, null, listOf(sort))
 
@@ -82,8 +82,8 @@ class CollectionSortStrategyTests {
     }
 
     @Test
-    fun `OPEN_CYPHER - prolog appears before WITH clause`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.OPEN_CYPHER.grammar())
+    fun `FALKORDB - prolog appears before WITH clause`() {
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.FALKORDB.grammar())
         val sort = CollectionSortSpec("assignedTo", "name", ascending = true)
         val query = builder.buildQuery(null, null, listOf(sort))
 
@@ -95,10 +95,10 @@ class CollectionSortStrategyTests {
     }
 
     @Test
-    fun `OPEN_CYPHER - nested views use CALL prologs`() {
+    fun `FALKORDB - nested views use CALL prologs`() {
         // RaisedAndAssignedIssue has raisedBy: PersonContext (a nested GraphView)
-        // On OPEN_CYPHER, this should emit a CALL prolog instead of nested pattern comprehensions
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.OPEN_CYPHER.grammar())
+        // On FALKORDB, this should emit a CALL prolog instead of nested pattern comprehensions
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.FALKORDB.grammar())
         val query = builder.buildQuery(null, null, emptyList())
 
         assertContains(query, "CALL {")
@@ -106,21 +106,21 @@ class CollectionSortStrategyTests {
     }
 
     @Test
-    fun `OPEN_CYPHER - nested sort works via CALL prolog`() {
+    fun `FALKORDB - nested sort works via CALL prolog`() {
         // Nested sorts now work on openCypher because the CallSubqueryNestedViewProjector
         // lifts the nested view out of inline comprehensions, so the sort applies naturally
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.OPEN_CYPHER.grammar())
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.FALKORDB.grammar())
         val sort = CollectionSortSpec("raisedBy_worksFor", "name", ascending = true)
         val query = builder.buildQuery(null, null, listOf(sort))
 
-        println("OPEN_CYPHER nested sort:\n$query\n")
+        println("FALKORDB nested sort:\n$query\n")
         assertContains(query, "CALL {")
         assertFalse(query.contains("apoc.coll.sortMaps"))
     }
 
     @Test
-    fun `OPEN_CYPHER - existence check uses inline pattern predicate`() {
-        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.OPEN_CYPHER.grammar())
+    fun `FALKORDB - existence check uses inline pattern predicate`() {
+        val builder = GraphViewQueryBuilder.forView(RaisedAndAssignedIssue::class, CypherDialect.FALKORDB.grammar())
         val query = builder.buildQuery()
 
         assertFalse(query.contains("EXISTS {"))
@@ -136,6 +136,6 @@ class CollectionSortStrategyTests {
     fun `dialect grammar defaults are correct`() {
         assertTrue(CypherDialect.NEO4J_5.grammar().collectionSortEmitter is ApocSortMapsEmitter)
         assertTrue(CypherDialect.NEO4J_4.grammar().collectionSortEmitter is ApocSortMapsEmitter)
-        assertTrue(CypherDialect.OPEN_CYPHER.grammar().collectionSortEmitter is CallSubqueryEmitter)
+        assertTrue(CypherDialect.FALKORDB.grammar().collectionSortEmitter is CallSubqueryEmitter)
     }
 }

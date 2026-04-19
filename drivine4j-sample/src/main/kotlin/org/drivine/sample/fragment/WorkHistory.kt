@@ -1,5 +1,6 @@
 package org.drivine.sample.fragment
 
+import org.drivine.annotation.JsonPacked
 import org.drivine.annotation.RelationshipFragment
 import java.time.LocalDate
 
@@ -13,6 +14,6 @@ import java.time.LocalDate
 data class WorkHistory(
     val startDate: LocalDate,
     val role: String,
-    val tags: List<String>? = null,
+    @JsonPacked val tags: List<String>? = null,
     val target: Organization
 )
