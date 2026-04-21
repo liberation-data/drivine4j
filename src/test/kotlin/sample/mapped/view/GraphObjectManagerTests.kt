@@ -1,6 +1,9 @@
 package sample.mapped.view
 
 import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.load
+import org.drivine.manager.loadAll
+import org.drivine.manager.loadOrThrow
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
@@ -160,10 +163,28 @@ class GraphObjectManagerTests @Autowired constructor(
     @Test
     fun `should return null when loading non-existent id`() {
         val nonExistentId = UUID.randomUUID().toString()
-        val result = graphObjectManager.load(nonExistentId, RaisedAndAssignedIssue::class.java)
+        val result = graphObjectManager.load<RaisedAndAssignedIssue>(nonExistentId)
 
         assertNull(result)
-        println("Correctly returned null for non-existent ID")
+    }
+
+    @Test
+    fun `loadOrThrow should return object when found`() {
+        val all = graphObjectManager.loadAll<RaisedAndAssignedIssue>()
+        val id = all.first().issue.uuid.toString()
+
+        val loaded = graphObjectManager.loadOrThrow<RaisedAndAssignedIssue>(id)
+        assertEquals(all.first().issue.title, loaded.issue.title)
+    }
+
+    @Test
+    fun `loadOrThrow should throw NoSuchElementException when not found`() {
+        val nonExistentId = UUID.randomUUID().toString()
+        val ex = org.junit.jupiter.api.assertThrows<NoSuchElementException> {
+            graphObjectManager.loadOrThrow<RaisedAndAssignedIssue>(nonExistentId)
+        }
+        assertTrue(ex.message!!.contains("RaisedAndAssignedIssue"))
+        assertTrue(ex.message!!.contains(nonExistentId))
     }
 
     @Test

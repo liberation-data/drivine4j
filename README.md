@@ -3,16 +3,16 @@
 [![CI](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml/badge.svg)](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-A Neo4j client library for Java and Kotlin with two approaches to graph mapping:
+A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, and **Amazon Neptune** with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
-2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL (new in 4.0)
+2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL. 
 
 ## Philosophy
 
 ### Composition Over Inheritance
 
-A typical ORM defines a reusable object model. From this model statements are generated to hydrate to and from the model to the database. This addresses the so-called impedance mismatch between the object model and the database. However, there are drawbacks:
+A typical ORM defines a reusable object model. From this model, statements are generated to hydrate to and from the model to the database. This addresses the so-called impedance mismatch between the object model and the database. However, there are drawbacks:
 
 * Generated queries work well for simple cases, but can get out of hand and degrade performance when it's more complex. Debugging these generated statements can be painful.
 * One model for many use cases is a big ask - the original CRUD cases work well, but more complex cases mean the model gets in the way more than it helps.
@@ -58,14 +58,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.1-SNAPSHOT")
+    implementation("org.drivine:drivine4j:0.0.30")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.1-SNAPSHOT'
+    implementation 'org.drivine:drivine4j:0.0.30'
 }
 ```
 
@@ -74,7 +74,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.1-SNAPSHOT</version>
+    <version>0.0.30</version>
 </dependency>
 ```
 
@@ -82,12 +82,7 @@ dependencies {
 
 If you want to use `GraphObjectManager` with the type-safe query DSL, you need to add the code generation processor.
 
-> **Note for Java Projects:** The code generator (KSP) only processes Kotlin source files. For the best experience:
-> - Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
-> - Your `@NodeFragment` classes can be in Java or Kotlin
-> - At runtime, both Java and Kotlin classes work fully with `GraphObjectManager`
->
-> See the [Java Interoperability](#java-interoperability) section for details and examples.
+> **Note for Java Projects:** Both Java and Kotlin are fully supported at runtime. The code generator (KSP) produces Kotlin DSL extensions, but a Java-friendly query builder API is also available. Define your `@GraphView` and `@NodeFragment` classes in either language. See the [Java Interoperability](#java-interoperability) section for details.
 
 #### Gradle (Kotlin DSL)
 
@@ -105,8 +100,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.1-SNAPSHOT")
-    ksp("org.drivine:drivine4j-codegen:0.0.1-SNAPSHOT")
+    implementation("org.drivine:drivine4j:0.0.30")
+    ksp("org.drivine:drivine4j-codegen:0.0.30")
 }
 ```
 
@@ -140,7 +135,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.1-SNAPSHOT</version>
+                    <version>0.0.30</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -440,7 +435,7 @@ class PersonService @Autowired constructor(
     private val graphObjectManager: GraphObjectManager
 ) {
     fun getAllPeople(): List<PersonCareer> {
-        return graphObjectManager.loadAll(PersonCareer::class.java)
+        return graphObjectManager.loadAll<PersonCareer>()
     }
 }
 ```
@@ -449,7 +444,7 @@ class PersonService @Autowired constructor(
 
 ```kotlin
 fun getPerson(uuid: String): PersonCareer? {
-    return graphObjectManager.load(uuid, PersonCareer::class.java)
+    return graphObjectManager.load<PersonCareer>(uuid)
 }
 ```
 
@@ -507,9 +502,16 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 }
 ```
 
-#### Ordering Nested Collections (Database-Side with APOC)
+#### Ordering Nested Collections (Database-Side)
 
-The DSL supports sorting nested relationship collections directly in the database using APOC Extended's `apoc.coll.sortMaps()` function.
+The DSL supports sorting nested relationship collections directly in the database. The Cypher emitted depends on the engine's dialect:
+
+| Engine | Strategy | Nested Sort |
+|--------|----------|-------------|
+| Neo4j (default) | `apoc.coll.sortMaps()` | Supported |
+| Neo4j (CALL) | `CALL { ORDER BY + collect }` | Supported |
+| FalkorDB | `CALL { ORDER BY + collect }` | Supported (via CALL prolog) |
+| Neptune | `CALL { ORDER BY + collect }` | Supported (via CALL prolog) |
 
 **Direct Relationship Sorting:**
 
@@ -521,10 +523,9 @@ val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
     }
     orderBy {
         issue.id.desc()           // Root ordering (uses index)
-        assignedTo.name.asc()     // Collection sorting (uses APOC)
+        assignedTo.name.asc()     // Collection sorting
     }
 }
-// Each issue's assignedTo list is sorted by name ascending
 ```
 
 **Nested Relationship Sorting:**
@@ -540,13 +541,20 @@ val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
 
 **How it works:**
 - Root-level ordering (e.g., `issue.id.desc()`) uses Cypher's `ORDER BY`, which can utilize indexes
-- Collection sorting (e.g., `assignedTo.name.asc()`) wraps the collection with `apoc.coll.sortMaps()`
-- Both can be combined in a single query
+- Collection sorting strategy is selected automatically by the Cypher dialect
+- On Neo4j, the default uses APOC Extended's `apoc.coll.sortMaps()` — requires APOC Extended matching your Neo4j version
+- On FalkorDB and Neptune, CALL subquery prologs are used — no plugins required
+- To use CALL subqueries on Neo4j instead of APOC, set the Cypher dialect in your datasource config:
 
-**Requirements:**
-- Collection sorting requires **APOC Extended** plugin (not APOC Core)
-- APOC Extended version must match your Neo4j version (e.g., Neo4j 5.26 → APOC Extended 5.26.x)
-- Download from: https://github.com/neo4j-contrib/neo4j-apoc-procedures/releases
+```yaml
+database:
+  datasources:
+    graph:
+      type: NEO4J
+      cypher-dialect: FALKORDB   # Uses CALL subquery sort, no APOC needed
+```
+
+The dialect controls all engine-specific Cypher generation — existence checks, collection sorting, and nested view projections. Available dialects: `NEO4J_5` (default for Neo4j), `NEO4J_4`, `FALKORDB`, `NEPTUNE`.
 
 #### Client-Side Sorting with @SortedBy
 
@@ -586,43 +594,6 @@ The `@SortedBy` annotation:
 - Works with any `Comparable` property type
 - Handles nulls gracefully (sorted to end)
 
-#### Manual Client-Side Sorting
-
-For more complex sort logic (multiple fields, custom comparators), use manual approaches:
-
-**Simple method (zero annotations):**
-
-```kotlin
-@GraphView
-data class IssueWithAssignees(
-    @Root val issue: Issue,
-    @GraphRelationship(type = "ASSIGNED_TO")
-    val assignees: List<AssigneeWithContext>
-) {
-    fun sortedAssignees() = assignees.sortedBy { it.person.name }
-}
-```
-
-**Cached lazy property:**
-
-```kotlin
-@GraphView
-data class IssueWithAssignees(
-    @Root val issue: Issue,
-    @GraphRelationship(type = "ASSIGNED_TO")
-    val assignees: List<AssigneeWithContext>
-) {
-    @get:JsonIgnore
-    val sortedAssignees: List<AssigneeWithContext> by lazy {
-        assignees.sortedBy { it.person.name }
-    }
-}
-```
-
-Note: Drivine's ObjectMapper auto-ignores Kotlin delegate backing fields (`*$delegate`), so you only need `@get:JsonIgnore` on the lazy property.
-
-**Tip:** If using UUIDv7 for IDs, `sortedBy { it.messageId }` gives chronological order since UUIDv7 strings are lexicographically time-ordered.
-
 #### Available Operators
 
 **Comparison:**
@@ -655,7 +626,7 @@ GraphObjectManager tracks loaded objects and only saves changed fields:
 
 ```kotlin
 // Load an object
-val person = graphObjectManager.load(uuid, PersonCareer::class.java)!!
+val person = graphObjectManager.loadOrThrow<PersonCareer>(uuid)
 
 // Modify it
 val updated = person.copy(
@@ -669,7 +640,7 @@ graphObjectManager.save(updated)
 #### Save with Relationship Changes
 
 ```kotlin
-val person = graphObjectManager.load(uuid, PersonCareer::class.java)!!
+val person = graphObjectManager.loadOrThrow<PersonCareer>(uuid)
 
 // Remove all employment history
 val updated = person.copy(employmentHistory = emptyList())
@@ -812,7 +783,7 @@ This means:
 #### Simple Load All
 
 ```kotlin
-graphObjectManager.loadAll(PersonCareer::class.java)
+graphObjectManager.loadAll<PersonCareer>()
 ```
 
 Generates:
@@ -1295,6 +1266,130 @@ The Neo4j ObjectMapper automatically:
 - Ignores unknown properties when deserializing
 
 To exclude nulls on specific properties, use `@JsonInclude(JsonInclude.Include.NON_NULL)`.
+
+## Supported Engines
+
+Drivine4j supports multiple graph database engines from the same codebase. Switch engines with a one-line YAML change — your models, queries, and DSL code stay the same.
+
+| Engine | Type | Transactions | Collection Sort | Auth |
+|--------|------|-------------|----------------|------|
+| Neo4j 5.x | `NEO4J` | Full ACID | APOC (default) or CALL subquery | Basic (user/pass) |
+| Neo4j 4.x | `NEO4J` | Full ACID | APOC (required) | Basic (user/pass) |
+| FalkorDB | `FALKORDB` | Passthrough (no multi-statement) | CALL subquery | None |
+| Amazon Neptune | `NEPTUNE` | Full ACID | CALL subquery | IAM SigV4 or None (tunnel) |
+
+### Neo4j
+
+The default engine. Works out of the box with Testcontainers or a local instance:
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: NEO4J
+      host: localhost
+      port: 7687
+      user-name: neo4j
+      password: your-password
+      database-name: neo4j
+```
+
+### FalkorDB
+
+FalkorDB is an in-memory graph database built on Redis. It offers extremely fast query execution but does not support multi-statement transactions.
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: FALKORDB
+      host: localhost
+      port: 6379
+      database-name: mygraph
+```
+
+**Transactions:** FalkorDB does not support multi-statement transactions. `@Transactional` methods work but each query executes and commits independently. By default, `startTransaction()` logs a debug message and `rollbackTransaction()` logs a warning. To enforce strict no-transaction usage (throw on `@Transactional`), set:
+
+```yaml
+      falkor-db-transaction-mode: STRICT   # default: WARN
+```
+
+**Known limitations:**
+- Nested pattern comprehensions return NULL ([FalkorDB#1888](https://github.com/FalkorDB/FalkorDB/issues/1888)) — Drivine works around this with CALL subquery prologs
+- `collect()` on null includes null maps ([FalkorDB#1889](https://github.com/FalkorDB/FalkorDB/issues/1889)) — Drivine filters with `CASE WHEN IS NOT NULL`
+- CASCADE `DELETE_ORPHAN` not supported ([FalkorDB#1890](https://github.com/FalkorDB/FalkorDB/issues/1890)) — use `DELETE_ALL` or `NONE` instead
+
+### Amazon Neptune
+
+Neptune is AWS's managed graph database. Drivine connects via the Bolt protocol with two authentication modes:
+
+**IAM SigV4 authentication (recommended for production):**
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: NEPTUNE
+      host: your-cluster.us-east-1.neptune.amazonaws.com
+      port: 8182
+      region: us-east-1
+      neptune-auth: IAM
+```
+
+Requires AWS credentials available via the standard AWS credential chain (`~/.aws/credentials`, environment variables, IAM role, etc.) and the AWS SDK on the classpath:
+
+```gradle
+implementation 'software.amazon.awssdk:auth:2.31.3'
+implementation 'software.amazon.awssdk:regions:2.31.3'
+implementation 'software.amazon.awssdk:http-client-spi:2.31.3'
+```
+
+Tokens are automatically refreshed before expiry.
+
+**No authentication (SSH tunnel for development):**
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: NEPTUNE
+      host: localhost
+      port: 8182
+      neptune-auth: NONE
+```
+
+Use with an SSH tunnel to a Neptune cluster that has IAM auth disabled:
+```bash
+ssh -N -o ServerAliveInterval=60 -L 8182:your-cluster.neptune.amazonaws.com:8182 ec2-user@bastion-ip
+```
+
+**Known limitations:**
+- No `date()` function — use string dates or `datetime()` for temporal properties
+- No list/array property values — annotate collection fields with `@JsonPacked` to store as JSON strings
+- `collSortMaps` uses `{key: 'prop', order: 'asc'}` syntax (differs from APOC)
+
+### @JsonPacked Annotation
+
+For engines that don't support list property values (Neptune), annotate collection fields to transparently serialize as JSON strings:
+
+```kotlin
+@RelationshipFragment
+data class WorkHistory(
+    val role: String,
+    @JsonPacked val tags: List<String>? = null,
+    val target: Organization
+)
+```
+
+On write: `["backend", "senior"]` is stored as the string `'["backend","senior"]'`. On read: the JSON string is deserialized back to `List<String>`. Works across all engines.
+
+### Cypher Dialect
+
+Each engine uses a Cypher dialect that controls query generation. The dialect is auto-detected from the database type but can be overridden:
+
+```yaml
+      cypher-dialect: NEO4J_5    # NEO4J_5, NEO4J_4, FALKORDB, NEPTUNE
+```
 
 ## Multi-Database Support
 

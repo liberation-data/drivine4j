@@ -25,6 +25,7 @@ class ConnectionProviderBuilder(
     private var cypherDialect: CypherDialect? = null
     private var falkorDbTransactionMode: FalkorDbTransactionMode? = null
     private var region: String? = null
+    private var neptuneAuth: NeptuneAuthMode? = null
 
     fun withType(type: DatabaseType): ConnectionProviderBuilder = apply { this.type = type }
     fun host(host: String): ConnectionProviderBuilder = apply { this.host = host }
@@ -48,6 +49,7 @@ class ConnectionProviderBuilder(
         properties.cypherDialect?.let { cypherDialect(it) }
         properties.falkorDbTransactionMode?.let { falkorDbTransactionMode = it }
         properties.region?.let { region = it }
+        properties.neptuneAuth?.let { neptuneAuth = it }
         return this
     }
 
@@ -113,6 +115,7 @@ class ConnectionProviderBuilder(
                 "connectionTimeout" to connectionTimeout,
                 "maxConnectionPoolSize" to poolMax,
                 "region" to (region ?: System.getenv("AWS_REGION") ?: "us-east-1"),
+                "neptuneAuth" to (neptuneAuth ?: NeptuneAuthMode.IAM),
             ).filterValues { it != null }.mapValues { it.value as Any },
             subtypeRegistry = subtypeRegistry,
             cypherDialect = cypherDialect ?: CypherDialect.NEPTUNE,

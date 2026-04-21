@@ -69,6 +69,24 @@ inline fun <reified T : Any> GraphObjectManager.load(id: String): T? {
 }
 
 /**
+ * Loads a single graph object by ID, throwing if not found.
+ *
+ * Example:
+ * ```kotlin
+ * val issue = graphObjectManager.loadOrThrow<RaisedAndAssignedIssue>("some-uuid")
+ * ```
+ *
+ * @param T The graph object type to load
+ * @param id The object ID
+ * @return The graph object instance
+ * @throws NoSuchElementException if not found
+ */
+inline fun <reified T : Any> GraphObjectManager.loadOrThrow(id: String): T {
+    return load(id, T::class.java)
+        ?: throw NoSuchElementException("${T::class.simpleName} not found: $id")
+}
+
+/**
  * Deletes a graph object by ID using reified type parameter.
  *
  * Example:
@@ -173,6 +191,19 @@ inline fun <reified T : Any, Q : Any> GraphObjectManager.deleteAll(
  */
 inline fun <reified T : Any> GraphObjectManager.load(id: UUID): T? {
     return load(id.toString(), T::class.java)
+}
+
+/**
+ * Loads a single graph object by UUID, throwing if not found.
+ *
+ * @param T The graph object type to load
+ * @param id The object UUID
+ * @return The graph object instance
+ * @throws NoSuchElementException if not found
+ */
+inline fun <reified T : Any> GraphObjectManager.loadOrThrow(id: UUID): T {
+    return load(id.toString(), T::class.java)
+        ?: throw NoSuchElementException("${T::class.simpleName} not found: $id")
 }
 
 /**

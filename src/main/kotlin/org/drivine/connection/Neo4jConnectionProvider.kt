@@ -41,14 +41,14 @@ class Neo4jConnectionProvider(
         }.build()
 
         when {
-            // Neptune with IAM auth — SigV4 token refresh
-            type == DatabaseType.NEPTUNE && user == null && isSigV4Available() -> {
+            // Neptune with IAM auth
+            type == DatabaseType.NEPTUNE && config["neptuneAuth"] == NeptuneAuthMode.IAM -> {
                 val sigV4 = NeptuneSigV4AuthProvider(host, port, config["region"] as? String ?: "us-east-1")
                 val authManager = AuthTokenManagers.basic { sigV4.authToken() }
                 GraphDatabase.driver("$protocol://$host:$port", authManager, driverConfig)
             }
-            // Neptune via tunnel — no auth
-            type == DatabaseType.NEPTUNE && user == null -> {
+            // Neptune without auth (tunnel)
+            type == DatabaseType.NEPTUNE -> {
                 GraphDatabase.driver("$protocol://$host:$port", AuthTokens.none(), driverConfig)
             }
             // Neo4j — basic auth
@@ -71,12 +71,4 @@ class Neo4jConnectionProvider(
         driver.close()
     }
 
-    private fun isSigV4Available(): Boolean {
-        return try {
-            Class.forName("software.amazon.awssdk.auth.signer.Aws4Signer")
-            true
-        } catch (e: ClassNotFoundException) {
-            false
-        }
-    }
 }

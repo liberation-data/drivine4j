@@ -17,4 +17,5 @@ data class ConnectionProperties(
     val cypherDialect: CypherDialect? = null,
     val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
     val region: String? = null,
+    val neptuneAuth: NeptuneAuthMode? = null,
 ) {}
