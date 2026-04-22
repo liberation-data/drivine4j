@@ -7,6 +7,7 @@ import org.drivine.mapper.convertValueForNeo4j
 class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
     var parameters: Map<String, Any?> = emptyMap<String, Any?>(),
+    var renderParameters: Map<String, Any> = emptyMap<String, Any>(),
     var postProcessors: MutableList<ResultPostProcessor<Any, Any>> = mutableListOf(),
     var _skip: Int? = null,
     var _limit: Int? = null,
@@ -84,6 +85,44 @@ class QuerySpecification<T> private constructor(
         return this
     }
 
+    /**
+     * Registers template values that will be inlined into the query text before it reaches the
+     * connection layer. Use this for parts of Cypher that cannot be parameterized — labels,
+     * relationship types, property names — on backends (FalkorDB, Neptune) that lack Neo4j 5's
+     * native `$()` dynamic syntax.
+     *
+     * Template placeholders use the form `$($key)`. Matching keys are substituted with literal
+     * text; unmatched `$(...)` expressions pass through untouched so Neo4j 5's native syntax is
+     * preserved when mixed in the same query.
+     *
+     * Value coercion:
+     * - `String` → inserted as-is
+     * - `List<*>` → elements joined with `:` (for chained labels like `Chunk:Document`)
+     * - Other types → `toString()`
+     *
+     * Render params are never sent to the database as Cypher parameters.
+     *
+     * Example:
+     * ```kotlin
+     * QuerySpecification
+     *     .withStatement("MERGE (e:ContentElement {id: \$id}) SET e:\$(\$labels)")
+     *     .render(mapOf("labels" to listOf("Chunk", "Document")))
+     *     .bind(mapOf("id" to "abc"))
+     * ```
+     */
+    fun render(params: Map<String, Any>): QuerySpecification<T> {
+        this.renderParameters = this.renderParameters + params
+        return this
+    }
+
+    /**
+     * Convenience form of [render] for a single template value.
+     */
+    fun renderParam(key: String, value: Any): QuerySpecification<T> {
+        this.renderParameters = this.renderParameters + (key to value)
+        return this
+    }
+
     fun addPostProcessors(vararg postProcessors: ResultPostProcessor<Any, Any>): QuerySpecification<T> {
         this.postProcessors.addAll(postProcessors)
         return this
@@ -94,6 +133,7 @@ class QuerySpecification<T> private constructor(
         val newSpec = QuerySpecification<U>(
             statement = this.statement,
             parameters = this.parameters,
+            renderParameters = this.renderParameters,
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -133,6 +173,7 @@ class QuerySpecification<T> private constructor(
         val newSpec = QuerySpecification<U>(
             statement = this.statement,
             parameters = this.parameters,
+            renderParameters = this.renderParameters,
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -152,6 +193,7 @@ class QuerySpecification<T> private constructor(
         val newSpec = QuerySpecification<U>(
             statement = this.statement,
             parameters = this.parameters,
+            renderParameters = this.renderParameters,
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -185,6 +227,7 @@ class QuerySpecification<T> private constructor(
         val newSpec = QuerySpecification<U>(
             statement = this.statement,
             parameters = this.parameters,
+            renderParameters = this.renderParameters,
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -235,6 +278,7 @@ class QuerySpecification<T> private constructor(
         return QuerySpecification<T>(
             statement = toPlatformDefault(language, this.statement!!),
             parameters = this.parameters,
+            renderParameters = this.renderParameters,
             postProcessors = this.postProcessors.toMutableList(),
             _skip = this._skip,
             _limit = this._limit,

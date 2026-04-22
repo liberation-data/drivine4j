@@ -10,7 +10,33 @@ abstract class QuerySpecificationCompiler(protected val spec: QuerySpecification
     }
 
     protected open fun appliedStatement(): String {
-        return "${spec.statement!!.text} ${skipClause()} ${limitClause()}"
+        val rendered = renderTemplate(spec.statement!!.text, spec.renderParameters)
+        return "$rendered ${skipClause()} ${limitClause()}"
+    }
+
+    private fun renderTemplate(text: String, renderParams: Map<String, Any>): String {
+        if (renderParams.isEmpty()) return text
+        return RENDER_PATTERN.replace(text) { match ->
+            val key = match.groupValues[1]
+            if (renderParams.containsKey(key)) {
+                coerceRenderValue(renderParams[key])
+            } else {
+                match.value
+            }
+        }
+    }
+
+    private fun coerceRenderValue(value: Any?): String {
+        return when (value) {
+            null -> ""
+            is String -> value
+            is List<*> -> value.joinToString(":") { it?.toString() ?: "" }
+            else -> value.toString()
+        }
+    }
+
+    companion object {
+        private val RENDER_PATTERN = Regex("""\$\(\$([A-Za-z_][A-Za-z0-9_]*)\)""")
     }
 
     protected open fun skipClause(): String {
