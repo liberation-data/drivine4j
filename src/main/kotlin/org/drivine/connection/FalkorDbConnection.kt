@@ -47,7 +47,7 @@ class FalkorDbConnection(
         val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
         val compiled = SpecCompiler(finalizedSpec).compile()
         val coercedParams = applyParameterCoercers(finalizedSpec, compiled.parameters)
-        val (statement, params) = inlineDollarStrings(compiled.statement, coercedParams)
+        val (statement, params) = inlineProblematicStrings(compiled.statement, coercedParams)
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
 
@@ -122,25 +122,32 @@ class FalkorDbConnection(
     }
 
     /**
-     * For any top-level [String] parameter whose value contains `$`, splice the value into
-     * the query text as a Cypher string literal and drop the key from the parameter map.
+     * For any top-level [String] parameter whose value contains characters jfalkordb can't
+     * safely put in its `CYPHER key=value ...` prefix, splice the value into the query text
+     * as a Cypher string literal and drop the key from the parameter map.
      *
-     * WORKAROUND: FalkorDB/JFalkorDB#251 — jfalkordb builds a `CYPHER key=value ...` prefix
-     * using a string format that has no escape for `$` in values. FalkorDB's server then
-     * interprets `${...}` patterns inside those values as parameter expressions, causing
-     * `query with more than one statement is not supported` errors — length-dependent in
-     * practice, so short values pass but real-world RAG chunks (docs with code samples)
-     * blow up.
+     * WORKAROUND: Two jfalkordb bugs in `Utils.quoteString()` / `Utils.prepareQuery()`:
      *
-     * The fix is to take `$`-containing strings out of the prefix entirely: Cypher's parser
-     * does not interpret `$` inside a string literal in the query body, so splicing the
-     * value in as `"..."` is correct by construction. Remove this workaround once jfalkordb
-     * ships a fix and we bump the dependency.
+     * - FalkorDB/JFalkorDB#251 — `$` isn't escaped. FalkorDB's server then interprets `${...}`
+     *   in prefix values as parameter expressions, causing
+     *   `query with more than one statement is not supported`. Length-dependent, so short
+     *   values pass but real-world RAG chunks blow up.
+     *
+     * - FalkorDB/JFalkorDB#252 — backslashes aren't escaped before `"` is escaped. A value
+     *   like `{\"rows\": 5}` becomes `{\\"rows\\": 5}` in the prefix, which FalkorDB parses
+     *   as the quoted string ending early.
+     *
+     * Both bugs go away if the problematic value never reaches the prefix. Cypher's query
+     * parser does not interpret `$` or backslash escapes inside a string literal in the
+     * query body (beyond standard Cypher escape sequences, which [toCypherStringLiteral]
+     * produces), so splicing the value in as `"..."` is correct by construction.
      *
      * Only scalar `String` values are handled. Maps-as-parameter-values aren't supported by
-     * FalkorDB anyway (JFalkorDB#68), so we don't recurse into nested structures.
+     * FalkorDB anyway (JFalkorDB#68), so we don't recurse into nested structures. Remove
+     * this whole workaround once jfalkordb ships fixes for #251 and #252 and we bump the
+     * dependency.
      */
-    private fun inlineDollarStrings(
+    private fun inlineProblematicStrings(
         statement: String,
         parameters: Map<String, Any?>
     ): Pair<String, Map<String, Any?>> {
@@ -149,7 +156,7 @@ class FalkorDbConnection(
         var rewritten = statement
         val remaining = mutableMapOf<String, Any?>()
         for ((key, value) in parameters) {
-            if (value is String && value.contains('$')) {
+            if (value is String && needsInlining(value)) {
                 val literal = toCypherStringLiteral(value)
                 val reference = Regex("\\\$${Regex.escape(key)}(?![A-Za-z0-9_])")
                 rewritten = reference.replace(rewritten, Regex.escapeReplacement(literal))
@@ -159,6 +166,9 @@ class FalkorDbConnection(
         }
         return rewritten to remaining
     }
+
+    private fun needsInlining(value: String): Boolean =
+        value.contains('$') || value.contains('\\')
 
     private fun toCypherStringLiteral(value: String): String {
         val escaped = value

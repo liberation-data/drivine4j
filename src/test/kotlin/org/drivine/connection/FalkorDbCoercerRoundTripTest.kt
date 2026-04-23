@@ -237,6 +237,38 @@ class FalkorDbCoercerRoundTripTest {
     }
 
     @Test
+    fun `JSON-shaped string with escaped quotes triggers JFalkorDB#252 without inlining`() {
+        // Upstream reproducer: a docs chunk containing HTML-escaped JSON code samples
+        // like {\"rows\": 5}. jfalkordb's quoteString() escapes " without first escaping
+        // \, so the CYPHER prefix ends up with \\" and FalkorDB closes the quoted string
+        // at the wrong point. The inlining path puts the value in the query body as a
+        // properly Cypher-escaped literal, bypassing the broken prefix escaping entirely.
+        val text = """
+            Example response: {\"rows\": 5, \"cols\": 3}
+            Another chunk:    {\"name\": \"Ada\", \"role\": \"engineer\"}
+            Mixed:            path="C:\\Users\\ada" and reply={\"ok\": true}
+        """.trimIndent().repeat(6)
+
+        val conn = provider.connect()
+        try {
+            conn.query<Any>(
+                QuerySpecification
+                    .withStatement("MERGE (e:TestNode {id: \$id}) SET e.text = \$text")
+                    .bind(mapOf("id" to "json-chunk", "text" to text))
+            )
+            val out = conn.query(
+                QuerySpecification
+                    .withStatement("MATCH (e:TestNode {id: \$id}) RETURN e.text")
+                    .bind(mapOf("id" to "json-chunk"))
+                    .transform<String>()
+            )
+            assertEquals(text, out.single())
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
     fun `string with embedded double quotes and backslashes is properly Cypher-escaped`() {
         // Exercises the literal-escape rules: \, ", and $ all need the right handling for
         // the inlined Cypher string literal to parse back to the original bytes.
