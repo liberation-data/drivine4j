@@ -86,11 +86,16 @@ class CallSubqueryNestedViewProjector : NestedViewProjector {
             collectVars.add(nested.fieldName to collectVar)
         }
 
-        // Collect nested relationships per target node, filtering out nulls from OPTIONAL MATCH
+        // Collect nested relationships per target node, filtering out nulls from OPTIONAL MATCH.
+        // For single nullable relationships (isCollection = false), wrap collect() in head() so
+        // the field materialises as a single object or null rather than a list — matching the
+        // shape the inline (Neo4j) projector produces.
         if (collectVars.isNotEmpty()) {
             val collectExprs = collectVars.mapIndexed { i, (_, collectVar) ->
                 val nested = ctx.nestedRelationships[i]
-                "collect(DISTINCT CASE WHEN ${nested.alias} IS NOT NULL THEN ${nested.projection} END) AS $collectVar"
+                val collectExpr = "collect(DISTINCT CASE WHEN ${nested.alias} IS NOT NULL THEN ${nested.projection} END)"
+                val wrapped = if (nested.isCollection) collectExpr else "head($collectExpr)"
+                "$wrapped AS $collectVar"
             }
             sb.appendLine("    WITH ${ctx.targetAlias}, ${collectExprs.joinToString(", ")}")
         }
