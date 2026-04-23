@@ -4,6 +4,7 @@ import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
 import kotlin.test.assertEquals
@@ -20,12 +21,20 @@ class TemporalCoercerTest {
     }
 
     @Test
-    fun `ZonedDateTime is coerced to string`() {
+    fun `ZonedDateTime is coerced to zone-free ISO 8601 string so Jackson can parse it back`() {
         val zdt = ZonedDateTime.of(2026, 4, 23, 5, 7, 53, 0, ZoneOffset.UTC)
         val out = TemporalCoercer.coerce(mapOf("ts" to zdt))
 
-        assertTrue(out["ts"] is String)
-        assertEquals(zdt.toString(), out["ts"])
+        // Must NOT be the default "...Z[UTC]" form — Jackson's InstantDeserializer rejects it.
+        assertEquals("2026-04-23T05:07:53Z", out["ts"])
+    }
+
+    @Test
+    fun `non-UTC ZonedDateTime keeps its offset but drops the zone name suffix`() {
+        val zdt = ZonedDateTime.of(2026, 4, 23, 1, 7, 53, 0, ZoneId.of("America/New_York"))
+        val out = TemporalCoercer.coerce(mapOf("ts" to zdt))
+
+        assertEquals("2026-04-23T01:07:53-04:00", out["ts"])
     }
 
     @Test
