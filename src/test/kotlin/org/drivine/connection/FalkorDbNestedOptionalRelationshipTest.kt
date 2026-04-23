@@ -188,6 +188,29 @@ class FalkorDbNestedOptionalRelationshipTest {
         assertNull(msg.recipient, "no SENT_TO edge — recipient must be null")
     }
 
+    @Test
+    fun `root session with zero messages yields empty list, not a list of null-valued messages`() {
+        // Repro for FalkorDB/FalkorDB#1889: when the CALL subquery's OPTIONAL MATCH for
+        // messages finds nothing, FalkorDB still produces a row with messages = null.
+        // Without the CASE-WHEN-IS-NOT-NULL wrap on the outer projection, collect() builds
+        // a list containing a {message: {messageId: null, ...}} map and deserialization
+        // blows up on any non-nullable field of MessageData.
+        val sessionId = UUID.randomUUID()
+        seed(
+            "CREATE (:NestedSession {id: ${'$'}sessionId, name: 'empty-session'})",
+            mapOf("sessionId" to sessionId.toString())
+        )
+
+        val loaded = graphObjectManager.loadAll(Session::class.java)
+
+        assertEquals(1, loaded.size)
+        assertEquals(
+            emptyList(),
+            loaded.single().messages,
+            "absent HAS_MESSAGE edges must produce [] — not [{message: {nulls}, author: null, recipient: null}]"
+        )
+    }
+
     private fun seed(statement: String, params: Map<String, Any?>) {
         persistenceManager.execute(
             QuerySpecification

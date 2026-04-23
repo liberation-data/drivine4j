@@ -114,10 +114,17 @@ class CallSubqueryNestedViewProjector : NestedViewProjector {
 
         val targetProjection = "{ ${returnFields.joinToString(", ")} }"
 
+        // Guard the outer projection against an absent target. OPTIONAL MATCH produces a row
+        // with the target alias = null when nothing matches; collect()ing that projection
+        // without a null check gives a list containing `{root: {null-valued fields}, ...}`,
+        // because collect() only skips NULL *scalars*, not maps whose contents are null.
+        // FalkorDB hits this directly (FalkorDB/FalkorDB#1889); Neo4j sidesteps it by using
+        // InlineNestedViewProjector's pattern comprehension, which returns [] naturally.
+        val guardedProjection = "CASE WHEN ${ctx.targetAlias} IS NOT NULL THEN $targetProjection END"
         if (ctx.rel.isCollection) {
-            sb.appendLine("    RETURN collect($targetProjection) AS ${ctx.targetAlias}")
+            sb.appendLine("    RETURN collect($guardedProjection) AS ${ctx.targetAlias}")
         } else {
-            sb.appendLine("    RETURN $targetProjection AS ${ctx.targetAlias}")
+            sb.appendLine("    RETURN $guardedProjection AS ${ctx.targetAlias}")
         }
         sb.append("}")
 
