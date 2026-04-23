@@ -1,17 +1,36 @@
 package org.drivine.query
 
-abstract class QuerySpecificationCompiler(protected val spec: QuerySpecification<*>) {
+/**
+ * Compiles a [QuerySpecification] into a [CompiledQuery] — a statement string and parameter map
+ * ready to be sent to a backend driver.
+ *
+ * Currently backend-agnostic. If a future backend needs dialect-specific compilation behavior,
+ * reintroduce subclasses and keep this as the common case.
+ */
+class SpecCompiler(private val spec: QuerySpecification<*>) {
 
     fun compile(): CompiledQuery {
         return CompiledQuery(
-            statement = formattedStatement().trim(),
-            parameters = this.formattedParams()
+            statement = appliedStatement().trim(),
+            parameters = spec.parameters
         )
     }
 
-    protected open fun appliedStatement(): String {
+    private fun appliedStatement(): String {
         val rendered = renderTemplate(spec.statement!!.text, spec.renderParameters)
         return "$rendered ${skipClause()} ${limitClause()}"
+    }
+
+    private fun skipClause(): String {
+        return if (spec._skip != null) {
+            "${if (spec.statement!!.language == QueryLanguage.CYPHER) "SKIP" else "OFFSET"} ${spec._skip}"
+        } else {
+            ""
+        }
+    }
+
+    private fun limitClause(): String {
+        return spec._limit?.let { "LIMIT $it" } ?: ""
     }
 
     private fun renderTemplate(text: String, renderParams: Map<String, Any>): String {
@@ -38,20 +57,4 @@ abstract class QuerySpecificationCompiler(protected val spec: QuerySpecification
     companion object {
         private val RENDER_PATTERN = Regex("""\$\(\$([A-Za-z_][A-Za-z0-9_]*)\)""")
     }
-
-    protected open fun skipClause(): String {
-        return if (spec._skip != null) {
-            "${if (spec.statement!!.language == QueryLanguage.CYPHER) "SKIP" else "OFFSET"} ${spec._skip}"
-        } else {
-            ""
-        }
-    }
-
-    protected open fun limitClause(): String {
-        return spec._limit?.let { "LIMIT $it" } ?: ""
-    }
-
-    abstract fun formattedStatement(): String
-
-    abstract fun formattedParams(): Map<String, Any?>
 }

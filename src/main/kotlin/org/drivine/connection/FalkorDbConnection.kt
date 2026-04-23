@@ -3,9 +3,12 @@ package org.drivine.connection
 import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.ResultMapper
+import org.drivine.query.DollarEscaper
+import org.drivine.query.ParameterCoercer
 import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
-import org.drivine.query.Neo4jSpecCompiler
+import org.drivine.query.SpecCompiler
+import org.drivine.query.TemporalCoercer
 import com.falkordb.Graph
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -39,27 +42,30 @@ class FalkorDbConnection(
 
     override fun sessionId(): String = "falkordb-${System.identityHashCode(graph)}"
 
+    override fun parameterCoercers(): List<ParameterCoercer> = listOf(TemporalCoercer, DollarEscaper)
+
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
         val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
-        val compiled = Neo4jSpecCompiler(finalizedSpec).compile()
+        val compiled = SpecCompiler(finalizedSpec).compile()
+        val coercedParams = applyParameterCoercers(finalizedSpec, compiled.parameters)
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
 
         try {
             logger.info("FalkorDB query:\n{}", compiled.statement)
-            if (compiled.parameters.isNotEmpty()) {
-                logger.debug("FalkorDB params: {}", compiled.parameters)
+            if (coercedParams.isNotEmpty()) {
+                logger.debug("FalkorDB params: {}", coercedParams)
             }
 
             val resultSet = try {
-                if (compiled.parameters.isEmpty()) {
+                if (coercedParams.isEmpty()) {
                     graph.query(compiled.statement)
                 } else {
-                    graph.query(compiled.statement, compiled.parameters)
+                    graph.query(compiled.statement, coercedParams)
                 }
             } catch (e: Exception) {
                 logger.error("FalkorDB GRAPH.QUERY failed: {}\n  Statement: {}\n  Params: {}",
-                    e.message, compiled.statement, compiled.parameters)
+                    e.message, compiled.statement, coercedParams)
                 throw e
             }
 

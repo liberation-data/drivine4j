@@ -8,6 +8,7 @@ class QuerySpecification<T> private constructor(
     var statement: Statement? = null,
     var parameters: Map<String, Any?> = emptyMap<String, Any?>(),
     var renderParameters: Map<String, Any> = emptyMap<String, Any>(),
+    var parameterCoercers: MutableList<ParameterCoercer> = mutableListOf(),
     var postProcessors: MutableList<ResultPostProcessor<Any, Any>> = mutableListOf(),
     var _skip: Int? = null,
     var _limit: Int? = null,
@@ -128,12 +129,23 @@ class QuerySpecification<T> private constructor(
         return this
     }
 
+    /**
+     * Attaches coercers that reshape the compiled parameter map before it is sent to the
+     * backend driver. Runs *after* any coercers supplied by the connection (e.g. FalkorDB's
+     * [TemporalCoercer]), so spec-level coercers see the connection-coerced values.
+     */
+    fun addParameterCoercers(vararg coercers: ParameterCoercer): QuerySpecification<T> {
+        this.parameterCoercers.addAll(coercers)
+        return this
+    }
+
     // Map from current type T to new type U - returns new QuerySpecification<U>
     fun <U> map(mapper: (T) -> U): QuerySpecification<U> {
         val newSpec = QuerySpecification<U>(
             statement = this.statement,
             parameters = this.parameters,
             renderParameters = this.renderParameters,
+            parameterCoercers = this.parameterCoercers.toMutableList(),
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -174,6 +186,7 @@ class QuerySpecification<T> private constructor(
             statement = this.statement,
             parameters = this.parameters,
             renderParameters = this.renderParameters,
+            parameterCoercers = this.parameterCoercers.toMutableList(),
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -194,6 +207,7 @@ class QuerySpecification<T> private constructor(
             statement = this.statement,
             parameters = this.parameters,
             renderParameters = this.renderParameters,
+            parameterCoercers = this.parameterCoercers.toMutableList(),
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -228,6 +242,7 @@ class QuerySpecification<T> private constructor(
             statement = this.statement,
             parameters = this.parameters,
             renderParameters = this.renderParameters,
+            parameterCoercers = this.parameterCoercers.toMutableList(),
             postProcessors = mutableListOf(),
             _skip = this._skip,
             _limit = this._limit,
@@ -279,6 +294,7 @@ class QuerySpecification<T> private constructor(
             statement = toPlatformDefault(language, this.statement!!),
             parameters = this.parameters,
             renderParameters = this.renderParameters,
+            parameterCoercers = this.parameterCoercers.toMutableList(),
             postProcessors = this.postProcessors.toMutableList(),
             _skip = this._skip,
             _limit = this._limit,

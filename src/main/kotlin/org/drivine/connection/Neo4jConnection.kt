@@ -4,8 +4,8 @@ import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.ResultMapper
 import org.drivine.mapper.SubtypeRegistry
-import org.drivine.query.Neo4jSpecCompiler
 import org.drivine.query.QueryLanguage
+import org.drivine.query.SpecCompiler
 import org.drivine.query.QuerySpecification
 import org.neo4j.driver.Session
 import org.neo4j.driver.Transaction
@@ -28,13 +28,14 @@ class Neo4jConnection(
 
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
         val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
-        val compiledSpec = Neo4jSpecCompiler(finalizedSpec).compile()
+        val compiledSpec = SpecCompiler(finalizedSpec).compile()
+        val coercedParams = applyParameterCoercers(finalizedSpec, compiledSpec.parameters)
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
 
         try {
-            val result = transaction?.run(compiledSpec.statement, compiledSpec.parameters)
-                ?: session.run(compiledSpec.statement, compiledSpec.parameters)
+            val result = transaction?.run(compiledSpec.statement, coercedParams)
+                ?: session.run(compiledSpec.statement, coercedParams)
 
             val mapped = resultMapper.mapQueryResults(result.list(), finalizedSpec)
             statementLogger.log(spec, startTime)

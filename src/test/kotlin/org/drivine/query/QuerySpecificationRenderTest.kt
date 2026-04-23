@@ -16,7 +16,7 @@ class QuerySpecificationRenderTest {
             .withStatement("MATCH ()-[r:\$(\$type)]->() RETURN r")
             .renderParam("type", "HAS_ENTITY")
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals("MATCH ()-[r:HAS_ENTITY]->() RETURN r", compiled.statement)
     }
@@ -28,7 +28,7 @@ class QuerySpecificationRenderTest {
             .render(mapOf("labels" to listOf("Chunk", "Document")))
             .bind(mapOf("id" to "abc"))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(
             "MERGE (e:ContentElement {id: \$id}) SET e:Chunk:Document",
@@ -42,7 +42,7 @@ class QuerySpecificationRenderTest {
             .withStatement("MATCH (n:\$(\$known)) WHERE n.foo = \$(\$unknown) RETURN n")
             .render(mapOf("known" to "Person"))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(
             "MATCH (n:Person) WHERE n.foo = \$(\$unknown) RETURN n",
@@ -56,7 +56,7 @@ class QuerySpecificationRenderTest {
             .withStatement("MATCH (n:\$(\$label)) RETURN n")
             .bind(mapOf("label" to "Person"))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals("MATCH (n:\$(\$label)) RETURN n", compiled.statement)
     }
@@ -68,7 +68,7 @@ class QuerySpecificationRenderTest {
             .render(mapOf("labels" to listOf("Chunk", "Document")))
             .bind(mapOf("id" to "abc"))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertTrue(compiled.parameters.containsKey("id"))
         assertFalse(
@@ -88,7 +88,7 @@ class QuerySpecificationRenderTest {
                 "to" to "Person"
             ))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(
             "MATCH (a:Person)-[r:KNOWS]->(b:Person) RETURN r",
@@ -109,7 +109,7 @@ class QuerySpecificationRenderTest {
                 "props" to mapOf("title" to "hello")
             ))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(
             "MERGE (e:ContentElement {id: \$id}) SET e:Chunk:Document SET e += \$props",
@@ -127,8 +127,8 @@ class QuerySpecificationRenderTest {
             .withStatement("MATCH (n:\$(\$label)) RETURN n")
             .renderParam("label", "Person")
 
-        val compiledMap = Neo4jSpecCompiler(viaMap.finalizedCopy(QueryLanguage.CYPHER)).compile()
-        val compiledSingle = Neo4jSpecCompiler(viaSingle.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiledMap = SpecCompiler(viaMap.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiledSingle = SpecCompiler(viaSingle.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(compiledMap.statement, compiledSingle.statement)
     }
@@ -144,8 +144,8 @@ class QuerySpecificationRenderTest {
             .render(mapOf("label" to "Person"))
             .bind(mapOf("id" to id, "name" to "Ada", "age" to 36))
 
-        val compiledNo = Neo4jSpecCompiler(withoutRender.finalizedCopy(QueryLanguage.CYPHER)).compile()
-        val compiledYes = Neo4jSpecCompiler(withRender.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiledNo = SpecCompiler(withoutRender.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiledYes = SpecCompiler(withRender.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(compiledNo.parameters, compiledYes.parameters)
     }
@@ -162,7 +162,7 @@ class QuerySpecificationRenderTest {
                 "createdAt" to now
             ))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(uuid.toString(), compiled.parameters["id"])
         assertTrue(
@@ -179,7 +179,7 @@ class QuerySpecificationRenderTest {
             .render(mapOf("label" to "Person"))
             .bind(mapOf("note" to trickyValue))
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals("MATCH (n:Person) WHERE n.note = \$note RETURN n", compiled.statement)
         assertEquals(
@@ -200,8 +200,8 @@ class QuerySpecificationRenderTest {
             .bind(mapOf("id" to "abc"))
             .render(mapOf("label" to "Person"))
 
-        val a = Neo4jSpecCompiler(renderFirst.finalizedCopy(QueryLanguage.CYPHER)).compile()
-        val b = Neo4jSpecCompiler(bindFirst.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val a = SpecCompiler(renderFirst.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val b = SpecCompiler(bindFirst.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals(a.statement, b.statement)
         assertEquals(a.parameters, b.parameters)
@@ -213,7 +213,7 @@ class QuerySpecificationRenderTest {
             .withStatement("MATCH (n) WHERE n.count = \$(\$n) RETURN n")
             .renderParam("n", 42)
 
-        val compiled = Neo4jSpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
+        val compiled = SpecCompiler(spec.finalizedCopy(QueryLanguage.CYPHER)).compile()
 
         assertEquals("MATCH (n) WHERE n.count = 42 RETURN n", compiled.statement)
     }
