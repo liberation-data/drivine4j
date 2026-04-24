@@ -325,8 +325,9 @@ class DemoTest @Autowired constructor(
     @Test
     fun `demo - CASCADE DELETE_ORPHAN - removes only orphaned nodes`() {
         Assumptions.assumeTrue(
-            persistenceManager.type != DatabaseType.FALKORDB,
-            "CASCADE DELETE_ORPHAN not supported on FalkorDB (FalkorDB/FalkorDB#1890)"
+            persistenceManager.grammar.supportsOrphanDelete,
+            "CASCADE DELETE_ORPHAN not supported on this backend " +
+                "(FalkorDB: FalkorDB/FalkorDB#1890; Memgraph: EXISTS in WITH not implemented)"
         )
 
         val aliceId = UUID.randomUUID()

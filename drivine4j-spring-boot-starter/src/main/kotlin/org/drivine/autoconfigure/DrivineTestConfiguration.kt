@@ -5,6 +5,7 @@ import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseType
 import org.drivine.test.DrivineTestContainer
 import org.drivine.test.FalkorDbTestContainer
+import org.drivine.test.MemgraphTestContainer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
@@ -26,6 +27,10 @@ import org.springframework.context.annotation.Primary
  * ## FalkorDB
  * - `test.falkordb.use-local=true` or `USE_LOCAL_FALKORDB=true` → uses local instance
  * - Otherwise starts a FalkorDB Testcontainer
+ *
+ * ## Memgraph
+ * - `test.memgraph.use-local=true` or `USE_LOCAL_MEMGRAPH=true` → uses local instance
+ * - Otherwise starts a Memgraph Testcontainer
  */
 @Configuration
 class DrivineTestConfiguration {
@@ -38,7 +43,8 @@ class DrivineTestConfiguration {
     fun dataSourceMap(
         properties: DrivineProperties,
         @Value("\${test.neo4j.use-local:#{null}}") useLocalNeo4jFromSpring: String?,
-        @Value("\${test.falkordb.use-local:#{null}}") useLocalFalkorFromSpring: String?
+        @Value("\${test.falkordb.use-local:#{null}}") useLocalFalkorFromSpring: String?,
+        @Value("\${test.memgraph.use-local:#{null}}") useLocalMemgraphFromSpring: String?
     ): DataSourceMap {
         val datasources = properties.datasources.toMutableMap()
 
@@ -73,6 +79,22 @@ class DrivineTestConfiguration {
                         datasources[name] = props.copy(
                             host = FalkorDbTestContainer.getConnectionHost(),
                             port = FalkorDbTestContainer.getConnectionPort(),
+                        )
+                    }
+                }
+
+                DatabaseType.MEMGRAPH -> {
+                    val useLocal = useLocalMemgraphFromSpring?.toBoolean()
+                        ?: System.getenv("USE_LOCAL_MEMGRAPH")?.toBoolean()
+                        ?: false
+
+                    log.info("Drivine Test Config [$name]: Memgraph use-local=$useLocal")
+
+                    if (!useLocal) {
+                        log.info("Starting Memgraph Testcontainer...")
+                        datasources[name] = props.copy(
+                            host = MemgraphTestContainer.getConnectionHost(),
+                            port = MemgraphTestContainer.getConnectionPort(),
                         )
                     }
                 }

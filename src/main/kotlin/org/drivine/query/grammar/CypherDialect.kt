@@ -43,7 +43,14 @@ enum class CypherDialect {
      * - Working nested pattern comprehensions and orphan delete
      * - Built-in `collSortMaps` / `collSortNodes` functions
      */
-    NEPTUNE;
+    NEPTUNE,
+
+    /**
+     * Memgraph — Neo4j-compatible openCypher dialect with `EXISTS { pattern }`, working
+     * nested pattern comprehensions, and orphan delete. Ships without APOC (uses MAGE
+     * instead), so the default sort emitter is `CALL { }` subqueries.
+     */
+    MEMGRAPH;
 
     fun grammar(sortEmitterOverride: CollectionSortEmitter? = null): CypherGrammar = when (this) {
         NEO4J_5 -> Neo4j5Grammar(sortEmitterOverride ?: ApocSortMapsEmitter())
@@ -51,5 +58,6 @@ enum class CypherDialect {
         OPEN_CYPHER -> OpenCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
         FALKORDB -> FalkorDbCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
         NEPTUNE -> NeptuneCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
+        MEMGRAPH -> MemgraphGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
     }
 }

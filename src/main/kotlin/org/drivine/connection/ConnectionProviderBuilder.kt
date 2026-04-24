@@ -61,6 +61,7 @@ class ConnectionProviderBuilder(
             DatabaseType.NEO4J -> buildNeo4jProvider(name)
             DatabaseType.NEPTUNE -> buildNeptuneProvider(name)
             DatabaseType.FALKORDB -> buildFalkorDbProvider(name)
+            DatabaseType.MEMGRAPH -> buildMemgraphProvider(name)
             else -> throw DrivineException("Type $type is not supported by ConnectionProviderBuilder")
         }
 
@@ -119,6 +120,33 @@ class ConnectionProviderBuilder(
             ).filterValues { it != null }.mapValues { it.value as Any },
             subtypeRegistry = subtypeRegistry,
             cypherDialect = cypherDialect ?: CypherDialect.NEPTUNE,
+        )
+    }
+
+    private fun buildMemgraphProvider(name: String): ConnectionProvider {
+        if (protocol == null) protocol = "bolt"
+        if (idleTimeout != null) logger.warn("idleTimeout is not supported by Memgraph")
+
+        val resolvedPort = port ?: 7687
+        if (resolvedPort != 7687) logger.warn("$resolvedPort is a non-standard port for Memgraph")
+
+        // Memgraph accepts empty credentials by default (auth disabled out of the box).
+        // Users running an auth-enabled Memgraph can still supply username/password.
+        return Neo4jConnectionProvider(
+            name = name,
+            type = type!!,
+            host = host!!,
+            port = resolvedPort,
+            user = userName ?: "",
+            password = password ?: "",
+            database = this.name,
+            protocol = protocol!!,
+            config = mapOf(
+                "connectionTimeout" to connectionTimeout,
+                "maxConnectionPoolSize" to poolMax
+            ).filterValues { it != null }.mapValues { it.value as Any },
+            subtypeRegistry = subtypeRegistry,
+            cypherDialect = cypherDialect ?: CypherDialect.MEMGRAPH,
         )
     }
 

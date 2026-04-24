@@ -3,7 +3,7 @@
 [![CI](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml/badge.svg)](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, and **Amazon Neptune** with two approaches to graph mapping:
+A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, and **Memgraph** with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
 2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL. 
@@ -512,6 +512,7 @@ The DSL supports sorting nested relationship collections directly in the databas
 | Neo4j (CALL) | `CALL { ORDER BY + collect }` | Supported |
 | FalkorDB | `CALL { ORDER BY + collect }` | Supported (via CALL prolog) |
 | Neptune | `CALL { ORDER BY + collect }` | Supported (via CALL prolog) |
+| Memgraph | `CALL { ORDER BY + collect }` | Supported (no APOC, uses CALL) |
 
 **Direct Relationship Sorting:**
 
@@ -543,7 +544,7 @@ val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
 - Root-level ordering (e.g., `issue.id.desc()`) uses Cypher's `ORDER BY`, which can utilize indexes
 - Collection sorting strategy is selected automatically by the Cypher dialect
 - On Neo4j, the default uses APOC Extended's `apoc.coll.sortMaps()` — requires APOC Extended matching your Neo4j version
-- On FalkorDB and Neptune, CALL subquery prologs are used — no plugins required
+- On FalkorDB, Neptune, and Memgraph, CALL subquery prologs are used — no plugins required
 - To use CALL subqueries on Neo4j instead of APOC, set the Cypher dialect in your datasource config:
 
 ```yaml
@@ -554,7 +555,7 @@ database:
       cypher-dialect: FALKORDB   # Uses CALL subquery sort, no APOC needed
 ```
 
-The dialect controls all engine-specific Cypher generation — existence checks, collection sorting, and nested view projections. Available dialects: `NEO4J_5` (default for Neo4j), `NEO4J_4`, `FALKORDB`, `NEPTUNE`.
+The dialect controls all engine-specific Cypher generation — existence checks, collection sorting, and nested view projections. Available dialects: `NEO4J_5` (default for Neo4j), `NEO4J_4`, `FALKORDB`, `NEPTUNE`, `MEMGRAPH`.
 
 #### Client-Side Sorting with @SortedBy
 
@@ -1277,6 +1278,7 @@ Drivine4j supports multiple graph database engines from the same codebase. Switc
 | Neo4j 4.x | `NEO4J` | Full ACID | APOC (required) | Basic (user/pass) |
 | FalkorDB | `FALKORDB` | Passthrough (no multi-statement) | CALL subquery | None |
 | Amazon Neptune | `NEPTUNE` | Full ACID | CALL subquery | IAM SigV4 or None (tunnel) |
+| Memgraph | `MEMGRAPH` | Full ACID | CALL subquery | Basic (user/pass) or None |
 
 ### Neo4j
 
@@ -1368,6 +1370,27 @@ ssh -N -o ServerAliveInterval=60 -L 8182:your-cluster.neptune.amazonaws.com:8182
 - No list/array property values — annotate collection fields with `@JsonPacked` to store as JSON strings
 - `collSortMaps` uses `{key: 'prop', order: 'asc'}` syntax (differs from APOC)
 
+### Memgraph
+
+Memgraph is an in-memory, Bolt-compatible graph database with Neo4j-compatible Cypher. Drivine reuses the Neo4j driver stack — only the Cypher dialect differs (no APOC; collection sorting via `CALL` subqueries).
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: MEMGRAPH
+      host: localhost
+      port: 7687
+      user-name: ""        # Memgraph accepts empty credentials by default
+      password: ""
+```
+
+**Notes:**
+- Full ACID transactions (`startTransaction` / `commit` / `rollback` all work as expected)
+- `EXISTS { pattern }` and nested pattern comprehensions are supported, so `@GraphView` queries use the same inline projector as Neo4j
+- No APOC — use MAGE for procedures; collection sorting uses CALL subqueries by default
+- For MAGE algorithms or Memgraph Lab, switch the image to `memgraph/memgraph-platform`
+
 ### @JsonPacked Annotation
 
 For engines that don't support list property values (Neptune), annotate collection fields to transparently serialize as JSON strings:
@@ -1388,7 +1411,7 @@ On write: `["backend", "senior"]` is stored as the string `'["backend","senior"]
 Each engine uses a Cypher dialect that controls query generation. The dialect is auto-detected from the database type but can be overridden:
 
 ```yaml
-      cypher-dialect: NEO4J_5    # NEO4J_5, NEO4J_4, FALKORDB, NEPTUNE
+      cypher-dialect: NEO4J_5    # NEO4J_5, NEO4J_4, FALKORDB, NEPTUNE, MEMGRAPH
 ```
 
 ## Multi-Database Support
