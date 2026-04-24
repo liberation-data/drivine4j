@@ -21,4 +21,21 @@ class MemgraphGrammar(
     // be used within WITH!") which is what the CASCADE DELETE_ORPHAN query emits. Opt out so
     // callers get a clean UnsupportedOperationException instead of a cryptic server error.
     override val supportsOrphanDelete: Boolean = false
+
+    /**
+     * Memgraph cannot execute the `CALL { WITH rootAlias ... RETURN count(x) AS _ec0 }` pattern
+     * that [OpenCypherGrammar.filteredExistenceCheck] emits — CALL-with-imported-variables
+     * surfaces internally as an "Exists" AST node, and Memgraph errors with
+     * "Not yet implemented: Exists cannot be used within WITH!". Use a size-of-pattern-
+     * comprehension check instead: standard openCypher, no subquery, no variable imports.
+     */
+    override fun filteredExistenceCheck(
+        relationshipPattern: String,
+        whereClause: String,
+        uniqueId: Int
+    ): FilteredExistenceResult {
+        return FilteredExistenceResult(
+            inlineCondition = "size([$relationshipPattern WHERE $whereClause | 1]) > 0"
+        )
+    }
 }

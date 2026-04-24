@@ -16,6 +16,7 @@ test:
 # Default datasource: Neo4j via Testcontainers
 # For FalkorDB: change type to FALKORDB, host/port to 6379, add database-name
 # For Neptune: change type to NEPTUNE, set host/port/region, add neptune-auth
+# For Memgraph: change type to MEMGRAPH, port stays 7687, user-name and password empty
 database:
   datasources:
     graph:
