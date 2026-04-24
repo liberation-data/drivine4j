@@ -25,11 +25,14 @@ import kotlin.test.assertNotNull
 class MemgraphConnectionIntegrationTest {
 
     companion object {
+        // Wait for the mapped Bolt port to actually accept TCP connections — Memgraph's
+        // "You are running Memgraph" log line prints before Bolt is ready, so a log-based
+        // wait races with the first test.
         @Container
         @JvmField
         val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
             .withExposedPorts(7687)
-            .waitingFor(Wait.forLogMessage(".*You are running Memgraph.*", 1))
+            .waitingFor(Wait.forListeningPort())
 
         private lateinit var provider: Neo4jConnectionProvider
 

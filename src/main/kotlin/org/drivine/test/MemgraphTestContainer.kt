@@ -91,8 +91,10 @@ class MemgraphTestContainer private constructor(
         private fun createTestContainer(): MemgraphTestContainer {
             val container = MemgraphTestContainer(DockerImageName.parse(MEMGRAPH_IMAGE))
                 .withExposedPorts(MEMGRAPH_BOLT_PORT)
-                // Memgraph logs "You are running Memgraph" when Bolt is ready
-                .waitingFor(Wait.forLogMessage(".*You are running Memgraph.*", 1))
+                // Memgraph's "You are running Memgraph" log line prints before Bolt is ready
+                // to accept connections. Wait on the exposed port instead so Bolt handshake
+                // attempts don't race with container startup.
+                .waitingFor(Wait.forListeningPort())
 
             container.start()
             return container
