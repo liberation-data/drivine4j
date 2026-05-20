@@ -1,10 +1,15 @@
 package org.drivine.model
 
+import org.drivine.annotation.DrivineIgnore
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import java.lang.reflect.Modifier
 import kotlin.reflect.KClass
+import kotlin.reflect.KMutableProperty1
+import kotlin.reflect.KProperty1
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
+import kotlin.reflect.jvm.javaField
 import kotlin.reflect.jvm.javaType
 
 /**
@@ -92,18 +97,50 @@ data class FragmentModel(
          */
         private fun extractKotlinFields(clazz: Class<*>): List<FragmentField> {
             val kClass = clazz.kotlin
-            return kClass.memberProperties.map { property ->
-                val returnType = property.returnType
-                val javaType = returnType.javaType as? Class<*> ?: Any::class.java
+            return kClass.memberProperties
+                .filterNot { it.isDrivineIgnored() }
+                .filterNot { it.isStaticBackingField() }
+                .map { property ->
+                    val returnType = property.returnType
+                    val javaType = returnType.javaType as? Class<*> ?: Any::class.java
 
-                FragmentField(
-                    name = property.name,
-                    type = javaType,
-                    kotlinType = returnType.classifier as? KClass<*>,
-                    nullable = returnType.isMarkedNullable,
-                    typeString = returnType.toString()
-                )
-            }.sortedBy { it.name }
+                    FragmentField(
+                        name = property.name,
+                        type = javaType,
+                        kotlinType = returnType.classifier as? KClass<*>,
+                        nullable = returnType.isMarkedNullable,
+                        typeString = returnType.toString()
+                    )
+                }.sortedBy { it.name }
+        }
+
+        /**
+         * True if the property is annotated [DrivineIgnore] on the
+         * property itself, its getter, its setter, or its backing
+         * field. Lets callers model computed / lazy / cache
+         * properties on a `@NodeFragment` class without those
+         * accessors becoming MERGE columns on save.
+         */
+        private fun KProperty1<*, *>.isDrivineIgnored(): Boolean {
+            if (findAnnotation<DrivineIgnore>() != null) return true
+            if (getter.findAnnotation<DrivineIgnore>() != null) return true
+            if (this is KMutableProperty1<*, *> &&
+                setter.findAnnotation<DrivineIgnore>() != null
+            ) return true
+            val backingField = javaField
+            if (backingField?.isAnnotationPresent(DrivineIgnore::class.java) == true) return true
+            return false
+        }
+
+        /**
+         * Skip properties whose backing field is JVM-static — those
+         * are companion-object refs (`Companion`) and other static
+         * artefacts that Kotlin reflection surfaces via
+         * `memberProperties` but that aren't instance-level state.
+         */
+        private fun KProperty1<*, *>.isStaticBackingField(): Boolean {
+            val f = javaField ?: return false
+            return Modifier.isStatic(f.modifiers)
         }
 
         /**
