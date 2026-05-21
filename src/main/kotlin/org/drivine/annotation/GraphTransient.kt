@@ -1,11 +1,11 @@
 package org.drivine.annotation
 
 /**
- * Marks a Kotlin/Java property so Drivine excludes it from graph
- * mapping. Use on computed/derived getters, lazy caches, transient
- * collaborators, or any other class member that lives on a
- * `@NodeFragment` for in-memory ergonomics but should NOT appear as
- * a Neo4j node property on save.
+ * Marks a Kotlin/Java property as transient for graph mapping —
+ * Drivine excludes it from the persisted node properties. Use on
+ * computed/derived getters, lazy caches, transient collaborators, or
+ * any other class member that lives on a `@NodeFragment` for in-memory
+ * ergonomics but should NOT appear as a Neo4j node property on save.
  *
  * **Why not just `@JsonIgnore`.** `@JsonIgnore` is Jackson's
  * serialization concern — a downstream API serializer may legitimately
@@ -13,8 +13,15 @@ package org.drivine.annotation
  * persisted to the graph. The two concerns can pull in opposite
  * directions (a lazy cache that you want in the JSON API response
  * but not in Neo4j; a relationship target you want in Neo4j but not
- * in JSON). Domain-specific `@DrivineIgnore` lets callers be explicit
+ * in JSON). Domain-specific `@GraphTransient` lets callers be explicit
  * about which concern is which.
+ *
+ * **Why not just `@Transient`.** A bare `@Transient` collides on import
+ * with `jakarta.persistence.Transient`, `org.springframework.data`
+ * `.annotation.Transient`, and Kotlin's `kotlin.jvm.Transient` — only
+ * one can be imported per file, and IDE auto-import picks the wrong one.
+ * `@GraphTransient` carries the same "in-memory, not persisted" meaning
+ * with a unique name that never collides.
  *
  * Applies to getters by default — that's where computed properties
  * live in Kotlin. Also valid on backing fields for the `private var
@@ -27,10 +34,10 @@ package org.drivine.annotation
  *     @NodeId var nodeId: String = "",
  *     var threadJson: String = "{}",
  * ) {
- *     @get:DrivineIgnore
+ *     @get:GraphTransient
  *     val thread: EmailThread by lazy { mapper.readValue(threadJson, EmailThread::class.java) }
  *
- *     @field:DrivineIgnore
+ *     @field:GraphTransient
  *     private var cachedThread: EmailThread? = null
  * }
  * ```
@@ -42,4 +49,4 @@ package org.drivine.annotation
     AnnotationTarget.PROPERTY_SETTER,
 )
 @Retention(AnnotationRetention.RUNTIME)
-annotation class DrivineIgnore
+annotation class GraphTransient

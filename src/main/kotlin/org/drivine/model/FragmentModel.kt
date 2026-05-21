@@ -1,6 +1,6 @@
 package org.drivine.model
 
-import org.drivine.annotation.DrivineIgnore
+import org.drivine.annotation.GraphTransient
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import java.lang.reflect.Modifier
@@ -98,7 +98,7 @@ data class FragmentModel(
         private fun extractKotlinFields(clazz: Class<*>): List<FragmentField> {
             val kClass = clazz.kotlin
             return kClass.memberProperties
-                .filterNot { it.isDrivineIgnored() }
+                .filterNot { it.isGraphTransient() }
                 .filterNot { it.isStaticBackingField() }
                 .map { property ->
                     val returnType = property.returnType
@@ -115,20 +115,20 @@ data class FragmentModel(
         }
 
         /**
-         * True if the property is annotated [DrivineIgnore] on the
+         * True if the property is annotated [GraphTransient] on the
          * property itself, its getter, its setter, or its backing
          * field. Lets callers model computed / lazy / cache
          * properties on a `@NodeFragment` class without those
          * accessors becoming MERGE columns on save.
          */
-        private fun KProperty1<*, *>.isDrivineIgnored(): Boolean {
-            if (findAnnotation<DrivineIgnore>() != null) return true
-            if (getter.findAnnotation<DrivineIgnore>() != null) return true
+        private fun KProperty1<*, *>.isGraphTransient(): Boolean {
+            if (findAnnotation<GraphTransient>() != null) return true
+            if (getter.findAnnotation<GraphTransient>() != null) return true
             if (this is KMutableProperty1<*, *> &&
-                setter.findAnnotation<DrivineIgnore>() != null
+                setter.findAnnotation<GraphTransient>() != null
             ) return true
             val backingField = javaField
-            if (backingField?.isAnnotationPresent(DrivineIgnore::class.java) == true) return true
+            if (backingField?.isAnnotationPresent(GraphTransient::class.java) == true) return true
             return false
         }
 
