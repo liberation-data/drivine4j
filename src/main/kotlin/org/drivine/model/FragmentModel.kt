@@ -56,10 +56,10 @@ data class FragmentModel(
          * @throws IllegalArgumentException if the class is not annotated with @GraphFragment
          */
         fun from(clazz: Class<*>): FragmentModel {
-            val annotation = clazz.getAnnotation(NodeFragment::class.java)
+            clazz.getAnnotation(NodeFragment::class.java)
                 ?: throw IllegalArgumentException("Class ${clazz.name} is not annotated with @GraphFragment")
 
-            val labels = annotation.labels.toList()
+            val labels = labelsFor(clazz)
             val fields = extractFields(clazz)
             val nodeIdField = findNodeIdField(clazz)
 
@@ -76,6 +76,42 @@ data class FragmentModel(
          * Creates a FragmentModel from a Kotlin class annotated with @GraphFragment.
          */
         fun from(kClass: KClass<*>): FragmentModel = from(kClass.java)
+
+        /**
+         * Resolves the complete set of @NodeFragment labels a class
+         * persists with: the class's own labels unioned with those
+         * declared on its superclasses and (transitively) implemented
+         * interfaces.
+         *
+         * The class's own labels lead, followed by inherited labels in
+         * breadth-first order, with duplicates removed. So a concrete
+         * subtype of `@NodeFragment(labels = ["Signal"]) interface Signal`
+         * persists as `:EmailSignal:Signal` without having to repeat
+         * "Signal" in its own annotation — which is what makes
+         * `MATCH (n:Signal)` find every subtype.
+         *
+         * Before this traversal existed only the concrete class's own
+         * annotation was inspected, so interface/superclass labels were
+         * silently dropped at save time and `pm.registerSubtype` only
+         * wired load-time polymorphism, never the persisted label set.
+         */
+        fun labelsFor(clazz: Class<*>): List<String> {
+            val labels = LinkedHashSet<String>()
+            val visited = mutableSetOf<Class<*>>()
+            val queue = ArrayDeque<Class<*>>()
+            queue.add(clazz)
+            while (queue.isNotEmpty()) {
+                val current = queue.removeFirst()
+                if (!visited.add(current)) continue
+                current.getAnnotation(NodeFragment::class.java)
+                    ?.let { labels.addAll(it.labels) }
+                current.superclass
+                    ?.takeIf { it != Any::class.java }
+                    ?.let { queue.add(it) }
+                current.interfaces.forEach { queue.add(it) }
+            }
+            return labels.toList()
+        }
 
         /**
          * Extracts all fields from a class, including inherited fields.

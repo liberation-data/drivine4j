@@ -902,8 +902,11 @@ data class StoredSession(
 Consumers implement the interface and register at startup:
 
 ```kotlin
-// Consumer's implementation
-@NodeFragment(labels = ["SessionUser", "AppUser"])
+// Consumer's implementation.
+// Only the subtype's own label is needed — the parent's "SessionUser"
+// label is inherited from the interface's @NodeFragment automatically,
+// so saved nodes carry (:AppUser:SessionUser).
+@NodeFragment(labels = ["AppUser"])
 data class AppUser(
     @NodeId override val id: String,
     override val displayName: String,
@@ -916,7 +919,7 @@ fun persistenceManager(factory: PersistenceManagerFactory): PersistenceManager {
     val pm = factory.get("neo")
     pm.registerSubtype(
         SessionUser::class.java,
-        "AppUser|SessionUser",  // Composite label key (sorted alphabetically, pipe-separated)
+        listOf("AppUser", "SessionUser"),  // labels the persisted node carries
         AppUser::class.java
     )
     return pm
@@ -926,6 +929,11 @@ fun persistenceManager(factory: PersistenceManagerFactory): PersistenceManager {
 The `registerSubtype()` call configures both:
 - Drivine's label-based polymorphism for loading
 - Jackson's abstract type mapping for save operations
+
+> **Note:** `@NodeFragment` labels declared on a parent interface (or superclass)
+> are inherited at save time — a subtype persists with the union of its own labels
+> and every annotated supertype's labels, de-duplicated. You no longer need to
+> repeat the parent's labels in each subtype's `@NodeFragment`.
 
 **Use interfaces when:**
 - Implementations are defined in different modules/libraries
