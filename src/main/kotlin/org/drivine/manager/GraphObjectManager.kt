@@ -362,7 +362,22 @@ class GraphObjectManager(
      * @return The number of nodes deleted (0 or 1)
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>): Int {
-        return delete(id, graphClass, null)
+        return delete(id, graphClass, null, CascadeType.NONE)
+    }
+
+    /**
+     * Deletes a graph object by its ID, applying a cascade policy scoped by the view.
+     *
+     * Mirrors [save]'s cascade parameter on the delete path. The cascade boundary is the shape
+     * of the view passed in — see [delete] (the four-arg overload) for the full semantics.
+     *
+     * @param id The ID value of the object to delete
+     * @param graphClass The graph object class
+     * @param cascade The cascade policy (default NONE = root-only DETACH DELETE)
+     * @return The number of nodes deleted (root plus any cascaded fragments)
+     */
+    fun <T : Any> delete(id: String, graphClass: Class<T>, cascade: CascadeType): Int {
+        return delete(id, graphClass, null, cascade)
     }
 
     /**
@@ -381,6 +396,35 @@ class GraphObjectManager(
      * @return The number of nodes deleted (0 or 1)
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
+        return delete(id, graphClass, whereClause, CascadeType.NONE)
+    }
+
+    /**
+     * Deletes a graph object by its ID with both a WHERE clause filter and a cascade policy.
+     *
+     * The cascade scope is the shape of the view: traversal follows only the relationships the
+     * view declares, so callers express "what to destroy" by passing a narrow, delete-only view.
+     *
+     * - [CascadeType.NONE] (default) → root-only DETACH DELETE, identical to the legacy behavior.
+     *   Related fragments are left as orphans.
+     * - [CascadeType.DELETE_ALL] → also deletes every fragment reachable through the view's
+     *   declared relationships (honoring direction and maxDepth). Nodes the view does not include
+     *   survive; DETACH merely drops the edges to them.
+     * - [CascadeType.DELETE_ORPHAN] → also deletes each included related fragment, but only if it
+     *   has no relationships left once the root is removed. Requires a grammar that supports it
+     *   (see [validateCascadeSupport]).
+     *
+     * Ids are always bound as parameters; nothing is interpolated into the Cypher.
+     *
+     * @param id The ID value of the object to delete
+     * @param graphClass The graph object class
+     * @param whereClause Additional WHERE clause conditions (without WHERE keyword)
+     * @param cascade The cascade policy
+     * @return The number of nodes deleted (root plus any cascaded fragments)
+     */
+    fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
+        validateCascadeSupport(cascade)
+
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val idCondition = builder.buildIdWhereClause("id")
 
@@ -390,7 +434,12 @@ class GraphObjectManager(
             idCondition
         }
 
-        val query = builder.buildDeleteQuery(fullWhereClause)
+        val query = if (cascade == CascadeType.NONE) {
+            // Preserve the legacy root-only delete byte-for-byte.
+            builder.buildDeleteQuery(fullWhereClause)
+        } else {
+            builder.buildCascadeDeleteQuery(fullWhereClause, cascade)
+        }
 
         return persistenceManager.getOne(
             QuerySpecification

@@ -120,6 +120,38 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: String, whereClause: 
 }
 
 /**
+ * Deletes a graph object by ID with a cascade policy using reified type parameter.
+ *
+ * The cascade scope is the shape of the view T — see [GraphObjectManager.delete].
+ *
+ * Example:
+ * ```kotlin
+ * val count = graphObjectManager.delete<DeletableSession>(sessionId, CascadeType.DELETE_ALL)
+ * ```
+ *
+ * @param T The graph object type to delete
+ * @param id The object ID
+ * @param cascade The cascade policy
+ * @return The number of nodes deleted (root plus any cascaded fragments)
+ */
+inline fun <reified T : Any> GraphObjectManager.delete(id: String, cascade: CascadeType): Int {
+    return delete(id, T::class.java, cascade)
+}
+
+/**
+ * Deletes a graph object by ID with a WHERE clause and cascade policy using reified type parameter.
+ *
+ * @param T The graph object type to delete
+ * @param id The object ID
+ * @param whereClause Additional WHERE clause conditions
+ * @param cascade The cascade policy
+ * @return The number of nodes deleted (root plus any cascaded fragments)
+ */
+inline fun <reified T : Any> GraphObjectManager.delete(id: String, whereClause: String?, cascade: CascadeType): Int {
+    return delete(id, T::class.java, whereClause, cascade)
+}
+
+/**
  * Deletes all graph objects of a type using reified type parameter.
  *
  * Example:
@@ -237,4 +269,34 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: UUID): Int {
  */
 inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, whereClause: String?): Int {
     return delete(id.toString(), T::class.java, whereClause)
+}
+
+/**
+ * Deletes a graph object by UUID with a cascade policy using reified type parameter.
+ *
+ * Example:
+ * ```kotlin
+ * val count = graphObjectManager.delete<DeletableSession>(sessionUuid, CascadeType.DELETE_ALL)
+ * ```
+ *
+ * @param T The graph object type to delete
+ * @param id The object UUID
+ * @param cascade The cascade policy
+ * @return The number of nodes deleted (root plus any cascaded fragments)
+ */
+inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, cascade: CascadeType): Int {
+    return delete(id.toString(), T::class.java, cascade)
+}
+
+/**
+ * Deletes a graph object by UUID with a WHERE clause and cascade policy using reified type parameter.
+ *
+ * @param T The graph object type to delete
+ * @param id The object UUID
+ * @param whereClause Additional WHERE clause conditions
+ * @param cascade The cascade policy
+ * @return The number of nodes deleted (root plus any cascaded fragments)
+ */
+inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, whereClause: String?, cascade: CascadeType): Int {
+    return delete(id.toString(), T::class.java, whereClause, cascade)
 }

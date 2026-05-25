@@ -8,6 +8,8 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.annotation.Rollback
 import org.springframework.transaction.annotation.Transactional
+import sample.mapped.view.DeletableSession
+import sample.mapped.view.DeletableSessionDeep
 import sample.mapped.view.RaisedAndAssignedIssue
 import sample.simple.TestAppContext
 import java.util.*
@@ -529,5 +531,201 @@ class CascadeDeleteTests @Autowired constructor(
         assertEquals(2, reloaded.assignedTo.size)
         assertTrue(reloaded.assignedTo.any { it.name == "Kent Beck" }, "Original assignee should be preserved")
         assertTrue(reloaded.assignedTo.any { it.name == "Ward Cunningham" }, "New assignee should be added")
+    }
+
+    // ==================== Cascade delete-by-id (scoped by GraphView) ====================
+    //
+    // These exercise GraphObjectManager.delete(id, view, cascade) on the chat-session shape:
+    //   (:User) <-[OWNED_BY]- (:Session) -[HAS_MESSAGE]-> (:Message) -[AUTHORED_BY/SENT_TO]-> (:User)
+    // The delete views (DeletableSession / DeletableSessionDeep) declare only HAS_MESSAGE, so the
+    // :User node is always out-of-view and must survive every cascade.
+
+    @Test
+    fun `delete by id DELETE_ALL deletes session and messages but preserves out-of-view user`() {
+        val sessionId = UUID.randomUUID().toString()
+        val userId = UUID.randomUUID().toString()
+        val message1Id = UUID.randomUUID().toString()
+        val message2Id = UUID.randomUUID().toString()
+
+        // The trap: each Message has an edge to :User that the view does NOT declare.
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (u:User {id: ${'$'}userId, createdBy: 'cascade-test'})
+                    CREATE (s:Session {id: ${'$'}sessionId, createdBy: 'cascade-test'})
+                    CREATE (m1:Message {id: ${'$'}message1Id, createdBy: 'cascade-test'})
+                    CREATE (m2:Message {id: ${'$'}message2Id, createdBy: 'cascade-test'})
+                    CREATE (s)-[:OWNED_BY]->(u)
+                    CREATE (s)-[:HAS_MESSAGE]->(m1)
+                    CREATE (s)-[:HAS_MESSAGE]->(m2)
+                    CREATE (m1)-[:AUTHORED_BY]->(u)
+                    CREATE (m2)-[:SENT_TO]->(u)
+                """.trimIndent())
+                .bind(mapOf(
+                    "userId" to userId,
+                    "sessionId" to sessionId,
+                    "message1Id" to message1Id,
+                    "message2Id" to message2Id
+                ))
+        )
+
+        val deleted = graphObjectManager.delete<DeletableSession>(sessionId, CascadeType.DELETE_ALL)
+
+        // Root + both messages deleted...
+        assertEquals(3, deleted)
+        assertEquals(0, nodeCount("Session", sessionId))
+        assertEquals(0, nodeCount("Message", message1Id))
+        assertEquals(0, nodeCount("Message", message2Id))
+        // ...but the user the messages pointed at is outside the view and survives.
+        assertEquals(1, nodeCount("User", userId))
+    }
+
+    @Test
+    fun `delete by id DELETE_ALL cascades through a nested view to every level`() {
+        val sessionId = UUID.randomUUID().toString()
+        val userId = UUID.randomUUID().toString()
+        val messageId = UUID.randomUUID().toString()
+        val attachmentId = UUID.randomUUID().toString()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (u:User {id: ${'$'}userId, createdBy: 'cascade-test'})
+                    CREATE (s:Session {id: ${'$'}sessionId, createdBy: 'cascade-test'})
+                    CREATE (m:Message {id: ${'$'}messageId, createdBy: 'cascade-test'})
+                    CREATE (a:Attachment {id: ${'$'}attachmentId, createdBy: 'cascade-test'})
+                    CREATE (s)-[:OWNED_BY]->(u)
+                    CREATE (s)-[:HAS_MESSAGE]->(m)
+                    CREATE (m)-[:HAS_ATTACHMENT]->(a)
+                    CREATE (m)-[:AUTHORED_BY]->(u)
+                """.trimIndent())
+                .bind(mapOf(
+                    "userId" to userId,
+                    "sessionId" to sessionId,
+                    "messageId" to messageId,
+                    "attachmentId" to attachmentId
+                ))
+        )
+
+        val deleted = graphObjectManager.delete<DeletableSessionDeep>(sessionId, CascadeType.DELETE_ALL)
+
+        // Session + Message + Attachment (two levels deep through the nested view).
+        assertEquals(3, deleted)
+        assertEquals(0, nodeCount("Session", sessionId))
+        assertEquals(0, nodeCount("Message", messageId))
+        assertEquals(0, nodeCount("Attachment", attachmentId))
+        assertEquals(1, nodeCount("User", userId))
+    }
+
+    @Test
+    fun `delete by id DELETE_ORPHAN deletes orphaned children but preserves still-referenced ones`() {
+        val sessionId = UUID.randomUUID().toString()
+        val userId = UUID.randomUUID().toString()
+        val referencedMessageId = UUID.randomUUID().toString()
+        val orphanMessageId = UUID.randomUUID().toString()
+
+        // referencedMessage keeps an AUTHORED_BY edge after the session goes; orphanMessage does not.
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (u:User {id: ${'$'}userId, createdBy: 'cascade-test'})
+                    CREATE (s:Session {id: ${'$'}sessionId, createdBy: 'cascade-test'})
+                    CREATE (referenced:Message {id: ${'$'}referencedMessageId, createdBy: 'cascade-test'})
+                    CREATE (orphan:Message {id: ${'$'}orphanMessageId, createdBy: 'cascade-test'})
+                    CREATE (s)-[:OWNED_BY]->(u)
+                    CREATE (s)-[:HAS_MESSAGE]->(referenced)
+                    CREATE (s)-[:HAS_MESSAGE]->(orphan)
+                    CREATE (referenced)-[:AUTHORED_BY]->(u)
+                """.trimIndent())
+                .bind(mapOf(
+                    "userId" to userId,
+                    "sessionId" to sessionId,
+                    "referencedMessageId" to referencedMessageId,
+                    "orphanMessageId" to orphanMessageId
+                ))
+        )
+
+        val deleted = graphObjectManager.delete<DeletableSession>(sessionId, CascadeType.DELETE_ORPHAN)
+
+        // Root + the one orphaned message.
+        assertEquals(2, deleted)
+        assertEquals(0, nodeCount("Session", sessionId))
+        assertEquals(0, nodeCount("Message", orphanMessageId))
+        // Still referenced (AUTHORED_BY) → preserved.
+        assertEquals(1, nodeCount("Message", referencedMessageId))
+        assertEquals(1, nodeCount("User", userId))
+    }
+
+    @Test
+    fun `delete by id with default NONE deletes only the root and orphans children`() {
+        val sessionId = UUID.randomUUID().toString()
+        val userId = UUID.randomUUID().toString()
+        val message1Id = UUID.randomUUID().toString()
+        val message2Id = UUID.randomUUID().toString()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (u:User {id: ${'$'}userId, createdBy: 'cascade-test'})
+                    CREATE (s:Session {id: ${'$'}sessionId, createdBy: 'cascade-test'})
+                    CREATE (m1:Message {id: ${'$'}message1Id, createdBy: 'cascade-test'})
+                    CREATE (m2:Message {id: ${'$'}message2Id, createdBy: 'cascade-test'})
+                    CREATE (s)-[:OWNED_BY]->(u)
+                    CREATE (s)-[:HAS_MESSAGE]->(m1)
+                    CREATE (s)-[:HAS_MESSAGE]->(m2)
+                """.trimIndent())
+                .bind(mapOf(
+                    "userId" to userId,
+                    "sessionId" to sessionId,
+                    "message1Id" to message1Id,
+                    "message2Id" to message2Id
+                ))
+        )
+
+        // Default cascade = NONE: legacy root-only DETACH DELETE.
+        val deleted = graphObjectManager.delete<DeletableSession>(sessionId)
+
+        assertEquals(1, deleted)
+        assertEquals(0, nodeCount("Session", sessionId))
+        // Children remain as orphans — exactly the pre-cascade behavior.
+        assertEquals(1, nodeCount("Message", message1Id))
+        assertEquals(1, nodeCount("Message", message2Id))
+        assertEquals(1, nodeCount("User", userId))
+    }
+
+    @Test
+    fun `delete by id DELETE_ALL with a non-matching where clause deletes nothing`() {
+        val sessionId = UUID.randomUUID().toString()
+        val messageId = UUID.randomUUID().toString()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (s:Session {id: ${'$'}sessionId, title: 'keep', createdBy: 'cascade-test'})
+                    CREATE (m:Message {id: ${'$'}messageId, createdBy: 'cascade-test'})
+                    CREATE (s)-[:HAS_MESSAGE]->(m)
+                """.trimIndent())
+                .bind(mapOf("sessionId" to sessionId, "messageId" to messageId))
+        )
+
+        // WHERE filters out the root, so cascade matches nothing and must return a single 0 row.
+        val deleted = graphObjectManager.delete<DeletableSession>(
+            sessionId,
+            "session.title = 'archived'",
+            CascadeType.DELETE_ALL
+        )
+
+        assertEquals(0, deleted)
+        assertEquals(1, nodeCount("Session", sessionId))
+        assertEquals(1, nodeCount("Message", messageId))
+    }
+
+    private fun nodeCount(label: String, id: String): Int {
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (n:$label {id: \$id}) RETURN count(n)")
+                .bind(mapOf("id" to id))
+                .transform<Int>()
+        )
     }
 }

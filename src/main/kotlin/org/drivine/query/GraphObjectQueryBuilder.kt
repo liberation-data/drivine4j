@@ -2,6 +2,7 @@ package org.drivine.query
 
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
+import org.drivine.manager.CascadeType
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.grammar.CypherGrammar
 
@@ -59,6 +60,29 @@ interface GraphObjectQueryBuilder {
         prologs: List<String> = emptyList(),
         bridgeVariables: List<String> = emptyList(),
     ): String
+
+    /**
+     * Builds a cascade-aware DELETE query scoped by this graph object.
+     *
+     * The cascade boundary is the shape of the view: only nodes reachable through the
+     * view's declared @GraphRelationships are touched. Relationships that live on the
+     * target fragments but are not declared by the view are never followed.
+     *
+     * - [CascadeType.NONE] → identical to [buildDeleteQuery] (root-only DETACH DELETE).
+     * - [CascadeType.DELETE_ALL] → DETACH DELETE the root and every fragment reachable
+     *   through the view's relationships (respecting direction and maxDepth).
+     * - [CascadeType.DELETE_ORPHAN] → delete the root, then delete each included related
+     *   fragment only if it has no relationships left once the root is removed.
+     *
+     * For plain fragments (no view) there is nothing to cascade into, so the default
+     * implementation falls back to the root-only delete regardless of [cascade].
+     *
+     * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @param cascade The cascade policy
+     * @return The generated Cypher DELETE query that returns the count of deleted nodes
+     */
+    fun buildCascadeDeleteQuery(whereClause: String?, cascade: CascadeType): String =
+        buildDeleteQuery(whereClause)
 
     /**
      * Returns the node alias used in queries.
