@@ -1,8 +1,12 @@
 package org.drivine.mapper
 
+import com.fasterxml.jackson.annotation.JsonSetter
+import com.fasterxml.jackson.annotation.Nulls
 import com.fasterxml.jackson.databind.introspect.Annotated
 import com.fasterxml.jackson.databind.introspect.AnnotatedMember
 import com.fasterxml.jackson.databind.introspect.NopAnnotationIntrospector
+import org.drivine.annotation.Default
+import org.drivine.annotation.EmptyWhenAbsent
 import org.drivine.annotation.JsonPacked
 
 /**
@@ -57,5 +61,19 @@ class DrivineAnnotationIntrospector : NopAnnotationIntrospector() {
             return JsonPackedDeserializer::class.java
         }
         return null
+    }
+
+    /**
+     * Translates Drivine's null-handling annotations into Jackson null behavior, so consumers never
+     * touch Jackson directly:
+     *  - [Default] → [Nulls.SKIP]: an absent/null graph value falls back to the property's declared
+     *    default (Kotlin constructor default or Java field initializer).
+     *  - [EmptyWhenAbsent] → [Nulls.AS_EMPTY]: an absent/null collection/map becomes empty, with no
+     *    declared default required (for Java records).
+     */
+    override fun findSetterInfo(a: Annotated): JsonSetter.Value = when {
+        a.hasAnnotation(Default::class.java) -> JsonSetter.Value.forValueNulls(Nulls.SKIP)
+        a.hasAnnotation(EmptyWhenAbsent::class.java) -> JsonSetter.Value.forValueNulls(Nulls.AS_EMPTY)
+        else -> super.findSetterInfo(a)
     }
 }

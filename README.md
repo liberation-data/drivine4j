@@ -290,6 +290,24 @@ data class Organization(
 )
 ```
 
+**Defaults for missing properties.** When a node is missing a property, the value loads as `null` — which fails for a non-nullable type. Two annotations handle that without any Jackson knowledge:
+
+```kotlin
+@NodeFragment(labels = ["User"])
+data class UserNode(
+    @NodeId val id: String,
+    @Default val roles: List<String> = emptyList(),  // missing/null → the declared default []
+    @Default val status: String = "active",          // missing/null → "active"
+    @EmptyWhenAbsent val tags: List<String>,         // missing/null → [] (no default needed)
+)
+```
+
+- **`@Default`** falls back to the property's declared default (a Kotlin constructor default, or a Java field initializer). Works for any type; a provided value always wins.
+- **`@EmptyWhenAbsent`** maps an absent/null collection or map to empty, with no declared default required — the right choice for **Java records**, whose components have no field initializer:
+  ```java
+  public record UserNode(@NodeId String id, @EmptyWhenAbsent List<String> roles) {}
+  ```
+
 #### 2. RelationshipFragment - Capturing Relationship Properties
 
 A `@RelationshipFragment` captures properties on relationship edges, not just the target node:
