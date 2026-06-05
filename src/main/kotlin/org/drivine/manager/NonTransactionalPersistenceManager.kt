@@ -6,6 +6,8 @@ import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.ConstraintManager
+import org.drivine.schema.IndexManager
 import org.slf4j.LoggerFactory
 
 class NonTransactionalPersistenceManager(
@@ -17,6 +19,10 @@ class NonTransactionalPersistenceManager(
 
     override val grammar: CypherGrammar
         get() = connectionProvider.grammar
+
+    override val indexes: IndexManager by lazy { IndexManager(connectionProvider) }
+
+    override val constraints: ConstraintManager by lazy { ConstraintManager(connectionProvider, indexes) }
 
     private val logger = LoggerFactory.getLogger(NonTransactionalPersistenceManager::class.java)
     private val finderOperations = FinderOperations(this)

@@ -1,5 +1,6 @@
 package org.drivine.autoconfigure
 
+import org.springframework.boot.context.properties.EnableConfigurationProperties
 import org.springframework.context.annotation.Import
 import kotlin.annotation.AnnotationRetention.RUNTIME
 import kotlin.annotation.AnnotationTarget.CLASS
@@ -37,10 +38,12 @@ import kotlin.annotation.AnnotationTarget.CLASS
  * - `DrivineTransactionManager`
  * - `PersistenceManagerFactory`
  * - `GraphObjectManagerFactory`
+ * - `SchemaManager` (applies any registered `SchemaCatalog` beans; enforced on startup)
  *
  * All beans can be overridden by defining your own.
  */
 @Target(CLASS)
 @Retention(RUNTIME)
-@Import(DrivineConfiguration::class)
+@EnableConfigurationProperties(DrivineSchemaProperties::class)
+@Import(DrivineConfiguration::class, DrivineSchemaConfiguration::class)
 annotation class EnableDrivine

@@ -3,6 +3,11 @@ package org.drivine.query.grammar
 import org.drivine.query.sort.ApocSortMapsEmitter
 import org.drivine.query.sort.CallSubqueryEmitter
 import org.drivine.query.sort.CollectionSortEmitter
+import org.drivine.schema.FalkorDbSchemaGrammar
+import org.drivine.schema.MemgraphSchemaGrammar
+import org.drivine.schema.Neo4jSchemaGrammar
+import org.drivine.schema.SchemaGrammar
+import org.drivine.schema.UnsupportedSchemaGrammar
 
 /**
  * Cypher dialect variants that control query generation for engine-specific syntax.
@@ -59,5 +64,19 @@ enum class CypherDialect {
         FALKORDB -> FalkorDbCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
         NEPTUNE -> NeptuneCypherGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
         MEMGRAPH -> MemgraphGrammar(sortEmitterOverride ?: CallSubqueryEmitter())
+    }
+
+    /**
+     * Schema (index / constraint) DDL grammar for this dialect.
+     *
+     * Neo4j 4 and 5 share schema DDL — only their DML existence syntax differs, which is why
+     * [grammar] distinguishes them but this does not. Engines without schema management support
+     * (Neptune, generic openCypher) return a grammar that fails loudly on every operation.
+     */
+    fun schemaGrammar(): SchemaGrammar = when (this) {
+        NEO4J_5, NEO4J_4 -> Neo4jSchemaGrammar()
+        MEMGRAPH -> MemgraphSchemaGrammar()
+        FALKORDB -> FalkorDbSchemaGrammar()
+        NEPTUNE, OPEN_CYPHER -> UnsupportedSchemaGrammar(name)
     }
 }

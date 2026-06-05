@@ -5,6 +5,8 @@ import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.ConstraintManager
+import org.drivine.schema.IndexManager
 import org.drivine.transaction.DrivineTransactionObject
 import org.drivine.transaction.TransactionContextHolder
 
@@ -15,9 +17,27 @@ class TransactionalPersistenceManager(
     override val type: DatabaseType,
     private val subtypeRegistry: SubtypeRegistry,
     override val grammar: CypherGrammar,
+    /**
+     * Source of schema managers — the non-transactional manager for the same database, supplied
+     * by [PersistenceManagerFactory]. Schema DDL must execute in auto-commit mode, never through
+     * this manager's transactional connection.
+     */
+    private val schemaManagerSource: PersistenceManager? = null,
 ) : PersistenceManager {
 
     private val finderOperations: FinderOperations = FinderOperations(this)
+
+    override val indexes: IndexManager
+        get() = schemaManagerSource?.indexes ?: throw DrivineException(
+            "Schema management is not available on this TransactionalPersistenceManager instance. " +
+                "Obtain managers through PersistenceManagerFactory, or use a non-transactional manager."
+        )
+
+    override val constraints: ConstraintManager
+        get() = schemaManagerSource?.constraints ?: throw DrivineException(
+            "Schema management is not available on this TransactionalPersistenceManager instance. " +
+                "Obtain managers through PersistenceManagerFactory, or use a non-transactional manager."
+        )
 
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
         val txObject = currentTransactionOrThrow()

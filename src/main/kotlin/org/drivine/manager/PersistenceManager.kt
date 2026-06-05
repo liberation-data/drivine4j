@@ -5,6 +5,8 @@ package org.drivine.manager
 import org.drivine.connection.DatabaseType
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.ConstraintManager
+import org.drivine.schema.IndexManager
 import java.util.*
 
 interface PersistenceManager {
@@ -16,6 +18,30 @@ interface PersistenceManager {
      * Cypher grammar for this database, controlling dialect-specific query generation.
      */
     val grammar: CypherGrammar
+
+    /**
+     * Index management (vector / range) for this database.
+     *
+     * Operations are idempotent and drift-aware, and always execute in auto-commit mode —
+     * schema DDL cannot run inside an open data transaction.
+     *
+     * ```kotlin
+     * persistenceManager.indexes.ensure(VectorIndexSpec("Proposition", "embedding", 1536))
+     * persistenceManager.indexes.ensure(RangeIndexSpec("Proposition", "contextId"))
+     * ```
+     */
+    val indexes: IndexManager
+
+    /**
+     * Constraint management (uniqueness) for this database.
+     *
+     * Operations are idempotent and drift-aware, and always execute in auto-commit mode.
+     *
+     * ```kotlin
+     * persistenceManager.constraints.ensure(UniquenessConstraintSpec("ChatSession", "sessionId"))
+     * ```
+     */
+    val constraints: ConstraintManager
 
     /**
      * Queries for a set of results according to the supplied specification.

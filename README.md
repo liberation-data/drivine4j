@@ -1422,6 +1422,159 @@ Each engine uses a Cypher dialect that controls query generation. The dialect is
       cypher-dialect: NEO4J_5    # NEO4J_5, NEO4J_4, FALKORDB, NEPTUNE, MEMGRAPH
 ```
 
+## Schema Management (Indexes & Constraints)
+
+Drivine manages vector indexes, range indexes, and uniqueness constraints across Neo4j, Memgraph, and FalkorDB — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
+
+### Imperative API
+
+Every `PersistenceManager` exposes `indexes` and `constraints` managers. Operations always run in auto-commit mode (schema DDL cannot run inside a data transaction):
+
+```kotlin
+// Idempotent — call on every startup
+val result = persistenceManager.indexes.ensure(
+    VectorIndexSpec(label = "Proposition", property = "embedding", dimensions = 1536)
+)
+persistenceManager.indexes.ensure(RangeIndexSpec("Proposition", "contextId"))
+persistenceManager.indexes.ensure(RangeIndexSpec("Message", listOf("sessionId", "createdAt")))  // composite
+
+persistenceManager.constraints.ensure(UniquenessConstraintSpec("ChatSession", "sessionId"))
+persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", listOf("tenantId", "userId")))
+```
+
+`ensure` returns an `EnsureResult`:
+
+| Result | Meaning |
+|---|---|
+| `Created` | Nothing existed; the item was created |
+| `AlreadyMatching` | A matching item exists; nothing changed |
+| `Drift` | An item exists with a **different shape** (e.g. vector dimensions changed). Nothing changed — call `recreate(spec)` to replace it (destructive) |
+| `Violation` | Constraint only: existing data violates it. Includes a bounded sample of the conflicting values |
+| `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
+
+### Declarative: SchemaCatalog bean
+
+Register a `SchemaCatalog` bean and Drivine ensures everything on startup (indexes before constraints):
+
+```kotlin
+@Bean
+fun propositionSchema(embeddingService: EmbeddingService) = SchemaCatalog.of(
+    VectorIndexSpec("Proposition", "embedding", embeddingService.dimensions),
+    RangeIndexSpec("Proposition", "contextId"),
+    UniquenessConstraintSpec("Proposition", "id"),
+)
+```
+
+Multiple catalog beans merge; identical declarations deduplicate; conflicting declarations for the same (kind, label, properties) fail startup.
+
+**Which databases a catalog applies to.** By default a catalog broadcasts to **every schema-capable registered database** — engines without DDL support (Neptune, openCypher) are skipped with a warning. Narrow it when you need to:
+
+```kotlin
+SchemaCatalog.of(...)                        // all schema-capable databases (default)
+SchemaCatalog.of(...).forDefaultDatabase()   // only the primary (first-registered) datasource
+SchemaCatalog.of(...).forDatabase("users")   // one named datasource
+SchemaCatalog.of(...).forDatabases("a", "b") // a specific set
+```
+
+Broadcast is lenient (skips engines that can't do schema); an explicitly **named** target is strict — pointing it at an unknown or schema-incapable datasource fails startup. `"default"` resolves to the first-registered datasource, consistent with the rest of Drivine.
+
+Targeting is replace/last-wins, not additive — use one `forDatabases("a", "b")` call to target several; chaining `forDatabase(...)` calls does not accumulate (last wins).
+
+### Declarative: annotations on fragments
+
+```kotlin
+@NodeFragment(labels = ["Proposition"])
+data class PropositionNode(
+    @NodeId
+    @RangeIndex
+    @Unique
+    val id: String,
+
+    @RangeIndex
+    val contextId: String,
+
+    val text: String,
+
+    @VectorIndex(similarity = SimilarityFunction.COSINE)
+    val embedding: List<Float>?,
+)
+
+// Composite declarations go on the class
+@NodeFragment(labels = ["Message"])
+@RangeIndex(properties = ["sessionId", "createdAt"])
+@Unique(properties = ["sessionId", "sequence"])
+data class MessageNode(/* ... */)
+```
+
+Scan them into a catalog — vector dimensions come from your embedding model at runtime, via a `VectorDimensionProvider`:
+
+```kotlin
+@Bean
+fun schema(embeddingService: EmbeddingService) = SchemaCatalog.fromFragments(
+    VectorDimensionProvider { _, _ -> embeddingService.dimensions },
+    PropositionNode::class,
+    MessageNode::class,
+)
+```
+
+Works for Java fragments too (`SchemaCatalog.fromFragments(JavaNode.class)`).
+
+### Runtime enforcement (`SchemaManager`)
+
+Catalogs are applied by a `SchemaManager` bean, enforced once on startup. It's also injectable, so you can drive schema changes at runtime — e.g. build indexes *after* a bulk load, or rebuild after re-embedding:
+
+```kotlin
+@Component
+class Reindexer(private val schema: SchemaManager) {
+    fun afterBulkLoad() {
+        schema.enforce()      // idempotent: create what's missing, recreate on version change
+    }
+    fun afterReembed() {
+        schema.recreateAll()  // brute-force: drop + recreate every declared item
+    }
+}
+```
+
+`enforce()` is safe to call repeatedly; `recreateAll()` is the destructive hammer. (`drivine.schema.enabled=false` disables only the startup run — the bean is still there for runtime calls.)
+
+### Version-triggered rebuild
+
+Drift detection only catches changes introspection can *see* (dimensions, similarity, properties). A change it can't see — swapping the embedding model for one with the **same dimensions** — leaves stale vectors behind. Tag a catalog with a version token to force a one-time rebuild when that token changes:
+
+```kotlin
+@Bean
+fun chunkSchema(embeddingService: EmbeddingService) = SchemaCatalog.of(
+    VectorIndexSpec("Chunk", "embedding", embeddingService.dimensions),
+).withVersion(embeddingService.modelId)   // bump this → recreate once
+```
+
+How it works: the last-applied token is stored in a reserved `_DrivineSchema` marker node per database (portable across all three engines). On `enforce()`, a **changed** token drops and recreates that catalog's items, then records the new token; a first-ever token is *adopted* without recreating, so turning versioning on never nukes a healthy schema.
+
+> Recreating a vector index rebuilds it from the stored embedding *properties* — it does **not** re-embed. After a model swap, re-embed the nodes first (same dimensions → the index even auto-updates), then `enforce()`/`recreateAll()` for the structural half. Drivine manages schema, not your embeddings.
+
+### Configuration
+
+```yaml
+drivine:
+  schema:
+    enabled: true              # master switch for startup initialization
+    mode: FAIL_FAST            # FAIL_FAST (default) or WARN on drift/violations
+    recreate-on-drift: false   # destructive: rebuild items whose shape changed
+    recreate-on-startup: false # destructive: rebuild everything every startup
+    violation-sample-size: 10  # conflicting rows sampled on constraint violations
+```
+
+### Per-engine notes
+
+| | Neo4j | Memgraph | FalkorDB |
+|---|---|---|---|
+| Vector indexes | `CREATE VECTOR INDEX … IF NOT EXISTS` | `WITH CONFIG {…}`, uSearch metrics | `OPTIONS {…}`, unnamed |
+| Range indexes | Named, composite supported | Label-property style | Per-label coverage; extended incrementally |
+| Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build |
+| Item names | Yes | Vector only | No |
+
+Neptune and generic openCypher have no schema management support — operations fail loudly rather than silently no-op.
+
 ## Multi-Database Support
 
 ```kotlin

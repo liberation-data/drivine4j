@@ -52,9 +52,12 @@ class PersistenceManagerFactory(
             ?: throw DrivineException("No database is registered under name: $name")
 
         val grammar = connectionProvider.grammar
+        // The non-transactional manager owns the schema managers (DDL must run in auto-commit
+        // mode); the transactional manager borrows them from it.
+        val nonTransactional = NonTransactionalPersistenceManager(connectionProvider, name, connectionProvider.type, registry.subtypeRegistry)
         managers[name] = PersistenceManagerEntry(
-            transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type, registry.subtypeRegistry, grammar),
-            nonTransactional = NonTransactionalPersistenceManager(connectionProvider, name, connectionProvider.type, registry.subtypeRegistry),
+            transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type, registry.subtypeRegistry, grammar, nonTransactional),
+            nonTransactional = nonTransactional,
             delegating = DelegatingPersistenceManager(name, connectionProvider.type, contextHolder, this, registry.subtypeRegistry, grammar)
         )
     }

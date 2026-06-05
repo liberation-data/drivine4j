@@ -4,6 +4,8 @@ import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.ConstraintManager
+import org.drivine.schema.IndexManager
 import org.drivine.transaction.TransactionContextHolder
 import org.slf4j.LoggerFactory
 
@@ -17,6 +19,16 @@ class DelegatingPersistenceManager(
 ) : PersistenceManager {
 
     private val logger = LoggerFactory.getLogger(DelegatingPersistenceManager::class.java)
+
+    /**
+     * Schema operations always route to the non-transactional manager — DDL must run in
+     * auto-commit mode regardless of any transaction in flight.
+     */
+    override val indexes: IndexManager
+        get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).indexes
+
+    override val constraints: ConstraintManager
+        get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).constraints
 
     override fun <T : Any> getOne(spec: QuerySpecification<T>): T {
         return persistenceManager().getOne(spec)
