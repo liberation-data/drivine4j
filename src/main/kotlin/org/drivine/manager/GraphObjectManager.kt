@@ -113,6 +113,70 @@ class GraphObjectManager(
     }
 
     /**
+     * Counts all instances of a graph object (GraphView or GraphFragment).
+     *
+     * For a `@GraphView` this counts only roots that satisfy the view's required relationships —
+     * the same roots [loadAll] would return — not a naive node count. For a plain `@NodeFragment`
+     * it is a straight node count of the fragment's labels.
+     *
+     * @param graphClass The graph object class to count
+     * @return The number of matching graph objects
+     */
+    fun <T : Any> count(graphClass: Class<T>): Long {
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(builder.buildCountQuery())
+                .transform(Long::class.java)
+        )
+    }
+
+    /**
+     * Counts graph objects matching a simple WHERE clause filter (Java-friendly). Conditions use
+     * the same aliases as [loadAll] — `n` for fragments, the root field name for views.
+     *
+     * @param graphClass The graph object class to count
+     * @param whereClause Cypher WHERE clause conditions (without the WHERE keyword)
+     * @return The number of matching graph objects
+     */
+    fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long {
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(builder.buildCountQuery(whereClause))
+                .transform(Long::class.java)
+        )
+    }
+
+    /**
+     * Counts graph objects using the type-safe query DSL (mirrors the DSL [loadAll]/[deleteAll]).
+     *
+     * @param graphClass The graph object class to count
+     * @param queryObject The query object providing property references
+     * @param spec DSL block for building the filter
+     * @return The number of matching graph objects
+     */
+    fun <T : Any, Q : Any> count(
+        graphClass: Class<T>,
+        queryObject: Q,
+        spec: GraphQuerySpec<Q>.() -> Unit,
+    ): Long {
+        val querySpec = GraphQuerySpec(queryObject)
+        querySpec.spec()
+
+        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
+        val ctx = buildQueryContext(graphClass, querySpec)
+        val query = builder.buildCountQuery(ctx.whereClause, ctx.prologs, ctx.bridgeVariables)
+
+        return persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(query)
+                .bind(ctx.bindings)
+                .transform(Long::class.java)
+        )
+    }
+
+    /**
      * Auto-registers subtypes for a class hierarchy based on Neo4j labels.
      * For sealed classes and classes with @JsonSubTypes, automatically registers all subclasses
      * using their simple name as the discriminator.

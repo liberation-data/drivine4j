@@ -39,6 +39,26 @@ interface GraphObjectQueryBuilder {
     ): String = buildQuery(whereClause, orderByClause)
 
     /**
+     * Builds a Cypher query that counts matching graph objects.
+     *
+     * The count is consistent with [buildQuery]/`loadAll`: it counts the same things the load query
+     * would return. For a `@GraphView` that means counting only root nodes that satisfy the view's
+     * required (non-optional, non-collection) relationships — those become `EXISTS` predicates in the
+     * WHERE, exactly as in the load query — so the result equals `loadAll(...).size`, not a naive
+     * node count.
+     *
+     * @param whereClause Optional WHERE clause conditions (without the WHERE keyword)
+     * @param prologs Optional `CALL { }` prologs for filtered-existence checks (openCypher engines)
+     * @param bridgeVariables Variables carried from prologs into the WHERE scope
+     * @return The generated Cypher query, returning a single `count` column
+     */
+    fun buildCountQuery(
+        whereClause: String? = null,
+        prologs: List<String> = emptyList(),
+        bridgeVariables: List<String> = emptyList(),
+    ): String
+
+    /**
      * Builds a WHERE clause for loading by ID.
      * Implementations know the correct alias and field name for their type.
      * This will be the integration point for a future filter DSL.

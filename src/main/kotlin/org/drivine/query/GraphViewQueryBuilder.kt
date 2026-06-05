@@ -62,6 +62,13 @@ class GraphViewQueryBuilder(
         ),
     ).build(whereClause, orderByClause)
 
+    override fun buildCountQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String =
+        GraphViewLoadBuilder(
+            viewModel,
+            grammar,
+            BuildContext(externalPrologs = prologs, externalBridgeVariables = bridgeVariables),
+        ).buildCount(whereClause)
+
     override fun buildIdWhereClause(idParamName: String): String {
         val rootFragmentModel = viewModel.rootFragment
         val fragmentModel = FragmentModel.from(rootFragmentModel.fragmentType)

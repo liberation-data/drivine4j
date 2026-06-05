@@ -85,19 +85,7 @@ internal class GraphViewLoadBuilder(
         }
 
         // Insert CALL { } prologs between MATCH and WHERE.
-        // If bridge variables exist (from filtered existence checks on openCypher),
-        // emit a WITH clause to carry them into WHERE scope.
-        val prologSection = if (context.prologs.isNotEmpty()) {
-            val prologs = "\n" + context.prologs.joinToString("\n")
-            if (context.bridgeVariables.isNotEmpty()) {
-                val bridgeWith = "\nWITH $rootFieldName, ${context.bridgeVariables.joinToString(", ")}"
-                "$prologs$bridgeWith"
-            } else {
-                prologs
-            }
-        } else {
-            ""
-        }
+        val prologSection = prologSection(rootFieldName)
 
         val withClause = "\n\nWITH\n" + withSections.joinToString(",\n\n")
 
@@ -123,6 +111,45 @@ ${returnFields.joinToString(",\n")}
         }
 
         return matchClause + prologSection + whereSection + withClause + returnClause + orderBySection
+    }
+
+    /**
+     * Builds a count query for this view: the same MATCH + prolog + WHERE the load query uses
+     * (so required-relationship `EXISTS` checks filter roots identically), but returning
+     * `count(root)` instead of the projected view. Relationships are never expanded into the
+     * MATCH — they are WHERE-clause existence predicates — so each root is counted once.
+     */
+    fun buildCount(whereClause: String?): String {
+        val rootFragmentModel = viewModel.rootFragment
+        val rootFieldName = rootFragmentModel.fieldName
+
+        val fragmentLabels = GraphTypeLabels.fragmentLabels(rootFragmentModel.fragmentType)
+        if (fragmentLabels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for root fragment ${rootFragmentModel.fragmentType.name}. @GraphFragment must specify at least one label.")
+        }
+
+        val labelString = fragmentLabels.joinToString(":")
+        val matchClause = "MATCH ($rootFieldName:$labelString)"
+        val requiredRelationshipChecks = buildRequiredRelationshipChecks(rootFieldName)
+        val whereSection = buildWhereSection(whereClause, requiredRelationshipChecks)
+        val prologSection = prologSection(rootFieldName)
+
+        return "$matchClause$prologSection$whereSection\nRETURN count($rootFieldName) AS count"
+    }
+
+    /**
+     * The `CALL { }` prolog section emitted between MATCH and WHERE. When bridge variables exist
+     * (from filtered existence checks on openCypher), a `WITH` carries the root and those variables
+     * into WHERE scope.
+     */
+    private fun prologSection(rootFieldName: String): String {
+        if (context.prologs.isEmpty()) return ""
+        val prologs = "\n" + context.prologs.joinToString("\n")
+        return if (context.bridgeVariables.isNotEmpty()) {
+            "$prologs\nWITH $rootFieldName, ${context.bridgeVariables.joinToString(", ")}"
+        } else {
+            prologs
+        }
     }
 
     /**

@@ -75,6 +75,18 @@ RETURN {
         return matchClause + whereSection + returnClause + orderBySection
     }
 
+    override fun buildCountQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String {
+        if (fragmentModel.labels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for fragment ${fragmentModel.className}. @GraphFragment must specify at least one label.")
+        }
+
+        val labelString = fragmentModel.labels.joinToString(":")
+        val matchClause = "MATCH ($nodeAlias:$labelString)"
+        val whereSection = if (whereClause != null) "\nWHERE $whereClause" else ""
+
+        return "$matchClause$whereSection\nRETURN count($nodeAlias) AS count"
+    }
+
     override fun buildIdWhereClause(idParamName: String): String {
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("GraphFragment ${fragmentModel.className} does not have a @GraphNodeId field")

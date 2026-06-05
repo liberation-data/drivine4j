@@ -448,6 +448,37 @@ fun getPerson(uuid: String): PersonCareer? {
 }
 ```
 
+#### Count
+
+`count` returns a `Long` and is **consistent with `loadAll`** — it counts exactly the objects `loadAll` would return for the same type and filter. There are three overloads, mirroring `loadAll`/`deleteAll`:
+
+```kotlin
+// 1. Count everything of a type
+val total: Long = graphObjectManager.count(Issue::class.java)
+
+// 2. Count with a simple WHERE filter (aliases match loadAll: `n` for fragments,
+//    the root fragment field name for views)
+graphObjectManager.count(Issue::class.java, "n.state = 'open'")
+
+// 3. Count with the type-safe DSL (pass the generated query object)
+graphObjectManager.count(RaisedAndAssignedIssue::class.java, RaisedAndAssignedIssueQueryDsl.INSTANCE) {
+    where { query.issue.state eq "open" }
+}
+```
+
+**Fragments** are a straight node count of the fragment's labels.
+
+**Views count only roots that satisfy the view's _required_ relationships** — non-optional, non-collection `@GraphRelationship`s — so the result equals `loadAll(...).size`, *not* a naive node count. For example, `RaisedAndAssignedIssue` requires `raisedBy` (a single, non-null `RAISED_BY`):
+
+```kotlin
+graphObjectManager.count(Issue::class.java)                    // 3 — every Issue node
+graphObjectManager.count(RaisedAndAssignedIssue::class.java)   // 2 — only Issues with a RAISED_BY edge
+```
+
+An `Issue` with no `RAISED_BY` is a valid `Issue` node but is **not** a `RaisedAndAssignedIssue`, so it is excluded — just as `loadAll` would exclude it. Optional (nullable) and collection relationships place no such constraint.
+
+From Java, the same three overloads apply (use `.count(Issue.class)` etc.); the DSL overload takes the generated query object and a lambda.
+
 ### Type-Safe Query DSL
 
 The code generator creates a type-safe DSL for each `@GraphView`, giving you IntelliJ autocomplete and compile-time type checking.
