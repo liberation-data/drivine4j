@@ -443,6 +443,42 @@ data class OrgPersonView(
 )
 ```
 
+#### 5. Path Traversal - Skipping Intermediary Nodes
+
+`@GraphRelationship` is a single hop. `@GraphPath` traverses several and maps only the **final** node, skipping the ones in between:
+
+```kotlin
+@GraphView
+data class ActorDirectors(
+    @Root val actor: Actor,
+    @GraphPath([
+        Hop("ACTED_IN",    Direction.OUTGOING, label = "Movie"),  // through Movie — not mapped
+        Hop("DIRECTED_BY", Direction.OUTGOING),                   // to Director
+    ])
+    val directors: List<Director>,
+)
+```
+
+The far node is **de-duplicated** (an actor who made two movies by the same director gets that director once). Field cardinality mirrors `@GraphRelationship`: `List<T>` is a collection, `T?` a single optional, `T` a required single (roots lacking the path are filtered out). Each `Hop`'s `label` optionally constrains the node it reaches; `maxDepth` does not apply (a path is a fixed hop list, not variable-length recursion).
+
+#### 6. Aggregates - Counting & Summarizing Without Loading
+
+`@Count` and `@Aggregate` add per-root scalar fields computed in the query, so you don't load a collection just to size or summarize it:
+
+```kotlin
+@GraphView
+data class ActorStats(
+    @Root val actor: Actor,
+    @Count("ACTED_IN")                                              val movieCount: Long,
+    @Aggregate(AggregateFunction.AVG, type = "RATED", property = "score") val avgRating: Double,
+    @Aggregate(AggregateFunction.SUM, type = "RATED", property = "score") val totalRating: Double,
+)
+```
+
+`@Count` needs no property; `SUM`/`AVG`/`MIN`/`MAX` aggregate a numeric property of the related nodes. Aggregates are single-hop. For group-by *ranking* (top-N), use `PersistenceManager` + `.transform<T>()` with Cypher — that's not a node-rooted view.
+
+> All three — path traversal and aggregates — work identically across Neo4j, Memgraph, and FalkorDB.
+
 ### Loading Data
 
 #### Load All Instances
@@ -1376,7 +1412,8 @@ database:
 **Known limitations:**
 - Nested pattern comprehensions return NULL ([FalkorDB#1888](https://github.com/FalkorDB/FalkorDB/issues/1888)) — Drivine works around this with CALL subquery prologs
 - `collect()` on null includes null maps ([FalkorDB#1889](https://github.com/FalkorDB/FalkorDB/issues/1889)) — Drivine filters with `CASE WHEN IS NOT NULL`
-- CASCADE `DELETE_ORPHAN` not supported ([FalkorDB#1890](https://github.com/FalkorDB/FalkorDB/issues/1890)) — use `DELETE_ALL` or `NONE` instead
+
+CASCADE `DELETE_ORPHAN` is supported on current FalkorDB ([FalkorDB#1890](https://github.com/FalkorDB/FalkorDB/issues/1890) is fixed in the graph module Drivine tracks); older builds lacking that fix are not supported for orphan delete.
 
 ### Amazon Neptune
 

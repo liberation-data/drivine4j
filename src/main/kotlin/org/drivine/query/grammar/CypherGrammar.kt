@@ -112,12 +112,16 @@ open class OpenCypherGrammar(
 /**
  * FalkorDB — openCypher with known limitations:
  * - Nested pattern comprehensions return NULL (FalkorDB/FalkorDB#1888)
- * - CASCADE DELETE_ORPHAN not supported (FalkorDB/FalkorDB#1890)
  * - collect() on null produces {key: NULL} instead of skipping (FalkorDB/FalkorDB#1889)
+ *
+ * CASCADE DELETE_ORPHAN (FalkorDB/FalkorDB#1890 — a DELETE not being visible to a subsequent WHERE
+ * pattern predicate in the same query) was fixed upstream (graph module ≥ 41809), so orphan delete
+ * is supported again. Drivine tracks FalkorDB `latest`; older builds lacking the fix are not
+ * supported for CASCADE DELETE_ORPHAN.
  */
 class FalkorDbCypherGrammar(
     collectionSortEmitter: CollectionSortEmitter
 ) : OpenCypherGrammar(collectionSortEmitter) {
     override val nestedViewProjector: NestedViewProjector = CallSubqueryNestedViewProjector()
-    override val supportsOrphanDelete: Boolean = false
+    // Inherits supportsOrphanDelete = true from the interface default (FalkorDB#1890 fixed).
 }

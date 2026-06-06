@@ -2,6 +2,10 @@ package org.drivine.model
 
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphRelationship
+import org.drivine.annotation.GraphPath
+import org.drivine.annotation.Aggregate
+import org.drivine.annotation.AggregateFunction
+import org.drivine.annotation.Count
 import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.Root
@@ -40,7 +44,12 @@ data class GraphViewModel(
     /**
      * The relationship fields annotated with @GraphRelationship.
      */
-    val relationships: List<RelationshipModel>
+    val relationships: List<RelationshipModel>,
+
+    /**
+     * The per-root aggregate fields annotated with @Count / @Aggregate.
+     */
+    val aggregateFields: List<AggregateFieldModel> = emptyList()
 ) {
     companion object {
         /**
@@ -72,8 +81,13 @@ data class GraphViewModel(
             // Use Kotlin reflection for Kotlin classes
             // Find the root fragment - the field WITHOUT @GraphRelationship that points to a @GraphFragment class
             val rootFragmentProperty = properties.find { prop ->
-                val hasRelationshipAnnotation = prop.findAnnotation<GraphRelationship>() != null
-                if (hasRelationshipAnnotation) {
+                // The root is the only fragment-typed field that carries no mapping annotation —
+                // @GraphPath (and aggregate) fields can also be fragment-typed, so exclude them.
+                val isMappedField = prop.findAnnotation<GraphRelationship>() != null ||
+                    prop.findAnnotation<GraphPath>() != null ||
+                    prop.findAnnotation<Count>() != null ||
+                    prop.findAnnotation<Aggregate>() != null
+                if (isMappedField) {
                     false
                 } else {
                     val returnType = prop.returnType.classifier as? KClass<*>
@@ -93,6 +107,19 @@ data class GraphViewModel(
             val relationships = properties
                 .mapNotNull { prop ->
                     val relationshipAnnotation = prop.findAnnotation<GraphRelationship>()
+                    val pathAnnotation = prop.findAnnotation<GraphPath>()
+                    if (pathAnnotation != null) {
+                        val fieldType = (prop.returnType.classifier as? KClass<*>)?.java ?: Any::class.java
+                        val (elementType, isCollection) = extractElementType(prop.returnType.toString(), fieldType)
+                        return@mapNotNull pathRelationshipModel(
+                            fieldName = prop.name,
+                            hopsAnnotation = pathAnnotation.hops,
+                            fieldType = fieldType,
+                            elementType = elementType,
+                            isCollection = isCollection,
+                            isNullable = prop.returnType.isMarkedNullable,
+                        )
+                    }
                     if (relationshipAnnotation != null) {
                         val fieldType = (prop.returnType.classifier as? KClass<*>)?.java ?: Any::class.java
 
@@ -171,11 +198,16 @@ data class GraphViewModel(
                     }
                 }
 
+            val aggregateFields = properties.mapNotNull { prop ->
+                aggregateFieldModel(prop.name, prop.findAnnotation<Count>(), prop.findAnnotation<Aggregate>())
+            }
+
             return GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = relationships
+                relationships = relationships,
+                aggregateFields = aggregateFields
             )
         }
 
@@ -183,6 +215,73 @@ data class GraphViewModel(
          * Creates a GraphViewModel from a Kotlin class annotated with @GraphView.
          */
         fun from(kClass: KClass<*>): GraphViewModel = from(kClass.java)
+
+        /**
+         * Builds a [RelationshipModel] for a @GraphPath field. Shared by the Kotlin and Java
+         * reflection paths. The final node's labels come from [elementType]; the hops carry the
+         * per-segment types/directions/intermediate labels. [RelationshipModel.type]/`direction`
+         * are unused for paths and mirror the first hop.
+         */
+        private fun pathRelationshipModel(
+            fieldName: String,
+            hopsAnnotation: Array<org.drivine.annotation.Hop>,
+            fieldType: Class<*>,
+            elementType: Class<*>,
+            isCollection: Boolean,
+            isNullable: Boolean,
+        ): RelationshipModel {
+            require(hopsAnnotation.isNotEmpty()) {
+                "@GraphPath on field '$fieldName' must declare at least one hop"
+            }
+            val hops = hopsAnnotation.map { hop ->
+                HopModel(
+                    type = hop.type,
+                    direction = hop.direction,
+                    intermediateLabel = hop.label.ifEmpty { null },
+                )
+            }
+            return RelationshipModel(
+                fieldName = fieldName,
+                type = hops.first().type,
+                direction = hops.first().direction,
+                fieldType = fieldType,
+                elementType = elementType,
+                isCollection = isCollection,
+                isNullable = isNullable,
+                hops = hops,
+            )
+        }
+
+        /**
+         * Builds an [AggregateFieldModel] from a field's @Count / @Aggregate annotation, or null if
+         * neither is present. SUM/AVG/MIN/MAX require a [Aggregate.property]; COUNT must not have one.
+         */
+        private fun aggregateFieldModel(
+            fieldName: String,
+            count: Count?,
+            aggregate: Aggregate?,
+        ): AggregateFieldModel? {
+            require(count == null || aggregate == null) {
+                "Field '$fieldName' cannot be annotated with both @Count and @Aggregate"
+            }
+            if (count != null) {
+                return AggregateFieldModel(fieldName, AggregateFunction.COUNT, count.type, count.direction, null)
+            }
+            if (aggregate != null) {
+                val needsProperty = aggregate.function != AggregateFunction.COUNT
+                require(!needsProperty || aggregate.property.isNotEmpty()) {
+                    "@Aggregate(${aggregate.function}) on field '$fieldName' requires a 'property' to aggregate"
+                }
+                return AggregateFieldModel(
+                    fieldName = fieldName,
+                    function = aggregate.function,
+                    type = aggregate.type,
+                    direction = aggregate.direction,
+                    property = aggregate.property.ifEmpty { null },
+                )
+            }
+            return null
+        }
 
         /**
          * Extracts the element type from a field type.
@@ -328,6 +427,18 @@ data class GraphViewModel(
             val relationships = fields
                 .mapNotNull { field ->
                     val relationshipAnnotation = field.getAnnotation(GraphRelationship::class.java)
+                    val pathAnnotation = field.getAnnotation(GraphPath::class.java)
+                    if (pathAnnotation != null) {
+                        val (elementType, isCollection) = extractElementTypeFromJavaField(field)
+                        return@mapNotNull pathRelationshipModel(
+                            fieldName = field.name,
+                            hopsAnnotation = pathAnnotation.hops,
+                            fieldType = field.type,
+                            elementType = elementType,
+                            isCollection = isCollection,
+                            isNullable = true, // Java has no runtime nullability metadata
+                        )
+                    }
                     if (relationshipAnnotation != null) {
                         val fieldType = field.type
 
@@ -400,11 +511,20 @@ data class GraphViewModel(
                     }
                 }
 
+            val aggregateFields = fields.mapNotNull { field ->
+                aggregateFieldModel(
+                    field.name,
+                    field.getAnnotation(Count::class.java),
+                    field.getAnnotation(Aggregate::class.java),
+                )
+            }
+
             return GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = relationships
+                relationships = relationships,
+                aggregateFields = aggregateFields
             )
         }
     }

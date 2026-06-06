@@ -1,6 +1,5 @@
 package org.drivine.sample
 
-import org.drivine.connection.DatabaseType
 import org.drivine.test.TestCleanup
 import org.drivine.manager.CascadeType
 import org.drivine.manager.GraphObjectManager
@@ -321,13 +320,12 @@ class DemoTest @Autowired constructor(
         assertNotNull(startupStillExists)
     }
 
-    // TODO: Restore when FalkorDB fixes DELETE visibility in same query (FalkorDB/FalkorDB#1890)
     @Test
     fun `demo - CASCADE DELETE_ORPHAN - removes only orphaned nodes`() {
         Assumptions.assumeTrue(
             persistenceManager.grammar.supportsOrphanDelete,
             "CASCADE DELETE_ORPHAN not supported on this backend " +
-                "(FalkorDB: FalkorDB/FalkorDB#1890; Memgraph: EXISTS in WITH not implemented)"
+                "(Memgraph: EXISTS in WITH not implemented)"
         )
 
         val aliceId = UUID.randomUUID()
@@ -364,58 +362,6 @@ class DemoTest @Autowired constructor(
 
         val acmeExists = graphObjectManager.load(acmeCorpId.toString(), Organization::class.java)
         assertNotNull(acmeExists)
-    }
-
-    /**
-     * Canary test: verifies FalkorDB still has the DELETE visibility bug (FalkorDB/FalkorDB#1890).
-     * When this test FAILS, FalkorDB has fixed the bug — remove this canary and
-     * re-enable CASCADE DELETE_ORPHAN support in OpenCypherGrammar.supportsOrphanDelete.
-     */
-    @Test
-    fun `canary - FalkorDB 1890 - DELETE not visible to subsequent WHERE pattern predicate`() {
-        Assumptions.assumeTrue(
-            persistenceManager.type == DatabaseType.FALKORDB,
-            "Canary only runs on FalkorDB"
-        )
-
-        // Setup: A -[:R]-> B (B's only relationship)
-        persistenceManager.execute(
-            QuerySpecification.withStatement(
-                """
-                CREATE (:CanaryA {id: 'canary-1890', createdBy: 'demo-test'})
-                    -[:CANARY_REL]->
-                    (:CanaryB {id: 'canary-1890', createdBy: 'demo-test'})
-                """.trimIndent()
-            )
-        )
-
-        // Attempt the pattern that fails: delete rel, then check orphan in same query
-        persistenceManager.execute(
-            QuerySpecification.withStatement(
-                """
-                MATCH (a:CanaryA {id: 'canary-1890'})-[r:CANARY_REL]->(b:CanaryB)
-                DELETE r
-                WITH b
-                WHERE NOT (b)<-[]-() AND NOT (b)-[]-()
-                DELETE b
-                """.trimIndent()
-            )
-        )
-
-        // If FalkorDB STILL has the bug, B survives (delete didn't persist)
-        val bSurvived = persistenceManager.query(
-            QuerySpecification
-                .withStatement("MATCH (b:CanaryB {id: 'canary-1890'}) RETURN b.id")
-                .transform(String::class.java)
-        )
-
-        // This assertion will FAIL when FalkorDB fixes the bug — that's the signal
-        assertTrue(bSurvived.isNotEmpty(), """
-            FalkorDB/FalkorDB#1890 appears to be FIXED!
-            The canary node was correctly deleted, meaning DELETE is now visible
-            to subsequent WHERE pattern predicates in the same query.
-            ACTION: Remove this canary test and set OpenCypherGrammar.supportsOrphanDelete = true.
-        """.trimIndent())
     }
 
     @Test

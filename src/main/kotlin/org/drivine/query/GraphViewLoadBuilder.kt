@@ -1,7 +1,9 @@
 package org.drivine.query
 
+import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
+import org.drivine.model.AggregateFieldModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
@@ -84,6 +86,11 @@ internal class GraphViewLoadBuilder(
             withSections.add("    $comment\n    $projection")
         }
 
+        // Add per-root aggregate projections (@Count / @Aggregate)
+        viewModel.aggregateFields.forEach { agg ->
+            withSections.add("    // ${agg.fieldName} (${agg.function} over ${agg.type})\n    ${buildAggregateProjection(rootFieldName, agg)}")
+        }
+
         // Insert CALL { } prologs between MATCH and WHERE.
         val prologSection = prologSection(rootFieldName)
 
@@ -95,6 +102,9 @@ internal class GraphViewLoadBuilder(
         viewModel.relationships.forEach { rel ->
             val targetAlias = rel.deriveTargetAlias()
             returnFields.add("    ${rel.fieldName}: $targetAlias")
+        }
+        viewModel.aggregateFields.forEach { agg ->
+            returnFields.add("    ${agg.fieldName}: ${agg.fieldName}")
         }
 
         val returnClause = """
@@ -301,6 +311,11 @@ ${returnFields.joinToString(",\n")}
         targetAlias: String,
         visitCounts: Map<String, Int> = emptyMap()
     ): String {
+        if (rel.isPath) {
+            // Multi-hop @GraphPath: traverse through intermediate nodes, project only the final node
+            return buildPathPattern(rootFieldName, rel, targetAlias, visitCounts)
+        }
+
         if (rel.isRelationshipFragment) {
             // Relationship fragment pattern: capture both relationship properties and target node
             return buildRelationshipFragmentPattern(rootFieldName, rel, targetAlias, visitCounts)
@@ -588,6 +603,93 @@ ${returnFields.joinToString(",\n")}
     }
 
     /**
+     * Builds a multi-hop @GraphPath field as a CALL-subquery prolog that traverses the path,
+     * projects only the final node, and de-duplicates it. Emitted uniformly across engines (Neo4j,
+     * Memgraph, FalkorDB all accept `CALL { WITH root … RETURN collect(DISTINCT …) }`; pattern
+     * comprehensions can't express a skip-intermediary projection with dedup inline).
+     *
+     * Returns `field AS field` for the projection WITH (so RETURN resolves), and registers the
+     * prolog + a bridge variable on the context — the same shape as [CallSubqueryNestedViewProjector].
+     */
+    private fun buildPathPattern(
+        rootFieldName: String,
+        rel: RelationshipModel,
+        targetAlias: String,
+        visitCounts: Map<String, Int>,
+    ): String {
+        val targetLabels = GraphTypeLabels.labelsForType(rel.elementType)
+        if (targetLabels.isEmpty()) {
+            throw IllegalArgumentException("No labels defined for @GraphPath target ${rel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
+        }
+        val targetLabelString = targetLabels.joinToString(":")
+        val matchPattern = buildPathMatchPattern(rootFieldName, rel, "($targetAlias:$targetLabelString)")
+        val projection = buildRelationshipProjection(targetAlias, rel.elementType, visitCounts)
+
+        // Guard against OPTIONAL MATCH null rows (mandatory for FalkorDB #1889); DISTINCT dedups
+        // the far node reached via multiple intermediate paths.
+        val collectExpr = "collect(DISTINCT CASE WHEN $targetAlias IS NOT NULL THEN $projection END)"
+        val returnExpr = if (rel.isCollection) collectExpr else "head($collectExpr)"
+
+        val prolog = buildString {
+            appendLine("CALL {")
+            appendLine("    WITH $rootFieldName")
+            appendLine("    OPTIONAL MATCH $matchPattern")
+            append("    RETURN $returnExpr AS $targetAlias\n}")
+        }
+
+        context.addProlog(prolog)
+        context.addBridgeVariables(listOf(targetAlias))
+        return "$targetAlias AS $targetAlias"
+    }
+
+    /**
+     * Builds a per-root aggregate field (@Count / @Aggregate). COUNT is an inline
+     * `size([pattern | 1])` (portable; sidesteps the `count()`-in-CALL form Memgraph rejects);
+     * SUM/AVG/MIN/MAX are a CALL subquery returning the scalar — uniform across Neo4j, Memgraph,
+     * and FalkorDB (all verified), registered as a prolog + bridge variable like a path.
+     */
+    private fun buildAggregateProjection(rootFieldName: String, agg: AggregateFieldModel): String {
+        val arrow = Directions.hopArrow(agg.type, agg.direction)
+        val nodeVar = "${agg.fieldName}_x"
+
+        if (agg.function == AggregateFunction.COUNT) {
+            return "size([($rootFieldName)$arrow($nodeVar) | 1]) AS ${agg.fieldName}"
+        }
+
+        val property = agg.property
+            ?: throw IllegalArgumentException("@Aggregate(${agg.function}) on '${agg.fieldName}' requires a property")
+        val func = agg.function.name.lowercase()
+        val prolog = buildString {
+            appendLine("CALL {")
+            appendLine("    WITH $rootFieldName")
+            appendLine("    OPTIONAL MATCH ($rootFieldName)$arrow($nodeVar)")
+            append("    RETURN $func($nodeVar.$property) AS ${agg.fieldName}\n}")
+        }
+        context.addProlog(prolog)
+        context.addBridgeVariables(listOf(agg.fieldName))
+        return "${agg.fieldName} AS ${agg.fieldName}"
+    }
+
+    /**
+     * Renders a @GraphPath match pattern from the root through each hop. Intermediate nodes are
+     * anonymous (optionally labelled per [HopModel.intermediateLabel]); [finalNode] is the rendered
+     * final node, e.g. `(directors:Director)` for projection or `(:Director)` for an existence check.
+     */
+    private fun buildPathMatchPattern(rootAlias: String, rel: RelationshipModel, finalNode: String): String =
+        buildString {
+            append("($rootAlias)")
+            rel.hops.forEachIndexed { i, hop ->
+                append(Directions.hopArrow(hop.type, hop.direction))
+                if (i == rel.hops.lastIndex) {
+                    append(finalNode)
+                } else {
+                    val label = hop.intermediateLabel?.let { ":$it" } ?: ""
+                    append("($label)")
+                }
+            }
+        }
+
+    /**
      * Builds the projection for a relationship target.
      * If it's a GraphFragment, returns the fields projection.
      * If it's a GraphView, recursively builds nested structure with cycle detection.
@@ -734,6 +836,14 @@ ${returnFields.joinToString(",\n")}
         return viewModel.relationships
             .filter { rel -> !rel.isNullable && !rel.isCollection }
             .map { rel ->
+                if (rel.isPath) {
+                    // The path's CALL prolog already computed the (single) target via head(collect(…)),
+                    // which is null when the path is absent. A plain value null-check filters roots
+                    // lacking the path — portable across engines (no pattern predicate after WITH,
+                    // which Memgraph rejects).
+                    return@map "${rel.deriveTargetAlias()} IS NOT NULL"
+                }
+
                 val direction = Directions.directionString(rel)
 
                 // Get labels for the target - for relationship fragments, use the target node type

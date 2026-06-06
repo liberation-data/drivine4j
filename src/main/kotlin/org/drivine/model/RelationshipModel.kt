@@ -3,6 +3,21 @@ package org.drivine.model
 import org.drivine.annotation.Direction
 
 /**
+ * One hop of a multi-hop [GraphPath][org.drivine.annotation.GraphPath].
+ *
+ * @param type the relationship type for this hop
+ * @param direction traversal direction
+ * @param intermediateLabel optional label of the node this hop reaches (null = unconstrained);
+ *   meaningful on intermediate hops, redundant on the final hop (target labels come from the
+ *   field's element type)
+ */
+data class HopModel(
+    val type: String,
+    val direction: Direction,
+    val intermediateLabel: String? = null,
+)
+
+/**
  * Represents metadata about a property annotated with @GraphRelationship.
  */
 data class RelationshipModel(
@@ -107,8 +122,19 @@ data class RelationshipModel(
      * the same as the declaring @GraphView class).
      * Detected during GraphViewModel construction.
      */
-    val isRecursive: Boolean = false
+    val isRecursive: Boolean = false,
+
+    /**
+     * The hops of a multi-hop @GraphPath field, in order. Empty for an ordinary single-hop
+     * @GraphRelationship. When non-empty, the relationship traverses a path that skips the
+     * intermediate nodes and projects only the final node ([elementType]); [type]/[direction]
+     * are unused (they mirror the first hop).
+     */
+    val hops: List<HopModel> = emptyList()
 ) {
+
+    /** Whether this relationship is a multi-hop path (a @GraphPath rather than a @GraphRelationship). */
+    val isPath: Boolean get() = hops.isNotEmpty()
     /**
      * Returns the field name to use as the target alias in queries.
      * Simply uses the field name as-is for clarity.
