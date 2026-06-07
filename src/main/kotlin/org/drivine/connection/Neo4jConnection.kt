@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.ResultMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.ParameterCoercer
 import org.drivine.query.QueryLanguage
 import org.drivine.query.SpecCompiler
 import org.drivine.query.QuerySpecification
@@ -17,10 +18,13 @@ class Neo4jConnection(
     private val session: Session,
     private val resultMapper: ResultMapper,
     val subtypeRegistry: SubtypeRegistry? = null,
+    private val coercers: List<ParameterCoercer> = emptyList(),
 ) : Connection {
 
     private val logger: Logger = LoggerFactory.getLogger(Neo4jConnection::class.java)
     private var transaction: Transaction? = null
+
+    override fun parameterCoercers(): List<ParameterCoercer> = coercers
 
     override fun sessionId(): String {
         return session.toString() // Neo4j Java driver doesn't expose session ID directly.

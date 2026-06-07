@@ -2,6 +2,7 @@ package org.drivine.connection
 
 import org.drivine.mapper.Neo4jResultMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.TemporalCoercer
 import org.drivine.query.grammar.CypherDialect
 import org.neo4j.driver.AuthTokenManagers
 import org.neo4j.driver.AuthTokens
@@ -64,7 +65,11 @@ class Neo4jConnectionProvider(
         } else {
             driver.session()
         }
-        return Neo4jConnection(session, Neo4jResultMapper(subtypeRegistry), subtypeRegistry)
+        // Neptune lacks native datetime support, so temporals are coerced to ISO strings — the same
+        // representation FalkorDB uses — keeping write and param paths consistent. Neo4j and Memgraph
+        // handle native temporals directly, so no coercer is attached.
+        val coercers = if (type == DatabaseType.NEPTUNE) listOf(TemporalCoercer) else emptyList()
+        return Neo4jConnection(session, Neo4jResultMapper(subtypeRegistry), subtypeRegistry, coercers)
     }
 
     override fun end() {

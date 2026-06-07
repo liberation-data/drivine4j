@@ -7,9 +7,14 @@ import com.fasterxml.jackson.core.JsonGenerator
 import com.fasterxml.jackson.databind.*
 import com.fasterxml.jackson.databind.introspect.AnnotationIntrospectorPair
 import com.fasterxml.jackson.databind.module.SimpleModule
+import com.fasterxml.jackson.databind.util.TokenBuffer
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.LocalTime
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.Date
@@ -65,19 +70,14 @@ object Neo4jObjectMapper {
             // @JsonPacked support — serialize/deserialize collections as JSON strings
             registerModule(JsonPackedModule())
 
-            // Register custom serializers for Neo4j-specific conversions
+            // Register custom serializers for Neo4j-specific conversions.
+            // Note: temporals are intentionally NOT customized here — this mapper handles reads
+            // (result map → domain) and real JSON (@JsonPacked), where JavaTimeModule's ISO-string
+            // form is correct. The object→property-map *write* path uses a separate write mapper that
+            // preserves native temporals (see [toMap] / [temporalWriteMapper]).
             registerModule(SimpleModule().apply {
-                // Enum -> String serializer
                 addSerializer(Enum::class.java, EnumToStringSerializer())
-
-                // UUID -> String serializer
                 addSerializer(UUID::class.java, UuidToStringSerializer())
-
-                // Instant -> ZonedDateTime serializer (Neo4j doesn't support Instant directly)
-                addSerializer(Instant::class.java, InstantToZonedDateTimeSerializer())
-
-                // Date -> ZonedDateTime serializer (legacy java.util.Date support)
-                addSerializer(Date::class.java, DateToZonedDateTimeSerializer())
             })
         }
     }
@@ -101,43 +101,66 @@ object Neo4jObjectMapper {
     }
 
     /**
-     * Serializes Instant to ZonedDateTime at UTC for Neo4j compatibility.
-     * Neo4j's driver supports ZonedDateTime but not Instant directly.
+     * Serializes a value as an *embedded object* when going through a Jackson [TokenBuffer] (the
+     * `convertValue` / [toMap] object→map path), so the native Java value survives the round-trip
+     * instead of being stringified. Used only by the [temporalWriteMapper]; never used to write
+     * real JSON (the fallback is defensive).
      */
-    internal class InstantToZonedDateTimeSerializer : JsonSerializer<Instant>() {
-        override fun serialize(value: Instant, gen: JsonGenerator, serializers: SerializerProvider) {
-            val zonedDateTime = value.atZone(ZoneId.of("UTC"))
-            gen.writeObject(zonedDateTime)
-        }
-    }
-
-    /**
-     * Serializes legacy java.util.Date to ZonedDateTime at UTC for Neo4j compatibility.
-     */
-    internal class DateToZonedDateTimeSerializer : JsonSerializer<Date>() {
-        override fun serialize(value: Date, gen: JsonGenerator, serializers: SerializerProvider) {
-            val zonedDateTime = value.toInstant().atZone(ZoneId.of("UTC"))
-            gen.writeObject(zonedDateTime)
+    internal class EmbeddedObjectSerializer<T : Any> : JsonSerializer<T>() {
+        override fun serialize(value: T, gen: JsonGenerator, serializers: SerializerProvider) {
+            if (gen is TokenBuffer) gen.writeEmbeddedObject(value) else gen.writeString(value.toString())
         }
     }
 }
 
 /**
- * Converts an object to a Map<String, Any?> using Neo4j-aware serialization.
+ * A Jackson module that preserves temporal values as their native java.time types when converting
+ * an object to a property map (instead of JavaTimeModule's ISO strings). Registered only on the
+ * write mapper used by [toMap] — see that function for why writes and reads use different mappers.
+ */
+internal class Neo4jTemporalWriteModule : SimpleModule() {
+    init {
+        addSerializer(Instant::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(Date::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(ZonedDateTime::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(OffsetDateTime::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(LocalDate::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(LocalDateTime::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+        addSerializer(LocalTime::class.java, Neo4jObjectMapper.EmbeddedObjectSerializer())
+    }
+}
+
+/** Write mappers, derived per source mapper, that preserve native temporals (see [toMap]). */
+private val temporalWriteMappers = java.util.concurrent.ConcurrentHashMap<ObjectMapper, ObjectMapper>()
+
+/** The temporal-preserving write variant of [this] (cached); shares all other configuration. */
+private fun ObjectMapper.temporalWriteMapper(): ObjectMapper =
+    temporalWriteMappers.getOrPut(this) { copy().registerModule(Neo4jTemporalWriteModule()) }
+
+/**
+ * Converts an object to a `Map<String, Any?>` of its properties for use as Neo4j query parameters.
  *
- * This extension function provides a type-safe way to convert objects to maps
- * without requiring @Suppress("UNCHECKED_CAST") at call sites.
+ * Temporal values are kept as their **native** `java.time` types (not ISO strings): the map then
+ * flows through `.bind()` → [convertValueForNeo4j] → the connection's parameter coercers, which is
+ * exactly the pipeline bound query params use — so a saved `Instant` is stored as a native datetime
+ * (or coerced to a string per backend), identically to a param. If [toMap] stringified temporals,
+ * that downstream pipeline would only ever see a dead string, and `WHERE n.ts >= $param` would
+ * silently match nothing (Cypher returns null comparing String to a datetime).
  *
- * Example:
+ * This requires a *different* serialization than reads: the result-map → domain conversion also uses
+ * `convertValue`, where a native temporal must be deserialized back into the field's type (e.g. a
+ * stored `ZonedDateTime` into an `Instant` field) — which only works via ISO strings. So reads use
+ * the main mapper (JavaTimeModule strings) and writes use a temporal-preserving variant.
+ *
  * ```kotlin
  * val person = Person(uuid = UUID.randomUUID(), name = "Alice", createdAt = Instant.now())
  * val props = Neo4jObjectMapper.instance.toMap(person)
- * // props now contains: {uuid: "...", name: "Alice", createdAt: ZonedDateTime}
+ * // props now contains: {uuid: "...", name: "Alice", createdAt: Instant}
  * ```
  */
 @Suppress("UNCHECKED_CAST")
 fun ObjectMapper.toMap(value: Any): Map<String, Any?> {
-    return this.convertValue(value, Map::class.java) as Map<String, Any?>
+    return temporalWriteMapper().convertValue(value, Map::class.java) as Map<String, Any?>
 }
 
 /**
@@ -168,8 +191,8 @@ fun ObjectMapper.convertValueForNeo4j(value: Any?): Any? {
         is Enum<*> -> value.name
         // Convert legacy Date to ZonedDateTime
         is Date -> value.toInstant().atZone(ZoneId.of("UTC"))
-        // Keep ZonedDateTime, LocalDate, LocalDateTime as-is (Neo4j supports them)
-        is ZonedDateTime, is java.time.LocalDate, is java.time.LocalDateTime, is java.time.LocalTime -> value
+        // Keep native temporals as-is (the Neo4j driver supports them directly)
+        is ZonedDateTime, is OffsetDateTime, is java.time.LocalDate, is java.time.LocalDateTime, is java.time.LocalTime -> value
         // Recursively handle collections
         is Collection<*> -> value.map { convertValueForNeo4j(it) }
         // Handle arrays (convert to list and recursively process)
