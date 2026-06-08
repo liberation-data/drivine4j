@@ -190,7 +190,7 @@ class PersonRepository @Autowired constructor(
     fun findByCity(city: String): List<Person> {
         return manager.query(
             QuerySpecification
-                .withStatement<Any>("MATCH (p:Person {city: \$city}) RETURN properties(p)")
+                .withStatement("MATCH (p:Person {city: \$city}) RETURN properties(p)")
                 .bind(mapOf("city" to city))
                 .transform(Person::class.java)
         )
@@ -200,7 +200,7 @@ class PersonRepository @Autowired constructor(
     fun findById(id: String): Person? {
         return manager.maybeGetOne(
             QuerySpecification
-                .withStatement<Any>("MATCH (p:Person {uuid: \$id}) RETURN properties(p)")
+                .withStatement("MATCH (p:Person {uuid: \$id}) RETURN properties(p)")
                 .bind(mapOf("id" to id))
                 .transform(Person::class.java)
         )
@@ -210,7 +210,7 @@ class PersonRepository @Autowired constructor(
     fun create(person: Person): Person {
         return manager.getOne(
             QuerySpecification
-                .withStatement<Any>("CREATE (p:Person) SET p = \$props RETURN properties(p)")
+                .withStatement("CREATE (p:Person) SET p = \$props RETURN properties(p)")
                 .bindObject("props", person)
                 .transform(Person::class.java)
         )
@@ -221,7 +221,7 @@ class PersonRepository @Autowired constructor(
         val props = patch.toMap()
         return manager.getOne(
             QuerySpecification
-                .withStatement<Any>(
+                .withStatement(
                     "MATCH (p:Person {uuid: \$uuid}) SET p += \$props RETURN properties(p)"
                 )
                 .bind(mapOf("uuid" to uuid, "props" to props))
@@ -1192,7 +1192,7 @@ This prevents `MissingKotlinParameterException` that would occur if a null value
 ```kotlin
 val activeAdults = manager.query(
     QuerySpecification
-        .withStatement<Any>("MATCH (p:Person) RETURN properties(p)")
+        .withStatement("MATCH (p:Person) RETURN properties(p)")
         .transform(Person::class.java)
         .filter { it.age >= 18 }           // Client-side filtering
         .filter { it.email != null }
@@ -1206,7 +1206,7 @@ val activeAdults = manager.query(
 ```kotlin
 val fullNames: List<String> = manager.query(
     QuerySpecification
-        .withStatement<Any>("MATCH (p:Person) RETURN properties(p)")
+        .withStatement("MATCH (p:Person) RETURN properties(p)")
         .transform(Person::class.java)    // Map to Person
         .filter { it.age > 25 }            // Filter
         .map { "${it.firstName} ${it.lastName}" }  // Transform to String
@@ -1275,7 +1275,7 @@ class PersonRepository @Autowired constructor(
     fun getActive(): List<Person> {
         return manager.query(
             QuerySpecification
-                .withStatement<Any>(findActiveUsers.statement)
+                .withStatement(findActiveUsers.statement)
                 .transform(Person::class.java)
         )
     }
@@ -1315,7 +1315,7 @@ interface PersistenceManager {
 
 ```kotlin
 QuerySpecification
-    .withStatement<T>(cypherQuery)       // Start with Cypher query
+    .withStatement(cypherQuery)       // Start with Cypher query
     .bind(params)                        // Bind parameters
     .transform(TargetClass::class.java)  // Map to target type
     .filter { predicate }                // Client-side filtering
