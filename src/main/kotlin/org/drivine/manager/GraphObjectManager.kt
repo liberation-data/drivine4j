@@ -8,6 +8,7 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.mapper.TransformPostProcessor
+import org.drivine.query.FragmentVectorSearchBuilder
 import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
@@ -358,26 +359,29 @@ class GraphObjectManager(
      * Loads the [topK] graph objects whose embedding is most similar to [vector], ordered most
      * similar first, each paired with its normalized similarity [score][Scored.score].
      *
-     * The vector index is inferred from the `@VectorIndex` annotation on the view's root fragment.
-     * When the fragment declares a single embedding no [property] is needed; pass [property] only to
-     * disambiguate between several embeddings on the same node.
+     * Works on both a `@GraphView` (searches the **root fragment**'s embedding, returns the
+     * projected view) and a plain `@NodeFragment` (searches and returns the fragment itself). The
+     * vector index is inferred from the `@VectorIndex` annotation on the searched fragment; when it
+     * declares a single embedding no [property] is needed — pass [property] only to disambiguate
+     * between several embeddings on the same node.
      *
      * **Result count semantics:** `topK` is the index's `k` — the number of candidates the
-     * nearest-neighbour search returns. The view's required-relationship filters (and an optional
-     * [threshold]) are applied *afterwards*, so **fewer than [topK] results may come back**. Raise
-     * [topK] if your view is selective and you need a fuller set.
+     * nearest-neighbour search returns. For a view, the required-relationship filters (and an
+     * optional [threshold]) are applied *afterwards*, so **fewer than [topK] results may come back**;
+     * raise [topK] if your view is selective. A fragment search has no relationship filters, so it
+     * returns the full top-K (minus any [threshold] cut).
      *
      * Example:
      * ```kotlin
-     * val similar = graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
-     * similar.forEach { println("${it.score} -> ${it.value.proposition.text}") }
+     * val views = graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
+     * val nodes = graphObjectManager.loadNearest(PropositionNode::class.java, queryEmbedding, topK = 20)
      * ```
      *
-     * @param graphClass the `@GraphView` class to load
+     * @param graphClass the `@GraphView` or `@NodeFragment` class to load
      * @param vector the query embedding
      * @param topK the number of nearest candidates to retrieve from the index
      * @param threshold optional minimum similarity (higher = closer); candidates below it are dropped
-     * @return scored view instances, most similar first, of length `<= topK`
+     * @return scored instances, most similar first, of length `<= topK`
      * @throws UnsupportedOperationException if the backend has no native vector index
      */
     @JvmOverloads
@@ -389,9 +393,9 @@ class GraphObjectManager(
     ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold)
 
     /**
-     * Vector search variant that names the embedding [property] explicitly — use when the root
+     * Vector search variant that names the embedding [property] explicitly — use when the searched
      * fragment carries more than one `@VectorIndex` property. See the [loadNearest] overload above
-     * for the full semantics (notably: the result may contain fewer than [topK] elements).
+     * for the full semantics.
      *
      * @param property the `@VectorIndex` embedding property to search
      */
@@ -403,9 +407,6 @@ class GraphObjectManager(
         topK: Int,
         threshold: Double? = null,
     ): List<Scored<T>> {
-        require(graphClass.isAnnotationPresent(GraphView::class.java)) {
-            "loadNearest currently supports @GraphView types; ${graphClass.simpleName} is not a @GraphView"
-        }
         if (!grammar.supportsVectorSearch) {
             throw UnsupportedOperationException(
                 "Vector search is not supported on this backend (${grammar::class.simpleName} has no native vector index)."
@@ -414,13 +415,25 @@ class GraphObjectManager(
 
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val viewModel = GraphViewModel.from(graphClass)
-        val vectorSpec = VectorIndexResolver.resolve(
-            viewModel.rootFragment.fragmentType, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM,
-        )
-
         val thresholdParam = if (threshold != null) VECTOR_THRESHOLD_PARAM else null
-        val query = GraphViewQueryBuilder.forView(graphClass, grammar).buildVectorQuery(vectorSpec, thresholdParam)
+        val query = when {
+            graphClass.isAnnotationPresent(GraphView::class.java) -> {
+                // A view searches its root fragment's embedding and returns the projected view.
+                val rootFragmentType = GraphViewModel.from(graphClass).rootFragment.fragmentType
+                val spec = VectorIndexResolver.resolve(rootFragmentType, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
+                GraphViewQueryBuilder.forView(graphClass, grammar).buildVectorQuery(spec, thresholdParam)
+            }
+
+            graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
+                // A fragment searches and returns itself — no relationships, no required-rel filter.
+                val spec = VectorIndexResolver.resolve(graphClass, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
+                FragmentVectorSearchBuilder(FragmentModel.from(graphClass), grammar).build(spec, thresholdParam)
+            }
+
+            else -> throw IllegalArgumentException(
+                "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
+            )
+        }
 
         val bindings = buildMap<String, Any?> {
             put(VECTOR_TOP_K_PARAM, topK)

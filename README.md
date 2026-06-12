@@ -535,10 +535,23 @@ From Java, the same three overloads apply (use `.count(Issue.class)` etc.); the 
 
 #### Vector Search (`loadNearest`)
 
-`loadNearest` runs an approximate nearest-neighbour search over a `@GraphView` and returns the hits
-as fully-projected views, each paired with a normalized similarity score.
+`loadNearest` runs an approximate nearest-neighbour search and returns the hits paired with a
+normalized similarity score. Like `loadAll`, it works on both a **`@GraphView`** — searching the
+root fragment's embedding and returning the fully-projected view — and a plain **`@NodeFragment`**,
+searching and returning the bare nodes:
 
-The embedding to search is identified by a `@VectorIndex` annotation on the view's root fragment —
+```kotlin
+// Search a view: ranks PropositionViews by their root proposition's embedding
+val views: List<Scored<PropositionView>> =
+    graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
+
+// Search a fragment: ranks bare PropositionNodes
+val nodes: List<Scored<PropositionNode>> =
+    graphObjectManager.loadNearest(PropositionNode::class.java, queryEmbedding, topK = 20)
+```
+
+The embedding to search is identified by a `@VectorIndex` annotation on the searched fragment (the
+view's root fragment, or the fragment itself) —
 **inferred** when the fragment declares one embedding, or **named explicitly** to pick among
 several. `@VectorIndex` is the query-side declaration of "this embedding is searchable" and is
 independent of how the index is *created*: it works whether you create the index from the annotation
@@ -577,10 +590,12 @@ graphObjectManager.loadNearest(PropositionView::class.java, "titleEmbedding", qu
 Each result is a `Scored<T>(value, score)`; the score is normalized to **similarity, higher = more
 similar** on every engine, so ordering and `threshold` mean the same thing regardless of backend.
 
-**`topK` is the index's `k`, not a guaranteed result count.** The view's *required* relationships
-(and the optional `threshold`) are applied **after** the K-nearest search, so a candidate that ranks
-in the top K but fails the filter is dropped — meaning **`loadNearest` can return fewer than `topK`
-results**. Raise `topK` if your view is selective and you need a fuller set.
+**`topK` is the index's `k`, not a guaranteed result count.** When searching a **view**, its
+*required* relationships (and the optional `threshold`) are applied **after** the K-nearest search,
+so a candidate that ranks in the top K but fails the filter is dropped — meaning **`loadNearest` can
+return fewer than `topK` results**. Raise `topK` if your view is selective and you need a fuller set.
+A **fragment** search has no relationship filter, so it returns the full top K (minus any `threshold`
+cut).
 
 Backends without a native vector index (Amazon Neptune) throw `UnsupportedOperationException`.
 

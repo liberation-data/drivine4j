@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import org.drivine.DrivineException
+import org.drivine.model.FragmentModel
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.sort.ApocSortMapsEmitter
 import org.drivine.schema.SimilarityFunction
@@ -91,5 +92,31 @@ class VectorSearchBuilderTest {
             .buildVectorQuery(spec, thresholdParam = "_vectorThreshold")
 
         assertTrue(cypher.contains("_score >= \$_vectorThreshold"))
+    }
+
+    // ----- Fragment vector search -----
+
+    @Test
+    fun `fragment vector query projects the fragment's fields with no relationship filter`() {
+        val spec = VectorIndexResolver.resolve(DocNode::class.java, null, "_vectorTopK", "_vectorQuery")
+        val cypher = FragmentVectorSearchBuilder(FragmentModel.from(DocNode::class.java), grammar).build(spec, null)
+
+        assertTrue(cypher.startsWith("CALL db.index.vector.queryNodes('Doc_embedding_vector'"))
+        assertTrue(cypher.contains("WITH node AS n, score AS _score"))
+        assertTrue(cypher.contains("id: n.id"))
+        assertTrue(cypher.contains("score: _score"))
+        assertTrue(cypher.contains("} AS row"))
+        assertTrue(cypher.trimEnd().endsWith("ORDER BY _score DESC"))
+        // A fragment has no relationships, so no required-relationship filter and no MATCH.
+        assertTrue(!cypher.contains("IS NOT NULL"))
+        assertTrue(!cypher.contains("MATCH ("))
+    }
+
+    @Test
+    fun `fragment vector query adds a threshold floor`() {
+        val spec = VectorIndexResolver.resolve(DocNode::class.java, null, "_vectorTopK", "_vectorQuery")
+        val cypher = FragmentVectorSearchBuilder(FragmentModel.from(DocNode::class.java), grammar).build(spec, "_vectorThreshold")
+
+        assertTrue(cypher.contains("WHERE _score >= \$_vectorThreshold"))
     }
 }

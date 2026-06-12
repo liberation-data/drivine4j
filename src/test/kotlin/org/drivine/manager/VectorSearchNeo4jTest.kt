@@ -15,6 +15,7 @@ import org.testcontainers.containers.Neo4jContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import sample.vector.DocNode
 import sample.vector.DocView
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -119,6 +120,21 @@ class VectorSearchNeo4jTest {
         val results = gom.loadNearest(DocView::class.java, query, topK = 10)
         assertEquals(3, results.size)
         assertTrue(results.none { it.value.doc.id == "D" })
+    }
+
+    @Test
+    fun `fragment search returns the bare nodes, including ones a view would prune`() {
+        // Searching the DocNode fragment directly: no relationship filter, so the authorless D —
+        // which the DocView search pruned — is included. A and D (identical embedding) rank jointly.
+        val results = gom.loadNearest(DocNode::class.java, query, topK = 10)
+        val ids = results.map { it.value.id }
+
+        assertEquals(setOf("A", "B", "C", "D"), ids.toSet())
+        assertEquals(setOf("A", "D"), ids.take(2).toSet())
+        assertEquals("C", ids.last())
+        assertEquals("Alpha", results.first { it.value.id == "A" }.value.title)
+        val scores = results.map { it.score }
+        assertEquals(scores, scores.sortedDescending())
     }
 
     @Test

@@ -17,6 +17,7 @@ import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import sample.vector.DocNode
 import sample.vector.DocView
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -51,6 +52,11 @@ private fun verify(gom: GraphObjectManager) {
     val between = (scores[0] + scores[1]) / 2.0
     val filtered = gom.loadNearest(DocView::class.java, QUERY, topK = 10, threshold = between)
     assertEquals(listOf("A"), filtered.map { it.value.doc.id })
+
+    // Fragment search has no relationship filter, so the authorless D is included (unlike the view).
+    val frags = gom.loadNearest(DocNode::class.java, QUERY, topK = 10)
+    assertEquals(setOf("A", "B", "C", "D"), frags.map { it.value.id }.toSet())
+    assertEquals(frags.map { it.score }, frags.map { it.score }.sortedDescending())
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {
