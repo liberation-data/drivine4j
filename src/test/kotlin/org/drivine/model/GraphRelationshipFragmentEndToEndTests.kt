@@ -218,6 +218,67 @@ class GraphRelationshipFragmentEndToEndTests @Autowired constructor(
         assertEquals(2, loaded2.assignedTo[0].estimatedHours)
         assertEquals(Instant.parse("2025-01-15T15:00:00Z"), loaded2.assignedTo[0].assignedAt)
     }
+
+    @Test
+    fun `should persist target node property change when relationship properties are unchanged`() {
+        // Regression test for the relationship-fragment unchanged path: when the relationship
+        // properties (assignedAt, priority, estimatedHours) are unchanged but a property on the
+        // target node (Developer.name) changed, that change must still be persisted. Previously
+        // the assignment was neither added nor removed, so the target node update was dropped.
+        val taskId = UUID.randomUUID()
+        val assigneeId = UUID.randomUUID()
+
+        val assignee = Developer(
+            uuid = assigneeId,
+            name = "Original Name",
+            email = "dev@example.com"
+        )
+
+        val assignment = TaskAssignment(
+            assignedAt = Instant.parse("2025-01-15T10:00:00Z"),
+            priority = "HIGH",
+            estimatedHours = 5,
+            target = assignee
+        )
+
+        val task = TaskWithAssignments(
+            task = Task(
+                uuid = taskId,
+                title = "Bug fix",
+                description = "Fix bug #789"
+            ),
+            assignedTo = listOf(assignment)
+        )
+
+        // Initial save, then load so the view (and its snapshot) is tracked in the session.
+        graphObjectManager.save(task)
+        val loaded = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+        assertNotNull(loaded)
+        assertEquals("Original Name", loaded.assignedTo[0].target.name)
+
+        // Change ONLY the target node property; keep the relationship properties identical
+        // (reuse the loaded assignment so assignedAt/priority/estimatedHours are unchanged).
+        val loadedAssignment = loaded.assignedTo[0]
+        val modified = loaded.copy(
+            assignedTo = listOf(
+                loadedAssignment.copy(
+                    target = loadedAssignment.target.copy(name = "Updated Name")
+                )
+            )
+        )
+
+        graphObjectManager.save(modified)
+
+        val reloaded = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+        assertNotNull(reloaded)
+        assertEquals(1, reloaded.assignedTo.size)
+        // Target node property change persisted...
+        assertEquals("Updated Name", reloaded.assignedTo[0].target.name)
+        // ...sibling target field untouched, relationship properties intact.
+        assertEquals("dev@example.com", reloaded.assignedTo[0].target.email)
+        assertEquals("HIGH", reloaded.assignedTo[0].priority)
+        assertEquals(5, reloaded.assignedTo[0].estimatedHours)
+    }
 }
 
 // Test domain model

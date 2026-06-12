@@ -102,20 +102,41 @@ class SessionManager(
     fun <T : Any> getDirtyFields(obj: T, idValue: Any): Set<String>? {
         val key = buildKey(obj.javaClass, idValue)
         val snapshot = snapshots[key] ?: return null
+        return diffFields(objectMapper.valueToTree(obj), snapshot)
+    }
 
-        val currentNode = objectMapper.valueToTree<JsonNode>(obj)
+    /**
+     * Computes the dirty fields between two object instances by comparing their JSON
+     * representations directly, without consulting the session snapshot store.
+     *
+     * This is used for fragments that are not tracked individually in the session but
+     * whose previous state is available from an enclosing GraphView's snapshot (e.g. a
+     * related fragment loaded as part of a view).
+     *
+     * @param current The current object state
+     * @param snapshot The previous object state to compare against
+     * @return Set of field names that have changed
+     */
+    fun computeDirtyFields(current: Any, snapshot: Any): Set<String> {
+        return diffFields(objectMapper.valueToTree(current), objectMapper.valueToTree(snapshot))
+    }
+
+    /**
+     * Field-by-field diff of two JSON representations.
+     */
+    private fun diffFields(currentNode: JsonNode, snapshotNode: JsonNode): Set<String> {
         val dirtyFields = mutableSetOf<String>()
 
         // Compare each field in the current state with the snapshot
         currentNode.fields().forEach { (fieldName, currentValue) ->
-            val snapshotValue = snapshot.get(fieldName)
+            val snapshotValue = snapshotNode.get(fieldName)
             if (currentValue != snapshotValue) {
                 dirtyFields.add(fieldName)
             }
         }
 
         // Check for fields that existed in snapshot but are now missing
-        snapshot.fields().forEach { (fieldName, _) ->
+        snapshotNode.fields().forEach { (fieldName, _) ->
             if (!currentNode.has(fieldName)) {
                 dirtyFields.add(fieldName)
             }

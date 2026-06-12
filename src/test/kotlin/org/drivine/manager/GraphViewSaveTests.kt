@@ -302,6 +302,201 @@ class GraphViewSaveTests @Autowired constructor(
     }
 
     @Test
+    fun `should persist property change on related fragment`() {
+        // Regression test: mutating a property on an existing, still-related fragment
+        // (a non-root fragment loaded as part of the view) must be persisted on save.
+        // Previously such changes were silently dropped because the relationship was
+        // neither added nor removed, so no SET was emitted for the target node.
+        val issueUuid = UUID.randomUUID()
+        val raiserUuid = UUID.randomUUID()
+        val assigneeUuid = UUID.randomUUID()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (issue:Issue {
+                        uuid: ${'$'}issueUuid,
+                        id: 2005,
+                        title: 'Test Issue',
+                        body: 'Body text',
+                        state: 'open',
+                        stateReason: 'REOPENED',
+                        locked: false,
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (raiser:Person:Mapped {
+                        uuid: ${'$'}raiserUuid,
+                        name: 'Ward Cunningham',
+                        bio: 'Wiki inventor',
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (assignee:Person:Mapped {
+                        uuid: ${'$'}assigneeUuid,
+                        name: 'Alice',
+                        bio: 'Original bio',
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (issue)-[:RAISED_BY]->(raiser)
+                    CREATE (issue)-[:ASSIGNED_TO]->(assignee)
+                """.trimIndent())
+                .bind(mapOf(
+                    "issueUuid" to issueUuid.toString(),
+                    "raiserUuid" to raiserUuid.toString(),
+                    "assigneeUuid" to assigneeUuid.toString()
+                ))
+        )
+
+        // Load the GraphView (adds to session, snapshotting the related fragments too)
+        val loaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(loaded)
+        assertEquals(1, loaded.assignedTo.size)
+        assertEquals("Original bio", loaded.assignedTo.first().bio)
+
+        // Mutate a property on the existing related fragment (not the root)
+        val assignee = loaded.assignedTo.first()
+        val modified = loaded.copy(
+            assignedTo = listOf(assignee.copy(bio = "Updated bio"))
+        )
+
+        graphObjectManager.save(modified)
+
+        // The property change on the related fragment must be persisted
+        val reloaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(reloaded)
+        assertEquals(1, reloaded.assignedTo.size)
+        assertEquals("Updated bio", reloaded.assignedTo.first().bio)
+        // Sibling field untouched - confirms dirty-only semantics, not a wholesale overwrite
+        assertEquals("Alice", reloaded.assignedTo.first().name)
+    }
+
+    @Test
+    fun `should persist property change on fragment inside nested view`() {
+        // Regression test: the related fragment is the root of a nested view (raisedBy.person).
+        // Mutating one of its properties must be persisted recursively through the nested view.
+        val issueUuid = UUID.randomUUID()
+        val raiserUuid = UUID.randomUUID()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (issue:Issue {
+                        uuid: ${'$'}issueUuid,
+                        id: 2006,
+                        title: 'Test Issue',
+                        body: 'Body text',
+                        state: 'open',
+                        stateReason: 'REOPENED',
+                        locked: false,
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (raiser:Person:Mapped {
+                        uuid: ${'$'}raiserUuid,
+                        name: 'Ward Cunningham',
+                        bio: 'Original bio',
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (issue)-[:RAISED_BY]->(raiser)
+                """.trimIndent())
+                .bind(mapOf(
+                    "issueUuid" to issueUuid.toString(),
+                    "raiserUuid" to raiserUuid.toString()
+                ))
+        )
+
+        val loaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(loaded)
+        assertEquals("Original bio", loaded.raisedBy.person.bio)
+
+        // Mutate a property on the root fragment of the nested view
+        val modified = loaded.copy(
+            raisedBy = loaded.raisedBy.copy(
+                person = loaded.raisedBy.person.copy(bio = "Updated bio")
+            )
+        )
+
+        graphObjectManager.save(modified)
+
+        val reloaded = graphObjectManager.load(issueUuid.toString(), RaisedAndAssignedIssue::class.java)
+        assertNotNull(reloaded)
+        assertEquals("Updated bio", reloaded.raisedBy.person.bio)
+        // Sibling field untouched
+        assertEquals("Ward Cunningham", reloaded.raisedBy.person.name)
+    }
+
+    @Test
+    fun `should persist property change deep inside a collection of nested views`() {
+        // Regression test: the related item is one element of a collection of nested views
+        // (IssueWithSortedAssignees.assignees -> AssigneeWithContext), and the changed property
+        // lives a further level down, on a fragment reached through the nested view's own
+        // (unchanged) relationship (AssigneeWithContext.employer). Exercises the full
+        // collection -> nested view -> nested relationship -> fragment recursion on the unchanged path.
+        val issueUuid = UUID.randomUUID()
+        val assigneeUuid = UUID.randomUUID()
+        val orgUuid = UUID.randomUUID()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (issue:Issue {
+                        uuid: ${'$'}issueUuid,
+                        id: 3002,
+                        title: 'Test Issue',
+                        body: 'Body text',
+                        state: 'open',
+                        stateReason: 'REOPENED',
+                        locked: false,
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (assignee:Person:Mapped {
+                        uuid: ${'$'}assigneeUuid,
+                        name: 'Zara First',
+                        bio: 'Original assignee bio',
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (org:Organization {
+                        uuid: ${'$'}orgUuid,
+                        name: 'Original Org',
+                        createdBy: 'graphview-save-test'
+                    })
+                    CREATE (assignee)-[:WORKS_FOR]->(org)
+                    CREATE (issue)-[:ASSIGNED_TO]->(assignee)
+                """.trimIndent())
+                .bind(mapOf(
+                    "issueUuid" to issueUuid.toString(),
+                    "assigneeUuid" to assigneeUuid.toString(),
+                    "orgUuid" to orgUuid.toString()
+                ))
+        )
+
+        val loaded = graphObjectManager.load(issueUuid.toString(), IssueWithSortedAssignees::class.java)
+        assertNotNull(loaded)
+        assertEquals(1, loaded.assignees.size)
+        assertEquals("Original assignee bio", loaded.assignees.first().person.bio)
+        assertEquals("Original Org", loaded.assignees.first().employer?.name)
+
+        // Mutate a property on the nested view's root (person.bio) AND on a fragment one level
+        // deeper, reached through the nested view's own unchanged relationship (employer.name).
+        val modified = loaded.copy(
+            assignees = loaded.assignees.map { assignee ->
+                assignee.copy(
+                    person = assignee.person.copy(bio = "Updated assignee bio"),
+                    employer = assignee.employer?.copy(name = "Updated Org")
+                )
+            }
+        )
+
+        graphObjectManager.save(modified)
+
+        val reloaded = graphObjectManager.load(issueUuid.toString(), IssueWithSortedAssignees::class.java)
+        assertNotNull(reloaded)
+        assertEquals(1, reloaded.assignees.size)
+        assertEquals("Updated assignee bio", reloaded.assignees.first().person.bio)
+        assertEquals("Updated Org", reloaded.assignees.first().employer?.name)
+        // Sibling fields untouched
+        assertEquals("Zara First", reloaded.assignees.first().person.name)
+    }
+
+    @Test
     fun `should handle lazy sorted property pattern`() {
         // This test verifies the pattern:
         //   @GraphRelationship(...) val assignees: List<AssigneeWithContext>

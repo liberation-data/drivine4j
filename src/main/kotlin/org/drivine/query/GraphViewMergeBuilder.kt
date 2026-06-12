@@ -59,11 +59,15 @@ class GraphViewMergeBuilder(
         val rootFragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
         val rootFragmentBuilder = FragmentMergeBuilder(rootFragmentModel, objectMapper)
 
-        // Check if root fragment is dirty
-        val rootIdValue = sessionManager.extractIdValue(rootFragment, rootFragmentModel)?.toString()
-        val rootDirtyFields = if (rootIdValue != null) {
-            sessionManager.getDirtyFields(rootFragment, rootIdValue)
-        } else null
+        // Check if root fragment is dirty.
+        // Prefer the enclosing view snapshot (the only place a fragment-inside-a-view's
+        // previous state is recorded); fall back to session tracking, then to a full save.
+        val rootDirtyFields = if (snapshot != null) {
+            sessionManager.computeDirtyFields(rootFragment, extractRootFragment(snapshot))
+        } else {
+            val rootIdValue = sessionManager.extractIdValue(rootFragment, rootFragmentModel)?.toString()
+            if (rootIdValue != null) sessionManager.getDirtyFields(rootFragment, rootIdValue) else null
+        }
 
         statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields))
 
@@ -119,11 +123,11 @@ class GraphViewMergeBuilder(
         }
 
         // Detect changes
-        val (added, removed) = if (snapshotItems != null) {
+        val (added, removed, unchanged) = if (snapshotItems != null) {
             detectChanges(currentItems, snapshotItems, relModel)
         } else {
             // No snapshot = all current items are "added"
-            Pair(currentItems, emptyList())
+            Triple(currentItems.filterNotNull(), emptyList<Any>(), emptyList<Pair<Any, Any>>())
         }
 
         // Generate statements for removed relationships (skip for PRESERVE — append-only mode)
@@ -135,24 +139,77 @@ class GraphViewMergeBuilder(
 
         // Generate statements for added relationships
         added.forEach { addedItem ->
-            if (addedItem != null) {
-                statements.addAll(buildAddRelationshipStatements(rootFragment, rootFragmentModel, addedItem, relModel))
-            }
+            statements.addAll(buildAddRelationshipStatements(rootFragment, rootFragmentModel, addedItem, relModel))
+        }
+
+        // Generate statements for unchanged relationships whose target node/view properties changed.
+        // The relationship itself is neither added nor removed, but the related fragment may be dirty.
+        unchanged.forEach { (currentItem, snapshotItem) ->
+            statements.addAll(buildUnchangedTargetStatements(currentItem, snapshotItem, relModel, cascade))
         }
 
         return statements
     }
 
     /**
-     * Detects which items were added and which were removed.
-     * Uses ID-based comparison.
-     * Handles both GraphFragments, nested GraphViews, and relationship fragments.
+     * Builds statements to persist property changes on an unchanged relationship's target.
+     *
+     * The relationship link is unchanged (same target ID, and for relationship fragments the
+     * relationship properties are unchanged too), but the target node — or, for a nested view,
+     * any fragment within it — may have dirty properties that must still be written.
+     *
+     * - Fragment target: emit a dirty-field SET on the target node (nothing if nothing changed).
+     * - Nested view target: recurse, diffing the current target view against its snapshot so the
+     *   nested root and its own relationships are reconciled too.
+     */
+    private fun buildUnchangedTargetStatements(
+        currentItem: Any,
+        snapshotItem: Any,
+        relModel: RelationshipModel,
+        cascade: CascadeType
+    ): List<MergeStatement> {
+        val currentTarget = extractTargetNode(currentItem, relModel)
+        val snapshotTarget = extractTargetNode(snapshotItem, relModel)
+
+        val targetClass = if (relModel.isRelationshipFragment) relModel.targetNodeType!! else relModel.elementType
+        val isView = targetClass.isAnnotationPresent(org.drivine.annotation.GraphView::class.java)
+
+        return if (isView) {
+            // Recurse into the nested view, diffing against the snapshot view.
+            val nestedViewModel = GraphViewModel.from(targetClass)
+            val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+            nestedViewBuilder.buildMergeStatementsInternal(currentTarget, snapshotTarget, cascade)
+        } else {
+            // Direct fragment target: write only the dirty fields, if any.
+            val dirtyFields = sessionManager.computeDirtyFields(currentTarget, snapshotTarget)
+            if (dirtyFields.isEmpty()) {
+                emptyList()
+            } else {
+                // IMPORTANT: Use runtime type, not declared type, for correct labels on polymorphic types.
+                val targetFragmentModel = FragmentModel.from(currentTarget::class.java)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
+                listOf(fragmentBuilder.buildMergeStatement(currentTarget, dirtyFields))
+            }
+        }
+    }
+
+    /**
+     * Detects which related items were added, removed, or unchanged, using ID-based comparison.
+     * Handles GraphFragments, nested GraphViews, and relationship fragments.
+     *
+     * - added:     present in current but not in snapshot (new ID), or — for relationship
+     *              fragments — present in both but with changed relationship properties (re-MERGE).
+     * - removed:   present in snapshot but not in current.
+     * - unchanged: present in both with the same ID (and, for relationship fragments, unchanged
+     *              relationship properties). The link is unchanged, but the target node/view may
+     *              still hold dirty properties — returned as (currentItem, snapshotItem) pairs so
+     *              the caller can reconcile those. See [buildUnchangedTargetStatements].
      */
     private fun detectChanges(
         current: List<Any?>,
         snapshot: List<Any?>,
         relModel: RelationshipModel
-    ): Pair<List<Any>, List<Any>> {
+    ): Triple<List<Any>, List<Any>, List<Pair<Any, Any>>> {
         // For relationship fragments, we need to extract the target node for comparison
         val actualTargetClass = if (relModel.isRelationshipFragment) {
             relModel.targetNodeType!!
@@ -164,138 +221,78 @@ class GraphViewMergeBuilder(
 
         val fragmentModel = if (isView) {
             // For views, use the root fragment's model for ID extraction
-            val viewModel = GraphViewModel.from(actualTargetClass)
-            FragmentModel.from(viewModel.rootFragment.fragmentType)
+            FragmentModel.from(GraphViewModel.from(actualTargetClass).rootFragment.fragmentType)
         } else {
             FragmentModel.from(actualTargetClass)
         }
 
-        val nodeIdField = fragmentModel.nodeIdField
+        fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("Cannot detect changes for relationship without @GraphNodeId: ${relModel.fieldName}")
 
-        // Helper to extract the actual target node from an item
-        fun extractTargetNode(item: Any): Any {
-            return if (relModel.isRelationshipFragment) {
-                // Extract target from relationship fragment
-                val targetField = item.javaClass.getDeclaredField(relModel.targetFieldName!!)
-                targetField.isAccessible = true
-                targetField.get(item) ?: throw IllegalArgumentException("Target field is null")
+        // Extract the ID for an item - for views, extract from the root fragment.
+        fun idOf(item: Any): Any? {
+            val targetNode = extractTargetNode(item, relModel)
+            val fragment = if (isView) {
+                extractRootFragmentFromObject(targetNode, GraphViewModel.from(actualTargetClass))
             } else {
-                item
+                targetNode
             }
+            return sessionManager.extractIdValue(fragment, fragmentModel)
         }
 
-        // Extract IDs - for views, extract from root fragment
-        val currentIds = current.mapNotNull { item ->
-            if (item != null) {
-                val targetNode = extractTargetNode(item)
-                val fragment = if (isView) {
-                    val viewModel = GraphViewModel.from(actualTargetClass)
-                    extractRootFragmentFromObject(targetNode, viewModel)
-                } else {
-                    targetNode
-                }
-                val id = sessionManager.extractIdValue(fragment, fragmentModel)
-                Pair(id, item)
-            } else null
-        }.toMap()
+        // Build ordered ID -> item maps for both sides (preserve declaration order).
+        val currentById = LinkedHashMap<Any?, Any>()
+        current.forEach { item -> if (item != null) idOf(item)?.let { currentById[it] = item } }
 
-        val snapshotIds = snapshot.mapNotNull { item ->
-            if (item != null) {
-                val targetNode = extractTargetNode(item)
-                val fragment = if (isView) {
-                    val viewModel = GraphViewModel.from(actualTargetClass)
-                    extractRootFragmentFromObject(targetNode, viewModel)
-                } else {
-                    targetNode
-                }
-                sessionManager.extractIdValue(fragment, fragmentModel)
-            } else null
-        }.toSet()
+        val snapshotById = LinkedHashMap<Any?, Any>()
+        snapshot.forEach { item -> if (item != null) idOf(item)?.let { snapshotById[it] = item } }
 
-        // For relationship fragments, we need to treat property changes as "updates"
-        // which means we regenerate the MERGE statement (added) but don't remove the old one
         val added = mutableListOf<Any>()
-        val removed = mutableListOf<Any>()
+        val unchanged = mutableListOf<Pair<Any, Any>>()
 
-        if (relModel.isRelationshipFragment) {
-            // For relationship fragments: compare full relationship including properties
-            val currentMap = current.mapNotNull { item ->
-                if (item != null) {
-                    val targetNode = extractTargetNode(item)
-                    val fragment = if (isView) {
-                        val viewModel = GraphViewModel.from(actualTargetClass)
-                        extractRootFragmentFromObject(targetNode, viewModel)
-                    } else {
-                        targetNode
-                    }
-                    val id = sessionManager.extractIdValue(fragment, fragmentModel)
-                    Pair(id, item)
-                } else null
-            }.toMap()
-
-            val snapshotMap = snapshot.mapNotNull { item ->
-                if (item != null) {
-                    val targetNode = extractTargetNode(item)
-                    val fragment = if (isView) {
-                        val viewModel = GraphViewModel.from(actualTargetClass)
-                        extractRootFragmentFromObject(targetNode, viewModel)
-                    } else {
-                        targetNode
-                    }
-                    val id = sessionManager.extractIdValue(fragment, fragmentModel)
-                    Pair(id, item)
-                } else null
-            }.toMap()
-
-            // For each current item:
-            // - If ID is new: add it
-            // - If ID exists but relationship properties changed: add it (will update via MERGE + SET)
-            currentMap.forEach { (id, currentItem) ->
-                val snapshotItem = snapshotMap[id]
-                if (snapshotItem == null) {
+        currentById.forEach { (id, currentItem) ->
+            val snapshotItem = snapshotById[id]
+            when {
+                snapshotItem == null -> {
                     // New target ID
                     added.add(currentItem)
-                } else {
-                    // Same target ID - check if relationship properties changed
+                }
+                relModel.isRelationshipFragment -> {
+                    // Same target ID - re-MERGE only if the relationship properties changed.
                     val currentProps = objectMapper.toMap(currentItem)
                         .filterKeys { it in relModel.relationshipProperties }
                     val snapshotProps = objectMapper.toMap(snapshotItem)
                         .filterKeys { it in relModel.relationshipProperties }
-
                     if (currentProps != snapshotProps) {
-                        // Properties changed - re-run MERGE to update
                         added.add(currentItem)
-                    }
-                    // If properties are the same, do nothing (no statement needed)
-                }
-            }
-
-            // Items that exist in snapshot but not in current are removed
-            snapshotMap.forEach { (id, item) ->
-                if (id !in currentMap.keys) {
-                    removed.add(item)
-                }
-            }
-        } else {
-            // For direct references: simple ID-based comparison
-            added.addAll(currentIds.filter { (id, _) -> id !in snapshotIds }.values)
-            removed.addAll(snapshot.mapNotNull { item ->
-                if (item != null) {
-                    val targetNode = extractTargetNode(item)
-                    val fragment = if (isView) {
-                        val viewModel = GraphViewModel.from(actualTargetClass)
-                        extractRootFragmentFromObject(targetNode, viewModel)
                     } else {
-                        item
+                        unchanged.add(currentItem to snapshotItem)
                     }
-                    val id = sessionManager.extractIdValue(fragment, fragmentModel)
-                    if (id !in currentIds.keys) item else null
-                } else null
-            })
+                }
+                else -> {
+                    unchanged.add(currentItem to snapshotItem)
+                }
+            }
         }
 
-        return Pair(added, removed)
+        // Items present in snapshot but not in current are removed.
+        val removed = snapshotById.filterKeys { it !in currentById.keys }.values.toList()
+
+        return Triple(added, removed, unchanged)
+    }
+
+    /**
+     * Extracts the actual target node from a relationship item. For a relationship fragment this is
+     * the field annotated as the target node; otherwise the item is itself the target.
+     */
+    private fun extractTargetNode(item: Any, relModel: RelationshipModel): Any {
+        return if (relModel.isRelationshipFragment) {
+            val targetField = item.javaClass.getDeclaredField(relModel.targetFieldName!!)
+            targetField.isAccessible = true
+            targetField.get(item) ?: throw IllegalArgumentException("Target field is null")
+        } else {
+            item
+        }
     }
 
     /**

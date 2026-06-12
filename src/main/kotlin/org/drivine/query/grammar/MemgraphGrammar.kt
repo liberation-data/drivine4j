@@ -38,4 +38,16 @@ class MemgraphGrammar(
             inlineCondition = "size([$relationshipPattern WHERE $whereClause | 1]) > 0"
         )
     }
+
+    override val supportsVectorSearch: Boolean = true
+
+    /**
+     * `vector_search.search(index_name, limit, query_vector)` — queried by index name, yielding
+     * `node`, `distance`, and `similarity`. Memgraph's `similarity` is already higher-is-closer
+     * (cosine similarity for the `cos` metric), so it carries through directly as the score.
+     */
+    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
+        "CALL vector_search.search('${spec.indexName}', \$${spec.topKParam}, \$${spec.vectorParam})\n" +
+            "YIELD node, similarity\n" +
+            "WITH node AS $rootAlias, similarity AS $scoreAlias"
 }

@@ -720,6 +720,113 @@ class CascadeDeleteTests @Autowired constructor(
         assertEquals(1, nodeCount("Message", messageId))
     }
 
+    // ==================== Cascade on save() through an unchanged nested view ====================
+    //
+    // When a relationship is removed *inside* a nested view whose link to the parent is itself
+    // unchanged, the removal must still be reconciled on save() and honor the cascade policy.
+    // Session -[HAS_MESSAGE]-> MessageWithAttachments(view) -[HAS_ATTACHMENT]-> Attachment.
+
+    @Test
+    fun `save DELETE_ALL removes an attachment inside an unchanged nested-view message`() {
+        val sessionId = UUID.randomUUID().toString()
+        val messageId = UUID.randomUUID().toString()
+        val attachment1Id = UUID.randomUUID().toString()
+        val attachment2Id = UUID.randomUUID().toString()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (s:Session {id: ${'$'}sessionId, createdBy: 'cascade-test'})
+                    CREATE (m:Message {id: ${'$'}messageId, createdBy: 'cascade-test'})
+                    CREATE (a1:Attachment {id: ${'$'}attachment1Id, name: 'keep', createdBy: 'cascade-test'})
+                    CREATE (a2:Attachment {id: ${'$'}attachment2Id, name: 'drop', createdBy: 'cascade-test'})
+                    CREATE (s)-[:HAS_MESSAGE]->(m)
+                    CREATE (m)-[:HAS_ATTACHMENT]->(a1)
+                    CREATE (m)-[:HAS_ATTACHMENT]->(a2)
+                """.trimIndent())
+                .bind(mapOf(
+                    "sessionId" to sessionId,
+                    "messageId" to messageId,
+                    "attachment1Id" to attachment1Id,
+                    "attachment2Id" to attachment2Id
+                ))
+        )
+
+        val loaded = graphObjectManager.load(sessionId, DeletableSessionDeep::class.java)
+        assertNotNull(loaded)
+        assertEquals(1, loaded.messages.size)
+        assertEquals(2, loaded.messages.first().attachments.size)
+
+        // Remove attachment2 from the message; the session->message link is unchanged.
+        val message = loaded.messages.first()
+        val modified = loaded.copy(
+            messages = listOf(
+                message.copy(attachments = message.attachments.filter { it.id == attachment1Id })
+            )
+        )
+
+        graphObjectManager.save(modified, CascadeType.DELETE_ALL)
+
+        // The dropped attachment node is deleted (DELETE_ALL); the kept one and the message survive.
+        assertEquals(0, nodeCount("Attachment", attachment2Id))
+        assertEquals(1, nodeCount("Attachment", attachment1Id))
+        assertEquals(1, nodeCount("Message", messageId))
+        assertEquals(1, nodeCount("Session", sessionId))
+
+        val reloaded = graphObjectManager.load(sessionId, DeletableSessionDeep::class.java)
+        assertNotNull(reloaded)
+        assertEquals(1, reloaded.messages.first().attachments.size)
+        assertEquals(attachment1Id, reloaded.messages.first().attachments.first().id)
+    }
+
+    @Test
+    fun `save NONE removes the relationship inside an unchanged nested-view message but keeps the node`() {
+        val sessionId = UUID.randomUUID().toString()
+        val messageId = UUID.randomUUID().toString()
+        val attachment1Id = UUID.randomUUID().toString()
+        val attachment2Id = UUID.randomUUID().toString()
+
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("""
+                    CREATE (s:Session {id: ${'$'}sessionId, createdBy: 'cascade-test'})
+                    CREATE (m:Message {id: ${'$'}messageId, createdBy: 'cascade-test'})
+                    CREATE (a1:Attachment {id: ${'$'}attachment1Id, name: 'keep', createdBy: 'cascade-test'})
+                    CREATE (a2:Attachment {id: ${'$'}attachment2Id, name: 'unlink', createdBy: 'cascade-test'})
+                    CREATE (s)-[:HAS_MESSAGE]->(m)
+                    CREATE (m)-[:HAS_ATTACHMENT]->(a1)
+                    CREATE (m)-[:HAS_ATTACHMENT]->(a2)
+                """.trimIndent())
+                .bind(mapOf(
+                    "sessionId" to sessionId,
+                    "messageId" to messageId,
+                    "attachment1Id" to attachment1Id,
+                    "attachment2Id" to attachment2Id
+                ))
+        )
+
+        val loaded = graphObjectManager.load(sessionId, DeletableSessionDeep::class.java)
+        assertNotNull(loaded)
+
+        val message = loaded.messages.first()
+        val modified = loaded.copy(
+            messages = listOf(
+                message.copy(attachments = message.attachments.filter { it.id == attachment1Id })
+            )
+        )
+
+        graphObjectManager.save(modified, CascadeType.NONE)
+
+        // CASCADE NONE: the HAS_ATTACHMENT relationship is removed, but the Attachment node survives.
+        assertEquals(1, nodeCount("Attachment", attachment2Id))
+        assertEquals(1, nodeCount("Attachment", attachment1Id))
+
+        val reloaded = graphObjectManager.load(sessionId, DeletableSessionDeep::class.java)
+        assertNotNull(reloaded)
+        assertEquals(1, reloaded.messages.first().attachments.size)
+        assertEquals(attachment1Id, reloaded.messages.first().attachments.first().id)
+    }
+
     private fun nodeCount(label: String, id: String): Int {
         return persistenceManager.getOne(
             QuerySpecification

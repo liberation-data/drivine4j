@@ -7,10 +7,12 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.mapper.TransformPostProcessor
 import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
+import org.drivine.query.VectorIndexResolver
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
@@ -353,6 +355,102 @@ class GraphObjectManager(
     }
 
     /**
+     * Loads the [topK] graph objects whose embedding is most similar to [vector], ordered most
+     * similar first, each paired with its normalized similarity [score][Scored.score].
+     *
+     * The vector index is inferred from the `@VectorIndex` annotation on the view's root fragment.
+     * When the fragment declares a single embedding no [property] is needed; pass [property] only to
+     * disambiguate between several embeddings on the same node.
+     *
+     * **Result count semantics:** `topK` is the index's `k` — the number of candidates the
+     * nearest-neighbour search returns. The view's required-relationship filters (and an optional
+     * [threshold]) are applied *afterwards*, so **fewer than [topK] results may come back**. Raise
+     * [topK] if your view is selective and you need a fuller set.
+     *
+     * Example:
+     * ```kotlin
+     * val similar = graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
+     * similar.forEach { println("${it.score} -> ${it.value.proposition.text}") }
+     * ```
+     *
+     * @param graphClass the `@GraphView` class to load
+     * @param vector the query embedding
+     * @param topK the number of nearest candidates to retrieve from the index
+     * @param threshold optional minimum similarity (higher = closer); candidates below it are dropped
+     * @return scored view instances, most similar first, of length `<= topK`
+     * @throws UnsupportedOperationException if the backend has no native vector index
+     */
+    @JvmOverloads
+    fun <T : Any> loadNearest(
+        graphClass: Class<T>,
+        vector: List<Float>,
+        topK: Int,
+        threshold: Double? = null,
+    ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold)
+
+    /**
+     * Vector search variant that names the embedding [property] explicitly — use when the root
+     * fragment carries more than one `@VectorIndex` property. See the [loadNearest] overload above
+     * for the full semantics (notably: the result may contain fewer than [topK] elements).
+     *
+     * @param property the `@VectorIndex` embedding property to search
+     */
+    @JvmOverloads
+    fun <T : Any> loadNearest(
+        graphClass: Class<T>,
+        property: String?,
+        vector: List<Float>,
+        topK: Int,
+        threshold: Double? = null,
+    ): List<Scored<T>> {
+        require(graphClass.isAnnotationPresent(GraphView::class.java)) {
+            "loadNearest currently supports @GraphView types; ${graphClass.simpleName} is not a @GraphView"
+        }
+        if (!grammar.supportsVectorSearch) {
+            throw UnsupportedOperationException(
+                "Vector search is not supported on this backend (${grammar::class.simpleName} has no native vector index)."
+            )
+        }
+
+        autoRegisterSubtypesIfNeeded(graphClass)
+
+        val viewModel = GraphViewModel.from(graphClass)
+        val vectorSpec = VectorIndexResolver.resolve(
+            viewModel.rootFragment.fragmentType, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM,
+        )
+
+        val thresholdParam = if (threshold != null) VECTOR_THRESHOLD_PARAM else null
+        val query = GraphViewQueryBuilder.forView(graphClass, grammar).buildVectorQuery(vectorSpec, thresholdParam)
+
+        val bindings = buildMap<String, Any?> {
+            put(VECTOR_TOP_K_PARAM, topK)
+            put(VECTOR_QUERY_PARAM, vector)
+            if (threshold != null) put(VECTOR_THRESHOLD_PARAM, threshold)
+        }
+
+        // Each row is { value: <view projection>, score: <similarity> }; transform the inner `value`
+        // with the same machinery loadAll uses, then pair it with the score.
+        val rows = persistenceManager.query(
+            QuerySpecification.withStatement(query).bind(bindings).transform(Map::class.java)
+        )
+
+        val transform = TransformPostProcessor<Any, T>(graphClass, subtypeRegistry)
+        val scored = rows.map { row ->
+            @Suppress("UNCHECKED_CAST")
+            val map = row as Map<String, Any?>
+            val valueData = map["value"] as Any
+            val value = transform.apply(listOf(valueData)).first()
+            val score = (map["score"] as Number).toDouble()
+            Scored(value, score)
+        }
+
+        // Snapshot for dirty tracking, consistent with loadAll.
+        snapshotResults(graphClass, scored.map { it.value })
+
+        return scored
+    }
+
+    /**
      * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.
      */
     private fun <Q : Any> buildQueryContext(
@@ -638,6 +736,14 @@ class GraphObjectManager(
         snapshotResults(graphClass, listOf(obj))
 
         return obj
+    }
+
+    private companion object {
+        // Bound-parameter names for the vector search. Underscored to avoid clashing with any
+        // user-supplied bindings on future filtered vector queries.
+        const val VECTOR_TOP_K_PARAM = "_vectorTopK"
+        const val VECTOR_QUERY_PARAM = "_vectorQuery"
+        const val VECTOR_THRESHOLD_PARAM = "_vectorThreshold"
     }
 
     private fun validateCascadeSupport(cascade: CascadeType) {

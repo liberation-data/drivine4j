@@ -533,6 +533,57 @@ An `Issue` with no `RAISED_BY` is a valid `Issue` node but is **not** a `RaisedA
 
 From Java, the same three overloads apply (use `.count(Issue.class)` etc.); the DSL overload takes the generated query object and a lambda.
 
+#### Vector Search (`loadNearest`)
+
+`loadNearest` runs an approximate nearest-neighbour search over a `@GraphView` and returns the hits
+as fully-projected views, each paired with a normalized similarity score.
+
+The embedding to search is identified by a `@VectorIndex` annotation on the view's root fragment —
+**inferred** when the fragment declares one embedding, or **named explicitly** to pick among
+several. `@VectorIndex` is the query-side declaration of "this embedding is searchable" and is
+independent of how the index is *created*: it works whether you create the index from the annotation
+(`SchemaCatalog.fromFragments(...)`) or from an explicit spec (`SchemaCatalog.of(VectorIndexSpec(...))`);
+in the latter case, add the annotation to the fragment as well — it carries no creation side effects
+on its own.
+
+```kotlin
+@NodeFragment(labels = ["Proposition"])
+data class PropositionNode(
+    @NodeId val id: String,
+    val text: String,
+    @VectorIndex(similarity = SimilarityFunction.COSINE)
+    val embedding: List<Float>? = null,
+)
+
+@GraphView
+data class PropositionView(
+    @Root val proposition: PropositionNode,
+    @GraphRelationship(type = "HAS_MENTION", direction = Direction.OUTGOING)
+    val mentions: List<Mention>,
+)
+```
+
+```kotlin
+// Single embedding on the root fragment → inferred, no property argument
+val hits: List<Scored<PropositionView>> =
+    graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
+
+hits.forEach { println("${it.score} → ${it.value.proposition.text}") }
+
+// Disambiguate when a node carries several embeddings, and/or floor by similarity
+graphObjectManager.loadNearest(PropositionView::class.java, "titleEmbedding", queryEmbedding, topK = 20, threshold = 0.8)
+```
+
+Each result is a `Scored<T>(value, score)`; the score is normalized to **similarity, higher = more
+similar** on every engine, so ordering and `threshold` mean the same thing regardless of backend.
+
+**`topK` is the index's `k`, not a guaranteed result count.** The view's *required* relationships
+(and the optional `threshold`) are applied **after** the K-nearest search, so a candidate that ranks
+in the top K but fails the filter is dropped — meaning **`loadNearest` can return fewer than `topK`
+results**. Raise `topK` if your view is selective and you need a fuller set.
+
+Backends without a native vector index (Amazon Neptune) throw `UnsupportedOperationException`.
+
 ### Type-Safe Query DSL
 
 The code generator creates a type-safe DSL for each `@GraphView`, giving you IntelliJ autocomplete and compile-time type checking.

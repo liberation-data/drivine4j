@@ -5,6 +5,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.query.grammar.VectorQuerySpec
 
 /**
  * Builds Cypher queries for GraphView classes.
@@ -61,6 +62,18 @@ class GraphViewQueryBuilder(
             externalBridgeVariables = externalBridgeVars,
         ),
     ).build(whereClause, orderByClause)
+
+    /**
+     * Builds a vector (approximate nearest-neighbour) search over this view. The grammar's vector
+     * `CALL` head replaces the `MATCH`, and the view's required-relationship filters apply *after*
+     * the K-nearest search — so the query may return fewer than `topK` rows. See
+     * [GraphViewLoadBuilder.buildVectorSearch].
+     *
+     * @param vectorSpec the resolved index + bound parameter names to search
+     * @param thresholdParam optional bound parameter name for a `_score >= $param` floor
+     */
+    fun buildVectorQuery(vectorSpec: VectorQuerySpec, thresholdParam: String? = null): String =
+        GraphViewVectorSearchBuilder(viewModel, grammar, BuildContext()).build(vectorSpec, thresholdParam)
 
     override fun buildCountQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String =
         GraphViewLoadBuilder(

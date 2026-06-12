@@ -56,6 +56,32 @@ interface CypherGrammar {
      * @param uniqueId a unique suffix for generated variable names to avoid collisions
      */
     fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int = 0): FilteredExistenceResult
+
+    /**
+     * Whether this engine has a native vector index that [vectorSearchHead] can query.
+     * Engines without one (e.g. Neptune) leave this `false` and throw from [vectorSearchHead].
+     */
+    val supportsVectorSearch: Boolean
+        get() = false
+
+    /**
+     * Emits the *head* of a vector (approximate nearest-neighbour) search: a `CALL` that yields the
+     * K nearest nodes bound to [rootAlias] and a **normalized similarity** bound to [scoreAlias]
+     * (higher = more similar, the same convention on every engine — each grammar converts its
+     * native distance/similarity output as needed). The head ends with a `WITH` that establishes
+     * exactly those two variables, so the rest of the load query (filters, projection, RETURN)
+     * composes on top of it unchanged.
+     *
+     * The default throws — engines without a native vector index inherit it.
+     *
+     * @param spec the resolved index + bound parameter names to search with
+     * @param rootAlias the alias the matched node must be bound to (the view's root field name)
+     * @param scoreAlias the alias the normalized similarity must be bound to
+     */
+    fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
+        throw UnsupportedOperationException(
+            "Vector search is not supported on this backend (${this::class.simpleName} has no native vector index)."
+        )
 }
 
 /**
@@ -69,6 +95,18 @@ class Neo4j5Grammar(
 
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int) =
         FilteredExistenceResult("EXISTS { $relationshipPattern WHERE $whereClause }")
+
+    override val supportsVectorSearch: Boolean = true
+
+    /**
+     * `db.index.vector.queryNodes(name, k, vector)` — Neo4j's `score` is already a normalized
+     * similarity in (0, 1] (higher = closer) for both cosine and euclidean, so it carries through
+     * directly. The index is referenced by name.
+     */
+    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
+        "CALL db.index.vector.queryNodes('${spec.indexName}', \$${spec.topKParam}, \$${spec.vectorParam})\n" +
+            "YIELD node, score\n" +
+            "WITH node AS $rootAlias, score AS $scoreAlias"
 }
 
 /**
@@ -124,4 +162,24 @@ class FalkorDbCypherGrammar(
 ) : OpenCypherGrammar(collectionSortEmitter) {
     override val nestedViewProjector: NestedViewProjector = CallSubqueryNestedViewProjector()
     // Inherits supportsOrphanDelete = true from the interface default (FalkorDB#1890 fixed).
+
+    override val supportsVectorSearch: Boolean = true
+
+    /**
+     * `db.idx.vector.queryNodes(label, attribute, k, vector)` — queried by label + property (FalkorDB
+     * has no index names), and the query vector must be wrapped in `vecf32(...)`. FalkorDB returns a
+     * raw *distance* (smaller = closer), so we convert to a higher-is-closer similarity to match the
+     * cross-engine convention: cosine distance `d → 1 - d`; euclidean distance `d → 1 / (1 + d)`
+     * (the same shape Neo4j applies to euclidean).
+     */
+    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
+        val similarityExpr = when (spec.similarity) {
+            org.drivine.schema.SimilarityFunction.COSINE -> "1.0 - score"
+            org.drivine.schema.SimilarityFunction.EUCLIDEAN -> "1.0 / (1.0 + score)"
+        }
+        return "CALL db.idx.vector.queryNodes('${spec.label}', '${spec.property}', \$${spec.topKParam}, " +
+            "vecf32(\$${spec.vectorParam}))\n" +
+            "YIELD node, score\n" +
+            "WITH node AS $rootAlias, $similarityExpr AS $scoreAlias"
+    }
 }
