@@ -36,8 +36,11 @@ internal class GraphViewVectorSearchBuilder(
     /**
      * @param vectorSpec the resolved index + bound parameter names to search
      * @param thresholdParam optional bound parameter name; when set, adds `_score >= $param`
+     * @param callerWhere optional caller-supplied predicate (already rendered Cypher, without the
+     *   `WHERE` keyword) `AND`-ed into the post-projection filter. Rendered the same way the load
+     *   path renders predicates, so property predicates reference the projected root map directly.
      */
-    fun build(vectorSpec: VectorQuerySpec, thresholdParam: String?): String {
+    fun build(vectorSpec: VectorQuerySpec, thresholdParam: String?, callerWhere: String? = null): String {
         val rootFieldName = assembler.rootFieldName
         val scoreVar = SCORE_VAR
 
@@ -53,11 +56,13 @@ internal class GraphViewVectorSearchBuilder(
         val withClause = "\n\nWITH\n" + withSections.joinToString(",\n\n")
 
         // Post-projection filter: required relationships are filtered on their *projected* value
-        // (null when absent), plus an optional similarity threshold. This runs after the projection
-        // WITH — a pre-projection inline existence pattern over a vector-index node trips FalkorDB
-        // (see [GraphViewProjectionAssembler.requiredRelationshipAliases]).
+        // (null when absent), an optional similarity threshold, and any caller-supplied predicate.
+        // This runs after the projection WITH — a pre-projection inline existence pattern over a
+        // vector-index node trips FalkorDB (see [GraphViewProjectionAssembler.requiredRelationshipAliases]).
+        // Property predicates read the projected root map (e.g. `proposition.contextId`) and are safe here.
         val filters = assembler.requiredRelationshipAliases().map { "$it IS NOT NULL" }.toMutableList()
         thresholdParam?.let { filters.add("$scoreVar >= \$$it") }
+        callerWhere?.let { filters.add(it) }
         val whereSection = if (filters.isEmpty()) "" else "\nWHERE " + filters.joinToString("\n  AND ")
 
         // Wrap the view projection and its score in a single map column so the result mapper

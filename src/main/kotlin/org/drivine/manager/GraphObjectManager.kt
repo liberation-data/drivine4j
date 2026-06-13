@@ -441,8 +441,92 @@ class GraphObjectManager(
             if (threshold != null) put(VECTOR_THRESHOLD_PARAM, threshold)
         }
 
-        // Each row is { value: <view projection>, score: <similarity> }; transform the inner `value`
-        // with the same machinery loadAll uses, then pair it with the score.
+        return executeVectorSearch(graphClass, query, bindings)
+    }
+
+    /**
+     * Vector search over a `@GraphView` with an additional caller `where { }` predicate `AND`-ed into
+     * the post-projection filter. Use for "find the nearest propositions in this context with this
+     * status" — vector similarity plus arbitrary property predicates in one statement.
+     *
+     * ```kotlin
+     * graphObjectManager.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, queryVector, topK = 20) {
+     *     where { query.proposition.contextId eq ctx; query.proposition.status eq status }
+     * }
+     * ```
+     *
+     * Predicates filter the *projected root* value, so **property predicates on the root** are
+     * supported. Relationship predicates (`mentions.any { … }`) are not yet supported here — they
+     * require the raw node, which the vector path has already projected to a map by the time the
+     * filter runs. The `topK` / post-filter semantics are unchanged: the result may contain fewer
+     * than `topK` rows.
+     *
+     * @param queryObject the generated query DSL object providing property references
+     * @param spec the `where { }` block
+     */
+    fun <T : Any, Q : Any> loadNearest(
+        graphClass: Class<T>,
+        queryObject: Q,
+        vector: List<Float>,
+        topK: Int,
+        threshold: Double? = null,
+        spec: GraphQuerySpec<Q>.() -> Unit,
+    ): List<Scored<T>> {
+        if (!grammar.supportsVectorSearch) {
+            throw UnsupportedOperationException(
+                "Vector search is not supported on this backend (${grammar::class.simpleName} has no native vector index)."
+            )
+        }
+        require(graphClass.isAnnotationPresent(GraphView::class.java)) {
+            "loadNearest { where { } } currently supports @GraphView types; ${graphClass.simpleName} is not a @GraphView"
+        }
+
+        autoRegisterSubtypesIfNeeded(graphClass)
+
+        val querySpec = GraphQuerySpec(queryObject)
+        querySpec.spec()
+
+        val viewModel = GraphViewModel.from(graphClass)
+        val relationshipNames = viewModel.relationships.map { it.fieldName }.toSet()
+        if (hasRelationshipPredicate(querySpec.conditions, relationshipNames)) {
+            throw UnsupportedOperationException(
+                "Relationship predicates in loadNearest { where { } } are not yet supported. The vector " +
+                "path projects the root to a map before filtering, so it cannot traverse relationships in the " +
+                "filter. Use property predicates on the root here, or filter relationships in a separate query."
+            )
+        }
+
+        val whereResult = if (querySpec.conditions.isNotEmpty()) {
+            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar)
+        } else null
+        val callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
+
+        val rootFragmentType = viewModel.rootFragment.fragmentType
+        val vectorSpec = VectorIndexResolver.resolve(rootFragmentType, null, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
+        val thresholdParam = if (threshold != null) VECTOR_THRESHOLD_PARAM else null
+        val query = GraphViewQueryBuilder.forView(graphClass, grammar)
+            .buildVectorQuery(vectorSpec, thresholdParam, whereResult?.whereClause)
+
+        val bindings = buildMap<String, Any?> {
+            put(VECTOR_TOP_K_PARAM, topK)
+            put(VECTOR_QUERY_PARAM, vector)
+            if (threshold != null) put(VECTOR_THRESHOLD_PARAM, threshold)
+            putAll(callerBindings)
+        }
+
+        return executeVectorSearch(graphClass, query, bindings)
+    }
+
+    /**
+     * Runs a vector-search query and packages each `{ value, score }` row into a [Scored] instance,
+     * transforming the inner `value` with the same machinery [loadAll] uses, then snapshots for
+     * dirty tracking.
+     */
+    private fun <T : Any> executeVectorSearch(
+        graphClass: Class<T>,
+        query: String,
+        bindings: Map<String, Any?>,
+    ): List<Scored<T>> {
         val rows = persistenceManager.query(
             QuerySpecification.withStatement(query).bind(bindings).transform(Map::class.java)
         )
@@ -461,6 +545,27 @@ class GraphObjectManager(
         snapshotResults(graphClass, scored.map { it.value })
 
         return scored
+    }
+
+    /**
+     * Whether any condition filters on a relationship rather than a root property — an explicit
+     * `RelationshipCondition` (from `any{}`/`none{}`), or a property/label condition whose alias is a
+     * relationship name (the flat `mentions.x eq y` form). Such predicates need the root *node*, so
+     * they are rejected on the vector path (which filters the projected root map).
+     */
+    private fun hasRelationshipPredicate(
+        conditions: List<org.drivine.query.dsl.WhereCondition>,
+        relationshipNames: Set<String>,
+    ): Boolean = conditions.any { condition ->
+        when (condition) {
+            is org.drivine.query.dsl.WhereCondition.RelationshipCondition -> true
+            is org.drivine.query.dsl.WhereCondition.PropertyCondition -> {
+                val alias = condition.propertyPath.substringBefore(".")
+                alias in relationshipNames || (alias.contains("_") && alias.substringBefore("_") in relationshipNames)
+            }
+            is org.drivine.query.dsl.WhereCondition.LabelCondition -> condition.alias in relationshipNames
+            is org.drivine.query.dsl.WhereCondition.OrCondition -> hasRelationshipPredicate(condition.conditions, relationshipNames)
+        }
     }
 
     /**

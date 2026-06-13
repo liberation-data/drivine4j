@@ -94,6 +94,19 @@ class VectorSearchBuilderTest {
         assertTrue(cypher.contains("_score >= \$_vectorThreshold"))
     }
 
+    @Test
+    fun `caller where clause is ANDed into the post-projection filter`() {
+        val spec = VectorIndexResolver.resolve(DocNode::class.java, null, "_vectorTopK", "_vectorQuery")
+        val cypher = GraphViewQueryBuilder.forView(DocView::class.java, grammar)
+            .buildVectorQuery(spec, thresholdParam = null, callerWhere = "doc.title = \$p0")
+
+        // appears in the post-projection WHERE (after the projection's AS author / AS doc), ANDed with
+        // the required-relationship check.
+        assertTrue(cypher.contains("doc.title = \$p0"))
+        assertTrue(cypher.indexOf("doc.title = \$p0") > cypher.indexOf("AS doc"))
+        assertTrue(cypher.contains("author IS NOT NULL\n  AND doc.title = \$p0"))
+    }
+
     // ----- Fragment vector search -----
 
     @Test

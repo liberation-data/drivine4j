@@ -324,6 +324,11 @@ object CypherGenerator {
         // Get the relationship target alias (usually the relationship field name)
         val targetAlias = relationship.fieldName
 
+        // `none { }` negates the existence check. NOT-wrapping the positive inline condition is
+        // portable: NOT EXISTS { } on Neo4j, NOT (_ec > 0) / NOT (size([...]) > 0) elsewhere.
+        fun finalize(inlineCondition: String): String =
+            if (condition.negate) "NOT ($inlineCondition)" else inlineCondition
+
         // Build the relationship pattern based on direction
         val relationshipPattern = when (relationship.direction) {
             org.drivine.annotation.Direction.OUTGOING -> "($rootAlias)-[:${relationship.type}]->($targetAlias)"
@@ -413,7 +418,7 @@ object CypherGenerator {
                     )
                     result.prolog?.let { prologs.add(it) }
                     bridgeVars.addAll(result.bridgeVariables)
-                    return result.inlineCondition
+                    return finalize(result.inlineCondition)
                 } else {
                     // Neo4j: use nested EXISTS { } (original behavior)
                     nestedConditions.entries.joinToString(" AND ") { (nestedRelName, nestedConds) ->
@@ -458,14 +463,14 @@ object CypherGenerator {
             )
             result.prolog?.let { prologs.add(it) }
             bridgeVars.addAll(result.bridgeVariables)
-            return result.inlineCondition
+            return finalize(result.inlineCondition)
         } else {
             val direction = when (relationship.direction) {
                 org.drivine.annotation.Direction.OUTGOING -> "-[:${relationship.type}]->"
                 org.drivine.annotation.Direction.INCOMING -> "<-[:${relationship.type}]-"
                 org.drivine.annotation.Direction.UNDIRECTED -> "-[:${relationship.type}]-"
             }
-            return grammar.existenceCheck(rootAlias, direction, "")
+            return finalize(grammar.existenceCheck(rootAlias, direction, ""))
         }
     }
 

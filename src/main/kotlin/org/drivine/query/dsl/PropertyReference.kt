@@ -338,6 +338,17 @@ open class PropertyReference<T>(
     }
 
     /**
+     * IN condition with context parameter (Kotlin DSL) — a readable alias for [`in`] that avoids the
+     * backtick-quoted keyword. `resolvedId inList entityIds` → `resolvedId IN $entityIds`.
+     */
+    context(builder: WhereBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("inListContext")
+    infix fun inList(values: Collection<T>) {
+        builder.conditions.add(makePropertyCondition(ComparisonOperator.IN, values))
+    }
+
+    /**
      * IS NULL condition with context parameter (Kotlin DSL).
      */
     context(builder: WhereBuilder<*>)

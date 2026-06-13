@@ -599,6 +599,26 @@ cut).
 
 Backends without a native vector index (Amazon Neptune) throw `UnsupportedOperationException`.
 
+**Filtering with `where { }`.** A `where { }` block AND-s caller predicates into the same
+post-search filter, so you can combine vector similarity with arbitrary property predicates in one
+statement:
+
+```kotlin
+graphObjectManager.loadNearest(PropositionView::class.java, queryVector, topK = 20) {
+    where {
+        proposition.contextId eq ctx
+        proposition.status eq "active"
+    }
+}
+```
+
+The predicate is applied **after** the K-nearest search (on the projected root), so it really does
+prune — a node that ranks in the top K but fails the predicate is dropped, and `topK` remains the
+index's `k` (the result may contain fewer rows). Property predicates on the root are supported;
+relationship-quantifier predicates (`mentions.any { … }`) are **not** supported in this position yet
+(the vector path has projected the root to a map by filter time) and throw a clear error — filter
+relationships in a separate `loadAll` for now.
+
 ### Type-Safe Query DSL
 
 The code generator creates a type-safe DSL for each `@GraphView`, giving you IntelliJ autocomplete and compile-time type checking.
@@ -639,6 +659,40 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 }
 // Generates: WHERE (person.name = $p0 OR person.name = $p1)
 ```
+
+#### Quantified Predicates over a To-Many Relationship (`any` / `none`)
+
+Filter a root by a predicate over the elements of a `List<>`-typed `@GraphRelationship`. The block
+is scoped to the **target fragment's** properties, and several conditions inside one block correlate
+to a *single* related element.
+
+```kotlin
+// propositions that have at least one mention resolving to this entity
+graphObjectManager.loadAll<PropositionView> {
+    where { mentions.any { resolvedId eq entityId } }
+}
+
+// ... or to any of several
+graphObjectManager.loadAll<PropositionView> {
+    where { mentions.any { resolvedId inList entityIds } }
+}
+
+// propositions with NO mention resolving to this entity (also matches propositions with no mentions)
+graphObjectManager.loadAll<PropositionView> {
+    where { mentions.none { resolvedId eq entityId } }
+}
+
+// correlated: a single mention that is BOTH the subject AND resolves to this entity
+graphObjectManager.loadAll<PropositionView> {
+    where { mentions.any { role eq "SUBJECT"; resolvedId eq entityId } }
+}
+```
+
+Rendered as an existence subquery, per engine — `EXISTS { (root)-[:HAS_MENTION]->(m) WHERE … }` on
+Neo4j, `size([(root)-[:HAS_MENTION]->(m) WHERE … | 1]) > 0` on Memgraph, a `CALL`-subquery count on
+FalkorDB — with `none{}` wrapping it in `NOT (…)`. `any{}` is the explicit form of the flat
+`mentions.resolvedId eq id` shorthand; prefer it for `none`, for correlated multi-condition blocks,
+or for clarity. (Backends without subquery support throw, per the grammar default.)
 
 #### Ordering
 

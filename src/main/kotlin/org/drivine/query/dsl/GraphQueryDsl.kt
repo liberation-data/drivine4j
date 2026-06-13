@@ -189,6 +189,60 @@ fun <T : Any> anyOf(block: context(WhereBuilder<T>) () -> Unit) {
 }
 
 /**
+ * Quantified predicate over a relationship: **at least one** related node satisfies the block.
+ *
+ * The receiver is the relationship's generated `Properties` object (so the target fragment's
+ * properties — `resolvedId`, `role`, … — are directly in scope inside the block), and the block's
+ * conditions are correlated to a single related node.
+ *
+ * ```kotlin
+ * where { mentions.any { resolvedId eq entityId } }
+ * ```
+ * → `EXISTS { (root)-[:HAS_MENTION]->(mentions) WHERE mentions.resolvedId = $id }`
+ *
+ * This is the explicit form of the flat `mentions.resolvedId eq id` shorthand; prefer it when a
+ * single related node must satisfy several conditions together, or for symmetry with [none].
+ */
+context(outer: WhereBuilder<*>)
+fun <P : NodeReference> P.any(block: context(WhereBuilder<P>) P.() -> Unit) {
+    outer.conditions.add(collectRelationshipCondition(this, block, negate = false))
+}
+
+/**
+ * Quantified predicate over a relationship: **no** related node satisfies the block.
+ *
+ * ```kotlin
+ * where { mentions.none { resolvedId eq entityId } }
+ * ```
+ * → `NOT EXISTS { (root)-[:HAS_MENTION]->(mentions) WHERE mentions.resolvedId = $id }`
+ */
+context(outer: WhereBuilder<*>)
+fun <P : NodeReference> P.none(block: context(WhereBuilder<P>) P.() -> Unit) {
+    outer.conditions.add(collectRelationshipCondition(this, block, negate = true))
+}
+
+/**
+ * Runs a quantifier block against a fresh sub-builder scoped to the relationship's [target]
+ * `Properties`, then packages the collected conditions into a [WhereCondition.RelationshipCondition]
+ * keyed by the target's [NodeReference.nodeAlias] (which the codegen sets to the relationship field
+ * name). The relationship's type/direction/target-label are resolved from the view model at render
+ * time, exactly as the flat relationship-predicate form already does.
+ */
+private fun <P : NodeReference> collectRelationshipCondition(
+    target: P,
+    block: context(WhereBuilder<P>) P.() -> Unit,
+    negate: Boolean,
+): WhereCondition.RelationshipCondition {
+    val sub = WhereBuilder(target)
+    block(sub, target)
+    return WhereCondition.RelationshipCondition(
+        relationshipName = target.nodeAlias,
+        targetConditions = sub.conditions,
+        negate = negate,
+    )
+}
+
+/**
  * Builder for ORDER BY specifications.
  *
  * With context parameters, the query object is available and order specs auto-register:
@@ -242,12 +296,17 @@ sealed class WhereCondition {
     ) : WhereCondition()
 
     /**
-     * Filter on relationship target properties.
+     * Filter on relationship target properties — a quantified existence check over the relationship.
      * Example: assignedTo { it.name eq "Kent Beck" }
+     *
+     * Renders as an existence subquery: at least one related node satisfies [targetConditions]
+     * (`EXISTS { … }` / `size([…]) > 0`). When [negate] is true it becomes "no related node
+     * satisfies them" (`NOT EXISTS { … }`) — the `none { }` quantifier.
      */
     data class RelationshipCondition(
         val relationshipName: String,  // e.g., "assignedTo"
-        val targetConditions: List<WhereCondition>
+        val targetConditions: List<WhereCondition>,
+        val negate: Boolean = false,
     ) : WhereCondition()
 
     /**

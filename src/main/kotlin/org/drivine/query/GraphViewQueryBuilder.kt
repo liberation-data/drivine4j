@@ -72,8 +72,12 @@ class GraphViewQueryBuilder(
      * @param vectorSpec the resolved index + bound parameter names to search
      * @param thresholdParam optional bound parameter name for a `_score >= $param` floor
      */
-    fun buildVectorQuery(vectorSpec: VectorQuerySpec, thresholdParam: String? = null): String =
-        GraphViewVectorSearchBuilder(viewModel, grammar, BuildContext()).build(vectorSpec, thresholdParam)
+    fun buildVectorQuery(
+        vectorSpec: VectorQuerySpec,
+        thresholdParam: String? = null,
+        callerWhere: String? = null,
+    ): String =
+        GraphViewVectorSearchBuilder(viewModel, grammar, BuildContext()).build(vectorSpec, thresholdParam, callerWhere)
 
     override fun buildCountQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String =
         GraphViewLoadBuilder(
