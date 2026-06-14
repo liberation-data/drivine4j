@@ -9,6 +9,7 @@ import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import sample.proposition.PropositionView
 import sample.proposition.PropositionViewQueryDsl
 
@@ -101,5 +102,70 @@ class QuantifiedRelationshipTest {
             conditionsOf { where { query.mentions.none { resolvedId eq "ent-1" } } }, viewModel, grammar,
         ).whereClause!!
         assertTrue(none.startsWith("NOT (size(["))
+    }
+
+    // ----- Projected-collection mode (the vector-search path) -----
+
+    private val neo4j = Neo4j5Grammar(ApocSortMapsEmitter())
+
+    private fun collectionWhere(spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit): String =
+        CypherGenerator.buildWhereClause(conditionsOf(spec), viewModel, neo4j, projectedCollectionMode = true).whereClause!!
+
+    @Test
+    fun `projected-collection mode renders any as a list predicate over the projected collection`() {
+        val any = collectionWhere { where { query.mentions.any { resolvedId eq "ent-1" } } }
+        assertTrue(any.contains("any("), any)
+        assertTrue(any.contains("IN mentions WHERE"), any)
+        assertTrue(Regex("""_e\d+\.resolvedId = \$""").containsMatchIn(any), any)
+        assertFalse(any.contains("EXISTS"))
+    }
+
+    @Test
+    fun `projected-collection mode renders none as NOT any`() {
+        val none = collectionWhere { where { query.mentions.none { resolvedId eq "ent-1" } } }
+        assertTrue(none.startsWith("NOT any("), none)
+    }
+
+    @Test
+    fun `correlated conditions become an AND inside one any predicate`() {
+        val any = collectionWhere { where { query.mentions.any { resolvedId eq "ent-1"; role eq "SUBJECT" } } }
+        // a single any(...) with both element comparisons ANDed inside it
+        assertEquals(1, Regex("""\bany\(""").findAll(any).count(), any)
+        assertTrue(any.contains(".resolvedId = ") && any.contains(".role = "), any)
+        assertTrue(any.substringAfter("WHERE").contains(" AND "), any)
+    }
+
+    @Test
+    fun `referencing a relationship the view does not project is an error`() {
+        val bogus = listOf(
+            WhereCondition.RelationshipCondition(
+                relationshipName = "notARelationship",
+                targetConditions = listOf(
+                    WhereCondition.PropertyCondition("notARelationship.x", ComparisonOperator.EQUALS, "v")
+                ),
+            )
+        )
+        assertThrows<IllegalArgumentException> {
+            CypherGenerator.buildWhereClause(bogus, viewModel, neo4j, projectedCollectionMode = true)
+        }
+    }
+
+    @Test
+    fun `property and relationship predicates compose, and parameters align with bindings`() {
+        val conditions = conditionsOf {
+            where {
+                query.proposition.contextId eq "ctx-a"
+                query.mentions.any { resolvedId eq "ent-1" }
+            }
+        }
+        val clause = CypherGenerator.buildWhereClause(conditions, viewModel, neo4j, projectedCollectionMode = true).whereClause!!
+        val bindings = CypherGenerator.extractBindings(conditions, viewModel)
+
+        assertTrue(clause.contains("proposition.contextId = "))
+        assertTrue(clause.contains("any("))
+        // every $param referenced in the clause must be bound
+        Regex("""\$(\w+)""").findAll(clause).map { it.groupValues[1] }.forEach { p ->
+            assertTrue(bindings.containsKey(p), "missing binding for \$$p in: $clause")
+        }
     }
 }

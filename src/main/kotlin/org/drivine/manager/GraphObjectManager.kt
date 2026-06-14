@@ -455,11 +455,13 @@ class GraphObjectManager(
      * }
      * ```
      *
-     * Predicates filter the *projected root* value, so **property predicates on the root** are
-     * supported. Relationship predicates (`mentions.any { … }`) are not yet supported here — they
-     * require the raw node, which the vector path has already projected to a map by the time the
-     * filter runs. The `topK` / post-filter semantics are unchanged: the result may contain fewer
-     * than `topK` rows.
+     * Predicates filter the *projected* values: **property predicates** on the root map
+     * (`proposition.contextId eq …`) and **relationship quantifiers** over the projected relationship
+     * collection (`mentions.any { resolvedId eq … }` → `any(m IN mentions WHERE m.resolvedId = …)`,
+     * `none{}` → `NOT any(...)`). Multiple quantifiers `AND` together (e.g. "mentions all of these
+     * entities" = one `any{}` per id). Referencing a relationship the view does not project is an
+     * error. The `topK` / post-filter semantics are unchanged: the result may contain fewer than
+     * `topK` rows.
      *
      * @param queryObject the generated query DSL object providing property references
      * @param spec the `where { }` block
@@ -487,17 +489,14 @@ class GraphObjectManager(
         querySpec.spec()
 
         val viewModel = GraphViewModel.from(graphClass)
-        val relationshipNames = viewModel.relationships.map { it.fieldName }.toSet()
-        if (hasRelationshipPredicate(querySpec.conditions, relationshipNames)) {
-            throw UnsupportedOperationException(
-                "Relationship predicates in loadNearest { where { } } are not yet supported. The vector " +
-                "path projects the root to a map before filtering, so it cannot traverse relationships in the " +
-                "filter. Use property predicates on the root here, or filter relationships in a separate query."
-            )
-        }
 
+        // Render the caller predicate in projected-collection mode: property predicates read the
+        // projected root map, and relationship quantifiers (`mentions.any { … }`) become list
+        // predicates over the projected relationship collection — both run in the post-projection
+        // WHERE without traversing the vector-sourced node. Referencing a relationship the view does
+        // not project throws (from buildWhereClause's relationship lookup).
         val whereResult = if (querySpec.conditions.isNotEmpty()) {
-            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar)
+            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar, projectedCollectionMode = true)
         } else null
         val callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
 
@@ -547,26 +546,6 @@ class GraphObjectManager(
         return scored
     }
 
-    /**
-     * Whether any condition filters on a relationship rather than a root property — an explicit
-     * `RelationshipCondition` (from `any{}`/`none{}`), or a property/label condition whose alias is a
-     * relationship name (the flat `mentions.x eq y` form). Such predicates need the root *node*, so
-     * they are rejected on the vector path (which filters the projected root map).
-     */
-    private fun hasRelationshipPredicate(
-        conditions: List<org.drivine.query.dsl.WhereCondition>,
-        relationshipNames: Set<String>,
-    ): Boolean = conditions.any { condition ->
-        when (condition) {
-            is org.drivine.query.dsl.WhereCondition.RelationshipCondition -> true
-            is org.drivine.query.dsl.WhereCondition.PropertyCondition -> {
-                val alias = condition.propertyPath.substringBefore(".")
-                alias in relationshipNames || (alias.contains("_") && alias.substringBefore("_") in relationshipNames)
-            }
-            is org.drivine.query.dsl.WhereCondition.LabelCondition -> condition.alias in relationshipNames
-            is org.drivine.query.dsl.WhereCondition.OrCondition -> hasRelationshipPredicate(condition.conditions, relationshipNames)
-        }
-    }
 
     /**
      * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.

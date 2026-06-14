@@ -7,6 +7,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.any
+import org.drivine.query.dsl.none
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.VectorIndexSpec
@@ -14,7 +15,6 @@ import org.drivine.session.SessionManager
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.assertThrows
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
 import org.testcontainers.containers.wait.strategy.Wait
@@ -27,14 +27,20 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * Feature 2 end-to-end — filtered vector search: `loadNearest(...) { where { } }` AND-ing caller
- * property predicates into the post-projection filter, verified on Neo4j, FalkorDB, and Memgraph.
+ * 0.0.49 — filtered vector search with **relationship** predicates: `loadNearest(...) { where { } }`
+ * AND-ing property predicates *and* `any{}`/`none{}` quantifiers over the projected relationship
+ * collection into the post-projection filter, verified on Neo4j, FalkorDB, and Memgraph.
  *
- * The proof that the predicate is genuinely applied: p2 and p3 are joint-nearest (identical
- * embedding to the query) but fail the predicate, so they are excluded despite ranking at the top;
- * p4 matches the predicate but is far, so it ranks last yet is included.
+ * The proof the predicate genuinely prunes: p2/p3 are joint-nearest (identical embedding) but fail
+ * the filter and are excluded despite ranking top; p4 matches but is far, so it ranks last yet is
+ * included. The FalkorDB case is the critical one — the relationship quantifier is a list predicate
+ * over the projected `mentions` collection, never a pattern over the `vecf32`-bearing node.
+ *
+ * Mentions: p1→{entX, entY}, p2→{entX}, p3→{entY}, p4→{entX}.
  */
 private val QUERY = listOf(1.0f, 0.0f, 0.0f, 0.0f)
+
+private fun ids(scored: List<Scored<PropositionView>>) = scored.map { it.value.proposition.id }
 
 private fun verify(gom: GraphObjectManager) {
     // Unfiltered: p1/p2/p3 are joint-nearest (cosine 1.0), p4 is far.
@@ -42,23 +48,46 @@ private fun verify(gom: GraphObjectManager) {
     assertEquals(setOf("p1", "p2", "p3"), all.take(3).map { it.value.proposition.id }.toSet())
     assertEquals("p4", all.last().value.proposition.id)
 
-    // Filtered: contextId = ctx-a AND status = active. p2 (archived) and p3 (ctx-b) are excluded
-    // despite ranking top; p4 (ctx-a, active, but far) is included.
-    val filtered = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
+    // Property filter: contextId = ctx-a AND status = active → p1, p4 (p2 archived, p3 ctx-b out).
+    val byProperty = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
+        where { query.proposition.contextId eq "ctx-a"; query.proposition.status eq "active" }
+    }
+    assertEquals(listOf("p1", "p4"), ids(byProperty))
+    assertEquals(byProperty.map { it.score }, byProperty.map { it.score }.sortedDescending())
+
+    // Relationship quantifier: mentions entX → p1, p2, p4 (p3 mentions only entY, excluded despite
+    // ranking top); p4 (far) is included. Ordered by score desc.
+    val anyEntX = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
+        where { query.mentions.any { resolvedId eq "entX" } }
+    }
+    assertEquals(setOf("p1", "p2", "p4"), ids(anyEntX).toSet())
+    assertEquals("p4", ids(anyEntX).last())
+    assertEquals(anyEntX.map { it.score }, anyEntX.map { it.score }.sortedDescending())
+
+    // none: propositions NOT mentioning entX → only p3 (the rest all mention entX).
+    val noneEntX = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
+        where { query.mentions.none { resolvedId eq "entX" } }
+    }
+    assertEquals(listOf("p3"), ids(noneEntX))
+
+    // Two any{} AND together → "mentions BOTH entX and entY" → only p1.
+    val bothEntities = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
+        where {
+            query.mentions.any { resolvedId eq "entX" }
+            query.mentions.any { resolvedId eq "entY" }
+        }
+    }
+    assertEquals(listOf("p1"), ids(bothEntities))
+
+    // Compose property + relationship: ctx-a, active, mentions entX → p1, p4.
+    val composed = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
         where {
             query.proposition.contextId eq "ctx-a"
             query.proposition.status eq "active"
+            query.mentions.any { resolvedId eq "entX" }
         }
     }
-    assertEquals(listOf("p1", "p4"), filtered.map { it.value.proposition.id })
-    assertEquals(filtered.map { it.score }, filtered.map { it.score }.sortedDescending())
-
-    // Relationship predicates aren't supported on the vector path (root is a map by filter time).
-    assertThrows<UnsupportedOperationException> {
-        gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
-            where { query.mentions.any { resolvedId eq "ent-1" } }
-        }
-    }
+    assertEquals(listOf("p1", "p4"), ids(composed))
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {
@@ -75,6 +104,16 @@ private fun seed(pm: NonTransactionalPersistenceManager, vec: (String) -> String
             CREATE (p2:Proposition {id: 'p2', contextId: 'ctx-a', status: 'archived', level: 0, embedding: ${vec("[1.0, 0.0, 0.0, 0.0]")}})
             CREATE (p3:Proposition {id: 'p3', contextId: 'ctx-b', status: 'active',   level: 0, embedding: ${vec("[1.0, 0.0, 0.0, 0.0]")}})
             CREATE (p4:Proposition {id: 'p4', contextId: 'ctx-a', status: 'active',   level: 0, embedding: ${vec("[0.0, 1.0, 0.0, 0.0]")}})
+            CREATE (m1x:Mention {id: 'm1x', resolvedId: 'entX', role: 'SUBJECT'})
+            CREATE (m1y:Mention {id: 'm1y', resolvedId: 'entY', role: 'OBJECT'})
+            CREATE (m2x:Mention {id: 'm2x', resolvedId: 'entX', role: 'SUBJECT'})
+            CREATE (m3y:Mention {id: 'm3y', resolvedId: 'entY', role: 'SUBJECT'})
+            CREATE (m4x:Mention {id: 'm4x', resolvedId: 'entX', role: 'SUBJECT'})
+            CREATE (p1)-[:HAS_MENTION]->(m1x)
+            CREATE (p1)-[:HAS_MENTION]->(m1y)
+            CREATE (p2)-[:HAS_MENTION]->(m2x)
+            CREATE (p3)-[:HAS_MENTION]->(m3y)
+            CREATE (p4)-[:HAS_MENTION]->(m4x)
             """.trimIndent()
         )
     )

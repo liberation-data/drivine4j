@@ -21,10 +21,18 @@ object CypherGenerator {
      * @param viewModel Optional GraphViewModel for relationship metadata (needed for relationship filtering)
      * @return Cypher WHERE clause (without the WHERE keyword)
      */
+    /**
+     * @param projectedCollectionMode when true, relationship predicates render as a list predicate
+     *   over the *already-projected* relationship collection (`any(x IN mentions WHERE …)`) instead
+     *   of an `EXISTS { (root)-[…] }` subquery. Used by the vector-search path, whose filter runs
+     *   after projection (the root is a map, not a node) — the same reason property predicates work
+     *   post-projection. See [buildProjectedCollectionPredicate].
+     */
     fun buildWhereClause(
         conditions: List<WhereCondition>,
         viewModel: GraphViewModel? = null,
-        grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter())
+        grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter()),
+        projectedCollectionMode: Boolean = false,
     ): WhereClauseResult {
         val grouped = groupConditionsByAlias(conditions, viewModel)
         val prologs = mutableListOf<String>()
@@ -43,7 +51,7 @@ object CypherGenerator {
                     result
                 }
                 is WhereCondition.RelationshipCondition -> {
-                    val result = buildRelationshipCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
+                    val result = buildRelationshipCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
                     paramIndex += condition.targetConditions.size
                     result
                 }
@@ -51,7 +59,7 @@ object CypherGenerator {
                     buildLabelCondition(condition)
                 }
                 is WhereCondition.OrCondition -> {
-                    val result = buildOrCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
+                    val result = buildOrCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
                     paramIndex += countParameters(condition.conditions)
                     result
                 }
@@ -292,6 +300,70 @@ object CypherGenerator {
     }
 
     /**
+     * Renders a relationship predicate as a list predicate over the **already-projected** relationship
+     * collection (the vector-search path), e.g.
+     *
+     *     any(_e0 IN mentions WHERE _e0.resolvedId = $param_mentions_resolvedId_0)
+     *
+     * `none{}` (negate) → `NOT any(...)`. The inner predicate filters on the projected map keys
+     * (`_e0.resolvedId`), not node properties, which is why it dodges the FalkorDB `vecf32`-Pointer
+     * quirk — exactly like post-projection property predicates. Portable openCypher across engines.
+     *
+     * An empty projected collection (optional relationship with no matches) makes `any(...)` false —
+     * so `any{}` excludes such roots and `none{}` includes them, both correct.
+     *
+     * Parameter names are derived from the original `relationship.property` path (e.g.
+     * `mentions.resolvedId`), keeping them aligned with [extractBindings].
+     */
+    private fun buildProjectedCollectionPredicate(
+        condition: WhereCondition.RelationshipCondition,
+        relationship: org.drivine.model.RelationshipModel,
+        startIndex: Int,
+        ecCounter: AtomicInteger,
+    ): String {
+        val collectionAlias = relationship.fieldName // the projected list, e.g. "mentions"
+        val elemVar = "_e${ecCounter.getAndIncrement()}"
+
+        var paramIndex = startIndex
+        val inner = condition.targetConditions.joinToString(" AND ") { targetCondition ->
+            when (targetCondition) {
+                is WhereCondition.PropertyCondition -> {
+                    val lhs = "$elemVar.${targetCondition.propertyPath.substringAfter(".")}"
+                    val rendered = buildPropertyConditionWithLhs(targetCondition, paramIndex, lhs)
+                    if (targetCondition.operator != ComparisonOperator.IS_NULL &&
+                        targetCondition.operator != ComparisonOperator.IS_NOT_NULL) {
+                        paramIndex++
+                    }
+                    rendered
+                }
+                else -> throw UnsupportedOperationException(
+                    "Only property predicates are supported inside any{}/none{} on the vector-search path; " +
+                    "got ${targetCondition::class.simpleName} for relationship '${condition.relationshipName}'."
+                )
+            }
+        }
+
+        val quantifier = "any($elemVar IN $collectionAlias WHERE $inner)"
+        return if (condition.negate) "NOT $quantifier" else quantifier
+    }
+
+    /**
+     * Like [buildPropertyCondition], but renders against an explicit left-hand side (e.g. a list
+     * element `_e0.resolvedId`) while keeping the parameter name derived from the original property
+     * path, so bindings stay aligned with [extractBindings].
+     */
+    private fun buildPropertyConditionWithLhs(condition: WhereCondition.PropertyCondition, index: Int, lhs: String): String {
+        return when (condition.operator) {
+            ComparisonOperator.IS_NULL,
+            ComparisonOperator.IS_NOT_NULL -> "$lhs ${condition.operator.cypherOperator}"
+            else -> {
+                val paramName = generateParamName(condition.propertyPath, index)
+                "$lhs ${condition.operator.cypherOperator} \$$paramName"
+            }
+        }
+    }
+
+    /**
      * Builds a Cypher condition for relationship target filtering.
      * Uses EXISTS with pattern matching.
      *
@@ -305,18 +377,26 @@ object CypherGenerator {
         ecCounter: AtomicInteger = AtomicInteger(0),
         prologs: MutableList<String> = mutableListOf(),
         bridgeVars: MutableList<String> = mutableListOf(),
+        projectedCollectionMode: Boolean = false,
     ): String {
         requireNotNull(viewModel) {
             "GraphViewModel is required for relationship filtering. " +
             "This is likely a bug - relationship conditions should only be generated for GraphViews."
         }
 
-        // Find the relationship metadata
+        // Find the relationship metadata. A relationship not declared by the view is not projected,
+        // so it can be neither traversed (load path) nor list-filtered (vector path) — a clear error.
         val relationship = viewModel.relationships.find { it.fieldName == condition.relationshipName }
             ?: throw IllegalArgumentException(
                 "Relationship '${condition.relationshipName}' not found in ${viewModel.className}. " +
                 "Available relationships: ${viewModel.relationships.map { it.fieldName }}"
             )
+
+        // Vector path: filter the already-projected relationship collection in place, rather than an
+        // EXISTS subquery over the root node (which the vector path has projected to a map).
+        if (projectedCollectionMode) {
+            return buildProjectedCollectionPredicate(condition, relationship, startIndex, ecCounter)
+        }
 
         // Get the root fragment alias (usually the field name)
         val rootAlias = viewModel.rootFragment.fieldName
@@ -574,6 +654,7 @@ object CypherGenerator {
         ecCounter: AtomicInteger = AtomicInteger(0),
         prologs: MutableList<String> = mutableListOf(),
         bridgeVars: MutableList<String> = mutableListOf(),
+        projectedCollectionMode: Boolean = false,
     ): String {
         // First, group PropertyConditions that refer to relationships
         // But keep them separate - each OR branch gets its own EXISTS
@@ -593,7 +674,7 @@ object CypherGenerator {
                             relationshipName = baseAlias,
                             targetConditions = listOf(subCondition)
                         )
-                        val result = buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
+                        val result = buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
                         paramIndex++
                         result
                     } else {
@@ -603,7 +684,7 @@ object CypherGenerator {
                     }
                 }
                 is WhereCondition.RelationshipCondition -> {
-                    val result = buildRelationshipCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
+                    val result = buildRelationshipCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
                     paramIndex += subCondition.targetConditions.size
                     result
                 }
@@ -613,13 +694,13 @@ object CypherGenerator {
                             relationshipName = subCondition.alias,
                             targetConditions = listOf(subCondition)
                         )
-                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
+                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
                     } else {
                         buildLabelCondition(subCondition)
                     }
                 }
                 is WhereCondition.OrCondition -> {
-                    val result = buildOrCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
+                    val result = buildOrCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
                     paramIndex += countParameters(subCondition.conditions)
                     result
                 }

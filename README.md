@@ -600,24 +600,26 @@ cut).
 Backends without a native vector index (Amazon Neptune) throw `UnsupportedOperationException`.
 
 **Filtering with `where { }`.** A `where { }` block AND-s caller predicates into the same
-post-search filter, so you can combine vector similarity with arbitrary property predicates in one
-statement:
+post-search filter, so you can combine vector similarity with property predicates **and**
+relationship quantifiers in one statement:
 
 ```kotlin
+// nearest propositions in this context that mention entity X
 graphObjectManager.loadNearest(PropositionView::class.java, queryVector, topK = 20) {
     where {
         proposition.contextId eq ctx
         proposition.status eq "active"
+        mentions.any { resolvedId eq entityId }   // any{} / none{} over a projected relationship
     }
 }
 ```
 
-The predicate is applied **after** the K-nearest search (on the projected root), so it really does
-prune — a node that ranks in the top K but fails the predicate is dropped, and `topK` remains the
-index's `k` (the result may contain fewer rows). Property predicates on the root are supported;
-relationship-quantifier predicates (`mentions.any { … }`) are **not** supported in this position yet
-(the vector path has projected the root to a map by filter time) and throw a clear error — filter
-relationships in a separate `loadAll` for now.
+The predicate is applied **after** the K-nearest search, so it really does prune — a node that ranks
+in the top K but fails the predicate is dropped, and `topK` remains the index's `k` (the result may
+contain fewer rows). Property predicates filter the projected root; relationship quantifiers
+(`any{}`/`none{}`) filter the projected relationship collection (`any(m IN mentions WHERE …)`).
+Multiple `any{}` AND together — "mentions *all* of these entities" is one `any{}` per id. Referencing
+a relationship the view does not project is an error.
 
 ### Type-Safe Query DSL
 
