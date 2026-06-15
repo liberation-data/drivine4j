@@ -60,6 +60,9 @@ private fun verify(gom: GraphObjectManager) {
 
     // count ignores limit/skip in the same spec
     assertEquals(5L, gom.count(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) { limit(2) })
+
+    // reified count<T>() resolves and delegates to the ::class.java form
+    assertEquals(gom.count(PropositionView::class.java), gom.count<PropositionView>())
 }
 
 private const val SEED = """

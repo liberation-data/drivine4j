@@ -507,18 +507,21 @@ fun getPerson(uuid: String): PersonCareer? {
 `count` returns a `Long` and is **consistent with `loadAll`** — it counts exactly the objects `loadAll` would return for the same type and filter. There are three overloads, mirroring `loadAll`/`deleteAll`:
 
 ```kotlin
-// 1. Count everything of a type
-val total: Long = graphObjectManager.count(Issue::class.java)
+// 1. Count everything of a type (reified, or pass Issue::class.java)
+val total: Long = graphObjectManager.count<Issue>()
 
 // 2. Count with a simple WHERE filter (aliases match loadAll: `n` for fragments,
 //    the root fragment field name for views)
-graphObjectManager.count(Issue::class.java, "n.state = 'open'")
+graphObjectManager.count<Issue>("n.state = 'open'")
 
 // 3. Count with the type-safe DSL (pass the generated query object)
-graphObjectManager.count(RaisedAndAssignedIssue::class.java, RaisedAndAssignedIssueQueryDsl.INSTANCE) {
+graphObjectManager.count<RaisedAndAssignedIssue>(RaisedAndAssignedIssueQueryDsl.INSTANCE) {
     where { query.issue.state eq "open" }
 }
 ```
+
+The reified forms (`count<T>()`, `loadNearest<T>(…)`) mirror `loadAll<T>()` / `load<T>(…)`; the
+`::class.java` overloads remain for Java.
 
 **Fragments** are a straight node count of the fragment's labels.
 

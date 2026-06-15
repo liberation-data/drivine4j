@@ -300,3 +300,88 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, cascade: Cascad
 inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, whereClause: String?, cascade: CascadeType): Int {
     return delete(id.toString(), T::class.java, whereClause, cascade)
 }
+
+// ---------------------------------------------------------------------------------------------------
+// count
+// ---------------------------------------------------------------------------------------------------
+
+/**
+ * Counts all instances of a graph object using a reified type parameter.
+ *
+ * `graphObjectManager.count<RaisedAndAssignedIssue>()` instead of `count(RaisedAndAssignedIssue::class.java)`.
+ */
+inline fun <reified T : Any> GraphObjectManager.count(): Long {
+    return count(T::class.java)
+}
+
+/** Counts graph objects matching a simple WHERE clause, using a reified type parameter. */
+inline fun <reified T : Any> GraphObjectManager.count(whereClause: String): Long {
+    return count(T::class.java, whereClause)
+}
+
+/**
+ * Counts graph objects using the type-safe query DSL, with a reified type parameter.
+ *
+ * ```kotlin
+ * graphObjectManager.count<RaisedAndAssignedIssue>(RaisedAndAssignedIssueQueryDsl.INSTANCE) {
+ *     where { query.issue.state eq "open" }
+ * }
+ * ```
+ */
+inline fun <reified T : Any, Q : Any> GraphObjectManager.count(
+    queryObject: Q,
+    noinline spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
+): Long {
+    return count(T::class.java, queryObject, spec)
+}
+
+// ---------------------------------------------------------------------------------------------------
+// loadNearest
+// ---------------------------------------------------------------------------------------------------
+
+/**
+ * Vector search with a reified type parameter.
+ *
+ * `graphObjectManager.loadNearest<PropositionView>(queryVector, topK = 20)` instead of
+ * `loadNearest(PropositionView::class.java, queryVector, topK = 20)`.
+ */
+inline fun <reified T : Any> GraphObjectManager.loadNearest(
+    vector: List<Float>,
+    topK: Int,
+    threshold: Double? = null,
+): List<Scored<T>> {
+    return loadNearest(T::class.java, vector, topK, threshold)
+}
+
+/**
+ * Vector search naming the embedding [property] explicitly (when the fragment has several), with a
+ * reified type parameter.
+ */
+inline fun <reified T : Any> GraphObjectManager.loadNearest(
+    property: String?,
+    vector: List<Float>,
+    topK: Int,
+    threshold: Double? = null,
+): List<Scored<T>> {
+    return loadNearest(T::class.java, property, vector, topK, threshold)
+}
+
+/**
+ * Filtered vector search (a `where { }` predicate AND-ed into the post-projection filter), with a
+ * reified type parameter.
+ *
+ * ```kotlin
+ * graphObjectManager.loadNearest<PropositionView>(PropositionViewQueryDsl.INSTANCE, queryVector, topK = 20) {
+ *     where { query.proposition.contextId eq ctx }
+ * }
+ * ```
+ */
+inline fun <reified T : Any, Q : Any> GraphObjectManager.loadNearest(
+    queryObject: Q,
+    vector: List<Float>,
+    topK: Int,
+    threshold: Double? = null,
+    noinline spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
+): List<Scored<T>> {
+    return loadNearest(T::class.java, queryObject, vector, topK, threshold, spec)
+}

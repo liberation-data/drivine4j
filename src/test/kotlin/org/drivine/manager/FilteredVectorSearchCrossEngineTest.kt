@@ -48,6 +48,9 @@ private fun verify(gom: GraphObjectManager) {
     assertEquals(setOf("p1", "p2", "p3"), all.take(3).map { it.value.proposition.id }.toSet())
     assertEquals("p4", all.last().value.proposition.id)
 
+    // reified loadNearest<T>() resolves and delegates to the ::class.java form
+    assertEquals(all.map { it.value.proposition.id }, gom.loadNearest<PropositionView>(QUERY, topK = 10).map { it.value.proposition.id })
+
     // Property filter: contextId = ctx-a AND status = active → p1, p4 (p2 archived, p3 ctx-b out).
     val byProperty = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
         where { query.proposition.contextId eq "ctx-a"; query.proposition.status eq "active" }
