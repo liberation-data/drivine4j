@@ -273,30 +273,45 @@ object CypherGenerator {
      * Example: "issue.state = $param_issue_state_0"
      */
     private fun buildPropertyCondition(condition: WhereCondition.PropertyCondition, index: Int): String {
+        val lhs = renderPropertyPath(condition.propertyPath)
         return when (condition.operator) {
             ComparisonOperator.IS_NULL,
             ComparisonOperator.IS_NOT_NULL -> {
                 // Null checks don't need parameters
-                "${condition.propertyPath} ${condition.operator.cypherOperator}"
+                "$lhs ${condition.operator.cypherOperator}"
             }
             ComparisonOperator.IN -> {
                 // IN operator requires list syntax
                 val paramName = generateParamName(condition.propertyPath, index)
-                "${condition.propertyPath} ${condition.operator.cypherOperator} \$$paramName"
+                "$lhs ${condition.operator.cypherOperator} \$$paramName"
             }
             ComparisonOperator.CONTAINS,
             ComparisonOperator.STARTS_WITH,
             ComparisonOperator.ENDS_WITH -> {
                 // String operations
                 val paramName = generateParamName(condition.propertyPath, index)
-                "${condition.propertyPath} ${condition.operator.cypherOperator} \$$paramName"
+                "$lhs ${condition.operator.cypherOperator} \$$paramName"
             }
             else -> {
                 // Standard comparison operators
                 val paramName = generateParamName(condition.propertyPath, index)
-                "${condition.propertyPath} ${condition.operator.cypherOperator} \$$paramName"
+                "$lhs ${condition.operator.cypherOperator} \$$paramName"
             }
         }
+    }
+
+    /**
+     * Renders a `alias.property` path for the left-hand side of a condition, backtick-quoting the
+     * property segment when it contains a dot — a `@PropertyBag` key like `proposition.metadata.source`
+     * becomes `` proposition.`metadata.source` ``. Plain fields and relationship aliases are untouched.
+     * The parameter name is still derived from the raw path, so bindings stay aligned.
+     */
+    private fun renderPropertyPath(propertyPath: String): String {
+        val dot = propertyPath.indexOf('.')
+        if (dot < 0) return propertyPath
+        val alias = propertyPath.substring(0, dot)
+        val property = propertyPath.substring(dot + 1)
+        return if (property.contains('.')) "$alias.`$property`" else propertyPath
     }
 
     /**

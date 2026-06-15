@@ -1622,6 +1622,42 @@ data class WorkHistory(
 
 On write: `["backend", "senior"]` is stored as the string `'["backend","senior"]'`. On read: the JSON string is deserialized back to `List<String>`. Works across all engines.
 
+### @PropertyBag Annotation
+
+Maps an open `Map<String, *>` field to a set of **flat, prefixed node properties** — round-tripped on
+save and load. Unlike `@JsonPacked` (one opaque JSON string), each entry becomes a real property, so
+it's visible, filterable, and indexable. Mirrors Spring Data Neo4j's `@CompositeProperty` (available
+as an alias).
+
+```kotlin
+@NodeFragment(labels = ["Proposition"])
+data class PropositionNode(
+    @NodeId val id: String,
+    val text: String,
+    @PropertyBag val metadata: Map<String, Any?> = emptyMap(),   // -> metadata.<key> properties
+)
+```
+
+`metadata = {"source": "wiki", "score": 3}` persists as `metadata.source = "wiki"`,
+`metadata.score = 3` alongside `id`/`text`. Use `prefix` to decouple the graph namespace from the
+field name and `delimiter` to change the separator; a fragment may carry several bags.
+
+- **Values** must be storable Neo4j primitives or homogeneous arrays (String, Number, Boolean,
+  temporal, or arrays/lists thereof) — a nested map/object throws an `IllegalArgumentException`
+  naming the key.
+- **Updates clear stale keys**: removing an entry and saving removes its property — for
+  session-tracked objects (load → mutate → save). A detached save upserts but can't clear orphans.
+- **Read asymmetry**: `Map<String, Any?>` reads back driver-mapped types (an `Int` written returns as
+  `Long`).
+- **Filter by key** in the type-safe DSL — composes on the load path and inside `loadNearest`:
+
+```kotlin
+loadAll<PropositionView> { where { proposition.metadata.key("source") eq "wiki" } }
+// -> WHERE proposition.`metadata.source` = $p
+```
+
+Works across Neo4j, FalkorDB, and Memgraph.
+
 ### Cypher Dialect
 
 Each engine uses a Cypher dialect that controls query generation. The dialect is auto-detected from the database type but can be overridden:

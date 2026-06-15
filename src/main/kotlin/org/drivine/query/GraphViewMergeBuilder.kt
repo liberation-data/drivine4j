@@ -62,14 +62,15 @@ class GraphViewMergeBuilder(
         // Check if root fragment is dirty.
         // Prefer the enclosing view snapshot (the only place a fragment-inside-a-view's
         // previous state is recorded); fall back to session tracking, then to a full save.
+        val previousRootFragment = snapshot?.let { extractRootFragment(it) }
         val rootDirtyFields = if (snapshot != null) {
-            sessionManager.computeDirtyFields(rootFragment, extractRootFragment(snapshot))
+            sessionManager.computeDirtyFields(rootFragment, previousRootFragment!!)
         } else {
             val rootIdValue = sessionManager.extractIdValue(rootFragment, rootFragmentModel)?.toString()
             if (rootIdValue != null) sessionManager.getDirtyFields(rootFragment, rootIdValue) else null
         }
 
-        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields))
+        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields, previousRootFragment))
 
         // 2. Handle each relationship
         viewModel.relationships.forEach { relModel ->
@@ -188,7 +189,7 @@ class GraphViewMergeBuilder(
                 // IMPORTANT: Use runtime type, not declared type, for correct labels on polymorphic types.
                 val targetFragmentModel = FragmentModel.from(currentTarget::class.java)
                 val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
-                listOf(fragmentBuilder.buildMergeStatement(currentTarget, dirtyFields))
+                listOf(fragmentBuilder.buildMergeStatement(currentTarget, dirtyFields, snapshotTarget))
             }
         }
     }

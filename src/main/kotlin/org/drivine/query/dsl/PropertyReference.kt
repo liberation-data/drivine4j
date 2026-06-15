@@ -494,6 +494,31 @@ class StringPropertyReference(
 }
 
 /**
+ * DSL accessor for a `@PropertyBag` field. A bag has no fixed schema, so individual entries are
+ * reached by key:
+ *
+ * ```kotlin
+ * where { proposition.metadata.key("source") eq "wiki" }
+ * ```
+ * → `WHERE proposition.`metadata.source` = $p`
+ *
+ * `key(name)` returns a [PropertyReference] bound to the stored property `"$storedPrefix$name"`, so it
+ * composes with every operator (`eq`, `neq`, `in`, `contains`, …) on both the load path and the
+ * `loadNearest { where { } }` path. The generated query DSL emits one of these per `@PropertyBag` field
+ * instead of a scalar reference.
+ *
+ * @param alias the node alias the bag lives on (root field name, or relationship alias)
+ * @param storedPrefix the bag's stored-key prefix incl. delimiter, e.g. `"metadata."`
+ */
+class PropertyBagReference(
+    private val alias: String,
+    private val storedPrefix: String,
+) {
+    /** A reference to the bag entry [name] (stored as `"$storedPrefix$name"`). */
+    fun key(name: String): PropertyReference<Any?> = PropertyReference(alias, "$storedPrefix$name")
+}
+
+/**
  * Intermediate builder that holds a condition.
  * Automatically added to WhereBuilder when created in the DSL context.
  */

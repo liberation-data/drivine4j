@@ -33,5 +33,18 @@ data class FragmentField(
      * The raw type string representation.
      * Example: "java.lang.String", "java.util.UUID", "kotlin.collections.Set<java.lang.String>"
      */
-    val typeString: String
+    val typeString: String,
+
+    /**
+     * When non-null, this field is a `@PropertyBag` (an open map persisted as flat prefixed
+     * properties). Holds the raw annotation prefix/delimiter; the resolved stored prefix lives on
+     * [org.drivine.model.PropertyBagModel].
+     */
+    val propertyBag: PropertyBagSpec? = null,
+)
+
+/** The raw `@PropertyBag` / `@CompositeProperty` annotation values for a field. */
+data class PropertyBagSpec(
+    val prefix: String,
+    val delimiter: String,
 )

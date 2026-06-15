@@ -293,6 +293,9 @@ internal class GraphViewProjectionAssembler(
 
         return try {
             val fragmentModel = FragmentModel.from(fragmentType)
+            // Fragments with a @PropertyBag use .* so the open prefixed keys are projected too —
+            // the declared-field list can't name them. The transform reconstructs the bag from them.
+            if (fragmentModel.propertyBags.isNotEmpty()) return null
             val fields = fragmentModel.fields.map { it.name }
             // Return null if no fields found, to signal use of .*
             fields.ifEmpty { null }

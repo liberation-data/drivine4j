@@ -574,14 +574,6 @@ class QueryDslGenerator(
             val propName = prop.simpleName.asString()
             val propType = prop.type.resolve()
 
-            val propertyRefType = when {
-                propType.declaration.qualifiedName?.asString() == "kotlin.String" ->
-                    ClassName("org.drivine.query.dsl", "StringPropertyReference")
-                else ->
-                    ClassName("org.drivine.query.dsl", "PropertyReference")
-                        .parameterizedBy(propType.toTypeName().copy(nullable = false))
-            }
-
             // For root fragments, use the field name from the GraphView (e.g., "issue")
             // Otherwise use the fragment class name (e.g., "issueCore")
             val aliasExpr = if (needsAliasConstructor) {
@@ -589,6 +581,32 @@ class QueryDslGenerator(
             } else {
                 val defaultAlias = rootFieldName ?: fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }
                 "\"$defaultAlias\""
+            }
+
+            // @PropertyBag / @CompositeProperty → a PropertyBagReference with key(name), not a scalar.
+            val bagAnnotation = prop.annotations.find {
+                val name = it.shortName.asString()
+                name == "PropertyBag" || name == "CompositeProperty"
+            }
+            if (bagAnnotation != null) {
+                val prefix = (bagAnnotation.arguments.find { it.name?.asString() == "prefix" }?.value as? String) ?: ""
+                val delimiter = (bagAnnotation.arguments.find { it.name?.asString() == "delimiter" }?.value as? String) ?: "."
+                val storedPrefix = "${prefix.ifEmpty { propName }}$delimiter"
+                val bagRefType = ClassName("org.drivine.query.dsl", "PropertyBagReference")
+                classBuilder.addProperty(
+                    PropertySpec.builder(propName, bagRefType)
+                        .initializer("%T($aliasExpr, \"$storedPrefix\")", bagRefType)
+                        .build()
+                )
+                return@forEach
+            }
+
+            val propertyRefType = when {
+                propType.declaration.qualifiedName?.asString() == "kotlin.String" ->
+                    ClassName("org.drivine.query.dsl", "StringPropertyReference")
+                else ->
+                    ClassName("org.drivine.query.dsl", "PropertyReference")
+                        .parameterizedBy(propType.toTypeName().copy(nullable = false))
             }
 
             classBuilder.addProperty(

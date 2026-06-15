@@ -74,8 +74,10 @@ class FragmentMergeBuilderAdapter(
         val dirtyFields = if (idValue != null) {
             sessionManager.getDirtyFields(obj, idValue)
         } else null
+        // Previous state (for clearing stale @PropertyBag keys), when session-tracked.
+        val previous = if (idValue != null) sessionManager.getSnapshot(obj.javaClass, idValue) else null
 
         // Note: Fragments don't have relationships, so cascade is ignored
-        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields))
+        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields, previous))
     }
 }

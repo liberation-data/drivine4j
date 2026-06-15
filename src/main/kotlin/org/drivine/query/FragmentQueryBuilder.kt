@@ -39,8 +39,10 @@ class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObje
             ""
         }
 
-        // Check if this is a polymorphic query (abstract/sealed class)
-        val isPolymorphic = fragmentModel.clazz.kotlin.isAbstract || fragmentModel.clazz.kotlin.isSealed
+        // Check if this is a polymorphic query (abstract/sealed class). Bag fragments also use the
+        // .* path so the open prefixed properties are returned for the transform to reconstruct.
+        val isPolymorphic = fragmentModel.clazz.kotlin.isAbstract || fragmentModel.clazz.kotlin.isSealed ||
+            fragmentModel.propertyBags.isNotEmpty()
 
         // Include labels for polymorphic deserialization support
         val returnClause = if (isPolymorphic) {

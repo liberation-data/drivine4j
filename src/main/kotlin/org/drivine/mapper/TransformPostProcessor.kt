@@ -4,6 +4,7 @@ import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.annotation.JsonTypeInfo
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
+import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.neo4j.driver.Value
@@ -61,14 +62,67 @@ class TransformPostProcessor<S, T>(
      */
     @Suppress("UNCHECKED_CAST")
     private fun transformResult(result: S): T {
-        val data = extractDataFromResult(result)
-        val targetType = determineConcreteType(data) ?: type
+        val rawData = extractDataFromResult(result)
+        val targetType = determineConcreteType(rawData) ?: type
+
+        // Reassemble any @PropertyBag fields from their flat prefixed keys before deserializing.
+        val data = reconstructPropertyBags(rawData, targetType)
 
         return if (requiresSpecialHandling(targetType)) {
             constructWithSpecialHandling(data as Map<String, Any?>, targetType) as T
         } else {
             objectMapper.convertValue(data, targetType) as T
         }
+    }
+
+    /**
+     * Reassembles `@PropertyBag` fields from the flat prefixed node properties the projection
+     * surfaced (via `.*`). For a fragment, collects every key matching a bag's stored prefix into the
+     * bag's map field and drops the flat keys. For a view, recurses into the root fragment and each
+     * relationship target (single or collection, fragment or nested view). Leaves non-bag data
+     * untouched, so it is a no-op for the common case.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun reconstructPropertyBags(data: Any?, type: Class<*>): Any? {
+        if (data !is Map<*, *>) return data
+        val map = (data as Map<String, Any?>).toMutableMap()
+
+        if (type.isAnnotationPresent(GraphView::class.java)) {
+            val viewModel = GraphViewModel.from(type)
+            val rootName = viewModel.rootFragment.fieldName
+            map[rootName] = reconstructPropertyBags(map[rootName], viewModel.rootFragment.fragmentType)
+            viewModel.relationships.forEach { rel ->
+                when (val value = map[rel.fieldName]) {
+                    is List<*> -> map[rel.fieldName] = value.map { reconstructPropertyBags(it, rel.elementType) }
+                    else -> map[rel.fieldName] = reconstructPropertyBags(value, rel.elementType)
+                }
+            }
+            return map
+        }
+
+        if (type.isAnnotationPresent(NodeFragment::class.java)) {
+            val fragmentModel = try {
+                FragmentModel.from(type)
+            } catch (e: Exception) {
+                return map
+            }
+            if (fragmentModel.propertyBags.isEmpty()) return map
+            fragmentModel.propertyBags.forEach { bag ->
+                val bagMap = mutableMapOf<String, Any?>()
+                val claimedKeys = mutableListOf<String>()
+                map.forEach { (key, value) ->
+                    if (bag.owns(key)) {
+                        bagMap[bag.entryKey(key)] = value
+                        claimedKeys.add(key)
+                    }
+                }
+                claimedKeys.forEach { map.remove(it) }
+                map[bag.fieldName] = bagMap
+            }
+            return map
+        }
+
+        return map
     }
 
     /**

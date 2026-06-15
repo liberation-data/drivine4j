@@ -1,8 +1,10 @@
 package org.drivine.model
 
+import org.drivine.annotation.CompositeProperty
 import org.drivine.annotation.GraphTransient
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.PropertyBag
 import java.lang.reflect.Modifier
 import kotlin.reflect.KClass
 import kotlin.reflect.KMutableProperty1
@@ -36,8 +38,9 @@ data class FragmentModel(
     val labels: List<String>,
 
     /**
-     * The fields/properties of this fragment class with their types.
-     * Includes both declared fields and inherited fields.
+     * The fields/properties of this fragment class with their types. Includes declared and inherited
+     * fields, but **excludes** `@PropertyBag` fields (those are in [propertyBags]) — so the normal
+     * SET and projection paths treat the bag's prefixed properties, not the map field itself.
      */
     val fields: List<FragmentField>,
 
@@ -45,7 +48,13 @@ data class FragmentModel(
      * The name of the field annotated with @GraphNodeId, if present.
      * This field represents the Neo4j node ID.
      */
-    val nodeIdField: String?
+    val nodeIdField: String?,
+
+    /**
+     * The `@PropertyBag` / `@CompositeProperty` fields on this fragment — open maps persisted as flat
+     * prefixed node properties. Empty for the common case.
+     */
+    val propertyBags: List<PropertyBagModel> = emptyList(),
 ) {
     companion object {
         /**
@@ -60,16 +69,46 @@ data class FragmentModel(
                 ?: throw IllegalArgumentException("Class ${clazz.name} is not annotated with @GraphFragment")
 
             val labels = labelsFor(clazz)
-            val fields = extractFields(clazz)
+            val allFields = extractFields(clazz)
             val nodeIdField = findNodeIdField(clazz)
+
+            // Partition @PropertyBag fields out of the regular fields: they are persisted/loaded as
+            // flat prefixed properties, not as a single map-valued property.
+            val propertyBags = allFields.mapNotNull { field ->
+                field.propertyBag?.let { spec ->
+                    val prefix = spec.prefix.ifEmpty { field.name }
+                    PropertyBagModel(fieldName = field.name, storedPrefix = "$prefix${spec.delimiter}")
+                }
+            }
+            validateNonOverlappingPrefixes(propertyBags, clazz)
 
             return FragmentModel(
                 className = clazz.name,
                 clazz = clazz,
                 labels = labels,
-                fields = fields,
-                nodeIdField = nodeIdField
+                fields = allFields.filter { it.propertyBag == null },
+                nodeIdField = nodeIdField,
+                propertyBags = propertyBags,
             )
+        }
+
+        /**
+         * Rejects fragments whose property bags have overlapping prefixes — if one bag's prefix is a
+         * delimiter-prefix of another's, a stored key matches both on load and would be claimed
+         * twice. Fail loudly at model build rather than silently mis-assigning entries.
+         */
+        private fun validateNonOverlappingPrefixes(bags: List<PropertyBagModel>, clazz: Class<*>) {
+            for (a in bags) {
+                for (b in bags) {
+                    if (a !== b && b.storedPrefix.startsWith(a.storedPrefix)) {
+                        throw IllegalArgumentException(
+                            "@PropertyBag prefixes on ${clazz.simpleName} overlap: '${a.storedPrefix}' " +
+                                "(field '${a.fieldName}') is a prefix of '${b.storedPrefix}' (field '${b.fieldName}'). " +
+                                "Use distinct, non-nested prefixes."
+                        )
+                    }
+                }
+            }
         }
 
         /**
@@ -145,9 +184,20 @@ data class FragmentModel(
                         type = javaType,
                         kotlinType = returnType.classifier as? KClass<*>,
                         nullable = returnType.isMarkedNullable,
-                        typeString = returnType.toString()
+                        typeString = returnType.toString(),
+                        propertyBag = property.propertyBagSpec(),
                     )
                 }.sortedBy { it.name }
+        }
+
+        /** Reads `@PropertyBag` / `@CompositeProperty` off a Kotlin property (or its backing field). */
+        private fun KProperty1<*, *>.propertyBagSpec(): PropertyBagSpec? {
+            findAnnotation<PropertyBag>()?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
+            findAnnotation<CompositeProperty>()?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
+            val field = javaField
+            field?.getAnnotation(PropertyBag::class.java)?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
+            field?.getAnnotation(CompositeProperty::class.java)?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
+            return null
         }
 
         /**
@@ -191,13 +241,16 @@ data class FragmentModel(
                 currentClass.declaredFields
                     .filterNot { it.isSynthetic }
                     .forEach { field ->
+                        val bag = field.getAnnotation(PropertyBag::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter) }
+                            ?: field.getAnnotation(CompositeProperty::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter) }
                         fields.add(
                             FragmentField(
                                 name = field.name,
                                 type = field.type,
                                 kotlinType = null,
                                 nullable = true, // Java nullability cannot be reliably determined
-                                typeString = field.genericType.typeName
+                                typeString = field.genericType.typeName,
+                                propertyBag = bag,
                             )
                         )
                     }
