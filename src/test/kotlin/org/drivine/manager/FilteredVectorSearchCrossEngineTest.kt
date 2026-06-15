@@ -23,6 +23,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.proposition.PropositionView
 import sample.proposition.PropositionViewQueryDsl
+import sample.proposition.loadNearest
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -157,6 +158,23 @@ class FilteredVectorSearchNeo4jTest {
 
     @Test
     fun `filtered vector search on Neo4j`() = verify(gom)
+
+    @Test
+    fun `generated-form loadNearest wrapper delegates to the explicit form`() {
+        // Combine a property predicate and an any{} quantifier, via the generated-shape wrapper
+        // (loadNearest<PropositionView>(...) { }) and the explicit method; assert identical Scored<T>.
+        val explicit = gom.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, QUERY, topK = 10) {
+            where { query.proposition.contextId eq "ctx-a"; query.mentions.any { resolvedId eq "entX" } }
+        }
+        val generated = gom.loadNearest<PropositionView>(QUERY, topK = 10) {
+            where { query.proposition.contextId eq "ctx-a"; query.mentions.any { resolvedId eq "entX" } }
+        }
+        assertTrue(generated.isNotEmpty())
+        assertEquals(
+            explicit.map { it.value.proposition.id to it.score },
+            generated.map { it.value.proposition.id to it.score },
+        )
+    }
 }
 
 @Testcontainers

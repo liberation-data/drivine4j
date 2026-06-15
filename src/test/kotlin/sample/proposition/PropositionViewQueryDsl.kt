@@ -1,5 +1,8 @@
 package sample.proposition
 
+import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.Scored
+import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.NodeReference
 import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.StringPropertyReference
@@ -30,3 +33,20 @@ class PropositionViewQueryDsl {
         val INSTANCE = PropositionViewQueryDsl()
     }
 }
+
+/**
+ * Mirrors the codegen-emitted filtered vector-search wrapper for [PropositionView] (the generation
+ * test `GeneratedLoadNearestTest` asserts the codegen produces exactly this shape). Exercised by the
+ * round-trip in `FilteredVectorSearchNeo4jTest`.
+ */
+inline fun <reified T : PropositionView> GraphObjectManager.loadNearest(
+    vector: List<Float>,
+    topK: Int,
+    threshold: Double? = null,
+    noinline spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit,
+): List<Scored<T>> = loadNearest(T::class.java, PropositionViewQueryDsl.INSTANCE, vector, topK, threshold, spec)
+
+/** Mirrors the codegen-emitted `count(spec)` wrapper for [PropositionView]. */
+inline fun <reified T : PropositionView> GraphObjectManager.count(
+    noinline spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit,
+): Long = count(T::class.java, PropositionViewQueryDsl.INSTANCE, spec)

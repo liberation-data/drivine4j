@@ -311,17 +311,25 @@ class QueryDslGenerator(
         // Generate extension functions
         val loadAllExtension = generateLoadAllExtensionFunction(graphViewClass)
         val deleteAllExtension = generateDeleteAllExtensionFunction(graphViewClass)
+        val countExtension = generateCountExtensionFunction(graphViewClass)
 
         // Generate context property extensions as raw code (KotlinPoet doesn't support named context params)
         val contextPropertyExtensionsCode = generateContextPropertyExtensionsCode(graphViewClass, viewStructure)
 
         // Build the main file content with KotlinPoet
-        val fileSpec = FileSpec.builder(graphViewClassName.packageName, dslClassName)
+        val fileSpecBuilder = FileSpec.builder(graphViewClassName.packageName, dslClassName)
             .addFileComment("Generated code - do not modify")
             .addType(dslClass)
             .addFunction(loadAllExtension)
             .addFunction(deleteAllExtension)
-            .build()
+            .addFunction(countExtension)
+
+        // Filtered vector-search wrapper — only for views whose root fragment is vector-indexed.
+        if (rootFragmentHasVectorIndex(graphViewClass)) {
+            fileSpecBuilder.addFunction(generateLoadNearestExtensionFunction(graphViewClass))
+        }
+
+        val fileSpec = fileSpecBuilder.build()
 
         // Write to file manually so we can append raw code for context property extensions
         val outputStream = codeGenerator.createNewFile(
@@ -715,6 +723,103 @@ class QueryDslGenerator(
             .returns(List::class.asClassName().parameterizedBy(TypeVariableName("T")))
             .addStatement("return loadAll(T::class.java, $dslClassName.INSTANCE, spec)")
             .build()
+    }
+
+    /**
+     * Emits a filtered vector-search extension that injects the view's `…QueryDsl.INSTANCE`, mirroring
+     * the generated `loadAll(spec)` wrapper:
+     *
+     * ```kotlin
+     * inline fun <reified T : PropositionView> GraphObjectManager.loadNearest(
+     *     vector: List<Float>, topK: Int, threshold: Double? = null,
+     *     noinline spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit,
+     * ): List<Scored<T>> = loadNearest(T::class.java, PropositionViewQueryDsl.INSTANCE, vector, topK, threshold, spec)
+     * ```
+     *
+     * Only the filtered (spec) form is generated — the non-filtered `loadNearest<T>(vector, topK,
+     * threshold)` is a hand-written reified extension and needs no query object. Gated on the root
+     * fragment carrying a `@VectorIndex` (see [rootFragmentHasVectorIndex]); a view with no embedding
+     * can't be searched.
+     */
+    private fun generateLoadNearestExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
+        val graphViewClassName = graphViewClass.toClassName()
+        val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
+        val scoredClass = ClassName("org.drivine.manager", "Scored")
+        val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
+        val floatList = List::class.asClassName().parameterizedBy(Float::class.asClassName())
+
+        return FunSpec.builder("loadNearest")
+            .addModifiers(KModifier.INLINE)
+            .receiver(graphObjectManagerClass)
+            .addTypeVariable(
+                TypeVariableName("T", graphViewClassName).copy(reified = true)
+            )
+            .addParameter("vector", floatList)
+            .addParameter("topK", Int::class.asClassName())
+            .addParameter(
+                ParameterSpec.builder("threshold", Double::class.asClassName().copy(nullable = true))
+                    .defaultValue("null")
+                    .build()
+            )
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = graphQuerySpecClass.parameterizedBy(dslClass),
+                        returnType = Unit::class.asClassName()
+                    )
+                ).addModifiers(KModifier.NOINLINE)
+                .build()
+            )
+            .returns(List::class.asClassName().parameterizedBy(scoredClass.parameterizedBy(TypeVariableName("T"))))
+            .addStatement("return loadNearest(T::class.java, $dslClassName.INSTANCE, vector, topK, threshold, spec)")
+            .build()
+    }
+
+    /**
+     * Emits the `count(spec)` wrapper that injects the view's `…QueryDsl.INSTANCE`, mirroring the
+     * generated `loadAll(spec)` — `count<View> { where { } }` instead of
+     * `count(View::class.java, ViewQueryDsl.INSTANCE) { }`.
+     */
+    private fun generateCountExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
+        val graphViewClassName = graphViewClass.toClassName()
+        val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
+        val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
+
+        return FunSpec.builder("count")
+            .addModifiers(KModifier.INLINE)
+            .receiver(graphObjectManagerClass)
+            .addTypeVariable(
+                TypeVariableName("T", graphViewClassName).copy(reified = true)
+            )
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = graphQuerySpecClass.parameterizedBy(dslClass),
+                        returnType = Unit::class.asClassName()
+                    )
+                ).addModifiers(KModifier.NOINLINE)
+                .build()
+            )
+            .returns(Long::class.asClassName())
+            .addStatement("return count(T::class.java, $dslClassName.INSTANCE, spec)")
+            .build()
+    }
+
+    /** Whether the view's `@Root` fragment declares a `@VectorIndex` property (so it is searchable). */
+    private fun rootFragmentHasVectorIndex(graphViewClass: KSClassDeclaration): Boolean {
+        val rootProperty = graphViewClass.getAllProperties().find { prop ->
+            prop.annotations.any { it.shortName.asString() == "Root" }
+        } ?: return false
+        val rootFragment = rootProperty.type.resolve().declaration as? KSClassDeclaration ?: return false
+        return rootFragment.getAllProperties().any { p ->
+            p.annotations.any { it.shortName.asString() == "VectorIndex" }
+        }
     }
 
     private fun generateDeleteAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {

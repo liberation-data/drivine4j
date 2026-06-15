@@ -514,14 +514,16 @@ val total: Long = graphObjectManager.count<Issue>()
 //    the root fragment field name for views)
 graphObjectManager.count<Issue>("n.state = 'open'")
 
-// 3. Count with the type-safe DSL (pass the generated query object)
-graphObjectManager.count<RaisedAndAssignedIssue>(RaisedAndAssignedIssueQueryDsl.INSTANCE) {
+// 3. Count with the type-safe DSL (generated per-view extension injects the query object)
+graphObjectManager.count<RaisedAndAssignedIssue> {
     where { query.issue.state eq "open" }
 }
 ```
 
-The reified forms (`count<T>()`, `loadNearest<T>(…)`) mirror `loadAll<T>()` / `load<T>(…)`; the
-`::class.java` overloads remain for Java.
+The codegen emits INSTANCE-injecting extensions for every DSL-spec method — `loadAll<T> { }`,
+`deleteAll<T> { }`, `count<T> { }`, and `loadNearest<T>(…) { }` (the last only for `@VectorIndex`-ed
+views). The reified `count<T>()` / `loadNearest<T>(…)` and the explicit `::class.java` overloads also
+remain (the latter for Java).
 
 **Fragments** are a straight node count of the fragment's labels.
 
@@ -607,8 +609,8 @@ post-search filter, so you can combine vector similarity with property predicate
 relationship quantifiers in one statement:
 
 ```kotlin
-// nearest propositions in this context that mention entity X
-graphObjectManager.loadNearest(PropositionView::class.java, queryVector, topK = 20) {
+// nearest propositions in this context that mention entity X (reified form generated per @VectorIndex view)
+graphObjectManager.loadNearest<PropositionView>(queryVector, topK = 20) {
     where {
         proposition.contextId eq ctx
         proposition.status eq "active"
@@ -616,6 +618,10 @@ graphObjectManager.loadNearest(PropositionView::class.java, queryVector, topK = 
     }
 }
 ```
+
+The codegen emits this `loadNearest<View>(vector, topK, threshold) { where { } }` extension for each
+`@GraphView` whose root fragment is `@VectorIndex`-ed (mirroring the generated `loadAll { }`); the
+explicit `loadNearest(View::class.java, ViewQueryDsl.INSTANCE, …) { }` overload also remains.
 
 The predicate is applied **after** the K-nearest search, so it really does prune — a node that ranks
 in the top K but fails the predicate is dropped, and `topK` remains the index's `k` (the result may

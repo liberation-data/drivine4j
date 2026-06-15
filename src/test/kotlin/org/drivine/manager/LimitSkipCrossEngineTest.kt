@@ -22,6 +22,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.proposition.PropositionView
 import sample.proposition.PropositionViewQueryDsl
+import sample.proposition.count
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -63,6 +64,10 @@ private fun verify(gom: GraphObjectManager) {
 
     // reified count<T>() resolves and delegates to the ::class.java form
     assertEquals(gom.count(PropositionView::class.java), gom.count<PropositionView>())
+
+    // generated-form count<T> { } injects INSTANCE and delegates correctly
+    assertEquals(5L, gom.count<PropositionView> { })
+    assertEquals(1L, gom.count<PropositionView> { where { query.proposition.id eq "p3" } })
 }
 
 private const val SEED = """
