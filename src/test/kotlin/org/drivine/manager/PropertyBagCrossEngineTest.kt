@@ -115,6 +115,16 @@ class PropertyBagNeo4jTest {
 
     @Test
     fun `property bag round-trips on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `Java fragment property bag round-trips on Neo4j`() {
+        val gom = buildGom(pm, SubtypeRegistry())
+        gom.save(sample.propertybag.JavaBaggedNode("j1", "JT", mapOf<String, Any?>("source" to "wiki", "score" to 3)))
+        val loaded = gom.load("j1", sample.propertybag.JavaBaggedNode::class.java)!!
+        assertEquals("JT", loaded.title)
+        assertEquals("wiki", loaded.metadata["source"])
+        assertEquals(3L, (loaded.metadata["score"] as Number).toLong())
+    }
 }
 
 @Testcontainers

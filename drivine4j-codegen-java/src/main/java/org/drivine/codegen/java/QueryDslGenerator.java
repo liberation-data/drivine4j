@@ -183,6 +183,24 @@ public class QueryDslGenerator {
             String fieldName = field.getSimpleName().toString();
             TypeMirror fieldType = field.asType();
 
+            // @PropertyBag / @CompositeProperty → a PropertyBagReference with key(name), not a scalar.
+            AnnotationMirror bagAnnotation = getAnnotation(field, "org.drivine.annotation.PropertyBag");
+            if (bagAnnotation == null) {
+                bagAnnotation = getAnnotation(field, "org.drivine.annotation.CompositeProperty");
+            }
+            if (bagAnnotation != null) {
+                String prefix = getAnnotationStringValue(bagAnnotation, "prefix", "");
+                String delimiter = getAnnotationStringValue(bagAnnotation, "delimiter", ".");
+                String storedPrefix = (prefix.isEmpty() ? fieldName : prefix) + delimiter;
+                ClassName bagReference = ClassName.get("org.drivine.query.dsl", "PropertyBagReference");
+                classBuilder.addMethod(MethodSpec.methodBuilder(fieldName)
+                    .addModifiers(Modifier.PUBLIC)
+                    .returns(bagReference)
+                    .addStatement("return new $T(alias, $S)", bagReference, storedPrefix)
+                    .build());
+                continue;
+            }
+
             // Determine the property reference type
             TypeName propRefType;
             if (isStringType(fieldType)) {
@@ -300,6 +318,30 @@ public class QueryDslGenerator {
     private boolean hasAnnotation(TypeMirror type, String annotationName) {
         TypeElement typeElement = getTypeElement(type);
         return typeElement != null && hasAnnotation(typeElement, annotationName);
+    }
+
+    private AnnotationMirror getAnnotation(Element element, String annotationName) {
+        for (AnnotationMirror annotation : element.getAnnotationMirrors()) {
+            if (annotation.getAnnotationType().toString().equals(annotationName)) {
+                return annotation;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Reads a String-valued annotation parameter, returning [defaultValue] when it was not set
+     * explicitly (APT only surfaces explicitly-provided values).
+     */
+    private String getAnnotationStringValue(AnnotationMirror annotation, String key, String defaultValue) {
+        for (Map.Entry<? extends ExecutableElement, ? extends AnnotationValue> entry
+                : annotation.getElementValues().entrySet()) {
+            if (entry.getKey().getSimpleName().toString().equals(key)) {
+                Object value = entry.getValue().getValue();
+                return value != null ? value.toString() : defaultValue;
+            }
+        }
+        return defaultValue;
     }
 
     private TypeElement getTypeElement(TypeMirror type) {

@@ -305,16 +305,21 @@ class GraphObjectManager(
             OrderClauseResult(null, emptyList())
         }
 
-        val query = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
+        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
             builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
         } else {
             builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
         }
 
+        // SKIP/LIMIT are the final clauses, after RETURN … ORDER BY …. For a @GraphView each root is
+        // one row (relationships are pattern comprehensions in the projection), so LIMIT bounds root
+        // entities and keeps their collections intact.
+        val (query, bindings) = applyPagination(baseQuery, ctx.bindings, querySpec.skip, querySpec.limit)
+
         val results = persistenceManager.query(
             QuerySpecification
                 .withStatement(query)
-                .bind(ctx.bindings)
+                .bind(bindings)
                 .transform(graphClass)
         )
 
@@ -835,12 +840,40 @@ class GraphObjectManager(
         return obj
     }
 
+    /**
+     * Appends `SKIP $_skip` / `LIMIT $_limit` (bound, not inlined) after the query's `RETURN … ORDER
+     * BY …` tail. A no-op when neither is set. SKIP precedes LIMIT, per Cypher.
+     */
+    private fun applyPagination(
+        query: String,
+        bindings: Map<String, Any?>,
+        skip: Int?,
+        limit: Int?,
+    ): Pair<String, Map<String, Any?>> {
+        if (skip == null && limit == null) return query to bindings
+        val merged = bindings.toMutableMap()
+        val sb = StringBuilder(query)
+        if (skip != null) {
+            sb.append("\nSKIP \$$SKIP_PARAM")
+            merged[SKIP_PARAM] = skip
+        }
+        if (limit != null) {
+            sb.append("\nLIMIT \$$LIMIT_PARAM")
+            merged[LIMIT_PARAM] = limit
+        }
+        return sb.toString() to merged
+    }
+
     private companion object {
         // Bound-parameter names for the vector search. Underscored to avoid clashing with any
         // user-supplied bindings on future filtered vector queries.
         const val VECTOR_TOP_K_PARAM = "_vectorTopK"
         const val VECTOR_QUERY_PARAM = "_vectorQuery"
         const val VECTOR_THRESHOLD_PARAM = "_vectorThreshold"
+
+        // Bound-parameter names for DSL pagination.
+        const val SKIP_PARAM = "_skip"
+        const val LIMIT_PARAM = "_limit"
     }
 
     private fun validateCascadeSupport(cascade: CascadeType) {

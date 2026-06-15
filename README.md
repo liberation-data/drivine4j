@@ -709,6 +709,32 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 }
 ```
 
+#### Limit & Pagination
+
+`limit(n)` and `skip(n)` push a row bound into the generated Cypher (bound as `$_limit` / `$_skip`,
+after `ORDER BY`), so "top 20 by recency" is done database-side instead of over-fetching:
+
+```kotlin
+// top 20
+graphObjectManager.loadAll<PropositionView> {
+    orderBy { proposition.created.desc() }
+    limit(20)
+}
+
+// page 3 (20 per page)
+graphObjectManager.loadAll<PropositionView> {
+    orderBy { proposition.created.desc() }
+    skip(40)
+    limit(20)
+}
+```
+
+For a `@GraphView`, `limit(n)` bounds **root entities** — each returned view keeps its relationships
+fully populated (relationships are pattern comprehensions, so one root is one row). Pair `limit` with
+`orderBy` for a deterministic top-N; without ordering the subset is an arbitrary `≤ n`. `count(…)`
+ignores `limit`/`skip`. (`loadNearest` doesn't take a limit — `topK` is already its bound.) From Java,
+`.limit(n)` / `.skip(n)` are on the query builder alongside `.where()` / `.orderBy()`.
+
 #### Ordering Nested Collections (Database-Side)
 
 The DSL supports sorting nested relationship collections directly in the database. The Cypher emitted depends on the engine's dialect:

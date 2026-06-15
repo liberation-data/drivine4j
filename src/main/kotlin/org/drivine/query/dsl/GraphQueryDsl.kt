@@ -34,6 +34,35 @@ class GraphQuerySpec<T : Any>(private val queryObject: T) {
     internal val conditions = mutableListOf<WhereCondition>()
     internal val orders = mutableListOf<OrderSpec>()
     internal val depthOverrides = mutableMapOf<String, Int>()
+    internal var limit: Int? = null
+    internal var skip: Int? = null
+
+    /**
+     * Limits the result to at most [n] entities — for a `@GraphView`, [n] **roots** (relationships
+     * stay fully populated), bound as `$_limit` and applied after `ORDER BY`. Pair with [orderBy] for
+     * a deterministic top-N; without it the subset is an arbitrary `<= n` (standard Cypher).
+     *
+     * ```kotlin
+     * loadAll<PropositionView> { orderBy { proposition.created.desc() }; limit(20) }
+     * ```
+     */
+    fun limit(n: Int) {
+        require(n >= 0) { "limit must be >= 0, was $n" }
+        limit = n
+    }
+
+    /**
+     * Skips the first [n] entities (for pagination), bound as `$_skip` and applied before [limit].
+     * Combine with [orderBy] + [limit] for stable pages.
+     *
+     * ```kotlin
+     * loadAll<PropositionView> { orderBy { proposition.created.desc() }; skip(40); limit(20) }
+     * ```
+     */
+    fun skip(n: Int) {
+        require(n >= 0) { "skip must be >= 0, was $n" }
+        skip = n
+    }
 
     /**
      * Overrides the expansion depth for a recursive relationship at query time.

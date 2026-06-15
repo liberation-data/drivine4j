@@ -106,6 +106,8 @@ class JavaQueryBuilder<T : Any, Q : Any>(
 ) {
     private val conditions = mutableListOf<WhereCondition>()
     private val orders = mutableListOf<OrderSpec>()
+    private var limit: Int? = null
+    private var skip: Int? = null
 
     /**
      * Adds a WHERE condition using the query DSL.
@@ -181,6 +183,21 @@ class JavaQueryBuilder<T : Any, Q : Any>(
     }
 
     /**
+     * Limits the result to at most [n] entities (for a `@GraphView`, [n] roots). Pair with [orderBy]
+     * for a deterministic top-N.
+     */
+    fun limit(n: Int): JavaQueryBuilder<T, Q> {
+        this.limit = n
+        return this
+    }
+
+    /** Skips the first [n] entities (pagination); combine with [orderBy] + [limit] for stable pages. */
+    fun skip(n: Int): JavaQueryBuilder<T, Q> {
+        this.skip = n
+        return this
+    }
+
+    /**
      * Executes the query and returns all matching results.
      *
      * @return List of matching graph objects
@@ -190,6 +207,8 @@ class JavaQueryBuilder<T : Any, Q : Any>(
             // Transfer collected conditions and orders to the GraphQuerySpec
             this.conditions.addAll(this@JavaQueryBuilder.conditions)
             this.orders.addAll(this@JavaQueryBuilder.orders)
+            this@JavaQueryBuilder.limit?.let { limit(it) }
+            this@JavaQueryBuilder.skip?.let { skip(it) }
         }
     }
 
