@@ -50,6 +50,8 @@ class GraphObjectManager(
 
     private val grammar = persistenceManager.grammar
 
+    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE)
+
     /**
      * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
      * Loaded objects are automatically added to the session for dirty tracking.
@@ -841,6 +843,45 @@ class GraphObjectManager(
     }
 
     /**
+     * Batch-saves a collection of graph objects, mirroring [save]'s per-item semantics (cascade,
+     * change detection, MERGE identity) while cutting round trips. The whole call is **atomic** —
+     * inside an ambient transaction it joins it, otherwise it runs in a single transaction of its own
+     * (see [PersistenceManager.executeBatch]) — so a failure on any item rolls the whole call back and
+     * nothing is persisted.
+     *
+     * Heterogeneous collections are supported: items are grouped by runtime class and each group is
+     * saved with its own model. The returned list is [objs] in input order, unchanged.
+     *
+     * **Batching strategy — "UNWIND the roots, pipeline the rest".** For each homogeneous group the
+     * root-fragment upserts collapse into chunked `UNWIND $rows AS row MERGE (n:…{id}) SET n += row.props`
+     * statements (sub-linear round trips); relationship and cascade statements stay per-item, exactly as
+     * [save] builds them. Consequences worth knowing:
+     * - **Roots with a `@PropertyBag`/`@CompositeProperty` fall back** to the full per-item path — the
+     *   clear-stale `REMOVE` needs per-object keys an UNWIND can't express. Correct, just not batched.
+     * - The batched root upsert writes **all current non-null root properties** (`n += props`); it is
+     *   not dirty-optimized and does **not clear a root property by setting it to null**. Use [save] for
+     *   a single object when you need to null a root property. Relationship change-detection and cascade
+     *   are per-item and unaffected.
+     *
+     * @param objs the objects to save (any mix of `@GraphView` / `@NodeFragment` types)
+     * @param cascade the cascade policy for removed relationships, applied per item (default NONE)
+     * @return the saved objects in input order; empty in → empty out
+     */
+    fun <T : Any> saveAll(objs: Collection<T>, cascade: CascadeType = CascadeType.NONE): List<T> {
+        validateCascadeSupport(cascade)
+        val items = objs.toList()
+        if (items.isEmpty()) return emptyList()
+
+        // Statement building lives in BatchSaveOperations; the manager owns execution + snapshotting.
+        persistenceManager.executeBatch(batchSave.buildBatchSpecs(items, cascade))
+
+        // Update snapshots after the batch commits, each under its own runtime class.
+        items.forEach { @Suppress("UNCHECKED_CAST") snapshotResults(it.javaClass as Class<Any>, listOf<Any>(it)) }
+
+        return items
+    }
+
+    /**
      * Appends `SKIP $_skip` / `LIMIT $_limit` (bound, not inlined) after the query's `RETURN … ORDER
      * BY …` tail. A no-op when neither is set. SKIP precedes LIMIT, per Cypher.
      */
@@ -874,6 +915,10 @@ class GraphObjectManager(
         // Bound-parameter names for DSL pagination.
         const val SKIP_PARAM = "_skip"
         const val LIMIT_PARAM = "_limit"
+
+        // Max rows per UNWIND statement in saveAll — caps server-side batch size; each chunk is one
+        // statement (and, when not in an ambient transaction, still within the single batch transaction).
+        const val UNWIND_CHUNK_SIZE = 1000
     }
 
     private fun validateCascadeSupport(cascade: CascadeType) {

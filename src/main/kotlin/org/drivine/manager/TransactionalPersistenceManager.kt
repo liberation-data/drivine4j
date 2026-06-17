@@ -59,6 +59,24 @@ class TransactionalPersistenceManager(
         }
     }
 
+    /**
+     * Runs all [specs] on the ambient transaction's connection. Atomicity is the caller's transaction:
+     * a failing statement propagates and the surrounding `@Transactional` rolls the whole thing back.
+     */
+    override fun executeBatch(specs: List<QuerySpecification<*>>) {
+        if (specs.isEmpty()) return
+        val txObject = currentTransactionOrThrow()
+        val connection = txObject.getOrCreateConnection(database, contextHolder)
+        specs.forEach { spec ->
+            try {
+                @Suppress("UNCHECKED_CAST")
+                connection.query(spec as QuerySpecification<Any>)
+            } catch (e: Exception) {
+                throw DrivineException.withRootCause(e, spec)
+            }
+        }
+    }
+
     override fun <T: Any> getOne(spec: QuerySpecification<T>): T {
         return finderOperations.getOne(spec)
     }

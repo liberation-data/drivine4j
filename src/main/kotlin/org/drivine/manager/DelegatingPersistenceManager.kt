@@ -54,6 +54,12 @@ class DelegatingPersistenceManager(
         return persistenceManager().execute(spec)
     }
 
+    override fun executeBatch(specs: List<QuerySpecification<*>>) {
+        // Route to the transactional manager when in a transaction (joins it), else the
+        // non-transactional one (which wraps the batch in its own single transaction).
+        return persistenceManager().executeBatch(specs)
+    }
+
     private fun persistenceManager(): PersistenceManager {
         val type = if (contextHolder.currentTransaction != null) {
             PersistenceManagerType.TRANSACTIONAL

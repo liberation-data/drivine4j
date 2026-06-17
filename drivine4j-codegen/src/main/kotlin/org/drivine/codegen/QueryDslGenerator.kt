@@ -535,102 +535,110 @@ class QueryDslGenerator(
         rootFieldName: String? = null
     ): TypeSpec {
         // Implement NodeReference for instanceOf() support
-        val nodeReferenceClass = ClassName("org.drivine.query.dsl", "NodeReference")
         val classBuilder = TypeSpec.classBuilder(propertiesClassName)
-            .addSuperinterface(nodeReferenceClass)
+            .addSuperinterface(ClassName("org.drivine.query.dsl", "NodeReference"))
 
-        // Add constructor parameter for alias if needed
-        if (needsAliasConstructor) {
-            val paramBuilder = ParameterSpec.builder("alias", String::class)
-            if (hasDefaultAlias) {
-                // Add default value using the fragment name as alias
-                val defaultAlias = fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }
-                paramBuilder.defaultValue("\"$defaultAlias\"")
-            }
+        // For root fragments, the alias is the GraphView field name (e.g. "issue"); otherwise the
+        // decapitalized fragment class name (e.g. "issueCore").
+        val defaultAlias = rootFieldName ?: fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }
+        addAliasMembers(classBuilder, needsAliasConstructor, hasDefaultAlias, defaultAlias)
 
-            classBuilder.primaryConstructor(
-                FunSpec.constructorBuilder()
-                    .addParameter(paramBuilder.build())
-                    .build()
-            )
-            classBuilder.addProperty(
-                PropertySpec.builder("alias", String::class)
-                    .initializer("alias")
-                    .addModifiers(KModifier.PRIVATE)
-                    .build()
-            )
-            // Implement NodeReference.nodeAlias
-            classBuilder.addProperty(
-                PropertySpec.builder("nodeAlias", String::class)
-                    .addModifiers(KModifier.OVERRIDE)
-                    .getter(FunSpec.getterBuilder().addStatement("return alias").build())
-                    .build()
-            )
-        } else {
-            // For fragments without alias constructor, add a nodeAlias property with the default alias
-            val defaultAlias = rootFieldName ?: fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }
+        // Property references read the constructor param when aliased, else the literal default alias.
+        val aliasExpr = if (needsAliasConstructor) "alias" else "\"$defaultAlias\""
+        fragmentClass.getAllProperties().forEach { prop ->
+            addPropertyReference(classBuilder, prop, aliasExpr)
+        }
+
+        return classBuilder.build()
+    }
+
+    /**
+     * Emits the alias plumbing: an `alias` constructor param + private backing property + `nodeAlias`
+     * getter when the fragment needs a caller-supplied alias, or a fixed `nodeAlias` initializer
+     * otherwise.
+     */
+    private fun addAliasMembers(
+        classBuilder: TypeSpec.Builder,
+        needsAliasConstructor: Boolean,
+        hasDefaultAlias: Boolean,
+        defaultAlias: String,
+    ) {
+        if (!needsAliasConstructor) {
             classBuilder.addProperty(
                 PropertySpec.builder("nodeAlias", String::class)
                     .addModifiers(KModifier.OVERRIDE)
                     .initializer("\"$defaultAlias\"")
                     .build()
             )
+            return
         }
 
-        // Generate property references for each property in the fragment
-        fragmentClass.getAllProperties().forEach { prop ->
-            val propName = prop.simpleName.asString()
-            val propType = prop.type.resolve()
+        val paramBuilder = ParameterSpec.builder("alias", String::class)
+        if (hasDefaultAlias) {
+            paramBuilder.defaultValue("\"$defaultAlias\"")
+        }
+        classBuilder.primaryConstructor(
+            FunSpec.constructorBuilder().addParameter(paramBuilder.build()).build()
+        )
+        classBuilder.addProperty(
+            PropertySpec.builder("alias", String::class)
+                .initializer("alias")
+                .addModifiers(KModifier.PRIVATE)
+                .build()
+        )
+        // Implement NodeReference.nodeAlias
+        classBuilder.addProperty(
+            PropertySpec.builder("nodeAlias", String::class)
+                .addModifiers(KModifier.OVERRIDE)
+                .getter(FunSpec.getterBuilder().addStatement("return alias").build())
+                .build()
+        )
+    }
 
-            // For root fragments, use the field name from the GraphView (e.g., "issue")
-            // Otherwise use the fragment class name (e.g., "issueCore")
-            val aliasExpr = if (needsAliasConstructor) {
-                "alias"
-            } else {
-                val defaultAlias = rootFieldName ?: fragmentClass.simpleName.asString().replaceFirstChar { it.lowercase() }
-                "\"$defaultAlias\""
-            }
-
-            // @PropertyBag / @CompositeProperty → a PropertyBagReference with key(name), not a scalar.
-            val bagAnnotation = prop.annotations.find {
-                val name = it.shortName.asString()
-                name == "PropertyBag" || name == "CompositeProperty"
-            }
-            if (bagAnnotation != null) {
-                val prefix = (bagAnnotation.arguments.find { it.name?.asString() == "prefix" }?.value as? String) ?: ""
-                val delimiter = (bagAnnotation.arguments.find { it.name?.asString() == "delimiter" }?.value as? String) ?: "."
-                val storedPrefix = "${prefix.ifEmpty { propName }}$delimiter"
-                val bagRefType = ClassName("org.drivine.query.dsl", "PropertyBagReference")
-                classBuilder.addProperty(
-                    PropertySpec.builder(propName, bagRefType)
-                        .initializer("%T($aliasExpr, \"$storedPrefix\")", bagRefType)
-                        .build()
-                )
-                return@forEach
-            }
-
-            val propertyRefType = when {
-                propType.declaration.qualifiedName?.asString() == "kotlin.String" ->
-                    ClassName("org.drivine.query.dsl", "StringPropertyReference")
-                else ->
-                    ClassName("org.drivine.query.dsl", "PropertyReference")
-                        .parameterizedBy(propType.toTypeName().copy(nullable = false))
-            }
-
-            classBuilder.addProperty(
-                PropertySpec.builder(propName, propertyRefType)
-                    .initializer(
-                        if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
-                            "$propertyRefType($aliasExpr, \"$propName\")"
-                        } else {
-                            "$propertyRefType($aliasExpr, \"$propName\")"
-                        }
-                    )
-                    .build()
-            )
+    /** Emits one property reference, dispatching to the bag / string / scalar shape. */
+    private fun addPropertyReference(classBuilder: TypeSpec.Builder, prop: KSPropertyDeclaration, aliasExpr: String) {
+        // @PropertyBag / @CompositeProperty → a PropertyBagReference with key(name), not a scalar.
+        val bagAnnotation = prop.annotations.find {
+            val name = it.shortName.asString()
+            name == "PropertyBag" || name == "CompositeProperty"
+        }
+        if (bagAnnotation != null) {
+            addPropertyBagReference(classBuilder, prop.simpleName.asString(), aliasExpr, bagAnnotation)
+            return
         }
 
-        return classBuilder.build()
+        val propName = prop.simpleName.asString()
+        val propType = prop.type.resolve()
+        val propertyRefType = if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
+            ClassName("org.drivine.query.dsl", "StringPropertyReference")
+        } else {
+            ClassName("org.drivine.query.dsl", "PropertyReference")
+                .parameterizedBy(propType.toTypeName().copy(nullable = false))
+        }
+
+        classBuilder.addProperty(
+            PropertySpec.builder(propName, propertyRefType)
+                .initializer("$propertyRefType($aliasExpr, \"$propName\")")
+                .build()
+        )
+    }
+
+    /** Emits a `PropertyBagReference(alias, storedPrefix)` for a `@PropertyBag` / `@CompositeProperty`. */
+    private fun addPropertyBagReference(
+        classBuilder: TypeSpec.Builder,
+        propName: String,
+        aliasExpr: String,
+        bagAnnotation: KSAnnotation,
+    ) {
+        val prefix = (bagAnnotation.arguments.find { it.name?.asString() == "prefix" }?.value as? String) ?: ""
+        val delimiter = (bagAnnotation.arguments.find { it.name?.asString() == "delimiter" }?.value as? String) ?: "."
+        val storedPrefix = "${prefix.ifEmpty { propName }}$delimiter"
+        val bagRefType = ClassName("org.drivine.query.dsl", "PropertyBagReference")
+        classBuilder.addProperty(
+            PropertySpec.builder(propName, bagRefType)
+                .initializer("%T($aliasExpr, \"$storedPrefix\")", bagRefType)
+                .build()
+        )
     }
 
     private fun generateQueryDslClass(graphViewClass: KSClassDeclaration, viewStructure: List<ViewProperty>): TypeSpec {

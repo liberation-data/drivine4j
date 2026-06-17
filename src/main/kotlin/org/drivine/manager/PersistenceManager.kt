@@ -57,6 +57,19 @@ interface PersistenceManager {
     fun execute(spec: QuerySpecification<*>)
 
     /**
+     * Executes a list of statements **atomically** — all succeed or none do. When already inside a
+     * transaction the statements join it; otherwise they run together in a single transaction on one
+     * connection (fewer round trips than N separate [execute] calls). Used by batch operations such as
+     * [GraphObjectManager.saveAll].
+     *
+     * The default loops [execute] (no extra atomicity — a fallback for impls that don't override);
+     * the real managers override to provide the single-transaction guarantee.
+     */
+    fun executeBatch(specs: List<QuerySpecification<*>>) {
+        specs.forEach { execute(it) }
+    }
+
+    /**
      * Queries for a single result according to the supplied specification. Expects exactly one result or throws.
      * @param spec
      * @throws DrivineError
