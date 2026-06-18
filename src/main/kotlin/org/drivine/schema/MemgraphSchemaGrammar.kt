@@ -94,7 +94,7 @@ class MemgraphSchemaGrammar(
     }
 
     private fun parseVectorIndexRow(map: Map<*, *>): SchemaItemInfo? {
-        val label = map["label"] as? String ?: return null
+        val label = (map["label"] as? String)?.let(::normalizeLabel) ?: return null
         val property = map["property"] as? String ?: return null
         return SchemaItemInfo(
             kind = SchemaItemKind.VECTOR_INDEX,
@@ -109,9 +109,11 @@ class MemgraphSchemaGrammar(
     private fun parseLabelPropertyIndexRow(row: List<*>): SchemaItemInfo? {
         if (row.size < 3) return null
         val indexType = (row[0] as? String)?.lowercase() ?: return null
-        // "label+property" rows are range indexes; "label" rows (label-only) and others are not managed
-        if (!indexType.startsWith("label+prop")) return null
-        val label = row[1] as? String ?: return null
+        // "label+property" rows are range indexes; "label" rows (label-only) are not managed, and
+        // "label+property_vector" (Memgraph 3.11+ surfaces a vector index's backing here) is owned by
+        // the vector-introspection path, not range — exclude it so it isn't read as a phantom range index.
+        if (!indexType.startsWith("label+prop") || indexType.contains("vector")) return null
+        val label = (row[1] as? String)?.let(::normalizeLabel) ?: return null
         val properties = when (val property = row[2]) {
             is String -> listOf(property)
             is List<*> -> property.filterIsInstance<String>()
@@ -136,7 +138,7 @@ class MemgraphSchemaGrammar(
         val cols = row as? List<*> ?: return@mapNotNull null
         if (cols.size < 3) return@mapNotNull null
         if ((cols[0] as? String)?.lowercase() != "unique") return@mapNotNull null
-        val label = cols[1] as? String ?: return@mapNotNull null
+        val label = (cols[1] as? String)?.let(::normalizeLabel) ?: return@mapNotNull null
         val properties = when (val property = cols[2]) {
             is String -> listOf(property)
             is List<*> -> property.filterIsInstance<String>()
@@ -162,6 +164,14 @@ class MemgraphSchemaGrammar(
     }
 
     // ----- Helpers -----
+
+    /**
+     * Strips a leading `:` from an introspected label. Memgraph 3.11+ returns labels colon-prefixed
+     * (`:Proposition`) from `SHOW INDEX INFO` / `vector_search.show_index_info()` / `SHOW CONSTRAINT
+     * INFO`, where earlier versions returned them bare (`Proposition`). Without this, identity matching
+     * against a spec's bare label fails and every `ensure` re-creates instead of matching.
+     */
+    private fun normalizeLabel(raw: String): String = raw.removePrefix(":")
 
     private fun defaultVectorName(item: SchemaItemInfo): String =
         "${item.label}_${item.properties.first()}_vector"

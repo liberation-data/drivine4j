@@ -138,4 +138,38 @@ class MemgraphSchemaGrammarTest {
         assertEquals(listOf("sessionId"), items[0].properties)
         assertEquals(listOf("tenantId", "userId"), items[1].properties)
     }
+
+    // ----- Memgraph 3.11+ introspection shape -----
+
+    @Test
+    fun `strips the leading colon Memgraph 3-11 prefixes onto introspected labels`() {
+        // 3.11 returns labels colon-prefixed (`:Proposition`) from every introspection surface; earlier
+        // versions returned them bare. Without normalization, identity matching against a spec's bare
+        // label fails and every ensure() re-creates instead of matching.
+        val vector = grammar.parseIndexRows(
+            listOf(mapOf("index_name" to "i", "label" to ":Proposition", "property" to "embedding", "dimension" to 768L, "metric" to "cos"))
+        ).single()
+        assertEquals("Proposition", vector.label)
+
+        val range = grammar.parseIndexRows(listOf(listOf("label+property", ":Proposition", "contextId", 0L))).single()
+        assertEquals("Proposition", range.label)
+
+        val constraint = grammar.parseConstraintRows(listOf(listOf("unique", ":ChatSession", "sessionId"))).single()
+        assertEquals("ChatSession", constraint.label)
+    }
+
+    @Test
+    fun `ignores the label+property_vector backing row that 3-11 surfaces in SHOW INDEX INFO`() {
+        // A vector index's backing now appears in SHOW INDEX INFO as `label+property_vector`; it is owned
+        // by the vector-introspection path, so the range parser must not read it as a phantom range index.
+        val items = grammar.parseIndexRows(
+            listOf(
+                listOf("label+property_vector", ":Proposition", "embedding", 0L), // vector backing — skip
+                listOf("label+property", ":Proposition", "contextId", 0L),        // real range index — keep
+            )
+        )
+        assertEquals(1, items.size)
+        assertEquals(SchemaItemKind.RANGE_INDEX, items[0].kind)
+        assertEquals(listOf("contextId"), items[0].properties)
+    }
 }

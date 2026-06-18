@@ -22,8 +22,12 @@ data class PropositionNode(
     val level: Int,
     @VectorIndex(similarity = SimilarityFunction.COSINE)
     val embedding: List<Float>? = null,
-    /** Source chunk ids this proposition is grounded in — a list-valued property, for `hasItem`. */
-    val grounding: List<String> = emptyList(),
+    /**
+     * Source chunk ids this proposition is grounded in — a list-valued property, for `hasItem`.
+     * Nullable because drivine's deserialization fills a missing node property with null rather than
+     * the Kotlin default, and most fixtures' seeds don't set `grounding`.
+     */
+    val grounding: List<String>? = null,
 )
 
 @NodeFragment(labels = ["Mention"])
