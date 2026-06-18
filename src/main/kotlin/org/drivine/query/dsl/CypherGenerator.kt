@@ -63,6 +63,11 @@ object CypherGenerator {
                     paramIndex += countParameters(condition.conditions)
                     result
                 }
+                is WhereCondition.ListMembershipCondition -> {
+                    val result = buildListMembershipCondition(condition, paramIndex)
+                    paramIndex++
+                    result
+                }
             }
         }
 
@@ -146,6 +151,10 @@ object CypherGenerator {
                     // DON'T group conditions within OR - they need to stay separate
                     // so buildOrCondition can generate separate EXISTS clauses
                     // Each condition will be processed independently by buildOrCondition
+                    grouped.add(condition)
+                }
+                is WhereCondition.ListMembershipCondition -> {
+                    // A root list-property predicate (`$value IN root.listProp`); keep it in place.
                     grouped.add(condition)
                 }
             }
@@ -260,6 +269,11 @@ object CypherGenerator {
                         // Recursively extract bindings from OR conditions
                         extractRecursive(condition.conditions)
                     }
+                    is WhereCondition.ListMembershipCondition -> {
+                        val paramName = generateParamName(condition.propertyPath, paramIndex)
+                        bindings[paramName] = convertToNeo4jValue(condition.value)
+                        paramIndex++
+                    }
                 }
             }
         }
@@ -298,6 +312,20 @@ object CypherGenerator {
                 "$lhs ${condition.operator.cypherOperator} \$$paramName"
             }
         }
+    }
+
+    /**
+     * Builds a list-membership condition: `$param IN <alias>.<property>`. The mirror of the `IN`
+     * [PropertyCondition] (whose property is on the left); here the bound caller value is on the left
+     * and the list-valued property on the right. Uses the same path/backtick and parameter-name logic
+     * as the other property predicates, so it composes and binds identically — and in the vector path's
+     * projected-collection mode the root is a map, so `root.listProp` is plain map access (no pattern,
+     * no FalkorDB vecf32 quirk).
+     */
+    private fun buildListMembershipCondition(condition: WhereCondition.ListMembershipCondition, index: Int): String {
+        val rhs = renderPropertyPath(condition.propertyPath)
+        val paramName = generateParamName(condition.propertyPath, index)
+        return "\$$paramName IN $rhs"
     }
 
     /**
@@ -456,6 +484,10 @@ object CypherGenerator {
                         paramIndex += countParameters(targetCondition.conditions)
                         result
                     }
+                    is WhereCondition.ListMembershipCondition -> throw UnsupportedOperationException(
+                        "hasItem (list-membership) is not supported inside a relationship any{}/none{} block; " +
+                        "use it as a top-level root predicate."
+                    )
                 }
             }
             " WHERE $whereClauses"
@@ -719,6 +751,11 @@ object CypherGenerator {
                     paramIndex += countParameters(subCondition.conditions)
                     result
                 }
+                is WhereCondition.ListMembershipCondition -> {
+                    val result = buildListMembershipCondition(subCondition, paramIndex)
+                    paramIndex++
+                    result
+                }
             }
         }
         return "($orClauses)"
@@ -735,6 +772,7 @@ object CypherGenerator {
                 is WhereCondition.RelationshipCondition -> condition.targetConditions.size
                 is WhereCondition.LabelCondition -> 0  // Label conditions don't have parameters
                 is WhereCondition.OrCondition -> countParameters(condition.conditions)
+                is WhereCondition.ListMembershipCondition -> 1
             }
         }
     }

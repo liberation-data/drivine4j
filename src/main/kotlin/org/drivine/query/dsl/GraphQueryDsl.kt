@@ -356,6 +356,16 @@ sealed class WhereCondition {
     data class OrCondition(
         val conditions: List<WhereCondition>
     ) : WhereCondition()
+
+    /**
+     * Membership of a caller value in a **list-valued** node property — the mirror of `inList`
+     * (which is property IN caller-list). `proposition.grounding hasItem "chunk-1"` renders as
+     * `$param IN proposition.grounding`. Composes (AND-ed) with every other condition.
+     */
+    data class ListMembershipCondition(
+        val propertyPath: String,  // e.g., "proposition.grounding"
+        val value: Any?
+    ) : WhereCondition()
 }
 
 /**

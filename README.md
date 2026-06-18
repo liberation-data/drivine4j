@@ -705,6 +705,24 @@ FalkorDB — with `none{}` wrapping it in `NOT (…)`. `any{}` is the explicit f
 `mentions.resolvedId eq id` shorthand; prefer it for `none`, for correlated multi-condition blocks,
 or for clarity. (Backends without subquery support throw, per the grammar default.)
 
+#### List-Valued Properties (`hasItem`)
+
+Filter on a caller value being contained in a **list-valued node property** — the mirror of `inList`
+(`inList` is *property in caller-list*; `hasItem` is *caller-value in list-property*):
+
+```kotlin
+// propositions whose `grounding: List<String>` contains this chunk id
+graphObjectManager.loadAll<PropositionView> {
+    where { proposition.grounding hasItem "chunk-1" }
+}
+// -> WHERE 'chunk-1' IN proposition.grounding
+```
+
+Renders as portable openCypher (`$value IN node.listProp`) on Neo4j, FalkorDB, and Memgraph, AND-s
+with any other predicate, and works inside `loadNearest { where { } }`. (Named `hasItem` rather than
+`contains` because Kotlin reserves `operator fun contains` for the `in` operator and requires it to
+return `Boolean`, while the DSL operators register by side-effect.)
+
 #### Ordering
 
 ```kotlin
@@ -846,7 +864,8 @@ The `@SortedBy` annotation:
 - `gte` - greater than or equal (>=)
 - `lt` - less than (<)
 - `lte` - less than or equal (<=)
-- `in` - IN operator
+- `in` / `inList` - IN operator: a property value is in a caller list (`property IN $list`)
+- `hasItem` - list membership: a caller value is in a **list-valued** property (`$value IN node.listProp`) — the mirror of `inList`
 
 **String Operations:**
 - `contains` - CONTAINS
@@ -890,6 +909,23 @@ val updated = person.copy(employmentHistory = emptyList())
 
 graphObjectManager.save(updated, CascadeType.NONE)
 ```
+
+#### Batch Save (`saveAll`)
+
+Persist a collection in **one atomic round-trip group**, with `save`'s per-item semantics unchanged
+(cascade, dirty tracking, MERGE identity). Within an ambient `@Transactional` the statements join it;
+otherwise they run together in a single transaction — a failure on any item rolls the whole call back.
+
+```kotlin
+val saved = graphObjectManager.saveAll(views, CascadeType.DELETE_ORPHAN)
+```
+
+Homogeneous root upserts collapse into chunked `UNWIND … MERGE … SET n += row.props` statements
+(sub-linear round trips); relationship/cascade statements stay per-item. Heterogeneous collections are
+grouped by runtime class; the returned list preserves input order. Roots with a `@PropertyBag` fall
+back to the per-item path, and the batched root upsert writes all current non-null root properties
+(it does not null-clear a root property — use single `save` for that). See
+[docs/batch-saveall-0.0.55.md](docs/batch-saveall-0.0.55.md).
 
 ### Deleting Data
 

@@ -22,6 +22,8 @@ data class PropositionNode(
     val level: Int,
     @VectorIndex(similarity = SimilarityFunction.COSINE)
     val embedding: List<Float>? = null,
+    /** Source chunk ids this proposition is grounded in — a list-valued property, for `hasItem`. */
+    val grounding: List<String> = emptyList(),
 )
 
 @NodeFragment(labels = ["Mention"])

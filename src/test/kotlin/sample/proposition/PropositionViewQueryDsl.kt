@@ -17,6 +17,7 @@ class PropositionNodeProperties(override val nodeAlias: String = "proposition") 
     val contextId = StringPropertyReference(nodeAlias, "contextId")
     val status = StringPropertyReference(nodeAlias, "status")
     val level = PropertyReference<Int>(nodeAlias, "level")
+    val grounding = PropertyReference<List<String>>(nodeAlias, "grounding")
 }
 
 class MentionProperties(override val nodeAlias: String) : NodeReference {

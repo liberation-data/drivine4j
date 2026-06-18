@@ -396,6 +396,32 @@ open class PropertyReference<T>(
             value = value
         )
     }
+
+    // hasItem is intentionally an extension on PropertyReference<List<E>> (below), not a member —
+    // it only type-checks when the property itself is list-valued.
+}
+
+/**
+ * List-membership condition with context parameter (Kotlin DSL): a caller [value] contained in a
+ * **list-valued** node property. The mirror of [PropertyReference.inList] (property IN caller list);
+ * here it is caller value IN list-property.
+ *
+ * ```kotlin
+ * where { proposition.grounding hasItem "chunk-1" }   // -> 'chunk-1' IN proposition.grounding
+ * ```
+ *
+ * Named `hasItem` rather than `contains` on purpose: Kotlin reserves `operator fun contains` for the
+ * `in` operator and requires it to return `Boolean`, whereas the DSL operators register by
+ * side-effect and return `Unit`. Keeping them distinct avoids that collision.
+ */
+context(builder: WhereBuilder<*>)
+infix fun <E> PropertyReference<List<E>>.hasItem(value: E) {
+    builder.conditions.add(
+        WhereCondition.ListMembershipCondition(
+            propertyPath = "$alias.$propertyName",
+            value = value
+        )
+    )
 }
 
 /**
