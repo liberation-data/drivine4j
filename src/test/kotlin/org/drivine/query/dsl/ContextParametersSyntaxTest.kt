@@ -2,6 +2,7 @@ package org.drivine.query.dsl
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * Tests for context parameters syntax - the cleanest DSL syntax powered by Kotlin 2.2+
@@ -185,6 +186,58 @@ class ContextParametersSyntaxTest {
 
         assertEquals(2, spec.conditions.size)
         assertEquals(1, spec.orders.size)
+    }
+
+    @Test
+    fun `anyOf mixing IS NULL with a comparison keeps Cypher params and bindings aligned`() {
+        val spec = GraphQuerySpec(TestQuery())
+
+        spec.where {
+            anyOf {
+                query.status.isNull()
+                query.age gte 18
+            }
+            query.name eq "Alice" // a value-bearing predicate after the OR
+        }
+
+        val where = CypherGenerator.buildWhereClause(spec.conditions).whereClause!!
+        val bindings = CypherGenerator.extractBindings(spec.conditions)
+
+        // Every $param referenced in the rendered WHERE must have a value in the bindings map.
+        // The IS NULL branch renders no $param, so it must not consume a parameter index. Before the
+        // fix it did: `age` rendered as $param_test_age_2 while its value was bound at param_test_age_1,
+        // and the trailing `name` predicate was shifted too — Neo4j then rejected the query with
+        // "Expected parameter(s): ...".
+        val referenced = Regex("""\$(param_\w+)""").findAll(where).map { it.groupValues[1] }.toSet()
+        assertTrue(referenced.isNotEmpty(), "expected parameters in: $where")
+        referenced.forEach { name ->
+            assertTrue(bindings.containsKey(name), "param \$$name referenced in `$where` but absent from bindings $bindings")
+        }
+        // IS NULL binds nothing; only the two comparisons (age, name) contribute parameters.
+        assertEquals(2, bindings.size, bindings.toString())
+    }
+
+    @Test
+    fun `IS NULL inside anyOf contributes no parameter to a following OR predicate`() {
+        val spec = GraphQuerySpec(TestQuery())
+
+        // Two value-bearing predicates straddling an IS NULL, all inside one OR.
+        spec.where {
+            anyOf {
+                query.age gt 16
+                query.status.isNull()
+                query.age lt 99
+            }
+        }
+
+        val where = CypherGenerator.buildWhereClause(spec.conditions).whereClause!!
+        val bindings = CypherGenerator.extractBindings(spec.conditions)
+
+        val referenced = Regex("""\$(param_\w+)""").findAll(where).map { it.groupValues[1] }.toSet()
+        referenced.forEach { name ->
+            assertTrue(bindings.containsKey(name), "param \$$name referenced in `$where` but absent from bindings $bindings")
+        }
+        assertEquals(2, bindings.size, bindings.toString())
     }
 
     // Test helper classes
