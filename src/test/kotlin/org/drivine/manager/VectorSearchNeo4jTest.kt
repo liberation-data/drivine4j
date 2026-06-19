@@ -38,7 +38,7 @@ class VectorSearchNeo4jTest {
 
         @Container
         @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:5.26.1-community"))
+        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
             .apply { withAdminPassword(PASSWORD) }
 
         private lateinit var provider: Neo4jConnectionProvider
