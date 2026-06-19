@@ -715,6 +715,12 @@ object CypherGenerator {
                     val alias = subCondition.propertyPath.substringBefore(".")
                     val baseAlias = if (alias.contains("_")) alias.substringBefore("_") else alias
 
+                    // IS NULL / IS NOT NULL render no $param, so they must not consume a parameter
+                    // index here — the same rule buildWhereClause and extractBindings already apply.
+                    // Incrementing for them desyncs the rendered Cypher from the extracted bindings.
+                    val consumesParam = subCondition.operator != ComparisonOperator.IS_NULL &&
+                        subCondition.operator != ComparisonOperator.IS_NOT_NULL
+
                     if (baseAlias in relationshipNames) {
                         // Convert to RelationshipCondition on the fly
                         val relCondition = WhereCondition.RelationshipCondition(
@@ -722,11 +728,11 @@ object CypherGenerator {
                             targetConditions = listOf(subCondition)
                         )
                         val result = buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                        paramIndex++
+                        if (consumesParam) paramIndex++
                         result
                     } else {
                         val result = buildPropertyCondition(subCondition, paramIndex)
-                        paramIndex++
+                        if (consumesParam) paramIndex++
                         result
                     }
                 }
@@ -768,7 +774,11 @@ object CypherGenerator {
     private fun countParameters(conditions: List<WhereCondition>): Int {
         return conditions.sumOf { condition ->
             when (condition) {
-                is WhereCondition.PropertyCondition -> 1
+                is WhereCondition.PropertyCondition ->
+                    // IS NULL / IS NOT NULL bind no value, so they add no parameter to the OR's span.
+                    if (condition.operator == ComparisonOperator.IS_NULL ||
+                        condition.operator == ComparisonOperator.IS_NOT_NULL
+                    ) 0 else 1
                 is WhereCondition.RelationshipCondition -> condition.targetConditions.size
                 is WhereCondition.LabelCondition -> 0  // Label conditions don't have parameters
                 is WhereCondition.OrCondition -> countParameters(condition.conditions)
