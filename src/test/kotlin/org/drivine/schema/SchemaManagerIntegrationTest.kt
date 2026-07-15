@@ -162,4 +162,128 @@ class SchemaManagerIntegrationTest {
         schemaManager(emptyList()).enforce()
         assertTrue(true)
     }
+
+    // ----- Marker singleton guard: the concurrent-startup race -----
+
+    private val markerConstraint = UniquenessConstraintSpec(
+        SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY
+    )
+
+    private fun markerCount(): Long = manager.getOne(
+        QuerySpecification
+            .withStatement("MATCH (m:`${SchemaVersionStore.LABEL}`) RETURN count(m)")
+            .transform(Long::class.java)
+    )
+
+    /** Recreates the pre-constraint failure mode: two processes' MERGEs both created a marker. */
+    private fun plantDuplicateMarkers() {
+        manager.constraints.drop(markerConstraint)
+        SchemaVersionStore(manager).clear()
+        manager.execute(
+            QuerySpecification.withStatement(
+                "CREATE (:`${SchemaVersionStore.LABEL}` {scope: 'schema', version: 'older', appliedAt: 1})"
+            )
+        )
+        manager.execute(
+            QuerySpecification.withStatement(
+                "CREATE (:`${SchemaVersionStore.LABEL}` {scope: 'schema', version: 'newer', appliedAt: 2})"
+            )
+        )
+    }
+
+    @Test
+    @Order(7)
+    fun `storedVersion tolerates duplicate markers, preferring the most recently applied`() {
+        plantDuplicateMarkers()
+        assertEquals("newer", SchemaVersionStore(manager).storedVersion())
+    }
+
+    @Test
+    @Order(8)
+    fun `enforce repairs duplicate markers and installs the singleton constraint`() {
+        plantDuplicateMarkers()
+        val catalog = SchemaCatalog.of(RangeIndexSpec("Doc", "slug"))
+            .forDatabase("neo")
+            .withVersion("model-c")
+
+        schemaManager(listOf(catalog)).enforce() // must not throw despite the duplicates
+
+        assertEquals(1, markerCount())
+        assertEquals("model-c", SchemaVersionStore(manager).storedVersion())
+        assertNotNull(manager.constraints.find(markerConstraint))
+    }
+
+    @Test
+    @Order(9)
+    fun `concurrent record calls cannot create a second marker`() {
+        val store = SchemaVersionStore(manager)
+        store.clear()
+        store.ensureSingleton()
+
+        val threads = 8
+        val barrier = java.util.concurrent.CyclicBarrier(threads)
+        val errors = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        (1..threads).map { i ->
+            Thread {
+                barrier.await()
+                try {
+                    store.record("race-$i")
+                } catch (t: Throwable) {
+                    errors += t
+                }
+            }.apply { start() }
+        }.forEach { it.join() }
+
+        assertTrue(errors.isEmpty(), "record() should survive the create race: $errors")
+        assertEquals(1, markerCount())
+    }
+
+    @Test
+    @Order(10)
+    fun `ensureSingleton reclaims a manually created plain index on the marker key`() {
+        val store = SchemaVersionStore(manager)
+        store.clear()
+        manager.constraints.drop(markerConstraint)
+        // An emergency hand-fix: a plain index on the marker key. Neo4j refuses to create an
+        // equivalent-key uniqueness constraint while it exists.
+        manager.indexes.ensure(RangeIndexSpec(SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY))
+
+        store.ensureSingleton()
+
+        assertNotNull(manager.constraints.find(markerConstraint))
+        store.record("model-v3")
+        assertEquals("model-v3", store.storedVersion())
+    }
+
+    @Test
+    @Order(11)
+    fun `a manually created uniqueness constraint on the marker's version coexists with the singleton guard`() {
+        // An emergency hand-fix applied directly in prod: unique on version rather than on the
+        // MERGE key. Different property set → not the singleton constraint's identity; both live
+        // side by side and enforce must not fight it.
+        manager.execute(
+            QuerySpecification.withStatement(
+                "CREATE CONSTRAINT FOR (v:`${SchemaVersionStore.LABEL}`) REQUIRE v.version IS UNIQUE"
+            )
+        )
+        try {
+            val catalog = SchemaCatalog.of(RangeIndexSpec("Doc", "slug"))
+                .forDatabase("neo")
+                .withVersion("model-d")
+
+            schemaManager(listOf(catalog)).enforce() // must not throw
+            schemaManager(listOf(catalog)).enforce() // and stays idempotent
+
+            assertEquals(1, markerCount())
+            assertEquals("model-d", SchemaVersionStore(manager).storedVersion())
+            assertNotNull(manager.constraints.find(markerConstraint))
+            assertNotNull(
+                manager.constraints.find(
+                    UniquenessConstraintSpec(SchemaVersionStore.LABEL, "version")
+                )
+            )
+        } finally {
+            manager.constraints.drop(UniquenessConstraintSpec(SchemaVersionStore.LABEL, "version"))
+        }
+    }
 }

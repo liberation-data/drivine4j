@@ -83,7 +83,13 @@ class SchemaManager(
         val manager = persistenceManagerFactory.get(database, PersistenceManagerType.NON_TRANSACTIONAL)
         val versionStore = SchemaVersionStore(manager)
 
-        val storedVersion = effectiveVersion?.let { versionStore.storedVersion() }
+        val storedVersion = effectiveVersion?.let {
+            // Guard the marker's singleton invariant (dedupe + uniqueness constraint on the
+            // MERGE key) before reading or writing it — concurrent enforcing processes could
+            // otherwise each create a marker.
+            versionStore.ensureSingleton()
+            versionStore.storedVersion()
+        }
         // A version *change* (a prior value existed and now differs) forces a rebuild. A first-ever
         // value is adopted without recreating, so enabling versioning never nukes a healthy schema.
         val versionChanged = effectiveVersion != null && storedVersion != null && storedVersion != effectiveVersion

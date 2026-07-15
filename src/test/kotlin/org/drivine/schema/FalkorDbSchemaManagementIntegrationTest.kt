@@ -201,4 +201,36 @@ class FalkorDbSchemaManagementIntegrationTest {
         store.clear()
         assertNull(store.storedVersion())
     }
+
+    @Test
+    @Order(9)
+    fun `ensureSingleton repairs duplicate markers and constrains the marker key`() {
+        val store = SchemaVersionStore(manager)
+        store.clear()
+        // The pre-constraint race: two processes' MERGEs both created a marker
+        listOf("'older', appliedAt: 1", "'newer', appliedAt: 2").forEach {
+            manager.execute(
+                QuerySpecification.withStatement(
+                    "CREATE (:`${SchemaVersionStore.LABEL}` {scope: 'schema', version: $it})"
+                )
+            )
+        }
+
+        store.ensureSingleton()
+
+        val count = manager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (m:`${SchemaVersionStore.LABEL}`) RETURN count(m)")
+                .transform(Long::class.java)
+        )
+        assertEquals(1, count)
+        assertEquals("newer", store.storedVersion())
+        assertNotNull(
+            manager.constraints.find(
+                UniquenessConstraintSpec(SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY)
+            )
+        )
+        store.record("model-v2")
+        assertEquals("model-v2", store.storedVersion())
+    }
 }
