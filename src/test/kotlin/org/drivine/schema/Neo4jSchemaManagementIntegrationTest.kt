@@ -121,6 +121,45 @@ class Neo4jSchemaManagementIntegrationTest {
         assertTrue(compositeAgain is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $compositeAgain")
     }
 
+    // ----- Fulltext index lifecycle -----
+
+    @Test
+    fun `fulltext index - multi-property create, idempotent, named, analyzer drift`() {
+        val spec = FullTextIndexSpec("Article", listOf("title", "body"), analyzer = "english")
+
+        val created = manager.indexes.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        val info = (created as EnsureResult.Created).info
+        assertEquals(SchemaItemKind.FULLTEXT_INDEX, info.kind)
+        assertEquals("Article_title_body_fulltext", info.name)
+        assertEquals(listOf("title", "body"), info.properties)
+        assertEquals("english", info.analyzer)
+
+        // Idempotent: same analyzer matches
+        val again = manager.indexes.ensure(spec)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+
+        // A different analyzer is drift (Neo4j reports the analyzer back, so it is observable)
+        val drifted = manager.indexes.ensure(
+            FullTextIndexSpec("Article", listOf("title", "body"), analyzer = "standard")
+        )
+        assertTrue(drifted is EnsureResult.Drift, "expected Drift, got $drifted")
+
+        // A spec that declares no analyzer never drifts against whatever exists
+        val analyzerAgnostic = manager.indexes.ensure(FullTextIndexSpec("Article", listOf("title", "body")))
+        assertTrue(analyzerAgnostic is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $analyzerAgnostic")
+
+        // Recreate switches the analyzer
+        val recreated = manager.indexes.recreate(
+            FullTextIndexSpec("Article", listOf("title", "body"), analyzer = "standard")
+        )
+        assertEquals("standard", recreated.current.analyzer)
+
+        // Drop
+        assertTrue(manager.indexes.drop(FullTextIndexSpec("Article", listOf("title", "body"))))
+        assertNull(manager.indexes.find(FullTextIndexSpec("Article", listOf("title", "body"))))
+    }
+
     // ----- Uniqueness constraint lifecycle -----
 
     @Test

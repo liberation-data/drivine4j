@@ -65,6 +65,96 @@ class FalkorDbSchemaGrammarTest {
         assertTrue(statements.isEmpty())
     }
 
+    // ----- DDL: fulltext -----
+
+    @Test
+    fun `fulltext index DDL is one procedure call per property`() {
+        val statements = grammar.createIndex(
+            FullTextIndexSpec("Chunk", listOf("title", "body"), name = "ignored_name")
+        )
+
+        assertEquals(
+            listOf(
+                SchemaStatement.Cypher("CALL db.idx.fulltext.createNodeIndex('Chunk', 'title')"),
+                SchemaStatement.Cypher("CALL db.idx.fulltext.createNodeIndex('Chunk', 'body')"),
+            ),
+            statements
+        )
+    }
+
+    @Test
+    fun `fulltext creation only emits properties missing from the existing label coverage`() {
+        // FalkorDB rejects re-indexing an already-fulltext property, exactly as for range
+        val existing = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title"))
+
+        val statements = grammar.createIndex(FullTextIndexSpec("Chunk", listOf("title", "body")), existing)
+
+        assertEquals(
+            listOf(SchemaStatement.Cypher("CALL db.idx.fulltext.createNodeIndex('Chunk', 'body')")),
+            statements
+        )
+    }
+
+    @Test
+    fun `fulltext creation emits nothing when all properties are already covered`() {
+        val existing = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title", "body"))
+
+        assertTrue(grammar.createIndex(FullTextIndexSpec("Chunk", "title"), existing).isEmpty())
+    }
+
+    @Test
+    fun `fulltext drop emits one statement per property`() {
+        val statements = grammar.dropIndex(
+            SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title", "body"))
+        )
+
+        assertEquals(
+            listOf(
+                SchemaStatement.Cypher("DROP FULLTEXT INDEX FOR (n:Chunk) ON (n.title)"),
+                SchemaStatement.Cypher("DROP FULLTEXT INDEX FOR (n:Chunk) ON (n.body)"),
+            ),
+            statements
+        )
+    }
+
+    @Test
+    fun `one db indexes row reassembles all FULLTEXT properties into a single item`() {
+        // The fiddly case: [title, body] was created by two calls but must read back as ONE item,
+        // or every ensure() would report drift. A property may carry both RANGE and FULLTEXT.
+        val rows = listOf(
+            mapOf(
+                "label" to "Chunk",
+                "properties" to listOf("age", "title", "body"),
+                "types" to mapOf(
+                    "age" to listOf("RANGE", "FULLTEXT"),
+                    "title" to listOf("FULLTEXT"),
+                    "body" to listOf("FULLTEXT"),
+                ),
+                "options" to emptyMap<String, Any?>(),
+                "entitytype" to "NODE",
+            )
+        )
+
+        val items = grammar.parseIndexRows(rows)
+
+        val fulltext = items.single { it.kind == SchemaItemKind.FULLTEXT_INDEX }
+        assertEquals("Chunk", fulltext.label)
+        assertEquals(setOf("age", "title", "body"), fulltext.properties.toSet())
+        assertNull(fulltext.name) // FalkorDB indexes are unnamed
+
+        // The range fan-out is independent and still sees only the RANGE-typed property
+        val range = items.single { it.kind == SchemaItemKind.RANGE_INDEX }
+        assertEquals(listOf("age"), range.properties)
+    }
+
+    @Test
+    fun `fulltext identity uses coverage, like range`() {
+        val existing = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title", "body", "summary"))
+
+        assertTrue(grammar.matchesIdentity(existing, FullTextIndexSpec("Chunk", listOf("title", "body"))))
+        assertFalse(grammar.matchesIdentity(existing, FullTextIndexSpec("Chunk", listOf("title", "missing"))))
+    }
+
     @Test
     fun `index drops emit one statement per property`() {
         val statements = grammar.dropIndex(

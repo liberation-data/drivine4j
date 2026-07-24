@@ -53,6 +53,20 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                 )
             }
         }
+
+        // Fulltext is a procedure call, one per property. FalkorDB rejects re-indexing an
+        // already-fulltext property ("Attribute 'x' is already indexed"), so — exactly like the
+        // range path — only the properties missing from [existing]'s fulltext coverage are emitted.
+        is FullTextIndexSpec -> {
+            val alreadyIndexed = existing?.properties?.toSet() ?: emptySet()
+            spec.properties
+                .filterNot { it in alreadyIndexed }
+                .map { property ->
+                    SchemaStatement.Cypher(
+                        "CALL db.idx.fulltext.createNodeIndex('${spec.label}', '$property')"
+                    )
+                }
+        }
     }
 
     /**
@@ -62,6 +76,10 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = when (item.kind) {
         SchemaItemKind.VECTOR_INDEX -> item.properties.map {
             SchemaStatement.Cypher("DROP VECTOR INDEX FOR (n:${item.label}) ON (n.$it)")
+        }
+
+        SchemaItemKind.FULLTEXT_INDEX -> item.properties.map {
+            SchemaStatement.Cypher("DROP FULLTEXT INDEX FOR (n:${item.label}) ON (n.$it)")
         }
 
         else -> item.properties.map {
@@ -123,6 +141,21 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                 kind = SchemaItemKind.RANGE_INDEX,
                 label = label,
                 properties = rangeProperties,
+                name = null, // FalkorDB indexes are unnamed
+            )
+        }
+
+        // Fulltext, like range, is one-index-per-label: reassemble every FULLTEXT-typed property of
+        // the label into a single item, so a spec covering [title, body] — created as two procedure
+        // calls — matches one introspected item instead of reporting drift forever.
+        val fullTextProperties = types.entries
+            .filter { (_, propTypes) -> hasType(propTypes, "FULLTEXT") }
+            .mapNotNull { it.key as? String }
+        if (fullTextProperties.isNotEmpty()) {
+            items += SchemaItemInfo(
+                kind = SchemaItemKind.FULLTEXT_INDEX,
+                label = label,
+                properties = fullTextProperties,
                 name = null, // FalkorDB indexes are unnamed
             )
         }
@@ -201,7 +234,10 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     override fun matchesIdentity(existing: SchemaItemInfo, spec: SchemaItemSpec): Boolean {
         if (existing.kind != spec.kind || existing.label != spec.label) return false
         return when (spec) {
+            // Both range and fulltext are per-label on FalkorDB: satisfied when the label's index
+            // covers all the spec's properties (coverage), not exact property-set equality.
             is RangeIndexSpec -> existing.properties.containsAll(spec.properties)
+            is FullTextIndexSpec -> existing.properties.containsAll(spec.properties)
             else -> existing.properties.toSet() == spec.properties.toSet()
         }
     }

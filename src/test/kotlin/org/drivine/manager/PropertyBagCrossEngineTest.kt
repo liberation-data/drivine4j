@@ -23,6 +23,7 @@ import sample.propertybag.BaggedNode
 import sample.propertybag.BaggedView
 import sample.propertybag.BaggedViewQueryDsl
 import sample.propertybag.TaggedNode
+import sample.propertybag.TypedBagNode
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
@@ -75,6 +76,42 @@ private fun verify(gom: GraphObjectManager) {
         where { query.node.metadata.key("source") eq "nope" }
     }
     assertTrue(unmatched.isEmpty(), "no doc has source=nope")
+
+    // ----- Typed bags round-trip to their DECLARED value type, not the driver's widened one -----
+    verifyTypedBags(gom)
+}
+
+/**
+ * A bag declared with a concrete value type (`Map<String, Int>`, `Map<String, Instant>`, …) reads
+ * back as that type: Jackson resolves the field's declared generic when converting the reassembled
+ * map. This is what narrows the documented read asymmetry to `Map<String, Any?>` alone.
+ */
+private fun verifyTypedBags(gom: GraphObjectManager) {
+    val moment = java.time.Instant.parse("2026-07-24T10:15:30Z")
+    gom.save(
+        TypedBagNode(
+            id = "t1",
+            scores = mapOf("relevance" to 3, "rank" to 42),
+            ratios = mapOf("confidence" to 0.75),
+            labels = mapOf("source" to "wiki"),
+            flags = mapOf("published" to true),
+            timestamps = mapOf("indexedAt" to moment),
+        )
+    )
+    val loaded = gom.load("t1", TypedBagNode::class.java)!!
+
+    // Int stays Int — the Int→Long widening is NOT observable through a typed bag
+    assertEquals(3, loaded.scores["relevance"])
+    assertEquals(42, loaded.scores["rank"])
+    assertEquals(
+        Int::class.javaObjectType, loaded.scores["relevance"]!!::class.javaObjectType,
+        "typed bag value should be Int, got ${loaded.scores["relevance"]!!::class.java}"
+    )
+
+    assertEquals(0.75, loaded.ratios["confidence"])
+    assertEquals("wiki", loaded.labels["source"])
+    assertEquals(true, loaded.flags["published"])
+    assertEquals(moment, loaded.timestamps["indexedAt"])
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {

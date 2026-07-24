@@ -89,6 +89,52 @@ class SchemaCatalogTest {
     }
 
     @Test
+    fun `named sets the owner and survives target and version copies`() {
+        val base = SchemaCatalog.of(RangeIndexSpec("Chunk", "slug"))
+        assertNull(base.name)
+
+        val owned = base.named("rag")
+        assertEquals("rag", owned.name)
+
+        // name carries through the copy-returning builders
+        assertEquals("rag", owned.forDatabase("neo").name)
+        assertEquals("rag", owned.withVersion("v1").name)
+        assertEquals("rag", owned.forDatabases("a", "b").name)
+        assertEquals("rag", owned.forAllDatabases().name)
+
+        // replace / last-wins, and back to anonymous
+        assertEquals("app", owned.named("app").name)
+        assertNull(owned.named(null).name)
+    }
+
+    @Test
+    fun `merging catalogs with different owners fails fast`() {
+        val app = SchemaCatalog.of(RangeIndexSpec("Chunk", "slug")).named("app")
+        val rag = SchemaCatalog.of(RangeIndexSpec("Other", "id")).named("rag")
+
+        val exception = assertThrows<DrivineException> { app + rag }
+        assertTrue(exception.message!!.contains("different owners"))
+    }
+
+    @Test
+    fun `inventoryKey is stable and distinguishes kind, properties, and name`() {
+        assertEquals(
+            "UNIQUENESS_CONSTRAINT:Chunk:id:Chunk_id_unique",
+            UniquenessConstraintSpec("Chunk", "id").inventoryKey,
+        )
+        // an explicit name changes the key (a rename is a distinct inventory entry)
+        assertEquals(
+            "RANGE_INDEX:Chunk:slug:custom_name",
+            RangeIndexSpec("Chunk", "slug", name = "custom_name").inventoryKey,
+        )
+        // identical declarations produce identical keys (co-ownership detection relies on this)
+        assertEquals(
+            VectorIndexSpec("Doc", "embedding", 768).inventoryKey,
+            VectorIndexSpec("Doc", "embedding", 768).inventoryKey,
+        )
+    }
+
+    @Test
     fun `merge combines version tokens of its parts`() {
         val a = SchemaCatalog.of(RangeIndexSpec("Proposition", "contextId")).withVersion("v1")
         val b = SchemaCatalog.of(RangeIndexSpec("Mention", "id")).withVersion("v2")

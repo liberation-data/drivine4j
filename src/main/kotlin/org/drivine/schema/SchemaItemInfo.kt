@@ -10,6 +10,9 @@ package org.drivine.schema
  * @param name the item's name, or null on engines without named items (FalkorDB)
  * @param dimensions vector indexes only: dimensionality
  * @param similarity vector indexes only: similarity function (normalized from engine vocabulary)
+ * @param analyzer fulltext indexes only: the engine-reported analyzer, or null where the engine
+ *   does not surface one (FalkorDB, Memgraph). Null means "unobservable", not "default" — drift is
+ *   never reported against an analyzer the engine won't tell us about.
  * @param status engine-reported status where applicable (e.g. FalkorDB constraints:
  *   `OPERATIONAL` / `UNDER CONSTRUCTION` / `FAILED`)
  */
@@ -20,6 +23,7 @@ data class SchemaItemInfo(
     val name: String? = null,
     val dimensions: Int? = null,
     val similarity: SimilarityFunction? = null,
+    val analyzer: String? = null,
     val status: String? = null,
 ) {
 
@@ -37,6 +41,14 @@ data class SchemaItemInfo(
                 name = spec.name,
                 dimensions = spec.dimensions,
                 similarity = spec.similarity,
+            )
+
+            is FullTextIndexSpec -> SchemaItemInfo(
+                kind = spec.kind,
+                label = spec.label,
+                properties = spec.properties,
+                name = spec.name,
+                analyzer = spec.analyzer,
             )
 
             is RangeIndexSpec, is UniquenessConstraintSpec -> SchemaItemInfo(

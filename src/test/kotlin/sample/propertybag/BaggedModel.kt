@@ -34,6 +34,21 @@ data class BaggedView(
     val tags: List<TaggedNode> = emptyList(),
 )
 
+/**
+ * Typed property bags: the declared value type is what Jackson coerces to on read, so these come
+ * back as `Int` / `Double` / `Instant` rather than the driver's widened `Long` / `Double` / temporal.
+ * The `Map<String, Any?>` asymmetry ([BaggedNode.metadata]) applies only to untyped bags.
+ */
+@NodeFragment(labels = ["TypedBag"])
+data class TypedBagNode(
+    @NodeId val id: String,
+    @PropertyBag(prefix = "score") val scores: Map<String, Int> = emptyMap(),
+    @PropertyBag(prefix = "ratio") val ratios: Map<String, Double> = emptyMap(),
+    @PropertyBag(prefix = "label") val labels: Map<String, String> = emptyMap(),
+    @PropertyBag(prefix = "flag") val flags: Map<String, Boolean> = emptyMap(),
+    @PropertyBag(prefix = "at") val timestamps: Map<String, java.time.Instant> = emptyMap(),
+)
+
 /** Two non-overlapping bags on one fragment — supported. */
 @NodeFragment(labels = ["TwoBag"])
 data class TwoBagNode(

@@ -5,5 +5,6 @@ package org.drivine.schema
  *
  * @see VectorIndexSpec
  * @see RangeIndexSpec
+ * @see FullTextIndexSpec
  */
 sealed interface IndexSpec : SchemaItemSpec

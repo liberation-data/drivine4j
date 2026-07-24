@@ -6,5 +6,6 @@ package org.drivine.schema
 enum class SchemaItemKind {
     VECTOR_INDEX,
     RANGE_INDEX,
+    FULLTEXT_INDEX,
     UNIQUENESS_CONSTRAINT,
 }

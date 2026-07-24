@@ -31,4 +31,15 @@ sealed interface SchemaItemSpec {
         get() = name ?: defaultName()
 
     fun defaultName(): String
+
+    /**
+     * A stable, engine-independent identity for this item, used to record what a catalog owner
+     * applied (in the `_DrivineSchema` marker's inventory) and to detect co-ownership and orphans.
+     *
+     * Includes [effectiveName] so a rename is a distinct key — the old name shows up as an orphan
+     * against the marker rather than silently coexisting unattributed. Kept purely derived (no engine
+     * state) so the same declaration produces the same key on every run and every backend.
+     */
+    val inventoryKey: String
+        get() = "$kind:$label:${properties.joinToString(",")}:$effectiveName"
 }

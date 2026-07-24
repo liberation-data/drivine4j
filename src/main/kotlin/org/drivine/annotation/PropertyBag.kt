@@ -27,8 +27,21 @@ package org.drivine.annotation
  * Long, Double, Boolean, temporal, or arrays/lists thereof) — no nested maps/objects. A non-storable
  * value raises an `IllegalArgumentException` at save naming the offending key.
  *
- * **Read asymmetry:** a `Map<String, Any?>` reads back driver-mapped types, so an `Int` written comes
- * back as `Long`. Use a typed bag / converter (a follow-up) if exact types matter.
+ * **Declare a value type to keep it.** A bag declared with a concrete value type round-trips to that
+ * type — Jackson resolves the field's declared generic when the bag is reassembled on read:
+ *
+ * ```kotlin
+ * @PropertyBag val scores: Map<String, Int> = emptyMap()        // reads back Int, not Long
+ * @PropertyBag val indexedAt: Map<String, Instant> = emptyMap() // reads back Instant
+ * ```
+ *
+ * **Read asymmetry (untyped bags only, and permanent):** a `Map<String, Any?>` reads back
+ * driver-mapped types, so an `Int` written comes back as `Long` (and a `Float` as `Double`). This is
+ * inherent, not a pending gap: Neo4j, Memgraph, and FalkorDB each have exactly **one** integer type
+ * (64-bit) and one float type, so the declared width is lost at *write* time and nothing on the read
+ * side can recover it. An `Any?` declaration gives Jackson nothing to narrow to. Declare a typed bag
+ * (above) when exact width matters, or coerce at the call site (`(v as Number).toInt()`). No value is
+ * lost either way — only the declared width.
  *
  * @param prefix property-name prefix; empty (`""`) uses the field name.
  * @param delimiter separator between prefix and key (default `.`).

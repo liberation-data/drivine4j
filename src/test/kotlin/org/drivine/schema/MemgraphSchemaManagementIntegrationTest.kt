@@ -108,6 +108,35 @@ class MemgraphSchemaManagementIntegrationTest {
         assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
     }
 
+    // ----- Fulltext (text) index lifecycle -----
+
+    @Test
+    fun `fulltext index - named multi-property text index create, idempotent, drop`() {
+        val spec = FullTextIndexSpec("Article", listOf("title", "body"))
+
+        val created = manager.indexes.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+
+        val info = manager.indexes.find(spec)!!
+        assertEquals(SchemaItemKind.FULLTEXT_INDEX, info.kind)
+        assertEquals("Article_title_body_fulltext", info.name)
+        assertEquals(setOf("title", "body"), info.properties.toSet())
+        // Memgraph does not report an analyzer, so a spec's analyzer is never drift here
+        assertNull(info.analyzer)
+
+        val again = manager.indexes.ensure(spec)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+
+        // An analyzer on the spec is silently unverified (not drift) on Memgraph
+        val withAnalyzer = manager.indexes.ensure(
+            FullTextIndexSpec("Article", listOf("title", "body"), analyzer = "english")
+        )
+        assertTrue(withAnalyzer is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $withAnalyzer")
+
+        assertTrue(manager.indexes.drop(spec))
+        assertNull(manager.indexes.find(spec))
+    }
+
     // ----- Uniqueness constraint lifecycle -----
 
     @Test

@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.annotation.FullTextIndex
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.RangeIndex
 import org.drivine.annotation.Unique
@@ -51,6 +52,20 @@ internal object FragmentSchemaScanner {
             specs += RangeIndexSpec(label, annotation.properties.toList(), annotation.name.ifEmpty { null })
         }
 
+        fragmentClass.getAnnotationsByType(FullTextIndex::class.java).forEach { annotation ->
+            if (annotation.properties.isEmpty()) {
+                throw DrivineException(
+                    "Class-level @FullTextIndex on ${fragmentClass.simpleName} must declare properties"
+                )
+            }
+            specs += FullTextIndexSpec(
+                label,
+                annotation.properties.toList(),
+                annotation.name.ifEmpty { null },
+                annotation.analyzer.ifEmpty { null },
+            )
+        }
+
         fragmentClass.getAnnotationsByType(Unique::class.java).forEach { annotation ->
             if (annotation.properties.isEmpty()) {
                 throw DrivineException(
@@ -94,6 +109,16 @@ internal object FragmentSchemaScanner {
                     is RangeIndex -> {
                         requireNoProperties(annotation.properties, "@RangeIndex", fragmentClass, propertyName)
                         RangeIndexSpec(label, propertyName, annotation.name.ifEmpty { null })
+                    }
+
+                    is FullTextIndex -> {
+                        requireNoProperties(annotation.properties, "@FullTextIndex", fragmentClass, propertyName)
+                        FullTextIndexSpec(
+                            label,
+                            propertyName,
+                            annotation.name.ifEmpty { null },
+                            annotation.analyzer.ifEmpty { null },
+                        )
                     }
 
                     is Unique -> {
@@ -165,5 +190,6 @@ internal object FragmentSchemaScanner {
     }
 
     private fun isSchemaAnnotation(annotation: Annotation): Boolean =
-        annotation is VectorIndex || annotation is RangeIndex || annotation is Unique
+        annotation is VectorIndex || annotation is RangeIndex ||
+            annotation is FullTextIndex || annotation is Unique
 }
