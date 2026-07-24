@@ -50,7 +50,7 @@ class GraphObjectManager(
 
     private val grammar = persistenceManager.grammar
 
-    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE)
+    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar)
 
     /**
      * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
@@ -823,7 +823,8 @@ class GraphObjectManager(
         val mergeBuilder = GraphObjectMergeBuilder.forClass(
             graphClass,
             objectMapper,
-            sessionManager
+            sessionManager,
+            grammar
         )
         val statements = mergeBuilder.buildMergeStatements(obj, cascade)
 

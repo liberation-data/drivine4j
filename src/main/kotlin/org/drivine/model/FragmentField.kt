@@ -41,6 +41,14 @@ data class FragmentField(
      * [org.drivine.model.PropertyBagModel].
      */
     val propertyBag: PropertyBagSpec? = null,
+
+    /**
+     * Whether this field carries `@VectorIndex` — an embedding property. On save its value must be
+     * written as the engine's native vector type (FalkorDB's `vecf32(...)`), so the merge builder
+     * emits it through [org.drivine.query.grammar.CypherGrammar.vectorPropertyLiteral] rather than a
+     * plain parameter. Mirrors the read side, which already wraps the query vector.
+     */
+    val vectorIndexed: Boolean = false,
 )
 
 /** The raw `@PropertyBag` / `@CompositeProperty` annotation values for a field. */

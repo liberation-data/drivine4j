@@ -7,6 +7,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.QuerySpecification
+import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 
 /**
@@ -18,13 +19,16 @@ import org.drivine.session.SessionManager
  * statements (sub-linear round trips); relationship and cascade statements stay per-item, built by the
  * very same [GraphObjectMergeBuilder] the single-object [GraphObjectManager.save] uses — so per-item
  * cascade and change detection are identical. Roots carrying a `@PropertyBag` fall back to the full
- * per-item path (their clear-stale `REMOVE` needs per-object keys an UNWIND can't express). See
- * [GraphObjectManager.saveAll] for the full contract and caveats.
+ * per-item path (their clear-stale `REMOVE` needs per-object keys an UNWIND can't express); a root
+ * with a `@VectorIndex` field falls back too on engines that wrap vector writes (FalkorDB), since
+ * `SET n += row.props` cannot wrap one property in `vecf32(...)`. See [GraphObjectManager.saveAll]
+ * for the full contract and caveats.
  */
 internal class BatchSaveOperations(
     private val objectMapper: ObjectMapper,
     private val sessionManager: SessionManager,
     private val chunkSize: Int,
+    private val grammar: CypherGrammar? = null,
 ) {
     /**
      * Builds the statements for [items] (assumed non-empty), grouped by runtime class. Within a group
@@ -36,7 +40,11 @@ internal class BatchSaveOperations(
         items.groupBy { it.javaClass }.forEach { (clazz, group) ->
             val (rootModel, rootFieldName) = rootMetadata(clazz)
             val idField = rootModel.nodeIdField
-            if (idField != null && rootModel.propertyBags.isEmpty()) {
+            // A vector-bearing root needs per-item saves on engines that wrap vector writes (FalkorDB):
+            // `SET n += row.props` can't wrap a single property in vecf32(...). Elsewhere (Neo4j /
+            // Memgraph store a plain array) the UNWIND path is fine, exactly as for a plain fragment.
+            val vectorNeedsPerItem = rootModel.vectorFieldNames.isNotEmpty() && grammar?.wrapsVectorLiteral == true
+            if (idField != null && rootModel.propertyBags.isEmpty() && !vectorNeedsPerItem) {
                 appendUnwindGroup(specs, clazz, group, rootModel.labels.joinToString(":"), rootFieldName, idField, cascade)
             } else {
                 group.forEach { obj -> mergeStatements(clazz, obj, cascade).forEach { specs.add(it.toSpec()) } }
@@ -84,7 +92,7 @@ internal class BatchSaveOperations(
     }
 
     private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType) =
-        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager).buildMergeStatements(obj, cascade)
+        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar).buildMergeStatements(obj, cascade)
 
     /** Root [FragmentModel] and (for views) the root field name; mirrors the manager's snapshot metadata. */
     private fun rootMetadata(clazz: Class<*>): Pair<FragmentModel, String?> =

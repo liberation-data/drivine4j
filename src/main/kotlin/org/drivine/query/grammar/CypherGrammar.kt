@@ -82,6 +82,35 @@ interface CypherGrammar {
         throw UnsupportedOperationException(
             "Vector search is not supported on this backend (${this::class.simpleName} has no native vector index)."
         )
+
+    /**
+     * How a `@VectorIndex` property value is written on the **save** side, in a `SET` clause RHS —
+     * the write-side mirror of [vectorSearchHead]'s read-side `vecf32(...)` wrapping.
+     *
+     * The default binds the parameter plainly (`$param`), which is correct for engines that index a
+     * stored array directly (Neo4j, Memgraph). FalkorDB only indexes a property stored as its native
+     * vector type, so [FalkorDbCypherGrammar] wraps it in `vecf32(...)`; without that, an embedding
+     * saved through the object manager writes a plain array, the vector index stays empty, and
+     * `loadNearest` finds nothing.
+     *
+     * @param param the bind-parameter name (without the leading `$`); the binding value is unchanged.
+     */
+    fun vectorPropertyLiteral(param: String): String = "\$$param"
+
+    /**
+     * Whether [vectorPropertyLiteral] wraps the value rather than binding it plainly. When true, a
+     * vector property cannot be written through a single-shot `SET n += row.props` (an UNWIND batch
+     * cannot wrap one property), so the batch path falls back to per-item saves for vector-bearing
+     * fragments — mirroring how a `@PropertyBag` root already does. Derived from
+     * [vectorPropertyLiteral] so the wrapping rule has a single source of truth.
+     */
+    val wrapsVectorLiteral: Boolean
+        get() = vectorPropertyLiteral(WRAP_PROBE) != "\$$WRAP_PROBE"
+
+    companion object {
+        /** An arbitrary parameter name used only to detect whether [vectorPropertyLiteral] wraps. */
+        private const val WRAP_PROBE = "_v"
+    }
 }
 
 /**
@@ -182,4 +211,11 @@ class FalkorDbCypherGrammar(
             "YIELD node, score\n" +
             "WITH node AS $rootAlias, $similarityExpr AS $scoreAlias"
     }
+
+    /**
+     * A `@VectorIndex` property must be stored as FalkorDB's native vector type for the index to pick
+     * it up — the write-side mirror of the `vecf32(...)` wrapping [vectorSearchHead] applies to the
+     * query vector.
+     */
+    override fun vectorPropertyLiteral(param: String): String = "vecf32(\$$param)"
 }

@@ -7,6 +7,7 @@ import org.drivine.mapper.toMap
 import org.drivine.model.GraphViewModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.RelationshipModel
+import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 
 /**
@@ -21,7 +22,8 @@ import org.drivine.session.SessionManager
 class GraphViewMergeBuilder(
     private val viewModel: GraphViewModel,
     private val objectMapper: ObjectMapper,
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val grammar: CypherGrammar? = null,
 ) : GraphObjectMergeBuilder {
 
     /**
@@ -57,7 +59,7 @@ class GraphViewMergeBuilder(
         // 1. Save the root fragment
         val rootFragment = extractRootFragment(obj)
         val rootFragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
-        val rootFragmentBuilder = FragmentMergeBuilder(rootFragmentModel, objectMapper)
+        val rootFragmentBuilder = FragmentMergeBuilder(rootFragmentModel, objectMapper, grammar)
 
         // Check if root fragment is dirty.
         // Prefer the enclosing view snapshot (the only place a fragment-inside-a-view's
@@ -188,7 +190,7 @@ class GraphViewMergeBuilder(
             } else {
                 // IMPORTANT: Use runtime type, not declared type, for correct labels on polymorphic types.
                 val targetFragmentModel = FragmentModel.from(currentTarget::class.java)
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
                 listOf(fragmentBuilder.buildMergeStatement(currentTarget, dirtyFields, snapshotTarget))
             }
         }
@@ -514,7 +516,7 @@ class GraphViewMergeBuilder(
                     sessionManager.getDirtyFields(targetNode, targetId)
                 } else null
 
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
                 statements.add(fragmentBuilder.buildMergeStatement(targetNode, targetDirtyFields))
 
                 // 2. CREATE/MERGE the relationship with properties
@@ -556,7 +558,7 @@ class GraphViewMergeBuilder(
                     sessionManager.getDirtyFields(targetItem, targetId)
                 } else null
 
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
                 statements.add(fragmentBuilder.buildMergeStatement(targetItem, targetDirtyFields))
 
                 // 2. CREATE/MERGE the relationship

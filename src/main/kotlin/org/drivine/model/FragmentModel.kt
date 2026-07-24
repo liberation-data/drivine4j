@@ -5,6 +5,7 @@ import org.drivine.annotation.GraphTransient
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.PropertyBag
+import org.drivine.annotation.VectorIndex
 import java.lang.reflect.Modifier
 import kotlin.reflect.KClass
 import kotlin.reflect.KMutableProperty1
@@ -56,6 +57,13 @@ data class FragmentModel(
      */
     val propertyBags: List<PropertyBagModel> = emptyList(),
 ) {
+    /**
+     * Names of `@VectorIndex` (embedding) fields — the fields whose value must be written as the
+     * engine's native vector type on save. Empty for the common (non-vector) fragment.
+     */
+    val vectorFieldNames: Set<String>
+        get() = fields.filter { it.vectorIndexed }.map { it.name }.toSet()
+
     companion object {
         /**
          * Creates a FragmentModel from a class annotated with @GraphFragment.
@@ -186,9 +194,14 @@ data class FragmentModel(
                         nullable = returnType.isMarkedNullable,
                         typeString = returnType.toString(),
                         propertyBag = property.propertyBagSpec(),
+                        vectorIndexed = property.isVectorIndexed(),
                     )
                 }.sortedBy { it.name }
         }
+
+        /** Whether a Kotlin property (or its backing field) carries `@VectorIndex`. */
+        private fun KProperty1<*, *>.isVectorIndexed(): Boolean =
+            findAnnotation<VectorIndex>() != null || javaField?.isAnnotationPresent(VectorIndex::class.java) == true
 
         /** Reads `@PropertyBag` / `@CompositeProperty` off a Kotlin property (or its backing field). */
         private fun KProperty1<*, *>.propertyBagSpec(): PropertyBagSpec? {
@@ -251,6 +264,7 @@ data class FragmentModel(
                                 nullable = true, // Java nullability cannot be reliably determined
                                 typeString = field.genericType.typeName,
                                 propertyBag = bag,
+                                vectorIndexed = field.isAnnotationPresent(VectorIndex::class.java),
                             )
                         )
                     }

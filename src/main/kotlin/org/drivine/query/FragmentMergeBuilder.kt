@@ -3,6 +3,7 @@ package org.drivine.query
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
+import org.drivine.query.grammar.CypherGrammar
 
 /**
  * Builds Cypher MERGE statements for GraphFragment classes.
@@ -10,12 +11,19 @@ import org.drivine.model.FragmentModel
  * Generates queries that:
  * 1. MERGE on (labels + ID) - creates if not exists, matches if exists
  * 2. SET declared fields (dirty fields for optimized saves, all fields for full saves)
- * 3. Expand each `@PropertyBag` field into flat prefixed properties, and REMOVE keys that the bag
+ * 3. Write each `@VectorIndex` (embedding) field through the grammar's
+ *    [CypherGrammar.vectorPropertyLiteral], so FalkorDB stores it as its native vector type (the
+ *    write-side mirror of the read-side `vecf32(...)` wrapping) — a no-op on Neo4j / Memgraph.
+ * 4. Expand each `@PropertyBag` field into flat prefixed properties, and REMOVE keys that the bag
  *    no longer contains (clear-stale-then-set) when the previous state is known.
+ *
+ * [grammar] is optional; when null (e.g. in unit tests that only assert plain SET shape) vector
+ * fields are written plainly, exactly as any other field.
  */
 class FragmentMergeBuilder(
     private val fragmentModel: FragmentModel,
-    private val objectMapper: ObjectMapper
+    private val objectMapper: ObjectMapper,
+    private val grammar: CypherGrammar? = null,
 ) {
 
     /**
@@ -52,8 +60,17 @@ class FragmentMergeBuilder(
             fragmentModel.fields.map { it.name }.filter { it != nodeIdField }
         }
         fieldsToSet.forEach { field ->
-            setClauses.add("n.$field = \$$field")
-            bindings[field] = allProps[field]
+            val value = allProps[field]
+            // Vector (embedding) fields are written through the grammar so FalkorDB stores them as
+            // its native vector type. A null embedding falls through to a plain assignment — vecf32(null)
+            // is invalid, and a plain SET clears the property, matching normal null semantics.
+            val rhs = if (field in fragmentModel.vectorFieldNames && value != null) {
+                (grammar?.vectorPropertyLiteral(field) ?: "\$$field")
+            } else {
+                "\$$field"
+            }
+            setClauses.add("n.$field = $rhs")
+            bindings[field] = value
         }
 
         // ----- Property bags: expand to prefixed properties + clear stale keys -----
