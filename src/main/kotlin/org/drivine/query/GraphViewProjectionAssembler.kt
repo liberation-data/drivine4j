@@ -370,6 +370,19 @@ internal class GraphViewProjectionAssembler(
             }
         }
 
+        // Flat List<Fragment> with an effective depth > 1 (from maxDepth or a runtime depth() override):
+        // a variable-length `*1..N` traversal collecting every reached node into a de-duplicated flat
+        // list — a transitive N-hop neighbourhood, distinct from recursive-view nesting. maxDepth == 1
+        // (the default) keeps the single-hop comprehension below byte-identical; views are unaffected.
+        if (rel.isCollection && !isGraphView) {
+            val effectiveMaxDepth = context.depthOverrides[rel.fieldName] ?: rel.maxDepth
+            if (effectiveMaxDepth > 1) {
+                return buildVariableLengthListPattern(
+                    rootFieldName, rel, targetAlias, targetLabelString, effectiveMaxDepth, visitCounts
+                )
+            }
+        }
+
         // Delegate nested GraphView projection to the grammar's projector
         if (isGraphView) {
             val projectorResult = tryNestedViewProjector(rootFieldName, rel, targetAlias, direction, targetLabelString)
@@ -617,6 +630,44 @@ internal class GraphViewProjectionAssembler(
         }
 
         return pattern
+    }
+
+    /**
+     * Builds a flat `List<Fragment>` relationship with an effective depth > 1 as a variable-length
+     * `*1..N` traversal, collecting every reached node into a **de-duplicated** flat list — the
+     * transitive N-hop neighbourhood along the edge, in the relationship's direction.
+     *
+     * Emitted as a `CALL { … }` prolog + bridge variable, mirroring [buildPathPattern]: a
+     * variable-length pattern yields one row per path (so a node reached by several paths appears many
+     * times). De-dup is on **node identity** — `collect(DISTINCT node)` — then each distinct node is
+     * projected, which collapses multi-path nodes to one on every engine (Memgraph's `DISTINCT` does
+     * not collapse structurally-equal *maps*, so we dedupe nodes, not projections). An anchor with no
+     * neighbours yields `[]` (`collect` drops the OPTIONAL-MATCH null). A polymorphic fragment target
+     * composes: the projection carries `labels`, and the transform dispatches each item exactly as for
+     * a single-hop polymorphic list.
+     */
+    private fun buildVariableLengthListPattern(
+        rootFieldName: String,
+        rel: RelationshipModel,
+        targetAlias: String,
+        targetLabelString: String,
+        maxDepth: Int,
+        visitCounts: Map<String, Int>,
+    ): String {
+        val arrow = Directions.varLengthDirectionString(rel, maxDepth)
+        val matchPattern = "($rootFieldName)$arrow($targetAlias:$targetLabelString)"
+        val projection = buildRelationshipProjection(targetAlias, rel.elementType, visitCounts)
+        val nodesVar = "_${targetAlias}_nodes"
+        val prolog = buildString {
+            appendLine("CALL {")
+            appendLine("    WITH $rootFieldName")
+            appendLine("    OPTIONAL MATCH $matchPattern")
+            appendLine("    WITH collect(DISTINCT $targetAlias) AS $nodesVar")
+            append("    RETURN [$targetAlias IN $nodesVar | $projection] AS $targetAlias\n}")
+        }
+        context.addProlog(prolog)
+        context.addBridgeVariables(listOf(targetAlias))
+        return "$targetAlias AS $targetAlias"
     }
 
     /**
