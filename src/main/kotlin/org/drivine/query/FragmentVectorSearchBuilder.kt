@@ -60,7 +60,7 @@ RETURN {
 ORDER BY $scoreVar DESC"""
         } else {
             val fieldMappings = fragmentModel.fields.joinToString(",\n        ") {
-                "${it.name}: $node.${it.name}"
+                "${it.name}: $node.${it.propertyName}"
             }
             """
 

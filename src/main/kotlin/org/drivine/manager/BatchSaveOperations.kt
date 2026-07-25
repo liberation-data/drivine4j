@@ -45,7 +45,7 @@ internal class BatchSaveOperations(
             // Memgraph store a plain array) the UNWIND path is fine, exactly as for a plain fragment.
             val vectorNeedsPerItem = rootModel.vectorFieldNames.isNotEmpty() && grammar?.wrapsVectorLiteral == true
             if (idField != null && rootModel.propertyBags.isEmpty() && !vectorNeedsPerItem) {
-                appendUnwindGroup(specs, clazz, group, rootModel.labels.joinToString(":"), rootFieldName, idField, cascade)
+                appendUnwindGroup(specs, clazz, group, rootModel, rootFieldName, idField, cascade)
             } else {
                 group.forEach { obj -> mergeStatements(clazz, obj, cascade).forEach { specs.add(it.toSpec()) } }
             }
@@ -58,16 +58,19 @@ internal class BatchSaveOperations(
         specs: MutableList<QuerySpecification<*>>,
         clazz: Class<*>,
         group: List<Any>,
-        labels: String,
+        rootModel: FragmentModel,
         rootFieldName: String?,
         idField: String,
         cascade: CascadeType,
     ) {
-        val rows = group.map { obj -> unwindRootRow(obj, rootFieldName, idField) }
+        val labels = rootModel.labels.joinToString(":")
+        // MERGE keys on the id field's on-disk property name (only differs under a @GraphProperty id).
+        val idProperty = rootModel.nodeIdProperty ?: idField
+        val rows = group.map { obj -> unwindRootRow(obj, rootModel, rootFieldName, idField) }
         rows.chunked(chunkSize).forEach { chunk ->
             specs.add(
                 QuerySpecification
-                    .withStatement("UNWIND \$rows AS row\nMERGE (n:$labels {$idField: row.id})\nSET n += row.props")
+                    .withStatement("UNWIND \$rows AS row\nMERGE (n:$labels {$idProperty: row.id})\nSET n += row.props")
                     .bind(mapOf("rows" to chunk))
             )
         }
@@ -76,8 +79,12 @@ internal class BatchSaveOperations(
         group.forEach { obj -> mergeStatements(clazz, obj, cascade).drop(1).forEach { specs.add(it.toSpec()) } }
     }
 
-    /** One `{ id, props }` UNWIND row for an UNWIND-eligible root (id excluded, nulls dropped). */
-    private fun unwindRootRow(obj: Any, rootFieldName: String?, idField: String): Map<String, Any?> {
+    /**
+     * One `{ id, props }` UNWIND row for an UNWIND-eligible root (id excluded, nulls dropped). The
+     * `props` map is keyed by **on-disk property name** so `SET n += row.props` writes the right
+     * properties for `@GraphProperty`-overridden fields (a no-op remap when there are no overrides).
+     */
+    private fun unwindRootRow(obj: Any, rootModel: FragmentModel, rootFieldName: String?, idField: String): Map<String, Any?> {
         val rootProps: Map<String, Any?> = if (rootFieldName != null) {
             @Suppress("UNCHECKED_CAST")
             objectMapper.toMap(obj)[rootFieldName] as? Map<String, Any?>
@@ -87,7 +94,11 @@ internal class BatchSaveOperations(
         }
         val id = rootProps[idField]
             ?: throw IllegalArgumentException("Cannot saveAll ${obj.javaClass.simpleName} with a null @GraphNodeId")
-        val props = rootProps.filterKeys { it != idField }.filterValues { it != null }
+        val propertyNameByField = rootModel.fields.associate { it.name to it.propertyName }
+        val props = rootProps
+            .filterKeys { it != idField }
+            .filterValues { it != null }
+            .mapKeys { (field, _) -> propertyNameByField[field] ?: field }
         return mapOf("id" to id, "props" to props)
     }
 

@@ -255,7 +255,7 @@ internal class GraphViewProjectionAssembler(
      *
      * For polymorphic types (null fields), uses .* to capture all properties.
      */
-    private fun buildFragmentProjectionWithMapping(varName: String, sourceVar: String, fields: List<String>?): String {
+    private fun buildFragmentProjectionWithMapping(varName: String, sourceVar: String, fields: List<org.drivine.model.FragmentField>?): String {
         // For polymorphic types, use .* to get all fields
         if (fields == null) {
             return """$varName {
@@ -267,7 +267,7 @@ internal class GraphViewProjectionAssembler(
         if (fields.isEmpty()) {
             return varName
         }
-        val fieldMappings = fields.joinToString(",\n        ") { "$it: $sourceVar.$it" }
+        val fieldMappings = fields.joinToString(",\n        ") { "${it.name}: $sourceVar.${it.propertyName}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
         $fieldMappings,
@@ -279,7 +279,7 @@ internal class GraphViewProjectionAssembler(
      * Gets field names from a FragmentModel.
      * Returns null for polymorphic types (sealed classes or interfaces) to signal that .* should be used.
      */
-    private fun getFragmentFields(fragmentType: Class<*>): List<String>? {
+    private fun getFragmentFields(fragmentType: Class<*>): List<org.drivine.model.FragmentField>? {
         // For sealed classes, return null to signal use of .*
         if (fragmentType.kotlin.isSealed) {
             return null
@@ -296,9 +296,8 @@ internal class GraphViewProjectionAssembler(
             // Fragments with a @PropertyBag use .* so the open prefixed keys are projected too —
             // the declared-field list can't name them. The transform reconstructs the bag from them.
             if (fragmentModel.propertyBags.isNotEmpty()) return null
-            val fields = fragmentModel.fields.map { it.name }
-            // Return null if no fields found, to signal use of .*
-            fields.ifEmpty { null }
+            // Return null if no fields, to signal use of .*. Callers alias field name ← property name.
+            fragmentModel.fields.ifEmpty { null }
         } catch (e: Exception) {
             // On error, return null to signal use of .* (safe fallback)
             null
@@ -422,7 +421,7 @@ internal class GraphViewProjectionAssembler(
                 val projection = if (nestedFields == null) {
                     "$nestedAlias { .*, labels: labels($nestedAlias) }"
                 } else {
-                    val fieldMappings = nestedFields.joinToString(", ") { "$it: $nestedAlias.$it" }
+                    val fieldMappings = nestedFields.joinToString(", ") { "${it.name}: $nestedAlias.${it.propertyName}" }
                     "$nestedAlias { $fieldMappings, labels: labels($nestedAlias) }"
                 }
                 NestedRelInfo(
@@ -486,7 +485,7 @@ internal class GraphViewProjectionAssembler(
             val fieldProjections = if (rootFragmentFields == null) {
                 listOf(".*")
             } else {
-                rootFragmentFields.map { "$it: $depthAlias.$it" }
+                rootFragmentFields.map { "${it.name}: $depthAlias.${it.propertyName}" }
             }
 
             // Build non-recursive relationship projections at this depth
@@ -526,7 +525,7 @@ internal class GraphViewProjectionAssembler(
             val rootFieldMappings = if (rootFragmentFields == null) {
                 ".*"
             } else {
-                rootFragmentFields.joinToString(",\n                    ") { "$it: $depthAlias.$it" }
+                rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.propertyName}" }
             }
             allProjections.add("$rootFragmentFieldName: {\n                    $rootFieldMappings\n                }")
 
@@ -739,7 +738,7 @@ internal class GraphViewProjectionAssembler(
         }"""
         }
 
-        val fieldMappings = fields.joinToString(",\n            ") { "$it: $varName.$it" }
+        val fieldMappings = fields.joinToString(",\n            ") { "${it.name}: $varName.${it.propertyName}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
             $fieldMappings,
@@ -772,7 +771,7 @@ internal class GraphViewProjectionAssembler(
             // Polymorphic type - use .*
             ".*"
         } else {
-            rootFragmentFields.joinToString(",\n                ") { "$it: $varName.$it" }
+            rootFragmentFields.joinToString(",\n                ") { "${it.name}: $varName.${it.propertyName}" }
         }
         fields.add("$rootFragmentFieldName: {\n                $rootFieldMappings\n            }")
 

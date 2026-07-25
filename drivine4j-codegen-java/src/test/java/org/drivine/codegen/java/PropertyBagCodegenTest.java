@@ -55,6 +55,43 @@ class PropertyBagCodegenTest {
     }
 
     @Test
+    void emitsOnDiskNameForGraphPropertyField() {
+        JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.gp.Chunk",
+            "package sample.gp;",
+            "import org.drivine.annotation.NodeFragment;",
+            "import org.drivine.annotation.NodeId;",
+            "import org.drivine.annotation.GraphProperty;",
+            "@NodeFragment(labels = {\"Chunk\"})",
+            "public class Chunk {",
+            "  @NodeId public String id;",
+            "  @GraphProperty(\"container_section_id\") public String containerSectionId;",
+            "}");
+        JavaFileObject view = JavaFileObjects.forSourceLines("sample.gp.ChunkView",
+            "package sample.gp;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class ChunkView {",
+            "  @Root public Chunk node;",
+            "}");
+
+        Compilation compilation = Compiler.javac()
+            .withProcessors(new GraphViewProcessor())
+            .compile(fragment, view);
+
+        assertThat(compilation).succeeded();
+        // The accessor keeps the field name; the PropertyReference carries the on-disk name.
+        assertThat(compilation)
+            .generatedSourceFile("sample.gp.ChunkProperties")
+            .contentsAsUtf8String()
+            .contains("containerSectionId()");
+        assertThat(compilation)
+            .generatedSourceFile("sample.gp.ChunkProperties")
+            .contentsAsUtf8String()
+            .contains("\"container_section_id\"");
+    }
+
+    @Test
     void emitsScalarReferenceForOrdinaryField() {
         JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.bag.PlainFrag",
             "package sample.bag;",

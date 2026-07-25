@@ -65,8 +65,9 @@ class TransformPostProcessor<S, T>(
         val rawData = extractDataFromResult(result)
         val targetType = determineConcreteType(rawData) ?: type
 
-        // Reassemble any @PropertyBag fields from their flat prefixed keys before deserializing.
-        val data = reconstructPropertyBags(rawData, targetType)
+        // Rename @GraphProperty on-disk keys back to field names and reassemble any @PropertyBag
+        // fields from their flat prefixed keys, before deserializing.
+        val data = reconstructFragmentData(rawData, targetType)
 
         return if (requiresSpecialHandling(targetType)) {
             constructWithSpecialHandling(data as Map<String, Any?>, targetType) as T
@@ -76,25 +77,27 @@ class TransformPostProcessor<S, T>(
     }
 
     /**
-     * Reassembles `@PropertyBag` fields from the flat prefixed node properties the projection
-     * surfaced (via `.*`). For a fragment, collects every key matching a bag's stored prefix into the
-     * bag's map field and drops the flat keys. For a view, recurses into the root fragment and each
-     * relationship target (single or collection, fragment or nested view). Leaves non-bag data
-     * untouched, so it is a no-op for the common case.
+     * Prepares a raw result map for Jackson: renames `@GraphProperty` on-disk keys back to field
+     * names, and reassembles `@PropertyBag` fields from their flat prefixed node properties. Both are
+     * needed only on the `.*` path (polymorphic / bag fragments), where the map is keyed by node
+     * *property* names; the concrete-fragment projection already aliases to field names, so these are
+     * no-ops there. For a view, recurses into the root fragment and each relationship target (single
+     * or collection, fragment or nested view). Leaves untouched data alone, so a no-op for the common
+     * case.
      */
     @Suppress("UNCHECKED_CAST")
-    private fun reconstructPropertyBags(data: Any?, type: Class<*>): Any? {
+    private fun reconstructFragmentData(data: Any?, type: Class<*>): Any? {
         if (data !is Map<*, *>) return data
         val map = (data as Map<String, Any?>).toMutableMap()
 
         if (type.isAnnotationPresent(GraphView::class.java)) {
             val viewModel = GraphViewModel.from(type)
             val rootName = viewModel.rootFragment.fieldName
-            map[rootName] = reconstructPropertyBags(map[rootName], viewModel.rootFragment.fragmentType)
+            map[rootName] = reconstructFragmentData(map[rootName], viewModel.rootFragment.fragmentType)
             viewModel.relationships.forEach { rel ->
                 when (val value = map[rel.fieldName]) {
-                    is List<*> -> map[rel.fieldName] = value.map { reconstructPropertyBags(it, rel.elementType) }
-                    else -> map[rel.fieldName] = reconstructPropertyBags(value, rel.elementType)
+                    is List<*> -> map[rel.fieldName] = value.map { reconstructFragmentData(it, rel.elementType) }
+                    else -> map[rel.fieldName] = reconstructFragmentData(value, rel.elementType)
                 }
             }
             return map
@@ -105,6 +108,13 @@ class TransformPostProcessor<S, T>(
                 FragmentModel.from(type)
             } catch (e: Exception) {
                 return map
+            }
+            // @GraphProperty: rename each overridden on-disk key back to its field name. On the concrete
+            // projection the map is already field-keyed, so containsKey(propertyName) is false — no-op.
+            fragmentModel.fields.forEach { field ->
+                if (field.propertyName != field.name && map.containsKey(field.propertyName)) {
+                    map[field.name] = map.remove(field.propertyName)
+                }
             }
             if (fragmentModel.propertyBags.isEmpty()) return map
             fragmentModel.propertyBags.forEach { bag ->

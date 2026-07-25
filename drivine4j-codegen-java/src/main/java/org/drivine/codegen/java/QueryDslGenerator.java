@@ -201,6 +201,13 @@ public class QueryDslGenerator {
                 continue;
             }
 
+            // @GraphProperty overrides the on-disk property name in the WHERE LHS; the accessor keeps
+            // the Java field name. The bind-param derives from this path (now the on-disk name) — internal.
+            AnnotationMirror graphProperty = getAnnotation(field, "org.drivine.annotation.GraphProperty");
+            String onDiskName = graphProperty != null
+                ? getAnnotationStringValue(graphProperty, "value", fieldName)
+                : fieldName;
+
             // Determine the property reference type
             TypeName propRefType;
             if (isStringType(fieldType)) {
@@ -214,7 +221,7 @@ public class QueryDslGenerator {
             classBuilder.addMethod(MethodSpec.methodBuilder(fieldName)
                 .addModifiers(Modifier.PUBLIC)
                 .returns(propRefType)
-                .addStatement("return new $T(alias, $S)", propRefType, fieldName)
+                .addStatement("return new $T(alias, $S)", propRefType, onDiskName)
                 .build());
         }
 

@@ -28,10 +28,23 @@ internal object FragmentSchemaScanner {
             )
 
         val label = primaryLabel(fragmentClass)
+        // A field's index/constraint must target its on-disk property name (@GraphProperty), since
+        // that is what is stored and queried. Identity when there is no override.
+        val onDisk = onDiskNameResolver(fragmentClass)
         val specs = mutableListOf<SchemaItemSpec>()
-        specs += classLevelSpecs(fragmentClass, label)
-        specs += propertyLevelSpecs(fragmentClass, label, dimensionProvider)
+        specs += classLevelSpecs(fragmentClass, label, onDisk)
+        specs += propertyLevelSpecs(fragmentClass, label, dimensionProvider, onDisk)
         return specs
+    }
+
+    /** Maps a fragment field name to its on-disk property name (`@GraphProperty`), identity otherwise. */
+    private fun onDiskNameResolver(fragmentClass: Class<*>): (String) -> String {
+        val byField = try {
+            FragmentModel.from(fragmentClass).fields.associate { it.name to it.propertyName }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        return { field -> byField[field] ?: field }
     }
 
     /** The anchor label schema items are declared against — first of [FragmentModel.labelsFor]. */
@@ -40,7 +53,7 @@ internal object FragmentSchemaScanner {
 
     // ----- Class-level (composite) declarations -----
 
-    private fun classLevelSpecs(fragmentClass: Class<*>, label: String): List<SchemaItemSpec> {
+    private fun classLevelSpecs(fragmentClass: Class<*>, label: String, onDisk: (String) -> String): List<SchemaItemSpec> {
         val specs = mutableListOf<SchemaItemSpec>()
 
         fragmentClass.getAnnotationsByType(RangeIndex::class.java).forEach { annotation ->
@@ -49,7 +62,7 @@ internal object FragmentSchemaScanner {
                     "Class-level @RangeIndex on ${fragmentClass.simpleName} must declare properties"
                 )
             }
-            specs += RangeIndexSpec(label, annotation.properties.toList(), annotation.name.ifEmpty { null })
+            specs += RangeIndexSpec(label, annotation.properties.map(onDisk), annotation.name.ifEmpty { null })
         }
 
         fragmentClass.getAnnotationsByType(FullTextIndex::class.java).forEach { annotation ->
@@ -60,7 +73,7 @@ internal object FragmentSchemaScanner {
             }
             specs += FullTextIndexSpec(
                 label,
-                annotation.properties.toList(),
+                annotation.properties.map(onDisk),
                 annotation.name.ifEmpty { null },
                 annotation.analyzer.ifEmpty { null },
             )
@@ -72,7 +85,7 @@ internal object FragmentSchemaScanner {
                     "Class-level @Unique on ${fragmentClass.simpleName} must declare properties"
                 )
             }
-            specs += UniquenessConstraintSpec(label, annotation.properties.toList(), annotation.name.ifEmpty { null })
+            specs += UniquenessConstraintSpec(label, annotation.properties.map(onDisk), annotation.name.ifEmpty { null })
         }
 
         return specs
@@ -84,22 +97,25 @@ internal object FragmentSchemaScanner {
         fragmentClass: Class<*>,
         label: String,
         dimensionProvider: VectorDimensionProvider?,
+        onDisk: (String) -> String,
     ): List<SchemaItemSpec> {
         val specs = mutableListOf<SchemaItemSpec>()
 
-        annotatedProperties(fragmentClass).forEach { (propertyName, annotations) ->
+        annotatedProperties(fragmentClass).forEach { (fieldName, annotations) ->
+            // Error messages name the Kotlin field; the spec targets its on-disk property name.
+            val property = onDisk(fieldName)
             annotations.forEach { annotation ->
                 val spec: SchemaItemSpec? = when (annotation) {
                     is VectorIndex -> {
-                        val dimensions = dimensionProvider?.dimensionsFor(label, propertyName)
+                        val dimensions = dimensionProvider?.dimensionsFor(label, property)
                             ?: throw DrivineException(
-                                "@VectorIndex on ${fragmentClass.simpleName}.$propertyName requires a " +
+                                "@VectorIndex on ${fragmentClass.simpleName}.$fieldName requires a " +
                                     "VectorDimensionProvider — vector dimensions come from the embedding " +
                                     "model at runtime, not the annotation"
                             )
                         VectorIndexSpec(
                             label = label,
-                            property = propertyName,
+                            property = property,
                             dimensions = dimensions,
                             similarity = annotation.similarity,
                             name = annotation.name.ifEmpty { null },
@@ -107,23 +123,23 @@ internal object FragmentSchemaScanner {
                     }
 
                     is RangeIndex -> {
-                        requireNoProperties(annotation.properties, "@RangeIndex", fragmentClass, propertyName)
-                        RangeIndexSpec(label, propertyName, annotation.name.ifEmpty { null })
+                        requireNoProperties(annotation.properties, "@RangeIndex", fragmentClass, fieldName)
+                        RangeIndexSpec(label, property, annotation.name.ifEmpty { null })
                     }
 
                     is FullTextIndex -> {
-                        requireNoProperties(annotation.properties, "@FullTextIndex", fragmentClass, propertyName)
+                        requireNoProperties(annotation.properties, "@FullTextIndex", fragmentClass, fieldName)
                         FullTextIndexSpec(
                             label,
-                            propertyName,
+                            property,
                             annotation.name.ifEmpty { null },
                             annotation.analyzer.ifEmpty { null },
                         )
                     }
 
                     is Unique -> {
-                        requireNoProperties(annotation.properties, "@Unique", fragmentClass, propertyName)
-                        UniquenessConstraintSpec(label, propertyName, annotation.name.ifEmpty { null })
+                        requireNoProperties(annotation.properties, "@Unique", fragmentClass, fieldName)
+                        UniquenessConstraintSpec(label, property, annotation.name.ifEmpty { null })
                     }
 
                     else -> null

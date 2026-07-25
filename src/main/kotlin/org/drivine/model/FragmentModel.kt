@@ -1,6 +1,7 @@
 package org.drivine.model
 
 import org.drivine.annotation.CompositeProperty
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.GraphTransient
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
@@ -64,6 +65,14 @@ data class FragmentModel(
     val vectorFieldNames: Set<String>
         get() = fields.filter { it.vectorIndexed }.map { it.name }.toSet()
 
+    /**
+     * The on-disk node-property name of the `@NodeId` field — the MERGE key and load-`WHERE` property.
+     * Equals [nodeIdField] unless the id field carries a `@GraphProperty` override. Null when there is
+     * no id field.
+     */
+    val nodeIdProperty: String?
+        get() = nodeIdField?.let { idName -> fields.firstOrNull { it.name == idName }?.propertyName ?: idName }
+
     companion object {
         /**
          * Creates a FragmentModel from a class annotated with @GraphFragment.
@@ -79,6 +88,8 @@ data class FragmentModel(
             val labels = labelsFor(clazz)
             val allFields = extractFields(clazz)
             val nodeIdField = findNodeIdField(clazz)
+
+            validateGraphProperty(allFields, clazz)
 
             // Partition @PropertyBag fields out of the regular fields: they are persisted/loaded as
             // flat prefixed properties, not as a single map-valued property.
@@ -98,6 +109,35 @@ data class FragmentModel(
                 nodeIdField = nodeIdField,
                 propertyBags = propertyBags,
             )
+        }
+
+        /**
+         * Validates `@GraphProperty` overrides: it may not combine with `@PropertyBag` on the same
+         * field (a bag manages its own prefixed names), and no two non-bag fields may resolve to the
+         * same on-disk [FragmentField.propertyName] — whether via an override or a collision with
+         * another field's default name. Both fail fast, naming the offending field(s).
+         */
+        private fun validateGraphProperty(allFields: List<FragmentField>, clazz: Class<*>) {
+            allFields.forEach { field ->
+                if (field.propertyBag != null && field.propertyName != field.name) {
+                    throw IllegalArgumentException(
+                        "Field '${field.name}' on ${clazz.simpleName} has both @GraphProperty and @PropertyBag. " +
+                            "A property bag manages its own prefixed property names, so an explicit " +
+                            "@GraphProperty override is contradictory — remove one."
+                    )
+                }
+            }
+
+            allFields.filter { it.propertyBag == null }
+                .groupBy { it.propertyName }
+                .filterValues { it.size > 1 }
+                .forEach { (propertyName, clashing) ->
+                    throw IllegalArgumentException(
+                        "Fields ${clashing.joinToString(" and ") { "'${it.name}'" }} on ${clazz.simpleName} " +
+                            "both map to node property '$propertyName'. Give each a distinct " +
+                            "@GraphProperty name so they don't overwrite each other on save."
+                    )
+                }
         }
 
         /**
@@ -195,6 +235,7 @@ data class FragmentModel(
                         typeString = returnType.toString(),
                         propertyBag = property.propertyBagSpec(),
                         vectorIndexed = property.isVectorIndexed(),
+                        propertyName = property.graphPropertyName() ?: property.name,
                     )
                 }.sortedBy { it.name }
         }
@@ -202,6 +243,10 @@ data class FragmentModel(
         /** Whether a Kotlin property (or its backing field) carries `@VectorIndex`. */
         private fun KProperty1<*, *>.isVectorIndexed(): Boolean =
             findAnnotation<VectorIndex>() != null || javaField?.isAnnotationPresent(VectorIndex::class.java) == true
+
+        /** The `@GraphProperty` override on a Kotlin property (or its backing field), or null. */
+        private fun KProperty1<*, *>.graphPropertyName(): String? =
+            (findAnnotation<GraphProperty>() ?: javaField?.getAnnotation(GraphProperty::class.java))?.value
 
         /** Reads `@PropertyBag` / `@CompositeProperty` off a Kotlin property (or its backing field). */
         private fun KProperty1<*, *>.propertyBagSpec(): PropertyBagSpec? {
@@ -265,6 +310,7 @@ data class FragmentModel(
                                 typeString = field.genericType.typeName,
                                 propertyBag = bag,
                                 vectorIndexed = field.isAnnotationPresent(VectorIndex::class.java),
+                                propertyName = field.getAnnotation(GraphProperty::class.java)?.value ?: field.name,
                             )
                         )
                     }

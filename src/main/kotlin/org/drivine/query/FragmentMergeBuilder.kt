@@ -46,31 +46,35 @@ class FragmentMergeBuilder(
             ?: throw IllegalArgumentException("Cannot build MERGE for fragment with null ID: ${fragmentModel.className}")
 
         val labels = fragmentModel.labels.joinToString(":")
-        val mergeClause = "MERGE (n:$labels {$nodeIdField: \$$nodeIdField})"
+        // The MERGE key uses the id field's on-disk property name; the bind-param stays the field name.
+        val nodeIdProperty = fragmentModel.nodeIdProperty ?: nodeIdField
+        val mergeClause = "MERGE (n:$labels {$nodeIdProperty: \$$nodeIdField})"
 
         val bindings = mutableMapOf<String, Any?>(nodeIdField to idValue)
         val setClauses = mutableListOf<String>()
         val removeClauses = mutableListOf<String>()
 
         // ----- Declared fields (bags are excluded from fragmentModel.fields) -----
-        val declaredNames = fragmentModel.fields.map { it.name }.toSet()
+        val fieldByName = fragmentModel.fields.associateBy { it.name }
         val fieldsToSet = if (dirtyFields != null) {
-            dirtyFields.filter { it != nodeIdField && it in declaredNames }
+            dirtyFields.filter { it != nodeIdField && it in fieldByName }
         } else {
             fragmentModel.fields.map { it.name }.filter { it != nodeIdField }
         }
-        fieldsToSet.forEach { field ->
-            val value = allProps[field]
-            // Vector (embedding) fields are written through the grammar so FalkorDB stores them as
-            // its native vector type. A null embedding falls through to a plain assignment — vecf32(null)
-            // is invalid, and a plain SET clears the property, matching normal null semantics.
-            val rhs = if (field in fragmentModel.vectorFieldNames && value != null) {
-                (grammar?.vectorPropertyLiteral(field) ?: "\$$field")
+        fieldsToSet.forEach { name ->
+            val field = fieldByName.getValue(name)
+            val value = allProps[name]
+            // The bind-param stays the field name (identity); the assigned property is the on-disk name.
+            // Vector (embedding) fields are written through the grammar so FalkorDB stores them as its
+            // native vector type. A null embedding falls through to a plain assignment — vecf32(null) is
+            // invalid, and a plain SET clears the property, matching normal null semantics.
+            val rhs = if (name in fragmentModel.vectorFieldNames && value != null) {
+                (grammar?.vectorPropertyLiteral(name) ?: "\$$name")
             } else {
-                "\$$field"
+                "\$$name"
             }
-            setClauses.add("n.$field = $rhs")
-            bindings[field] = value
+            setClauses.add("n.${field.propertyName} = $rhs")
+            bindings[name] = value
         }
 
         // ----- Property bags: expand to prefixed properties + clear stale keys -----

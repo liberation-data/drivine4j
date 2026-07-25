@@ -608,6 +608,12 @@ class QueryDslGenerator(
         }
 
         val propName = prop.simpleName.asString()
+        // @GraphProperty overrides the on-disk property name in the WHERE LHS; the accessor keeps the
+        // Kotlin field name. The bind-param derives from this path (now the on-disk name) — internal.
+        val onDiskName = prop.annotations
+            .find { it.shortName.asString() == "GraphProperty" }
+            ?.arguments?.firstOrNull()?.value as? String
+            ?: propName
         val propType = prop.type.resolve()
         val propertyRefType = if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
             ClassName("org.drivine.query.dsl", "StringPropertyReference")
@@ -618,7 +624,7 @@ class QueryDslGenerator(
 
         classBuilder.addProperty(
             PropertySpec.builder(propName, propertyRefType)
-                .initializer("$propertyRefType($aliasExpr, \"$propName\")")
+                .initializer("$propertyRefType($aliasExpr, \"$onDiskName\")")
                 .build()
         )
     }
