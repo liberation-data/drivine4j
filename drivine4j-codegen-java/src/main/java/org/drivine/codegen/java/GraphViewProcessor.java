@@ -22,7 +22,8 @@ import java.util.*;
  * 3. Static factory methods for building queries
  */
 @SupportedAnnotationTypes({
-    "org.drivine.annotation.GraphView"
+    "org.drivine.annotation.GraphView",
+    "org.drivine.annotation.NodeFragment"
 })
 @SupportedSourceVersion(SourceVersion.RELEASE_17)
 public class GraphViewProcessor extends AbstractProcessor {
@@ -62,16 +63,28 @@ public class GraphViewProcessor extends AbstractProcessor {
             }
         }
 
-        if (graphViewClasses.isEmpty()) {
+        // Also collect @NodeFragment classes for standalone fragment query DSLs.
+        List<TypeElement> fragmentClasses = new ArrayList<>();
+        TypeElement nodeFragmentAnnotation = elementUtils.getTypeElement("org.drivine.annotation.NodeFragment");
+        if (nodeFragmentAnnotation != null) {
+            for (Element element : roundEnv.getElementsAnnotatedWith(nodeFragmentAnnotation)) {
+                if (element.getKind() == ElementKind.CLASS || element.getKind() == ElementKind.INTERFACE) {
+                    fragmentClasses.add((TypeElement) element);
+                }
+            }
+        }
+
+        if (graphViewClasses.isEmpty() && fragmentClasses.isEmpty()) {
             return false;
         }
 
         messager.printMessage(Diagnostic.Kind.NOTE,
-            "Drivine4j Java codegen: Processing " + graphViewClasses.size() + " @GraphView classes");
+            "Drivine4j Java codegen: Processing " + graphViewClasses.size() + " @GraphView and "
+                + fragmentClasses.size() + " @NodeFragment classes");
 
         // Generate DSL code
         QueryDslGenerator generator = new QueryDslGenerator(
-            elementUtils, typeUtils, filer, messager, graphViewClasses
+            elementUtils, typeUtils, filer, messager, graphViewClasses, fragmentClasses
         );
         generator.generateAll();
 

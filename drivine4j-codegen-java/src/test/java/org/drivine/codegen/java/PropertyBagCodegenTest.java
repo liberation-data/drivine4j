@@ -92,6 +92,43 @@ class PropertyBagCodegenTest {
     }
 
     @Test
+    void emitsStandaloneFragmentQueryDsl() {
+        JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.fd.Chunk",
+            "package sample.fd;",
+            "import org.drivine.annotation.NodeFragment;",
+            "import org.drivine.annotation.NodeId;",
+            "import org.drivine.annotation.GraphProperty;",
+            "@NodeFragment(labels = {\"Chunk\"})",
+            "public class Chunk {",
+            "  @NodeId public String id;",
+            "  @GraphProperty(\"container_section_id\") public String containerSectionId;",
+            "}");
+
+        Compilation compilation = Compiler.javac()
+            .withProcessors(new GraphViewProcessor())
+            .compile(fragment);
+
+        assertThat(compilation).succeeded();
+        // A NodeReference at alias "n" with a static INSTANCE and property getters (@GraphProperty on-disk).
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("implements NodeReference");
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("public static final ChunkQueryDsl INSTANCE");
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("\"container_section_id\"");
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("containerSectionId()");
+    }
+
+    @Test
     void emitsScalarReferenceForOrdinaryField() {
         JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.bag.PlainFrag",
             "package sample.bag;",

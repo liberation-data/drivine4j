@@ -1,5 +1,6 @@
 package org.drivine.codegen
 
+import com.google.devtools.ksp.getAllSuperTypes
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.processing.KSPLogger
@@ -23,11 +24,32 @@ import com.squareup.kotlinpoet.ksp.writeTo
 class QueryDslGenerator(
     private val codeGenerator: CodeGenerator,
     private val logger: KSPLogger,
-    private val graphViewClasses: List<KSClassDeclaration>
+    private val graphViewClasses: List<KSClassDeclaration>,
+    /** Bare @NodeFragment classes to also generate a standalone query DSL for (not just view roots). */
+    private val fragmentClasses: List<KSClassDeclaration> = emptyList(),
 ) {
 
     fun generateAll() {
-        logger.info("Generating QueryDsl for ${graphViewClasses.size} @GraphView classes")
+        logger.info(
+            "Generating QueryDsl for ${graphViewClasses.size} @GraphView and ${fragmentClasses.size} @NodeFragment classes"
+        )
+
+        // Standalone fragment DSLs: a query-object + INSTANCE + loadAll/count/deleteAll bound to it,
+        // so a bare @NodeFragment is queryable like a view (its where surface is the node's properties).
+        // The reified extensions are emitted only for "root" fragments (no generated @NodeFragment
+        // supertype): a subtype's `loadAll<Sub>` would be ambiguous with the base's (a subtype
+        // satisfies `T : Base`), so subtypes get only their QueryDsl class — usable via the explicit
+        // 3-arg `loadAll(Sub::class.java, SubQueryDsl.INSTANCE) { }` and as an `instanceOf()` target;
+        // `loadAll<Sub> { }` resolves to the base extension, typed `List<Sub>`.
+        val fragmentNames = fragmentClasses.mapNotNull { it.qualifiedName?.asString() }.toSet()
+        fragmentClasses.forEach { fragment ->
+            val hasGeneratedSupertype = fragment.getAllSuperTypes().any {
+                it.declaration.qualifiedName?.asString() in fragmentNames
+            }
+            generateFragmentDslFile(fragment, emitExtensions = !hasGeneratedSupertype)
+        }
+
+        if (graphViewClasses.isEmpty()) return
 
         // Collect all fragment types across all views
         val allFragmentTypes = mutableMapOf<String, FragmentType>()
@@ -298,6 +320,112 @@ class QueryDslGenerator(
         }
 
         return classBuilder.build()
+    }
+
+    /**
+     * Generates the standalone query DSL for a bare `@NodeFragment`: a `<Fragment>QueryDsl` query
+     * object (a [org.drivine.query.dsl.NodeReference] at the fragment root alias `"n"`, exposing the
+     * node's property references + `instanceOf()` for sealed/abstract fragments) plus `INSTANCE`, and
+     * the `INSTANCE`-injecting `loadAll` / `count` / `deleteAll` extensions bound to it. `where` targets
+     * node properties directly; the parameterized binding path is the view DSL's ($param_*). Vector
+     * search is already available via the hand-written non-filtered `loadNearest<T>`.
+     */
+    private fun generateFragmentDslFile(fragmentClass: KSClassDeclaration, emitExtensions: Boolean) {
+        val packageName = fragmentClass.packageName.asString()
+        val simpleName = fragmentClass.simpleName.asString()
+        val dslClassName = "${simpleName}QueryDsl"
+        val fragmentClassName = fragmentClass.toClassName()
+        val dslClass = ClassName(packageName, dslClassName)
+
+        val fileSpecBuilder = FileSpec.builder(packageName, dslClassName)
+            .addFileComment("Generated code - do not modify")
+            .addType(generateFragmentDslClass(fragmentClass, dslClassName))
+
+        if (emitExtensions) {
+            fileSpecBuilder
+                .addFunction(
+                    fragmentDslExtension(fragmentClassName, dslClass, dslClassName, "loadAll",
+                        List::class.asClassName().parameterizedBy(TypeVariableName("T")))
+                )
+                .addFunction(
+                    fragmentDslExtension(fragmentClassName, dslClass, dslClassName, "count", Long::class.asClassName())
+                )
+                .addFunction(
+                    fragmentDslExtension(fragmentClassName, dslClass, dslClassName, "deleteAll", Int::class.asClassName())
+                )
+        }
+
+        fileSpecBuilder.build().writeTo(
+            codeGenerator = codeGenerator,
+            dependencies = Dependencies(false, fragmentClass.containingFile!!)
+        )
+        logger.info("Generated $dslClassName at $packageName.$dslClassName (extensions=$emitExtensions)")
+    }
+
+    /** The `<Fragment>QueryDsl` query object: a NodeReference at alias `"n"` with the node's property refs. */
+    private fun generateFragmentDslClass(fragmentClass: KSClassDeclaration, dslClassName: String): TypeSpec {
+        val classBuilder = TypeSpec.classBuilder(dslClassName)
+            .addSuperinterface(ClassName("org.drivine.query.dsl", "NodeReference"))
+
+        // Fixed root alias "n" — matches FragmentQueryBuilder.nodeAlias, so `where { query.x }` renders
+        // `n.x` and instanceOf() renders `n:Label`, aligning with the fragment's MATCH/RETURN.
+        classBuilder.addProperty(
+            PropertySpec.builder("nodeAlias", String::class)
+                .addModifiers(KModifier.OVERRIDE)
+                .initializer("\"n\"")
+                .build()
+        )
+
+        fragmentClass.getAllProperties().forEach { prop ->
+            addPropertyReference(classBuilder, prop, "\"n\"")
+        }
+
+        classBuilder.addType(
+            TypeSpec.companionObjectBuilder()
+                .addProperty(
+                    PropertySpec.builder("INSTANCE", ClassName(fragmentClass.packageName.asString(), dslClassName))
+                        .initializer("$dslClassName()")
+                        .build()
+                )
+                .build()
+        )
+        return classBuilder.build()
+    }
+
+    /**
+     * One `INSTANCE`-injecting reified extension on `GraphObjectManager` for a fragment, mirroring the
+     * view wrappers: `inline fun <reified T : Fragment> …(spec) = …(T::class.java, DslClass.INSTANCE, spec)`.
+     */
+    private fun fragmentDslExtension(
+        fragmentClassName: ClassName,
+        dslClass: ClassName,
+        dslClassName: String,
+        funcName: String,
+        returnType: TypeName,
+    ): FunSpec {
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
+        return FunSpec.builder(funcName)
+            // A final (concrete) fragment makes `reified T : Fragment` predetermined — harmless, and the
+            // explicit `loadAll<Fragment> { }` still reads well; suppress the resulting warning.
+            .addAnnotation(
+                AnnotationSpec.builder(Suppress::class).addMember("%S", "FINAL_UPPER_BOUND").build()
+            )
+            .addModifiers(KModifier.INLINE)
+            .receiver(graphObjectManagerClass)
+            .addTypeVariable(TypeVariableName("T", fragmentClassName).copy(reified = true))
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = graphQuerySpecClass.parameterizedBy(dslClass),
+                        returnType = Unit::class.asClassName()
+                    )
+                ).addModifiers(KModifier.NOINLINE).build()
+            )
+            .returns(returnType)
+            .addStatement("return $funcName(T::class.java, $dslClassName.INSTANCE, spec)")
+            .build()
     }
 
     private fun generateViewDslFile(graphViewClass: KSClassDeclaration, viewStructure: List<ViewProperty>) {
