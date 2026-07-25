@@ -12,6 +12,13 @@ import org.drivine.query.grammar.*
 import org.drivine.query.sort.*
 
 /**
+ * The map-projection key under which a nested polymorphic fragment carries its node labels, so
+ * [org.drivine.mapper.TransformPostProcessor] can dispatch each nested map to its concrete subtype.
+ * Prefixed with `__` so it never collides with a real node property surfaced by `.*`.
+ */
+internal const val POLYMORPHIC_LABELS_KEY = "__labels"
+
+/**
  * The shared projection core of a `@GraphView` query: the WITH-clause projection of the root
  * fragment plus every relationship (pattern comprehensions, nested views, recursive expansion,
  * relationship fragments, collection sorts), the per-root aggregates, the required-relationship
@@ -481,13 +488,6 @@ internal class GraphViewProjectionAssembler(
         fun buildAtDepth(depth: Int, parentVar: String): String {
             val depthAlias = rel.deriveTargetAliasAtDepth(depth)
 
-            // Build root fragment field projections
-            val fieldProjections = if (rootFragmentFields == null) {
-                listOf(".*")
-            } else {
-                rootFragmentFields.map { "${it.name}: $depthAlias.${it.propertyName}" }
-            }
-
             // Build non-recursive relationship projections at this depth
             val nestedRelProjections = nonRecursiveRels.map { nestedRel ->
                 val nestedDirection = Directions.directionString(nestedRel)
@@ -520,14 +520,20 @@ internal class GraphViewProjectionAssembler(
             // Assemble all projections
             val allProjections = mutableListOf<String>()
 
-            // Root fragment as nested object
+            // Root fragment as nested object. A polymorphic root fragment can't use the top-level
+            // `WITH properties(n)…` strategy inside a comprehension, so it projects a comprehension-safe
+            // map projection on the node variable — `depthAlias { .*, <LABELS_KEY>: labels(depthAlias) }`
+            // — carrying the labels the transform needs to dispatch each node to its concrete subtype.
+            // A bare `{ .* }` (no source var) is invalid Cypher — the original bug.
             val rootFragmentFieldName = nestedViewModel.rootFragment.fieldName
-            val rootFieldMappings = if (rootFragmentFields == null) {
-                ".*"
+            val rootProjection = if (rootFragmentFields == null) {
+                "$rootFragmentFieldName: $depthAlias { .*, $POLYMORPHIC_LABELS_KEY: labels($depthAlias) }"
             } else {
-                rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.propertyName}" }
+                val rootFieldMappings =
+                    rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.propertyName}" }
+                "$rootFragmentFieldName: {\n                    $rootFieldMappings\n                }"
             }
-            allProjections.add("$rootFragmentFieldName: {\n                    $rootFieldMappings\n                }")
+            allProjections.add(rootProjection)
 
             allProjections.addAll(nestedRelProjections)
             allProjections.add(recursiveFieldProjection)

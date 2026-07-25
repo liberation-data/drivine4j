@@ -7,6 +7,7 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
+import org.drivine.query.POLYMORPHIC_LABELS_KEY
 import org.neo4j.driver.Value
 import org.neo4j.driver.internal.value.MapValue
 import kotlin.reflect.KClass
@@ -147,10 +148,25 @@ class TransformPostProcessor<S, T>(
     }
 
     /**
-     * Checks if a type requires special handling (polymorphic relationships or sorting).
+     * Whether a view must be built by reflection ([constructWithSpecialHandling]) rather than plain
+     * Jackson `convertValue`. Needed when the view contains a polymorphic fragment that must be
+     * dispatched to a concrete subtype — as a **root fragment** (e.g. a recursive tree whose node is a
+     * sealed interface) or a **relationship target** — a client-side sorted collection, or a
+     * nested/recursive view that itself needs it. Cycle-guarded for self-referential views.
      */
-    private fun requiresSpecialHandling(targetClass: Class<*>): Boolean {
-        return hasPolymorphicRelationships(targetClass) || hasSortedRelationships(targetClass)
+    private fun requiresSpecialHandling(targetClass: Class<*>): Boolean =
+        requiresSpecialHandling(targetClass, mutableSetOf())
+
+    private fun requiresSpecialHandling(targetClass: Class<*>, visited: MutableSet<Class<*>>): Boolean {
+        if (!targetClass.isAnnotationPresent(GraphView::class.java)) return false
+        if (!visited.add(targetClass)) return false // already visiting (recursive view) — no new reason here
+        val viewModel = GraphViewModel.from(targetClass)
+        if (needsPolymorphicHandling(viewModel.rootFragment.fragmentType)) return true
+        if (viewModel.relationships.any { needsPolymorphicHandling(it.elementType) }) return true
+        if (viewModel.relationships.any { it.sortBy != null }) return true
+        return viewModel.relationships.any {
+            it.elementType.isAnnotationPresent(GraphView::class.java) && requiresSpecialHandling(it.elementType, visited)
+        }
     }
 
     // =============================================================================
@@ -191,8 +207,9 @@ class TransformPostProcessor<S, T>(
             val paramName = param.name ?: return@forEach
             val rel = viewModel.relationships.find { it.fieldName == paramName }
             val fieldData = data[paramName]
+            val isRootFragment = viewModel.rootFragment.fieldName == paramName
 
-            val value = convertFieldValue(param, rel, fieldData)
+            val value = convertFieldValue(param, rel, fieldData, isRootFragment, viewModel)
             val sortedValue = applySortingIfConfigured(value, rel)
 
             if (sortedValue != null || param.type.isMarkedNullable) {
@@ -207,11 +224,23 @@ class TransformPostProcessor<S, T>(
      * Converts a field value based on its type and relationship configuration.
      */
     @Suppress("UNCHECKED_CAST")
-    private fun convertFieldValue(param: KParameter, rel: RelationshipModel?, fieldData: Any?): Any? {
+    private fun convertFieldValue(
+        param: KParameter,
+        rel: RelationshipModel?,
+        fieldData: Any?,
+        isRootFragment: Boolean,
+        viewModel: GraphViewModel,
+    ): Any? {
         return when {
-            // Polymorphic relationship
+            // Polymorphic relationship target
             rel != null && needsPolymorphicHandling(rel.elementType) && fieldData != null -> {
                 convertPolymorphicRelationship(rel, fieldData)
+            }
+
+            // Nested / recursive view relationship whose own tree needs special handling — recurse
+            // (so a nested view's polymorphic root fragment is dispatched too).
+            rel != null && fieldData != null && isSpecialView(rel.elementType) -> {
+                convertNestedViewRelationship(rel, fieldData)
             }
 
             // Non-polymorphic collection relationship
@@ -224,6 +253,11 @@ class TransformPostProcessor<S, T>(
                 objectMapper.convertValue(fieldData, rel.elementType)
             }
 
+            // Polymorphic root fragment field — dispatch to its concrete subtype by labels.
+            isRootFragment && fieldData != null && needsPolymorphicHandling(viewModel.rootFragment.fragmentType) -> {
+                convertPolymorphicItem(fieldData, viewModel.rootFragment.fragmentType)
+            }
+
             // Non-relationship field
             fieldData != null -> {
                 convertNonRelationshipField(param, fieldData)
@@ -232,6 +266,23 @@ class TransformPostProcessor<S, T>(
             // Null value
             else -> null
         }
+    }
+
+    /** Whether a relationship-target view must itself be built by reflection (nested / recursive). */
+    private fun isSpecialView(type: Class<*>): Boolean =
+        type.isAnnotationPresent(GraphView::class.java) && requiresSpecialHandling(type)
+
+    /** Builds a nested/recursive view relationship, recursing through [constructWithSpecialHandling]. */
+    @Suppress("UNCHECKED_CAST")
+    private fun convertNestedViewRelationship(rel: RelationshipModel, fieldData: Any): Any? {
+        fun build(item: Any?): Any? = when (item) {
+            is Map<*, *> -> constructWithSpecialHandling(
+                reconstructFragmentData(item, rel.elementType) as Map<String, Any?>, rel.elementType
+            )
+            null -> null
+            else -> objectMapper.convertValue(item, rel.elementType)
+        }
+        return if (rel.isCollection && fieldData is List<*>) fieldData.map { build(it) } else build(fieldData)
     }
 
     /**
@@ -301,28 +352,6 @@ class TransformPostProcessor<S, T>(
     }
 
     /**
-     * Checks if the target type has any polymorphic relationship fields.
-     */
-    private fun hasPolymorphicRelationships(targetClass: Class<*>): Boolean {
-        if (!targetClass.isAnnotationPresent(GraphView::class.java)) {
-            return false
-        }
-        val viewModel = GraphViewModel.from(targetClass)
-        return viewModel.relationships.any { needsPolymorphicHandling(it.elementType) }
-    }
-
-    /**
-     * Checks if a GraphView has any relationships that require client-side sorting.
-     */
-    private fun hasSortedRelationships(targetClass: Class<*>): Boolean {
-        if (!targetClass.isAnnotationPresent(GraphView::class.java)) {
-            return false
-        }
-        val viewModel = GraphViewModel.from(targetClass)
-        return viewModel.relationships.any { it.sortBy != null }
-    }
-
-    /**
      * Converts a single polymorphic item by resolving its concrete type from labels.
      */
     @Suppress("UNCHECKED_CAST")
@@ -332,14 +361,18 @@ class TransformPostProcessor<S, T>(
         }
 
         val mapData = data as Map<String, Any?>
-        val labels = mapData["labels"]
+        // A nested comprehension carries labels under __labels (collision-safe); the top-level and
+        // relationship-target projections use `labels`. Accept either.
+        val labels = mapData[POLYMORPHIC_LABELS_KEY] ?: mapData["labels"]
 
         if (labels is List<*>) {
             val labelStrings = labels.filterIsInstance<String>()
             val concreteType = resolveConcreteTypeByLabels(baseType, labelStrings)
 
             if (concreteType != null) {
-                return objectMapper.convertValue(mapData, concreteType)
+                // Reconstruct @GraphProperty / @PropertyBag keys using the *concrete* subtype's model
+                // (the base model doesn't know a subtype's fields), then deserialize.
+                return objectMapper.convertValue(reconstructFragmentData(mapData, concreteType), concreteType)
             }
         }
 
