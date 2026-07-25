@@ -11,6 +11,7 @@ import java.lang.reflect.Modifier
 import kotlin.reflect.KClass
 import kotlin.reflect.KMutableProperty1
 import kotlin.reflect.KProperty1
+import kotlin.reflect.full.allSuperclasses
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.javaField
@@ -323,21 +324,35 @@ data class FragmentModel(
         /**
          * Finds the field annotated with @GraphNodeId.
          * Returns the field name if found, null otherwise.
-         * Checks both property-level annotations and getter-level annotations (@get:NodeId).
+         * Checks property- and getter-level annotations (`@get:NodeId`), including one **inherited**
+         * from a supertype — e.g. a sealed subtype whose `@NodeId` is declared on the interface getter
+         * (`interface X { @get:NodeId val id }`). Kotlin does not propagate the annotation onto an
+         * `override`, so the subtype's own property/getter carries none; we look through supertypes.
          */
         private fun findNodeIdField(clazz: Class<*>): String? {
             // Try Kotlin reflection first
             return try {
                 val kClass = clazz.kotlin
-                kClass.memberProperties.find { property ->
-                    // Check property-level annotation first
-                    property.findAnnotation<NodeId>() != null ||
-                        // Also check getter annotation (for @get:NodeId on interface properties)
-                        property.getter.findAnnotation<NodeId>() != null
-                }?.name
+                kClass.memberProperties.find { property -> hasNodeId(kClass, property) }?.name
             } catch (e: Exception) {
                 // Fall back to Java reflection
                 findNodeIdFieldJava(clazz)
+            }
+        }
+
+        /**
+         * Whether [property] carries `@NodeId` on itself, its getter, or — for an `override` of a
+         * supertype property — the same-named property/getter on any supertype (interface or class).
+         */
+        private fun hasNodeId(kClass: KClass<*>, property: KProperty1<*, *>): Boolean {
+            if (property.findAnnotation<NodeId>() != null || property.getter.findAnnotation<NodeId>() != null) {
+                return true
+            }
+            return kClass.allSuperclasses.any { supertype ->
+                supertype.memberProperties.any { superProp ->
+                    superProp.name == property.name &&
+                        (superProp.findAnnotation<NodeId>() != null || superProp.getter.findAnnotation<NodeId>() != null)
+                }
             }
         }
 
