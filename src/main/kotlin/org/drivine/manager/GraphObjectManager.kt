@@ -245,9 +245,12 @@ class GraphObjectManager(
             }
         }
 
-        // For GraphViews, also register subtypes for relationship target types
+        // For GraphViews, also register subtypes for the root fragment and every relationship target.
+        // The root fragment can itself be polymorphic — e.g. a recursive view whose node is a sealed
+        // fragment — and needs the same registry population a directly-loaded sealed fragment gets.
         if (graphClass.isAnnotationPresent(GraphView::class.java)) {
             val viewModel = GraphViewModel.from(graphClass)
+            autoRegisterSubtypesRecursive(viewModel.rootFragment.fragmentType, registeredClasses)
             viewModel.relationships.forEach { rel ->
                 autoRegisterSubtypesRecursive(rel.elementType, registeredClasses)
             }

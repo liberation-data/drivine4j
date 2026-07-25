@@ -19,6 +19,7 @@ import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.polytree.ChunkNode
+import sample.polytree.ContentElementNode
 import sample.polytree.ContentTreeView
 import sample.polytree.DocumentNode
 import sample.polytree.FolderWithHead
@@ -55,11 +56,19 @@ private fun seed(pm: NonTransactionalPersistenceManager) {
     )
 }
 
-private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManager) {
+private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) {
     seed(pm)
 
     // ----- Polymorphic recursive view: each node its concrete subtype -----
     val roots = gom.loadAll(TypedContentTreeView::class.java, "element.id = 'd'")
+
+    // Auto-registration must fire for the view's *root* fragment (not just relationship targets), so
+    // registry-based dispatch works without an explicit registerSubtype — the reported gap.
+    assertEquals(
+        ChunkNode::class.java,
+        registry.resolveByLabels(ContentElementNode::class.java, listOf("ContentElement", "Chunk")),
+        "auto-registration should populate the sealed root fragment's subtypes",
+    )
     assertEquals(1, roots.size)
     val root = roots.single()
     assertTrue(root.element is DocumentNode, "root is a Document, got ${root.element::class.simpleName}")
@@ -123,7 +132,7 @@ class PolymorphicRecursiveViewNeo4jTest {
 
     @BeforeEach fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
-    @Test fun `polymorphic recursive view on Neo4j`() = verify(buildGom(pm, registry), pm)
+    @Test fun `polymorphic recursive view on Neo4j`() = verify(buildGom(pm, registry), pm, registry)
 }
 
 @Testcontainers
@@ -155,7 +164,7 @@ class PolymorphicRecursiveViewFalkorDbTest {
 
     @BeforeEach fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
-    @Test fun `polymorphic recursive view on FalkorDB`() = verify(buildGom(pm, registry), pm)
+    @Test fun `polymorphic recursive view on FalkorDB`() = verify(buildGom(pm, registry), pm, registry)
 }
 
 @Testcontainers
@@ -187,5 +196,5 @@ class PolymorphicRecursiveViewMemgraphTest {
 
     @BeforeEach fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
-    @Test fun `polymorphic recursive view on Memgraph`() = verify(buildGom(pm, registry), pm)
+    @Test fun `polymorphic recursive view on Memgraph`() = verify(buildGom(pm, registry), pm, registry)
 }
