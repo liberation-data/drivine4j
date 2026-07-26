@@ -199,6 +199,23 @@ open class WhereBuilder<T : Any>(
             conditions.add(WhereCondition.OrCondition(orBuilder.conditions))
         }
     }
+
+    /**
+     * Negates the sub-expression built inside the block — `NOT ( … )`. The inner conditions are AND-ed
+     * before negation, so `not { query.a eq 1; query.b eq 2 }` renders `NOT (a = $p AND b = $p)`; pair
+     * with [anyOf] for `NOT ( … OR … )`. The counterpart of embabel's `PropertyFilter.Not`.
+     *
+     * ```kotlin
+     * where { not { query.property("metadata.status") eq "archived" } }   // → NOT (n.`metadata.status` = $p)
+     * ```
+     */
+    fun not(block: context(WhereBuilder<T>) () -> Unit) {
+        val notBuilder = WhereBuilder(queryObject)
+        block(notBuilder)
+        if (notBuilder.conditions.isNotEmpty()) {
+            conditions.add(WhereCondition.NotCondition(notBuilder.conditions))
+        }
+    }
 }
 
 /**
@@ -215,6 +232,14 @@ val <T : Any> query: T
 context(builder: WhereBuilder<T>)
 fun <T : Any> anyOf(block: context(WhereBuilder<T>) () -> Unit) {
     builder.anyOf(block)
+}
+
+/**
+ * Context-aware function to negate a sub-expression within a where block — `NOT ( … )`.
+ */
+context(builder: WhereBuilder<T>)
+fun <T : Any> not(block: context(WhereBuilder<T>) () -> Unit) {
+    builder.not(block)
 }
 
 /**
@@ -366,6 +391,25 @@ sealed class WhereCondition {
         val propertyPath: String,  // e.g., "proposition.grounding"
         val value: Any?
     ) : WhereCondition()
+
+    /**
+     * Negation of a sub-expression — `not { … }`. The [conditions] are AND-ed and wrapped:
+     * `NOT (c1 AND c2 …)`. Wraps a single leaf (`not { query.x eq 1 }` → `NOT (x = $p)`) or a compound
+     * (`not { anyOf { … } }` → `NOT ((… OR …))`). The counterpart of embabel's `PropertyFilter.Not`.
+     */
+    data class NotCondition(
+        val conditions: List<WhereCondition>
+    ) : WhereCondition()
+
+    /**
+     * Label membership where **any** of [labels] matches — `ANY(l IN labels(alias) WHERE l IN $p)`.
+     * Distinct from [LabelCondition] (`alias:L1:L2`, which requires **all** labels). The counterpart of
+     * embabel's `EntityFilter.HasAnyLabel`. Binds [labels] as a single list parameter.
+     */
+    data class AnyLabelCondition(
+        val alias: String,        // e.g., "chunk"
+        val labels: List<String>  // any-of; at least one must be present
+    ) : WhereCondition()
 }
 
 /**
@@ -379,9 +423,17 @@ enum class ComparisonOperator(val cypherOperator: String) {
     LESS_THAN("<"),
     LESS_THAN_OR_EQUAL("<="),
     IN("IN"),
+    /** `NOT lhs IN $p` — rendered with a leading `NOT`, binds a list like [IN]. */
+    NOT_IN("IN"),
     CONTAINS("CONTAINS"),
     STARTS_WITH("STARTS WITH"),
     ENDS_WITH("ENDS WITH"),
+    /** Regex match, `lhs =~ $p`. */
+    MATCHES("=~"),
+    /** Case-insensitive contains — `toLower(lhs) CONTAINS $p` (the bound value is lower-cased). */
+    CONTAINS_IGNORE_CASE("CONTAINS"),
+    /** Case-insensitive equals — `toLower(lhs) = $p` (the bound value is lower-cased). */
+    EQUALS_IGNORE_CASE("="),
     IS_NULL("IS NULL"),
     IS_NOT_NULL("IS NOT NULL")
 }

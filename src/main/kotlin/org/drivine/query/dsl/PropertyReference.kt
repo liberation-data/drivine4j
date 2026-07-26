@@ -545,6 +545,104 @@ class PropertyBagReference(
 }
 
 /**
+ * Dynamic (untyped) reference to a node property by its **runtime** name — the escape hatch for
+ * filtering on property paths not known at compile time (so no generated typed accessor exists),
+ * e.g. arbitrary `@PropertyBag` keys or caller/tool-supplied filter keys.
+ *
+ * ```kotlin
+ * where { query.property("metadata.source") eq "wiki" }   // → n.`metadata.source` = $param
+ * ```
+ *
+ * [path] is the stored property name (a `@PropertyBag` entry is stored as `"prefix.key"`, so pass the
+ * full dotted name). It is rendered exactly like [PropertyBagReference.key]: a path containing a dot is
+ * backtick-quoted (and internal backticks escaped) by [org.drivine.query.dsl.CypherGenerator], and the
+ * value binds as a `$param_*` — so untrusted **values** cannot inject. Prefer the generated typed
+ * accessors (`query.someField`) when the key is known; use this only for genuinely dynamic keys.
+ *
+ * The returned reference composes with every base operator (`eq`, `neq`, `gt`, `in`, `isNull`, …). For
+ * data-driven filters (translating a runtime filter object), see [predicate], which takes the operator
+ * as a value and covers the string operators too.
+ */
+fun NodeReference.property(path: String): PropertyReference<Any?> =
+    PropertyReference(this.nodeAlias, path)
+
+/**
+ * Appends a single property predicate built from a **runtime** `(path, operator, value)` triple — the
+ * programmatic counterpart to [property], for translating a data-driven filter (a list/tree of
+ * key/op/value leaves) into `where { }` without a compile-time accessor per key.
+ *
+ * ```kotlin
+ * where {
+ *     runtimeFilter.leaves.forEach { query.predicate(it.path, it.op, it.value) }
+ * }
+ * ```
+ *
+ * Covers the full [ComparisonOperator] set (including `CONTAINS` / `STARTS_WITH` / `ENDS_WITH`, which
+ * the untyped [property] reference does not expose). [value] is ignored for `IS_NULL` / `IS_NOT_NULL`
+ * and should be a list for `IN`. The [path] is rendered (and dot-containing paths backtick-quoted)
+ * exactly as [property]; the value binds as a parameter.
+ */
+context(builder: WhereBuilder<*>)
+fun NodeReference.predicate(path: String, operator: ComparisonOperator, value: Any? = null) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition(
+            propertyPath = "${this.nodeAlias}.$path",
+            operator = operator,
+            value = value,
+        )
+    )
+}
+
+/**
+ * Filters to nodes carrying **any** of [labels] — `ANY(l IN labels(alias) WHERE l IN $p)`. Contrast
+ * [instanceOf], which requires **all** of a type's labels. The counterpart of embabel's
+ * `EntityFilter.HasAnyLabel`.
+ *
+ * ```kotlin
+ * where { query.hasAnyLabel("Chunk", "Section") }   // → ANY(_lbl IN labels(n) WHERE _lbl IN $p)
+ * ```
+ */
+context(builder: WhereBuilder<*>)
+fun NodeReference.hasAnyLabel(vararg labels: String) {
+    require(labels.isNotEmpty()) { "hasAnyLabel() requires at least one label" }
+    builder.conditions.add(WhereCondition.AnyLabelCondition(this.nodeAlias, labels.toList()))
+}
+
+// ----- Phase B operator sugar (composes with property()/typed references; also usable via predicate) -----
+
+/** `NOT lhs IN $p` — the negation of [PropertyReference.isIn]. */
+context(builder: WhereBuilder<*>)
+infix fun <T> PropertyReference<T>.notIn(values: List<T>) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.NOT_IN, values)
+    )
+}
+
+/** Regex match, `lhs =~ $p`. */
+context(builder: WhereBuilder<*>)
+infix fun StringPropertyReference.matches(pattern: String) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.MATCHES, pattern)
+    )
+}
+
+/** Case-insensitive contains, `toLower(lhs) CONTAINS $p`. */
+context(builder: WhereBuilder<*>)
+infix fun StringPropertyReference.containsIgnoreCase(value: String) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.CONTAINS_IGNORE_CASE, value)
+    )
+}
+
+/** Case-insensitive equals, `toLower(lhs) = $p`. */
+context(builder: WhereBuilder<*>)
+infix fun StringPropertyReference.eqIgnoreCase(value: String) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.EQUALS_IGNORE_CASE, value)
+    )
+}
+
+/**
  * Intermediate builder that holds a condition.
  * Automatically added to WhereBuilder when created in the DSL context.
  */
