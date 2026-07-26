@@ -56,6 +56,31 @@ interface NodeReference {
 }
 
 /**
+ * A [NodeReference] that additionally carries its fragment's **logical-key → stored-property** mapping,
+ * so a caller can filter on a runtime key without knowing the on-disk name or the `@PropertyBag` prefix.
+ * Codegen emits it into each `<Fragment>QueryDsl` from the fragment's `@GraphProperty` / `@PropertyBag`
+ * annotations — the same single source of truth the typed accessors are generated from.
+ *
+ * @see field
+ * @see predicateOn
+ */
+interface ResolvableNodeReference : NodeReference {
+    /**
+     * Maps a logical field key — both the declared (Kotlin/Java) name **and** any `@GraphProperty`
+     * on-disk name — to the stored property name. `containerSectionId` and `container_section_id` both
+     * map to `container_section_id`.
+     */
+    val fieldKeyPaths: Map<String, String>
+
+    /**
+     * The stored prefixes (incl. delimiter, e.g. `"metadata."`) of the fragment's `@PropertyBag` fields,
+     * one per bag. An unmatched key resolves through the single prefix when there is exactly one; zero
+     * or more than one makes an unmatched key unresolvable — see [resolveKey].
+     */
+    val bagPrefixes: List<String>
+}
+
+/**
  * Extension function to filter by node type using the @NodeFragment annotation.
  *
  * Example:
@@ -587,6 +612,57 @@ fun NodeReference.predicate(path: String, operator: ComparisonOperator, value: A
     builder.conditions.add(
         WhereCondition.PropertyCondition(
             propertyPath = "${this.nodeAlias}.$path",
+            operator = operator,
+            value = value,
+        )
+    )
+}
+
+/**
+ * Resolves a **logical** [key] to its stored property name using the fragment's own annotations
+ * (via [ResolvableNodeReference]): a declared field (matched by Kotlin/Java name **or** `@GraphProperty`
+ * on-disk name) resolves to its on-disk name; an unmatched key resolves through the fragment's single
+ * `@PropertyBag` prefix. Throws when a key matches no field and there is not exactly one bag — never
+ * silently guesses.
+ */
+fun ResolvableNodeReference.resolveKey(key: String): String {
+    fieldKeyPaths[key]?.let { return it }
+    return when (bagPrefixes.size) {
+        1 -> "${bagPrefixes.single()}$key"
+        0 -> throw IllegalArgumentException(
+            "Cannot resolve key '$key': it matches no declared field and this fragment has no @PropertyBag. " +
+                "Known keys: ${fieldKeyPaths.keys.sorted()}."
+        )
+        else -> throw IllegalArgumentException(
+            "Cannot resolve key '$key': it matches no declared field and this fragment has multiple @PropertyBag " +
+                "prefixes ($bagPrefixes) — ambiguous. Use property(\"<prefix>$key\") with the explicit prefix."
+        )
+    }
+}
+
+/**
+ * Resolving counterpart of [property]: takes a **logical** [key], resolves it to the stored path via the
+ * fragment's `@GraphProperty` / `@PropertyBag` annotations (see [resolveKey]), and returns a reference
+ * composing with every base operator — so the caller needn't know the on-disk name or the bag prefix.
+ *
+ * ```kotlin
+ * where { query.field("containerSectionId") eq "s1" }   // @GraphProperty → n.container_section_id
+ * where { query.field("source") eq "wiki" }             // @PropertyBag   → n.`metadata.source`
+ * ```
+ */
+fun ResolvableNodeReference.field(key: String): PropertyReference<Any?> =
+    PropertyReference(this.nodeAlias, resolveKey(key))
+
+/**
+ * Resolving counterpart of [predicate]: appends a predicate from a `(logicalKey, operator, value)`
+ * triple, resolving the key to its stored path via the fragment's annotations. Full [ComparisonOperator]
+ * set — the entry point for translating a data-driven filter keyed by *logical* model keys.
+ */
+context(builder: WhereBuilder<*>)
+fun ResolvableNodeReference.predicateOn(key: String, operator: ComparisonOperator, value: Any? = null) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition(
+            propertyPath = "${this.nodeAlias}.${resolveKey(key)}",
             operator = operator,
             value = value,
         )

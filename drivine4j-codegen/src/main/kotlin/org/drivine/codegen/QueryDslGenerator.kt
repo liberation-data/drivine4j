@@ -372,7 +372,8 @@ class QueryDslGenerator(
     /** The `<Fragment>QueryDsl` query object: a NodeReference at alias `"n"` with the node's property refs. */
     private fun generateFragmentDslClass(fragmentClass: KSClassDeclaration, dslClassName: String): TypeSpec {
         val classBuilder = TypeSpec.classBuilder(dslClassName)
-            .addSuperinterface(ClassName("org.drivine.query.dsl", "NodeReference"))
+            // ResolvableNodeReference (: NodeReference) — carries the logical-key → stored-path resolver.
+            .addSuperinterface(ClassName("org.drivine.query.dsl", "ResolvableNodeReference"))
 
         // Fixed root alias "n" — matches FragmentQueryBuilder.nodeAlias, so `where { query.x }` renders
         // `n.x` and instanceOf() renders `n:Label`, aligning with the fragment's MATCH/RETURN.
@@ -383,9 +384,37 @@ class QueryDslGenerator(
                 .build()
         )
 
+        // Accumulate the model-aware key resolver as each reference is emitted: a scalar field maps both
+        // its Kotlin name and its @GraphProperty on-disk name to the on-disk name; a @PropertyBag adds a
+        // stored prefix. field(key) / predicateOn(key) consult these at query time.
+        val fieldKeyPaths = LinkedHashMap<String, String>()
+        val bagPrefixes = mutableListOf<String>()
         fragmentClass.getAllProperties().forEach { prop ->
-            addPropertyReference(classBuilder, prop, "\"n\"")
+            when (val emitted = addPropertyReference(classBuilder, prop, "\"n\"")) {
+                is EmittedRef.Field -> {
+                    fieldKeyPaths[emitted.logicalName] = emitted.onDiskName
+                    fieldKeyPaths[emitted.onDiskName] = emitted.onDiskName
+                }
+                is EmittedRef.Bag -> bagPrefixes.add(emitted.storedPrefix)
+            }
         }
+
+        val stringType = String::class.asClassName()
+        val mapInit = if (fieldKeyPaths.isEmpty()) "emptyMap()" else
+            "mapOf(${fieldKeyPaths.entries.joinToString(", ") { "\"${it.key}\" to \"${it.value}\"" }})"
+        classBuilder.addProperty(
+            PropertySpec.builder("fieldKeyPaths", Map::class.asClassName().parameterizedBy(stringType, stringType))
+                .addModifiers(KModifier.OVERRIDE)
+                .initializer(mapInit)
+                .build()
+        )
+        val listInit = "listOf(${bagPrefixes.joinToString(", ") { "\"$it\"" }})"
+        classBuilder.addProperty(
+            PropertySpec.builder("bagPrefixes", List::class.asClassName().parameterizedBy(stringType))
+                .addModifiers(KModifier.OVERRIDE)
+                .initializer(listInit)
+                .build()
+        )
 
         classBuilder.addType(
             TypeSpec.companionObjectBuilder()
@@ -785,16 +814,24 @@ class QueryDslGenerator(
         )
     }
 
+    /** What [addPropertyReference] emitted, so callers can accumulate the model-aware key resolver. */
+    sealed interface EmittedRef {
+        /** A scalar/typed reference: [logicalName] (Kotlin name) and its stored [onDiskName]. */
+        data class Field(val logicalName: String, val onDiskName: String) : EmittedRef
+        /** A `@PropertyBag` reference with its [storedPrefix] (incl. delimiter). */
+        data class Bag(val storedPrefix: String) : EmittedRef
+    }
+
     /** Emits one property reference, dispatching to the bag / string / scalar shape. */
-    private fun addPropertyReference(classBuilder: TypeSpec.Builder, prop: KSPropertyDeclaration, aliasExpr: String) {
+    private fun addPropertyReference(classBuilder: TypeSpec.Builder, prop: KSPropertyDeclaration, aliasExpr: String): EmittedRef {
         // @PropertyBag / @CompositeProperty → a PropertyBagReference with key(name), not a scalar.
         val bagAnnotation = prop.annotations.find {
             val name = it.shortName.asString()
             name == "PropertyBag" || name == "CompositeProperty"
         }
         if (bagAnnotation != null) {
-            addPropertyBagReference(classBuilder, prop.simpleName.asString(), aliasExpr, bagAnnotation)
-            return
+            val storedPrefix = addPropertyBagReference(classBuilder, prop.simpleName.asString(), aliasExpr, bagAnnotation)
+            return EmittedRef.Bag(storedPrefix)
         }
 
         val propName = prop.simpleName.asString()
@@ -817,15 +854,16 @@ class QueryDslGenerator(
                 .initializer("$propertyRefType($aliasExpr, \"$onDiskName\")")
                 .build()
         )
+        return EmittedRef.Field(propName, onDiskName)
     }
 
-    /** Emits a `PropertyBagReference(alias, storedPrefix)` for a `@PropertyBag` / `@CompositeProperty`. */
+    /** Emits a `PropertyBagReference(alias, storedPrefix)`; returns the stored prefix (incl. delimiter). */
     private fun addPropertyBagReference(
         classBuilder: TypeSpec.Builder,
         propName: String,
         aliasExpr: String,
         bagAnnotation: KSAnnotation,
-    ) {
+    ): String {
         val prefix = (bagAnnotation.arguments.find { it.name?.asString() == "prefix" }?.value as? String) ?: ""
         val delimiter = (bagAnnotation.arguments.find { it.name?.asString() == "delimiter" }?.value as? String) ?: "."
         val storedPrefix = "${prefix.ifEmpty { propName }}$delimiter"
@@ -835,6 +873,7 @@ class QueryDslGenerator(
                 .initializer("%T($aliasExpr, \"$storedPrefix\")", bagRefType)
                 .build()
         )
+        return storedPrefix
     }
 
     private fun generateQueryDslClass(graphViewClass: KSClassDeclaration, viewStructure: List<ViewProperty>): TypeSpec {

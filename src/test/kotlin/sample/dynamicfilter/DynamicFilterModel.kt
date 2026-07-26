@@ -1,33 +1,49 @@
 package sample.dynamicfilter
 
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.PropertyBag
-import org.drivine.query.dsl.NodeReference
 import org.drivine.query.dsl.PropertyBagReference
+import org.drivine.query.dsl.ResolvableNodeReference
 import org.drivine.query.dsl.StringPropertyReference
 
 /**
- * A fragment with free-form `@PropertyBag(prefix = "metadata")` — the shape a consumer filters on with
- * arbitrary runtime keys (stored as flat node properties literally named `metadata.<key>`). Used to
- * verify the dynamic `property(path)` / `predicate(path, op, value)` escape hatch resolves those keys
- * cross-engine.
+ * A fragment mixing a promoted `@GraphProperty` field (`sectionId` → on-disk `section_id`) with
+ * free-form `@PropertyBag(prefix = "metadata")` (stored as flat node properties named `metadata.<key>`)
+ * — the shape a consumer filters on with arbitrary runtime keys. Used to verify both the dynamic
+ * `property(path)` / `predicate(path, op, value)` escape hatch and the model-aware `field(key)` /
+ * `predicateOn(key, …)` resolution cross-engine.
  */
 @NodeFragment(labels = ["Record"])
 data class RecordNode(
     @NodeId val id: String,
     val title: String,
+    @GraphProperty("section_id") val sectionId: String? = null,
     @PropertyBag(prefix = "metadata") val metadata: Map<String, Any?> = emptyMap(),
 )
 
-/** Hand-written DSL mirroring the codegen shape (test source isn't KSP-processed). */
-class RecordNodeQueryDsl : NodeReference {
+/**
+ * Hand-written DSL mirroring the codegen shape (test source isn't KSP-processed) — now a
+ * [ResolvableNodeReference], carrying the same `fieldKeyPaths` / `bagPrefixes` the generator emits.
+ */
+class RecordNodeQueryDsl : ResolvableNodeReference {
     override val nodeAlias: String = "n"
     val id = StringPropertyReference("n", "id")
     val title = StringPropertyReference("n", "title")
+    val sectionId = StringPropertyReference("n", "section_id")
 
     /** The `@PropertyBag` accessor — the typed way to reach a bag key, for the equivalence check. */
     val metadata = PropertyBagReference("n", "metadata.")
+
+    // Both the Kotlin name and the @GraphProperty on-disk name resolve to the on-disk name.
+    override val fieldKeyPaths: Map<String, String> = mapOf(
+        "id" to "id",
+        "title" to "title",
+        "sectionId" to "section_id",
+        "section_id" to "section_id",
+    )
+    override val bagPrefixes: List<String> = listOf("metadata.")
 
     companion object {
         val INSTANCE = RecordNodeQueryDsl()

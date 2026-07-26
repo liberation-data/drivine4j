@@ -195,7 +195,7 @@ public class QueryDslGenerator {
             .build());
 
         // Generate property accessors reading the constructor `alias` field.
-        addPropertyGetters(classBuilder, fragmentClass, "alias");
+        addPropertyGetters(classBuilder, fragmentClass, "alias", null, null);
 
         // Write the file
         try {
@@ -218,7 +218,14 @@ public class QueryDslGenerator {
      * `@PropertyBag` (a PropertyBagReference) and `@GraphProperty` (on-disk name), exactly as the
      * Kotlin generator does.
      */
-    private void addPropertyGetters(TypeSpec.Builder classBuilder, TypeElement fragmentClass, String aliasExpr) {
+    /**
+     * Emits the property getters. When [fieldKeyPaths] / [bagPrefixes] are non-null, also accumulates the
+     * model-aware key resolver: each scalar field maps both its Java name and its @GraphProperty on-disk
+     * name to the on-disk name; each @PropertyBag contributes its stored prefix. Pass null from callers
+     * (e.g. the view Properties classes) that don't emit a resolver.
+     */
+    private void addPropertyGetters(TypeSpec.Builder classBuilder, TypeElement fragmentClass, String aliasExpr,
+                                    java.util.Map<String, String> fieldKeyPaths, java.util.List<String> bagPrefixes) {
         ClassName propertyReference = ClassName.get("org.drivine.query.dsl", "PropertyReference");
         ClassName stringPropertyReference = ClassName.get("org.drivine.query.dsl", "StringPropertyReference");
 
@@ -244,6 +251,7 @@ public class QueryDslGenerator {
                     .returns(bagReference)
                     .addStatement("return new $T($L, $S)", bagReference, aliasExpr, storedPrefix)
                     .build());
+                if (bagPrefixes != null) bagPrefixes.add(storedPrefix);
                 continue;
             }
 
@@ -267,6 +275,10 @@ public class QueryDslGenerator {
                 .returns(propRefType)
                 .addStatement("return new $T($L, $S)", propRefType, aliasExpr, onDiskName)
                 .build());
+            if (fieldKeyPaths != null) {
+                fieldKeyPaths.put(fieldName, onDiskName);
+                fieldKeyPaths.put(onDiskName, onDiskName);
+            }
         }
     }
 
@@ -280,11 +292,15 @@ public class QueryDslGenerator {
         String simpleName = fragmentClass.getSimpleName().toString();
         String dslClassName = simpleName + "QueryDsl";
         String packageName = getPackageName(fragmentClass);
-        ClassName nodeReference = ClassName.get("org.drivine.query.dsl", "NodeReference");
+        // ResolvableNodeReference (: NodeReference) — carries the logical-key → stored-path resolver.
+        ClassName resolvableNodeReference = ClassName.get("org.drivine.query.dsl", "ResolvableNodeReference");
+        ClassName str = ClassName.get(String.class);
+        ClassName mapCn = ClassName.get("java.util", "Map");
+        ClassName listCn = ClassName.get("java.util", "List");
 
         TypeSpec.Builder classBuilder = TypeSpec.classBuilder(dslClassName)
             .addModifiers(Modifier.PUBLIC)
-            .addSuperinterface(nodeReference);
+            .addSuperinterface(resolvableNodeReference);
 
         // NodeReference.getNodeAlias() — fixed to the fragment root alias "n".
         classBuilder.addMethod(MethodSpec.methodBuilder("getNodeAlias")
@@ -294,7 +310,42 @@ public class QueryDslGenerator {
             .addStatement("return $S", "n")
             .build());
 
-        addPropertyGetters(classBuilder, fragmentClass, "\"n\"");
+        // Emit the getters and accumulate the model-aware key resolver as we go.
+        java.util.Map<String, String> fieldKeyPaths = new java.util.LinkedHashMap<>();
+        java.util.List<String> bagPrefixes = new java.util.ArrayList<>();
+        addPropertyGetters(classBuilder, fragmentClass, "\"n\"", fieldKeyPaths, bagPrefixes);
+
+        // ResolvableNodeReference.getFieldKeyPaths()
+        MethodSpec.Builder fieldKeyPathsMethod = MethodSpec.methodBuilder("getFieldKeyPaths")
+            .addModifiers(Modifier.PUBLIC)
+            .addAnnotation(Override.class)
+            .returns(ParameterizedTypeName.get(mapCn, str, str));
+        if (fieldKeyPaths.isEmpty()) {
+            fieldKeyPathsMethod.addStatement("return $T.emptyMap()", ClassName.get("java.util", "Collections"));
+        } else {
+            fieldKeyPathsMethod.addStatement("$T<$T, $T> m = new $T<>()", mapCn, str, str, ClassName.get("java.util", "LinkedHashMap"));
+            for (java.util.Map.Entry<String, String> e : fieldKeyPaths.entrySet()) {
+                fieldKeyPathsMethod.addStatement("m.put($S, $S)", e.getKey(), e.getValue());
+            }
+            fieldKeyPathsMethod.addStatement("return m");
+        }
+        classBuilder.addMethod(fieldKeyPathsMethod.build());
+
+        // ResolvableNodeReference.getBagPrefixes()
+        MethodSpec.Builder bagPrefixesMethod = MethodSpec.methodBuilder("getBagPrefixes")
+            .addModifiers(Modifier.PUBLIC)
+            .addAnnotation(Override.class)
+            .returns(ParameterizedTypeName.get(listCn, str));
+        if (bagPrefixes.isEmpty()) {
+            bagPrefixesMethod.addStatement("return $T.emptyList()", ClassName.get("java.util", "Collections"));
+        } else {
+            bagPrefixesMethod.addStatement("$T<$T> l = new $T<>()", listCn, str, ClassName.get("java.util", "ArrayList"));
+            for (String p : bagPrefixes) {
+                bagPrefixesMethod.addStatement("l.add($S)", p);
+            }
+            bagPrefixesMethod.addStatement("return l");
+        }
+        classBuilder.addMethod(bagPrefixesMethod.build());
 
         // Static INSTANCE — filterWith(FQueryDsl.class) resolves it by reflection.
         ClassName dslType = ClassName.get(packageName, dslClassName);

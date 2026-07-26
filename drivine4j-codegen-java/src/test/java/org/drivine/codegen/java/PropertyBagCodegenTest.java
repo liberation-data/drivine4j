@@ -109,11 +109,11 @@ class PropertyBagCodegenTest {
             .compile(fragment);
 
         assertThat(compilation).succeeded();
-        // A NodeReference at alias "n" with a static INSTANCE and property getters (@GraphProperty on-disk).
+        // A ResolvableNodeReference at alias "n" with a static INSTANCE and property getters (@GraphProperty on-disk).
         assertThat(compilation)
             .generatedSourceFile("sample.fd.ChunkQueryDsl")
             .contentsAsUtf8String()
-            .contains("implements NodeReference");
+            .contains("implements ResolvableNodeReference");
         assertThat(compilation)
             .generatedSourceFile("sample.fd.ChunkQueryDsl")
             .contentsAsUtf8String()
@@ -126,6 +126,45 @@ class PropertyBagCodegenTest {
             .generatedSourceFile("sample.fd.ChunkQueryDsl")
             .contentsAsUtf8String()
             .contains("containerSectionId()");
+    }
+
+    @Test
+    void emitsModelAwareKeyResolverForMixedFragment() {
+        JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.kr.Record",
+            "package sample.kr;",
+            "import org.drivine.annotation.NodeFragment;",
+            "import org.drivine.annotation.NodeId;",
+            "import org.drivine.annotation.GraphProperty;",
+            "import org.drivine.annotation.PropertyBag;",
+            "import java.util.Map;",
+            "@NodeFragment(labels = {\"Record\"})",
+            "public class Record {",
+            "  @NodeId public String id;",
+            "  @GraphProperty(\"section_id\") public String sectionId;",
+            "  @PropertyBag(prefix = \"metadata\") public Map<String, Object> metadata;",
+            "}");
+
+        Compilation compilation = Compiler.javac()
+            .withProcessors(new GraphViewProcessor())
+            .compile(fragment);
+
+        assertThat(compilation).succeeded();
+        String dsl = "sample.kr.RecordQueryDsl";
+        // Implements ResolvableNodeReference and emits the two resolver getters.
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("implements ResolvableNodeReference");
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("getFieldKeyPaths");
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("getBagPrefixes");
+        // A promoted @GraphProperty field resolves by BOTH its Java name and its on-disk name.
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("m.put(\"sectionId\", \"section_id\")");
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("m.put(\"section_id\", \"section_id\")");
+        // The @PropertyBag prefix is the sole bag prefix.
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("l.add(\"metadata.\")");
     }
 
     @Test

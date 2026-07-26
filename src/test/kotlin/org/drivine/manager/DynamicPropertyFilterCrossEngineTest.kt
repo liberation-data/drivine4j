@@ -9,11 +9,13 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.containsIgnoreCase
 import org.drivine.query.dsl.eqIgnoreCase
+import org.drivine.query.dsl.field
 import org.drivine.query.dsl.hasAnyLabel
 import org.drivine.query.dsl.matches
 import org.drivine.query.dsl.not
 import org.drivine.query.dsl.notIn
 import org.drivine.query.dsl.predicate
+import org.drivine.query.dsl.predicateOn
 import org.drivine.query.dsl.property
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
@@ -43,9 +45,9 @@ private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManag
     pm.execute(
         QuerySpecification.withStatement(
             """
-            CREATE (:Record:Premium {id: 'a', title: 'Alpha', `metadata.source`: 'web',  `metadata.rank`: 5})
-            CREATE (:Record          {id: 'b', title: 'Beta',  `metadata.source`: 'book', `metadata.rank`: 2})
-            CREATE (:Record:Premium {id: 'c', title: 'Gamma', `metadata.source`: 'web',  `metadata.rank`: 8})
+            CREATE (:Record:Premium {id: 'a', title: 'Alpha', section_id: 's1', `metadata.source`: 'web',  `metadata.rank`: 5})
+            CREATE (:Record          {id: 'b', title: 'Beta',  section_id: 's2', `metadata.source`: 'book', `metadata.rank`: 2})
+            CREATE (:Record:Premium {id: 'c', title: 'Gamma', section_id: 's1', `metadata.source`: 'web',  `metadata.rank`: 8})
             """.trimIndent()
         )
     )
@@ -120,6 +122,27 @@ private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManag
         }
     }
     assertEquals(setOf("a"), premiumNotTop.map { it.id }.toSet())
+
+    // ----- Model-aware key resolution: field() / predicateOn() -----
+
+    // A promoted @GraphProperty field resolves by BOTH its Kotlin name and its on-disk name → section_id.
+    val byKotlinName = gom.loadAll(RecordNode::class.java, dsl) { where { query.field("sectionId") eq "s1" } }
+    assertEquals(setOf("a", "c"), byKotlinName.map { it.id }.toSet())
+    val byOnDiskName = gom.loadAll(RecordNode::class.java, dsl) { where { query.field("section_id") eq "s1" } }
+    assertEquals(setOf("a", "c"), byOnDiskName.map { it.id }.toSet())
+
+    // A free-form key (no matching field) resolves through the single @PropertyBag prefix → metadata.source,
+    // and matches the explicit stored-path form exactly.
+    val bySource = gom.loadAll(RecordNode::class.java, dsl) { where { query.field("source") eq "book" } }
+    val byStoredPath = gom.loadAll(RecordNode::class.java, dsl) { where { query.property("metadata.source") eq "book" } }
+    assertEquals(setOf("b"), bySource.map { it.id }.toSet())
+    assertEquals(byStoredPath.map { it.id }.toSet(), bySource.map { it.id }.toSet())
+
+    // predicateOn resolves the key the same way, with the full operator set.
+    val sourceContains = gom.loadAll(RecordNode::class.java, dsl) {
+        where { query.predicateOn("source", ComparisonOperator.CONTAINS, "oo") }
+    }
+    assertEquals(setOf("b"), sourceContains.map { it.id }.toSet())
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {
