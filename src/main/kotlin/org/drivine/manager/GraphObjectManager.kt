@@ -421,17 +421,24 @@ class GraphObjectManager(
         executeScoredSearch(graphClass, VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar))
 
     /**
-     * Vector search over a `@GraphView` with an additional caller `where { }` predicate `AND`-ed into
-     * the post-projection filter. Use for "find the nearest propositions in this context with this
-     * status" — vector similarity plus arbitrary property predicates in one statement.
+     * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
+     * similarity plus arbitrary property predicates in one statement. Works on a `@GraphView`
+     * (predicates filter the *projected* values) and on a bare `@NodeFragment` (predicates filter the
+     * matched node directly, via the fragment's generated query DSL) — the vector mirror of the filtered
+     * [loadMatching].
      *
      * ```kotlin
+     * // view
      * graphObjectManager.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, queryVector, topK = 20) {
      *     where { query.proposition.contextId eq ctx; query.proposition.status eq status }
      * }
+     * // fragment
+     * graphObjectManager.loadNearest(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
+     *     where { query.containerSectionId eq "sec-1" }
+     * }
      * ```
      *
-     * Predicates filter the *projected* values: **property predicates** on the root map
+     * For a **view**, predicates filter the *projected* values: **property predicates** on the root map
      * (`proposition.contextId eq …`) and **relationship quantifiers** over the projected relationship
      * collection (`mentions.any { resolvedId eq … }` → `any(m IN mentions WHERE m.resolvedId = …)`,
      * `none{}` → `NOT any(...)`). Multiple quantifiers `AND` together (e.g. "mentions all of these

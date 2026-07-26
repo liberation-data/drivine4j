@@ -66,22 +66,41 @@ internal object VectorSearchPlanner {
         grammar: CypherGrammar,
     ): ScoredSearchPlan {
         requireSupport(grammar)
-        require(graphClass.isAnnotationPresent(GraphView::class.java)) {
-            "loadNearest { where { } } currently supports @GraphView types; ${graphClass.simpleName} is not a @GraphView"
+
+        val cypher: String
+        val callerBindings: Map<String, Any?>
+        when {
+            graphClass.isAnnotationPresent(GraphView::class.java) -> {
+                val viewModel = GraphViewModel.from(graphClass)
+                // Projected-collection mode: property predicates read the projected root map, and
+                // relationship quantifiers become list predicates over the projected relationship
+                // collection — both run in the post-projection WHERE without traversing the node.
+                val whereResult = if (querySpec.conditions.isNotEmpty()) {
+                    CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar, projectedCollectionMode = true)
+                } else null
+                callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
+                val spec = VectorIndexResolver.resolve(viewModel.rootFragment.fragmentType, null, TOP_K_PARAM, QUERY_PARAM)
+                cypher = GraphViewQueryBuilder.forView(graphClass, grammar)
+                    .buildVectorQuery(spec, thresholdParam(threshold), whereResult?.whereClause)
+            }
+
+            graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
+                // Fragment predicates render against the node alias `n` (viewModel == null), which the
+                // vector head bound the matched node to — applied directly, no projection. The mirror
+                // of the filtered full-text fragment path.
+                val whereResult = if (querySpec.conditions.isNotEmpty()) {
+                    CypherGenerator.buildWhereClause(querySpec.conditions, null, grammar)
+                } else null
+                callerBindings = CypherGenerator.extractBindings(querySpec.conditions, null)
+                val spec = VectorIndexResolver.resolve(graphClass, null, TOP_K_PARAM, QUERY_PARAM)
+                cypher = FragmentVectorSearchBuilder(FragmentModel.from(graphClass), grammar)
+                    .build(spec, thresholdParam(threshold), whereResult?.whereClause)
+            }
+
+            else -> throw IllegalArgumentException(
+                "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
+            )
         }
-
-        val viewModel = GraphViewModel.from(graphClass)
-        // Projected-collection mode: property predicates read the projected root map, and relationship
-        // quantifiers become list predicates over the projected relationship collection — both run in
-        // the post-projection WHERE without traversing the vector-sourced node.
-        val whereResult = if (querySpec.conditions.isNotEmpty()) {
-            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar, projectedCollectionMode = true)
-        } else null
-        val callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
-
-        val spec = VectorIndexResolver.resolve(viewModel.rootFragment.fragmentType, null, TOP_K_PARAM, QUERY_PARAM)
-        val cypher = GraphViewQueryBuilder.forView(graphClass, grammar)
-            .buildVectorQuery(spec, thresholdParam(threshold), whereResult?.whereClause)
         return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, callerBindings))
     }
 
