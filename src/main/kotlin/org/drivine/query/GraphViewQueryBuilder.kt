@@ -5,6 +5,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.query.grammar.FullTextQuerySpec
 import org.drivine.query.grammar.VectorQuerySpec
 
 /**
@@ -78,6 +79,22 @@ class GraphViewQueryBuilder(
         callerWhere: String? = null,
     ): String =
         GraphViewVectorSearchBuilder(viewModel, grammar, BuildContext()).build(vectorSpec, thresholdParam, callerWhere)
+
+    /**
+     * Builds a full-text search over this view — the full-text counterpart to [buildVectorQuery].
+     * The grammar's full-text `CALL` head replaces the `MATCH`, and the view's required-relationship
+     * filters (plus the optional threshold / caller `where`) apply *after* the search, so the query
+     * may return fewer than `topK` rows. See [GraphViewFullTextSearchBuilder].
+     *
+     * @param fullTextSpec the resolved index + bound parameter names to search
+     * @param thresholdParam optional bound parameter name for a `_score >= $param` floor
+     */
+    fun buildFullTextQuery(
+        fullTextSpec: FullTextQuerySpec,
+        thresholdParam: String? = null,
+        callerWhere: String? = null,
+    ): String =
+        GraphViewFullTextSearchBuilder(viewModel, grammar, BuildContext()).build(fullTextSpec, thresholdParam, callerWhere)
 
     override fun buildCountQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String =
         GraphViewLoadBuilder(

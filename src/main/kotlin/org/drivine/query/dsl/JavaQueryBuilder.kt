@@ -232,4 +232,27 @@ class JavaQueryBuilder<T : Any, Q : Any>(
             this.orders.addAll(this@JavaQueryBuilder.orders)
         }
     }
+
+    /**
+     * Executes a full-text search combined with the collected `where` predicates, returning the
+     * [topK] most relevant results scored in `[0, 1]` — the Java fluent form of `loadMatching`.
+     *
+     * ```java
+     * List<Scored<ChunkNode>> hits = gom.query(ChunkNode.class)
+     *     .filterWith(ChunkNodeQueryDsl.class)
+     *     .where(q -> q.containerSectionId().eq("sec-1"))
+     *     .match("graph databases", 20);
+     * ```
+     *
+     * @param query the full-text query string
+     * @param topK the maximum number of results to return
+     * @param threshold minimum normalized relevance in `[0, 1]` (default `0.0` keeps everything)
+     * @return scored instances, most relevant first, of length `<= topK`
+     */
+    @JvmOverloads
+    fun match(query: String, topK: Int, threshold: Double = 0.0): List<org.drivine.manager.Scored<T>> {
+        return graphObjectManager.loadMatching(graphClass, queryDsl, query, topK, threshold) {
+            this.conditions.addAll(this@JavaQueryBuilder.conditions)
+        }
+    }
 }

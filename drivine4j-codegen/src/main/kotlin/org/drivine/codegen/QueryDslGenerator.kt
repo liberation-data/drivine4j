@@ -353,6 +353,13 @@ class QueryDslGenerator(
                 .addFunction(
                     fragmentDslExtension(fragmentClassName, dslClass, dslClassName, "deleteAll", Int::class.asClassName())
                 )
+
+            // Filtered full-text-search wrapper — only for fragments carrying a @FullTextIndex.
+            if (fragmentHasFullTextIndex(fragmentClass)) {
+                fileSpecBuilder.addFunction(
+                    fragmentLoadMatchingExtension(fragmentClassName, dslClass, dslClassName)
+                )
+            }
         }
 
         fileSpecBuilder.build().writeTo(
@@ -428,6 +435,56 @@ class QueryDslGenerator(
             .build()
     }
 
+    /**
+     * The `INSTANCE`-injecting filtered `loadMatching` extension for a fragment — full-text relevance
+     * plus a `where { }` predicate over the fragment's node properties, in one call:
+     *
+     * ```kotlin
+     * inline fun <reified T : ChunkNode> GraphObjectManager.loadMatching(
+     *     query: String, topK: Int, threshold: Double = 0.0,
+     *     noinline spec: GraphQuerySpec<ChunkNodeQueryDsl>.() -> Unit,
+     * ): List<Scored<T>> = loadMatching(T::class.java, ChunkNodeQueryDsl.INSTANCE, query, topK, threshold, spec)
+     * ```
+     *
+     * Emitted only for root fragments (the same `emitExtensions` gate the other fragment wrappers use)
+     * that carry a `@FullTextIndex`. The non-filtered `loadMatching<T>(query, topK)` is hand-written.
+     */
+    private fun fragmentLoadMatchingExtension(
+        fragmentClassName: ClassName,
+        dslClass: ClassName,
+        dslClassName: String,
+    ): FunSpec {
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
+        val scoredClass = ClassName("org.drivine.manager", "Scored")
+        return FunSpec.builder("loadMatching")
+            .addAnnotation(
+                AnnotationSpec.builder(Suppress::class).addMember("%S", "FINAL_UPPER_BOUND").build()
+            )
+            .addModifiers(KModifier.INLINE)
+            .receiver(graphObjectManagerClass)
+            .addTypeVariable(TypeVariableName("T", fragmentClassName).copy(reified = true))
+            .addParameter("query", String::class.asClassName())
+            .addParameter("topK", Int::class.asClassName())
+            .addParameter(
+                ParameterSpec.builder("threshold", Double::class.asClassName())
+                    .defaultValue("0.0")
+                    .build()
+            )
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = graphQuerySpecClass.parameterizedBy(dslClass),
+                        returnType = Unit::class.asClassName()
+                    )
+                ).addModifiers(KModifier.NOINLINE).build()
+            )
+            .returns(List::class.asClassName().parameterizedBy(scoredClass.parameterizedBy(TypeVariableName("T"))))
+            .addStatement("return loadMatching(T::class.java, $dslClassName.INSTANCE, query, topK, threshold, spec)")
+            .build()
+    }
+
     private fun generateViewDslFile(graphViewClass: KSClassDeclaration, viewStructure: List<ViewProperty>) {
         val graphViewClassName = graphViewClass.toClassName()
         val graphViewSimpleName = graphViewClass.simpleName.asString()
@@ -455,6 +512,11 @@ class QueryDslGenerator(
         // Filtered vector-search wrapper — only for views whose root fragment is vector-indexed.
         if (rootFragmentHasVectorIndex(graphViewClass)) {
             fileSpecBuilder.addFunction(generateLoadNearestExtensionFunction(graphViewClass))
+        }
+
+        // Filtered full-text-search wrapper — only for views whose root fragment has a text index.
+        if (rootFragmentHasFullTextIndex(graphViewClass)) {
+            fileSpecBuilder.addFunction(generateLoadMatchingExtensionFunction(graphViewClass))
         }
 
         val fileSpec = fileSpecBuilder.build()
@@ -921,6 +983,57 @@ class QueryDslGenerator(
     }
 
     /**
+     * Emits a filtered full-text-search extension that injects the view's `…QueryDsl.INSTANCE`, the
+     * full-text mirror of [generateLoadNearestExtensionFunction]:
+     *
+     * ```kotlin
+     * inline fun <reified T : ChunkView> GraphObjectManager.loadMatching(
+     *     query: String, topK: Int, threshold: Double = 0.0,
+     *     noinline spec: GraphQuerySpec<ChunkViewQueryDsl>.() -> Unit,
+     * ): List<Scored<T>> = loadMatching(T::class.java, ChunkViewQueryDsl.INSTANCE, query, topK, threshold, spec)
+     * ```
+     *
+     * Only the filtered (spec) form is generated — the non-filtered `loadMatching<T>(query, topK,
+     * threshold)` is a hand-written reified extension. Gated on the root fragment carrying a
+     * `@FullTextIndex` (see [rootFragmentHasFullTextIndex]); a view with no text index can't be searched.
+     */
+    private fun generateLoadMatchingExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
+        val graphViewClassName = graphViewClass.toClassName()
+        val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
+        val scoredClass = ClassName("org.drivine.manager", "Scored")
+        val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
+
+        return FunSpec.builder("loadMatching")
+            .addModifiers(KModifier.INLINE)
+            .receiver(graphObjectManagerClass)
+            .addTypeVariable(
+                TypeVariableName("T", graphViewClassName).copy(reified = true)
+            )
+            .addParameter("query", String::class.asClassName())
+            .addParameter("topK", Int::class.asClassName())
+            .addParameter(
+                ParameterSpec.builder("threshold", Double::class.asClassName())
+                    .defaultValue("0.0")
+                    .build()
+            )
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = graphQuerySpecClass.parameterizedBy(dslClass),
+                        returnType = Unit::class.asClassName()
+                    )
+                ).addModifiers(KModifier.NOINLINE)
+                .build()
+            )
+            .returns(List::class.asClassName().parameterizedBy(scoredClass.parameterizedBy(TypeVariableName("T"))))
+            .addStatement("return loadMatching(T::class.java, $dslClassName.INSTANCE, query, topK, threshold, spec)")
+            .build()
+    }
+
+    /**
      * Emits the `count(spec)` wrapper that injects the view's `…QueryDsl.INSTANCE`, mirroring the
      * generated `loadAll(spec)` — `count<View> { where { } }` instead of
      * `count(View::class.java, ViewQueryDsl.INSTANCE) { }`.
@@ -962,6 +1075,28 @@ class QueryDslGenerator(
         return rootFragment.getAllProperties().any { p ->
             p.annotations.any { it.shortName.asString() == "VectorIndex" }
         }
+    }
+
+    /**
+     * Whether the view's `@Root` fragment carries a `@FullTextIndex` — property-level (on any
+     * property) or class-level (on the fragment itself, for a multi-property index) — so it is
+     * full-text searchable.
+     */
+    private fun rootFragmentHasFullTextIndex(graphViewClass: KSClassDeclaration): Boolean {
+        val rootProperty = graphViewClass.getAllProperties().find { prop ->
+            prop.annotations.any { it.shortName.asString() == "Root" }
+        } ?: return false
+        val rootFragment = rootProperty.type.resolve().declaration as? KSClassDeclaration ?: return false
+        return fragmentHasFullTextIndex(rootFragment)
+    }
+
+    /** Whether a fragment carries a `@FullTextIndex` — property-level or class-level (multi-property). */
+    private fun fragmentHasFullTextIndex(fragmentClass: KSClassDeclaration): Boolean {
+        val classLevel = fragmentClass.annotations.any { it.shortName.asString() == "FullTextIndex" }
+        val propertyLevel = fragmentClass.getAllProperties().any { p ->
+            p.annotations.any { it.shortName.asString() == "FullTextIndex" }
+        }
+        return classLevel || propertyLevel
     }
 
     private fun generateDeleteAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {

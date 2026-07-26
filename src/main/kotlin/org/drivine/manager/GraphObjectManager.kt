@@ -8,12 +8,13 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.mapper.TransformPostProcessor
-import org.drivine.query.FragmentVectorSearchBuilder
+import org.drivine.query.FullTextSearchPlanner
 import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
-import org.drivine.query.VectorIndexResolver
+import org.drivine.query.ScoredSearchPlan
+import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
@@ -416,43 +417,8 @@ class GraphObjectManager(
         vector: List<Float>,
         topK: Int,
         threshold: Double? = null,
-    ): List<Scored<T>> {
-        if (!grammar.supportsVectorSearch) {
-            throw UnsupportedOperationException(
-                "Vector search is not supported on this backend (${grammar::class.simpleName} has no native vector index)."
-            )
-        }
-
-        autoRegisterSubtypesIfNeeded(graphClass)
-
-        val thresholdParam = if (threshold != null) VECTOR_THRESHOLD_PARAM else null
-        val query = when {
-            graphClass.isAnnotationPresent(GraphView::class.java) -> {
-                // A view searches its root fragment's embedding and returns the projected view.
-                val rootFragmentType = GraphViewModel.from(graphClass).rootFragment.fragmentType
-                val spec = VectorIndexResolver.resolve(rootFragmentType, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
-                GraphViewQueryBuilder.forView(graphClass, grammar).buildVectorQuery(spec, thresholdParam)
-            }
-
-            graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
-                // A fragment searches and returns itself — no relationships, no required-rel filter.
-                val spec = VectorIndexResolver.resolve(graphClass, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
-                FragmentVectorSearchBuilder(FragmentModel.from(graphClass), grammar).build(spec, thresholdParam)
-            }
-
-            else -> throw IllegalArgumentException(
-                "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
-            )
-        }
-
-        val bindings = buildMap<String, Any?> {
-            put(VECTOR_TOP_K_PARAM, topK)
-            put(VECTOR_QUERY_PARAM, vector)
-            if (threshold != null) put(VECTOR_THRESHOLD_PARAM, threshold)
-        }
-
-        return executeVectorSearch(graphClass, query, bindings)
-    }
+    ): List<Scored<T>> =
+        executeScoredSearch(graphClass, VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar))
 
     /**
      * Vector search over a `@GraphView` with an additional caller `where { }` predicate `AND`-ed into
@@ -484,60 +450,111 @@ class GraphObjectManager(
         threshold: Double? = null,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
-        if (!grammar.supportsVectorSearch) {
-            throw UnsupportedOperationException(
-                "Vector search is not supported on this backend (${grammar::class.simpleName} has no native vector index)."
-            )
-        }
-        require(graphClass.isAnnotationPresent(GraphView::class.java)) {
-            "loadNearest { where { } } currently supports @GraphView types; ${graphClass.simpleName} is not a @GraphView"
-        }
-
-        autoRegisterSubtypesIfNeeded(graphClass)
-
-        val querySpec = GraphQuerySpec(queryObject)
-        querySpec.spec()
-
-        val viewModel = GraphViewModel.from(graphClass)
-
-        // Render the caller predicate in projected-collection mode: property predicates read the
-        // projected root map, and relationship quantifiers (`mentions.any { … }`) become list
-        // predicates over the projected relationship collection — both run in the post-projection
-        // WHERE without traversing the vector-sourced node. Referencing a relationship the view does
-        // not project throws (from buildWhereClause's relationship lookup).
-        val whereResult = if (querySpec.conditions.isNotEmpty()) {
-            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar, projectedCollectionMode = true)
-        } else null
-        val callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
-
-        val rootFragmentType = viewModel.rootFragment.fragmentType
-        val vectorSpec = VectorIndexResolver.resolve(rootFragmentType, null, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
-        val thresholdParam = if (threshold != null) VECTOR_THRESHOLD_PARAM else null
-        val query = GraphViewQueryBuilder.forView(graphClass, grammar)
-            .buildVectorQuery(vectorSpec, thresholdParam, whereResult?.whereClause)
-
-        val bindings = buildMap<String, Any?> {
-            put(VECTOR_TOP_K_PARAM, topK)
-            put(VECTOR_QUERY_PARAM, vector)
-            if (threshold != null) put(VECTOR_THRESHOLD_PARAM, threshold)
-            putAll(callerBindings)
-        }
-
-        return executeVectorSearch(graphClass, query, bindings)
+        val querySpec = GraphQuerySpec(queryObject).apply(spec)
+        return executeScoredSearch(
+            graphClass,
+            VectorSearchPlanner.planFiltered(graphClass, querySpec, vector, topK, threshold, grammar),
+        )
     }
 
     /**
-     * Runs a vector-search query and packages each `{ value, score }` row into a [Scored] instance,
-     * transforming the inner `value` with the same machinery [loadAll] uses, then snapshots for
-     * dirty tracking.
+     * Full-text search: finds the [topK] nodes most relevant to a text [query] and returns them
+     * scored, the full-text mirror of [loadNearest]. Resolves the model's `@FullTextIndex`, runs the
+     * engine-appropriate full-text `CALL`, and returns typed, **[0, 1]-normalized** [Scored] results
+     * (polymorphic dispatch included) — no consumer Cypher, no per-engine score normalization.
+     *
+     * Works on a `@GraphView` (searches its root fragment's text index, returns the projected view)
+     * and on a bare `@NodeFragment` (searches and returns itself). As with [loadNearest], a view's
+     * required-relationship filters apply *after* the search, so **fewer than [topK] rows may return**.
+     *
+     * The [query] is passed through to the engine's full-text query language (Lucene syntax on Neo4j:
+     * `AND`/`OR`/`"phrase"`/`field:term`). Raw user input is **not** escaped here — wrap or escape it
+     * yourself if it may contain query-syntax metacharacters.
+     *
+     * @param graphClass the `@GraphView` or `@NodeFragment` class to load
+     * @param query the full-text query string
+     * @param topK the maximum number of results to return (applied as a `LIMIT`)
+     * @param threshold minimum normalized relevance in `[0, 1]`; results below it are dropped (default
+     *   `0.0` keeps everything)
+     * @return scored instances, most relevant first, of length `<= topK`
+     * @throws UnsupportedOperationException if the backend has no native full-text index
      */
-    private fun <T : Any> executeVectorSearch(
+    @JvmOverloads
+    fun <T : Any> loadMatching(
         graphClass: Class<T>,
         query: String,
-        bindings: Map<String, Any?>,
+        topK: Int,
+        threshold: Double = 0.0,
+    ): List<Scored<T>> = loadMatching(graphClass, null, query, topK, threshold)
+
+    /**
+     * Full-text search variant that names the indexed [property] explicitly — use when the searched
+     * fragment carries more than one `@FullTextIndex`. Pass any property the target index covers. See
+     * the [loadMatching] overload above for the full semantics.
+     *
+     * @param property a property covered by the `@FullTextIndex` to search
+     */
+    @JvmOverloads
+    fun <T : Any> loadMatching(
+        graphClass: Class<T>,
+        property: String?,
+        query: String,
+        topK: Int,
+        threshold: Double = 0.0,
+    ): List<Scored<T>> =
+        executeScoredSearch(graphClass, FullTextSearchPlanner.plan(graphClass, property, query, topK, threshold, grammar))
+
+    /**
+     * Full-text search with an additional caller `where { }` predicate `AND`-ed into the post-search
+     * filter — full-text relevance plus arbitrary property predicates in one statement, the full-text
+     * mirror of the filtered [loadNearest]. Works on a `@GraphView` (predicates filter the *projected*
+     * values, exactly as the filtered vector search does) and on a bare `@NodeFragment` (predicates
+     * filter the matched node directly, using the fragment's generated query DSL).
+     *
+     * ```kotlin
+     * // view
+     * graphObjectManager.loadMatching(ChunkView::class.java, ChunkViewQueryDsl.INSTANCE, "graph databases", topK = 20) {
+     *     where { query.containerSectionId eq "sec-1" }
+     * }
+     * // fragment
+     * graphObjectManager.loadMatching(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, "graph databases", topK = 20) {
+     *     where { query.containerSectionId eq "sec-1" }
+     * }
+     * ```
+     *
+     * @param queryObject the generated query DSL object providing property references
+     * @param query the full-text query string
+     * @param spec the `where { }` block
+     */
+    fun <T : Any, Q : Any> loadMatching(
+        graphClass: Class<T>,
+        queryObject: Q,
+        query: String,
+        topK: Int,
+        threshold: Double = 0.0,
+        spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
+        val querySpec = GraphQuerySpec(queryObject).apply(spec)
+        return executeScoredSearch(
+            graphClass,
+            FullTextSearchPlanner.planFiltered(graphClass, querySpec, query, topK, threshold, grammar),
+        )
+    }
+
+    /**
+     * Runs a planned scored search (vector or full-text) and packages each `{ value, score }` row into
+     * a [Scored] instance, transforming the inner `value` with the same machinery [loadAll] uses, then
+     * snapshots for dirty tracking. Registers subtypes first so polymorphic dispatch works. Both search
+     * kinds share this row shape, so both planners feed this one executor.
+     */
+    private fun <T : Any> executeScoredSearch(
+        graphClass: Class<T>,
+        plan: ScoredSearchPlan,
+    ): List<Scored<T>> {
+        autoRegisterSubtypesIfNeeded(graphClass)
+
         val rows = persistenceManager.query(
-            QuerySpecification.withStatement(query).bind(bindings).transform(Map::class.java)
+            QuerySpecification.withStatement(plan.cypher).bind(plan.bindings).transform(Map::class.java)
         )
 
         val transform = TransformPostProcessor<Any, T>(graphClass, subtypeRegistry)
@@ -910,11 +927,8 @@ class GraphObjectManager(
     }
 
     private companion object {
-        // Bound-parameter names for the vector search. Underscored to avoid clashing with any
-        // user-supplied bindings on future filtered vector queries.
-        const val VECTOR_TOP_K_PARAM = "_vectorTopK"
-        const val VECTOR_QUERY_PARAM = "_vectorQuery"
-        const val VECTOR_THRESHOLD_PARAM = "_vectorThreshold"
+        // Scored-search bound-parameter names now live on their planners (VectorSearchPlanner /
+        // FullTextSearchPlanner), which build those queries.
 
         // Bound-parameter names for DSL pagination.
         const val SKIP_PARAM = "_skip"

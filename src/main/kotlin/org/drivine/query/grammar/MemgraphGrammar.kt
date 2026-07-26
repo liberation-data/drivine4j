@@ -50,4 +50,18 @@ class MemgraphGrammar(
         "CALL vector_search.search('${spec.indexName}', \$${spec.topKParam}, \$${spec.vectorParam})\n" +
             "YIELD node, similarity\n" +
             "WITH node AS $rootAlias, similarity AS $scoreAlias"
+
+    override val supportsFullTextSearch: Boolean = true
+
+    /**
+     * `text_search.search_all(index_name, query)` — Memgraph's text index (MAGE) is referenced by
+     * **name** and `search_all` searches across every indexed property. It yields `node` and a
+     * relevance `score`; [CypherGrammar.normalizedFullTextHead] normalizes it to `[0, 1]`.
+     */
+    override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
+        CypherGrammar.normalizedFullTextHead(
+            "CALL text_search.search_all('${spec.indexName}', \$${spec.queryParam})",
+            rootAlias,
+            scoreAlias,
+        )
 }
