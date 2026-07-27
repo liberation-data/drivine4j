@@ -54,13 +54,21 @@ class VectorMergeBuilderTest {
     }
 
     @Test
-    fun `a null embedding is never wrapped - vecf32(null) is invalid`() {
+    fun `a null embedding is left untouched by default (IGNORE), and never wrapped`() {
         val builder = FragmentMergeBuilder(model, mapper, FalkorDbCypherGrammar(CallSubqueryEmitter()))
+        // Default policy is IGNORE (merge-patch) — a null embedding is skipped, so a partially-loaded
+        // object never wipes a computed vector. And it's never wrapped (vecf32(null) is invalid).
         val stmt = builder.buildMergeStatement(DocNode("A", "Alpha", embedding = null), dirtyFields = null)
+        assertFalse(stmt.statement.contains("embedding"), stmt.statement)
+        assertFalse(stmt.bindings.containsKey("embedding"))
+        assertTrue(stmt.statement.contains("n.title = \$title"), stmt.statement)
 
-        // Plain assignment (which clears the property), matching normal null semantics
-        assertTrue(stmt.statement.contains("n.embedding = \$embedding"), stmt.statement)
-        assertFalse(stmt.statement.contains("vecf32"), stmt.statement)
+        // Under an explicit CLEAR the embedding is cleared with a plain SET (not vecf32).
+        val cleared = builder.buildMergeStatement(
+            DocNode("A", "Alpha", embedding = null), dirtyFields = null, nullPolicy = org.drivine.manager.NullPolicy.CLEAR
+        )
+        assertTrue(cleared.statement.contains("n.embedding = \$embedding"), cleared.statement)
+        assertFalse(cleared.statement.contains("vecf32"), cleared.statement)
     }
 
     @Test

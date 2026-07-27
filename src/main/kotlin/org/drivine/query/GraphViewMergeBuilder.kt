@@ -3,6 +3,7 @@ package org.drivine.query
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.manager.CascadeType
+import org.drivine.manager.NullPolicy
 import org.drivine.mapper.toMap
 import org.drivine.model.GraphViewModel
 import org.drivine.model.FragmentModel
@@ -34,7 +35,7 @@ class GraphViewMergeBuilder(
      * @param cascade The cascade policy for deleted relationships
      * @return List of MergeStatements to execute in order
      */
-    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType): List<MergeStatement> {
+    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType, nullPolicy: NullPolicy): List<MergeStatement> {
         // Get snapshot from session (if exists)
         val rootFragment = extractRootFragment(obj)
         val rootFragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
@@ -47,13 +48,23 @@ class GraphViewMergeBuilder(
             null
         }
 
-        return buildMergeStatementsInternal(obj, snapshot, cascade)
+        return buildMergeStatementsInternal(obj, snapshot, cascade, nullPolicy)
     }
 
     /**
      * Internal implementation that accepts an explicit snapshot parameter and cascade policy.
+     *
+     * [nullPolicy] governs the **root** fragment write (the object being saved). Relationship-target and
+     * nested-view fragment writes use the default [NullPolicy.IGNORE] (merge-patch) — they only ever
+     * write the non-null fields present on the target, so they never clear a related node's stored data;
+     * making that per-relationship-tunable is a targeted follow-up.
      */
-    private fun <T : Any> buildMergeStatementsInternal(obj: T, snapshot: Any?, cascade: CascadeType): List<MergeStatement> {
+    private fun <T : Any> buildMergeStatementsInternal(
+        obj: T,
+        snapshot: Any?,
+        cascade: CascadeType,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+    ): List<MergeStatement> {
         val statements = mutableListOf<MergeStatement>()
 
         // 1. Save the root fragment
@@ -72,7 +83,7 @@ class GraphViewMergeBuilder(
             if (rootIdValue != null) sessionManager.getDirtyFields(rootFragment, rootIdValue) else null
         }
 
-        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields, previousRootFragment))
+        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields, previousRootFragment, nullPolicy))
 
         // 2. Handle each relationship
         viewModel.relationships.forEach { relModel ->

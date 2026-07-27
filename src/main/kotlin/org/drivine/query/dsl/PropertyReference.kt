@@ -719,6 +719,18 @@ infix fun StringPropertyReference.eqIgnoreCase(value: String) {
 }
 
 /**
+ * Reversed list-membership on an **untyped** reference (`property(path)` / `field(key)`): `$value IN
+ * n.<key>`. The dynamic-key twin of the typed [hasItem] (which needs a `PropertyReference<List<E>>`);
+ * use this for a runtime/bagged list key whose element type isn't known at compile time.
+ */
+context(builder: WhereBuilder<*>)
+infix fun PropertyReference<Any?>.hasElement(value: Any?) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.HAS_ELEMENT, value)
+    )
+}
+
+/**
  * Intermediate builder that holds a condition.
  * Automatically added to WhereBuilder when created in the DSL context.
  */

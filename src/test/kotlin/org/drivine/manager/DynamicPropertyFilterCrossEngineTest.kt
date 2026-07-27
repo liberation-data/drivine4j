@@ -11,6 +11,8 @@ import org.drivine.query.dsl.containsIgnoreCase
 import org.drivine.query.dsl.eqIgnoreCase
 import org.drivine.query.dsl.field
 import org.drivine.query.dsl.hasAnyLabel
+import org.drivine.query.dsl.hasElement
+import org.drivine.query.dsl.hasItem
 import org.drivine.query.dsl.matches
 import org.drivine.query.dsl.not
 import org.drivine.query.dsl.notIn
@@ -45,9 +47,9 @@ private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManag
     pm.execute(
         QuerySpecification.withStatement(
             """
-            CREATE (:Record:Premium {id: 'a', title: 'Alpha', section_id: 's1', `metadata.source`: 'web',  `metadata.rank`: 5})
-            CREATE (:Record          {id: 'b', title: 'Beta',  section_id: 's2', `metadata.source`: 'book', `metadata.rank`: 2})
-            CREATE (:Record:Premium {id: 'c', title: 'Gamma', section_id: 's1', `metadata.source`: 'web',  `metadata.rank`: 8})
+            CREATE (:Record:Premium {id: 'a', title: 'Alpha', section_id: 's1', tags: ['kotlin', 'graph'], `metadata.source`: 'web',  `metadata.rank`: 5})
+            CREATE (:Record          {id: 'b', title: 'Beta',  section_id: 's2', tags: ['python'],          `metadata.source`: 'book', `metadata.rank`: 2})
+            CREATE (:Record:Premium {id: 'c', title: 'Gamma', section_id: 's1', tags: ['kotlin', 'rust'],  `metadata.source`: 'web',  `metadata.rank`: 8})
             """.trimIndent()
         )
     )
@@ -143,6 +145,24 @@ private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManag
         where { query.predicateOn("source", ComparisonOperator.CONTAINS, "oo") }
     }
     assertEquals(setOf("b"), sourceContains.map { it.id }.toSet())
+
+    // ----- Dynamic list-membership: HAS_ELEMENT == typed hasItem -----
+
+    // Typed hasItem on a list-valued property.
+    val typedTag = gom.loadAll(RecordNode::class.java, dsl) { where { query.tags hasItem "kotlin" } }
+    assertEquals(setOf("a", "c"), typedTag.map { it.id }.toSet())
+
+    // Dynamic HAS_ELEMENT via predicateOn (resolves the key) — same rows.
+    val dynTagOn = gom.loadAll(RecordNode::class.java, dsl) {
+        where { query.predicateOn("tags", ComparisonOperator.HAS_ELEMENT, "kotlin") }
+    }
+    assertEquals(typedTag.map { it.id }.toSet(), dynTagOn.map { it.id }.toSet())
+
+    // Dynamic HAS_ELEMENT via the hasElement infix on an untyped reference — same rows.
+    val dynTagInfix = gom.loadAll(RecordNode::class.java, dsl) {
+        where { query.field("tags") hasElement "kotlin" }
+    }
+    assertEquals(typedTag.map { it.id }.toSet(), dynTagInfix.map { it.id }.toSet())
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {

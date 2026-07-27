@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
 import org.drivine.manager.CascadeType
+import org.drivine.manager.NullPolicy
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.grammar.CypherGrammar
@@ -19,9 +20,15 @@ interface GraphObjectMergeBuilder {
      *
      * @param obj The object to save
      * @param cascade The cascade policy for deleted relationships
+     * @param nullPolicy How null field values are treated (see [NullPolicy]); defaults to
+     *   [NullPolicy.IGNORE] (merge-patch). Applies to the (root) fragment being saved.
      * @return List of MergeStatements to execute in order
      */
-    fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType = CascadeType.NONE): List<MergeStatement>
+    fun <T : Any> buildMergeStatements(
+        obj: T,
+        cascade: CascadeType = CascadeType.NONE,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+    ): List<MergeStatement>
 
     companion object {
         /**
@@ -70,7 +77,7 @@ class FragmentMergeBuilderAdapter(
     private val grammar: CypherGrammar? = null,
 ) : GraphObjectMergeBuilder {
 
-    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType): List<MergeStatement> {
+    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType, nullPolicy: NullPolicy): List<MergeStatement> {
         val fragmentBuilder = FragmentMergeBuilder(fragmentModel, objectMapper, grammar)
 
         // Check if object is in session to determine dirty fields
@@ -82,6 +89,6 @@ class FragmentMergeBuilderAdapter(
         val previous = if (idValue != null) sessionManager.getSnapshot(obj.javaClass, idValue) else null
 
         // Note: Fragments don't have relationships, so cascade is ignored
-        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields, previous))
+        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields, previous, nullPolicy))
     }
 }

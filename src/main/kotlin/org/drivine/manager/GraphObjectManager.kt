@@ -841,9 +841,14 @@ class GraphObjectManager(
      *
      * @param obj The object to save
      * @param cascade The cascade policy for deleted relationships (default: NONE - only delete relationship)
+     * @param nullPolicy How null field values are treated. Default [NullPolicy.IGNORE] — a merge-patch
+     *   that writes only non-null fields and never clears anything (so a partially-loaded object never
+     *   destroys stored data, embeddings included). Pass [NullPolicy.CLEAR] for a full overwrite that
+     *   clears null fields. Uniform for all fields — see [NullPolicy].
      * @return The saved object
      */
-    fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE): T {
+    @JvmOverloads
+    fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): T {
         validateCascadeSupport(cascade)
         val graphClass = obj.javaClass
 
@@ -853,7 +858,7 @@ class GraphObjectManager(
             sessionManager,
             grammar
         )
-        val statements = mergeBuilder.buildMergeStatements(obj, cascade)
+        val statements = mergeBuilder.buildMergeStatements(obj, cascade, nullPolicy)
 
         // Execute all statements in order
         statements.forEach { statement ->
@@ -886,22 +891,24 @@ class GraphObjectManager(
      * [save] builds them. Consequences worth knowing:
      * - **Roots with a `@PropertyBag`/`@CompositeProperty` fall back** to the full per-item path — the
      *   clear-stale `REMOVE` needs per-object keys an UNWIND can't express. Correct, just not batched.
-     * - The batched root upsert writes **all current non-null root properties** (`n += props`); it is
-     *   not dirty-optimized and does **not clear a root property by setting it to null**. Use [save] for
-     *   a single object when you need to null a root property. Relationship change-detection and cascade
-     *   are per-item and unaffected.
+     * - The batched root upsert writes the root properties via `n += props`. Null handling follows
+     *   [nullPolicy], uniformly with [save]: under [NullPolicy.IGNORE] (default) nulls are dropped from
+     *   `props` and never clear anything (merge-patch); under [NullPolicy.CLEAR] a null is kept so
+     *   `+= {x: null}` clears the property. Relationship change-detection and cascade are per-item.
      *
      * @param objs the objects to save (any mix of `@GraphView` / `@NodeFragment` types)
      * @param cascade the cascade policy for removed relationships, applied per item (default NONE)
+     * @param nullPolicy how null field values are treated (default [NullPolicy.IGNORE]); see [NullPolicy]
      * @return the saved objects in input order; empty in → empty out
      */
-    fun <T : Any> saveAll(objs: Collection<T>, cascade: CascadeType = CascadeType.NONE): List<T> {
+    @JvmOverloads
+    fun <T : Any> saveAll(objs: Collection<T>, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): List<T> {
         validateCascadeSupport(cascade)
         val items = objs.toList()
         if (items.isEmpty()) return emptyList()
 
         // Statement building lives in BatchSaveOperations; the manager owns execution + snapshotting.
-        persistenceManager.executeBatch(batchSave.buildBatchSpecs(items, cascade))
+        persistenceManager.executeBatch(batchSave.buildBatchSpecs(items, cascade, nullPolicy))
 
         // Update snapshots after the batch commits, each under its own runtime class.
         items.forEach { @Suppress("UNCHECKED_CAST") snapshotResults(it.javaClass as Class<Any>, listOf<Any>(it)) }

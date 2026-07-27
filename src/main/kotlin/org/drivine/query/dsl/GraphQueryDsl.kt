@@ -425,6 +425,12 @@ enum class ComparisonOperator(val cypherOperator: String) {
     IN("IN"),
     /** `NOT lhs IN $p` — rendered with a leading `NOT`, binds a list like [IN]. */
     NOT_IN("IN"),
+    /**
+     * List-membership with the operands reversed vs [IN]: `$p IN lhs` — the bound value on the left, the
+     * (list-valued) property on the right. The dynamic-key twin of the typed `hasItem`, so `predicateOn`
+     * can express membership on a runtime/bagged key.
+     */
+    HAS_ELEMENT("IN"),
     CONTAINS("CONTAINS"),
     STARTS_WITH("STARTS WITH"),
     ENDS_WITH("ENDS WITH"),

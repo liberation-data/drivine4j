@@ -170,6 +170,32 @@ class DynamicPropertyPredicateTest {
     }
 
     @Test
+    fun `predicateOn HAS_ELEMENT renders reversed membership (value left, key right)`() {
+        val (where, bindings) = render {
+            where { query.predicate("tags", ComparisonOperator.HAS_ELEMENT, "kotlin") }
+        }
+        assertEquals("\$param_n_tags_0 IN n.tags", where)
+        assertEquals("kotlin", bindings["param_n_tags_0"])
+    }
+
+    @Test
+    fun `HAS_ELEMENT on a dotted bag key is backtick-quoted on the right`() {
+        val (where, bindings) = render {
+            where { query.predicate("metadata.tags", ComparisonOperator.HAS_ELEMENT, "graph") }
+        }
+        assertEquals("\$param_n_metadata_tags_0 IN n.`metadata.tags`", where)
+        assertEquals("graph", bindings["param_n_metadata_tags_0"])
+    }
+
+    @Test
+    fun `hasElement infix on an untyped reference renders the same as the operator`() {
+        assertEquals(
+            "\$param_n_tags_0 IN n.tags",
+            render { where { query.property("tags") hasElement "kotlin" } }.first,
+        )
+    }
+
+    @Test
     fun `hasAnyLabel renders an ANY-over-labels check and binds the label list`() {
         val (where, bindings) = render { where { query.hasAnyLabel("Chunk", "Section") } }
         assertEquals("ANY(_lbl IN labels(n) WHERE _lbl IN \$param_n_labels_0)", where)

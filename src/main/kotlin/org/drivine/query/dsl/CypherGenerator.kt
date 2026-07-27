@@ -384,6 +384,12 @@ object CypherGenerator {
                 val paramName = generateParamName(condition.propertyPath, index)
                 "NOT $lhs IN \$$paramName"
             }
+            ComparisonOperator.HAS_ELEMENT -> {
+                // Reversed membership — the bound value on the left, the list-valued property on the
+                // right (the dynamic twin of hasItem / ListMembershipCondition).
+                val paramName = generateParamName(condition.propertyPath, index)
+                "\$$paramName IN $lhs"
+            }
             ComparisonOperator.CONTAINS_IGNORE_CASE -> {
                 // Case-insensitive contains — the bound value is lower-cased in extractBindings.
                 val paramName = generateParamName(condition.propertyPath, index)
@@ -497,6 +503,10 @@ object CypherGenerator {
         return when (condition.operator) {
             ComparisonOperator.IS_NULL,
             ComparisonOperator.IS_NOT_NULL -> "$lhs ${condition.operator.cypherOperator}"
+            ComparisonOperator.NOT_IN -> "NOT $lhs IN \$${generateParamName(condition.propertyPath, index)}"
+            ComparisonOperator.HAS_ELEMENT -> "\$${generateParamName(condition.propertyPath, index)} IN $lhs"
+            ComparisonOperator.CONTAINS_IGNORE_CASE -> "toLower($lhs) CONTAINS \$${generateParamName(condition.propertyPath, index)}"
+            ComparisonOperator.EQUALS_IGNORE_CASE -> "toLower($lhs) = \$${generateParamName(condition.propertyPath, index)}"
             else -> {
                 val paramName = generateParamName(condition.propertyPath, index)
                 "$lhs ${condition.operator.cypherOperator} \$$paramName"

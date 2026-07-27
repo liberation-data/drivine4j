@@ -5,6 +5,7 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.PropertyBag
 import org.drivine.query.dsl.PropertyBagReference
+import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.ResolvableNodeReference
 import org.drivine.query.dsl.StringPropertyReference
 
@@ -20,6 +21,7 @@ data class RecordNode(
     @NodeId val id: String,
     val title: String,
     @GraphProperty("section_id") val sectionId: String? = null,
+    val tags: List<String> = emptyList(),
     @PropertyBag(prefix = "metadata") val metadata: Map<String, Any?> = emptyMap(),
 )
 
@@ -33,6 +35,9 @@ class RecordNodeQueryDsl : ResolvableNodeReference {
     val title = StringPropertyReference("n", "title")
     val sectionId = StringPropertyReference("n", "section_id")
 
+    /** A typed list reference — the typed `hasItem` twin of the dynamic `HAS_ELEMENT`. */
+    val tags = PropertyReference<List<String>>("n", "tags")
+
     /** The `@PropertyBag` accessor — the typed way to reach a bag key, for the equivalence check. */
     val metadata = PropertyBagReference("n", "metadata.")
 
@@ -42,6 +47,7 @@ class RecordNodeQueryDsl : ResolvableNodeReference {
         "title" to "title",
         "sectionId" to "section_id",
         "section_id" to "section_id",
+        "tags" to "tags",
     )
     override val bagPrefixes: List<String> = listOf("metadata.")
 

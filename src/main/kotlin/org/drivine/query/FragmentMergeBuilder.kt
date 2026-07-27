@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.manager.NullPolicy
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.query.grammar.CypherGrammar
@@ -34,9 +35,17 @@ class FragmentMergeBuilder(
      * @param previousObject The prior state of [obj] (from the session snapshot), used to clear stale
      *   `@PropertyBag` keys on update. Null when the object is not session-tracked — then current bag
      *   entries are written but orphaned keys from a previous detached save are not removed.
+     * @param nullPolicy How null field values are treated: [NullPolicy.IGNORE] (default) skips them
+     *   (merge-patch), [NullPolicy.CLEAR] writes `SET x = null` to clear them. Uniform for all fields,
+     *   embeddings included — see [NullPolicy].
      * @return A MergeStatement containing the query and bindings
      */
-    fun <T : Any> buildMergeStatement(obj: T, dirtyFields: Set<String>?, previousObject: Any? = null): MergeStatement {
+    fun <T : Any> buildMergeStatement(
+        obj: T,
+        dirtyFields: Set<String>?,
+        previousObject: Any? = null,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+    ): MergeStatement {
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("Cannot build MERGE for fragment without @GraphNodeId field: ${fragmentModel.className}")
 
@@ -55,26 +64,34 @@ class FragmentMergeBuilder(
         val removeClauses = mutableListOf<String>()
 
         // ----- Declared fields (bags are excluded from fragmentModel.fields) -----
+        // Null handling is driven purely by [nullPolicy] and the object — NOT by dirty-tracking — so the
+        // result never depends on a possibly-stale snapshot (IGNORE always skips a null, CLEAR always
+        // clears one). Dirty-tracking only optimizes away re-writes of unchanged non-null fields, which
+        // is a semantics-preserving no-op. No field is special: an embedding is just another property.
         val fieldByName = fragmentModel.fields.associateBy { it.name }
-        val fieldsToSet = if (dirtyFields != null) {
-            dirtyFields.filter { it != nodeIdField && it in fieldByName }
-        } else {
-            fragmentModel.fields.map { it.name }.filter { it != nodeIdField }
-        }
-        fieldsToSet.forEach { name ->
+        fragmentModel.fields.map { it.name }.filter { it != nodeIdField }.forEach { name ->
             val field = fieldByName.getValue(name)
             val value = allProps[name]
-            // The bind-param stays the field name (identity); the assigned property is the on-disk name.
-            // Vector (embedding) fields are written through the grammar so FalkorDB stores them as its
-            // native vector type. A null embedding falls through to a plain assignment — vecf32(null) is
-            // invalid, and a plain SET clears the property, matching normal null semantics.
-            val rhs = if (name in fragmentModel.vectorFieldNames && value != null) {
-                (grammar?.vectorPropertyLiteral(name) ?: "\$$name")
+            if (value == null) {
+                // IGNORE: leave it. CLEAR: clear it (a plain SET — we only wrap non-null values, so
+                // there's no invalid vecf32(null)).
+                if (nullPolicy == NullPolicy.CLEAR) {
+                    setClauses.add("n.${field.propertyName} = \$$name")
+                    bindings[name] = null
+                }
             } else {
-                "\$$name"
+                // Non-null: write it, but skip an unchanged field on a tracked (dirty-diffed) save.
+                // The bind-param stays the field name (identity); the assigned property is the on-disk
+                // name. Vector fields wrap via the grammar so FalkorDB stores the native vector type.
+                if (dirtyFields != null && name !in dirtyFields) return@forEach
+                val rhs = if (name in fragmentModel.vectorFieldNames) {
+                    grammar?.vectorPropertyLiteral(name) ?: "\$$name"
+                } else {
+                    "\$$name"
+                }
+                setClauses.add("n.${field.propertyName} = $rhs")
+                bindings[name] = value
             }
-            setClauses.add("n.${field.propertyName} = $rhs")
-            bindings[name] = value
         }
 
         // ----- Property bags: expand to prefixed properties + clear stale keys -----
@@ -90,15 +107,20 @@ class FragmentMergeBuilder(
                 val key = k.toString()
                 currentKeys.add(key)
                 assertStorable(v, bag.storedKey(key))
+                // Under IGNORE a null bag value is skipped (never clears); under CLEAR it clears the key.
+                if (v == null && nullPolicy == NullPolicy.IGNORE) return@forEach
                 val param = "_bag${bagParamIndex++}"
                 bindings[param] = v
                 setClauses.add("n.`${bag.storedKey(key)}` = \$$param")
             }
 
-            // Remove keys present before but gone now (requires the previous state).
-            val prevBag = previousProps?.get(bag.fieldName) as? Map<*, *>
-            prevBag?.keys?.map { it.toString() }?.filter { it !in currentKeys }?.forEach { staleKey ->
-                removeClauses.add("n.`${bag.storedKey(staleKey)}`")
+            // Remove keys present before but gone now (requires the previous state). Removal is a form of
+            // clearing, so under IGNORE (merge-patch) we leave stale keys in place.
+            if (nullPolicy == NullPolicy.CLEAR) {
+                val prevBag = previousProps?.get(bag.fieldName) as? Map<*, *>
+                prevBag?.keys?.map { it.toString() }?.filter { it !in currentKeys }?.forEach { staleKey ->
+                    removeClauses.add("n.`${bag.storedKey(staleKey)}`")
+                }
             }
         }
 
