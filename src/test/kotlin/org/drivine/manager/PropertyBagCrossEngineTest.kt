@@ -30,7 +30,8 @@ import kotlin.test.assertTrue
 
 /**
  * `@PropertyBag` round-trip verified on Neo4j, FalkorDB, and Memgraph: a multi-entry bag persists as
- * flat prefixed properties and reads back; an update that drops a key removes the stale property;
+ * flat prefixed properties and reads back; an update that drops a key leaves the stale property under the
+ * default merge-patch and removes it under [NullPolicy.CLEAR];
  * empty bags read back empty; and bags round-trip through a `@GraphView` (root + relationship target).
  */
 private fun verify(gom: GraphObjectManager) {
@@ -42,8 +43,15 @@ private fun verify(gom: GraphObjectManager) {
     assertEquals(3L, (loaded.metadata["score"] as Number).toLong()) // read asymmetry: Int written, Long read
     assertEquals(listOf("a", "b"), loaded.metadata["tags"])
 
-    // ----- Update that removes a key: stale property is gone -----
+    // ----- Update that drops a key: merge-patch (default IGNORE) leaves the stale property -----
     gom.save(loaded.copy(metadata = mapOf("source" to "blog", "tags" to listOf("a", "b"))))
+    val patched = gom.load("n1", BaggedNode::class.java)!!
+    assertEquals("blog", patched.metadata["source"])
+    assertTrue(patched.metadata.containsKey("score"), "IGNORE must not clear a dropped key: ${patched.metadata}")
+
+    // ----- The same update under CLEAR: the stale property is gone. Based on `patched` so the session
+    // snapshot (refreshed by the load above) still carries "score" — that's what the REMOVE diffs against.
+    gom.save(patched.copy(metadata = mapOf("source" to "blog", "tags" to listOf("a", "b"))), nullPolicy = NullPolicy.CLEAR)
     val updated = gom.load("n1", BaggedNode::class.java)!!
     assertEquals("blog", updated.metadata["source"])
     assertFalse(updated.metadata.containsKey("score"), "stale key should be removed: ${updated.metadata}")
