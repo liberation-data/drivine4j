@@ -54,6 +54,20 @@ private fun verify(gom: GraphObjectManager) {
     assertEquals(listOf("p3", "p2"), page2)
     assertTrue((page1.toSet() intersect page2.toSet()).isEmpty())
 
+    // Equivalent second page via a compound keyset. The id is the deterministic tie-breaker.
+    val keysetPage2 = ids {
+        orderBy {
+            query.proposition.level.desc()
+            query.proposition.id.desc()
+        }
+        seekAfter {
+            query.proposition.level after 4
+            query.proposition.id after "p4"
+        }
+        limit(2)
+    }
+    assertEquals(listOf("p3", "p2"), keysetPage2)
+
     // edge cases
     assertTrue(load { limit(0) }.isEmpty(), "limit(0) -> empty")
     assertTrue(load { skip(100) }.isEmpty(), "skip past the end -> empty")

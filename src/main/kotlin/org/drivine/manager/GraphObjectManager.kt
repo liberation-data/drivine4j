@@ -18,6 +18,7 @@ import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
+import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.session.SessionManager
 
 /**
@@ -311,16 +312,29 @@ class GraphObjectManager(
             OrderClauseResult(null, emptyList())
         }
 
-        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
+        require(querySpec.seekValues.isEmpty() || querySpec.skip == null) {
+            "seekAfter and skip cannot be used together"
+        }
+        val keysetPlan = if (querySpec.seekValues.isNotEmpty()) {
+            KeysetPlanner.plan(orderResult.rootOrders, querySpec.seekValues)
         } else {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
+            null
+        }
+        val effectiveWhereClause = listOfNotNull(ctx.whereClause, keysetPlan?.predicate)
+            .joinToString(" AND ") { "($it)" }
+            .takeIf { it.isNotEmpty() }
+        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
+
+        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
+            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
+        } else {
+            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
         }
 
         // SKIP/LIMIT are the final clauses, after RETURN … ORDER BY …. For a @GraphView each root is
         // one row (relationships are pattern comprehensions in the projection), so LIMIT bounds root
         // entities and keeps their collections intact.
-        val (query, bindings) = applyPagination(baseQuery, ctx.bindings, querySpec.skip, querySpec.limit)
+        val (query, bindings) = applyPagination(baseQuery, effectiveBindings, querySpec.skip, querySpec.limit)
 
         val results = persistenceManager.query(
             QuerySpecification

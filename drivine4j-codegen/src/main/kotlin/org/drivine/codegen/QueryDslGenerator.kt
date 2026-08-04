@@ -1180,7 +1180,7 @@ class QueryDslGenerator(
      * where { core.guideProgress gte 0 }
      * ```
      *
-     * Generates extensions for both WhereBuilder and OrderBuilder contexts.
+     * Generates extensions for WhereBuilder, OrderBuilder, and SeekBuilder contexts.
      */
     private fun generateContextPropertyExtensionsCode(
         graphViewClass: KSClassDeclaration,
@@ -1215,6 +1215,15 @@ public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
             // Generate context property for OrderBuilder
             code.appendLine("""
 context(builder: org.drivine.query.dsl.OrderBuilder<$dslClassName>)
+@Suppress("CONTEXT_RECEIVERS_DEPRECATED")
+public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
+    get() = builder.queryObject.${viewProp.name}
+""".trimIndent())
+            code.appendLine()
+
+            // Generate context property for SeekBuilder
+            code.appendLine("""
+context(builder: org.drivine.query.dsl.SeekBuilder<$dslClassName>)
 @Suppress("CONTEXT_RECEIVERS_DEPRECATED")
 public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
     get() = builder.queryObject.${viewProp.name}

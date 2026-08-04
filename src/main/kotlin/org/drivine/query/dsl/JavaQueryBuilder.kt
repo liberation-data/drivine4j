@@ -106,6 +106,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
 ) {
     private val conditions = mutableListOf<WhereCondition>()
     private val orders = mutableListOf<OrderSpec>()
+    private val seekValues = mutableListOf<SeekValueSpec>()
     private var limit: Int? = null
     private var skip: Int? = null
 
@@ -183,6 +184,18 @@ class JavaQueryBuilder<T : Any, Q : Any>(
     }
 
     /**
+     * Continues after a compound keyset cursor. Values must match the root [orderBy] properties in
+     * the same order; each value is type-checked by `PropertyReference.after(value)`.
+     */
+    fun seekAfter(values: java.util.function.Function<Q, List<SeekValueSpec>>): JavaQueryBuilder<T, Q> {
+        check(seekValues.isEmpty()) { "seekAfter may only be specified once" }
+        val supplied = values.apply(queryDsl)
+        require(supplied.isNotEmpty()) { "seekAfter requires at least one cursor value" }
+        seekValues.addAll(supplied)
+        return this
+    }
+
+    /**
      * Limits the result to at most [n] entities (for a `@GraphView`, [n] roots). Pair with [orderBy]
      * for a deterministic top-N.
      */
@@ -207,6 +220,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
             // Transfer collected conditions and orders to the GraphQuerySpec
             this.conditions.addAll(this@JavaQueryBuilder.conditions)
             this.orders.addAll(this@JavaQueryBuilder.orders)
+            this.seekValues.addAll(this@JavaQueryBuilder.seekValues)
             this@JavaQueryBuilder.limit?.let { limit(it) }
             this@JavaQueryBuilder.skip?.let { skip(it) }
         }

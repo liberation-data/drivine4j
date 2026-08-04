@@ -33,6 +33,7 @@ package org.drivine.query.dsl
 class GraphQuerySpec<T : Any>(private val queryObject: T) {
     internal val conditions = mutableListOf<WhereCondition>()
     internal val orders = mutableListOf<OrderSpec>()
+    internal val seekValues = mutableListOf<SeekValueSpec>()
     internal val depthOverrides = mutableMapOf<String, Int>()
     internal var limit: Int? = null
     internal var skip: Int? = null
@@ -62,6 +63,44 @@ class GraphQuerySpec<T : Any>(private val queryObject: T) {
     fun skip(n: Int) {
         require(n >= 0) { "skip must be >= 0, was $n" }
         skip = n
+    }
+
+    /**
+     * Continues a deterministically ordered query after a keyset cursor.
+     *
+     * Each property in this block must correspond, in the same order, to a root property declared
+     * in [orderBy]. Drivine derives the comparison operator from that property's direction (`<` for
+     * `DESC`, `>` for `ASC`) and expands compound cursors into the correct lexicographic predicate.
+     * Cursor values must be non-null. Pair the final key with a unique property (normally the root
+     * `@NodeId`) so every result has a unique position.
+     *
+     * ```kotlin
+     * orderBy {
+     *     session.lastActivityAt.desc()
+     *     session.sessionId.desc()
+     * }
+     * seekAfter {
+     *     session.lastActivityAt after cursor.lastActivityAt
+     *     session.sessionId after cursor.sessionId
+     * }
+     * limit(21)
+     * ```
+     *
+     * [seekAfter] and [skip] are mutually exclusive.
+     */
+    fun seekAfter(block: context(SeekBuilder<T>) () -> Unit) {
+        check(seekValues.isEmpty()) { "seekAfter may only be specified once" }
+        val builder = SeekBuilder(queryObject)
+        block(builder)
+        require(builder.values.isNotEmpty()) { "seekAfter requires at least one cursor value" }
+        seekValues.addAll(builder.values)
+    }
+
+    /** Explicit form of [seekAfter], also useful from Kotlin versions with context overload ambiguity. */
+    fun seekAfter(vararg values: SeekValueSpec) {
+        check(seekValues.isEmpty()) { "seekAfter may only be specified once" }
+        require(values.isNotEmpty()) { "seekAfter requires at least one cursor value" }
+        seekValues.addAll(values)
     }
 
     /**
@@ -116,6 +155,11 @@ class GraphQuerySpec<T : Any>(private val queryObject: T) {
         val builder = OrderBuilder(queryObject)
         block(builder)
         orders.addAll(builder.orders)
+    }
+
+    /** Explicit form of [orderBy] for callers that already have typed [OrderSpec] values. */
+    fun orderBy(vararg specifications: OrderSpec) {
+        orders.addAll(specifications)
     }
 }
 
@@ -327,10 +371,34 @@ class OrderBuilder<T : Any>(
     }
 }
 
+/** Collects the typed property values that make up a keyset cursor. */
+class SeekBuilder<T : Any>(
+    /** The generated query DSL object providing property references. */
+    val queryObject: T,
+) {
+    internal val values = mutableListOf<SeekValueSpec>()
+
+    /** Adds a cursor value explicitly; useful when overload resolution needs an expected type. */
+    operator fun invoke(value: SeekValueSpec) {
+        values.add(value)
+    }
+}
+
+/** A property path and its value at the end of the previous page. */
+data class SeekValueSpec(
+    val propertyPath: String,
+    val value: Any,
+)
+
 /**
  * Context-aware property to access the query object within an orderBy block.
  */
 context(builder: OrderBuilder<T>)
+val <T : Any> query: T
+    get() = builder.queryObject
+
+/** Context-aware access to the generated query object within a [GraphQuerySpec.seekAfter] block. */
+context(builder: SeekBuilder<T>)
 val <T : Any> query: T
     get() = builder.queryObject
 
@@ -492,5 +560,7 @@ data class CollectionSortSpec(
  */
 data class OrderClauseResult(
     val orderByClause: String?,
-    val collectionSorts: List<CollectionSortSpec>
+    val collectionSorts: List<CollectionSortSpec>,
+    /** Root-entity orders, retained for keyset planning after collection sorts are separated. */
+    val rootOrders: List<OrderSpec> = emptyList(),
 )

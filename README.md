@@ -829,6 +829,30 @@ graphObjectManager.loadAll<PropositionView> {
 }
 ```
 
+For large or changing result sets, prefer keyset pagination with `seekAfter`. Its properties must
+match the root `orderBy` properties in the same order; Drivine derives each comparison from the
+sort direction and builds the lexicographic continuation predicate. End with a unique key so ties
+cannot be skipped or duplicated:
+
+```kotlin
+graphObjectManager.loadAll<SessionView> {
+    orderBy {
+        session.lastActivityAt.desc()
+        session.sessionId.desc()
+    }
+    seekAfter {
+        session.lastActivityAt after cursor.lastActivityAt
+        session.sessionId after cursor.sessionId
+    }
+    limit(pageSize + 1)
+}
+```
+
+`seekAfter` rejects missing/misaligned order keys, null cursor values, and use together with `skip`.
+Drivine intentionally owns query planning but not cursor serialization; applications can expose an
+opaque cursor format appropriate to their API. Java callers use `.seekAfter(q -> List.of(...))` and
+the Java-friendly `PropertyReference.after(value)` method.
+
 For a `@GraphView`, `limit(n)` bounds **root entities** — each returned view keeps its relationships
 fully populated (relationships are pattern comprehensions, so one root is one row). Pair `limit` with
 `orderBy` for a deterministic top-N; without ordering the subset is an arbitrary `≤ n`. `count(…)`
