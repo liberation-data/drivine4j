@@ -44,6 +44,6 @@ import kotlin.annotation.AnnotationTarget.CLASS
  */
 @Target(CLASS)
 @Retention(RUNTIME)
-@EnableConfigurationProperties(DrivineSchemaProperties::class)
+@EnableConfigurationProperties(DrivineSchemaProperties::class, DrivineQueryProperties::class)
 @Import(DrivineConfiguration::class, DrivineSchemaConfiguration::class)
 annotation class EnableDrivine
