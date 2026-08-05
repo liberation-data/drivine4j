@@ -287,7 +287,7 @@ object CypherGenerator {
             null
         }
 
-        return OrderClauseResult(orderByClause, collectionSorts)
+        return OrderClauseResult(orderByClause, collectionSorts, rootOrders)
     }
 
     /**
@@ -935,7 +935,7 @@ object CypherGenerator {
      * Converts a value to a Neo4j-compatible type.
      * Neo4j driver doesn't support java.util.UUID natively, so we convert it to String.
      */
-    private fun convertToNeo4jValue(value: Any?): Any? {
+    internal fun convertToNeo4jValue(value: Any?): Any? {
         return when (value) {
             is java.util.UUID -> value.toString()
             is Collection<*> -> value.map { convertToNeo4jValue(it) }

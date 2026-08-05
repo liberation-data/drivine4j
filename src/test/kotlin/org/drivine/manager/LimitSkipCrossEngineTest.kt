@@ -7,6 +7,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
@@ -14,6 +15,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
 import org.testcontainers.containers.wait.strategy.Wait
@@ -31,6 +33,10 @@ import kotlin.test.assertTrue
  * **GraphView root-cardinality** decision: `limit(n)` bounds *root entities* (each with its to-many
  * relationship fully populated), not post-expansion rows; that pagination is disjoint; the edge
  * cases; and that `count` ignores `limit`. SKIP/LIMIT are bound as `$_skip`/`$_limit`.
+ *
+ * Also covers `seek` keyset pagination on the same data: that it reproduces the offset page,
+ * composes with an OR'd caller `where` without widening it, walks the whole relation exactly once,
+ * and is rejected where it would otherwise be silently ignored.
  *
  * Data: p1..p5 with level 1..5; each has one mention, p5 has two.
  */
@@ -53,6 +59,80 @@ private fun verify(gom: GraphObjectManager) {
     assertEquals(listOf("p5", "p4"), page1)
     assertEquals(listOf("p3", "p2"), page2)
     assertTrue((page1.toSet() intersect page2.toSet()).isEmpty())
+
+    // Equivalent second page via a compound keyset. The id is the deterministic tie-breaker.
+    val keysetPage2 = ids {
+        orderBy {
+            query.proposition.level.desc()
+            query.proposition.id.desc()
+        }
+        seek {
+            query.proposition.level after 4
+            query.proposition.id after "p4"
+        }
+        limit(2)
+    }
+    assertEquals(listOf("p3", "p2"), keysetPage2)
+
+    // A keyset composes with a caller `where`, including one whose top level is an OR: the two must
+    // be parenthesised independently, or the seek bound would bind to only the last OR branch.
+    val filteredKeyset = ids {
+        where {
+            anyOf {
+                query.proposition.id eq "p2"
+                query.proposition.id eq "p4"
+                query.proposition.id eq "p5"
+            }
+        }
+        orderBy {
+            query.proposition.level.desc()
+            query.proposition.id.desc()
+        }
+        seek {
+            query.proposition.level after 5
+            query.proposition.id after "p5"
+        }
+        limit(10)
+    }
+    assertEquals(listOf("p4", "p2"), filteredKeyset, "seek must not widen an OR'd where clause")
+
+    // Walking the whole relation by cursor visits every root exactly once, in order.
+    val walked = mutableListOf<String>()
+    var cursor: Pair<Int, String>? = null
+    while (true) {
+        val page = load {
+            orderBy {
+                query.proposition.level.desc()
+                query.proposition.id.desc()
+            }
+            cursor?.let { (level, id) ->
+                seek {
+                    query.proposition.level after level
+                    query.proposition.id after id
+                }
+            }
+            limit(2)
+        }
+        if (page.isEmpty()) break
+        walked += page.map { it.proposition.id }
+        cursor = page.last().let { it.proposition.level to it.proposition.id }
+    }
+    assertEquals(listOf("p5", "p4", "p3", "p2", "p1"), walked)
+
+    // seek is rejected where it would be silently ignored, rather than over-returning.
+    assertThrows<IllegalArgumentException> {
+        ids {
+            orderBy { query.proposition.level.desc() }
+            seek { query.proposition.level after 4 }
+            skip(1)
+        }
+    }
+    assertThrows<IllegalArgumentException> {
+        gom.count(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+            orderBy { query.proposition.level.desc() }
+            seek { query.proposition.level after 4 }
+        }
+    }
 
     // edge cases
     assertTrue(load { limit(0) }.isEmpty(), "limit(0) -> empty")

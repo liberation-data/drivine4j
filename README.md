@@ -829,6 +829,41 @@ graphObjectManager.loadAll<PropositionView> {
 }
 ```
 
+For large or changing result sets, prefer keyset pagination with `seek`. Its properties must
+match the root `orderBy` properties in the same order; Drivine derives each comparison from the
+sort direction and builds the lexicographic continuation predicate. End with a unique key so ties
+cannot be skipped or duplicated:
+
+```kotlin
+graphObjectManager.loadAll<SessionView> {
+    orderBy {
+        session.lastActivityAt.desc()
+        session.sessionId.desc()
+    }
+    seek {
+        session.lastActivityAt after cursor.lastActivityAt
+        session.sessionId after cursor.sessionId
+    }
+    limit(pageSize)
+}
+```
+
+Each cursor value is the corresponding property of the last row of the previous page. To tell the caller whether a next page exists
+without a second query, ask for `limit(pageSize + 1)`, return the first `pageSize` results, and treat
+the presence of the extra row as `hasMore`.
+
+**The ordered properties must be non-null in the data.** A row whose sort key is null satisfies no
+comparison, so it is dropped from every page after the first — and engines disagree about where
+nulls sort, so the shape of that loss is not even portable. Use non-null properties as keys, or
+filter nulls out in `where`.
+
+`seek` rejects missing/misaligned order keys, null cursor values, use together with `skip`, and
+use on any operation that would ignore it (`count`, `deleteAll`, `loadNearest`, `loadMatching`) —
+those fail loudly rather than quietly returning an unpaginated result. Drivine intentionally owns
+query planning but not cursor serialization; applications can expose an opaque cursor format
+appropriate to their API. Java callers use `.seek(q -> List.of(...))` and the Java-friendly
+`PropertyReference.after(value)` method.
+
 For a `@GraphView`, `limit(n)` bounds **root entities** — each returned view keeps its relationships
 fully populated (relationships are pattern comprehensions, so one root is one row). Pair `limit` with
 `orderBy` for a deterministic top-N; without ordering the subset is an arbitrary `≤ n`. `count(…)`

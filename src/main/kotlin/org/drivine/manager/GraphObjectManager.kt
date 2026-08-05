@@ -18,6 +18,7 @@ import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
+import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.session.SessionManager
 
 /**
@@ -301,7 +302,7 @@ class GraphObjectManager(
         querySpec.spec()
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val ctx = buildQueryContext(graphClass, querySpec)
+        val ctx = buildQueryContext(graphClass, querySpec, supportsSeek = true)
 
         // Process ORDER BY clause - separate root orders from collection sorts
         val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
@@ -311,16 +312,34 @@ class GraphObjectManager(
             OrderClauseResult(null, emptyList())
         }
 
-        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
+        require(querySpec.seekValues.isEmpty() || querySpec.skip == null) {
+            "seek and skip cannot be used together"
+        }
+        val keysetPlan = if (querySpec.seekValues.isNotEmpty()) {
+            KeysetPlanner.plan(orderResult.rootOrders, querySpec.seekValues, orderResult.collectionSorts.size)
         } else {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
+            null
+        }
+        val effectiveWhereClause = listOfNotNull(ctx.whereClause, keysetPlan?.predicate)
+            .joinToString(" AND ") { "($it)" }
+            .takeIf { it.isNotEmpty() }
+        keysetPlan?.bindings?.keys?.forEach { reserved ->
+            require(reserved !in ctx.bindings) {
+                "Keyset cursor parameter \$$reserved collides with a where-clause binding"
+            }
+        }
+        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
+
+        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
+            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
+        } else {
+            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
         }
 
         // SKIP/LIMIT are the final clauses, after RETURN … ORDER BY …. For a @GraphView each root is
         // one row (relationships are pattern comprehensions in the projection), so LIMIT bounds root
         // entities and keeps their collections intact.
-        val (query, bindings) = applyPagination(baseQuery, ctx.bindings, querySpec.skip, querySpec.limit)
+        val (query, bindings) = applyPagination(baseQuery, effectiveBindings, querySpec.skip, querySpec.limit)
 
         val results = persistenceManager.query(
             QuerySpecification
@@ -583,11 +602,20 @@ class GraphObjectManager(
 
     /**
      * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.
+     *
+     * @param supportsSeek whether the calling operation applies [GraphQuerySpec.seek]. Only
+     *   `loadAll` does; every other path would silently ignore the cursor and return (or delete, or
+     *   count) the whole unpaginated result, so they reject it here instead.
      */
     private fun <Q : Any> buildQueryContext(
         graphClass: Class<*>,
-        querySpec: GraphQuerySpec<Q>
+        querySpec: GraphQuerySpec<Q>,
+        supportsSeek: Boolean = false,
     ): QueryContext {
+        require(supportsSeek || querySpec.seekValues.isEmpty()) {
+            "seek is only supported by loadAll; this operation would ignore the cursor"
+        }
+
         val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
             GraphViewModel.from(graphClass)
         } else {
