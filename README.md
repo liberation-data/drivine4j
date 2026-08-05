@@ -58,14 +58,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.75")
+    implementation("org.drivine:drivine4j:0.0.76")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.75'
+    implementation 'org.drivine:drivine4j:0.0.76'
 }
 ```
 
@@ -74,7 +74,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.75</version>
+    <version>0.0.76</version>
 </dependency>
 ```
 
@@ -100,8 +100,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.75")
-    ksp("org.drivine:drivine4j-codegen:0.0.75")
+    implementation("org.drivine:drivine4j:0.0.76")
+    ksp("org.drivine:drivine4j-codegen:0.0.76")
 }
 ```
 
@@ -135,7 +135,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.75</version>
+                    <version>0.0.76</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -899,9 +899,12 @@ will not use a composite index unless the query provably excludes those same nod
 what makes the composite index usable; against an index that doesn't contain the property, it is
 just an extra property read per row. Hence: mirror the cursor, and neither half of that applies.
 
-These numbers are measured on Neo4j. The predicate is exercised against FalkorDB and Memgraph in the
-cross-engine tests, but their planners have not been profiled — treat the index advice as Neo4j
-guidance until they are.
+**This applies to Neo4j.** Memgraph and FalkorDB cannot satisfy an `ORDER BY` from an index — both
+place a blocking sort between the scan and the limit, measured even in the simplest case of one
+indexed property and no predicate. So on those engines keyset pagination costs O(remaining) rather
+than O(page), no index will change that, and Drivine neither emits the `IS NOT NULL` conjuncts (which
+cost Memgraph its range bound) nor gives index advice there. `seek` is still worth using on them for
+its *stability* — pages that don't shift under concurrent writes — just not for its cost.
 
 **Drivine tells you when the index is missing.** Any root-level `orderBy` — with or without `seek` —
 is checked against the database's indexes, and reports when nothing mirrors it:

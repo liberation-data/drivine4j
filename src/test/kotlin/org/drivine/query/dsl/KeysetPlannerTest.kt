@@ -99,6 +99,30 @@ class KeysetPlannerTest {
     }
 
     @Test
+    fun `an engine whose indexes include nulls gets no IS NOT NULL guards`() {
+        // Memgraph gains nothing from them and loses its range bound: measured 200,001 index-scan
+        // hits with the guards against 100,010 without, for the same page.
+        val plan = KeysetPlanner.plan(
+            orders = listOf(
+                OrderSpec("s.lastActivityAt", OrderDirection.DESC),
+                OrderSpec("s.sessionId", OrderDirection.DESC),
+            ),
+            values = listOf(
+                SeekValueSpec("s.lastActivityAt", 10_000),
+                SeekValueSpec("s.sessionId", "sess-100005"),
+            ),
+            guardAgainstNulls = false,
+        )
+
+        assertEquals(
+            "(s.lastActivityAt <= \$_seek_0 AND " +
+                "(s.lastActivityAt < \$_seek_0 OR " +
+                "(s.lastActivityAt = \$_seek_0 AND s.sessionId < \$_seek_1)))",
+            plan.predicate,
+        )
+    }
+
+    @Test
     fun `cursor paths and order paths must match`() {
         val error = assertThrows<IllegalArgumentException> {
             KeysetPlanner.plan(

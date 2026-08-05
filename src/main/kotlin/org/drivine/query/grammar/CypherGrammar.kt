@@ -37,6 +37,31 @@ interface CypherGrammar {
 
 
     /**
+     * Whether this engine can satisfy an `ORDER BY` from an index and stop once the page is full.
+     *
+     * Neo4j can: an ordered keyset page plans as `NodeIndexSeek` → `Limit`, with no sort operator at
+     * all, which is what makes keyset pagination cost O(page). Memgraph and FalkorDB always place a
+     * blocking sort between the scan and the limit — measured even in the simplest case, one indexed
+     * property and no predicate — so pagination there costs O(remaining) no matter what is indexed.
+     *
+     * Index advice is only given where this is true; elsewhere there is no index to recommend,
+     * because none would change the plan.
+     */
+    val supportsIndexBackedOrdering: Boolean
+        get() = false
+
+    /**
+     * Whether an index excludes nodes that lack the indexed property.
+     *
+     * On Neo4j it does, so a composite index is unusable unless the query provably excludes those
+     * nodes — which is why keyset predicates constrain every cursor key with `IS NOT NULL`. Memgraph
+     * gains nothing from those conjuncts and is actively slowed by them: they cost it the range bound
+     * and roughly double its scan.
+     */
+    val indexesExcludeNulls: Boolean
+        get() = false
+
+    /**
      * Generates a WHERE-clause condition asserting that a relationship exists.
      * Used for non-nullable single relationships in GraphView queries.
      */
@@ -172,6 +197,10 @@ class Neo4j5Grammar(
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int) =
         FilteredExistenceResult("EXISTS { $relationshipPattern WHERE $whereClause }")
 
+    override val supportsIndexBackedOrdering: Boolean = true
+
+    override val indexesExcludeNulls: Boolean = true
+
     override val supportsVectorSearch: Boolean = true
 
     /**
@@ -210,6 +239,10 @@ class Neo4j4Grammar(
 
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int) =
         FilteredExistenceResult("EXISTS { $relationshipPattern WHERE $whereClause }")
+
+    override val supportsIndexBackedOrdering: Boolean = true
+
+    override val indexesExcludeNulls: Boolean = true
 }
 
 /**

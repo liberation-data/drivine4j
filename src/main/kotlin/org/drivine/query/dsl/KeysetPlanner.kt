@@ -47,11 +47,16 @@ internal object KeysetPlanner {
      * @param values the cursor components, which must align 1:1 with [orders]
      * @param collectionSortCount how many declared orders were routed to collection sorts rather
      *   than root ordering — used only to explain an arity mismatch
+     * @param guardAgainstNulls whether to constrain each key with `IS NOT NULL`. True where indexes
+     *   exclude null-valued nodes (Neo4j), since the conjunct is what makes a composite index usable
+     *   at all. False elsewhere: on Memgraph the same conjunct costs the range bound and roughly
+     *   doubles the scan. See [org.drivine.query.grammar.CypherGrammar.indexesExcludeNulls].
      */
     fun plan(
         orders: List<OrderSpec>,
         values: List<SeekValueSpec>,
         collectionSortCount: Int = 0,
+        guardAgainstNulls: Boolean = true,
     ): KeysetPlan {
         require(orders.isNotEmpty()) {
             "seek requires at least one root orderBy property" +
@@ -82,7 +87,11 @@ internal object KeysetPlanner {
         } else {
             branches.joinToString(" OR ", prefix = "(", postfix = ")")
         }
-        val notNulls = orders.map { "${it.propertyPath} IS NOT NULL" }
+        val notNulls = if (guardAgainstNulls) {
+            orders.map { "${it.propertyPath} IS NOT NULL" }
+        } else {
+            emptyList()
+        }
         val rangeBound = if (orders.size == 1) {
             // A single key's comparison is already a usable range bound on its own.
             emptyList()

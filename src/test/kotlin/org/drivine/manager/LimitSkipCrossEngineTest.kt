@@ -150,6 +150,23 @@ private fun verify(gom: GraphObjectManager) {
     assertEquals(1L, gom.count<PropositionView> { where { query.proposition.id eq "p3" } })
 }
 
+/**
+ * Index advice is Neo4j-only: the other engines put a blocking sort between scan and limit whatever
+ * is indexed, so there is no index to recommend. `FAIL` must therefore stay silent on them — if this
+ * regresses, those users get told to create an index that cannot help.
+ */
+private fun verifyAdviceIsSilent(gom: GraphObjectManager) {
+    gom.indexAdvice = org.drivine.query.dsl.IndexAdvicePolicy.FAIL
+    val ids = gom.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+        orderBy {
+            query.proposition.level.desc()
+            query.proposition.id.desc()
+        }
+        limit(2)
+    }.map { it.proposition.id }
+    assertEquals(listOf("p5", "p4"), ids)
+}
+
 private const val SEED = """
     CREATE (p1:Proposition {id: 'p1', contextId: 'c', status: 'active', level: 1})
     CREATE (p2:Proposition {id: 'p2', contextId: 'c', status: 'active', level: 2})
@@ -247,6 +264,9 @@ class LimitSkipFalkorDbTest {
 
     @Test
     fun `limit and skip on FalkorDB`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `index advice stays silent on FalkorDB`() = verifyAdviceIsSilent(buildGom(pm, SubtypeRegistry()))
 }
 
 @Testcontainers
@@ -283,4 +303,7 @@ class LimitSkipMemgraphTest {
 
     @Test
     fun `limit and skip on Memgraph`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `index advice stays silent on Memgraph`() = verifyAdviceIsSilent(buildGom(pm, SubtypeRegistry()))
 }

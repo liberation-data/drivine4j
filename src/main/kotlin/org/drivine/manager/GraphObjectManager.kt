@@ -333,7 +333,12 @@ class GraphObjectManager(
             "seek and skip cannot be used together"
         }
         val keysetPlan = if (querySpec.seekValues.isNotEmpty()) {
-            KeysetPlanner.plan(orderResult.rootOrders, querySpec.seekValues, orderResult.collectionSorts.size)
+            KeysetPlanner.plan(
+                orderResult.rootOrders,
+                querySpec.seekValues,
+                orderResult.collectionSorts.size,
+                guardAgainstNulls = grammar.indexesExcludeNulls,
+            )
         } else {
             null
         }
@@ -635,6 +640,10 @@ class GraphObjectManager(
         isKeyset: Boolean,
     ) {
         if (indexAdvice == IndexAdvicePolicy.OFF || rootOrders.isEmpty()) return
+        // Only Neo4j can turn an index into an ordered seek that stops at the page boundary. On the
+        // other engines a blocking sort sits between scan and limit whatever is indexed, so there is
+        // no index worth recommending.
+        if (!grammar.supportsIndexBackedOrdering) return
 
         val fragmentType = viewModel?.rootFragment?.fragmentType ?: graphClass
         val fragmentModel = FragmentModel.from(fragmentType)
