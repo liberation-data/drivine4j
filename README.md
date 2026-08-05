@@ -914,16 +914,28 @@ The index must cover exactly these properties, in this order.
 ```
 
 Ordering without an index is *correct*, just unindexed — perfectly reasonable on a small collection
-— so the default only warns, once per label/property combination. Turn it up in development or CI to
-make an unindexed page fail:
+— so the default only warns, once per label/property combination. Turn it up in development or CI so
+an unindexed page fails the build instead of quietly scanning in production:
+
+```yaml
+drivine:
+  query:
+    index-advice: FAIL      # WARN (default) | OFF
+```
+
+The property applies to every manager the factory creates. Without Spring, or to override a single
+manager after it has been handed out:
 
 ```kotlin
-graphObjectManager.indexAdvice = IndexAdvicePolicy.FAIL   // WARN (default) | OFF
+graphObjectManager.indexAdvice = IndexAdvicePolicy.FAIL
 ```
 
 The index list is read once and cached per manager, so the check costs one round trip per process,
 not one per query. If your application ensures indexes lazily, after the first ordered query has
 already run, that cache will be stale — construct the manager after schema setup, or use `OFF`.
+
+See [docs/0.0.75-index-aware-keyset-pagination.md](docs/0.0.75-index-aware-keyset-pagination.md) for
+the planner reasoning behind the mirror rule, the full measurements, and the cross-engine caveats.
 
 `seek` rejects missing/misaligned order keys, null cursor values, use together with `skip`, and
 use on any operation that would ignore it (`count`, `deleteAll`, `loadNearest`, `loadMatching`) —

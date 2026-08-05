@@ -2,6 +2,7 @@ package org.drivine.manager
 
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.dsl.IndexAdvicePolicy
 import org.drivine.session.SessionManager
 
 /**
@@ -12,7 +13,12 @@ import org.drivine.session.SessionManager
 class GraphObjectManagerFactory(
     private val persistenceManagerFactory: PersistenceManagerFactory,
     private val objectMapper: ObjectMapper,
-    private val subtypeRegistry: SubtypeRegistry
+    private val subtypeRegistry: SubtypeRegistry,
+    /**
+     * Applied to every manager this factory creates. See [GraphObjectManager.indexAdvice]; an
+     * individual manager can still be turned up or down after it is handed out.
+     */
+    private val indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN,
 ) {
     private val managers: MutableMap<String, GraphObjectManager> = mutableMapOf()
 
@@ -28,6 +34,7 @@ class GraphObjectManagerFactory(
             val persistenceManager = persistenceManagerFactory.get(database, type)
             val sessionManager = SessionManager(objectMapper)
             managers[key] = GraphObjectManager(persistenceManager, sessionManager, objectMapper, subtypeRegistry)
+                .apply { indexAdvice = this@GraphObjectManagerFactory.indexAdvice }
         }
         return managers[key]!!
     }

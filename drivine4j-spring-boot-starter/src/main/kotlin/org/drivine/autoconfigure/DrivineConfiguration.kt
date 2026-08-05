@@ -5,6 +5,7 @@ import org.drivine.connection.DatabaseRegistry
 import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.query.dsl.IndexAdvicePolicy
 import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
@@ -56,8 +57,14 @@ class DrivineConfiguration {
     @ConditionalOnMissingBean
     fun graphObjectManagerFactory(
         persistenceManagerFactory: PersistenceManagerFactory,
-        subtypeRegistry: org.drivine.mapper.SubtypeRegistry
+        subtypeRegistry: org.drivine.mapper.SubtypeRegistry,
+        queryProperties: DrivineQueryProperties?,
     ): GraphObjectManagerFactory {
-        return GraphObjectManagerFactory(persistenceManagerFactory, Neo4jObjectMapper.instance, subtypeRegistry)
+        return GraphObjectManagerFactory(
+            persistenceManagerFactory,
+            Neo4jObjectMapper.instance,
+            subtypeRegistry,
+            queryProperties?.indexAdvice ?: IndexAdvicePolicy.WARN,
+        )
     }
 }
