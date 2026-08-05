@@ -857,29 +857,73 @@ comparison, so it is dropped from every page after the first — and engines dis
 nulls sort, so the shape of that loss is not even portable. Use non-null properties as keys, or
 filter nulls out in `where`.
 
-**Index the *leading* sort property on its own.** Keyset pagination is only cheap if the engine can
-seek into the index and stop; otherwise it scans the whole continuation and takes the top *n*, which
-is no better than `skip`. What unlocks the seek is an index whose leading column is the first
-`orderBy` property:
+**Index the cursor.** Keyset pagination is only cheap if the engine can seek into an index and stop;
+otherwise it scans the whole continuation and takes the top *n*, which is no better than `skip`. The
+rule is that the index mirrors the cursor — a range index over exactly the `orderBy` properties, in
+the same order:
 
 ```kotlin
-@RangeIndex
-val lastActivityAt: Instant
+@NodeFragment(labels = ["Session"])
+@RangeIndex(properties = ["lastActivityAt", "sessionId"])   // matches the cursor below
+data class SessionNode(
+    @NodeId val sessionId: String,
+    val lastActivityAt: Instant,
+)
+```
+```kotlin
+orderBy {
+    session.lastActivityAt.desc()
+    session.sessionId.desc()
+}
+seek {
+    session.lastActivityAt after cursor.lastActivityAt
+    session.sessionId after cursor.sessionId
+}
 ```
 
-Profiled on Neo4j 25, 200k nodes, a 20-row page taken from the middle of the relation:
+A single-property cursor takes a single-property index (`@RangeIndex` on the field) — same rule, one
+key. Profiled on Neo4j 25, 200k nodes, a 20-row page from the middle of the relation:
 
-| Index present | Database accesses |
+| Index | Database accesses |
 | --- | --- |
-| `RangeIndexSpec("Session", "lastActivityAt")` | **64** |
-| `RangeIndexSpec("Session", listOf("lastActivityAt", "sessionId"))` only | 600,010 |
-| neither | 900,011 |
+| Composite over both cursor keys | **27** |
+| Single-property on the leading key only | 200,020 |
+| None | 500,010 |
 
-The composite index is the trap: it looks like the right index for a two-property cursor, but Neo4j
-will not use a composite index for a predicate that constrains only its leading property, so the
-query falls back to a label scan. Declare the single-property index on the first sort key. A
-composite index alongside it is harmless, and useful for other queries — it just is not what makes
-paging fast.
+With the matching index the plan is `NodeIndexSeek` → `Limit` — no sort at all, since the index
+supplies the order, and it stops as soon as the page is full.
+
+Why an index that covers only *part* of the cursor is so much worse: Drivine constrains every cursor
+key with `IS NOT NULL`, because a Neo4j index excludes nodes that lack the property, so the planner
+will not use a composite index unless the query provably excludes those same nodes. That conjunct is
+what makes the composite index usable; against an index that doesn't contain the property, it is
+just an extra property read per row. Hence: mirror the cursor, and neither half of that applies.
+
+These numbers are measured on Neo4j. The predicate is exercised against FalkorDB and Memgraph in the
+cross-engine tests, but their planners have not been profiled — treat the index advice as Neo4j
+guidance until they are.
+
+**Drivine tells you when the index is missing.** Any root-level `orderBy` — with or without `seek` —
+is checked against the database's indexes, and reports when nothing mirrors it:
+
+```
+seek on Session(lastActivityAt, sessionId) has no matching range index, so the query scans and
+sorts instead of seeking. Declare @RangeIndex(properties = ["lastActivityAt", "sessionId"]) on the
+fragment, or call indexes.ensure(RangeIndexSpec("Session", listOf("lastActivityAt", "sessionId"))).
+The index must cover exactly these properties, in this order.
+```
+
+Ordering without an index is *correct*, just unindexed — perfectly reasonable on a small collection
+— so the default only warns, once per label/property combination. Turn it up in development or CI to
+make an unindexed page fail:
+
+```kotlin
+graphObjectManager.indexAdvice = IndexAdvicePolicy.FAIL   // WARN (default) | OFF
+```
+
+The index list is read once and cached per manager, so the check costs one round trip per process,
+not one per query. If your application ensures indexes lazily, after the first ordered query has
+already run, that cache will be stale — construct the manager after schema setup, or use `OFF`.
 
 `seek` rejects missing/misaligned order keys, null cursor values, use together with `skip`, and
 use on any operation that would ignore it (`count`, `deleteAll`, `loadNearest`, `loadMatching`) —

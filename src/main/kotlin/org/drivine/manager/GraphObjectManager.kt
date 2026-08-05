@@ -19,6 +19,9 @@ import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
 import org.drivine.query.dsl.KeysetPlanner
+import org.drivine.query.dsl.IndexAdvicePolicy
+import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.QueryIndexAdvisor
 import org.drivine.session.SessionManager
 
 /**
@@ -53,6 +56,18 @@ class GraphObjectManager(
     private val grammar = persistenceManager.grammar
 
     private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar)
+
+    private val indexAdvisor = QueryIndexAdvisor(persistenceManager.indexes)
+
+    /**
+     * What to do when an ordered or keyset-paginated query has no range index to seek into.
+     *
+     * Defaults to [IndexAdvicePolicy.WARN], which logs once per distinct label/property combination.
+     * Set [IndexAdvicePolicy.FAIL] in development or CI to turn an unindexed page into an error, or
+     * [IndexAdvicePolicy.OFF] to say nothing — ordering without an index is correct, just unindexed,
+     * and on a small collection that is a perfectly reasonable thing to do.
+     */
+    var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
 
     /**
      * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
@@ -330,6 +345,8 @@ class GraphObjectManager(
         }
         val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
 
+        adviseOnIndexes(graphClass, ctx.viewModel, orderResult.rootOrders, isKeyset = keysetPlan != null)
+
         val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
             builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
         } else {
@@ -599,6 +616,33 @@ class GraphObjectManager(
         return scored
     }
 
+
+    /**
+     * Reports when an ordered query has no range index to seek into. See [indexAdvice] for the
+     * levels, and the README's pagination section for why the index must mirror the ordering
+     * exactly rather than merely overlap it.
+     *
+     * Only root-level orders participate — a collection sort happens inside a pattern comprehension,
+     * where no index applies.
+     */
+    private fun adviseOnIndexes(
+        graphClass: Class<*>,
+        viewModel: GraphViewModel?,
+        rootOrders: List<OrderSpec>,
+        isKeyset: Boolean,
+    ) {
+        if (indexAdvice == IndexAdvicePolicy.OFF || rootOrders.isEmpty()) return
+
+        val fragmentType = viewModel?.rootFragment?.fragmentType ?: graphClass
+        val label = FragmentModel.from(fragmentType).labels.firstOrNull() ?: return
+
+        indexAdvisor.check(
+            policy = indexAdvice,
+            label = label,
+            properties = rootOrders.map { it.propertyPath.substringAfter(".") },
+            operation = if (isKeyset) "seek" else "orderBy",
+        )
+    }
 
     /**
      * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.
