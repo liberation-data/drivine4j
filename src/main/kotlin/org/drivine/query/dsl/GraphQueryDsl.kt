@@ -71,36 +71,33 @@ class GraphQuerySpec<T : Any>(private val queryObject: T) {
      * Each property in this block must correspond, in the same order, to a root property declared
      * in [orderBy]. Drivine derives the comparison operator from that property's direction (`<` for
      * `DESC`, `>` for `ASC`) and expands compound cursors into the correct lexicographic predicate.
-     * Cursor values must be non-null. Pair the final key with a unique property (normally the root
-     * `@NodeId`) so every result has a unique position.
+     * Cursor values must be non-null, and so must the ordered properties themselves: a row whose
+     * key is null satisfies no comparison and would be skipped by every page after the first. Pair
+     * the final key with a unique property (normally the root `@NodeId`) so every result has a
+     * unique position.
      *
      * ```kotlin
      * orderBy {
      *     session.lastActivityAt.desc()
      *     session.sessionId.desc()
      * }
-     * seekAfter {
+     * seek {
      *     session.lastActivityAt after cursor.lastActivityAt
      *     session.sessionId after cursor.sessionId
      * }
-     * limit(21)
+     * limit(pageSize)
      * ```
      *
-     * [seekAfter] and [skip] are mutually exclusive.
+     * [seek] and [skip] are mutually exclusive, and [seek] is only supported on the
+     * `loadAll` family — a scored search or a `count`/`deleteAll` rejects it rather than silently
+     * returning an unpaginated result.
      */
-    fun seekAfter(block: context(SeekBuilder<T>) () -> Unit) {
-        check(seekValues.isEmpty()) { "seekAfter may only be specified once" }
+    fun seek(block: context(SeekBuilder<T>) () -> Unit) {
+        check(seekValues.isEmpty()) { "seek may only be specified once" }
         val builder = SeekBuilder(queryObject)
         block(builder)
-        require(builder.values.isNotEmpty()) { "seekAfter requires at least one cursor value" }
+        require(builder.values.isNotEmpty()) { "seek requires at least one cursor value" }
         seekValues.addAll(builder.values)
-    }
-
-    /** Explicit form of [seekAfter], also useful from Kotlin versions with context overload ambiguity. */
-    fun seekAfter(vararg values: SeekValueSpec) {
-        check(seekValues.isEmpty()) { "seekAfter may only be specified once" }
-        require(values.isNotEmpty()) { "seekAfter requires at least one cursor value" }
-        seekValues.addAll(values)
     }
 
     /**
@@ -155,11 +152,6 @@ class GraphQuerySpec<T : Any>(private val queryObject: T) {
         val builder = OrderBuilder(queryObject)
         block(builder)
         orders.addAll(builder.orders)
-    }
-
-    /** Explicit form of [orderBy] for callers that already have typed [OrderSpec] values. */
-    fun orderBy(vararg specifications: OrderSpec) {
-        orders.addAll(specifications)
     }
 }
 
@@ -377,14 +369,15 @@ class SeekBuilder<T : Any>(
     val queryObject: T,
 ) {
     internal val values = mutableListOf<SeekValueSpec>()
-
-    /** Adds a cursor value explicitly; useful when overload resolution needs an expected type. */
-    operator fun invoke(value: SeekValueSpec) {
-        values.add(value)
-    }
 }
 
-/** A property path and its value at the end of the previous page. */
+/**
+ * A property path and its value at the end of the previous page.
+ *
+ * Obtain these through the typed property references — `property after value` inside a
+ * [GraphQuerySpec.seek] block, or `property.after(value)` from Java — rather than
+ * constructing them directly: [propertyPath] is interpolated into Cypher verbatim.
+ */
 data class SeekValueSpec(
     val propertyPath: String,
     val value: Any,
@@ -397,7 +390,7 @@ context(builder: OrderBuilder<T>)
 val <T : Any> query: T
     get() = builder.queryObject
 
-/** Context-aware access to the generated query object within a [GraphQuerySpec.seekAfter] block. */
+/** Context-aware access to the generated query object within a [GraphQuerySpec.seek] block. */
 context(builder: SeekBuilder<T>)
 val <T : Any> query: T
     get() = builder.queryObject

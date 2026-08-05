@@ -187,10 +187,10 @@ class JavaQueryBuilder<T : Any, Q : Any>(
      * Continues after a compound keyset cursor. Values must match the root [orderBy] properties in
      * the same order; each value is type-checked by `PropertyReference.after(value)`.
      */
-    fun seekAfter(values: java.util.function.Function<Q, List<SeekValueSpec>>): JavaQueryBuilder<T, Q> {
-        check(seekValues.isEmpty()) { "seekAfter may only be specified once" }
+    fun seek(values: java.util.function.Function<Q, List<SeekValueSpec>>): JavaQueryBuilder<T, Q> {
+        check(seekValues.isEmpty()) { "seek may only be specified once" }
         val supplied = values.apply(queryDsl)
-        require(supplied.isNotEmpty()) { "seekAfter requires at least one cursor value" }
+        require(supplied.isNotEmpty()) { "seek requires at least one cursor value" }
         seekValues.addAll(supplied)
         return this
     }

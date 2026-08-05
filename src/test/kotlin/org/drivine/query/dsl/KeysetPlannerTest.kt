@@ -33,11 +33,22 @@ class KeysetPlannerTest {
         )
 
         assertEquals(
-            "(session.lastActivityAt < \$_seek_0 OR " +
-                "(session.lastActivityAt = \$_seek_0 AND session.sessionId < \$_seek_1))",
+            "(session.lastActivityAt <= \$_seek_0 AND " +
+                "(session.lastActivityAt < \$_seek_0 OR " +
+                "(session.lastActivityAt = \$_seek_0 AND session.sessionId < \$_seek_1)))",
             plan.predicate,
         )
         assertEquals(mapOf("_seek_0" to instant, "_seek_1" to "s-20"), plan.bindings)
+    }
+
+    @Test
+    fun `a single-key cursor is a bare comparison with no redundant bound`() {
+        val plan = KeysetPlanner.plan(
+            orders = listOf(OrderSpec("n.id", OrderDirection.ASC)),
+            values = listOf(SeekValueSpec("n.id", "id-7")),
+        )
+
+        assertEquals("(n.id > \$_seek_0)", plan.predicate)
     }
 
     @Test
@@ -56,10 +67,32 @@ class KeysetPlannerTest {
         )
 
         assertEquals(
-            "(n.priority < \$_seek_0 OR " +
+            "(n.priority <= \$_seek_0 AND " +
+                "(n.priority < \$_seek_0 OR " +
                 "(n.priority = \$_seek_0 AND n.name > \$_seek_1) OR " +
-                "(n.priority = \$_seek_0 AND n.name = \$_seek_1 AND n.id < \$_seek_2))",
+                "(n.priority = \$_seek_0 AND n.name = \$_seek_1 AND n.id < \$_seek_2)))",
             plan.predicate,
+        )
+    }
+
+    @Test
+    fun `an arity mismatch explains a collection sort that was routed away from root ordering`() {
+        val error = assertThrows<IllegalArgumentException> {
+            KeysetPlanner.plan(
+                orders = listOf(OrderSpec("issue.id", OrderDirection.DESC)),
+                values = listOf(
+                    SeekValueSpec("issue.id", "i-1"),
+                    SeekValueSpec("assignees.name", "Ada"),
+                ),
+                collectionSortCount = 1,
+            )
+        }
+
+        assertEquals(
+            "seek supplied 2 cursor values for 1 root orderBy properties " +
+                "(1 declared orderBy property sorts a relationship collection, which cannot " +
+                "participate in a keyset cursor)",
+            error.message,
         )
     }
 
@@ -73,13 +106,20 @@ class KeysetPlannerTest {
         }
 
         assertEquals(
-            "seekAfter property #1 is n.id, but orderBy property #1 is n.createdAt",
+            "seek property #1 is n.id, but orderBy property #1 is n.createdAt",
             error.message,
         )
     }
 
+    /**
+     * `after` is overloaded on [PropertyReference]: inside a [SeekBuilder] context it registers the
+     * value and returns `Unit`; outside one it returns a [SeekValueSpec] for Java callers. If the
+     * context overload ever stopped winning inside `seek { }`, every component would be silently
+     * discarded and this list would come back empty — so this test pins the resolution, not just
+     * the recording.
+     */
     @Test
-    fun `typed seekAfter DSL records cursor components`() {
+    fun `typed seek DSL records cursor components via the context overload`() {
         data class TestQuery(
             val activity: PropertyReference<Instant> = PropertyReference("n", "activity"),
             val id: PropertyReference<String> = PropertyReference("n", "id"),
@@ -91,7 +131,7 @@ class KeysetPlannerTest {
                 query.activity.desc()
                 query.id.desc()
             }
-            seekAfter {
+            seek {
                 query.activity after instant
                 query.id after "id-7"
             }
@@ -104,6 +144,13 @@ class KeysetPlannerTest {
             ),
             spec.seekValues,
         )
+    }
+
+    @Test
+    fun `outside a seek block the same call yields a value for Java callers`() {
+        val property = PropertyReference<String>("n", "id")
+
+        assertEquals(SeekValueSpec("n.id", "id-7"), property.after("id-7"))
     }
 
     @Test

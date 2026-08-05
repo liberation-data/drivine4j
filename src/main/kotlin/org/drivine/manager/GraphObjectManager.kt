@@ -302,7 +302,7 @@ class GraphObjectManager(
         querySpec.spec()
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val ctx = buildQueryContext(graphClass, querySpec)
+        val ctx = buildQueryContext(graphClass, querySpec, supportsSeek = true)
 
         // Process ORDER BY clause - separate root orders from collection sorts
         val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
@@ -313,16 +313,21 @@ class GraphObjectManager(
         }
 
         require(querySpec.seekValues.isEmpty() || querySpec.skip == null) {
-            "seekAfter and skip cannot be used together"
+            "seek and skip cannot be used together"
         }
         val keysetPlan = if (querySpec.seekValues.isNotEmpty()) {
-            KeysetPlanner.plan(orderResult.rootOrders, querySpec.seekValues)
+            KeysetPlanner.plan(orderResult.rootOrders, querySpec.seekValues, orderResult.collectionSorts.size)
         } else {
             null
         }
         val effectiveWhereClause = listOfNotNull(ctx.whereClause, keysetPlan?.predicate)
             .joinToString(" AND ") { "($it)" }
             .takeIf { it.isNotEmpty() }
+        keysetPlan?.bindings?.keys?.forEach { reserved ->
+            require(reserved !in ctx.bindings) {
+                "Keyset cursor parameter \$$reserved collides with a where-clause binding"
+            }
+        }
         val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
 
         val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
@@ -597,11 +602,20 @@ class GraphObjectManager(
 
     /**
      * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.
+     *
+     * @param supportsSeek whether the calling operation applies [GraphQuerySpec.seek]. Only
+     *   `loadAll` does; every other path would silently ignore the cursor and return (or delete, or
+     *   count) the whole unpaginated result, so they reject it here instead.
      */
     private fun <Q : Any> buildQueryContext(
         graphClass: Class<*>,
-        querySpec: GraphQuerySpec<Q>
+        querySpec: GraphQuerySpec<Q>,
+        supportsSeek: Boolean = false,
     ): QueryContext {
+        require(supportsSeek || querySpec.seekValues.isEmpty()) {
+            "seek is only supported by loadAll; this operation would ignore the cursor"
+        }
+
         val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
             GraphViewModel.from(graphClass)
         } else {

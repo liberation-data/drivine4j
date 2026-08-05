@@ -289,7 +289,7 @@ open class PropertyReference<T>(
 
     /**
      * Creates a Java-friendly keyset cursor value for this property. Kotlin callers normally use
-     * the context-aware infix form inside `seekAfter { property after value }`.
+     * the context-aware infix form inside `seek { property after value }`.
      */
     fun after(value: T): SeekValueSpec {
         require(value != null) { "Keyset cursor values must be non-null for $alias.$propertyName" }
@@ -422,7 +422,10 @@ open class PropertyReference<T>(
         builder.orders.add(OrderSpec("$alias.$propertyName", OrderDirection.DESC))
     }
 
-    /** Registers this property's non-null value as one component of a keyset cursor. */
+    /**
+     * Registers this property's non-null value as one component of a keyset cursor: reads as
+     * `session.lastActivityAt after cursor.lastActivityAt` — the page starts strictly after it.
+     */
     context(builder: SeekBuilder<*>)
     @Suppress("INAPPLICABLE_JVM_NAME")
     @JvmName("afterContext")

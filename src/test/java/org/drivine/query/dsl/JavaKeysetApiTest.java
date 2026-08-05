@@ -27,7 +27,7 @@ class JavaKeysetApiTest {
         JavaQueryBuilder<Object, TestDsl> result = builder
                 .orderBy(q -> q.activity.desc())
                 .orderBy(q -> q.id.desc())
-                .seekAfter(q -> List.of(q.activity.after(42L), q.id.after("session-42")))
+                .seek(q -> List.of(q.activity.after(42L), q.id.after("session-42")))
                 .limit(21);
 
         assertSame(builder, result);
