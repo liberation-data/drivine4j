@@ -22,6 +22,8 @@ import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.IndexAdvicePolicy
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.QueryIndexAdvisor
+import org.drivine.query.dsl.WhereCondition
+import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.session.SessionManager
 
 /**
@@ -57,7 +59,7 @@ class GraphObjectManager(
 
     private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar)
 
-    private val indexAdvisor = QueryIndexAdvisor(persistenceManager.indexes)
+    private val indexAdvisor = QueryIndexAdvisor(persistenceManager.indexes, persistenceManager.constraints)
 
     /**
      * What to do when an ordered or keyset-paginated query has no range index to seek into.
@@ -345,7 +347,7 @@ class GraphObjectManager(
         }
         val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
 
-        adviseOnIndexes(graphClass, ctx.viewModel, orderResult.rootOrders, isKeyset = keysetPlan != null)
+        adviseOnIndexes(graphClass, ctx.viewModel, orderResult.rootOrders, querySpec, isKeyset = keysetPlan != null)
 
         val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
             builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
@@ -625,24 +627,44 @@ class GraphObjectManager(
      * Only root-level orders participate — a collection sort happens inside a pattern comprehension,
      * where no index applies.
      */
-    private fun adviseOnIndexes(
+    private fun <Q : Any> adviseOnIndexes(
         graphClass: Class<*>,
         viewModel: GraphViewModel?,
         rootOrders: List<OrderSpec>,
+        querySpec: GraphQuerySpec<Q>,
         isKeyset: Boolean,
     ) {
         if (indexAdvice == IndexAdvicePolicy.OFF || rootOrders.isEmpty()) return
 
         val fragmentType = viewModel?.rootFragment?.fragmentType ?: graphClass
-        val label = FragmentModel.from(fragmentType).labels.firstOrNull() ?: return
+        val fragmentModel = FragmentModel.from(fragmentType)
+        val label = fragmentModel.labels.firstOrNull() ?: return
+        val rootAlias = viewModel?.rootFragment?.fieldName
 
         indexAdvisor.check(
             policy = indexAdvice,
             label = label,
             properties = rootOrders.map { it.propertyPath.substringAfter(".") },
             operation = if (isKeyset) "seek" else "orderBy",
+            pinnedBy = pinningEqualities(querySpec, rootAlias),
+            uniqueByContract = setOfNotNull(fragmentModel.nodeIdProperty),
         )
     }
+
+    /**
+     * Root properties the query fixes to a single value at the top level of its `where`.
+     *
+     * Only [WhereCondition.PropertyCondition] entries in the spec's own condition list count: those
+     * are AND-ed, so each genuinely narrows the result. Conditions nested inside an `anyOf` are not
+     * in this list, which is what we want — an equality in one branch of an OR pins nothing.
+     */
+    private fun <Q : Any> pinningEqualities(querySpec: GraphQuerySpec<Q>, rootAlias: String?): Set<String> =
+        querySpec.conditions
+            .filterIsInstance<WhereCondition.PropertyCondition>()
+            .filter { it.operator == ComparisonOperator.EQUALS }
+            .filter { rootAlias == null || it.propertyPath.substringBefore(".") == rootAlias }
+            .map { it.propertyPath.substringAfter(".") }
+            .toSet()
 
     /**
      * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.

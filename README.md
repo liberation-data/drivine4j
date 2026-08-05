@@ -58,14 +58,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.30")
+    implementation("org.drivine:drivine4j:0.0.75")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.30'
+    implementation 'org.drivine:drivine4j:0.0.75'
 }
 ```
 
@@ -74,7 +74,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.30</version>
+    <version>0.0.75</version>
 </dependency>
 ```
 
@@ -100,8 +100,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.30")
-    ksp("org.drivine:drivine4j-codegen:0.0.30")
+    implementation("org.drivine:drivine4j:0.0.75")
+    ksp("org.drivine:drivine4j-codegen:0.0.75")
 }
 ```
 
@@ -135,7 +135,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.30</version>
+                    <version>0.0.75</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -929,6 +929,11 @@ manager after it has been handed out:
 ```kotlin
 graphObjectManager.indexAdvice = IndexAdvicePolicy.FAIL
 ```
+
+A query already pinned to a single root — a top-level `where` equality on the `@NodeId`, or on a
+property carrying a single-property uniqueness constraint — is never advised on. Its ordering is over
+one row, so no index could change the plan. An equality inside `anyOf` doesn't count, since it
+constrains only one branch of the OR.
 
 The index list is read once and cached per manager, so the check costs one round trip per process,
 not one per query. If your application ensures indexes lazily, after the first ordered query has

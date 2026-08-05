@@ -157,6 +157,70 @@ class QueryIndexAdvisorTest {
     }
 
     @Test
+    fun `a query pinned to one root by its id is not advised on`() {
+        val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
+
+        // Ordering over a single row cannot be improved by an index, so advising here is noise.
+        val results = manager.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+            where { query.proposition.id eq "p1" }
+            orderBy {
+                query.proposition.level.desc()
+                query.proposition.id.desc()
+            }
+        }
+
+        assertEquals(1, results.size)
+    }
+
+    @Test
+    fun `a single-property uniqueness constraint also pins`() {
+        pm.execute(
+            QuerySpecification.withStatement(
+                "CREATE CONSTRAINT proposition_ctx IF NOT EXISTS " +
+                    "FOR (p:Proposition) REQUIRE p.contextId IS UNIQUE"
+            )
+        )
+        val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
+
+        val results = manager.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+            where { query.proposition.contextId eq "c" }
+            orderBy { query.proposition.level.desc() }
+        }
+
+        assertEquals(1, results.size)
+        pm.execute(QuerySpecification.withStatement("DROP CONSTRAINT proposition_ctx IF EXISTS"))
+    }
+
+    @Test
+    fun `an equality on a non-unique property does not pin`() {
+        val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
+
+        assertThrows<IllegalStateException> {
+            manager.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+                where { query.proposition.status eq "active" }
+                orderBy { query.proposition.level.desc() }
+            }
+        }
+    }
+
+    @Test
+    fun `an equality inside anyOf does not pin, since it constrains only one branch`() {
+        val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
+
+        assertThrows<IllegalStateException> {
+            manager.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+                where {
+                    anyOf {
+                        query.proposition.id eq "p1"
+                        query.proposition.id eq "p2"
+                    }
+                }
+                orderBy { query.proposition.level.desc() }
+            }
+        }
+    }
+
+    @Test
     fun `a keyset cursor is advised on under its own operation name`() {
         val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
 
