@@ -6,7 +6,9 @@
 A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, and **Memgraph** with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
-2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL. 
+2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL.
+
+Drivine4j is the graph database client library for [Embabel](https://hub.embabel.com) - Agentic AI for the JVM. 
 
 ## Philosophy
 
