@@ -53,20 +53,14 @@ class FalkorDbConnection(
 
         try {
             logger.info("FalkorDB query:\n{}", statement)
-            if (params.isNotEmpty()) {
-                logger.debug("FalkorDB params: {}", params)
-            }
 
-            val resultSet = try {
-                if (params.isEmpty()) {
-                    graph.query(statement)
-                } else {
-                    graph.query(statement, params)
-                }
-            } catch (e: Exception) {
-                logger.error("FalkorDB GRAPH.QUERY failed: {}\n  Statement: {}\n  Params: {}",
-                    e.message, statement, params)
-                throw e
+            // Failures are reported once, by the StatementLogger in the outer catch. A second
+            // report here would duplicate the line and, because it prints the raw parameter map,
+            // would dump unbounded values that QuerySpecification.toString() deliberately bounds.
+            val resultSet = if (params.isEmpty()) {
+                graph.query(statement)
+            } else {
+                graph.query(statement, params)
             }
 
             // Write-only queries (no RETURN) have an empty header

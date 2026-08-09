@@ -17,6 +17,29 @@ class QuerySpecification<T> private constructor(
 
     companion object {
 
+        /*
+         * Logging bounds. A `toString()` is a diagnostic, not a data dump: an
+         * embedding parameter is a few thousand floats that tell a reader
+         * nothing, and one failing vector query would otherwise put a hundred
+         * kilobytes of noise between them and the error that mattered.
+         *
+         * The `:params` block is written for copy-paste into Neo4j Browser,
+         * and an abbreviated one is not pasteable — that is deliberate. The
+         * marker is not valid Cypher, so a truncated paste fails loudly
+         * instead of quietly running against a two-element vector. For that
+         * to hold of strings too, the marker is emitted *outside* the string
+         * literal: `"xxx"… (5000 chars)` is a syntax error, whereas a marker
+         * inside the quotes would be a perfectly valid 500-char literal that
+         * silently writes a stub.
+         *
+         * Bounds apply at every level of nesting. The workloads that motivate
+         * this — `bindObject("props", entity)` and batch saves binding a list
+         * of property maps — put the embedding one or two levels down, so a
+         * top-level-only bound would not bind anything that matters.
+         */
+        private const val MAX_LOGGED_ELEMENTS = 10
+        private const val MAX_LOGGED_STRING = 500
+
         @JvmStatic
         fun withStatement(statement: Statement): QuerySpecification<Any> {
             return QuerySpecification(statement = statement)
@@ -324,49 +347,65 @@ class QuerySpecification<T> private constructor(
             // Old format for readability
             sb.append("  parameters:\n")
             parameters.forEach { (key, value) ->
-                val valueStr = when {
-                    value == null -> "null"
-                    value is String -> "\"$value\""
-                    value is Collection<*> -> "[${value.joinToString(", ")}]"
-                    value is Map<*, *> -> value.toString()
-                    else -> value.toString()
-                }
-                sb.append("    $key = $valueStr\n")
+                sb.append("    $key = ${renderReadable(value)}\n")
             }
 
             // New :params format for copy-paste into Neo4j
             sb.append("  :params ")
             sb.append("{")
             sb.append(parameters.entries.joinToString(", ") { (key, value) ->
-                val valueStr = when (value) {
-                    null -> "null"
-                    is String -> "\"${value.replace("\"", "\\\"")}\""
-                    is Number -> value.toString()
-                    is Boolean -> value.toString()
-                    is Collection<*> -> {
-                        "[${value.joinToString(", ") { item ->
-                            when (item) {
-                                is String -> "\"${item.replace("\"", "\\\"")}\""
-                                else -> item.toString()
-                            }
-                        }}]"
-                    }
-                    is Map<*, *> -> {
-                        "{${value.entries.joinToString(", ") { (k, v) ->
-                            val vStr = when (v) {
-                                is String -> "\"${v.replace("\"", "\\\"")}\""
-                                else -> v.toString()
-                            }
-                            "\"$k\": $vStr"
-                        }}}"
-                    }
-                    else -> "\"$value\""
-                }
-                "$key: $valueStr"
+                "$key: ${renderCypher(value)}"
             })
             sb.append("}\n")
         }
         return sb.toString()
+    }
+
+    /**
+     * Human-readable rendering, bounded at every level. The abbreviation marker sits inside the
+     * quotes here — this block is for reading, not for pasting, so there is nothing to break.
+     */
+    private fun renderReadable(value: Any?): String = when (value) {
+        null -> "null"
+        is String -> "\"${abbreviate(value)}\""
+        is Number, is Boolean -> value.toString()
+        is Collection<*> ->
+            "[${value.take(MAX_LOGGED_ELEMENTS).joinToString(", ") { renderReadable(it) }}${elided(value.size)}]"
+        is Map<*, *> ->
+            "{${value.entries.take(MAX_LOGGED_ELEMENTS)
+                .joinToString(", ") { (k, v) -> "$k=${renderReadable(v)}" }}${elided(value.size)}}"
+        else -> "\"${abbreviate(value.toString())}\""
+    }
+
+    /** `:params` rendering, bounded at every level, with abbreviation markers left un-pasteable. */
+    private fun renderCypher(value: Any?): String = when (value) {
+        null -> "null"
+        is String -> cypherString(value)
+        is Number, is Boolean -> value.toString()
+        is Collection<*> ->
+            "[${value.take(MAX_LOGGED_ELEMENTS).joinToString(", ") { renderCypher(it) }}${elided(value.size)}]"
+        is Map<*, *> ->
+            "{${value.entries.take(MAX_LOGGED_ELEMENTS)
+                .joinToString(", ") { (k, v) -> "\"$k\": ${renderCypher(v)}" }}${elided(value.size)}}"
+        else -> cypherString(value.toString())
+    }
+
+    /** The `, … +N more` marker for a collection or map printed short, or "" when printed whole. */
+    private fun elided(size: Int): String =
+        if (size > MAX_LOGGED_ELEMENTS) ", … +${size - MAX_LOGGED_ELEMENTS} more" else ""
+
+    private fun abbreviate(text: String): String =
+        if (text.length <= MAX_LOGGED_STRING) text
+        else "${text.take(MAX_LOGGED_STRING)}… (${text.length} chars)"
+
+    /**
+     * A Cypher string literal. When abbreviated, the marker is placed after the closing quote so
+     * the result is a parse error rather than a valid literal holding a silently truncated value.
+     */
+    private fun cypherString(text: String): String {
+        val escaped = { s: String -> s.replace("\"", "\\\"") }
+        return if (text.length <= MAX_LOGGED_STRING) "\"${escaped(text)}\""
+        else "\"${escaped(text.take(MAX_LOGGED_STRING))}\"… (${text.length} chars)"
     }
 
     private fun postProcessorsToString(): String {
