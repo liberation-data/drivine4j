@@ -126,4 +126,34 @@ class QuerySpecificationToStringTest {
         assert(spec.toString().contains("email = null"))
         assert(spec.toString().contains("name = \"Test\""))
     }
+
+    @Test
+    fun `long collections are abbreviated, not dumped`() {
+        val embedding = List(1536) { it * 0.001 }
+        val spec = QuerySpecification
+            .withStatement("CALL db.index.vector.queryNodes(\$index, \$topK, \$queryVector)")
+            .bind(mapOf("index" to "entity_index", "topK" to 10, "queryVector" to embedding))
+
+        val rendered = spec.toString()
+
+        // Both renderings — the readable block and the :params line — are bounded.
+        assert(rendered.contains("… +1526 more"))
+        assert(!rendered.contains(embedding.last().toString()))
+        // A log line for a 1536-dim vector should stay in the hundreds of chars.
+        assert(rendered.length < 1000) { "toString was ${rendered.length} chars" }
+        // Short parameters are untouched.
+        assert(rendered.contains("topK = 10"))
+    }
+
+    @Test
+    fun `long strings are abbreviated with their real length`() {
+        val spec = QuerySpecification
+            .withStatement("CREATE (d:Document {text: \$text})")
+            .bind(mapOf("text" to "x".repeat(5000)))
+
+        val rendered = spec.toString()
+
+        assert(rendered.contains("(5000 chars)"))
+        assert(rendered.length < 2000) { "toString was ${rendered.length} chars" }
+    }
 }

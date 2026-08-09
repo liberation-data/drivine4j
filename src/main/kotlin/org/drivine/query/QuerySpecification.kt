@@ -17,6 +17,20 @@ class QuerySpecification<T> private constructor(
 
     companion object {
 
+        /*
+         * Logging bounds. A `toString()` is a diagnostic, not a data dump: an
+         * embedding parameter is a few thousand floats that tell a reader
+         * nothing, and one failing vector query would otherwise put a hundred
+         * kilobytes of noise between them and the error that mattered.
+         *
+         * The `:params` block is written for copy-paste into Neo4j Browser,
+         * and an abbreviated one is not pasteable — that is deliberate. The
+         * marker is not valid Cypher, so a truncated paste fails loudly
+         * instead of quietly running against a two-element vector.
+         */
+        private const val MAX_LOGGED_ELEMENTS = 10
+        private const val MAX_LOGGED_STRING = 500
+
         @JvmStatic
         fun withStatement(statement: Statement): QuerySpecification<Any> {
             return QuerySpecification(statement = statement)
@@ -326,8 +340,8 @@ class QuerySpecification<T> private constructor(
             parameters.forEach { (key, value) ->
                 val valueStr = when {
                     value == null -> "null"
-                    value is String -> "\"$value\""
-                    value is Collection<*> -> "[${value.joinToString(", ")}]"
+                    value is String -> "\"${abbreviate(value)}\""
+                    value is Collection<*> -> "[${value.take(MAX_LOGGED_ELEMENTS).joinToString(", ")}${elided(value)}]"
                     value is Map<*, *> -> value.toString()
                     else -> value.toString()
                 }
@@ -340,21 +354,21 @@ class QuerySpecification<T> private constructor(
             sb.append(parameters.entries.joinToString(", ") { (key, value) ->
                 val valueStr = when (value) {
                     null -> "null"
-                    is String -> "\"${value.replace("\"", "\\\"")}\""
+                    is String -> "\"${abbreviate(value).replace("\"", "\\\"")}\""
                     is Number -> value.toString()
                     is Boolean -> value.toString()
                     is Collection<*> -> {
-                        "[${value.joinToString(", ") { item ->
+                        "[${value.take(MAX_LOGGED_ELEMENTS).joinToString(", ") { item ->
                             when (item) {
-                                is String -> "\"${item.replace("\"", "\\\"")}\""
+                                is String -> "\"${abbreviate(item).replace("\"", "\\\"")}\""
                                 else -> item.toString()
                             }
-                        }}]"
+                        }}${elided(value)}]"
                     }
                     is Map<*, *> -> {
                         "{${value.entries.joinToString(", ") { (k, v) ->
                             val vStr = when (v) {
-                                is String -> "\"${v.replace("\"", "\\\"")}\""
+                                is String -> "\"${abbreviate(v).replace("\"", "\\\"")}\""
                                 else -> v.toString()
                             }
                             "\"$k\": $vStr"
@@ -367,6 +381,16 @@ class QuerySpecification<T> private constructor(
             sb.append("}\n")
         }
         return sb.toString()
+    }
+
+    /** The `, … +N more` marker for a collection printed short, or "" when it was printed whole. */
+    private fun elided(value: Collection<*>): String =
+        if (value.size > MAX_LOGGED_ELEMENTS) ", … +${value.size - MAX_LOGGED_ELEMENTS} more" else ""
+
+    private fun abbreviate(value: Any): String {
+        val text = value.toString()
+        return if (text.length <= MAX_LOGGED_STRING) text
+        else "${text.take(MAX_LOGGED_STRING)}… (${text.length} chars)"
     }
 
     private fun postProcessorsToString(): String {
