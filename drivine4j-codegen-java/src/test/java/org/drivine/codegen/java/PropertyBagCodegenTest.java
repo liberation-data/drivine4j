@@ -55,6 +55,119 @@ class PropertyBagCodegenTest {
     }
 
     @Test
+    void emitsOnDiskNameForGraphPropertyField() {
+        JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.gp.Chunk",
+            "package sample.gp;",
+            "import org.drivine.annotation.NodeFragment;",
+            "import org.drivine.annotation.NodeId;",
+            "import org.drivine.annotation.GraphProperty;",
+            "@NodeFragment(labels = {\"Chunk\"})",
+            "public class Chunk {",
+            "  @NodeId public String id;",
+            "  @GraphProperty(\"container_section_id\") public String containerSectionId;",
+            "}");
+        JavaFileObject view = JavaFileObjects.forSourceLines("sample.gp.ChunkView",
+            "package sample.gp;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class ChunkView {",
+            "  @Root public Chunk node;",
+            "}");
+
+        Compilation compilation = Compiler.javac()
+            .withProcessors(new GraphViewProcessor())
+            .compile(fragment, view);
+
+        assertThat(compilation).succeeded();
+        // The accessor keeps the field name; the PropertyReference carries the on-disk name.
+        assertThat(compilation)
+            .generatedSourceFile("sample.gp.ChunkProperties")
+            .contentsAsUtf8String()
+            .contains("containerSectionId()");
+        assertThat(compilation)
+            .generatedSourceFile("sample.gp.ChunkProperties")
+            .contentsAsUtf8String()
+            .contains("\"container_section_id\"");
+    }
+
+    @Test
+    void emitsStandaloneFragmentQueryDsl() {
+        JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.fd.Chunk",
+            "package sample.fd;",
+            "import org.drivine.annotation.NodeFragment;",
+            "import org.drivine.annotation.NodeId;",
+            "import org.drivine.annotation.GraphProperty;",
+            "@NodeFragment(labels = {\"Chunk\"})",
+            "public class Chunk {",
+            "  @NodeId public String id;",
+            "  @GraphProperty(\"container_section_id\") public String containerSectionId;",
+            "}");
+
+        Compilation compilation = Compiler.javac()
+            .withProcessors(new GraphViewProcessor())
+            .compile(fragment);
+
+        assertThat(compilation).succeeded();
+        // A ResolvableNodeReference at alias "n" with a static INSTANCE and property getters (@GraphProperty on-disk).
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("implements ResolvableNodeReference");
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("public static final ChunkQueryDsl INSTANCE");
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("\"container_section_id\"");
+        assertThat(compilation)
+            .generatedSourceFile("sample.fd.ChunkQueryDsl")
+            .contentsAsUtf8String()
+            .contains("containerSectionId()");
+    }
+
+    @Test
+    void emitsModelAwareKeyResolverForMixedFragment() {
+        JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.kr.Record",
+            "package sample.kr;",
+            "import org.drivine.annotation.NodeFragment;",
+            "import org.drivine.annotation.NodeId;",
+            "import org.drivine.annotation.GraphProperty;",
+            "import org.drivine.annotation.PropertyBag;",
+            "import java.util.Map;",
+            "@NodeFragment(labels = {\"Record\"})",
+            "public class Record {",
+            "  @NodeId public String id;",
+            "  @GraphProperty(\"section_id\") public String sectionId;",
+            "  @PropertyBag(prefix = \"metadata\") public Map<String, Object> metadata;",
+            "}");
+
+        Compilation compilation = Compiler.javac()
+            .withProcessors(new GraphViewProcessor())
+            .compile(fragment);
+
+        assertThat(compilation).succeeded();
+        String dsl = "sample.kr.RecordQueryDsl";
+        // Implements ResolvableNodeReference and emits the two resolver getters.
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("implements ResolvableNodeReference");
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("getFieldKeyPaths");
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("getBagPrefixes");
+        // A promoted @GraphProperty field resolves by BOTH its Java name and its on-disk name.
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("m.put(\"sectionId\", \"section_id\")");
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("m.put(\"section_id\", \"section_id\")");
+        // The @PropertyBag prefix is the sole bag prefix.
+        assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+            .contains("l.add(\"metadata.\")");
+    }
+
+    @Test
     void emitsScalarReferenceForOrdinaryField() {
         JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.bag.PlainFrag",
             "package sample.bag;",

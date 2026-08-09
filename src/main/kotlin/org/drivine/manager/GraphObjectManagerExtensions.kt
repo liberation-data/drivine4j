@@ -385,3 +385,50 @@ inline fun <reified T : Any, Q : Any> GraphObjectManager.loadNearest(
 ): List<Scored<T>> {
     return loadNearest(T::class.java, queryObject, vector, topK, threshold, spec)
 }
+
+/**
+ * Full-text search with a reified type parameter — the full-text mirror of [loadNearest].
+ *
+ * `graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20)` instead of
+ * `loadMatching(ChunkNode::class.java, "graph databases", topK = 20)`.
+ */
+inline fun <reified T : Any> GraphObjectManager.loadMatching(
+    query: String,
+    topK: Int,
+    threshold: Double = 0.0,
+): List<Scored<T>> {
+    return loadMatching(T::class.java, query, topK, threshold)
+}
+
+/**
+ * Full-text search naming an indexed [property] explicitly (when the fragment has several
+ * `@FullTextIndex` indexes), with a reified type parameter.
+ */
+inline fun <reified T : Any> GraphObjectManager.loadMatching(
+    property: String?,
+    query: String,
+    topK: Int,
+    threshold: Double = 0.0,
+): List<Scored<T>> {
+    return loadMatching(T::class.java, property, query, topK, threshold)
+}
+
+/**
+ * Filtered full-text search (a `where { }` predicate AND-ed into the post-search filter), with a
+ * reified type parameter.
+ *
+ * ```kotlin
+ * graphObjectManager.loadMatching<ChunkView>(ChunkViewQueryDsl.INSTANCE, "graph databases", topK = 20) {
+ *     where { query.containerSectionId eq "sec-1" }
+ * }
+ * ```
+ */
+inline fun <reified T : Any, Q : Any> GraphObjectManager.loadMatching(
+    queryObject: Q,
+    query: String,
+    topK: Int,
+    threshold: Double = 0.0,
+    noinline spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
+): List<Scored<T>> {
+    return loadMatching(T::class.java, queryObject, query, topK, threshold, spec)
+}

@@ -33,6 +33,7 @@ package org.drivine.query.dsl
 class GraphQuerySpec<T : Any>(private val queryObject: T) {
     internal val conditions = mutableListOf<WhereCondition>()
     internal val orders = mutableListOf<OrderSpec>()
+    internal val seekValues = mutableListOf<SeekValueSpec>()
     internal val depthOverrides = mutableMapOf<String, Int>()
     internal var limit: Int? = null
     internal var skip: Int? = null
@@ -62,6 +63,41 @@ class GraphQuerySpec<T : Any>(private val queryObject: T) {
     fun skip(n: Int) {
         require(n >= 0) { "skip must be >= 0, was $n" }
         skip = n
+    }
+
+    /**
+     * Continues a deterministically ordered query after a keyset cursor.
+     *
+     * Each property in this block must correspond, in the same order, to a root property declared
+     * in [orderBy]. Drivine derives the comparison operator from that property's direction (`<` for
+     * `DESC`, `>` for `ASC`) and expands compound cursors into the correct lexicographic predicate.
+     * Cursor values must be non-null, and so must the ordered properties themselves: a row whose
+     * key is null satisfies no comparison and would be skipped by every page after the first. Pair
+     * the final key with a unique property (normally the root `@NodeId`) so every result has a
+     * unique position.
+     *
+     * ```kotlin
+     * orderBy {
+     *     session.lastActivityAt.desc()
+     *     session.sessionId.desc()
+     * }
+     * seek {
+     *     session.lastActivityAt after cursor.lastActivityAt
+     *     session.sessionId after cursor.sessionId
+     * }
+     * limit(pageSize)
+     * ```
+     *
+     * [seek] and [skip] are mutually exclusive, and [seek] is only supported on the
+     * `loadAll` family — a scored search or a `count`/`deleteAll` rejects it rather than silently
+     * returning an unpaginated result.
+     */
+    fun seek(block: context(SeekBuilder<T>) () -> Unit) {
+        check(seekValues.isEmpty()) { "seek may only be specified once" }
+        val builder = SeekBuilder(queryObject)
+        block(builder)
+        require(builder.values.isNotEmpty()) { "seek requires at least one cursor value" }
+        seekValues.addAll(builder.values)
     }
 
     /**
@@ -199,6 +235,23 @@ open class WhereBuilder<T : Any>(
             conditions.add(WhereCondition.OrCondition(orBuilder.conditions))
         }
     }
+
+    /**
+     * Negates the sub-expression built inside the block — `NOT ( … )`. The inner conditions are AND-ed
+     * before negation, so `not { query.a eq 1; query.b eq 2 }` renders `NOT (a = $p AND b = $p)`; pair
+     * with [anyOf] for `NOT ( … OR … )`. The counterpart of embabel's `PropertyFilter.Not`.
+     *
+     * ```kotlin
+     * where { not { query.property("metadata.status") eq "archived" } }   // → NOT (n.`metadata.status` = $p)
+     * ```
+     */
+    fun not(block: context(WhereBuilder<T>) () -> Unit) {
+        val notBuilder = WhereBuilder(queryObject)
+        block(notBuilder)
+        if (notBuilder.conditions.isNotEmpty()) {
+            conditions.add(WhereCondition.NotCondition(notBuilder.conditions))
+        }
+    }
 }
 
 /**
@@ -215,6 +268,14 @@ val <T : Any> query: T
 context(builder: WhereBuilder<T>)
 fun <T : Any> anyOf(block: context(WhereBuilder<T>) () -> Unit) {
     builder.anyOf(block)
+}
+
+/**
+ * Context-aware function to negate a sub-expression within a where block — `NOT ( … )`.
+ */
+context(builder: WhereBuilder<T>)
+fun <T : Any> not(block: context(WhereBuilder<T>) () -> Unit) {
+    builder.not(block)
 }
 
 /**
@@ -302,10 +363,35 @@ class OrderBuilder<T : Any>(
     }
 }
 
+/** Collects the typed property values that make up a keyset cursor. */
+class SeekBuilder<T : Any>(
+    /** The generated query DSL object providing property references. */
+    val queryObject: T,
+) {
+    internal val values = mutableListOf<SeekValueSpec>()
+}
+
+/**
+ * A property path and its value at the end of the previous page.
+ *
+ * Obtain these through the typed property references — `property after value` inside a
+ * [GraphQuerySpec.seek] block, or `property.after(value)` from Java — rather than
+ * constructing them directly: [propertyPath] is interpolated into Cypher verbatim.
+ */
+data class SeekValueSpec(
+    val propertyPath: String,
+    val value: Any,
+)
+
 /**
  * Context-aware property to access the query object within an orderBy block.
  */
 context(builder: OrderBuilder<T>)
+val <T : Any> query: T
+    get() = builder.queryObject
+
+/** Context-aware access to the generated query object within a [GraphQuerySpec.seek] block. */
+context(builder: SeekBuilder<T>)
 val <T : Any> query: T
     get() = builder.queryObject
 
@@ -366,6 +452,25 @@ sealed class WhereCondition {
         val propertyPath: String,  // e.g., "proposition.grounding"
         val value: Any?
     ) : WhereCondition()
+
+    /**
+     * Negation of a sub-expression — `not { … }`. The [conditions] are AND-ed and wrapped:
+     * `NOT (c1 AND c2 …)`. Wraps a single leaf (`not { query.x eq 1 }` → `NOT (x = $p)`) or a compound
+     * (`not { anyOf { … } }` → `NOT ((… OR …))`). The counterpart of embabel's `PropertyFilter.Not`.
+     */
+    data class NotCondition(
+        val conditions: List<WhereCondition>
+    ) : WhereCondition()
+
+    /**
+     * Label membership where **any** of [labels] matches — `ANY(l IN labels(alias) WHERE l IN $p)`.
+     * Distinct from [LabelCondition] (`alias:L1:L2`, which requires **all** labels). The counterpart of
+     * embabel's `EntityFilter.HasAnyLabel`. Binds [labels] as a single list parameter.
+     */
+    data class AnyLabelCondition(
+        val alias: String,        // e.g., "chunk"
+        val labels: List<String>  // any-of; at least one must be present
+    ) : WhereCondition()
 }
 
 /**
@@ -379,9 +484,23 @@ enum class ComparisonOperator(val cypherOperator: String) {
     LESS_THAN("<"),
     LESS_THAN_OR_EQUAL("<="),
     IN("IN"),
+    /** `NOT lhs IN $p` — rendered with a leading `NOT`, binds a list like [IN]. */
+    NOT_IN("IN"),
+    /**
+     * List-membership with the operands reversed vs [IN]: `$p IN lhs` — the bound value on the left, the
+     * (list-valued) property on the right. The dynamic-key twin of the typed `hasItem`, so `predicateOn`
+     * can express membership on a runtime/bagged key.
+     */
+    HAS_ELEMENT("IN"),
     CONTAINS("CONTAINS"),
     STARTS_WITH("STARTS WITH"),
     ENDS_WITH("ENDS WITH"),
+    /** Regex match, `lhs =~ $p`. */
+    MATCHES("=~"),
+    /** Case-insensitive contains — `toLower(lhs) CONTAINS $p` (the bound value is lower-cased). */
+    CONTAINS_IGNORE_CASE("CONTAINS"),
+    /** Case-insensitive equals — `toLower(lhs) = $p` (the bound value is lower-cased). */
+    EQUALS_IGNORE_CASE("="),
     IS_NULL("IS NULL"),
     IS_NOT_NULL("IS NOT NULL")
 }
@@ -434,5 +553,7 @@ data class CollectionSortSpec(
  */
 data class OrderClauseResult(
     val orderByClause: String?,
-    val collectionSorts: List<CollectionSortSpec>
+    val collectionSorts: List<CollectionSortSpec>,
+    /** Root-entity orders, retained for keyset planning after collection sorts are separated. */
+    val rootOrders: List<OrderSpec> = emptyList(),
 )

@@ -23,13 +23,15 @@ import sample.propertybag.BaggedNode
 import sample.propertybag.BaggedView
 import sample.propertybag.BaggedViewQueryDsl
 import sample.propertybag.TaggedNode
+import sample.propertybag.TypedBagNode
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
  * `@PropertyBag` round-trip verified on Neo4j, FalkorDB, and Memgraph: a multi-entry bag persists as
- * flat prefixed properties and reads back; an update that drops a key removes the stale property;
+ * flat prefixed properties and reads back; an update that drops a key leaves the stale property under the
+ * default merge-patch and removes it under [NullPolicy.CLEAR];
  * empty bags read back empty; and bags round-trip through a `@GraphView` (root + relationship target).
  */
 private fun verify(gom: GraphObjectManager) {
@@ -41,8 +43,15 @@ private fun verify(gom: GraphObjectManager) {
     assertEquals(3L, (loaded.metadata["score"] as Number).toLong()) // read asymmetry: Int written, Long read
     assertEquals(listOf("a", "b"), loaded.metadata["tags"])
 
-    // ----- Update that removes a key: stale property is gone -----
+    // ----- Update that drops a key: merge-patch (default IGNORE) leaves the stale property -----
     gom.save(loaded.copy(metadata = mapOf("source" to "blog", "tags" to listOf("a", "b"))))
+    val patched = gom.load("n1", BaggedNode::class.java)!!
+    assertEquals("blog", patched.metadata["source"])
+    assertTrue(patched.metadata.containsKey("score"), "IGNORE must not clear a dropped key: ${patched.metadata}")
+
+    // ----- The same update under CLEAR: the stale property is gone. Based on `patched` so the session
+    // snapshot (refreshed by the load above) still carries "score" — that's what the REMOVE diffs against.
+    gom.save(patched.copy(metadata = mapOf("source" to "blog", "tags" to listOf("a", "b"))), nullPolicy = NullPolicy.CLEAR)
     val updated = gom.load("n1", BaggedNode::class.java)!!
     assertEquals("blog", updated.metadata["source"])
     assertFalse(updated.metadata.containsKey("score"), "stale key should be removed: ${updated.metadata}")
@@ -75,6 +84,42 @@ private fun verify(gom: GraphObjectManager) {
         where { query.node.metadata.key("source") eq "nope" }
     }
     assertTrue(unmatched.isEmpty(), "no doc has source=nope")
+
+    // ----- Typed bags round-trip to their DECLARED value type, not the driver's widened one -----
+    verifyTypedBags(gom)
+}
+
+/**
+ * A bag declared with a concrete value type (`Map<String, Int>`, `Map<String, Instant>`, …) reads
+ * back as that type: Jackson resolves the field's declared generic when converting the reassembled
+ * map. This is what narrows the documented read asymmetry to `Map<String, Any?>` alone.
+ */
+private fun verifyTypedBags(gom: GraphObjectManager) {
+    val moment = java.time.Instant.parse("2026-07-24T10:15:30Z")
+    gom.save(
+        TypedBagNode(
+            id = "t1",
+            scores = mapOf("relevance" to 3, "rank" to 42),
+            ratios = mapOf("confidence" to 0.75),
+            labels = mapOf("source" to "wiki"),
+            flags = mapOf("published" to true),
+            timestamps = mapOf("indexedAt" to moment),
+        )
+    )
+    val loaded = gom.load("t1", TypedBagNode::class.java)!!
+
+    // Int stays Int — the Int→Long widening is NOT observable through a typed bag
+    assertEquals(3, loaded.scores["relevance"])
+    assertEquals(42, loaded.scores["rank"])
+    assertEquals(
+        Int::class.javaObjectType, loaded.scores["relevance"]!!::class.javaObjectType,
+        "typed bag value should be Int, got ${loaded.scores["relevance"]!!::class.java}"
+    )
+
+    assertEquals(0.75, loaded.ratios["confidence"])
+    assertEquals("wiki", loaded.labels["source"])
+    assertEquals(true, loaded.flags["published"])
+    assertEquals(moment, loaded.timestamps["indexedAt"])
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {

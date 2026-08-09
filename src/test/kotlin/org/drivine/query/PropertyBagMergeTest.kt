@@ -52,23 +52,27 @@ class PropertyBagMergeTest {
     }
 
     @Test
-    fun `update removing a key emits REMOVE for the stale prefixed property`() {
+    fun `update removing a key emits REMOVE for the stale prefixed property (CLEAR)`() {
         val previous = BaggedNode(id = "n1", title = "T", metadata = mapOf("source" to "wiki", "score" to 3))
         val current = BaggedNode(id = "n1", title = "T", metadata = mapOf("source" to "wiki")) // dropped "score"
 
-        // dirtyFields includes "metadata" because the bag changed
-        val stmt = builder.buildMergeStatement(current, dirtyFields = setOf("metadata"), previousObject = previous)
+        // Removing a stale key is a clearing operation → requires CLEAR (IGNORE is merge-patch, no removal).
+        val stmt = builder.buildMergeStatement(
+            current, dirtyFields = setOf("metadata"), previousObject = previous, nullPolicy = org.drivine.manager.NullPolicy.CLEAR
+        )
 
         assertTrue(stmt.statement.contains("SET n.`metadata.source` = "))
         assertTrue(stmt.statement.contains("REMOVE n.`metadata.score`"), stmt.statement)
     }
 
     @Test
-    fun `empty bag with a previous non-empty bag removes all stale keys`() {
+    fun `empty bag with a previous non-empty bag removes all stale keys (CLEAR)`() {
         val previous = BaggedNode(id = "n1", title = "T", metadata = mapOf("source" to "wiki", "score" to 3))
         val current = BaggedNode(id = "n1", title = "T", metadata = emptyMap())
 
-        val stmt = builder.buildMergeStatement(current, dirtyFields = setOf("metadata"), previousObject = previous)
+        val stmt = builder.buildMergeStatement(
+            current, dirtyFields = setOf("metadata"), previousObject = previous, nullPolicy = org.drivine.manager.NullPolicy.CLEAR
+        )
         assertTrue(stmt.statement.contains("REMOVE "), stmt.statement)
         assertTrue(stmt.statement.contains("n.`metadata.source`"), stmt.statement)
         assertTrue(stmt.statement.contains("n.`metadata.score`"), stmt.statement)

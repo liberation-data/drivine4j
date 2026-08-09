@@ -106,6 +106,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
 ) {
     private val conditions = mutableListOf<WhereCondition>()
     private val orders = mutableListOf<OrderSpec>()
+    private val seekValues = mutableListOf<SeekValueSpec>()
     private var limit: Int? = null
     private var skip: Int? = null
 
@@ -183,6 +184,18 @@ class JavaQueryBuilder<T : Any, Q : Any>(
     }
 
     /**
+     * Continues after a compound keyset cursor. Values must match the root [orderBy] properties in
+     * the same order; each value is type-checked by `PropertyReference.after(value)`.
+     */
+    fun seek(values: java.util.function.Function<Q, List<SeekValueSpec>>): JavaQueryBuilder<T, Q> {
+        check(seekValues.isEmpty()) { "seek may only be specified once" }
+        val supplied = values.apply(queryDsl)
+        require(supplied.isNotEmpty()) { "seek requires at least one cursor value" }
+        seekValues.addAll(supplied)
+        return this
+    }
+
+    /**
      * Limits the result to at most [n] entities (for a `@GraphView`, [n] roots). Pair with [orderBy]
      * for a deterministic top-N.
      */
@@ -207,6 +220,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
             // Transfer collected conditions and orders to the GraphQuerySpec
             this.conditions.addAll(this@JavaQueryBuilder.conditions)
             this.orders.addAll(this@JavaQueryBuilder.orders)
+            this.seekValues.addAll(this@JavaQueryBuilder.seekValues)
             this@JavaQueryBuilder.limit?.let { limit(it) }
             this@JavaQueryBuilder.skip?.let { skip(it) }
         }
@@ -230,6 +244,29 @@ class JavaQueryBuilder<T : Any, Q : Any>(
         return graphObjectManager.deleteAll(graphClass, queryDsl) {
             this.conditions.addAll(this@JavaQueryBuilder.conditions)
             this.orders.addAll(this@JavaQueryBuilder.orders)
+        }
+    }
+
+    /**
+     * Executes a full-text search combined with the collected `where` predicates, returning the
+     * [topK] most relevant results scored in `[0, 1]` — the Java fluent form of `loadMatching`.
+     *
+     * ```java
+     * List<Scored<ChunkNode>> hits = gom.query(ChunkNode.class)
+     *     .filterWith(ChunkNodeQueryDsl.class)
+     *     .where(q -> q.containerSectionId().eq("sec-1"))
+     *     .match("graph databases", 20);
+     * ```
+     *
+     * @param query the full-text query string
+     * @param topK the maximum number of results to return
+     * @param threshold minimum normalized relevance in `[0, 1]` (default `0.0` keeps everything)
+     * @return scored instances, most relevant first, of length `<= topK`
+     */
+    @JvmOverloads
+    fun match(query: String, topK: Int, threshold: Double = 0.0): List<org.drivine.manager.Scored<T>> {
+        return graphObjectManager.loadMatching(graphClass, queryDsl, query, topK, threshold) {
+            this.conditions.addAll(this@JavaQueryBuilder.conditions)
         }
     }
 }

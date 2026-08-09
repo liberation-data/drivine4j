@@ -103,11 +103,22 @@ interface SchemaGrammar {
     /**
      * Whether [existing]'s shape matches what [spec] requests. Only meaningful when
      * [matchesIdentity] is true; a shape mismatch is drift.
+     *
+     * The rule for every shape attribute is the same: **only report drift the engine can actually
+     * observe**. A null on [existing] means introspection did not surface that attribute, which is
+     * not evidence of a mismatch — reporting drift there would make `ensure` complain forever on
+     * engines that simply don't report the field back.
      */
     fun matchesShape(existing: SchemaItemInfo, spec: SchemaItemSpec): Boolean = when (spec) {
         is VectorIndexSpec ->
             existing.dimensions == spec.dimensions &&
                 (existing.similarity == null || existing.similarity == spec.similarity)
+
+        // An analyzer is drift only when the spec asks for one AND the engine reports one back.
+        // Neo4j is the only engine that does both; FalkorDB and Memgraph report null, so a spec's
+        // analyzer is silently unverified there rather than permanently drifting.
+        is FullTextIndexSpec ->
+            spec.analyzer == null || existing.analyzer == null || existing.analyzer == spec.analyzer
 
         else -> true
     }

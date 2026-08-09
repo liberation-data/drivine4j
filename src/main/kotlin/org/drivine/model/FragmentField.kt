@@ -7,7 +7,9 @@ import kotlin.reflect.KClass
  */
 data class FragmentField(
     /**
-     * The name of the field/property.
+     * The name of the field/property — the **identity** used everywhere in code: bind-parameter
+     * names, result-map keys, DSL references, and session/dirty tracking. Distinct from
+     * [propertyName], which is the on-disk name.
      */
     val name: String,
 
@@ -41,6 +43,23 @@ data class FragmentField(
      * [org.drivine.model.PropertyBagModel].
      */
     val propertyBag: PropertyBagSpec? = null,
+
+    /**
+     * Whether this field carries `@VectorIndex` — an embedding property. On save its value must be
+     * written as the engine's native vector type (FalkorDB's `vecf32(...)`), so the merge builder
+     * emits it through [org.drivine.query.grammar.CypherGrammar.vectorPropertyLiteral] rather than a
+     * plain parameter. Mirrors the read side, which already wraps the query vector.
+     */
+    val vectorIndexed: Boolean = false,
+
+    /**
+     * The **on-disk node-property name** this field is persisted to and queried by. Defaults to
+     * [name]; a `@GraphProperty("…")` overrides it. Every place a field is used *as a node property*
+     * (write SET, read projection alias source, id predicate, DSL LHS, schema index property) must use
+     * this; every place it is used *as an identity* (bind-param, result key, DSL accessor, dirty
+     * tracking) must use [name].
+     */
+    val propertyName: String = name,
 )
 
 /** The raw `@PropertyBag` / `@CompositeProperty` annotation values for a field. */

@@ -8,15 +8,22 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.mapper.TransformPostProcessor
-import org.drivine.query.FragmentVectorSearchBuilder
+import org.drivine.query.FullTextSearchPlanner
 import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
-import org.drivine.query.VectorIndexResolver
+import org.drivine.query.ScoredSearchPlan
+import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderClauseResult
+import org.drivine.query.dsl.KeysetPlanner
+import org.drivine.query.dsl.IndexAdvicePolicy
+import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.QueryIndexAdvisor
+import org.drivine.query.dsl.WhereCondition
+import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.session.SessionManager
 
 /**
@@ -50,7 +57,19 @@ class GraphObjectManager(
 
     private val grammar = persistenceManager.grammar
 
-    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE)
+    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar)
+
+    private val indexAdvisor = QueryIndexAdvisor(persistenceManager.indexes, persistenceManager.constraints)
+
+    /**
+     * What to do when an ordered or keyset-paginated query has no range index to seek into.
+     *
+     * Defaults to [IndexAdvicePolicy.WARN], which logs once per distinct label/property combination.
+     * Set [IndexAdvicePolicy.FAIL] in development or CI to turn an unindexed page into an error, or
+     * [IndexAdvicePolicy.OFF] to say nothing — ordering without an index is correct, just unindexed,
+     * and on a small collection that is a perfectly reasonable thing to do.
+     */
+    var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
 
     /**
      * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
@@ -245,9 +264,12 @@ class GraphObjectManager(
             }
         }
 
-        // For GraphViews, also register subtypes for relationship target types
+        // For GraphViews, also register subtypes for the root fragment and every relationship target.
+        // The root fragment can itself be polymorphic — e.g. a recursive view whose node is a sealed
+        // fragment — and needs the same registry population a directly-loaded sealed fragment gets.
         if (graphClass.isAnnotationPresent(GraphView::class.java)) {
             val viewModel = GraphViewModel.from(graphClass)
+            autoRegisterSubtypesRecursive(viewModel.rootFragment.fragmentType, registeredClasses)
             viewModel.relationships.forEach { rel ->
                 autoRegisterSubtypesRecursive(rel.elementType, registeredClasses)
             }
@@ -297,7 +319,7 @@ class GraphObjectManager(
         querySpec.spec()
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val ctx = buildQueryContext(graphClass, querySpec)
+        val ctx = buildQueryContext(graphClass, querySpec, supportsSeek = true)
 
         // Process ORDER BY clause - separate root orders from collection sorts
         val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
@@ -307,16 +329,41 @@ class GraphObjectManager(
             OrderClauseResult(null, emptyList())
         }
 
-        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
+        require(querySpec.seekValues.isEmpty() || querySpec.skip == null) {
+            "seek and skip cannot be used together"
+        }
+        val keysetPlan = if (querySpec.seekValues.isNotEmpty()) {
+            KeysetPlanner.plan(
+                orderResult.rootOrders,
+                querySpec.seekValues,
+                orderResult.collectionSorts.size,
+                guardAgainstNulls = grammar.indexesExcludeNulls,
+            )
         } else {
-            builder.buildQuery(ctx.whereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
+            null
+        }
+        val effectiveWhereClause = listOfNotNull(ctx.whereClause, keysetPlan?.predicate)
+            .joinToString(" AND ") { "($it)" }
+            .takeIf { it.isNotEmpty() }
+        keysetPlan?.bindings?.keys?.forEach { reserved ->
+            require(reserved !in ctx.bindings) {
+                "Keyset cursor parameter \$$reserved collides with a where-clause binding"
+            }
+        }
+        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
+
+        adviseOnIndexes(graphClass, ctx.viewModel, orderResult.rootOrders, querySpec, isKeyset = keysetPlan != null)
+
+        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
+            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
+        } else {
+            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
         }
 
         // SKIP/LIMIT are the final clauses, after RETURN … ORDER BY …. For a @GraphView each root is
         // one row (relationships are pattern comprehensions in the projection), so LIMIT bounds root
         // entities and keeps their collections intact.
-        val (query, bindings) = applyPagination(baseQuery, ctx.bindings, querySpec.skip, querySpec.limit)
+        val (query, bindings) = applyPagination(baseQuery, effectiveBindings, querySpec.skip, querySpec.limit)
 
         val results = persistenceManager.query(
             QuerySpecification
@@ -413,56 +460,28 @@ class GraphObjectManager(
         vector: List<Float>,
         topK: Int,
         threshold: Double? = null,
-    ): List<Scored<T>> {
-        if (!grammar.supportsVectorSearch) {
-            throw UnsupportedOperationException(
-                "Vector search is not supported on this backend (${grammar::class.simpleName} has no native vector index)."
-            )
-        }
-
-        autoRegisterSubtypesIfNeeded(graphClass)
-
-        val thresholdParam = if (threshold != null) VECTOR_THRESHOLD_PARAM else null
-        val query = when {
-            graphClass.isAnnotationPresent(GraphView::class.java) -> {
-                // A view searches its root fragment's embedding and returns the projected view.
-                val rootFragmentType = GraphViewModel.from(graphClass).rootFragment.fragmentType
-                val spec = VectorIndexResolver.resolve(rootFragmentType, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
-                GraphViewQueryBuilder.forView(graphClass, grammar).buildVectorQuery(spec, thresholdParam)
-            }
-
-            graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
-                // A fragment searches and returns itself — no relationships, no required-rel filter.
-                val spec = VectorIndexResolver.resolve(graphClass, property, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
-                FragmentVectorSearchBuilder(FragmentModel.from(graphClass), grammar).build(spec, thresholdParam)
-            }
-
-            else -> throw IllegalArgumentException(
-                "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
-            )
-        }
-
-        val bindings = buildMap<String, Any?> {
-            put(VECTOR_TOP_K_PARAM, topK)
-            put(VECTOR_QUERY_PARAM, vector)
-            if (threshold != null) put(VECTOR_THRESHOLD_PARAM, threshold)
-        }
-
-        return executeVectorSearch(graphClass, query, bindings)
-    }
+    ): List<Scored<T>> =
+        executeScoredSearch(graphClass, VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar))
 
     /**
-     * Vector search over a `@GraphView` with an additional caller `where { }` predicate `AND`-ed into
-     * the post-projection filter. Use for "find the nearest propositions in this context with this
-     * status" — vector similarity plus arbitrary property predicates in one statement.
+     * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
+     * similarity plus arbitrary property predicates in one statement. Works on a `@GraphView`
+     * (predicates filter the *projected* values) and on a bare `@NodeFragment` (predicates filter the
+     * matched node directly, via the fragment's generated query DSL) — the vector mirror of the filtered
+     * [loadMatching].
      *
      * ```kotlin
+     * // view
      * graphObjectManager.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, queryVector, topK = 20) {
      *     where { query.proposition.contextId eq ctx; query.proposition.status eq status }
      * }
+     * // fragment
+     * graphObjectManager.loadNearest(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
+     *     where { query.containerSectionId eq "sec-1" }
+     * }
      * ```
      *
-     * Predicates filter the *projected* values: **property predicates** on the root map
+     * For a **view**, predicates filter the *projected* values: **property predicates** on the root map
      * (`proposition.contextId eq …`) and **relationship quantifiers** over the projected relationship
      * collection (`mentions.any { resolvedId eq … }` → `any(m IN mentions WHERE m.resolvedId = …)`,
      * `none{}` → `NOT any(...)`). Multiple quantifiers `AND` together (e.g. "mentions all of these
@@ -481,60 +500,111 @@ class GraphObjectManager(
         threshold: Double? = null,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
-        if (!grammar.supportsVectorSearch) {
-            throw UnsupportedOperationException(
-                "Vector search is not supported on this backend (${grammar::class.simpleName} has no native vector index)."
-            )
-        }
-        require(graphClass.isAnnotationPresent(GraphView::class.java)) {
-            "loadNearest { where { } } currently supports @GraphView types; ${graphClass.simpleName} is not a @GraphView"
-        }
-
-        autoRegisterSubtypesIfNeeded(graphClass)
-
-        val querySpec = GraphQuerySpec(queryObject)
-        querySpec.spec()
-
-        val viewModel = GraphViewModel.from(graphClass)
-
-        // Render the caller predicate in projected-collection mode: property predicates read the
-        // projected root map, and relationship quantifiers (`mentions.any { … }`) become list
-        // predicates over the projected relationship collection — both run in the post-projection
-        // WHERE without traversing the vector-sourced node. Referencing a relationship the view does
-        // not project throws (from buildWhereClause's relationship lookup).
-        val whereResult = if (querySpec.conditions.isNotEmpty()) {
-            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar, projectedCollectionMode = true)
-        } else null
-        val callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
-
-        val rootFragmentType = viewModel.rootFragment.fragmentType
-        val vectorSpec = VectorIndexResolver.resolve(rootFragmentType, null, VECTOR_TOP_K_PARAM, VECTOR_QUERY_PARAM)
-        val thresholdParam = if (threshold != null) VECTOR_THRESHOLD_PARAM else null
-        val query = GraphViewQueryBuilder.forView(graphClass, grammar)
-            .buildVectorQuery(vectorSpec, thresholdParam, whereResult?.whereClause)
-
-        val bindings = buildMap<String, Any?> {
-            put(VECTOR_TOP_K_PARAM, topK)
-            put(VECTOR_QUERY_PARAM, vector)
-            if (threshold != null) put(VECTOR_THRESHOLD_PARAM, threshold)
-            putAll(callerBindings)
-        }
-
-        return executeVectorSearch(graphClass, query, bindings)
+        val querySpec = GraphQuerySpec(queryObject).apply(spec)
+        return executeScoredSearch(
+            graphClass,
+            VectorSearchPlanner.planFiltered(graphClass, querySpec, vector, topK, threshold, grammar),
+        )
     }
 
     /**
-     * Runs a vector-search query and packages each `{ value, score }` row into a [Scored] instance,
-     * transforming the inner `value` with the same machinery [loadAll] uses, then snapshots for
-     * dirty tracking.
+     * Full-text search: finds the [topK] nodes most relevant to a text [query] and returns them
+     * scored, the full-text mirror of [loadNearest]. Resolves the model's `@FullTextIndex`, runs the
+     * engine-appropriate full-text `CALL`, and returns typed, **[0, 1]-normalized** [Scored] results
+     * (polymorphic dispatch included) — no consumer Cypher, no per-engine score normalization.
+     *
+     * Works on a `@GraphView` (searches its root fragment's text index, returns the projected view)
+     * and on a bare `@NodeFragment` (searches and returns itself). As with [loadNearest], a view's
+     * required-relationship filters apply *after* the search, so **fewer than [topK] rows may return**.
+     *
+     * The [query] is passed through to the engine's full-text query language (Lucene syntax on Neo4j:
+     * `AND`/`OR`/`"phrase"`/`field:term`). Raw user input is **not** escaped here — wrap or escape it
+     * yourself if it may contain query-syntax metacharacters.
+     *
+     * @param graphClass the `@GraphView` or `@NodeFragment` class to load
+     * @param query the full-text query string
+     * @param topK the maximum number of results to return (applied as a `LIMIT`)
+     * @param threshold minimum normalized relevance in `[0, 1]`; results below it are dropped (default
+     *   `0.0` keeps everything)
+     * @return scored instances, most relevant first, of length `<= topK`
+     * @throws UnsupportedOperationException if the backend has no native full-text index
      */
-    private fun <T : Any> executeVectorSearch(
+    @JvmOverloads
+    fun <T : Any> loadMatching(
         graphClass: Class<T>,
         query: String,
-        bindings: Map<String, Any?>,
+        topK: Int,
+        threshold: Double = 0.0,
+    ): List<Scored<T>> = loadMatching(graphClass, null, query, topK, threshold)
+
+    /**
+     * Full-text search variant that names the indexed [property] explicitly — use when the searched
+     * fragment carries more than one `@FullTextIndex`. Pass any property the target index covers. See
+     * the [loadMatching] overload above for the full semantics.
+     *
+     * @param property a property covered by the `@FullTextIndex` to search
+     */
+    @JvmOverloads
+    fun <T : Any> loadMatching(
+        graphClass: Class<T>,
+        property: String?,
+        query: String,
+        topK: Int,
+        threshold: Double = 0.0,
+    ): List<Scored<T>> =
+        executeScoredSearch(graphClass, FullTextSearchPlanner.plan(graphClass, property, query, topK, threshold, grammar))
+
+    /**
+     * Full-text search with an additional caller `where { }` predicate `AND`-ed into the post-search
+     * filter — full-text relevance plus arbitrary property predicates in one statement, the full-text
+     * mirror of the filtered [loadNearest]. Works on a `@GraphView` (predicates filter the *projected*
+     * values, exactly as the filtered vector search does) and on a bare `@NodeFragment` (predicates
+     * filter the matched node directly, using the fragment's generated query DSL).
+     *
+     * ```kotlin
+     * // view
+     * graphObjectManager.loadMatching(ChunkView::class.java, ChunkViewQueryDsl.INSTANCE, "graph databases", topK = 20) {
+     *     where { query.containerSectionId eq "sec-1" }
+     * }
+     * // fragment
+     * graphObjectManager.loadMatching(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, "graph databases", topK = 20) {
+     *     where { query.containerSectionId eq "sec-1" }
+     * }
+     * ```
+     *
+     * @param queryObject the generated query DSL object providing property references
+     * @param query the full-text query string
+     * @param spec the `where { }` block
+     */
+    fun <T : Any, Q : Any> loadMatching(
+        graphClass: Class<T>,
+        queryObject: Q,
+        query: String,
+        topK: Int,
+        threshold: Double = 0.0,
+        spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
+        val querySpec = GraphQuerySpec(queryObject).apply(spec)
+        return executeScoredSearch(
+            graphClass,
+            FullTextSearchPlanner.planFiltered(graphClass, querySpec, query, topK, threshold, grammar),
+        )
+    }
+
+    /**
+     * Runs a planned scored search (vector or full-text) and packages each `{ value, score }` row into
+     * a [Scored] instance, transforming the inner `value` with the same machinery [loadAll] uses, then
+     * snapshots for dirty tracking. Registers subtypes first so polymorphic dispatch works. Both search
+     * kinds share this row shape, so both planners feed this one executor.
+     */
+    private fun <T : Any> executeScoredSearch(
+        graphClass: Class<T>,
+        plan: ScoredSearchPlan,
+    ): List<Scored<T>> {
+        autoRegisterSubtypesIfNeeded(graphClass)
+
         val rows = persistenceManager.query(
-            QuerySpecification.withStatement(query).bind(bindings).transform(Map::class.java)
+            QuerySpecification.withStatement(plan.cypher).bind(plan.bindings).transform(Map::class.java)
         )
 
         val transform = TransformPostProcessor<Any, T>(graphClass, subtypeRegistry)
@@ -555,12 +625,72 @@ class GraphObjectManager(
 
 
     /**
+     * Reports when an ordered query has no range index to seek into. See [indexAdvice] for the
+     * levels, and the README's pagination section for why the index must mirror the ordering
+     * exactly rather than merely overlap it.
+     *
+     * Only root-level orders participate — a collection sort happens inside a pattern comprehension,
+     * where no index applies.
+     */
+    private fun <Q : Any> adviseOnIndexes(
+        graphClass: Class<*>,
+        viewModel: GraphViewModel?,
+        rootOrders: List<OrderSpec>,
+        querySpec: GraphQuerySpec<Q>,
+        isKeyset: Boolean,
+    ) {
+        if (indexAdvice == IndexAdvicePolicy.OFF || rootOrders.isEmpty()) return
+        // Only Neo4j can turn an index into an ordered seek that stops at the page boundary. On the
+        // other engines a blocking sort sits between scan and limit whatever is indexed, so there is
+        // no index worth recommending.
+        if (!grammar.supportsIndexBackedOrdering) return
+
+        val fragmentType = viewModel?.rootFragment?.fragmentType ?: graphClass
+        val fragmentModel = FragmentModel.from(fragmentType)
+        val label = fragmentModel.labels.firstOrNull() ?: return
+        val rootAlias = viewModel?.rootFragment?.fieldName
+
+        indexAdvisor.check(
+            policy = indexAdvice,
+            label = label,
+            properties = rootOrders.map { it.propertyPath.substringAfter(".") },
+            operation = if (isKeyset) "seek" else "orderBy",
+            pinnedBy = pinningEqualities(querySpec, rootAlias),
+            uniqueByContract = setOfNotNull(fragmentModel.nodeIdProperty),
+        )
+    }
+
+    /**
+     * Root properties the query fixes to a single value at the top level of its `where`.
+     *
+     * Only [WhereCondition.PropertyCondition] entries in the spec's own condition list count: those
+     * are AND-ed, so each genuinely narrows the result. Conditions nested inside an `anyOf` are not
+     * in this list, which is what we want — an equality in one branch of an OR pins nothing.
+     */
+    private fun <Q : Any> pinningEqualities(querySpec: GraphQuerySpec<Q>, rootAlias: String?): Set<String> =
+        querySpec.conditions
+            .filterIsInstance<WhereCondition.PropertyCondition>()
+            .filter { it.operator == ComparisonOperator.EQUALS }
+            .filter { rootAlias == null || it.propertyPath.substringBefore(".") == rootAlias }
+            .map { it.propertyPath.substringAfter(".") }
+            .toSet()
+
+    /**
      * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.
+     *
+     * @param supportsSeek whether the calling operation applies [GraphQuerySpec.seek]. Only
+     *   `loadAll` does; every other path would silently ignore the cursor and return (or delete, or
+     *   count) the whole unpaginated result, so they reject it here instead.
      */
     private fun <Q : Any> buildQueryContext(
         graphClass: Class<*>,
-        querySpec: GraphQuerySpec<Q>
+        querySpec: GraphQuerySpec<Q>,
+        supportsSeek: Boolean = false,
     ): QueryContext {
+        require(supportsSeek || querySpec.seekValues.isEmpty()) {
+            "seek is only supported by loadAll; this operation would ignore the cursor"
+        }
+
         val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
             GraphViewModel.from(graphClass)
         } else {
@@ -814,18 +944,24 @@ class GraphObjectManager(
      *
      * @param obj The object to save
      * @param cascade The cascade policy for deleted relationships (default: NONE - only delete relationship)
+     * @param nullPolicy How null field values are treated. Default [NullPolicy.IGNORE] — a merge-patch
+     *   that writes only non-null fields and never clears anything (so a partially-loaded object never
+     *   destroys stored data, embeddings included). Pass [NullPolicy.CLEAR] for a full overwrite that
+     *   clears null fields. Uniform for all fields — see [NullPolicy].
      * @return The saved object
      */
-    fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE): T {
+    @JvmOverloads
+    fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): T {
         validateCascadeSupport(cascade)
         val graphClass = obj.javaClass
 
         val mergeBuilder = GraphObjectMergeBuilder.forClass(
             graphClass,
             objectMapper,
-            sessionManager
+            sessionManager,
+            grammar
         )
-        val statements = mergeBuilder.buildMergeStatements(obj, cascade)
+        val statements = mergeBuilder.buildMergeStatements(obj, cascade, nullPolicy)
 
         // Execute all statements in order
         statements.forEach { statement ->
@@ -858,22 +994,24 @@ class GraphObjectManager(
      * [save] builds them. Consequences worth knowing:
      * - **Roots with a `@PropertyBag`/`@CompositeProperty` fall back** to the full per-item path — the
      *   clear-stale `REMOVE` needs per-object keys an UNWIND can't express. Correct, just not batched.
-     * - The batched root upsert writes **all current non-null root properties** (`n += props`); it is
-     *   not dirty-optimized and does **not clear a root property by setting it to null**. Use [save] for
-     *   a single object when you need to null a root property. Relationship change-detection and cascade
-     *   are per-item and unaffected.
+     * - The batched root upsert writes the root properties via `n += props`. Null handling follows
+     *   [nullPolicy], uniformly with [save]: under [NullPolicy.IGNORE] (default) nulls are dropped from
+     *   `props` and never clear anything (merge-patch); under [NullPolicy.CLEAR] a null is kept so
+     *   `+= {x: null}` clears the property. Relationship change-detection and cascade are per-item.
      *
      * @param objs the objects to save (any mix of `@GraphView` / `@NodeFragment` types)
      * @param cascade the cascade policy for removed relationships, applied per item (default NONE)
+     * @param nullPolicy how null field values are treated (default [NullPolicy.IGNORE]); see [NullPolicy]
      * @return the saved objects in input order; empty in → empty out
      */
-    fun <T : Any> saveAll(objs: Collection<T>, cascade: CascadeType = CascadeType.NONE): List<T> {
+    @JvmOverloads
+    fun <T : Any> saveAll(objs: Collection<T>, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): List<T> {
         validateCascadeSupport(cascade)
         val items = objs.toList()
         if (items.isEmpty()) return emptyList()
 
         // Statement building lives in BatchSaveOperations; the manager owns execution + snapshotting.
-        persistenceManager.executeBatch(batchSave.buildBatchSpecs(items, cascade))
+        persistenceManager.executeBatch(batchSave.buildBatchSpecs(items, cascade, nullPolicy))
 
         // Update snapshots after the batch commits, each under its own runtime class.
         items.forEach { @Suppress("UNCHECKED_CAST") snapshotResults(it.javaClass as Class<Any>, listOf<Any>(it)) }
@@ -906,11 +1044,8 @@ class GraphObjectManager(
     }
 
     private companion object {
-        // Bound-parameter names for the vector search. Underscored to avoid clashing with any
-        // user-supplied bindings on future filtered vector queries.
-        const val VECTOR_TOP_K_PARAM = "_vectorTopK"
-        const val VECTOR_QUERY_PARAM = "_vectorQuery"
-        const val VECTOR_THRESHOLD_PARAM = "_vectorThreshold"
+        // Scored-search bound-parameter names now live on their planners (VectorSearchPlanner /
+        // FullTextSearchPlanner), which build those queries.
 
         // Bound-parameter names for DSL pagination.
         const val SKIP_PARAM = "_skip"

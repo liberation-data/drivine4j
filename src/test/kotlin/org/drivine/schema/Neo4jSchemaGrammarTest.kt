@@ -68,6 +68,45 @@ class Neo4jSchemaGrammarTest {
 
     // ----- DDL: constraints -----
 
+    // ----- DDL: fulltext index -----
+
+    @Test
+    fun `fulltext index DDL uses ON EACH with a bracketed property list`() {
+        val statement = grammar.createIndex(
+            FullTextIndexSpec("Chunk", listOf("title", "body"))
+        ).single() as SchemaStatement.Cypher
+
+        assertTrue(statement.statement.contains("CREATE FULLTEXT INDEX `Chunk_title_body_fulltext` IF NOT EXISTS"))
+        assertTrue(statement.statement.contains("FOR (n:`Chunk`) ON EACH [n.`title`, n.`body`]"))
+        // no analyzer declared → empty indexConfig, so Neo4j applies its own default
+        assertTrue(statement.statement.contains("OPTIONS {indexConfig: {}}"))
+    }
+
+    @Test
+    fun `fulltext index DDL respects explicit name and analyzer`() {
+        val statement = grammar.createIndex(
+            FullTextIndexSpec("Chunk", "body", name = "my_ft", analyzer = "english")
+        ).single() as SchemaStatement.Cypher
+
+        assertTrue(statement.statement.contains("CREATE FULLTEXT INDEX `my_ft` IF NOT EXISTS"))
+        assertTrue(statement.statement.contains("`fulltext.analyzer`: 'english'"))
+    }
+
+    @Test
+    fun `analyzer drifts only when both the spec and the engine report one`() {
+        val spec = FullTextIndexSpec("Chunk", listOf("title"), analyzer = "english")
+        val existingEnglish = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title"), analyzer = "english")
+        val existingStandard = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title"), analyzer = "standard")
+        val existingUnknown = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title"), analyzer = null)
+
+        assertTrue(grammar.matchesShape(existingEnglish, spec))
+        assertFalse(grammar.matchesShape(existingStandard, spec))
+        // engine reports no analyzer → unobservable, never drift
+        assertTrue(grammar.matchesShape(existingUnknown, spec))
+        // spec declares no analyzer → never drift whatever the engine reports
+        assertTrue(grammar.matchesShape(existingStandard, FullTextIndexSpec("Chunk", listOf("title"))))
+    }
+
     @Test
     fun `uniqueness constraint DDL uses REQUIRE IS UNIQUE`() {
         val statement = grammar.createConstraint(
@@ -116,7 +155,7 @@ class Neo4jSchemaGrammarTest {
     // ----- Introspection parsing -----
 
     @Test
-    fun `parses vector and range rows, skipping unmanaged index types`() {
+    fun `parses vector, range and fulltext rows, skipping unmanaged index types`() {
         val rows = listOf(
             mapOf(
                 "name" to "prop_embedding_vector", "type" to "VECTOR", "entityType" to "NODE",
@@ -133,20 +172,26 @@ class Neo4jSchemaGrammarTest {
                 "labelsOrTypes" to listOf("Proposition"), "properties" to listOf("contextId"),
                 "options" to null,
             ),
+            // fulltext is a managed kind as of 0.0.60, incl. its analyzer
+            mapOf(
+                "name" to "doc_text_fulltext", "type" to "FULLTEXT", "entityType" to "NODE",
+                "labelsOrTypes" to listOf("Doc"), "properties" to listOf("title", "body"),
+                "options" to mapOf("indexConfig" to mapOf("fulltext.analyzer" to "english")),
+            ),
             // not managed — must be skipped
             mapOf(
                 "name" to "token_lookup", "type" to "LOOKUP", "entityType" to "NODE",
                 "labelsOrTypes" to null, "properties" to null, "options" to null,
             ),
             mapOf(
-                "name" to "fulltext_idx", "type" to "FULLTEXT", "entityType" to "NODE",
-                "labelsOrTypes" to listOf("Doc"), "properties" to listOf("text"), "options" to null,
+                "name" to "point_idx", "type" to "POINT", "entityType" to "NODE",
+                "labelsOrTypes" to listOf("Place"), "properties" to listOf("location"), "options" to null,
             ),
         )
 
         val items = grammar.parseIndexRows(rows)
 
-        assertEquals(2, items.size)
+        assertEquals(3, items.size)
         val vector = items.first { it.kind == SchemaItemKind.VECTOR_INDEX }
         assertEquals("Proposition", vector.label)
         assertEquals(listOf("embedding"), vector.properties)
@@ -156,6 +201,12 @@ class Neo4jSchemaGrammarTest {
 
         val range = items.first { it.kind == SchemaItemKind.RANGE_INDEX }
         assertEquals(listOf("contextId"), range.properties)
+
+        val fulltext = items.first { it.kind == SchemaItemKind.FULLTEXT_INDEX }
+        assertEquals("Doc", fulltext.label)
+        assertEquals(listOf("title", "body"), fulltext.properties)
+        assertEquals("doc_text_fulltext", fulltext.name)
+        assertEquals("english", fulltext.analyzer)
     }
 
     @Test

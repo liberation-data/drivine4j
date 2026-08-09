@@ -39,8 +39,35 @@ object CypherGenerator {
         val bridgeVars = mutableListOf<String>()
         val ecCounter = AtomicInteger(0)
 
-        var paramIndex = 0
-        val whereClause = grouped.joinToString(" AND ") { condition ->
+        val whereClause = renderConditionList(
+            grouped, viewModel, startIndex = 0, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode,
+        )
+
+        return WhereClauseResult(
+            whereClause = whereClause.ifEmpty { null },
+            prologs = prologs,
+            bridgeVariables = bridgeVars,
+        )
+    }
+
+    /**
+     * Renders a list of (already-grouped) conditions as ` AND `-joined Cypher, threading a running
+     * parameter index from [startIndex]. This is the shared dispatch loop used by [buildWhereClause] at
+     * the top level and by [buildNotCondition] for a negated sub-expression — so parameter numbering
+     * stays aligned with [extractBindings] whether or not the conditions are nested under a `NOT`.
+     */
+    private fun renderConditionList(
+        conditions: List<WhereCondition>,
+        viewModel: GraphViewModel?,
+        startIndex: Int,
+        grammar: CypherGrammar,
+        ecCounter: AtomicInteger,
+        prologs: MutableList<String>,
+        bridgeVars: MutableList<String>,
+        projectedCollectionMode: Boolean,
+    ): String {
+        var paramIndex = startIndex
+        return conditions.joinToString(" AND ") { condition ->
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
                     val result = buildPropertyCondition(condition, paramIndex)
@@ -68,14 +95,41 @@ object CypherGenerator {
                     paramIndex++
                     result
                 }
+                is WhereCondition.NotCondition -> {
+                    val result = buildNotCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                    paramIndex += countParameters(condition.conditions)
+                    result
+                }
+                is WhereCondition.AnyLabelCondition -> {
+                    val result = buildAnyLabelCondition(condition, paramIndex)
+                    paramIndex++
+                    result
+                }
             }
         }
+    }
 
-        return WhereClauseResult(
-            whereClause = whereClause.ifEmpty { null },
-            prologs = prologs,
-            bridgeVariables = bridgeVars,
+    /** `NOT ( … )` — renders the (raw, un-regrouped) inner conditions AND-joined, then negates. */
+    private fun buildNotCondition(
+        condition: WhereCondition.NotCondition,
+        viewModel: GraphViewModel?,
+        startIndex: Int,
+        grammar: CypherGrammar,
+        ecCounter: AtomicInteger,
+        prologs: MutableList<String>,
+        bridgeVars: MutableList<String>,
+        projectedCollectionMode: Boolean,
+    ): String {
+        val inner = renderConditionList(
+            condition.conditions, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode,
         )
+        return "NOT ($inner)"
+    }
+
+    /** `ANY(l IN labels(alias) WHERE l IN $p)` — label membership matching **any** of the labels. */
+    private fun buildAnyLabelCondition(condition: WhereCondition.AnyLabelCondition, index: Int): String {
+        val paramName = generateParamName("${condition.alias}.labels", index)
+        return "ANY(_lbl IN labels(${condition.alias}) WHERE _lbl IN \$$paramName)"
     }
 
     /**
@@ -157,6 +211,14 @@ object CypherGenerator {
                     // A root list-property predicate (`$value IN root.listProp`); keep it in place.
                     grouped.add(condition)
                 }
+                is WhereCondition.NotCondition -> {
+                    // Negation wraps its own sub-expression; keep it whole (buildNotCondition renders it).
+                    grouped.add(condition)
+                }
+                is WhereCondition.AnyLabelCondition -> {
+                    // Root any-label predicate; keep in place.
+                    grouped.add(condition)
+                }
             }
         }
 
@@ -225,7 +287,7 @@ object CypherGenerator {
             null
         }
 
-        return OrderClauseResult(orderByClause, collectionSorts)
+        return OrderClauseResult(orderByClause, collectionSorts, rootOrders)
     }
 
     /**
@@ -251,7 +313,16 @@ object CypherGenerator {
                         if (condition.operator != ComparisonOperator.IS_NULL &&
                             condition.operator != ComparisonOperator.IS_NOT_NULL) {
                             val paramName = generateParamName(condition.propertyPath, paramIndex)
-                            bindings[paramName] = convertToNeo4jValue(condition.value)
+                            // The case-insensitive operators lower-case both sides: the LHS via
+                            // toLower(...) in the Cypher, the RHS by lower-casing the bound value here.
+                            bindings[paramName] = if (
+                                condition.operator == ComparisonOperator.CONTAINS_IGNORE_CASE ||
+                                condition.operator == ComparisonOperator.EQUALS_IGNORE_CASE
+                            ) {
+                                condition.value?.toString()?.lowercase()
+                            } else {
+                                convertToNeo4jValue(condition.value)
+                            }
                             paramIndex++
                         } else {
                             // Still increment index to keep ordering consistent with buildWhereClause
@@ -272,6 +343,15 @@ object CypherGenerator {
                     is WhereCondition.ListMembershipCondition -> {
                         val paramName = generateParamName(condition.propertyPath, paramIndex)
                         bindings[paramName] = convertToNeo4jValue(condition.value)
+                        paramIndex++
+                    }
+                    is WhereCondition.NotCondition -> {
+                        // Raw (un-regrouped) walk — mirrors buildNotCondition's rendering order.
+                        extractRecursive(condition.conditions)
+                    }
+                    is WhereCondition.AnyLabelCondition -> {
+                        val paramName = generateParamName("${condition.alias}.labels", paramIndex)
+                        bindings[paramName] = condition.labels
                         paramIndex++
                     }
                 }
@@ -298,6 +378,27 @@ object CypherGenerator {
                 // IN operator requires list syntax
                 val paramName = generateParamName(condition.propertyPath, index)
                 "$lhs ${condition.operator.cypherOperator} \$$paramName"
+            }
+            ComparisonOperator.NOT_IN -> {
+                // NOT membership — a leading NOT over the IN form.
+                val paramName = generateParamName(condition.propertyPath, index)
+                "NOT $lhs IN \$$paramName"
+            }
+            ComparisonOperator.HAS_ELEMENT -> {
+                // Reversed membership — the bound value on the left, the list-valued property on the
+                // right (the dynamic twin of hasItem / ListMembershipCondition).
+                val paramName = generateParamName(condition.propertyPath, index)
+                "\$$paramName IN $lhs"
+            }
+            ComparisonOperator.CONTAINS_IGNORE_CASE -> {
+                // Case-insensitive contains — the bound value is lower-cased in extractBindings.
+                val paramName = generateParamName(condition.propertyPath, index)
+                "toLower($lhs) CONTAINS \$$paramName"
+            }
+            ComparisonOperator.EQUALS_IGNORE_CASE -> {
+                // Case-insensitive equals — the bound value is lower-cased in extractBindings.
+                val paramName = generateParamName(condition.propertyPath, index)
+                "toLower($lhs) = \$$paramName"
             }
             ComparisonOperator.CONTAINS,
             ComparisonOperator.STARTS_WITH,
@@ -339,7 +440,10 @@ object CypherGenerator {
         if (dot < 0) return propertyPath
         val alias = propertyPath.substring(0, dot)
         val property = propertyPath.substring(dot + 1)
-        return if (property.contains('.')) "$alias.`$property`" else propertyPath
+        // A dotted property segment (a @PropertyBag key, or a dynamic `property(path)`) is backtick-
+        // quoted; escape any backtick in it (Cypher doubles them) so a runtime-supplied key can't
+        // break out of the quotes.
+        return if (property.contains('.')) "$alias.`${property.replace("`", "``")}`" else propertyPath
     }
 
     /**
@@ -399,6 +503,10 @@ object CypherGenerator {
         return when (condition.operator) {
             ComparisonOperator.IS_NULL,
             ComparisonOperator.IS_NOT_NULL -> "$lhs ${condition.operator.cypherOperator}"
+            ComparisonOperator.NOT_IN -> "NOT $lhs IN \$${generateParamName(condition.propertyPath, index)}"
+            ComparisonOperator.HAS_ELEMENT -> "\$${generateParamName(condition.propertyPath, index)} IN $lhs"
+            ComparisonOperator.CONTAINS_IGNORE_CASE -> "toLower($lhs) CONTAINS \$${generateParamName(condition.propertyPath, index)}"
+            ComparisonOperator.EQUALS_IGNORE_CASE -> "toLower($lhs) = \$${generateParamName(condition.propertyPath, index)}"
             else -> {
                 val paramName = generateParamName(condition.propertyPath, index)
                 "$lhs ${condition.operator.cypherOperator} \$$paramName"
@@ -486,6 +594,14 @@ object CypherGenerator {
                     }
                     is WhereCondition.ListMembershipCondition -> throw UnsupportedOperationException(
                         "hasItem (list-membership) is not supported inside a relationship any{}/none{} block; " +
+                        "use it as a top-level root predicate."
+                    )
+                    is WhereCondition.NotCondition -> throw UnsupportedOperationException(
+                        "not { } is not supported inside a relationship any{}/none{} block; " +
+                        "use it as a top-level root predicate (or none{} to negate a relationship)."
+                    )
+                    is WhereCondition.AnyLabelCondition -> throw UnsupportedOperationException(
+                        "hasAnyLabel() is not supported inside a relationship any{}/none{} block; " +
                         "use it as a top-level root predicate."
                     )
                 }
@@ -762,6 +878,16 @@ object CypherGenerator {
                     paramIndex++
                     result
                 }
+                is WhereCondition.NotCondition -> {
+                    val result = buildNotCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                    paramIndex += countParameters(subCondition.conditions)
+                    result
+                }
+                is WhereCondition.AnyLabelCondition -> {
+                    val result = buildAnyLabelCondition(subCondition, paramIndex)
+                    paramIndex++
+                    result
+                }
             }
         }
         return "($orClauses)"
@@ -783,6 +909,8 @@ object CypherGenerator {
                 is WhereCondition.LabelCondition -> 0  // Label conditions don't have parameters
                 is WhereCondition.OrCondition -> countParameters(condition.conditions)
                 is WhereCondition.ListMembershipCondition -> 1
+                is WhereCondition.NotCondition -> countParameters(condition.conditions)
+                is WhereCondition.AnyLabelCondition -> 1  // binds the labels list
             }
         }
     }
@@ -807,7 +935,7 @@ object CypherGenerator {
      * Converts a value to a Neo4j-compatible type.
      * Neo4j driver doesn't support java.util.UUID natively, so we convert it to String.
      */
-    private fun convertToNeo4jValue(value: Any?): Any? {
+    internal fun convertToNeo4jValue(value: Any?): Any? {
         return when (value) {
             is java.util.UUID -> value.toString()
             is Collection<*> -> value.map { convertToNeo4jValue(it) }

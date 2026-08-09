@@ -52,6 +52,51 @@ class MemgraphSchemaGrammarTest {
     }
 
     @Test
+    fun `fulltext index DDL uses Memgraph's named TEXT INDEX syntax`() {
+        val multi = grammar.createIndex(
+            FullTextIndexSpec("Chunk", listOf("title", "body"))
+        ).single() as SchemaStatement.Cypher
+        val named = grammar.createIndex(
+            FullTextIndexSpec("Chunk", "summary", name = "explicit_ft")
+        ).single() as SchemaStatement.Cypher
+
+        assertEquals("CREATE TEXT INDEX Chunk_title_body_fulltext ON :Chunk(title, body)", multi.statement)
+        assertEquals("CREATE TEXT INDEX explicit_ft ON :Chunk(summary)", named.statement)
+    }
+
+    @Test
+    fun `fulltext drop uses DROP TEXT INDEX by name`() {
+        val byName = grammar.dropIndex(
+            SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title"), name = "explicit_ft")
+        )
+        val derived = grammar.dropIndex(
+            SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title", "body"))
+        )
+
+        assertEquals(listOf(SchemaStatement.Cypher("DROP TEXT INDEX explicit_ft")), byName)
+        assertEquals(listOf(SchemaStatement.Cypher("DROP TEXT INDEX Chunk_title_body_fulltext")), derived)
+    }
+
+    @Test
+    fun `parses text index rows, recovering the name from the index type column`() {
+        // SHOW INDEX INFO reports text indexes as "label_text (name: <name>)" with a property list
+        val rows = listOf(
+            listOf("label_text (name: chunk_ft)", "Chunk", listOf("title", "body"), 0L),
+            listOf("label+property", "Chunk", "slug", 0L), // range row must still parse as range
+        )
+
+        val items = grammar.parseIndexRows(rows)
+
+        val fulltext = items.single { it.kind == SchemaItemKind.FULLTEXT_INDEX }
+        assertEquals("Chunk", fulltext.label)
+        assertEquals(listOf("title", "body"), fulltext.properties)
+        assertEquals("chunk_ft", fulltext.name)
+        assertNull(fulltext.analyzer) // Memgraph does not report an analyzer
+
+        assertEquals(SchemaItemKind.RANGE_INDEX, items.single { it.kind == SchemaItemKind.RANGE_INDEX }.kind)
+    }
+
+    @Test
     fun `uniqueness constraint DDL uses ASSERT IS UNIQUE`() {
         val single = grammar.createConstraint(UniquenessConstraintSpec("ChatSession", "sessionId")).single() as SchemaStatement.Cypher
         val composite = grammar.createConstraint(

@@ -84,4 +84,21 @@ class VectorSearchGrammarTest {
             grammar.vectorSearchHead(spec(), "doc", "_score")
         }
     }
+
+    // ----- Write side: vectorPropertyLiteral (the save-side mirror of the vecf32 read wrapping) -----
+
+    @Test
+    fun `FalkorDB wraps a vector property write in vecf32, and reports that it wraps`() {
+        val grammar = FalkorDbCypherGrammar(CallSubqueryEmitter())
+        assertEquals("vecf32(\$embedding)", grammar.vectorPropertyLiteral("embedding"))
+        assertTrue(grammar.wrapsVectorLiteral)
+    }
+
+    @Test
+    fun `Neo4j and Memgraph write a vector property plainly and do not wrap`() {
+        listOf(Neo4j5Grammar(ApocSortMapsEmitter()), MemgraphGrammar(CallSubqueryEmitter())).forEach { grammar ->
+            assertEquals("\$embedding", grammar.vectorPropertyLiteral("embedding"))
+            assertFalse(grammar.wrapsVectorLiteral, "${grammar::class.simpleName} should not wrap")
+        }
+    }
 }

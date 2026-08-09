@@ -83,9 +83,13 @@ class IndexManager internal constructor(
     fun find(spec: IndexSpec): SchemaItemInfo? =
         introspectIndexes(spec.kind).firstOrNull { grammar.matchesIdentity(it, spec) }
 
-    /** Lists all managed indexes (vector and range) on the database. */
+    /** Lists all managed indexes (vector, range, and fulltext) on the database. */
     fun list(): List<SchemaItemInfo> {
-        val queries = listOf(SchemaItemKind.VECTOR_INDEX, SchemaItemKind.RANGE_INDEX)
+        val queries = listOf(
+            SchemaItemKind.VECTOR_INDEX,
+            SchemaItemKind.RANGE_INDEX,
+            SchemaItemKind.FULLTEXT_INDEX,
+        )
             .map { grammar.listIndexesQuery(it) }
             .distinct()
         return queries

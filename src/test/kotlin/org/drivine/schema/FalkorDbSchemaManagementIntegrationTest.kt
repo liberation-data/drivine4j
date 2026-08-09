@@ -131,6 +131,60 @@ class FalkorDbSchemaManagementIntegrationTest {
         assertNotNull(manager.indexes.find(RangeIndexSpec("Widget", "b")))
     }
 
+    // ----- Fulltext index lifecycle (per-property procedure calls, reassembled on read) -----
+
+    @Test
+    fun `fulltext index - multi-property maps to per-property calls and reassembles into one item`() {
+        // A spec covering [title, body] becomes two `db.idx.fulltext.createNodeIndex` calls, but must
+        // introspect back as ONE item covering both — otherwise ensure() would drift forever.
+        val spec = FullTextIndexSpec("Article", listOf("title", "body"))
+
+        val created = manager.indexes.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+
+        val info = manager.indexes.find(spec)!!
+        assertEquals(SchemaItemKind.FULLTEXT_INDEX, info.kind)
+        assertEquals(setOf("title", "body"), info.properties.toSet())
+        assertNull(info.name) // FalkorDB indexes are unnamed
+
+        val again = manager.indexes.ensure(spec)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+    }
+
+    @Test
+    fun `fulltext index - extending coverage only emits the missing property`() {
+        // Existing fulltext coverage over 'name'; extend to (name, description). FalkorDB rejects
+        // re-indexing 'name', so createIndex must emit only 'description'.
+        manager.indexes.ensure(FullTextIndexSpec("Widget", "name"))
+        assertEquals(setOf("name"), manager.indexes.find(FullTextIndexSpec("Widget", "name"))!!.properties.toSet())
+
+        val extended = manager.indexes.ensure(FullTextIndexSpec("Widget", listOf("name", "description")))
+        assertTrue(
+            extended is EnsureResult.Created || extended is EnsureResult.AlreadyMatching,
+            "expected Created or AlreadyMatching, got $extended"
+        )
+        assertEquals(
+            setOf("name", "description"),
+            manager.indexes.find(FullTextIndexSpec("Widget", listOf("name", "description")))!!.properties.toSet()
+        )
+    }
+
+    @Test
+    fun `fulltext and range coverage on the same label stay distinct`() {
+        manager.indexes.ensure(RangeIndexSpec("Mixed", "age"))
+        manager.indexes.ensure(FullTextIndexSpec("Mixed", "bio"))
+
+        assertEquals(SchemaItemKind.RANGE_INDEX, manager.indexes.find(RangeIndexSpec("Mixed", "age"))!!.kind)
+        val ft = manager.indexes.find(FullTextIndexSpec("Mixed", "bio"))!!
+        assertEquals(SchemaItemKind.FULLTEXT_INDEX, ft.kind)
+        assertEquals(setOf("bio"), ft.properties.toSet())
+
+        // Drop the fulltext; the range index on the label survives
+        assertTrue(manager.indexes.drop(FullTextIndexSpec("Mixed", "bio")))
+        assertNull(manager.indexes.find(FullTextIndexSpec("Mixed", "bio")))
+        assertNotNull(manager.indexes.find(RangeIndexSpec("Mixed", "age")))
+    }
+
     // ----- Uniqueness constraints (native GRAPH.CONSTRAINT path) -----
 
     @Test
@@ -200,5 +254,37 @@ class FalkorDbSchemaManagementIntegrationTest {
         assertEquals("model-v1", store.storedVersion())
         store.clear()
         assertNull(store.storedVersion())
+    }
+
+    @Test
+    @Order(9)
+    fun `ensureSingleton repairs duplicate markers and constrains the marker key`() {
+        val store = SchemaVersionStore(manager)
+        store.clear()
+        // The pre-constraint race: two processes' MERGEs both created a marker
+        listOf("'older', appliedAt: 1", "'newer', appliedAt: 2").forEach {
+            manager.execute(
+                QuerySpecification.withStatement(
+                    "CREATE (:`${SchemaVersionStore.LABEL}` {scope: 'schema', version: $it})"
+                )
+            )
+        }
+
+        store.ensureSingleton()
+
+        val count = manager.getOne(
+            QuerySpecification
+                .withStatement("MATCH (m:`${SchemaVersionStore.LABEL}`) RETURN count(m)")
+                .transform(Long::class.java)
+        )
+        assertEquals(1, count)
+        assertEquals("newer", store.storedVersion())
+        assertNotNull(
+            manager.constraints.find(
+                UniquenessConstraintSpec(SchemaVersionStore.LABEL, SchemaVersionStore.SCOPE_PROPERTY)
+            )
+        )
+        store.record("model-v2")
+        assertEquals("model-v2", store.storedVersion())
     }
 }

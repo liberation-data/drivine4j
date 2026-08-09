@@ -55,6 +55,14 @@ class SchemaCatalog private constructor(
      * embedding-model swap that keeps the same dimensions. See [withVersion].
      */
     val version: String? = null,
+    /**
+     * Optional owner name. When a library and its host application each register catalogs, naming
+     * them keys versioning and recreation **per owner** — an app's version bump rebuilds only the
+     * app's items, not the library's, and each owner gets its own `_DrivineSchema` marker node
+     * (`scope: <name>`). Null (the default) is the anonymous/global owner, tracked under the
+     * historical `scope: 'schema'` marker so existing deployments are untouched. See [named].
+     */
+    val name: String? = null,
 ) {
 
     /** All items in ensure order: indexes first, then constraints. */
@@ -76,7 +84,27 @@ class SchemaCatalog private constructor(
      * not re-embed. After a model change, re-embed the nodes first, then enforce.
      */
     fun withVersion(version: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, target, version)
+        SchemaCatalog(indexes, constraints, target, version, name)
+
+    /**
+     * Returns a copy of this catalog owned by [name].
+     *
+     * Naming keys versioning and recreation to this owner: its version token is tracked in its own
+     * `_DrivineSchema {scope: '<name>'}` marker, a version change recreates only *this* owner's
+     * items, and [SchemaManager.enforce]/[SchemaManager.recreateAll] can target it selectively. The
+     * anonymous (unnamed) owner keeps the historical `scope: 'schema'` marker, so mixing a named
+     * library catalog with an existing unnamed app catalog needs no migration.
+     *
+     * Like [forDatabase], naming is **replace / last-wins**, not additive: each call sets the owner
+     * afresh. Pass `null` to return to the anonymous owner.
+     *
+     * Items declared identically by more than one live owner (e.g. both an app and a library
+     * wanting `Chunk(id)` unique) deduplicate at the DDL level and are **never recreated by a single
+     * owner's version bump** — only [SchemaManager.recreateAll] (all or by name) rebuilds a
+     * co-owned item. Genuinely conflicting declarations across owners fail fast, naming both owners.
+     */
+    fun named(name: String?): SchemaCatalog =
+        SchemaCatalog(indexes, constraints, target, version, name)
 
     /** Returns a copy of this catalog applying only to the primary (first-registered) database. */
     fun forDefaultDatabase(): SchemaCatalog = forDatabase(DEFAULT_DATABASE)
@@ -87,7 +115,7 @@ class SchemaCatalog private constructor(
      * Replaces any existing target — use [forDatabases] to target several at once.
      */
     fun forDatabase(database: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(setOf(database)), version)
+        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(setOf(database)), version, name)
 
     /**
      * Returns a copy of this catalog applying only to the named databases.
@@ -96,20 +124,21 @@ class SchemaCatalog private constructor(
      * chaining `forDatabase(...)` calls does not accumulate.
      */
     fun forDatabases(vararg databases: String): SchemaCatalog =
-        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(databases.toSet()), version)
+        SchemaCatalog(indexes, constraints, DatabaseTarget.Named(databases.toSet()), version, name)
 
     /**
      * Returns a copy of this catalog applying to every schema-capable database (the default).
      *
      * Replaces any existing target.
      */
-    fun forAllDatabases(): SchemaCatalog = SchemaCatalog(indexes, constraints, DatabaseTarget.All, version)
+    fun forAllDatabases(): SchemaCatalog = SchemaCatalog(indexes, constraints, DatabaseTarget.All, version, name)
 
-    /** Merges another catalog into this one. Both must share the same [target]. */
+    /** Merges another catalog into this one. Both must share the same [target] and [name]. */
     operator fun plus(other: SchemaCatalog): SchemaCatalog = merge(listOf(this, other))
 
     override fun toString(): String =
-        "SchemaCatalog(target=$target, version=$version, indexes=${indexes.size}, constraints=${constraints.size})"
+        "SchemaCatalog(name=$name, target=$target, version=$version, " +
+            "indexes=${indexes.size}, constraints=${constraints.size})"
 
     companion object {
 
@@ -161,11 +190,11 @@ class SchemaCatalog private constructor(
         // ----- Merging -----
 
         /**
-         * Merges catalogs that share a [target]: identical declarations deduplicate; conflicting
-         * declarations for the same (kind, label, properties) fail fast. Merging catalogs with
-         * different targets is an error — group them by target first, or let [SchemaManager]
-         * resolve per-database. Version tokens are combined (distinct, sorted, joined) so a merged
-         * catalog keeps the effective version of its parts.
+         * Merges catalogs that share a [target] and [name]: identical declarations deduplicate;
+         * conflicting declarations for the same (kind, label, properties) fail fast. Merging
+         * catalogs with different targets or different owners is an error — group them first, or let
+         * [SchemaManager] resolve per-database and per-owner. Version tokens are combined (distinct,
+         * sorted, joined) so a merged catalog keeps the effective version of its parts.
          */
         @JvmStatic
         fun merge(catalogs: List<SchemaCatalog>): SchemaCatalog {
@@ -179,7 +208,14 @@ class SchemaCatalog private constructor(
                         "Group catalogs by target before merging."
                 )
             }
-            return build(catalogs.flatMap { it.items }, targets.first(), combineVersions(catalogs))
+            val names = catalogs.map { it.name }.distinct()
+            if (names.size > 1) {
+                throw DrivineException(
+                    "Cannot merge schema catalogs with different owners: $names. " +
+                        "Group catalogs by owner (name) before merging."
+                )
+            }
+            return build(catalogs.flatMap { it.items }, targets.first(), combineVersions(catalogs), names.first())
         }
 
         /** The combined version token of several catalogs, or null if none set one. */
@@ -192,6 +228,7 @@ class SchemaCatalog private constructor(
             specs: List<SchemaItemSpec>,
             target: DatabaseTarget,
             version: String? = null,
+            name: String? = null,
         ): SchemaCatalog {
             val deduplicated = deduplicate(specs)
             return SchemaCatalog(
@@ -199,6 +236,7 @@ class SchemaCatalog private constructor(
                 constraints = deduplicated.filterIsInstance<ConstraintSpec>(),
                 target = target,
                 version = version,
+                name = name,
             )
         }
 

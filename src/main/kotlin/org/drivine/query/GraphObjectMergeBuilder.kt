@@ -4,8 +4,10 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.GraphView
 import org.drivine.manager.CascadeType
+import org.drivine.manager.NullPolicy
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 
 /**
@@ -18,9 +20,15 @@ interface GraphObjectMergeBuilder {
      *
      * @param obj The object to save
      * @param cascade The cascade policy for deleted relationships
+     * @param nullPolicy How null field values are treated (see [NullPolicy]); defaults to
+     *   [NullPolicy.IGNORE] (merge-patch). Applies to the (root) fragment being saved.
      * @return List of MergeStatements to execute in order
      */
-    fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType = CascadeType.NONE): List<MergeStatement>
+    fun <T : Any> buildMergeStatements(
+        obj: T,
+        cascade: CascadeType = CascadeType.NONE,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+    ): List<MergeStatement>
 
     companion object {
         /**
@@ -30,14 +38,15 @@ interface GraphObjectMergeBuilder {
         fun forClass(
             graphClass: Class<*>,
             objectMapper: ObjectMapper,
-            sessionManager: SessionManager
+            sessionManager: SessionManager,
+            grammar: CypherGrammar? = null,
         ): GraphObjectMergeBuilder {
             return if (graphClass.isAnnotationPresent(GraphView::class.java)) {
                 val viewModel = GraphViewModel.from(graphClass)
-                GraphViewMergeBuilder(viewModel, objectMapper, sessionManager)
+                GraphViewMergeBuilder(viewModel, objectMapper, sessionManager, grammar)
             } else if (graphClass.isAnnotationPresent(NodeFragment::class.java)) {
                 val fragmentModel = FragmentModel.from(graphClass)
-                FragmentMergeBuilderAdapter(fragmentModel, objectMapper, sessionManager)
+                FragmentMergeBuilderAdapter(fragmentModel, objectMapper, sessionManager, grammar)
             } else {
                 throw IllegalArgumentException("Class ${graphClass.name} must be annotated with @GraphView or @GraphFragment")
             }
@@ -49,9 +58,10 @@ interface GraphObjectMergeBuilder {
         fun forClass(
             graphClass: kotlin.reflect.KClass<*>,
             objectMapper: ObjectMapper,
-            sessionManager: SessionManager
+            sessionManager: SessionManager,
+            grammar: CypherGrammar? = null,
         ): GraphObjectMergeBuilder {
-            return forClass(graphClass.java, objectMapper, sessionManager)
+            return forClass(graphClass.java, objectMapper, sessionManager, grammar)
         }
     }
 }
@@ -63,11 +73,12 @@ interface GraphObjectMergeBuilder {
 class FragmentMergeBuilderAdapter(
     private val fragmentModel: FragmentModel,
     private val objectMapper: ObjectMapper,
-    private val sessionManager: SessionManager
+    private val sessionManager: SessionManager,
+    private val grammar: CypherGrammar? = null,
 ) : GraphObjectMergeBuilder {
 
-    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType): List<MergeStatement> {
-        val fragmentBuilder = FragmentMergeBuilder(fragmentModel, objectMapper)
+    override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType, nullPolicy: NullPolicy): List<MergeStatement> {
+        val fragmentBuilder = FragmentMergeBuilder(fragmentModel, objectMapper, grammar)
 
         // Check if object is in session to determine dirty fields
         val idValue = sessionManager.extractIdValue(obj, fragmentModel)?.toString()
@@ -78,6 +89,6 @@ class FragmentMergeBuilderAdapter(
         val previous = if (idValue != null) sessionManager.getSnapshot(obj.javaClass, idValue) else null
 
         // Note: Fragments don't have relationships, so cascade is ignored
-        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields, previous))
+        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields, previous, nullPolicy))
     }
 }

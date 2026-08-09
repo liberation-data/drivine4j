@@ -55,9 +55,10 @@ RETURN props {
     labels: lbls
 } AS result"""
         } else {
-            // For concrete types, list specific fields
+            // For concrete types, list specific fields. Key by field name (the identity the transform
+            // reconstructs by constructor param), read from the on-disk property name.
             val fieldMappings = fragmentModel.fields.joinToString(",\n    ") {
-                "${it.name}: $nodeAlias.${it.name}"
+                "${it.name}: $nodeAlias.${it.propertyName}"
             }
             """
 
@@ -90,9 +91,10 @@ RETURN {
     }
 
     override fun buildIdWhereClause(idParamName: String): String {
-        val nodeIdField = fragmentModel.nodeIdField
+        fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("GraphFragment ${fragmentModel.className} does not have a @GraphNodeId field")
-        return "n.$nodeIdField = \$$idParamName"
+        // Match on the id field's on-disk property name (differs only under a @GraphProperty id).
+        return "n.${fragmentModel.nodeIdProperty} = \$$idParamName"
     }
 
     override fun buildDeleteQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String {

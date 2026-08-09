@@ -56,6 +56,31 @@ interface NodeReference {
 }
 
 /**
+ * A [NodeReference] that additionally carries its fragment's **logical-key → stored-property** mapping,
+ * so a caller can filter on a runtime key without knowing the on-disk name or the `@PropertyBag` prefix.
+ * Codegen emits it into each `<Fragment>QueryDsl` from the fragment's `@GraphProperty` / `@PropertyBag`
+ * annotations — the same single source of truth the typed accessors are generated from.
+ *
+ * @see field
+ * @see predicateOn
+ */
+interface ResolvableNodeReference : NodeReference {
+    /**
+     * Maps a logical field key — both the declared (Kotlin/Java) name **and** any `@GraphProperty`
+     * on-disk name — to the stored property name. `containerSectionId` and `container_section_id` both
+     * map to `container_section_id`.
+     */
+    val fieldKeyPaths: Map<String, String>
+
+    /**
+     * The stored prefixes (incl. delimiter, e.g. `"metadata."`) of the fragment's `@PropertyBag` fields,
+     * one per bag. An unmatched key resolves through the single prefix when there is exactly one; zero
+     * or more than one makes an unmatched key unresolvable — see [resolveKey].
+     */
+    val bagPrefixes: List<String>
+}
+
+/**
  * Extension function to filter by node type using the @NodeFragment annotation.
  *
  * Example:
@@ -262,6 +287,15 @@ open class PropertyReference<T>(
         )
     }
 
+    /**
+     * Creates a Java-friendly keyset cursor value for this property. Kotlin callers normally use
+     * the context-aware infix form inside `seek { property after value }`.
+     */
+    fun after(value: T): SeekValueSpec {
+        require(value != null) { "Keyset cursor values must be non-null for $alias.$propertyName" }
+        return SeekValueSpec("$alias.$propertyName", value)
+    }
+
     // ==================== Kotlin context parameter methods ====================
     // These methods auto-register conditions when used within a where/orderBy block.
     // They have different signatures (take WhereBuilder context, return Unit).
@@ -386,6 +420,18 @@ open class PropertyReference<T>(
     @JvmName("descContext")
     fun desc() {
         builder.orders.add(OrderSpec("$alias.$propertyName", OrderDirection.DESC))
+    }
+
+    /**
+     * Registers this property's non-null value as one component of a keyset cursor: reads as
+     * `session.lastActivityAt after cursor.lastActivityAt` — the page starts strictly after it.
+     */
+    context(builder: SeekBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("afterContext")
+    infix fun after(value: T) {
+        require(value != null) { "Keyset cursor values must be non-null for $alias.$propertyName" }
+        builder.values.add(SeekValueSpec("$alias.$propertyName", value))
     }
 
     // Helper to create PropertyCondition
@@ -542,6 +588,167 @@ class PropertyBagReference(
 ) {
     /** A reference to the bag entry [name] (stored as `"$storedPrefix$name"`). */
     fun key(name: String): PropertyReference<Any?> = PropertyReference(alias, "$storedPrefix$name")
+}
+
+/**
+ * Dynamic (untyped) reference to a node property by its **runtime** name — the escape hatch for
+ * filtering on property paths not known at compile time (so no generated typed accessor exists),
+ * e.g. arbitrary `@PropertyBag` keys or caller/tool-supplied filter keys.
+ *
+ * ```kotlin
+ * where { query.property("metadata.source") eq "wiki" }   // → n.`metadata.source` = $param
+ * ```
+ *
+ * [path] is the stored property name (a `@PropertyBag` entry is stored as `"prefix.key"`, so pass the
+ * full dotted name). It is rendered exactly like [PropertyBagReference.key]: a path containing a dot is
+ * backtick-quoted (and internal backticks escaped) by [org.drivine.query.dsl.CypherGenerator], and the
+ * value binds as a `$param_*` — so untrusted **values** cannot inject. Prefer the generated typed
+ * accessors (`query.someField`) when the key is known; use this only for genuinely dynamic keys.
+ *
+ * The returned reference composes with every base operator (`eq`, `neq`, `gt`, `in`, `isNull`, …). For
+ * data-driven filters (translating a runtime filter object), see [predicate], which takes the operator
+ * as a value and covers the string operators too.
+ */
+fun NodeReference.property(path: String): PropertyReference<Any?> =
+    PropertyReference(this.nodeAlias, path)
+
+/**
+ * Appends a single property predicate built from a **runtime** `(path, operator, value)` triple — the
+ * programmatic counterpart to [property], for translating a data-driven filter (a list/tree of
+ * key/op/value leaves) into `where { }` without a compile-time accessor per key.
+ *
+ * ```kotlin
+ * where {
+ *     runtimeFilter.leaves.forEach { query.predicate(it.path, it.op, it.value) }
+ * }
+ * ```
+ *
+ * Covers the full [ComparisonOperator] set (including `CONTAINS` / `STARTS_WITH` / `ENDS_WITH`, which
+ * the untyped [property] reference does not expose). [value] is ignored for `IS_NULL` / `IS_NOT_NULL`
+ * and should be a list for `IN`. The [path] is rendered (and dot-containing paths backtick-quoted)
+ * exactly as [property]; the value binds as a parameter.
+ */
+context(builder: WhereBuilder<*>)
+fun NodeReference.predicate(path: String, operator: ComparisonOperator, value: Any? = null) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition(
+            propertyPath = "${this.nodeAlias}.$path",
+            operator = operator,
+            value = value,
+        )
+    )
+}
+
+/**
+ * Resolves a **logical** [key] to its stored property name using the fragment's own annotations
+ * (via [ResolvableNodeReference]): a declared field (matched by Kotlin/Java name **or** `@GraphProperty`
+ * on-disk name) resolves to its on-disk name; an unmatched key resolves through the fragment's single
+ * `@PropertyBag` prefix. Throws when a key matches no field and there is not exactly one bag — never
+ * silently guesses.
+ */
+fun ResolvableNodeReference.resolveKey(key: String): String {
+    fieldKeyPaths[key]?.let { return it }
+    return when (bagPrefixes.size) {
+        1 -> "${bagPrefixes.single()}$key"
+        0 -> throw IllegalArgumentException(
+            "Cannot resolve key '$key': it matches no declared field and this fragment has no @PropertyBag. " +
+                "Known keys: ${fieldKeyPaths.keys.sorted()}."
+        )
+        else -> throw IllegalArgumentException(
+            "Cannot resolve key '$key': it matches no declared field and this fragment has multiple @PropertyBag " +
+                "prefixes ($bagPrefixes) — ambiguous. Use property(\"<prefix>$key\") with the explicit prefix."
+        )
+    }
+}
+
+/**
+ * Resolving counterpart of [property]: takes a **logical** [key], resolves it to the stored path via the
+ * fragment's `@GraphProperty` / `@PropertyBag` annotations (see [resolveKey]), and returns a reference
+ * composing with every base operator — so the caller needn't know the on-disk name or the bag prefix.
+ *
+ * ```kotlin
+ * where { query.field("containerSectionId") eq "s1" }   // @GraphProperty → n.container_section_id
+ * where { query.field("source") eq "wiki" }             // @PropertyBag   → n.`metadata.source`
+ * ```
+ */
+fun ResolvableNodeReference.field(key: String): PropertyReference<Any?> =
+    PropertyReference(this.nodeAlias, resolveKey(key))
+
+/**
+ * Resolving counterpart of [predicate]: appends a predicate from a `(logicalKey, operator, value)`
+ * triple, resolving the key to its stored path via the fragment's annotations. Full [ComparisonOperator]
+ * set — the entry point for translating a data-driven filter keyed by *logical* model keys.
+ */
+context(builder: WhereBuilder<*>)
+fun ResolvableNodeReference.predicateOn(key: String, operator: ComparisonOperator, value: Any? = null) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition(
+            propertyPath = "${this.nodeAlias}.${resolveKey(key)}",
+            operator = operator,
+            value = value,
+        )
+    )
+}
+
+/**
+ * Filters to nodes carrying **any** of [labels] — `ANY(l IN labels(alias) WHERE l IN $p)`. Contrast
+ * [instanceOf], which requires **all** of a type's labels. The counterpart of embabel's
+ * `EntityFilter.HasAnyLabel`.
+ *
+ * ```kotlin
+ * where { query.hasAnyLabel("Chunk", "Section") }   // → ANY(_lbl IN labels(n) WHERE _lbl IN $p)
+ * ```
+ */
+context(builder: WhereBuilder<*>)
+fun NodeReference.hasAnyLabel(vararg labels: String) {
+    require(labels.isNotEmpty()) { "hasAnyLabel() requires at least one label" }
+    builder.conditions.add(WhereCondition.AnyLabelCondition(this.nodeAlias, labels.toList()))
+}
+
+// ----- Phase B operator sugar (composes with property()/typed references; also usable via predicate) -----
+
+/** `NOT lhs IN $p` — the negation of [PropertyReference.isIn]. */
+context(builder: WhereBuilder<*>)
+infix fun <T> PropertyReference<T>.notIn(values: List<T>) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.NOT_IN, values)
+    )
+}
+
+/** Regex match, `lhs =~ $p`. */
+context(builder: WhereBuilder<*>)
+infix fun StringPropertyReference.matches(pattern: String) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.MATCHES, pattern)
+    )
+}
+
+/** Case-insensitive contains, `toLower(lhs) CONTAINS $p`. */
+context(builder: WhereBuilder<*>)
+infix fun StringPropertyReference.containsIgnoreCase(value: String) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.CONTAINS_IGNORE_CASE, value)
+    )
+}
+
+/** Case-insensitive equals, `toLower(lhs) = $p`. */
+context(builder: WhereBuilder<*>)
+infix fun StringPropertyReference.eqIgnoreCase(value: String) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.EQUALS_IGNORE_CASE, value)
+    )
+}
+
+/**
+ * Reversed list-membership on an **untyped** reference (`property(path)` / `field(key)`): `$value IN
+ * n.<key>`. The dynamic-key twin of the typed [hasItem] (which needs a `PropertyReference<List<E>>`);
+ * use this for a runtime/bagged list key whose element type isn't known at compile time.
+ */
+context(builder: WhereBuilder<*>)
+infix fun PropertyReference<Any?>.hasElement(value: Any?) {
+    builder.conditions.add(
+        WhereCondition.PropertyCondition("$alias.$propertyName", ComparisonOperator.HAS_ELEMENT, value)
+    )
 }
 
 /**

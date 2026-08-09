@@ -6,7 +6,9 @@
 A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, and **Memgraph** with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
-2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL. 
+2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL.
+
+Drivine4j is the graph database client library for [Embabel](https://hub.embabel.com) - Agentic AI for the JVM. 
 
 ## Philosophy
 
@@ -58,14 +60,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.30")
+    implementation("org.drivine:drivine4j:0.0.76")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.30'
+    implementation 'org.drivine:drivine4j:0.0.76'
 }
 ```
 
@@ -74,7 +76,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.30</version>
+    <version>0.0.76</version>
 </dependency>
 ```
 
@@ -100,8 +102,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.30")
-    ksp("org.drivine:drivine4j-codegen:0.0.30")
+    implementation("org.drivine:drivine4j:0.0.76")
+    ksp("org.drivine:drivine4j-codegen:0.0.76")
 }
 ```
 
@@ -135,7 +137,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.30</version>
+                    <version>0.0.76</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -619,9 +621,16 @@ graphObjectManager.loadNearest<PropositionView>(queryVector, topK = 20) {
 }
 ```
 
-The codegen emits this `loadNearest<View>(vector, topK, threshold) { where { } }` extension for each
-`@GraphView` whose root fragment is `@VectorIndex`-ed (mirroring the generated `loadAll { }`); the
-explicit `loadNearest(View::class.java, ViewQueryDsl.INSTANCE, …) { }` overload also remains.
+The codegen emits this `loadNearest<T>(vector, topK, threshold) { where { } }` extension for each
+`@VectorIndex`-bearing **view** (its root fragment) *and* bare **fragment** (mirroring the generated
+`loadAll { }`). The filtered form works on a fragment too — filter its own properties directly:
+
+```kotlin
+// filtered vector search over a bare @NodeFragment
+graphObjectManager.loadNearest(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
+    where { query.containerSectionId eq "sec-1" }
+}
+```
 
 The predicate is applied **after** the K-nearest search, so it really does prune — a node that ranks
 in the top K but fails the predicate is dropped, and `topK` remains the index's `k` (the result may
@@ -629,6 +638,45 @@ contain fewer rows). Property predicates filter the projected root; relationship
 (`any{}`/`none{}`) filter the projected relationship collection (`any(m IN mentions WHERE …)`).
 Multiple `any{}` AND together — "mentions *all* of these entities" is one `any{}` per id. Referencing
 a relationship the view does not project is an error.
+
+#### Full-Text Search (`loadMatching`)
+
+`loadMatching` is the full-text mirror of `loadNearest`: it finds the `topK` nodes most relevant to a
+text query and returns them as scored, typed results — normalized to a consistent `[0, 1]` similarity
+across engines, with no consumer Cypher and no per-engine score wrangling.
+
+```kotlin
+// bare @NodeFragment
+val hits: List<Scored<ChunkNode>> = graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20)
+
+// with a floor on the normalized relevance
+graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20, threshold = 0.5)
+
+// a @GraphView searches its root fragment's text index and returns the projected view
+graphObjectManager.loadMatching<ChunkView>("graph databases", topK = 20)
+```
+
+The index is resolved from a **`@FullTextIndex`** on the searched fragment (property-level for a single
+field, or class-level `@FullTextIndex(properties = ["title", "body"])` for a multi-property index) — the
+same annotation the schema feature uses to *create* it. `threshold` defaults to `0.0` (keep everything);
+`topK` is applied as a trailing `LIMIT`. Each result is a `Scored<T>(value, score)`, most relevant
+first, with polymorphic dispatch (a `loadMatching<SealedBase>` returns each hit as its concrete subtype).
+
+The query string is passed through to the engine's full-text language (Lucene syntax on Neo4j:
+`AND`/`OR`/`"phrase"`/`field:term`); raw user input is not escaped for you. Backends without a native
+full-text index throw `UnsupportedOperationException`.
+
+**Filtering with `where { }`** works exactly like `loadNearest` — full-text relevance plus property
+predicates in one query, on a view or a bare fragment:
+
+```kotlin
+graphObjectManager.loadMatching(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, "graph databases", topK = 20) {
+    where { query.containerSectionId eq "sec-1" }
+}
+```
+
+> Engine note: full-text search runs on Neo4j (`db.index.fulltext`), FalkorDB (`db.idx.fulltext`, by
+> label), and Memgraph (`text_search`, GA — no experimental flag needed).
 
 ### Type-Safe Query DSL
 
@@ -670,6 +718,33 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 }
 // Generates: WHERE (person.name = $p0 OR person.name = $p1)
 ```
+
+#### Querying Bare Fragments
+
+The DSL isn't only for `@GraphView`s — the code generator also emits a `<Fragment>QueryDsl` for every
+bare `@NodeFragment`, so you can `loadAll` / `count` / `deleteAll` a node type directly with a typed
+`where` over its own properties. Import the `query` receiver:
+
+```kotlin
+import org.drivine.query.dsl.query
+
+// reified form — filters ChunkNode's own properties (query.<kotlinFieldName>, not the on-disk name)
+val chunks = graphObjectManager.loadAll<ChunkNode> {
+    where { query.containerSectionId eq "sec-1" }
+}
+graphObjectManager.count<ChunkNode> { where { query.containerSectionId eq "sec-1" } }
+
+// a sealed fragment dispatches each row to its concrete subtype; narrow with instanceOf()
+graphObjectManager.loadAll<ContentElementNode> { where { query.instanceOf<ChunkNode>() } }
+
+// to filter a subtype by its OWN property, use the explicit 3-arg form with that subtype's DSL
+graphObjectManager.loadAll(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE) {
+    where { query.containerSectionId eq "sec-1" }
+}
+```
+
+Use `query.<field>` (the Kotlin field name); `@GraphProperty` on-disk names are mapped for you. The same
+`<Fragment>QueryDsl.INSTANCE` powers the filtered `loadNearest` / `loadMatching` forms above.
 
 #### Quantified Predicates over a To-Many Relationship (`any` / `none`)
 
@@ -755,6 +830,129 @@ graphObjectManager.loadAll<PropositionView> {
     limit(20)
 }
 ```
+
+For large or changing result sets, prefer keyset pagination with `seek`. Its properties must
+match the root `orderBy` properties in the same order; Drivine derives each comparison from the
+sort direction and builds the lexicographic continuation predicate. End with a unique key so ties
+cannot be skipped or duplicated:
+
+```kotlin
+graphObjectManager.loadAll<SessionView> {
+    orderBy {
+        session.lastActivityAt.desc()
+        session.sessionId.desc()
+    }
+    seek {
+        session.lastActivityAt after cursor.lastActivityAt
+        session.sessionId after cursor.sessionId
+    }
+    limit(pageSize)
+}
+```
+
+Each cursor value is the corresponding property of the last row of the previous page. To tell the
+caller whether a next page exists without a second query, ask for `limit(pageSize + 1)`, return the
+first `pageSize` results, and treat the presence of the extra row as `hasMore`.
+
+**The ordered properties must be non-null in the data.** A row whose sort key is null satisfies no
+comparison, so it is dropped from every page after the first — and engines disagree about where
+nulls sort, so the shape of that loss is not even portable. Use non-null properties as keys, or
+filter nulls out in `where`.
+
+**Index the cursor.** Keyset pagination is only cheap if the engine can seek into an index and stop;
+otherwise it scans the whole continuation and takes the top *n*, which is no better than `skip`. The
+rule is that the index mirrors the cursor — a range index over exactly the `orderBy` properties, in
+the same order:
+
+```kotlin
+@NodeFragment(labels = ["Session"])
+@RangeIndex(properties = ["lastActivityAt", "sessionId"])   // matches the cursor below
+data class SessionNode(
+    @NodeId val sessionId: String,
+    val lastActivityAt: Instant,
+)
+```
+```kotlin
+orderBy {
+    session.lastActivityAt.desc()
+    session.sessionId.desc()
+}
+seek {
+    session.lastActivityAt after cursor.lastActivityAt
+    session.sessionId after cursor.sessionId
+}
+```
+
+A single-property cursor takes a single-property index (`@RangeIndex` on the field) — same rule, one
+key. Profiled on Neo4j 25, 200k nodes, a 20-row page from the middle of the relation:
+
+| Index | Database accesses |
+| --- | --- |
+| Composite over both cursor keys | **27** |
+| Single-property on the leading key only | 200,020 |
+| None | 500,010 |
+
+With the matching index the plan is `NodeIndexSeek` → `Limit` — no sort at all, since the index
+supplies the order, and it stops as soon as the page is full.
+
+Why an index that covers only *part* of the cursor is so much worse: Drivine constrains every cursor
+key with `IS NOT NULL`, because a Neo4j index excludes nodes that lack the property, so the planner
+will not use a composite index unless the query provably excludes those same nodes. That conjunct is
+what makes the composite index usable; against an index that doesn't contain the property, it is
+just an extra property read per row. Hence: mirror the cursor, and neither half of that applies.
+
+**This applies to Neo4j.** Memgraph and FalkorDB cannot satisfy an `ORDER BY` from an index — both
+place a blocking sort between the scan and the limit, measured even in the simplest case of one
+indexed property and no predicate. So on those engines keyset pagination costs O(remaining) rather
+than O(page), no index will change that, and Drivine neither emits the `IS NOT NULL` conjuncts (which
+cost Memgraph its range bound) nor gives index advice there. `seek` is still worth using on them for
+its *stability* — pages that don't shift under concurrent writes — just not for its cost.
+
+**Drivine tells you when the index is missing.** Any root-level `orderBy` — with or without `seek` —
+is checked against the database's indexes, and reports when nothing mirrors it:
+
+```
+seek on Session(lastActivityAt, sessionId) has no matching range index, so the query scans and
+sorts instead of seeking. Declare @RangeIndex(properties = ["lastActivityAt", "sessionId"]) on the
+fragment, or call indexes.ensure(RangeIndexSpec("Session", listOf("lastActivityAt", "sessionId"))).
+The index must cover exactly these properties, in this order.
+```
+
+Ordering without an index is *correct*, just unindexed — perfectly reasonable on a small collection
+— so the default only warns, once per label/property combination. Turn it up in development or CI so
+an unindexed page fails the build instead of quietly scanning in production:
+
+```yaml
+drivine:
+  query:
+    index-advice: FAIL      # WARN (default) | OFF
+```
+
+The property applies to every manager the factory creates. Without Spring, or to override a single
+manager after it has been handed out:
+
+```kotlin
+graphObjectManager.indexAdvice = IndexAdvicePolicy.FAIL
+```
+
+A query already pinned to a single root — a top-level `where` equality on the `@NodeId`, or on a
+property carrying a single-property uniqueness constraint — is never advised on. Its ordering is over
+one row, so no index could change the plan. An equality inside `anyOf` doesn't count, since it
+constrains only one branch of the OR.
+
+The index list is read once and cached per manager, so the check costs one round trip per process,
+not one per query. If your application ensures indexes lazily, after the first ordered query has
+already run, that cache will be stale — construct the manager after schema setup, or use `OFF`.
+
+See [docs/0.0.75-index-aware-keyset-pagination.md](docs/0.0.75-index-aware-keyset-pagination.md) for
+the planner reasoning behind the mirror rule, the full measurements, and the cross-engine caveats.
+
+`seek` rejects missing/misaligned order keys, null cursor values, use together with `skip`, and
+use on any operation that would ignore it (`count`, `deleteAll`, `loadNearest`, `loadMatching`) —
+those fail loudly rather than quietly returning an unpaginated result. Drivine intentionally owns
+query planning but not cursor serialization; applications can expose an opaque cursor format
+appropriate to their API. Java callers use `.seek(q -> List.of(...))` and the Java-friendly
+`PropertyReference.after(value)` method.
 
 For a `@GraphView`, `limit(n)` bounds **root entities** — each returned view keeps its relationships
 fully populated (relationships are pattern comprehensions, so one root is one row). Pair `limit` with
@@ -865,20 +1063,56 @@ The `@SortedBy` annotation:
 - `lt` - less than (<)
 - `lte` - less than or equal (<=)
 - `in` / `inList` - IN operator: a property value is in a caller list (`property IN $list`)
+- `notIn` - NOT IN (`NOT property IN $list`)
 - `hasItem` - list membership: a caller value is in a **list-valued** property (`$value IN node.listProp`) — the mirror of `inList`
 
 **String Operations:**
 - `contains` - CONTAINS
 - `startsWith` - STARTS WITH
 - `endsWith` - ENDS WITH
+- `matches` - regex match (`=~`) — *not supported on FalkorDB*
+- `containsIgnoreCase` / `eqIgnoreCase` - case-insensitive contains / equals (`toLower(...)`)
 
 **Null Checking:**
 - `isNull()` - IS NULL
 - `isNotNull()` - IS NOT NULL
 
+**Boolean / Label:**
+- `anyOf { }` - OR of the enclosed conditions
+- `not { }` - negation of the enclosed sub-expression (`NOT ( … )`)
+- `instanceOf<T>()` - node carries **all** of a `@NodeFragment` type's labels
+- `hasAnyLabel("A", "B")` - node carries **any** of the given labels (`ANY(l IN labels(n) WHERE l IN $p)`)
+
 **Ordering:**
 - `asc()` - ascending order
 - `desc()` - descending order
+
+#### Dynamic / Runtime-Key Predicates
+
+When the property to filter isn't known at compile time (an arbitrary `@PropertyBag` key, or a
+caller/tool-supplied filter key), reach for the untyped escape hatch instead of a generated accessor.
+Values still bind as parameters (no injection); a dotted `@PropertyBag` path is backtick-quoted for you.
+
+```kotlin
+import org.drivine.query.dsl.property     // stored-path form
+import org.drivine.query.dsl.field        // resolving form
+import org.drivine.query.dsl.predicate
+import org.drivine.query.dsl.predicateOn
+
+where {
+    query.property("metadata.source") eq "wiki"          // stored path → n.`metadata.source` = $p
+    query.field("source") eq "wiki"                       // resolves "source" via @GraphProperty/@PropertyBag
+    query.predicate("metadata.tags", ComparisonOperator.HAS_ELEMENT, "kotlin")   // $p IN n.`metadata.tags`
+    query.predicateOn("sectionId", ComparisonOperator.EQUALS, "s1")              // resolving, programmatic
+}
+```
+
+- `property(path)` / `predicate(path, op, value)` — take the **stored** property name.
+- `field(key)` / `predicateOn(key, op, value)` — take a **logical** key and resolve it to the stored
+  path from the fragment's own `@GraphProperty` on-disk names and single `@PropertyBag` prefix (so a
+  consumer needn't know the on-disk name or bag prefix). Throws if the key is unresolvable.
+- `predicate` / `predicateOn` accept any `ComparisonOperator` (including `HAS_ELEMENT`, the dynamic twin
+  of `hasItem`), so a runtime filter tree maps one leaf → one call.
 
 ### Saving Data
 
@@ -898,6 +1132,27 @@ val updated = person.copy(
 // Save - only dirty fields are written!
 graphObjectManager.save(updated)
 ```
+
+#### Null-Write Policy (`NullPolicy`)
+
+How a **null** field is treated on save is one declared, uniform contract (`save`, `saveAll`, every
+engine, bagged or not) — defined purely on the object you pass:
+
+```kotlin
+graphObjectManager.save(chunk)                                   // IGNORE (default): merge-patch
+graphObjectManager.save(chunk, nullPolicy = NullPolicy.CLEAR)    // full overwrite: nulls clear
+```
+
+- **`IGNORE` (default)** — writes only non-null fields; nulls are left untouched. A partially-loaded
+  object never destroys stored data — including a `@VectorIndex` embedding (a `ChunkNode` reconstructed
+  without its embedding won't wipe the stored vector). This is the safe default; no field is special.
+- **`CLEAR`** — the object is authoritative: null fields clear the corresponding property (a full
+  overwrite). Reach for it only with a complete object.
+
+Null handling is independent of dirty-tracking — the policy alone decides, so the result never depends
+on whether the object is session-tracked. `saveAll(..., nullPolicy = …)` behaves identically. Under
+`CLEAR`, a `@PropertyBag` also drops keys absent from the current map; under `IGNORE` those keys are
+left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-write-policy.md).
 
 #### Save with Relationship Changes
 
@@ -923,9 +1178,9 @@ val saved = graphObjectManager.saveAll(views, CascadeType.DELETE_ORPHAN)
 Homogeneous root upserts collapse into chunked `UNWIND … MERGE … SET n += row.props` statements
 (sub-linear round trips); relationship/cascade statements stay per-item. Heterogeneous collections are
 grouped by runtime class; the returned list preserves input order. Roots with a `@PropertyBag` fall
-back to the per-item path, and the batched root upsert writes all current non-null root properties
-(it does not null-clear a root property — use single `save` for that). See
-[docs/batch-saveall-0.0.55.md](docs/batch-saveall-0.0.55.md).
+back to the per-item path. Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy)
+uniformly with `save` — `IGNORE` (default) leaves nulls, `CLEAR` clears them —
+via `saveAll(objs, nullPolicy = …)`.
 
 ### Deleting Data
 
@@ -1549,10 +1804,14 @@ The Neo4j ObjectMapper automatically:
 - Converts `UUID` to `String`
 - Converts `Instant` to `ZonedDateTime`
 - Converts `Date` to `ZonedDateTime`
-- Includes null values by default (allows explicit property removal)
+- Includes null values by default (so a bound map/object can carry explicit nulls)
 - Ignores unknown properties when deserializing
 
 To exclude nulls on specific properties, use `@JsonInclude(JsonInclude.Include.NON_NULL)`.
+
+> This governs the low-level `PersistenceManager` binding only. Whether a null field **clears** a
+> property on a `GraphObjectManager` `save`/`saveAll` is governed by
+> [`NullPolicy`](#null-write-policy-nullpolicy) (default `IGNORE` — nulls are left untouched).
 
 ## Supported Engines
 
@@ -1693,6 +1952,24 @@ data class WorkHistory(
 
 On write: `["backend", "senior"]` is stored as the string `'["backend","senior"]'`. On read: the JSON string is deserialized back to `List<String>`. Works across all engines.
 
+### @GraphProperty Annotation
+
+Overrides the **on-disk property name** for a fragment field, decoupling the stored graph property from
+the Kotlin/Java field name:
+
+```kotlin
+@NodeFragment(labels = ["Chunk"])
+data class ChunkNode(
+    @NodeId val id: String,
+    @GraphProperty("container_section_id") val containerSectionId: String? = null,
+)
+```
+
+The field is `containerSectionId` everywhere in your code and the DSL (`query.containerSectionId`), but
+it's stored/matched as `container_section_id` in the graph. The mapping is applied on save, load, the
+generated query DSL, and index creation. It also feeds model-aware key resolution — `field("containerSectionId")`
+and `field("container_section_id")` both resolve to the on-disk name.
+
 ### @PropertyBag Annotation
 
 Maps an open `Map<String, *>` field to a set of **flat, prefixed node properties** — round-tripped on
@@ -1716,16 +1993,21 @@ field name and `delimiter` to change the separator; a fragment may carry several
 - **Values** must be storable Neo4j primitives or homogeneous arrays (String, Number, Boolean,
   temporal, or arrays/lists thereof) — a nested map/object throws an `IllegalArgumentException`
   naming the key.
-- **Updates clear stale keys**: removing an entry and saving removes its property — for
-  session-tracked objects (load → mutate → save). A detached save upserts but can't clear orphans.
+- **Stale keys** (removing an entry then saving) are removed only under `NullPolicy.CLEAR`, for a
+  session-tracked object (load → mutate → save). The default `IGNORE` is a merge-patch and leaves
+  orphaned keys; a detached save upserts but can't clear orphans either.
 - **Read asymmetry**: `Map<String, Any?>` reads back driver-mapped types (an `Int` written returns as
   `Long`).
-- **Filter by key** in the type-safe DSL — composes on the load path and inside `loadNearest`:
+- **Filter by key** in the type-safe DSL — composes on the load path and inside `loadNearest` /
+  `loadMatching`:
 
 ```kotlin
 loadAll<PropositionView> { where { proposition.metadata.key("source") eq "wiki" } }
 // -> WHERE proposition.`metadata.source` = $p
 ```
+
+For a **runtime** key (not known at compile time), use the dynamic
+[`property(path)` / `field(key)`](#dynamic--runtime-key-predicates) predicates instead of `.key(...)`.
 
 Works across Neo4j, FalkorDB, and Memgraph.
 
@@ -1739,7 +2021,7 @@ Each engine uses a Cypher dialect that controls query generation. The dialect is
 
 ## Schema Management (Indexes & Constraints)
 
-Drivine manages vector indexes, range indexes, and uniqueness constraints across Neo4j, Memgraph, and FalkorDB — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
+Drivine manages vector indexes, full-text indexes, range indexes, and uniqueness constraints across Neo4j, Memgraph, and FalkorDB — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
 
 ### Imperative API
 
@@ -1752,6 +2034,8 @@ val result = persistenceManager.indexes.ensure(
 )
 persistenceManager.indexes.ensure(RangeIndexSpec("Proposition", "contextId"))
 persistenceManager.indexes.ensure(RangeIndexSpec("Message", listOf("sessionId", "createdAt")))  // composite
+persistenceManager.indexes.ensure(FullTextIndexSpec("Chunk", "text"))                            // full-text (single property)
+persistenceManager.indexes.ensure(FullTextIndexSpec("Entity", listOf("name", "description")))    // full-text (multi-property)
 
 persistenceManager.constraints.ensure(UniquenessConstraintSpec("ChatSession", "sessionId"))
 persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", listOf("tenantId", "userId")))
@@ -1812,12 +2096,16 @@ data class PropositionNode(
 
     @VectorIndex(similarity = SimilarityFunction.COSINE)
     val embedding: List<Float>?,
+
+    @FullTextIndex                       // full-text index on this property (also drives loadMatching)
+    val body: String,
 )
 
 // Composite declarations go on the class
 @NodeFragment(labels = ["Message"])
 @RangeIndex(properties = ["sessionId", "createdAt"])
 @Unique(properties = ["sessionId", "sequence"])
+@FullTextIndex(properties = ["subject", "body"])   // multi-property full-text index
 data class MessageNode(/* ... */)
 ```
 
@@ -1884,6 +2172,7 @@ drivine:
 | | Neo4j | Memgraph | FalkorDB |
 |---|---|---|---|
 | Vector indexes | `CREATE VECTOR INDEX … IF NOT EXISTS` | `WITH CONFIG {…}`, uSearch metrics | `OPTIONS {…}`, unnamed |
+| Full-text indexes | `CREATE FULLTEXT INDEX … ON EACH […]` (+ analyzer) | `CREATE TEXT INDEX … ON :L(props)` | `db.idx.fulltext.createNodeIndex(label, prop)`, per-property, unnamed |
 | Range indexes | Named, composite supported | Label-property style | Per-label coverage; extended incrementally |
 | Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build |
 | Item names | Yes | Vector only | No |

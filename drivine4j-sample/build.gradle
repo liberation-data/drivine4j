@@ -1,6 +1,6 @@
 plugins {
     id 'org.jetbrains.kotlin.jvm'
-    id 'org.jetbrains.kotlin.plugin.spring' version '2.2.0'
+    id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20'
     id 'com.google.devtools.ksp' version '2.2.20-2.0.4'
     id 'io.spring.dependency-management' version '1.1.7'
 }
@@ -46,6 +46,12 @@ dependencies {
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+}
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
 }
 
 // Make generated sources visible to the IDE and compilers

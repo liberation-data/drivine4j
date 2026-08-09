@@ -12,6 +12,13 @@ import org.drivine.query.grammar.*
 import org.drivine.query.sort.*
 
 /**
+ * The map-projection key under which a nested polymorphic fragment carries its node labels, so
+ * [org.drivine.mapper.TransformPostProcessor] can dispatch each nested map to its concrete subtype.
+ * Prefixed with `__` so it never collides with a real node property surfaced by `.*`.
+ */
+internal const val POLYMORPHIC_LABELS_KEY = "__labels"
+
+/**
  * The shared projection core of a `@GraphView` query: the WITH-clause projection of the root
  * fragment plus every relationship (pattern comprehensions, nested views, recursive expansion,
  * relationship fragments, collection sorts), the per-root aggregates, the required-relationship
@@ -255,7 +262,7 @@ internal class GraphViewProjectionAssembler(
      *
      * For polymorphic types (null fields), uses .* to capture all properties.
      */
-    private fun buildFragmentProjectionWithMapping(varName: String, sourceVar: String, fields: List<String>?): String {
+    private fun buildFragmentProjectionWithMapping(varName: String, sourceVar: String, fields: List<org.drivine.model.FragmentField>?): String {
         // For polymorphic types, use .* to get all fields
         if (fields == null) {
             return """$varName {
@@ -267,7 +274,7 @@ internal class GraphViewProjectionAssembler(
         if (fields.isEmpty()) {
             return varName
         }
-        val fieldMappings = fields.joinToString(",\n        ") { "$it: $sourceVar.$it" }
+        val fieldMappings = fields.joinToString(",\n        ") { "${it.name}: $sourceVar.${it.propertyName}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
         $fieldMappings,
@@ -279,7 +286,7 @@ internal class GraphViewProjectionAssembler(
      * Gets field names from a FragmentModel.
      * Returns null for polymorphic types (sealed classes or interfaces) to signal that .* should be used.
      */
-    private fun getFragmentFields(fragmentType: Class<*>): List<String>? {
+    private fun getFragmentFields(fragmentType: Class<*>): List<org.drivine.model.FragmentField>? {
         // For sealed classes, return null to signal use of .*
         if (fragmentType.kotlin.isSealed) {
             return null
@@ -296,9 +303,8 @@ internal class GraphViewProjectionAssembler(
             // Fragments with a @PropertyBag use .* so the open prefixed keys are projected too —
             // the declared-field list can't name them. The transform reconstructs the bag from them.
             if (fragmentModel.propertyBags.isNotEmpty()) return null
-            val fields = fragmentModel.fields.map { it.name }
-            // Return null if no fields found, to signal use of .*
-            fields.ifEmpty { null }
+            // Return null if no fields, to signal use of .*. Callers alias field name ← property name.
+            fragmentModel.fields.ifEmpty { null }
         } catch (e: Exception) {
             // On error, return null to signal use of .* (safe fallback)
             null
@@ -364,6 +370,19 @@ internal class GraphViewProjectionAssembler(
             }
         }
 
+        // Flat List<Fragment> with an effective depth > 1 (from maxDepth or a runtime depth() override):
+        // a variable-length `*1..N` traversal collecting every reached node into a de-duplicated flat
+        // list — a transitive N-hop neighbourhood, distinct from recursive-view nesting. maxDepth == 1
+        // (the default) keeps the single-hop comprehension below byte-identical; views are unaffected.
+        if (rel.isCollection && !isGraphView) {
+            val effectiveMaxDepth = context.depthOverrides[rel.fieldName] ?: rel.maxDepth
+            if (effectiveMaxDepth > 1) {
+                return buildVariableLengthListPattern(
+                    rootFieldName, rel, targetAlias, targetLabelString, effectiveMaxDepth, visitCounts
+                )
+            }
+        }
+
         // Delegate nested GraphView projection to the grammar's projector
         if (isGraphView) {
             val projectorResult = tryNestedViewProjector(rootFieldName, rel, targetAlias, direction, targetLabelString)
@@ -422,7 +441,7 @@ internal class GraphViewProjectionAssembler(
                 val projection = if (nestedFields == null) {
                     "$nestedAlias { .*, labels: labels($nestedAlias) }"
                 } else {
-                    val fieldMappings = nestedFields.joinToString(", ") { "$it: $nestedAlias.$it" }
+                    val fieldMappings = nestedFields.joinToString(", ") { "${it.name}: $nestedAlias.${it.propertyName}" }
                     "$nestedAlias { $fieldMappings, labels: labels($nestedAlias) }"
                 }
                 NestedRelInfo(
@@ -482,13 +501,6 @@ internal class GraphViewProjectionAssembler(
         fun buildAtDepth(depth: Int, parentVar: String): String {
             val depthAlias = rel.deriveTargetAliasAtDepth(depth)
 
-            // Build root fragment field projections
-            val fieldProjections = if (rootFragmentFields == null) {
-                listOf(".*")
-            } else {
-                rootFragmentFields.map { "$it: $depthAlias.$it" }
-            }
-
             // Build non-recursive relationship projections at this depth
             val nestedRelProjections = nonRecursiveRels.map { nestedRel ->
                 val nestedDirection = Directions.directionString(nestedRel)
@@ -521,14 +533,20 @@ internal class GraphViewProjectionAssembler(
             // Assemble all projections
             val allProjections = mutableListOf<String>()
 
-            // Root fragment as nested object
+            // Root fragment as nested object. A polymorphic root fragment can't use the top-level
+            // `WITH properties(n)…` strategy inside a comprehension, so it projects a comprehension-safe
+            // map projection on the node variable — `depthAlias { .*, <LABELS_KEY>: labels(depthAlias) }`
+            // — carrying the labels the transform needs to dispatch each node to its concrete subtype.
+            // A bare `{ .* }` (no source var) is invalid Cypher — the original bug.
             val rootFragmentFieldName = nestedViewModel.rootFragment.fieldName
-            val rootFieldMappings = if (rootFragmentFields == null) {
-                ".*"
+            val rootProjection = if (rootFragmentFields == null) {
+                "$rootFragmentFieldName: $depthAlias { .*, $POLYMORPHIC_LABELS_KEY: labels($depthAlias) }"
             } else {
-                rootFragmentFields.joinToString(",\n                    ") { "$it: $depthAlias.$it" }
+                val rootFieldMappings =
+                    rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.propertyName}" }
+                "$rootFragmentFieldName: {\n                    $rootFieldMappings\n                }"
             }
-            allProjections.add("$rootFragmentFieldName: {\n                    $rootFieldMappings\n                }")
+            allProjections.add(rootProjection)
 
             allProjections.addAll(nestedRelProjections)
             allProjections.add(recursiveFieldProjection)
@@ -612,6 +630,44 @@ internal class GraphViewProjectionAssembler(
         }
 
         return pattern
+    }
+
+    /**
+     * Builds a flat `List<Fragment>` relationship with an effective depth > 1 as a variable-length
+     * `*1..N` traversal, collecting every reached node into a **de-duplicated** flat list — the
+     * transitive N-hop neighbourhood along the edge, in the relationship's direction.
+     *
+     * Emitted as a `CALL { … }` prolog + bridge variable, mirroring [buildPathPattern]: a
+     * variable-length pattern yields one row per path (so a node reached by several paths appears many
+     * times). De-dup is on **node identity** — `collect(DISTINCT node)` — then each distinct node is
+     * projected, which collapses multi-path nodes to one on every engine (Memgraph's `DISTINCT` does
+     * not collapse structurally-equal *maps*, so we dedupe nodes, not projections). An anchor with no
+     * neighbours yields `[]` (`collect` drops the OPTIONAL-MATCH null). A polymorphic fragment target
+     * composes: the projection carries `labels`, and the transform dispatches each item exactly as for
+     * a single-hop polymorphic list.
+     */
+    private fun buildVariableLengthListPattern(
+        rootFieldName: String,
+        rel: RelationshipModel,
+        targetAlias: String,
+        targetLabelString: String,
+        maxDepth: Int,
+        visitCounts: Map<String, Int>,
+    ): String {
+        val arrow = Directions.varLengthDirectionString(rel, maxDepth)
+        val matchPattern = "($rootFieldName)$arrow($targetAlias:$targetLabelString)"
+        val projection = buildRelationshipProjection(targetAlias, rel.elementType, visitCounts)
+        val nodesVar = "_${targetAlias}_nodes"
+        val prolog = buildString {
+            appendLine("CALL {")
+            appendLine("    WITH $rootFieldName")
+            appendLine("    OPTIONAL MATCH $matchPattern")
+            appendLine("    WITH collect(DISTINCT $targetAlias) AS $nodesVar")
+            append("    RETURN [$targetAlias IN $nodesVar | $projection] AS $targetAlias\n}")
+        }
+        context.addProlog(prolog)
+        context.addBridgeVariables(listOf(targetAlias))
+        return "$targetAlias AS $targetAlias"
     }
 
     /**
@@ -739,7 +795,7 @@ internal class GraphViewProjectionAssembler(
         }"""
         }
 
-        val fieldMappings = fields.joinToString(",\n            ") { "$it: $varName.$it" }
+        val fieldMappings = fields.joinToString(",\n            ") { "${it.name}: $varName.${it.propertyName}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
             $fieldMappings,
@@ -772,7 +828,7 @@ internal class GraphViewProjectionAssembler(
             // Polymorphic type - use .*
             ".*"
         } else {
-            rootFragmentFields.joinToString(",\n                ") { "$it: $varName.$it" }
+            rootFragmentFields.joinToString(",\n                ") { "${it.name}: $varName.${it.propertyName}" }
         }
         fields.add("$rootFragmentFieldName: {\n                $rootFieldMappings\n            }")
 

@@ -51,19 +51,14 @@ class GraphViewProcessor(
         }
         processedInRound = true
 
+        val unableToProcess = mutableListOf<KSAnnotated>()
+
         // Find all classes annotated with @GraphView
         val graphViewSymbols = resolver
             .getSymbolsWithAnnotation("org.drivine.annotation.GraphView")
             .filterIsInstance<KSClassDeclaration>()
             .toList()
 
-        if (graphViewSymbols.isEmpty()) {
-            return emptyList()
-        }
-
-        val unableToProcess = mutableListOf<KSAnnotated>()
-
-        // Validate all views
         val validViews = graphViewSymbols.filter { graphView ->
             if (!graphView.validate()) {
                 unableToProcess.add(graphView)
@@ -73,24 +68,41 @@ class GraphViewProcessor(
             }
         }
 
-        if (validViews.isEmpty()) {
+        // Also generate a standalone query DSL for every @NodeFragment, so a bare fragment is queryable
+        // like a view. (A fragment that is a view's root is still fine — its <F>QueryDsl is a separate
+        // file from the view's <View>QueryDsl and the shared <F>Properties.)
+        val fragmentSymbols = resolver
+            .getSymbolsWithAnnotation("org.drivine.annotation.NodeFragment")
+            .filterIsInstance<KSClassDeclaration>()
+            .toList()
+
+        val validFragments = fragmentSymbols.filter { fragment ->
+            if (!fragment.validate()) {
+                unableToProcess.add(fragment)
+                false
+            } else {
+                true
+            }
+        }
+
+        if (validViews.isEmpty() && validFragments.isEmpty()) {
             return unableToProcess
         }
 
         try {
-            logger.info("Processing ${validViews.size} @GraphView classes")
+            logger.info("Processing ${validViews.size} @GraphView and ${validFragments.size} @NodeFragment classes")
 
-            // Generate code for all views together
             val generator = QueryDslGenerator(
                 codeGenerator = codeGenerator,
                 logger = logger,
-                graphViewClasses = validViews
+                graphViewClasses = validViews,
+                fragmentClasses = validFragments,
             )
 
             generator.generateAll()
 
         } catch (e: Exception) {
-            logger.error("Failed to process @GraphView classes: ${e.message}")
+            logger.error("Failed to process @GraphView / @NodeFragment classes: ${e.message}")
             logger.exception(e)
         }
 

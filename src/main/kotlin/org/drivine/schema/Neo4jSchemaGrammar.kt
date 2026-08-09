@@ -40,6 +40,14 @@ class Neo4jSchemaGrammar : SchemaGrammar {
                     "FOR (n:`${spec.label}`) ON ${propertyList(spec.properties)}"
             )
         )
+
+        is FullTextIndexSpec -> listOf(
+            SchemaStatement.Cypher(
+                "CREATE FULLTEXT INDEX `${spec.effectiveName}` IF NOT EXISTS " +
+                    "FOR (n:`${spec.label}`) ON EACH ${eachPropertyList(spec.properties)} " +
+                    "OPTIONS {indexConfig: {${analyzerConfig(spec.analyzer)}}}"
+            )
+        )
     }
 
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> {
@@ -84,14 +92,16 @@ class Neo4jSchemaGrammar : SchemaGrammar {
         val kind = when ((map["type"] as? String)?.uppercase()) {
             "VECTOR" -> SchemaItemKind.VECTOR_INDEX
             "RANGE", "BTREE" -> SchemaItemKind.RANGE_INDEX
-            else -> return null // LOOKUP, FULLTEXT, TEXT, POINT — not managed by Drivine
+            "FULLTEXT" -> SchemaItemKind.FULLTEXT_INDEX
+            else -> return null // LOOKUP, TEXT, POINT — not managed by Drivine
         }
         val label = (map["labelsOrTypes"] as? List<*>)?.firstOrNull() as? String ?: return null
         val properties = (map["properties"] as? List<*>)?.filterIsInstance<String>() ?: return null
         val name = map["name"] as? String
 
+        val indexConfig = ((map["options"] as? Map<*, *>)?.get("indexConfig")) as? Map<*, *>
+
         if (kind == SchemaItemKind.VECTOR_INDEX) {
-            val indexConfig = ((map["options"] as? Map<*, *>)?.get("indexConfig")) as? Map<*, *>
             return SchemaItemInfo(
                 kind = kind,
                 label = label,
@@ -102,6 +112,17 @@ class Neo4jSchemaGrammar : SchemaGrammar {
                     ?.let { similarityFromName(it) },
             )
         }
+
+        if (kind == SchemaItemKind.FULLTEXT_INDEX) {
+            return SchemaItemInfo(
+                kind = kind,
+                label = label,
+                properties = properties,
+                name = name,
+                analyzer = indexConfig?.get("fulltext.analyzer") as? String,
+            )
+        }
+
         return SchemaItemInfo(kind = kind, label = label, properties = properties, name = name)
     }
 
@@ -147,6 +168,18 @@ class Neo4jSchemaGrammar : SchemaGrammar {
 
     private fun propertyList(properties: List<String>): String =
         properties.joinToString(", ", "(", ")") { "n.`$it`" }
+
+    /** Fulltext's `ON EACH` takes a bracketed list, not the parenthesized one the other kinds use. */
+    private fun eachPropertyList(properties: List<String>): String =
+        properties.joinToString(", ", "[", "]") { "n.`$it`" }
+
+    /**
+     * The `indexConfig` body for a fulltext index. Empty when no analyzer is declared, so Neo4j
+     * applies its own default (`standard-no-stop-words`) rather than us hard-coding one that could
+     * drift from the engine's default across versions.
+     */
+    private fun analyzerConfig(analyzer: String?): String =
+        analyzer?.let { "`fulltext.analyzer`: '$it'" } ?: ""
 
     private fun similarityName(similarity: SimilarityFunction): String = similarity.name.lowercase()
 

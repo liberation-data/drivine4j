@@ -40,11 +40,23 @@ class MemgraphSchemaGrammar(
                 "CREATE INDEX ON :${spec.label}(${spec.properties.joinToString(", ")})"
             )
         )
+
+        // Memgraph calls it a TEXT index, and it is named and multi-property like Neo4j's.
+        is FullTextIndexSpec -> listOf(
+            SchemaStatement.Cypher(
+                "CREATE TEXT INDEX ${spec.effectiveName} " +
+                    "ON :${spec.label}(${spec.properties.joinToString(", ")})"
+            )
+        )
     }
 
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = when (item.kind) {
         SchemaItemKind.VECTOR_INDEX -> listOf(
             SchemaStatement.Cypher("DROP VECTOR INDEX ${item.name ?: defaultVectorName(item)}")
+        )
+
+        SchemaItemKind.FULLTEXT_INDEX -> listOf(
+            SchemaStatement.Cypher("DROP TEXT INDEX ${item.name ?: defaultFullTextName(item)}")
         )
 
         else -> listOf(
@@ -77,20 +89,47 @@ class MemgraphSchemaGrammar(
             RETURN {index_name: index_name, label: label, property: property, dimension: dimension, metric: metric}
         """.trimIndent()
 
+        // Range and text (fulltext) indexes both surface through SHOW INDEX INFO.
         else -> "SHOW INDEX INFO"
     }
 
     /**
      * Vector rows arrive as maps (single map column from the `CALL … RETURN {…}` query);
-     * label-property rows arrive as positional lists (`SHOW INDEX INFO` is multi-column:
-     * index type, label, property, count).
+     * label-property and text rows arrive as positional lists (`SHOW INDEX INFO` is multi-column:
+     * index type, label, property, count). The index-type column distinguishes them — text indexes
+     * report `"label_text (name: <name>)"`.
      */
     override fun parseIndexRows(rows: List<Any?>): List<SchemaItemInfo> = rows.mapNotNull { row ->
         when (row) {
             is Map<*, *> -> parseVectorIndexRow(row)
-            is List<*> -> parseLabelPropertyIndexRow(row)
+            is List<*> -> parseTextIndexRow(row) ?: parseLabelPropertyIndexRow(row)
             else -> null
         }
+    }
+
+    /**
+     * Parses a `SHOW INDEX INFO` text-index row. Memgraph reports the index type as
+     * `"label_text (name: <name>)"` and the properties as a list, e.g.
+     * `["label_text (name: chunk_ft)", "Chunk", ["title", "body"], 0]`. Returns null for any row
+     * that is not a text index, so the range parser gets its turn.
+     */
+    private fun parseTextIndexRow(row: List<*>): SchemaItemInfo? {
+        if (row.size < 3) return null
+        val indexType = (row[0] as? String)?.lowercase() ?: return null
+        if (!indexType.startsWith("label_text")) return null
+        val label = (row[1] as? String)?.let(::normalizeLabel) ?: return null
+        val properties = when (val property = row[2]) {
+            is String -> listOf(property)
+            is List<*> -> property.filterIsInstance<String>()
+            else -> return null
+        }
+        if (properties.isEmpty()) return null
+        return SchemaItemInfo(
+            kind = SchemaItemKind.FULLTEXT_INDEX,
+            label = label,
+            properties = properties,
+            name = TEXT_INDEX_NAME.find(row[0] as String)?.groupValues?.get(1),
+        )
     }
 
     private fun parseVectorIndexRow(map: Map<*, *>): SchemaItemInfo? {
@@ -176,6 +215,9 @@ class MemgraphSchemaGrammar(
     private fun defaultVectorName(item: SchemaItemInfo): String =
         "${item.label}_${item.properties.first()}_vector"
 
+    private fun defaultFullTextName(item: SchemaItemInfo): String =
+        "${item.label}_${item.properties.joinToString("_")}_fulltext"
+
     /** Memgraph vector indexes use uSearch metric shorthand. */
     private fun metricName(similarity: SimilarityFunction): String = when (similarity) {
         SimilarityFunction.COSINE -> "cos"
@@ -190,5 +232,8 @@ class MemgraphSchemaGrammar(
 
     companion object {
         const val DEFAULT_VECTOR_CAPACITY = 10_000
+
+        /** Extracts `<name>` from a `SHOW INDEX INFO` text-index type string `label_text (name: <name>)`. */
+        private val TEXT_INDEX_NAME = Regex("""name:\s*([^)]+)\)""")
     }
 }

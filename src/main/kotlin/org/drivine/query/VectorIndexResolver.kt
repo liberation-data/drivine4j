@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import org.drivine.DrivineException
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.VectorIndex
 import org.drivine.model.FragmentModel
 import org.drivine.query.grammar.VectorQuerySpec
@@ -22,9 +23,12 @@ import kotlin.reflect.jvm.javaField
 internal object VectorIndexResolver {
 
     private data class VectorProperty(
+        /** The Kotlin field name — the identity a caller passes to disambiguate embeddings. */
         val property: String,
         val similarity: SimilarityFunction,
         val name: String,
+        /** The on-disk property name (`@GraphProperty`), used in the search + index-name derivation. */
+        val onDiskName: String,
     )
 
     fun resolve(
@@ -57,11 +61,13 @@ internal object VectorIndexResolver {
         }
 
         val label = FragmentModel.labelsFor(fragmentClass).firstOrNull() ?: fragmentClass.simpleName
-        val indexName = chosen.name.ifEmpty { "${label}_${chosen.property}_vector" }
+        // The index was created on the on-disk property (see FragmentSchemaScanner), so the search and
+        // the derived index name must use it too — otherwise an overridden embedding can't be found.
+        val indexName = chosen.name.ifEmpty { "${label}_${chosen.onDiskName}_vector" }
 
         return VectorQuerySpec(
             label = label,
-            property = chosen.property,
+            property = chosen.onDiskName,
             indexName = indexName,
             similarity = chosen.similarity,
             topKParam = topKParam,
@@ -79,7 +85,11 @@ internal object VectorIndexResolver {
         clazz.kotlin.memberProperties.mapNotNull { prop ->
             val annotation = prop.annotations.filterIsInstance<VectorIndex>().firstOrNull()
                 ?: prop.javaField?.annotations?.filterIsInstance<VectorIndex>()?.firstOrNull()
-            annotation?.let { VectorProperty(prop.name, it.similarity, it.name) }
+            annotation?.let {
+                val onDisk = (prop.annotations.filterIsInstance<GraphProperty>().firstOrNull()
+                    ?: prop.javaField?.getAnnotation(GraphProperty::class.java))?.value ?: prop.name
+                VectorProperty(prop.name, it.similarity, it.name, onDisk)
+            }
         }
     } catch (e: Throwable) {
         // Java class or unsupported construct — fall back to Java field reflection
@@ -93,7 +103,8 @@ internal object VectorIndexResolver {
             current.declaredFields.forEach { field ->
                 field.getAnnotation(VectorIndex::class.java)?.let { annotation ->
                     if (result.none { it.property == field.name }) {
-                        result.add(VectorProperty(field.name, annotation.similarity, annotation.name))
+                        val onDisk = field.getAnnotation(GraphProperty::class.java)?.value ?: field.name
+                        result.add(VectorProperty(field.name, annotation.similarity, annotation.name, onDisk))
                     }
                 }
             }

@@ -1,6 +1,6 @@
 plugins {
-	id 'org.jetbrains.kotlin.jvm' version '2.2.0'
-	id 'org.jetbrains.kotlin.plugin.spring' version '2.2.0'
+	id 'org.jetbrains.kotlin.jvm' version '2.2.20'
+	id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20'
 	id 'org.springframework.boot' version '3.5.7'
 	id 'io.spring.dependency-management' version '1.1.7'
 
@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.drivine'
-version = '0.0.58'
+version = '0.0.76'
 
 base {
 	archivesName = 'drivine4j'
@@ -93,6 +93,11 @@ kotlin {
 // Use JUnit 5
 tasks.named('test') {
 	useJUnitPlatform()
+	// The full suite runs many Spring contexts + testcontainer integration tests in one JVM; the
+	// default heap is too small and the worker OOM-crashes mid-run (surfacing as a cascade of
+	// NoClassDefFoundError on the still-pending tests, and a missing jacoco test.exec). Give it room.
+	// A ceiling, not a reservation — overridable for constrained CI via -PtestMaxHeap=1536m.
+	maxHeapSize = (project.findProperty('testMaxHeap') ?: '2g').toString()
 	finalizedBy jacocoTestReport // Generate coverage report after tests
 }
 

@@ -1,5 +1,6 @@
 package org.drivine.query.grammar
 
+import org.drivine.model.FragmentField
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 
@@ -13,7 +14,8 @@ data class NestedViewContext(
     val direction: String,
     val targetLabelString: String,
     val nestedViewModel: GraphViewModel,
-    val rootFragmentFields: List<String>?,
+    /** Root fragment fields, or null for the polymorphic `.*` path. Projected as field ← property. */
+    val rootFragmentFields: List<FragmentField>?,
     val rootFragmentFieldName: String,
     /** For each nested relationship: (fieldName, alias, directionString, labelString, fieldProjection) */
     val nestedRelationships: List<NestedRelInfo>,
@@ -104,7 +106,7 @@ class CallSubqueryNestedViewProjector : NestedViewProjector {
         val rootFieldMappings = if (ctx.rootFragmentFields == null) {
             ".*"
         } else {
-            ctx.rootFragmentFields.joinToString(", ") { "$it: ${ctx.targetAlias}.$it" }
+            ctx.rootFragmentFields.joinToString(", ") { "${it.name}: ${ctx.targetAlias}.${it.propertyName}" }
         }
 
         val returnFields = mutableListOf("${ctx.rootFragmentFieldName}: { $rootFieldMappings }")
