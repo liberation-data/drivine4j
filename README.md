@@ -60,14 +60,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.76")
+    implementation("org.drivine:drivine4j:0.0.77")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.76'
+    implementation 'org.drivine:drivine4j:0.0.77'
 }
 ```
 
@@ -76,7 +76,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.76</version>
+    <version>0.0.77</version>
 </dependency>
 ```
 
@@ -102,8 +102,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.76")
-    ksp("org.drivine:drivine4j-codegen:0.0.76")
+    implementation("org.drivine:drivine4j:0.0.77")
+    ksp("org.drivine:drivine4j-codegen:0.0.77")
 }
 ```
 
@@ -137,7 +137,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.76</version>
+                    <version>0.0.77</version>
                 </dependency>
             </dependencies>
         </plugin>
