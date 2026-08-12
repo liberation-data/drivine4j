@@ -26,9 +26,12 @@ sealed interface SchemaItemSpec {
 
     val kind: SchemaItemKind
 
-    /** The name used when creating the item, on engines that support names. */
+    /** The name used when creating the item, on engines that support names. A BLANK explicit name is
+     *  treated as absent (derive [defaultName]) — `@VectorIndex(name = "")` defaults to an empty string,
+     *  not null, and an empty name makes the engine reject the schema ("name cannot be the empty string").
+     *  Mirrors the query-side [org.drivine.query.VectorIndexResolver]'s `name.ifEmpty { … }`. */
     val effectiveName: String
-        get() = name ?: defaultName()
+        get() = name?.takeIf { it.isNotBlank() } ?: defaultName()
 
     fun defaultName(): String
 

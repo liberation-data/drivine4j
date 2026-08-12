@@ -41,6 +41,21 @@ class Neo4jSchemaGrammarTest {
         assertTrue(statement.statement.contains("'euclidean'"))
     }
 
+    @Test
+    fun `vector index DDL derives the default name when the explicit name is BLANK, not just null`() {
+        // `@VectorIndex(name = "")` defaults to an EMPTY string (not null). A blank name MUST derive the
+        // default — otherwise the engine rejects the DDL with "name cannot be the empty string" (the dice
+        // Proposition_embedding_vector boot failure on a fresh Neo4j).
+        val spec = VectorIndexSpec("Proposition", "embedding", 1536, name = "")
+        val statement = grammar.createIndex(spec).single() as SchemaStatement.Cypher
+
+        assertTrue(
+            statement.statement.contains("CREATE VECTOR INDEX `Proposition_embedding_vector` IF NOT EXISTS"),
+            statement.statement,
+        )
+        assertFalse(statement.statement.contains("INDEX `` "), "must not emit an empty index name: ${statement.statement}")
+    }
+
     // ----- DDL: range index -----
 
     @Test
