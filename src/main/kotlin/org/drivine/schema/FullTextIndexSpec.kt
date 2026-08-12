@@ -26,6 +26,7 @@ data class FullTextIndexSpec(
 
     init {
         require(properties.isNotEmpty()) { "FullTextIndexSpec requires at least one property" }
+        requireNameNotWhitespace(name, "FullTextIndexSpec")
     }
 
     override val kind: SchemaItemKind

@@ -32,13 +32,19 @@ data class SchemaItemInfo(
         /**
          * Synthesizes info from a spec, for engines/timing windows where an item was just created
          * but cannot yet be (or doesn't need to be) re-read via introspection.
+         *
+         * Reports [SchemaItemSpec.effectiveName] rather than the raw [SchemaItemSpec.name]: the DDL that
+         * was just executed used the effective name, so the raw one would misdescribe the database
+         * whenever a name was derived — and an empty raw name would make [SchemaGrammar.dropIndex] emit
+         * `DROP INDEX `` IF EXISTS`, which the `name ?: throw` guard does not catch. Engines with unnamed
+         * items (FalkorDB) ignore the name on both create and drop, so it is inert there.
          */
         fun fromSpec(spec: SchemaItemSpec): SchemaItemInfo = when (spec) {
             is VectorIndexSpec -> SchemaItemInfo(
                 kind = spec.kind,
                 label = spec.label,
                 properties = spec.properties,
-                name = spec.name,
+                name = spec.effectiveName,
                 dimensions = spec.dimensions,
                 similarity = spec.similarity,
             )
@@ -47,7 +53,7 @@ data class SchemaItemInfo(
                 kind = spec.kind,
                 label = spec.label,
                 properties = spec.properties,
-                name = spec.name,
+                name = spec.effectiveName,
                 analyzer = spec.analyzer,
             )
 
@@ -55,7 +61,7 @@ data class SchemaItemInfo(
                 kind = spec.kind,
                 label = spec.label,
                 properties = spec.properties,
-                name = spec.name,
+                name = spec.effectiveName,
             )
         }
     }

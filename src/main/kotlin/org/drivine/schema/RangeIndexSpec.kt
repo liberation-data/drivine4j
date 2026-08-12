@@ -20,6 +20,7 @@ data class RangeIndexSpec(
 
     init {
         require(properties.isNotEmpty()) { "RangeIndexSpec requires at least one property" }
+        requireNameNotWhitespace(name, "RangeIndexSpec")
     }
 
     override val kind: SchemaItemKind

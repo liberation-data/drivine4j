@@ -26,10 +26,15 @@ sealed interface SchemaItemSpec {
 
     val kind: SchemaItemKind
 
-    /** The name used when creating the item, on engines that support names. A BLANK explicit name is
-     *  treated as absent (derive [defaultName]) — `@VectorIndex(name = "")` defaults to an empty string,
-     *  not null, and an empty name makes the engine reject the schema ("name cannot be the empty string").
-     *  Mirrors the query-side [org.drivine.query.VectorIndexResolver]'s `name.ifEmpty { … }`. */
+    /**
+     * The name used when creating the item, on engines that support names.
+     *
+     * An empty explicit name is treated as absent (derive [defaultName]). Annotation defaults cannot be
+     * null, so `@VectorIndex(name = "")` means "unnamed", and emitting it would make the engine reject the
+     * schema ("name cannot be the empty string"). Whitespace-only names are rejected at construction
+     * ([requireNameNotWhitespace]) rather than normalized here, so this and the query-side
+     * [org.drivine.query.VectorIndexResolver] cannot disagree about what a given declaration resolves to.
+     */
     val effectiveName: String
         get() = name?.takeIf { it.isNotBlank() } ?: defaultName()
 
@@ -45,4 +50,21 @@ sealed interface SchemaItemSpec {
      */
     val inventoryKey: String
         get() = "$kind:$label:${properties.joinToString(",")}:$effectiveName"
+}
+
+/**
+ * Rejects a whitespace-only explicit schema-item name.
+ *
+ * The empty string is a legitimate "unset" sentinel — annotation attributes cannot default to null, so
+ * [FragmentSchemaScanner] passes `""` through to mean "derive a name". Whitespace carries no such meaning
+ * and is always a mistake, but it fails silently rather than loudly: Cypher's backtick quoting will happily
+ * create an index literally named `` ` ` ``, which then never matches the derived name the query-side
+ * resolvers search for. Rejecting it at construction keeps the create side and the query side from
+ * disagreeing, instead of requiring two normalization rules to stay in sync.
+ */
+internal fun requireNameNotWhitespace(name: String?, specType: String) {
+    require(name == null || name.isEmpty() || name.isNotBlank()) {
+        "$specType name must not be whitespace-only (got \"$name\"). " +
+            "Use null or \"\" to derive a name from the label and properties."
+    }
 }

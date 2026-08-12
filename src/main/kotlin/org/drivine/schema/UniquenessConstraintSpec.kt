@@ -20,6 +20,7 @@ data class UniquenessConstraintSpec(
 
     init {
         require(properties.isNotEmpty()) { "UniquenessConstraintSpec requires at least one property" }
+        requireNameNotWhitespace(name, "UniquenessConstraintSpec")
     }
 
     override val kind: SchemaItemKind

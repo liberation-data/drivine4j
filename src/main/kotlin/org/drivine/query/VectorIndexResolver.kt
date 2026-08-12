@@ -63,7 +63,9 @@ internal object VectorIndexResolver {
         val label = FragmentModel.labelsFor(fragmentClass).firstOrNull() ?: fragmentClass.simpleName
         // The index was created on the on-disk property (see FragmentSchemaScanner), so the search and
         // the derived index name must use it too — otherwise an overridden embedding can't be found.
-        val indexName = chosen.name.ifEmpty { "${label}_${chosen.onDiskName}_vector" }
+        // ifBlank, not ifEmpty: this must resolve exactly as SchemaItemSpec.effectiveName does on the
+        // create side, or a search looks for an index name that was never created.
+        val indexName = chosen.name.ifBlank { "${label}_${chosen.onDiskName}_vector" }
 
         return VectorQuerySpec(
             label = label,

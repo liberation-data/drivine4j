@@ -42,10 +42,12 @@ class Neo4jSchemaGrammarTest {
     }
 
     @Test
-    fun `vector index DDL derives the default name when the explicit name is BLANK, not just null`() {
-        // `@VectorIndex(name = "")` defaults to an EMPTY string (not null). A blank name MUST derive the
-        // default — otherwise the engine rejects the DDL with "name cannot be the empty string" (the dice
-        // Proposition_embedding_vector boot failure on a fresh Neo4j).
+    fun `vector index DDL derives the default name when the explicit name is EMPTY, not just null`() {
+        // An empty name MUST derive the default — otherwise the engine rejects the DDL with "name cannot
+        // be the empty string" (the dice Proposition_embedding_vector boot failure on a fresh Neo4j).
+        // FragmentSchemaScanner already maps `@VectorIndex(name = "")` to null, so the reachable source of
+        // an empty name is a hand-written SchemaCatalog spec or ensureVector(name = ""). See
+        // SchemaItemSpecNameTest for the empty-vs-whitespace rules.
         val spec = VectorIndexSpec("Proposition", "embedding", 1536, name = "")
         val statement = grammar.createIndex(spec).single() as SchemaStatement.Cypher
 

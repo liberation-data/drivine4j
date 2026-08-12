@@ -19,6 +19,7 @@ data class VectorIndexSpec(
 
     init {
         require(dimensions > 0) { "Vector index dimensions must be positive, got $dimensions" }
+        requireNameNotWhitespace(name, "VectorIndexSpec")
     }
 
     override val properties: List<String>

@@ -67,7 +67,9 @@ internal object FullTextIndexResolver {
         val label = FragmentModel.labelsFor(fragmentClass).firstOrNull() ?: fragmentClass.simpleName
         // The index was created on the on-disk property names (see FragmentSchemaScanner), so the
         // derived name must use them too — otherwise a @GraphProperty-renamed field can't be found.
-        val indexName = chosen.name.ifEmpty { "${label}_${chosen.onDiskNames.joinToString("_")}_fulltext" }
+        // ifBlank, not ifEmpty: this must resolve exactly as SchemaItemSpec.effectiveName does on the
+        // create side, or a search looks for an index name that was never created.
+        val indexName = chosen.name.ifBlank { "${label}_${chosen.onDiskNames.joinToString("_")}_fulltext" }
 
         return FullTextQuerySpec(
             label = label,
