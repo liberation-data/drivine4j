@@ -44,8 +44,9 @@ inline fun <reified T : PropositionView> GraphObjectManager.loadNearest(
     vector: List<Float>,
     topK: Int,
     threshold: Double? = null,
+    searchK: Int? = null,
     noinline spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit,
-): List<Scored<T>> = loadNearest(T::class.java, PropositionViewQueryDsl.INSTANCE, vector, topK, threshold, spec)
+): List<Scored<T>> = loadNearest(T::class.java, PropositionViewQueryDsl.INSTANCE, vector, topK, threshold, searchK, spec)
 
 /** Mirrors the codegen-emitted `count(spec)` wrapper for [PropositionView]. */
 inline fun <reified T : PropositionView> GraphObjectManager.count(

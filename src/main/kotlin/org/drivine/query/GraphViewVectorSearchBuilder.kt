@@ -65,6 +65,12 @@ internal class GraphViewVectorSearchBuilder(
         callerWhere?.let { filters.add(it) }
         val whereSection = if (filters.isEmpty()) "" else "\nWHERE " + filters.joinToString("\n  AND ")
 
+        // Present only when the caller searched wider than the rows they want back: the index yields
+        // the wide set, the WHERE thins it, and this trims what survives to the requested count. The
+        // trim must follow the filter — trimming first would discard exactly the rows over-fetching
+        // was meant to recover.
+        val limitSection = vectorSpec.rowLimitParam?.let { "\nLIMIT \$$it" } ?: ""
+
         // Wrap the view projection and its score in a single map column so the result mapper
         // collapses to one value per row; the manager unpacks `value` + `score` into Scored<T>.
         val returnClause = """
@@ -75,7 +81,7 @@ ${assembler.valueFieldEntries("        ").joinToString(",\n")}
     },
     score: $scoreVar
 } AS row
-ORDER BY $scoreVar DESC"""
+ORDER BY $scoreVar DESC""" + limitSection
 
         return head + prologSection + withClause + whereSection + returnClause
     }

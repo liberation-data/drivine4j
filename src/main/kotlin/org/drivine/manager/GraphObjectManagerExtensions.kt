@@ -381,9 +381,10 @@ inline fun <reified T : Any, Q : Any> GraphObjectManager.loadNearest(
     vector: List<Float>,
     topK: Int,
     threshold: Double? = null,
+    searchK: Int? = null,
     noinline spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
 ): List<Scored<T>> {
-    return loadNearest(T::class.java, queryObject, vector, topK, threshold, spec)
+    return loadNearest(T::class.java, queryObject, vector, topK, threshold, searchK, spec)
 }
 
 /**

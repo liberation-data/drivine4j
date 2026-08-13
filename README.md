@@ -600,9 +600,33 @@ similar** on every engine, so ordering and `threshold` mean the same thing regar
 **`topK` is the index's `k`, not a guaranteed result count.** When searching a **view**, its
 *required* relationships (and the optional `threshold`) are applied **after** the K-nearest search,
 so a candidate that ranks in the top K but fails the filter is dropped — meaning **`loadNearest` can
-return fewer than `topK` results**. Raise `topK` if your view is selective and you need a fuller set.
-A **fragment** search has no relationship filter, so it returns the full top K (minus any `threshold`
-cut).
+return fewer than `topK` results**. A **fragment** search has no relationship filter, so it returns
+the full top K (minus any `threshold` cut).
+
+**`k` is also the search beam width — this is the surprising part.** On Lucene-backed engines the
+result queue *is* the HNSW candidate queue, so `k` does not merely truncate a ranked list; it decides
+how much of the graph the search explores. A small `k` can miss a vector that is genuinely nearest.
+This is measurable, not theoretical: on a 9K-vector index, a vector verified as true global rank 3 was
+not returned at any `k ≤ 100`, and came back at rank 3 at `k = 200`. Neo4j exposes no separate
+`ef_search`, so raising `k` is the only query-time lever on recall.
+
+Use **`searchK`** to widen the search without widening the result:
+
+```kotlin
+// search with a beam of 200, return the best 40 that survive the filter
+graphObjectManager.loadNearest<PropositionView>(dsl, queryEmbedding, topK = 40, searchK = 200) {
+    where { proposition.contextId eq ctx }
+}
+```
+
+`searchK` is what the index is asked for; `topK` becomes a `LIMIT` applied **after** the filter, so
+over-fetching actually recovers rows the filter would otherwise have thinned away. Omit it and the
+emitted query is unchanged. `searchK < topK` throws — it can only lose results.
+
+**Filtered searches dilute.** Because predicates apply after the index yields, a scoped caller gets
+roughly `k × selectivity` rows — at 22% selectivity, asking for 40 returns about 9 — and those
+survivors are the globally-nearest that happen to be in scope, not the nearest within scope. `searchK`
+mitigates this. See [0.0.79-vector-search-k.md](docs/0.0.79-vector-search-k.md).
 
 Backends without a native vector index (Amazon Neptune) throw `UnsupportedOperationException`.
 

@@ -13,8 +13,17 @@ import org.drivine.schema.SimilarityFunction
  * @param property the embedding property the index covers
  * @param indexName the resolved index name (explicit, or `${label}_${property}_vector`)
  * @param similarity the similarity function the index was built with
- * @param topKParam the bound parameter name carrying the requested K (e.g. `"topK"`)
+ * @param topKParam the bound parameter name carrying the K handed to the **index**.
+ *
+ *   This is the HNSW search beam width, not just a row count: in Lucene-backed engines the result
+ *   queue *is* the candidate queue, so a small K explores a small part of the graph and can miss
+ *   vectors that are genuinely nearest. Raising it is the only lever on recall at query time.
  * @param vectorParam the bound parameter name carrying the query embedding (e.g. `"queryVector"`)
+ * @param rowLimitParam the bound parameter name for a trailing `LIMIT`, or null for no limit.
+ *
+ *   Set only when the caller asked for a wider search than the number of rows they want back
+ *   ([topKParam] > rows requested). Null keeps the emitted query byte-identical to what an untuned
+ *   search has always produced.
  */
 data class VectorQuerySpec(
     val label: String,
@@ -23,4 +32,5 @@ data class VectorQuerySpec(
     val similarity: SimilarityFunction,
     val topKParam: String,
     val vectorParam: String,
+    val rowLimitParam: String? = null,
 )

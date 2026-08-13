@@ -49,6 +49,12 @@ internal class FragmentVectorSearchBuilder(
         }
         val whereSection = if (filters.isEmpty()) "" else "\nWHERE " + filters.joinToString("\n  AND ")
 
+        // Present only when the caller searched wider than the rows they want back: the index yields
+        // the wide set, the WHERE thins it, and this trims what survives to the requested count. The
+        // trim must follow the filter — trimming first would discard exactly the rows over-fetching
+        // was meant to recover.
+        val limitSection = vectorSpec.rowLimitParam?.let { "\nLIMIT \$$it" } ?: ""
+
         val isPolymorphic = fragmentModel.clazz.kotlin.isAbstract || fragmentModel.clazz.kotlin.isSealed
 
         // Wrap the fragment projection + score in a single map column so the result mapper collapses
@@ -65,7 +71,7 @@ RETURN {
     },
     score: $scoreVar
 } AS row
-ORDER BY $scoreVar DESC"""
+ORDER BY $scoreVar DESC""" + limitSection
         } else {
             val fieldMappings = fragmentModel.fields.joinToString(",\n        ") {
                 "${it.name}: $node.${it.propertyName}"
@@ -79,7 +85,7 @@ RETURN {
     },
     score: $scoreVar
 } AS row
-ORDER BY $scoreVar DESC"""
+ORDER BY $scoreVar DESC""" + limitSection
         }
 
         return head + whereSection + returnClause

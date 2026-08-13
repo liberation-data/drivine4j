@@ -24,6 +24,7 @@ internal object VectorSearchPlanner {
     const val TOP_K_PARAM = "_vectorTopK"
     const val QUERY_PARAM = "_vectorQuery"
     const val THRESHOLD_PARAM = "_vectorThreshold"
+    const val ROW_LIMIT_PARAM = "_vectorRowLimit"
 
     /** Unfiltered vector search over a `@GraphView` (projected) or a bare `@NodeFragment` (itself). */
     fun plan(
@@ -33,19 +34,20 @@ internal object VectorSearchPlanner {
         topK: Int,
         threshold: Double?,
         grammar: CypherGrammar,
+        searchK: Int? = null,
     ): ScoredSearchPlan {
         requireSupport(grammar)
         val cypher = when {
             graphClass.isAnnotationPresent(GraphView::class.java) -> {
                 // A view searches its root fragment's embedding and returns the projected view.
                 val rootFragmentType = GraphViewModel.from(graphClass).rootFragment.fragmentType
-                val spec = VectorIndexResolver.resolve(rootFragmentType, property, TOP_K_PARAM, QUERY_PARAM)
+                val spec = VectorIndexResolver.resolve(rootFragmentType, property, TOP_K_PARAM, QUERY_PARAM, rowLimitParam(searchK))
                 GraphViewQueryBuilder.forView(graphClass, grammar).buildVectorQuery(spec, thresholdParam(threshold))
             }
 
             graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
                 // A fragment searches and returns itself — no relationships, no required-rel filter.
-                val spec = VectorIndexResolver.resolve(graphClass, property, TOP_K_PARAM, QUERY_PARAM)
+                val spec = VectorIndexResolver.resolve(graphClass, property, TOP_K_PARAM, QUERY_PARAM, rowLimitParam(searchK))
                 FragmentVectorSearchBuilder(FragmentModel.from(graphClass), grammar).build(spec, thresholdParam(threshold))
             }
 
@@ -53,7 +55,7 @@ internal object VectorSearchPlanner {
                 "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, emptyMap()))
+        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, emptyMap(), searchK))
     }
 
     /** Vector search over a `@GraphView` with a caller `where { }` predicate AND-ed into the filter. */
@@ -64,6 +66,7 @@ internal object VectorSearchPlanner {
         topK: Int,
         threshold: Double?,
         grammar: CypherGrammar,
+        searchK: Int? = null,
     ): ScoredSearchPlan {
         requireSupport(grammar)
 
@@ -79,7 +82,7 @@ internal object VectorSearchPlanner {
                     CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar, projectedCollectionMode = true)
                 } else null
                 callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
-                val spec = VectorIndexResolver.resolve(viewModel.rootFragment.fragmentType, null, TOP_K_PARAM, QUERY_PARAM)
+                val spec = VectorIndexResolver.resolve(viewModel.rootFragment.fragmentType, null, TOP_K_PARAM, QUERY_PARAM, rowLimitParam(searchK))
                 cypher = GraphViewQueryBuilder.forView(graphClass, grammar)
                     .buildVectorQuery(spec, thresholdParam(threshold), whereResult?.whereClause)
             }
@@ -92,7 +95,7 @@ internal object VectorSearchPlanner {
                     CypherGenerator.buildWhereClause(querySpec.conditions, null, grammar)
                 } else null
                 callerBindings = CypherGenerator.extractBindings(querySpec.conditions, null)
-                val spec = VectorIndexResolver.resolve(graphClass, null, TOP_K_PARAM, QUERY_PARAM)
+                val spec = VectorIndexResolver.resolve(graphClass, null, TOP_K_PARAM, QUERY_PARAM, rowLimitParam(searchK))
                 cypher = FragmentVectorSearchBuilder(FragmentModel.from(graphClass), grammar)
                     .build(spec, thresholdParam(threshold), whereResult?.whereClause)
             }
@@ -101,7 +104,7 @@ internal object VectorSearchPlanner {
                 "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, callerBindings))
+        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, callerBindings, searchK))
     }
 
     private fun requireSupport(grammar: CypherGrammar) {
@@ -114,13 +117,29 @@ internal object VectorSearchPlanner {
 
     private fun thresholdParam(threshold: Double?): String? = if (threshold != null) THRESHOLD_PARAM else null
 
-    private fun bindings(vector: List<Float>, topK: Int, threshold: Double?, caller: Map<String, Any?>) =
-        buildMap<String, Any?> {
-            put(TOP_K_PARAM, topK)
-            put(QUERY_PARAM, vector)
-            if (threshold != null) put(THRESHOLD_PARAM, threshold)
-            putAll(caller)
-        }
+    /**
+     * The trailing `LIMIT` parameter name, or null when the caller did not over-fetch.
+     *
+     * Null keeps the emitted Cypher byte-identical to what an untuned search has always produced, so
+     * turning the knob off is genuinely a no-op rather than a differently-shaped query.
+     */
+    private fun rowLimitParam(searchK: Int?): String? = if (searchK != null) ROW_LIMIT_PARAM else null
+
+    private fun bindings(
+        vector: List<Float>,
+        topK: Int,
+        threshold: Double?,
+        caller: Map<String, Any?>,
+        searchK: Int? = null,
+    ) = buildMap<String, Any?> {
+        // TOP_K_PARAM is what the index is asked for — the beam width. When the caller over-fetches it
+        // carries searchK, and topK moves to the post-filter LIMIT.
+        put(TOP_K_PARAM, searchK ?: topK)
+        put(QUERY_PARAM, vector)
+        if (searchK != null) put(ROW_LIMIT_PARAM, topK)
+        if (threshold != null) put(THRESHOLD_PARAM, threshold)
+        putAll(caller)
+    }
 }
 
 /**

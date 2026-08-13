@@ -114,10 +114,24 @@ manager unpacks `value` + `score` into `Scored<T>`.
   assertions run against **FalkorDB and Memgraph**, verifying each engine's procedure, `vecf32`
   wrapping, and distance→similarity normalization actually execute and rank correctly.
 
+## Recall tuning (0.0.79)
+
+**`searchK`** — what the *index* is asked for, i.e. the HNSW beam width. `topK` becomes a post-filter
+`LIMIT`, applied after the `WHERE` so over-fetching recovers rows the filter would otherwise thin away.
+
+`k` is not just a row count: on a 9K-vector index a vector at true global rank 3 was missed at every
+`k ≤ 100` and returned at rank 3 at `k = 200`. In Lucene-backed HNSW the result queue is the candidate
+queue, so `ef_search == k`. Omitting `searchK` leaves the emitted query byte-identical.
+
+Full rationale: [0.0.79-vector-search-k.md](0.0.79-vector-search-k.md).
+
 ## Open follow-ups
 
-1. **Phase 2 — `nearest{}` DSL sugar.** `loadNearest` is the primitive; a `nearest{}` block
+1. **Yield observability.** A filtered vector read that returns fewer rows than requested is silent
+   about it. Reporting requested `k`, index yield, and post-filter count would make dilution visible
+   rather than something to infer.
+2. **Phase 2 — `nearest{}` DSL sugar.** `loadNearest` is the primitive; a `nearest{}` block
    composable with `where{}` (returning plain `List<T>`, dropping the score by design) is deferred.
-2. **Search anchored on a non-root node.** A view always searches its *root* fragment's embedding; a
+3. **Search anchored on a non-root node.** A view always searches its *root* fragment's embedding; a
    `@VectorIndex` on a relationship target is not reachable (you'd search the target and traverse
    back). Not currently supported.

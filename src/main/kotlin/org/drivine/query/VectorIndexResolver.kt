@@ -36,6 +36,7 @@ internal object VectorIndexResolver {
         property: String?,
         topKParam: String,
         vectorParam: String,
+        rowLimitParam: String? = null,
     ): VectorQuerySpec {
         val candidates = vectorProperties(fragmentClass)
         if (candidates.isEmpty()) {
@@ -74,6 +75,7 @@ internal object VectorIndexResolver {
             similarity = chosen.similarity,
             topKParam = topKParam,
             vectorParam = vectorParam,
+            rowLimitParam = rowLimitParam,
         )
     }
 

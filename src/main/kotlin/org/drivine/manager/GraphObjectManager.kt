@@ -444,7 +444,8 @@ class GraphObjectManager(
         vector: List<Float>,
         topK: Int,
         threshold: Double? = null,
-    ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold)
+        searchK: Int? = null,
+    ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold, searchK)
 
     /**
      * Vector search variant that names the embedding [property] explicitly — use when the searched
@@ -460,8 +461,14 @@ class GraphObjectManager(
         vector: List<Float>,
         topK: Int,
         threshold: Double? = null,
-    ): List<Scored<T>> =
-        executeScoredSearch(graphClass, VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar))
+        searchK: Int? = null,
+    ): List<Scored<T>> {
+        requireValidSearchK(topK, searchK)
+        return executeScoredSearch(
+            graphClass,
+            VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar, searchK),
+        )
+    }
 
     /**
      * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
@@ -498,13 +505,28 @@ class GraphObjectManager(
         vector: List<Float>,
         topK: Int,
         threshold: Double? = null,
+        searchK: Int? = null,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
+        requireValidSearchK(topK, searchK)
         val querySpec = GraphQuerySpec(queryObject).apply(spec)
         return executeScoredSearch(
             graphClass,
-            VectorSearchPlanner.planFiltered(graphClass, querySpec, vector, topK, threshold, grammar),
+            VectorSearchPlanner.planFiltered(graphClass, querySpec, vector, topK, threshold, grammar, searchK),
         )
+    }
+
+    /**
+     * Guards the over-fetch knob. A [searchK] below [topK] would ask the index for fewer rows than the
+     * caller wants back, which can only lose results — always a mistake rather than a tuning choice.
+     */
+    private fun requireValidSearchK(topK: Int, searchK: Int?) {
+        if (searchK != null && searchK < topK) {
+            throw IllegalArgumentException(
+                "searchK ($searchK) must be >= topK ($topK): searchK widens the index search and topK " +
+                    "trims the surviving rows, so a smaller searchK can only discard results."
+            )
+        }
     }
 
     /**
