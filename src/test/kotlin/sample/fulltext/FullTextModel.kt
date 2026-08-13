@@ -4,6 +4,7 @@ import org.drivine.annotation.FullTextIndex
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.Root
 import org.drivine.query.dsl.NodeReference
 import org.drivine.query.dsl.StringPropertyReference
@@ -21,6 +22,19 @@ data class ArticleNode(
     @NodeId val id: String,
     val title: String,
     @FullTextIndex val body: String,
+)
+
+/**
+ * Carries a [PropertyBag]. The bag's open `metadata.` properties have no single column for an explicit
+ * projection to map, so a search that does not take the `properties(n).*` path returns the bag empty —
+ * while `load` returns it populated. Filtering on a bag key keeps working either way, which is what
+ * makes the difference silent, so the fixture exists to assert the bag comes back.
+ */
+@NodeFragment(labels = ["Memo"])
+data class MemoNode(
+    @NodeId val id: String,
+    @FullTextIndex val body: String,
+    @PropertyBag(prefix = "metadata") val metadata: Map<String, Any?> = emptyMap(),
 )
 
 /** A view rooted on [ArticleNode] — exercises the view full-text path (projection over the hit). */

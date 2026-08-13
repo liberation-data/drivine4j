@@ -23,6 +23,7 @@ import sample.fulltext.ArticleNode
 import sample.fulltext.ArticleNodeQueryDsl
 import sample.fulltext.ArticleView
 import sample.fulltext.EntityNode
+import sample.fulltext.MemoNode
 import sample.fulltext.NoteNode
 import sample.fulltext.PrivateNote
 import sample.fulltext.PublicNote
@@ -42,6 +43,7 @@ private fun ensureIndexes(pm: NonTransactionalPersistenceManager) {
     pm.indexes.ensure(FullTextIndexSpec("Article", "body"))
     pm.indexes.ensure(FullTextIndexSpec("Entity", listOf("name", "description")))
     pm.indexes.ensure(FullTextIndexSpec("Note", "text"))
+    pm.indexes.ensure(FullTextIndexSpec("Memo", "body"))
 }
 
 private fun seed(pm: NonTransactionalPersistenceManager, awaitIndexes: Boolean) {
@@ -58,6 +60,7 @@ private fun seed(pm: NonTransactionalPersistenceManager, awaitIndexes: Boolean) 
             CREATE (:Note:PublicNote {id: 'p1', text: 'kotlin is great'})
             CREATE (:Note:PrivateNote {id: 's1', text: 'kotlin secret plan'})
             CREATE (:Note:PublicNote {id: 'p2', text: 'python notes'})
+            CREATE (:Memo {id: 'm1', body: 'graph memo', `metadata.source`: 'wiki'})
             """.trimIndent()
         )
     )
@@ -100,6 +103,13 @@ private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManag
         where { query.id eq "A" }
     }
     assertEquals(listOf("A"), filtered.map { it.value.id })
+
+    // A @PropertyBag survives the search projection. The bag has no single column to map, so an
+    // explicit projection returns it empty while `load` returns it populated — and because filtering
+    // on a bag key works either way, nothing else in this suite would notice.
+    val memos = gom.loadMatching<MemoNode>("graph", topK = 10)
+    assertEquals(listOf("m1"), memos.map { it.value.id })
+    assertEquals(mapOf("source" to "wiki"), memos.single().value.metadata)
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {

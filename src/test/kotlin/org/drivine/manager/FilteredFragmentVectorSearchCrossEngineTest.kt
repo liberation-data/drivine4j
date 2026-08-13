@@ -64,6 +64,11 @@ private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManag
     val book = gom.loadNearest(VecDocNode::class.java, doc, QUERY, topK = 10) { where { query.property("metadata.source") eq "book" } }
     assertEquals(setOf("b"), book.map { it.value.id }.toSet())
 
+    // ...and the bag comes BACK, not just filtered on. A bag has no single column for the explicit
+    // projection to map, so a search that does not take the `properties(n).*` path returns it empty
+    // while `load` returns it populated — silently, since filtering still works either way.
+    assertEquals(mapOf("source" to "book"), book.single().value.metadata)
+
     // field() resolves the bag key from the fragment's annotations, matching the explicit stored path.
     val web = gom.loadNearest(VecDocNode::class.java, doc, QUERY, topK = 10) { where { query.field("source") eq "web" } }
     val webStored = gom.loadNearest(VecDocNode::class.java, doc, QUERY, topK = 10) { where { query.property("metadata.source") eq "web" } }

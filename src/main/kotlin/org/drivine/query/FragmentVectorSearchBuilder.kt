@@ -55,7 +55,10 @@ internal class FragmentVectorSearchBuilder(
         // was meant to recover.
         val limitSection = vectorSpec.rowLimitParam?.let { "\nLIMIT \$$it" } ?: ""
 
-        val isPolymorphic = fragmentModel.clazz.kotlin.isAbstract || fragmentModel.clazz.kotlin.isSealed
+        // A bag fragment takes the `.*` path for the same reason FragmentQueryBuilder does: the open
+        // prefixed properties have no single column to map, so the explicit projection would drop them.
+        val isPolymorphic = fragmentModel.clazz.kotlin.isAbstract || fragmentModel.clazz.kotlin.isSealed ||
+            fragmentModel.propertyBags.isNotEmpty()
 
         // Wrap the fragment projection + score in a single map column so the result mapper collapses
         // to one value per row; the manager unpacks `value` + `score` into Scored<T>.
