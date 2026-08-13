@@ -123,6 +123,11 @@ manager unpacks `value` + `score` into `Scored<T>`.
 `k ≤ 100` and returned at rank 3 at `k = 200`. In Lucene-backed HNSW the result queue is the candidate
 queue, so `ef_search == k`. Omitting `searchK` leaves the emitted query byte-identical.
 
+On Neo4j, over-fetching also **re-ranks the beam by exact similarity** rather than by the index's
+yielded score, because that score is computed against quantized vectors and does not order identically
+to exact similarity — measurably so even on a 4-dim vector. Without the re-rank, over-fetching buys row
+count on the filtered path but not row correctness. FalkorDB and Memgraph over-fetch without re-ranking.
+
 Full rationale: [0.0.79-vector-search-k.md](0.0.79-vector-search-k.md).
 
 **`partitionLabel`** — targets a per-partition index at runtime, so the search runs *inside* the

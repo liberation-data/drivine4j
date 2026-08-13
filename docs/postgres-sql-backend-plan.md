@@ -157,6 +157,9 @@ Neo4j path. Cross-checked by a testcontainer test.
 ### Acceptance
 
 `loadNearest(View::class, queryVec, topK, threshold)` returns ranked `Scored<View>` from pgvector,
+(as of 0.0.79 the signature also carries `searchK` and `partitionLabel`; pgvector's `ivfflat`/`hnsw`
+probe settings are the natural home for `searchK`, and a partitioned index or a partial index for
+`partitionLabel`)
 with the same ranking/prune/threshold assertions the cross-engine vector tests already make.
 
 ---

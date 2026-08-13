@@ -623,6 +623,10 @@ graphObjectManager.loadNearest<PropositionView>(dsl, queryEmbedding, topK = 40, 
 over-fetching actually recovers rows the filter would otherwise have thinned away. Omit it and the
 emitted query is unchanged. `searchK < topK` throws — it can only lose results.
 
+On Neo4j, over-fetching also re-ranks the beam by **exact** similarity before trimming: the index's own
+score is computed against quantized vectors (on by default since 2026.04) and does not order identically
+to exact similarity, so trimming by it discards true matches the beam already found.
+
 **Filtered searches dilute.** Because predicates apply after the index yields, a scoped caller gets
 roughly `k × selectivity` rows — at 22% selectivity, asking for 40 returns about 9 — and those
 survivors are the globally-nearest that happen to be in scope, not the nearest within scope. `searchK`
