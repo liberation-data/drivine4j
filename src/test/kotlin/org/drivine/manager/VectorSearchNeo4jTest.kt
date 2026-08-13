@@ -6,6 +6,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.schema.Neo4jVectorOptions
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.session.SessionManager
 import org.junit.jupiter.api.AfterAll
@@ -18,6 +19,7 @@ import org.testcontainers.utility.DockerImageName
 import sample.vector.DocNode
 import sample.vector.DocView
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -188,5 +190,82 @@ class VectorSearchNeo4jTest {
         // Searched wide inside the partition, trimmed to one row.
         assertEquals(1, results.size)
         assertEquals("A", results.single().value.id)
+    }
+
+    // ----- Why the rescore is load-bearing -----
+
+    @Test
+    fun `the rescored score is on the index's scale, not a different normalization`() {
+        // The threshold filter compares against whichever score is in scope, and over-fetching swaps
+        // the index's yielded score for an exactly recomputed one. A different NORMALIZATION would
+        // make the same threshold mean different things depending on whether searchK is set.
+        val fromIndex = gom.loadNearest(DocNode::class.java, query, topK = 10)
+            .associate { it.value.id to it.score }
+        val rescored = gom.loadNearest(
+            DocNode::class.java, null, query, topK = 10, threshold = null, searchK = 10,
+        )
+
+        assertTrue(rescored.isNotEmpty(), "expected rows to compare")
+        rescored.forEach { hit ->
+            val indexScore = assertNotNull(fromIndex[hit.value.id])
+            assertEquals(
+                indexScore, hit.score, 1e-3,
+                "rescored score for ${hit.value.id} is not on the index's scale " +
+                    "(index=$indexScore, rescored=${hit.score})",
+            )
+        }
+    }
+
+    @Test
+    fun `the index's own score is approximate, which is what makes re-ranking worth doing`() {
+        // B is [0.6, 0.8, 0, 0] against a query of [1, 0, 0, 0]: cosine 0.6, normalized to exactly
+        // 0.8. The index does not report 0.8 — it reports a value off by ~1e-4, on a FOUR-dimensional
+        // vector. Ordering a beam by that score therefore does not reproduce exact-similarity order,
+        // which is why trimming an over-fetched beam by the yielded score loses true matches.
+        val indexScore = gom.loadNearest(DocNode::class.java, query, topK = 10)
+            .single { it.value.id == "B" }.score
+        val exact = gom.loadNearest(
+            DocNode::class.java, null, query, topK = 10, threshold = null, searchK = 10,
+        ).single { it.value.id == "B" }.score
+
+        assertEquals(0.8, exact, 1e-6, "the rescore should be exact")
+        assertTrue(
+            kotlin.math.abs(indexScore - 0.8) > 1e-6,
+            "expected the index score to be approximate, but it was exact ($indexScore) — if this " +
+                "ever passes, re-ranking an over-fetched beam has stopped being necessary",
+        )
+    }
+
+    @Test
+    fun `disabling quantization removes the approximation`() {
+        // The causal link: the index score is approximate BECAUSE Neo4j 2026.04 enables
+        // vector.quantization.enabled by default. Pin it off on a partition index over the same
+        // nodes and the yielded score becomes exact — which is also why an unpinned schema produces
+        // measurably different search behaviour across engine versions.
+        pm.execute(QuerySpecification.withStatement("MATCH (n:Doc) SET n:DocExact"))
+        pm.indexes.ensure(
+            VectorIndexSpec(
+                "DocExact", "embedding", 4,
+                engineOptions = listOf(Neo4jVectorOptions(quantizationEnabled = false)),
+            )
+        )
+        pm.execute(QuerySpecification.withStatement("CALL db.awaitIndexes(300)"))
+
+        val unquantized = gom.loadNearest(
+            DocNode::class.java, null, query, topK = 10, threshold = null,
+            searchK = null, partitionLabel = "DocExact",
+        ).single { it.value.id == "B" }.score
+
+        assertEquals(0.8, unquantized, 1e-6, "with quantization off the index score should be exact")
+    }
+
+    @Test
+    fun `a threshold selects the same rows with and without over-fetching`() {
+        val plain = gom.loadNearest(DocNode::class.java, query, topK = 10, threshold = 0.9)
+        val tuned = gom.loadNearest(
+            DocNode::class.java, null, query, topK = 10, threshold = 0.9, searchK = 10,
+        )
+
+        assertEquals(plain.map { it.value.id }.sorted(), tuned.map { it.value.id }.sorted())
     }
 }

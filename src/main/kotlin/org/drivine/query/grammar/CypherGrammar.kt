@@ -1,6 +1,7 @@
 package org.drivine.query.grammar
 
 import org.drivine.query.sort.CollectionSortEmitter
+import org.drivine.schema.SimilarityFunction
 
 data class FilteredExistenceResult(
     /** The condition to embed in the WHERE clause (e.g. "EXISTS { ... }" or "_ec0 > 0") */
@@ -207,11 +208,30 @@ class Neo4j5Grammar(
      * `db.index.vector.queryNodes(name, k, vector)` — Neo4j's `score` is already a normalized
      * similarity in (0, 1] (higher = closer) for both cosine and euclidean, so it carries through
      * directly. The index is referenced by name.
+     *
+     * **Unless the caller over-fetched**, in which case the score is recomputed exactly. The yielded
+     * score does not order identically to exact similarity: measured on a 9k-vector, 1536-dim cosine
+     * index with one dense cluster, the true top 40 were all present inside a beam of 200, yet
+     * trimming that beam by the yielded score returned only 38 of them. Re-ranking the same beam by
+     * `vector.similarity.cosine` returned all 40.
+     *
+     * That matters only when over-fetching, because the trailing `LIMIT` that `searchK` introduces is
+     * what discards rows the beam already found. With no row limit there is nothing to discard, so
+     * the emitted Cypher stays byte-identical and `searchK = null` remains a true no-op.
      */
-    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
-        "CALL db.index.vector.queryNodes(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})\n" +
-            "YIELD node, score\n" +
-            "WITH node AS $rootAlias, score AS $scoreAlias"
+    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
+        val call =
+            "CALL db.index.vector.queryNodes(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})"
+        if (spec.rowLimitParam == null) {
+            return "$call\nYIELD node, score\nWITH node AS $rootAlias, score AS $scoreAlias"
+        }
+        val similarityFunction = when (spec.similarity) {
+            SimilarityFunction.COSINE -> "vector.similarity.cosine"
+            SimilarityFunction.EUCLIDEAN -> "vector.similarity.euclidean"
+        }
+        return "$call\nYIELD node\n" +
+            "WITH node AS $rootAlias, $similarityFunction(node.${spec.property}, \$${spec.vectorParam}) AS $scoreAlias"
+    }
 
     override val supportsFullTextSearch: Boolean = true
 

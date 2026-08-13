@@ -42,6 +42,66 @@ class VectorSearchGrammarTest {
         )
     }
 
+    /**
+     * Over-fetching only pays off if the trim re-ranks by EXACT similarity.
+     *
+     * Measured on a 9k-vector, 1536-dim cosine index with one dense cluster: the true top 40 are
+     * all present inside a beam of 200, yet trimming that beam by the index's OWN yielded score
+     * still returns only 38 of them - recall 0.95, not 1.0. Re-ranking the same beam by
+     * `vector.similarity.cosine` returns all 40. So the yielded score does not order identically to
+     * exact cosine, and a post-filter LIMIT over it discards true matches the beam already found.
+     *
+     * That makes the rescore the load-bearing half of `searchK`: without it, over-fetching buys row
+     * COUNT on the filtered path but not row CORRECTNESS.
+     */
+    @Test
+    fun `Neo4j re-ranks by exact similarity when the caller over-fetches`() {
+        val grammar = Neo4j5Grammar(ApocSortMapsEmitter())
+
+        val head = grammar.vectorSearchHead(
+            spec().copy(rowLimitParam = "rowLimit"),
+            rootAlias = "doc",
+            scoreAlias = "_score",
+        )
+
+        assertEquals(
+            """
+            CALL db.index.vector.queryNodes('Doc_embedding_vector', ${'$'}topK, ${'$'}queryVector)
+            YIELD node
+            WITH node AS doc, vector.similarity.cosine(node.embedding, ${'$'}queryVector) AS _score
+            """.trimIndent(),
+            head,
+        )
+    }
+
+    @Test
+    fun `Neo4j euclidean over-fetch re-ranks with its own similarity function`() {
+        val grammar = Neo4j5Grammar(ApocSortMapsEmitter())
+
+        val head = grammar.vectorSearchHead(
+            spec(SimilarityFunction.EUCLIDEAN).copy(rowLimitParam = "rowLimit"),
+            "doc",
+            "_score",
+        )
+
+        assertTrue(
+            head.contains("vector.similarity.euclidean(node.embedding, \$queryVector) AS _score"),
+            "the rescore must use the index's own similarity function, was: $head",
+        )
+    }
+
+    @Test
+    fun `an untuned Neo4j search is byte-identical to what it always emitted`() {
+        // The no-op promise: turning the knob off must not change the shape of the query, or
+        // "searchK = null" stops being a genuine no-op and every untuned caller inherits a rewrite.
+        val grammar = Neo4j5Grammar(ApocSortMapsEmitter())
+
+        val head = grammar.vectorSearchHead(spec(), "doc", "_score")
+
+        assertTrue(head.contains("YIELD node, score"), "untuned must keep carrying the native score")
+        assertFalse(head.contains("vector.similarity"), "untuned must not rescore, was: $head")
+    }
+
     @Test
     fun `FalkorDB queries by label and property, wraps vecf32, and normalizes distance to similarity`() {
         val grammar = FalkorDbCypherGrammar(CallSubqueryEmitter())
