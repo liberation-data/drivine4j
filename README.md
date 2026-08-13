@@ -628,6 +628,25 @@ roughly `k × selectivity` rows — at 22% selectivity, asking for 40 returns ab
 survivors are the globally-nearest that happen to be in scope, not the nearest within scope. `searchK`
 mitigates this. See [0.0.79-vector-search-k.md](docs/0.0.79-vector-search-k.md).
 
+**Searching a partition (`partitionLabel`).** When the same property is indexed per partition — one
+vector index per corpus, tenant, or other scope — name the partition and the search runs *inside* it,
+pre-filtered by construction, so `k` is no longer diluted by the filter:
+
+```kotlin
+persistenceManager.indexes.ensure(VectorIndexSpec("Corpus_abc", "embedding", 1536))
+
+graphObjectManager.loadNearest(
+    PropositionNode::class.java, null, queryEmbedding,
+    topK = 40, threshold = null, searchK = null, partitionLabel = "Corpus_abc",
+)
+```
+
+The label changes only which index is located: the node still carries its own `:Proposition` label, so
+`where { }` and the projection are unaffected. The index name re-derives as
+`${label}_${property}_vector`, matching what `VectorIndexSpec` would create — so a fragment whose
+`@VectorIndex` pins an explicit name cannot be partitioned, and says so.
+See [0.0.79-vector-partitioning.md](docs/0.0.79-vector-partitioning.md).
+
 Backends without a native vector index (Amazon Neptune) throw `UnsupportedOperationException`.
 
 **Pinning the physical index.** Only `dimensions` and `similarity_function` are always emitted;

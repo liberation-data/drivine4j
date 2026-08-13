@@ -117,6 +117,23 @@ class VectorSearchFalkorDbTest {
 
     @Test
     fun `vector search ranks, prunes, and thresholds on FalkorDB`() = verify(gom)
+
+    @Test
+    fun `a partition label is accepted as a bound argument on FalkorDB`() {
+        // FalkorDB addresses vector indexes by LABEL rather than by name, so the partition arrives as
+        // the label argument. Verifying against the engine matters more here than elsewhere: FalkorDB
+        // silently accepts unknown index OPTIONS keys, so "the query ran" is weak evidence — the proof
+        // is that only the partition's members come back.
+        pm.execute(QuerySpecification.withStatement("MATCH (n:Doc) WHERE n.id IN ['A','B'] SET n:Corpus_one"))
+        pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
+
+        val results = gom.loadNearest(
+            DocNode::class.java, null, QUERY, topK = 10, threshold = null,
+            searchK = null, partitionLabel = "Corpus_one",
+        )
+
+        assertEquals(listOf("A", "B"), results.map { it.value.id }.sorted())
+    }
 }
 
 @Testcontainers
@@ -153,4 +170,19 @@ class VectorSearchMemgraphTest {
 
     @Test
     fun `vector search ranks, prunes, and thresholds on Memgraph`() = verify(gom)
+
+    @Test
+    fun `a partition label is accepted as a bound argument on Memgraph`() {
+        // Memgraph addresses vector indexes by name, like Neo4j, so this exercises the bound
+        // index-name path on a third engine — the one most likely to need a literal fallback.
+        pm.execute(QuerySpecification.withStatement("MATCH (n:Doc) WHERE n.id IN ['A','B'] SET n:Corpus_one"))
+        pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
+
+        val results = gom.loadNearest(
+            DocNode::class.java, null, QUERY, topK = 10, threshold = null,
+            searchK = null, partitionLabel = "Corpus_one",
+        )
+
+        assertEquals(listOf("A", "B"), results.map { it.value.id }.sorted())
+    }
 }

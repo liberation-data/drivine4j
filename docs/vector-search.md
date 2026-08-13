@@ -125,13 +125,21 @@ queue, so `ef_search == k`. Omitting `searchK` leaves the emitted query byte-ide
 
 Full rationale: [0.0.79-vector-search-k.md](0.0.79-vector-search-k.md).
 
+**`partitionLabel`** — targets a per-partition index at runtime, so the search runs *inside* the
+partition rather than being post-filtered. The label is bound, not interpolated (one query plan for all
+partitions); the index name re-derives as `${label}_${property}_vector`, matching the create side.
+Targeting is not identity — the projection is unchanged.
+Full rationale: [0.0.79-vector-partitioning.md](0.0.79-vector-partitioning.md).
+
 ## Open follow-ups
 
 1. **Yield observability.** A filtered vector read that returns fewer rows than requested is silent
    about it. Reporting requested `k`, index yield, and post-filter count would make dilution visible
    rather than something to infer.
-2. **Phase 2 — `nearest{}` DSL sugar.** `loadNearest` is the primitive; a `nearest{}` block
+2. **Cross-partition search.** `partitionLabel` targets one partition; searching several needs one call
+   per index, merged and re-ranked, which changes what `k` means. Deliberately deferred.
+3. **Phase 2 — `nearest{}` DSL sugar.** `loadNearest` is the primitive; a `nearest{}` block
    composable with `where{}` (returning plain `List<T>`, dropping the score by design) is deferred.
-3. **Search anchored on a non-root node.** A view always searches its *root* fragment's embedding; a
+4. **Search anchored on a non-root node.** A view always searches its *root* fragment's embedding; a
    `@VectorIndex` on a relationship target is not reachable (you'd search the target and traverse
    back). Not currently supported.

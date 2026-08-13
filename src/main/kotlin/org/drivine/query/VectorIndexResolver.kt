@@ -37,6 +37,9 @@ internal object VectorIndexResolver {
         topKParam: String,
         vectorParam: String,
         rowLimitParam: String? = null,
+        partitionLabel: String? = null,
+        indexNameParam: String? = null,
+        labelParam: String? = null,
     ): VectorQuerySpec {
         val candidates = vectorProperties(fragmentClass)
         if (candidates.isEmpty()) {
@@ -61,11 +64,25 @@ internal object VectorIndexResolver {
             )
         }
 
-        val label = FragmentModel.labelsFor(fragmentClass).firstOrNull() ?: fragmentClass.simpleName
+        // A runtime partition label targets a DIFFERENT index of the same shape — one vector index per
+        // partition, all covering the same property. It replaces the label only for locating the index;
+        // the node this yields still carries the fragment's own label, so the WHERE and the projection
+        // downstream are untouched. That is what makes :Proposition:Corpus_abc work.
+        if (partitionLabel != null && chosen.name.isNotBlank()) {
+            throw DrivineException(
+                "Cannot target partition '$partitionLabel' on ${fragmentClass.simpleName}.${chosen.property}: " +
+                    "its @VectorIndex pins an explicit name ('${chosen.name}'), so there is no per-partition " +
+                    "name to derive. Remove the explicit name to use partitioned indexes."
+            )
+        }
+        val label = partitionLabel
+            ?: FragmentModel.labelsFor(fragmentClass).firstOrNull()
+            ?: fragmentClass.simpleName
         // The index was created on the on-disk property (see FragmentSchemaScanner), so the search and
         // the derived index name must use it too — otherwise an overridden embedding can't be found.
         // ifBlank, not ifEmpty: this must resolve exactly as SchemaItemSpec.effectiveName does on the
-        // create side, or a search looks for an index name that was never created.
+        // create side, or a search looks for an index name that was never created. Deriving from the
+        // label (rather than letting callers pass a name) is what keeps that symmetry under partitioning.
         val indexName = chosen.name.ifBlank { "${label}_${chosen.onDiskName}_vector" }
 
         return VectorQuerySpec(
@@ -76,6 +93,8 @@ internal object VectorIndexResolver {
             topKParam = topKParam,
             vectorParam = vectorParam,
             rowLimitParam = rowLimitParam,
+            indexNameParam = indexNameParam,
+            labelParam = labelParam,
         )
     }
 

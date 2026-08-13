@@ -47,7 +47,7 @@ class MemgraphGrammar(
      * (cosine similarity for the `cos` metric), so it carries through directly as the score.
      */
     override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
-        "CALL vector_search.search('${spec.indexName}', \$${spec.topKParam}, \$${spec.vectorParam})\n" +
+        "CALL vector_search.search(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})\n" +
             "YIELD node, similarity\n" +
             "WITH node AS $rootAlias, similarity AS $scoreAlias"
 

@@ -209,7 +209,7 @@ class Neo4j5Grammar(
      * directly. The index is referenced by name.
      */
     override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
-        "CALL db.index.vector.queryNodes('${spec.indexName}', \$${spec.topKParam}, \$${spec.vectorParam})\n" +
+        "CALL db.index.vector.queryNodes(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})\n" +
             "YIELD node, score\n" +
             "WITH node AS $rootAlias, score AS $scoreAlias"
 
@@ -300,7 +300,7 @@ class FalkorDbCypherGrammar(
             org.drivine.schema.SimilarityFunction.COSINE -> "1.0 - score"
             org.drivine.schema.SimilarityFunction.EUCLIDEAN -> "1.0 / (1.0 + score)"
         }
-        return "CALL db.idx.vector.queryNodes('${spec.label}', '${spec.property}', \$${spec.topKParam}, " +
+        return "CALL db.idx.vector.queryNodes(${spec.labelArgument()}, '${spec.property}', \$${spec.topKParam}, " +
             "vecf32(\$${spec.vectorParam}))\n" +
             "YIELD node, score\n" +
             "WITH node AS $rootAlias, $similarityExpr AS $scoreAlias"

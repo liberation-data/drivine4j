@@ -88,6 +88,11 @@ class VectorSearchNeo4jTest {
                     """.trimIndent()
                 )
             )
+            // A second, per-partition index over the same property: A and B also carry :Corpus_one,
+            // so the partitioned search below has its own index covering a subset of the same nodes.
+            pm.execute(QuerySpecification.withStatement("MATCH (n:Doc) WHERE n.id IN ['A','B'] SET n:Corpus_one"))
+            pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
+
             // Vector index population is async; wait for it before querying.
             pm.execute(QuerySpecification.withStatement("CALL db.awaitIndexes(300)"))
         }
@@ -146,5 +151,42 @@ class VectorSearchNeo4jTest {
 
         val filtered = gom.loadNearest(DocView::class.java, query, topK = 10, threshold = between)
         assertEquals(listOf("A"), filtered.map { it.value.doc.id })
+    }
+
+    // ----- Runtime partition targeting -----
+
+    @Test
+    fun `a partition label searches that partition's own index`() {
+        // The whole point of per-partition indexes: the ANN search runs INSIDE the partition, so the
+        // filter no longer has to thin a globally-nearest result set. Neo4j must accept the index name
+        // as a bound parameter for this to work at all — if it required a literal, every partition
+        // would compile to its own query plan.
+        val results = gom.loadNearest(
+            DocNode::class.java, null, query, topK = 10, threshold = null,
+            searchK = null, partitionLabel = "Corpus_one",
+        )
+
+        // Only the partition's members can come back — C and D were never in that index.
+        assertEquals(listOf("A", "B"), results.map { it.value.id }.sorted())
+    }
+
+    @Test
+    fun `the unpartitioned search still sees everything`() {
+        // Targeting is not identity: adding :Corpus_one to A and B must not change the default search.
+        val results = gom.loadNearest(DocNode::class.java, query, topK = 10)
+
+        assertEquals(listOf("A", "B", "C", "D"), results.map { it.value.id }.sorted())
+    }
+
+    @Test
+    fun `a partition composes with an over-fetch`() {
+        val results = gom.loadNearest(
+            DocNode::class.java, null, query, topK = 1, threshold = null,
+            searchK = 10, partitionLabel = "Corpus_one",
+        )
+
+        // Searched wide inside the partition, trimmed to one row.
+        assertEquals(1, results.size)
+        assertEquals("A", results.single().value.id)
     }
 }

@@ -31,13 +31,16 @@ class GeneratedLoadNearestTest {
         // delegates to the manager method with the view's INSTANCE injected
         assertTrue(
             flat.contains(
-                "loadNearest(T::class.java, SampleVectorViewQueryDsl.INSTANCE, vector, topK, threshold, searchK, spec)"
+                "loadNearest(T::class.java, SampleVectorViewQueryDsl.INSTANCE, vector, topK, threshold, searchK, partitionLabel, spec)"
             ),
             src,
         )
         // searchK must reach the generated wrapper — a caller who cannot widen the beam from the
         // generated extension has no way to reach the recall lever on a filtered view search.
         assertTrue(flat.contains("searchK: Int? = null"), src)
+        // partitionLabel must reach the generated wrapper too — per-partition indexes are exactly the
+        // filtered-view case, so a caller who cannot name a partition here cannot use them at all.
+        assertTrue(flat.contains("partitionLabel: String? = null"), src)
     }
 
     @Test

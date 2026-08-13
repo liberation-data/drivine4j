@@ -975,8 +975,9 @@ class QueryDslGenerator(
      * ```kotlin
      * inline fun <reified T : PropositionView> GraphObjectManager.loadNearest(
      *     vector: List<Float>, topK: Int, threshold: Double? = null, searchK: Int? = null,
+     *     partitionLabel: String? = null,
      *     noinline spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit,
-     * ): List<Scored<T>> = loadNearest(T::class.java, PropositionViewQueryDsl.INSTANCE, vector, topK, threshold, searchK, spec)
+     * ): List<Scored<T>> = loadNearest(T::class.java, PropositionViewQueryDsl.INSTANCE, vector, topK, threshold, searchK, partitionLabel, spec)
      * ```
      *
      * Only the filtered (spec) form is generated — the non-filtered `loadNearest<T>(vector, topK,
@@ -1012,6 +1013,11 @@ class QueryDslGenerator(
                     .build()
             )
             .addParameter(
+                ParameterSpec.builder("partitionLabel", String::class.asClassName().copy(nullable = true))
+                    .defaultValue("null")
+                    .build()
+            )
+            .addParameter(
                 ParameterSpec.builder(
                     "spec",
                     LambdaTypeName.get(
@@ -1022,7 +1028,7 @@ class QueryDslGenerator(
                 .build()
             )
             .returns(List::class.asClassName().parameterizedBy(scoredClass.parameterizedBy(TypeVariableName("T"))))
-            .addStatement("return loadNearest(T::class.java, $dslClassName.INSTANCE, vector, topK, threshold, searchK, spec)")
+            .addStatement("return loadNearest(T::class.java, $dslClassName.INSTANCE, vector, topK, threshold, searchK, partitionLabel, spec)")
             .build()
     }
 

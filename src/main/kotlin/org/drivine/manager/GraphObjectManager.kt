@@ -445,7 +445,8 @@ class GraphObjectManager(
         topK: Int,
         threshold: Double? = null,
         searchK: Int? = null,
-    ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold, searchK)
+        partitionLabel: String? = null,
+    ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold, searchK, partitionLabel)
 
     /**
      * Vector search variant that names the embedding [property] explicitly — use when the searched
@@ -462,11 +463,12 @@ class GraphObjectManager(
         topK: Int,
         threshold: Double? = null,
         searchK: Int? = null,
+        partitionLabel: String? = null,
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
         return executeScoredSearch(
             graphClass,
-            VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar, searchK),
+            VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar, searchK, partitionLabel),
         )
     }
 
@@ -506,13 +508,16 @@ class GraphObjectManager(
         topK: Int,
         threshold: Double? = null,
         searchK: Int? = null,
+        partitionLabel: String? = null,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
         val querySpec = GraphQuerySpec(queryObject).apply(spec)
         return executeScoredSearch(
             graphClass,
-            VectorSearchPlanner.planFiltered(graphClass, querySpec, vector, topK, threshold, grammar, searchK),
+            VectorSearchPlanner.planFiltered(
+                graphClass, querySpec, vector, topK, threshold, grammar, searchK, partitionLabel,
+            ),
         )
     }
 

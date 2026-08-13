@@ -24,6 +24,15 @@ import org.drivine.schema.SimilarityFunction
  *   Set only when the caller asked for a wider search than the number of rows they want back
  *   ([topKParam] > rows requested). Null keeps the emitted query byte-identical to what an untuned
  *   search has always produced.
+ * @param indexNameParam bound parameter carrying [indexName], or null to emit it as a literal.
+ * @param labelParam bound parameter carrying [label], or null to emit it as a literal.
+ *
+ *   Both are set together, and only when the caller targeted a partition label at runtime. Binding
+ *   rather than interpolating matters twice over there: a literal produces a **distinct query string
+ *   per partition**, so the plan cache holds one plan per corpus instead of one in total, and a label
+ *   derived from application data would otherwise be concatenated straight into Cypher. Left null for
+ *   the ordinary case, where the label is a compile-time constant from the fragment and the emitted
+ *   text is unchanged.
  */
 data class VectorQuerySpec(
     val label: String,
@@ -33,4 +42,13 @@ data class VectorQuerySpec(
     val topKParam: String,
     val vectorParam: String,
     val rowLimitParam: String? = null,
-)
+    val indexNameParam: String? = null,
+    val labelParam: String? = null,
+) {
+
+    /** The index-name argument as this query should spell it: a bound parameter, or a quoted literal. */
+    fun indexNameArgument(): String = indexNameParam?.let { "\$$it" } ?: "'$indexName'"
+
+    /** The label argument as this query should spell it: a bound parameter, or a quoted literal. */
+    fun labelArgument(): String = labelParam?.let { "\$$it" } ?: "'$label'"
+}
