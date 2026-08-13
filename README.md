@@ -606,6 +606,26 @@ cut).
 
 Backends without a native vector index (Amazon Neptune) throw `UnsupportedOperationException`.
 
+**Pinning the physical index.** Only `dimensions` and `similarity_function` are always emitted;
+everything else about the physical index is the engine's choice, and engine defaults change between
+versions — so the same declaration can produce a different index on different servers. Pin the HNSW
+graph shape portably on the annotation, and anything engine-specific on a `VectorIndexSpec`:
+
+```kotlin
+@VectorIndex(similarity = SimilarityFunction.COSINE, hnswM = 32, hnswEfConstruction = 200)
+val embedding: List<Float>? = null
+
+// engine-specific options — Neo4j quantization, FalkorDB efRuntime — in a catalog spec
+SchemaCatalog.of(
+    VectorIndexSpec("Proposition", "embedding", 1536,
+        engineOptions = listOf(Neo4jVectorOptions(quantizationEnabled = false))),
+)
+```
+
+An unpinned parameter stays the engine's to choose and is never reported as drift; a pinned one the
+engine contradicts is. The effective configuration is logged after every index creation either way.
+See [0.0.79-vector-index-tuning.md](docs/0.0.79-vector-index-tuning.md).
+
 **Filtering with `where { }`.** A `where { }` block AND-s caller predicates into the same
 post-search filter, so you can combine vector similarity with property predicates **and**
 relationship quantifiers in one statement:

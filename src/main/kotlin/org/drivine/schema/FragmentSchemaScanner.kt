@@ -119,6 +119,9 @@ internal object FragmentSchemaScanner {
                             dimensions = dimensions,
                             similarity = annotation.similarity,
                             name = annotation.name.ifEmpty { null },
+                            // Annotation ints cannot be null; anything under 1 means "engine default"
+                            hnswM = annotation.hnswM.takeIf { it > 0 },
+                            hnswEfConstruction = annotation.hnswEfConstruction.takeIf { it > 0 },
                         )
                     }
 

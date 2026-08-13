@@ -48,9 +48,11 @@ class IndexManager internal constructor(
             // A related item (same kind and label, not satisfying the spec) lets engines with
             // per-label indexes (FalkorDB) create only the missing properties
             val related = items.firstOrNull { it.kind == spec.kind && it.label == spec.label }
+            warnUnsupportedTuning(spec)
             executor.execute(grammar.createIndex(spec, related))
             val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
             logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
+            logEffectiveVectorConfig(spec, created)
             return EnsureResult.Created(created)
         }
         return if (grammar.matchesShape(existing, spec)) {
@@ -73,7 +75,15 @@ class IndexManager internal constructor(
         dimensions: Int,
         similarity: SimilarityFunction = SimilarityFunction.COSINE,
         name: String? = null,
-    ): EnsureResult = ensure(VectorIndexSpec(label, property, dimensions, similarity, name))
+        hnswM: Int? = null,
+        hnswEfConstruction: Int? = null,
+        engineOptions: List<EngineVectorOptions> = emptyList(),
+    ): EnsureResult = ensure(
+        VectorIndexSpec(
+            label, property, dimensions, similarity, name,
+            hnswM, hnswEfConstruction, engineOptions,
+        )
+    )
 
     /** Convenience for [ensure] with a [RangeIndexSpec] (single or composite). */
     fun ensureRange(label: String, vararg properties: String): EnsureResult =
@@ -122,14 +132,52 @@ class IndexManager internal constructor(
         // index covering other properties, which creation must take into account
         val related = introspectIndexes(spec.kind)
             .firstOrNull { it.kind == spec.kind && it.label == spec.label }
+        warnUnsupportedTuning(spec)
         executor.execute(grammar.createIndex(spec, related))
         val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
+        logEffectiveVectorConfig(spec, created)
         logger.warn(
             "Recreated {} {} on {}{} — previously indexed data may be stale " +
                 "(vector indexes: stored embeddings need re-embedding)",
             grammar.engine, spec.kind, spec.label, spec.properties
         )
         return EnsureResult.Recreated(existing, created)
+    }
+
+    /**
+     * Warns when a spec pins physical vector parameters this engine cannot express.
+     *
+     * Silently dropping them would reproduce the exact failure mode pinning exists to prevent: a
+     * declaration that reads as authoritative while the server picks its own values.
+     */
+    private fun warnUnsupportedTuning(spec: IndexSpec) {
+        if (spec !is VectorIndexSpec || !spec.pinsPhysicalConfig) return
+        val unsupported = grammar.unsupportedVectorTuning(spec).ifEmpty { return }
+        if (unsupported.isNotEmpty()) {
+            logger.warn(
+                "Vector index {} on {}{} pins {}, which {} cannot express — the engine will choose these " +
+                    "instead. Remove the pin or accept engine-chosen values on this backend.",
+                spec.effectiveName, spec.label, spec.properties, unsupported, grammar.engine
+            )
+        }
+    }
+
+    /**
+     * Logs the physical configuration a vector index actually ended up with.
+     *
+     * Engine defaults for quantization and HNSW change between versions, so an unpinned parameter is
+     * whatever that server chose today. Recording it at creation is what makes the value attributable
+     * later, instead of a suspect to be chased during an incident.
+     */
+    private fun logEffectiveVectorConfig(spec: IndexSpec, created: SchemaItemInfo) {
+        if (spec !is VectorIndexSpec) return
+        val effective = created.vectorConfigDescription()
+        if (effective.isEmpty()) return
+        val pinned = if (spec.pinsPhysicalConfig) "partly pinned" else "engine defaults"
+        logger.info(
+            "Vector index {} on {}{} effective config ({}): {}",
+            created.name ?: spec.effectiveName, spec.label, spec.properties, pinned, effective
+        )
     }
 
     /**

@@ -10,6 +10,12 @@ package org.drivine.schema
  * @param name the item's name, or null on engines without named items (FalkorDB)
  * @param dimensions vector indexes only: dimensionality
  * @param similarity vector indexes only: similarity function (normalized from engine vocabulary)
+ * @param quantizationEnabled vector indexes only: the engine-reported `vector.quantization.enabled`.
+ *   Null means "unobservable" (the engine does not report it), never "disabled" — see [dimensions]'s
+ *   sibling rule in [SchemaGrammar.matchesShape].
+ * @param hnswM vector indexes only: the engine-reported `vector.hnsw.m`, or null where unobservable
+ * @param hnswEfConstruction vector indexes only: the engine-reported `vector.hnsw.ef_construction`,
+ *   or null where unobservable
  * @param analyzer fulltext indexes only: the engine-reported analyzer, or null where the engine
  *   does not surface one (FalkorDB, Memgraph). Null means "unobservable", not "default" — drift is
  *   never reported against an analyzer the engine won't tell us about.
@@ -25,7 +31,22 @@ data class SchemaItemInfo(
     val similarity: SimilarityFunction? = null,
     val analyzer: String? = null,
     val status: String? = null,
+    val quantizationEnabled: Boolean? = null,
+    val hnswM: Int? = null,
+    val hnswEfConstruction: Int? = null,
 ) {
+
+    /**
+     * The physical vector parameters this item actually has, for logging what an engine chose when the
+     * spec did not pin it. Omits anything the engine did not report. Empty for non-vector items.
+     */
+    fun vectorConfigDescription(): String = listOfNotNull(
+        dimensions?.let { "dimensions=$it" },
+        similarity?.let { "similarity=$it" },
+        quantizationEnabled?.let { "quantization.enabled=$it" },
+        hnswM?.let { "hnsw.m=$it" },
+        hnswEfConstruction?.let { "hnsw.ef_construction=$it" },
+    ).joinToString(", ")
 
     companion object {
 
@@ -47,6 +68,12 @@ data class SchemaItemInfo(
                 name = spec.effectiveName,
                 dimensions = spec.dimensions,
                 similarity = spec.similarity,
+                // Only what the spec pinned portably. An unpinned parameter stays null because the engine
+                // picked it and we have not read it back — claiming a value here would invent one. Engine
+                // options are deliberately not resolved here: this synthesizes info without knowing which
+                // engine created the item, and guessing would be worse than reporting nothing.
+                hnswM = spec.hnswM,
+                hnswEfConstruction = spec.hnswEfConstruction,
             )
 
             is FullTextIndexSpec -> SchemaItemInfo(

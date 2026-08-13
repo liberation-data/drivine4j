@@ -19,6 +19,9 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     override val engine = "FalkorDB"
     override val supportsIfNotExists = false
     override val supportsNamedItems = false
+
+    /** FalkorDB expresses the portable HNSW parameters (as `M` / `efConstruction`) plus `efRuntime`. */
+    override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
     override val constraintsRequireBackingIndex = true
     override val constraintCreationIsAsync = true
 
@@ -34,7 +37,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
             SchemaStatement.Cypher(
                 """
                 CREATE VECTOR INDEX FOR (n:${spec.label}) ON (n.${spec.property})
-                OPTIONS {dimension: ${spec.dimensions}, similarityFunction: '${similarityName(spec.similarity)}'}
+                OPTIONS {${vectorIndexOptions(spec)}}
                 """.trimIndent()
             )
         )
@@ -173,6 +176,12 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                     dimensions = (vectorOptions?.get("dimension") as? Number)?.toInt(),
                     similarity = (vectorOptions?.get("similarityFunction") as? String)
                         ?.let { similarityFromName(it) },
+                    // FalkorDB reports the HNSW parameters back under its own names, so pinned values
+                    // are verifiable here rather than write-only. It reports its defaults when nothing
+                    // was pinned (M=16, efConstruction=200), which is exactly what makes an unpinned
+                    // parameter unverifiable-but-not-drifting: there is no declared value to compare.
+                    hnswM = (vectorOptions?.get("M") as? Number)?.toInt(),
+                    hnswEfConstruction = (vectorOptions?.get("efConstruction") as? Number)?.toInt(),
                 )
             }
 
@@ -256,6 +265,26 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     }
 
     // ----- Helpers -----
+
+    /**
+     * The `OPTIONS` body for a vector index.
+     *
+     * FalkorDB names the HNSW parameters `M` / `efConstruction`, and adds `efRuntime`, which is a
+     * search-time knob rather than a build-time one — hence its home on [FalkorDbVectorOptions] rather
+     * than the portable layer. As everywhere else, an unpinned parameter is simply omitted so the engine
+     * applies its own default.
+     */
+    private fun vectorIndexOptions(spec: VectorIndexSpec): String {
+        val tuning = spec.tuningFor(engine)
+        val options = spec.optionsFor(engine) as? FalkorDbVectorOptions
+        return listOfNotNull(
+            "dimension: ${spec.dimensions}",
+            "similarityFunction: '${similarityName(spec.similarity)}'",
+            tuning.hnswM?.let { "M: $it" },
+            tuning.hnswEfConstruction?.let { "efConstruction: $it" },
+            options?.efRuntime?.let { "efRuntime: $it" },
+        ).joinToString(", ")
+    }
 
     private fun similarityName(similarity: SimilarityFunction): String = similarity.name.lowercase()
 

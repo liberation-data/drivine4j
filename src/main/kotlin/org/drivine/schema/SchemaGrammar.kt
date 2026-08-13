@@ -110,9 +110,20 @@ interface SchemaGrammar {
      * engines that simply don't report the field back.
      */
     fun matchesShape(existing: SchemaItemInfo, spec: SchemaItemSpec): Boolean = when (spec) {
-        is VectorIndexSpec ->
+        is VectorIndexSpec -> {
+            // Resolved for THIS engine, so a Neo4j-specific override is compared on Neo4j and ignored
+            // on FalkorDB, where it was never going to apply.
+            val tuning = spec.tuningFor(engine)
             existing.dimensions == spec.dimensions &&
-                (existing.similarity == null || existing.similarity == spec.similarity)
+                (existing.similarity == null || existing.similarity == spec.similarity) &&
+                // Physical parameters follow the analyzer rule: drift only when the spec PINS one and the
+                // engine REPORTS one and they differ. An unpinned parameter is the engine's to choose, so
+                // it can never drift — otherwise every index would drift the moment a server changed its
+                // defaults, which is the opposite of what pinning is for.
+                pinnedMatches(tuning.hnswM, existing.hnswM) &&
+                pinnedMatches(tuning.hnswEfConstruction, existing.hnswEfConstruction) &&
+                matchesEngineVectorOptions(existing, spec)
+        }
 
         // An analyzer is drift only when the spec asks for one AND the engine reports one back.
         // Neo4j is the only engine that does both; FalkorDB and Memgraph report null, so a spec's
@@ -121,6 +132,34 @@ interface SchemaGrammar {
             spec.analyzer == null || existing.analyzer == null || existing.analyzer == spec.analyzer
 
         else -> true
+    }
+
+    /**
+     * Whether the engine-specific options in [spec] are satisfied by [existing].
+     *
+     * Only the grammar for a given engine understands its own options class, so the shared layer defers
+     * here. The default is permissive: an engine that cannot express its options has nothing to compare,
+     * and reports the gap through [unsupportedVectorTuning] instead of drifting forever.
+     */
+    fun matchesEngineVectorOptions(existing: SchemaItemInfo, spec: VectorIndexSpec): Boolean = true
+
+    /**
+     * What [spec] pins that this engine cannot express, named in the spec's own vocabulary.
+     *
+     * Empty when nothing is pinned, or when the engine honours everything pinned. A non-empty result
+     * means the created index will NOT have the requested physical shape — the caller is expected to say
+     * so out loud rather than let the declaration look like it took effect.
+     *
+     * The default assumes an engine expresses nothing, so a grammar that supports tuning must override.
+     * Options addressed to *other* engines are never reported: declaring Neo4j options does not make a
+     * FalkorDB deployment incorrect, it just doesn't apply there.
+     */
+    fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> {
+        val tuning = spec.tuningFor(engine)
+        return listOfNotNull(
+            tuning.hnswM?.let { "hnswM" },
+            tuning.hnswEfConstruction?.let { "hnswEfConstruction" },
+        ) + (spec.optionsFor(engine)?.let { listOf("${it::class.simpleName}") } ?: emptyList())
     }
 
     /**
@@ -136,3 +175,13 @@ interface SchemaGrammar {
             generateSequence(e) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
     }
 }
+
+/**
+ * Whether an [observed] value contradicts a [pinned] one.
+ *
+ * Both nulls are permissive, for different reasons: a null [pinned] means the declaration left the choice
+ * to the engine, and a null [observed] means the engine did not report the parameter back. Only two
+ * present-and-different values are drift.
+ */
+private fun <T> pinnedMatches(pinned: T?, observed: T?): Boolean =
+    pinned == null || observed == null || pinned == observed

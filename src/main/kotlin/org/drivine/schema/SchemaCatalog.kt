@@ -241,22 +241,47 @@ class SchemaCatalog private constructor(
         }
 
         /**
-         * Collapses duplicate declarations. The key is (kind, label, property set) — two
-         * declarations with the same key must be identical specs, otherwise they conflict
+         * Collapses duplicate declarations. The key is (kind, label, property set).
+         *
+         * Declarations for one key must agree on everything portable — dimensions, similarity, name,
+         * common HNSW parameters — and disagreement there is a conflict, as it always has been
          * (e.g. two fragments declaring different vector dimensions for the same property).
+         *
+         * The one permitted difference is **engine-specific options**. A vector index that is both
+         * queried and tuned is necessarily declared twice: `@VectorIndex` must stay on the fragment
+         * because [org.drivine.query.VectorIndexResolver] resolves `loadNearest`'s target index from
+         * the annotation, while engine options can only be expressed in a hand-written catalog spec.
+         * The two are not rivals, so the spec carrying engine options wins whole — no field-by-field
+         * merging. Two specs that *both* pin engine options and disagree are a genuine conflict.
          */
         private fun deduplicate(specs: List<SchemaItemSpec>): List<SchemaItemSpec> {
             val byKey = specs.groupBy { Triple(it.kind, it.label, it.properties.toSet()) }
-            return byKey.map { (key, group) ->
-                val distinct = group.distinct()
-                if (distinct.size > 1) {
-                    throw DrivineException(
-                        "Conflicting schema declarations for ${key.first} on ${key.second}${key.third.toList()}: " +
-                            distinct.joinToString("; ")
-                    )
-                }
-                distinct.first()
+            return byKey.map { (key, group) -> resolveDeclarations(key, group) }
+        }
+
+        private fun resolveDeclarations(
+            key: Triple<SchemaItemKind, String, Set<String>>,
+            group: List<SchemaItemSpec>,
+        ): SchemaItemSpec {
+            fun conflict(reason: String, offenders: List<SchemaItemSpec>): Nothing = throw DrivineException(
+                "Conflicting schema declarations for ${key.first} on ${key.second}${key.third.toList()} " +
+                    "($reason): " + offenders.joinToString("; ")
+            )
+
+            // Compare with engine options stripped: what remains is the portable declaration, and every
+            // contributor must agree on it before engine options are even considered.
+            val portable = group.map { if (it is VectorIndexSpec) it.withoutEngineOptions() else it }.distinct()
+            if (portable.size > 1) {
+                conflict("they disagree on portable parameters", portable)
             }
+
+            val pinning = group.filterIsInstance<VectorIndexSpec>()
+                .filter { it.engineOptions.isNotEmpty() }
+                .distinct()
+            if (pinning.size > 1) {
+                conflict("more than one declaration pins engine options", pinning)
+            }
+            return pinning.firstOrNull() ?: group.first()
         }
     }
 }

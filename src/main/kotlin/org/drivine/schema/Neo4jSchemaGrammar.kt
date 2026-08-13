@@ -18,6 +18,19 @@ class Neo4jSchemaGrammar : SchemaGrammar {
     override val supportsIfNotExists = true
     override val supportsNamedItems = true
 
+    /** Neo4j expresses the portable HNSW parameters and its own options class, so nothing is dropped. */
+    override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
+
+    override fun matchesEngineVectorOptions(existing: SchemaItemInfo, spec: VectorIndexSpec): Boolean =
+        pinnedQuantizationMatches(neo4jOptions(spec)?.quantizationEnabled, existing.quantizationEnabled)
+
+    private fun neo4jOptions(spec: VectorIndexSpec): Neo4jVectorOptions? =
+        spec.optionsFor(Neo4jVectorOptions.ENGINE) as? Neo4jVectorOptions
+
+    /** Same permissive rule as the portable parameters: unpinned or unreported is never drift. */
+    private fun pinnedQuantizationMatches(pinned: Boolean?, observed: Boolean?): Boolean =
+        pinned == null || observed == null || pinned == observed
+
     // ----- DDL emission -----
 
     override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
@@ -26,10 +39,7 @@ class Neo4jSchemaGrammar : SchemaGrammar {
                 """
                 CREATE VECTOR INDEX `${spec.effectiveName}` IF NOT EXISTS
                 FOR (n:`${spec.label}`) ON (n.`${spec.property}`)
-                OPTIONS { indexConfig: {
-                  `vector.dimensions`: ${spec.dimensions},
-                  `vector.similarity_function`: '${similarityName(spec.similarity)}'
-                }}
+                OPTIONS { indexConfig: { ${vectorIndexConfig(spec)} }}
                 """.trimIndent()
             )
         )
@@ -110,6 +120,11 @@ class Neo4jSchemaGrammar : SchemaGrammar {
                 dimensions = (indexConfig?.get("vector.dimensions") as? Number)?.toInt(),
                 similarity = (indexConfig?.get("vector.similarity_function") as? String)
                     ?.let { similarityFromName(it) },
+                // Read back whatever the server actually chose, pinned or not — this is what makes the
+                // effective config loggable and drift against a pinned value detectable.
+                quantizationEnabled = indexConfig?.get("vector.quantization.enabled") as? Boolean,
+                hnswM = (indexConfig?.get("vector.hnsw.m") as? Number)?.toInt(),
+                hnswEfConstruction = (indexConfig?.get("vector.hnsw.ef_construction") as? Number)?.toInt(),
             )
         }
 
@@ -180,6 +195,27 @@ class Neo4jSchemaGrammar : SchemaGrammar {
      */
     private fun analyzerConfig(analyzer: String?): String =
         analyzer?.let { "`fulltext.analyzer`: '$it'" } ?: ""
+
+    /**
+     * The `indexConfig` body for a vector index, as a single line.
+     *
+     * Dimensions and similarity are always emitted; the physical parameters are emitted only when the
+     * spec pins them, so an unpinned schema keeps taking the engine's default rather than freezing
+     * whatever this version of Drivine happened to think the default was.
+     *
+     * Single-line because a multi-line interpolation would defeat the caller's `trimIndent()`: the
+     * continuation lines would set the minimum indent and the surrounding DDL would keep its own.
+     */
+    private fun vectorIndexConfig(spec: VectorIndexSpec): String {
+        val tuning = spec.tuningFor(engine)
+        return listOfNotNull(
+            "`vector.dimensions`: ${spec.dimensions}",
+            "`vector.similarity_function`: '${similarityName(spec.similarity)}'",
+            neo4jOptions(spec)?.quantizationEnabled?.let { "`vector.quantization.enabled`: $it" },
+            tuning.hnswM?.let { "`vector.hnsw.m`: $it" },
+            tuning.hnswEfConstruction?.let { "`vector.hnsw.ef_construction`: $it" },
+        ).joinToString(", ")
+    }
 
     private fun similarityName(similarity: SimilarityFunction): String = similarity.name.lowercase()
 

@@ -87,6 +87,55 @@ class FalkorDbSchemaManagementIntegrationTest {
         assertEquals(1536, recreated.current.dimensions)
     }
 
+    @Test
+    @Order(1)
+    fun `vector index - pinned HNSW parameters actually take effect`() {
+        // A successful CREATE proves nothing here: FalkorDB silently ignores unknown OPTIONS keys
+        // (verified — an index created with a made-up key is accepted and comes back with defaults).
+        // The only real evidence that M / efConstruction are the right spelling is reading them back
+        // and seeing OUR values rather than FalkorDB's defaults of 16 / 200.
+        val spec = VectorIndexSpec(
+            "TunedNode", "embedding", 128,
+            hnswM = 24,
+            hnswEfConstruction = 222,
+            engineOptions = listOf(FalkorDbVectorOptions(efRuntime = 11)),
+        )
+
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
+
+        val found = assertNotNull(manager.indexes.find(spec))
+        assertEquals(24, found.hnswM, "M did not take effect; got FalkorDB's default")
+        assertEquals(222, found.hnswEfConstruction, "efConstruction did not take effect")
+    }
+
+    @Test
+    @Order(1)
+    fun `vector index - an engine override beats the portable pin on FalkorDB`() {
+        val spec = VectorIndexSpec(
+            "OverriddenNode", "embedding", 128,
+            hnswM = 16,
+            engineOptions = listOf(FalkorDbVectorOptions(hnswM = 32)),
+        )
+
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
+
+        assertEquals(32, assertNotNull(manager.indexes.find(spec)).hnswM)
+    }
+
+    @Test
+    @Order(1)
+    fun `vector index - a pinned HNSW parameter the engine contradicts is drift`() {
+        val pinned = VectorIndexSpec("DriftNode", "embedding", 128, hnswM = 24)
+        assertTrue(manager.indexes.ensure(pinned) is EnsureResult.Created)
+
+        val repinned = VectorIndexSpec("DriftNode", "embedding", 128, hnswM = 48)
+
+        assertTrue(
+            manager.indexes.ensure(repinned) is EnsureResult.Drift,
+            "a changed HNSW pin must surface as drift, not be silently ignored",
+        )
+    }
+
     // ----- Range index lifecycle -----
 
     @Test
