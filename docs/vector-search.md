@@ -131,15 +131,15 @@ partitions); the index name re-derives as `${label}_${property}_vector`, matchin
 Targeting is not identity — the projection is unchanged.
 Full rationale: [0.0.79-vector-partitioning.md](0.0.79-vector-partitioning.md).
 
+**Short-yield reporting** — a vector search returning fewer rows than requested logs the numbers at
+DEBUG on `org.drivine.manager.GraphObjectManager`, so post-filter dilution stops being silent.
+
 ## Open follow-ups
 
-1. **Yield observability.** A filtered vector read that returns fewer rows than requested is silent
-   about it. Reporting requested `k`, index yield, and post-filter count would make dilution visible
-   rather than something to infer.
-2. **Cross-partition search.** `partitionLabel` targets one partition; searching several needs one call
+1. **Cross-partition search.** `partitionLabel` targets one partition; searching several needs one call
    per index, merged and re-ranked, which changes what `k` means. Deliberately deferred.
-3. **Phase 2 — `nearest{}` DSL sugar.** `loadNearest` is the primitive; a `nearest{}` block
+2. **Phase 2 — `nearest{}` DSL sugar.** `loadNearest` is the primitive; a `nearest{}` block
    composable with `where{}` (returning plain `List<T>`, dropping the score by design) is deferred.
-4. **Search anchored on a non-root node.** A view always searches its *root* fragment's embedding; a
+3. **Search anchored on a non-root node.** A view always searches its *root* fragment's embedding; a
    `@VectorIndex` on a relationship target is not reachable (you'd search the target and traverse
    back). Not currently supported.

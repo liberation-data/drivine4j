@@ -25,6 +25,7 @@ import org.drivine.query.dsl.QueryIndexAdvisor
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.session.SessionManager
+import org.slf4j.LoggerFactory
 
 /**
  * Context for DSL-based queries containing the resolved view model, WHERE clause, and bindings.
@@ -49,6 +50,9 @@ class GraphObjectManager(
     private val objectMapper: ObjectMapper,
     private val subtypeRegistry: SubtypeRegistry
 ) {
+
+    private val logger = LoggerFactory.getLogger(GraphObjectManager::class.java)
+
     /**
      * The name of the database this manager is connected to.
      */
@@ -619,6 +623,32 @@ class GraphObjectManager(
     }
 
     /**
+     * Reports a vector search that returned fewer rows than asked for.
+     *
+     * Filters run *after* the index yields, so a scoped search returns roughly `k × selectivity` rows —
+     * ask for 40 against a 22%-selective filter and about 9 come back, drawn from the globally-nearest
+     * rather than the nearest within scope. That is silent otherwise: the caller sees a short list and
+     * has no way to tell dilution from a genuinely small result.
+     *
+     * Logged at DEBUG, not WARN, and deliberately. A view with required relationships routinely returns
+     * fewer than `topK` — documented, intended behaviour — so warning would be noise that teaches people
+     * to ignore the warning. Suppressing it behind a "shortfall greater than X" heuristic would mean
+     * picking X from a selectivity estimate Drivine does not have. Turn this logger up when recall looks
+     * wrong; the numbers needed to act are all in the line.
+     */
+    private fun reportShortYield(graphClass: Class<*>, plan: ScoredSearchPlan, returned: Int) {
+        val requested = plan.requestedRows ?: return
+        if (returned >= requested) return
+        if (!logger.isDebugEnabled) return
+        logger.debug(
+            "Vector search on {} returned {} of {} requested rows; the index was asked for {}. " +
+                "Filters apply after the index yields, so a scoped search thins the result — raise " +
+                "searchK to widen the search, or search a partition's own index.",
+            graphClass.simpleName, returned, requested, plan.indexK,
+        )
+    }
+
+    /**
      * Runs a planned scored search (vector or full-text) and packages each `{ value, score }` row into
      * a [Scored] instance, transforming the inner `value` with the same machinery [loadAll] uses, then
      * snapshots for dirty tracking. Registers subtypes first so polymorphic dispatch works. Both search
@@ -643,6 +673,8 @@ class GraphObjectManager(
             val score = (map["score"] as Number).toDouble()
             Scored(value, score)
         }
+
+        reportShortYield(graphClass, plan, scored.size)
 
         // Snapshot for dirty tracking, consistent with loadAll.
         snapshotResults(graphClass, scored.map { it.value })

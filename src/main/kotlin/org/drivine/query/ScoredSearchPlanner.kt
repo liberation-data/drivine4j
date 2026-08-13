@@ -14,7 +14,25 @@ import org.drivine.query.grammar.VectorQuerySpec
  * Both search kinds ([VectorSearchPlanner], [FullTextSearchPlanner]) produce this; the manager's
  * shared executor turns it into `List<Scored<T>>`.
  */
-internal data class ScoredSearchPlan(val cypher: String, val bindings: Map<String, Any?>)
+/**
+ * A planned scored search: the Cypher, its bindings, and — for vector searches — what was asked of the
+ * index versus what the caller wanted back.
+ *
+ * The two counts exist so the executor can report a short result. Note what is deliberately absent: the
+ * number of rows the index yielded *before* the filter. Observing that would mean restructuring the
+ * query to aggregate pre-filter, changing the plan shape and costing every caller on every query. It is
+ * also redundant in the only case that matters — when the result is short of [requestedRows] the
+ * trailing LIMIT never bound, so the rows returned *are* the post-filter survivors.
+ *
+ * @param requestedRows rows the caller asked for (`topK`), or null for searches that do not track it
+ * @param indexK what the index was actually asked for — `searchK` when over-fetching, else `topK`
+ */
+internal data class ScoredSearchPlan(
+    val cypher: String,
+    val bindings: Map<String, Any?>,
+    val requestedRows: Int? = null,
+    val indexK: Int? = null,
+)
 
 /**
  * Builds vector (approximate nearest-neighbour) search queries — the query-construction half of
@@ -62,7 +80,7 @@ internal object VectorSearchPlanner {
                 "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, emptyMap(), searchK, resolved))
+        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, emptyMap(), searchK, resolved), topK, searchK ?: topK)
     }
 
     /** Vector search over a `@GraphView` with a caller `where { }` predicate AND-ed into the filter. */
@@ -113,7 +131,7 @@ internal object VectorSearchPlanner {
                 "loadNearest requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, callerBindings, searchK, resolved))
+        return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, callerBindings, searchK, resolved), topK, searchK ?: topK)
     }
 
     private fun requireSupport(grammar: CypherGrammar) {
