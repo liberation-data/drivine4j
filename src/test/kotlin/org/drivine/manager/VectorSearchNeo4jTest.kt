@@ -90,6 +90,22 @@ class VectorSearchNeo4jTest {
                     """.trimIndent()
                 )
             )
+            // Two per-partition indexes over the same property, differing only in quantization, so
+            // tests can compare pinned-on against pinned-off without depending on the engine default.
+            pm.execute(QuerySpecification.withStatement("MATCH (n:Doc) SET n:DocExact, n:DocQuantized"))
+            pm.indexes.ensure(
+                VectorIndexSpec(
+                    "DocExact", "embedding", 4,
+                    engineOptions = listOf(Neo4jVectorOptions(quantizationEnabled = false)),
+                )
+            )
+            pm.indexes.ensure(
+                VectorIndexSpec(
+                    "DocQuantized", "embedding", 4,
+                    engineOptions = listOf(Neo4jVectorOptions(quantizationEnabled = true)),
+                )
+            )
+
             // A second, per-partition index over the same property: A and B also carry :Corpus_one,
             // so the partitioned search below has its own index covering a subset of the same nodes.
             pm.execute(QuerySpecification.withStatement("MATCH (n:Doc) WHERE n.id IN ['A','B'] SET n:Corpus_one"))
@@ -217,46 +233,46 @@ class VectorSearchNeo4jTest {
     }
 
     @Test
-    fun `the index's own score is approximate, which is what makes re-ranking worth doing`() {
-        // B is [0.6, 0.8, 0, 0] against a query of [1, 0, 0, 0]: cosine 0.6, normalized to exactly
-        // 0.8. The index does not report 0.8 — it reports a value off by ~1e-4, on a FOUR-dimensional
-        // vector. Ordering a beam by that score therefore does not reproduce exact-similarity order,
-        // which is why trimming an over-fetched beam by the yielded score loses true matches.
-        val indexScore = gom.loadNearest(DocNode::class.java, query, topK = 10)
-            .single { it.value.id == "B" }.score
-        val exact = gom.loadNearest(
-            DocNode::class.java, null, query, topK = 10, threshold = null, searchK = 10,
-        ).single { it.value.id == "B" }.score
+    fun `the rescore is exact whatever the index was configured to do`() {
+        // B is [0.6, 0.8, 0, 0] against a query of [1, 0, 0, 0]: cosine 0.6, normalized to exactly 0.8.
+        // The re-rank recomputes from the stored vector, so it yields 0.8 whether or not the index it
+        // read from quantizes. That independence is the point: it is what makes over-fetch-then-trim
+        // safe to apply without knowing how the index was built.
+        listOf("DocQuantized", "DocExact").forEach { partition ->
+            val exact = gom.loadNearest(
+                DocNode::class.java, null, query, topK = 10, threshold = null,
+                searchK = 10, partitionLabel = partition,
+            ).single { it.value.id == "B" }.score
 
-        assertEquals(0.8, exact, 1e-6, "the rescore should be exact")
-        assertTrue(
-            kotlin.math.abs(indexScore - 0.8) > 1e-6,
-            "expected the index score to be approximate, but it was exact ($indexScore) — if this " +
-                "ever passes, re-ranking an over-fetched beam has stopped being necessary",
-        )
+            assertEquals(0.8, exact, 1e-6, "the rescore should be exact on $partition")
+        }
     }
 
     @Test
-    fun `disabling quantization removes the approximation`() {
-        // The causal link: the index score is approximate BECAUSE Neo4j 2026.04 enables
-        // vector.quantization.enabled by default. Pin it off on a partition index over the same
-        // nodes and the yielded score becomes exact — which is also why an unpinned schema produces
-        // measurably different search behaviour across engine versions.
-        pm.execute(QuerySpecification.withStatement("MATCH (n:Doc) SET n:DocExact"))
-        pm.indexes.ensure(
-            VectorIndexSpec(
-                "DocExact", "embedding", 4,
-                engineOptions = listOf(Neo4jVectorOptions(quantizationEnabled = false)),
-            )
-        )
-        pm.execute(QuerySpecification.withStatement("CALL db.awaitIndexes(300)"))
-
+    fun `an index with quantization pinned off reports the exact score`() {
         val unquantized = gom.loadNearest(
             DocNode::class.java, null, query, topK = 10, threshold = null,
             searchK = null, partitionLabel = "DocExact",
         ).single { it.value.id == "B" }.score
 
         assertEquals(0.8, unquantized, 1e-6, "with quantization off the index score should be exact")
+    }
+
+    @Test
+    fun `whether the DEFAULT quantizes is the engine's business, and it changes`() {
+        // Deliberately asserts nothing about the unpinned index's score. An earlier version of this
+        // test asserted that the default quantizes — true on a neo4j:latest image pulled in June 2026,
+        // false on one pulled in August — so it passed locally and failed in CI, which pulls fresh.
+        // That is precisely the failure VectorIndexSpec's pinning exists to prevent, and asserting an
+        // unpinned default here would have been the same mistake one layer up. What IS invariant is
+        // that pinning wins, which the two tests above cover.
+        val fromDefaultIndex = gom.loadNearest(DocNode::class.java, query, topK = 10)
+            .single { it.value.id == "B" }.score
+
+        assertEquals(
+            0.8, fromDefaultIndex, 1e-3,
+            "an unpinned index may quantize or not, but must stay on the same scale",
+        )
     }
 
     @Test
