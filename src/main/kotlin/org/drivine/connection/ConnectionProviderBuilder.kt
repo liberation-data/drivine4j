@@ -58,6 +58,10 @@ class ConnectionProviderBuilder(
         requireNotNull(host) { "Host config is required" }
 
         val provider = when (type) {
+            DatabaseType.IN_PROCESS -> throw DrivineException(
+                "IN_PROCESS engines supply their own ConnectionProvider — register it as a bean " +
+                    "(or via DatabaseRegistry.register); connection properties cannot build one"
+            )
             DatabaseType.NEO4J -> buildNeo4jProvider(name)
             DatabaseType.NEPTUNE -> buildNeptuneProvider(name)
             DatabaseType.FALKORDB -> buildFalkorDbProvider(name)

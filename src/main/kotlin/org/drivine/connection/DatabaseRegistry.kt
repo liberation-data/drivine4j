@@ -15,7 +15,12 @@ class DatabaseRegistry(
 
     init {
         dataSourceMap.dataSources.forEach { (key, value) ->
-            withProperties(value).register(key)
+            /* An IN_PROCESS entry names and types the datasource for property
+             * binding, but its provider is code, not configuration — the
+             * application registers it (bean or [register]) after construction. */
+            if (value.type != DatabaseType.IN_PROCESS) {
+                withProperties(value).register(key)
+            }
         }
     }
 
