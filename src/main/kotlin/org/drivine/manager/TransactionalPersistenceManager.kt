@@ -27,6 +27,10 @@ class TransactionalPersistenceManager(
 
     private val finderOperations: FinderOperations = FinderOperations(this)
 
+    /** False when no schema source was supplied: nothing here could run DDL even if the engine could. */
+    override val supportsSchemaManagement: Boolean
+        get() = schemaManagerSource?.supportsSchemaManagement ?: false
+
     override val indexes: IndexManager
         get() = schemaManagerSource?.indexes ?: throw DrivineException(
             "Schema management is not available on this TransactionalPersistenceManager instance. " +

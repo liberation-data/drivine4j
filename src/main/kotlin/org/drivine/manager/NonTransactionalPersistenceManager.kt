@@ -20,6 +20,9 @@ class NonTransactionalPersistenceManager(
     override val grammar: CypherGrammar
         get() = connectionProvider.grammar
 
+    override val supportsSchemaManagement: Boolean
+        get() = connectionProvider.supportsSchemaManagement
+
     override val indexes: IndexManager by lazy { IndexManager(connectionProvider) }
 
     override val constraints: ConstraintManager by lazy { ConstraintManager(connectionProvider, indexes) }

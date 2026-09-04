@@ -24,6 +24,9 @@ class DelegatingPersistenceManager(
      * Schema operations always route to the non-transactional manager — DDL must run in
      * auto-commit mode regardless of any transaction in flight.
      */
+    override val supportsSchemaManagement: Boolean
+        get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).supportsSchemaManagement
+
     override val indexes: IndexManager
         get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).indexes
 
