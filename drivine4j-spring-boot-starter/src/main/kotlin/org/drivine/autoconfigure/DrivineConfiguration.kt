@@ -26,10 +26,23 @@ class DrivineConfiguration {
         return org.drivine.mapper.SubtypeRegistry()
     }
 
+    /**
+     * [ConnectionProvider] beans register alongside the property-built
+     * providers — the seam for engines connection properties cannot describe
+     * (an [org.drivine.connection.DatabaseType.EMBABEL] engine living in
+     * the application itself). A bean whose name collides with a datasource
+     * entry wins: application code outranks configuration.
+     */
     @Bean
     @ConditionalOnMissingBean
-    fun databaseRegistry(dataSourceMap: DataSourceMap, subtypeRegistry: org.drivine.mapper.SubtypeRegistry): DatabaseRegistry {
-        return DatabaseRegistry(dataSourceMap, subtypeRegistry)
+    fun databaseRegistry(
+        dataSourceMap: DataSourceMap,
+        subtypeRegistry: org.drivine.mapper.SubtypeRegistry,
+        providers: org.springframework.beans.factory.ObjectProvider<org.drivine.connection.ConnectionProvider>,
+    ): DatabaseRegistry {
+        val registry = DatabaseRegistry(dataSourceMap, subtypeRegistry)
+        providers.orderedStream().forEach { registry.register(it) }
+        return registry
     }
 
     @Bean

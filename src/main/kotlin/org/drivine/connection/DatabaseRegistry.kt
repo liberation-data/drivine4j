@@ -15,7 +15,13 @@ class DatabaseRegistry(
 
     init {
         dataSourceMap.dataSources.forEach { (key, value) ->
-            withProperties(value).register(key)
+            /* An entry for an engine with no wire names and types the
+             * datasource for property binding, but its provider is code, not
+             * configuration — the application registers it (bean or [register])
+             * after construction. */
+            if (value.type.buildableFromProperties) {
+                withProperties(value).register(key)
+            }
         }
     }
 

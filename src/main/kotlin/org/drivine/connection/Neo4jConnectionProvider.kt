@@ -25,7 +25,7 @@ class Neo4jConnectionProvider(
     private val config: Map<String, Any>,
     override val subtypeRegistry: SubtypeRegistry? = null,
     override val cypherDialect: CypherDialect = CypherDialect.NEO4J_5,
-) : ConnectionProvider {
+) : ConnectionProvider, NativeDriverSource<Driver> {
 
     private val driver: Driver = run {
         val driverConfig = Config.builder().apply {
@@ -58,6 +58,13 @@ class Neo4jConnectionProvider(
             }
         }
     }
+
+    /**
+     * The bolt driver backing this provider — same pool, same timeouts, same TLS and auth as
+     * the sessions [connect] hands out. Closed by [end]; do not close it here.
+     */
+    override val nativeDriver: Driver
+        get() = driver
 
     override fun connect(): Connection {
         val session: Session = if (database != null && type != DatabaseType.NEPTUNE) {
