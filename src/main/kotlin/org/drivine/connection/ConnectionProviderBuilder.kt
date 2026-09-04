@@ -55,13 +55,18 @@ class ConnectionProviderBuilder(
 
     fun register(name: String = "default"): ConnectionProvider {
         registry.connectionProvider(name)?.let { return it }
-        requireNotNull(host) { "Host config is required" }
 
-        val provider = when (type) {
-            DatabaseType.IN_PROCESS -> throw DrivineException(
-                "IN_PROCESS engines supply their own ConnectionProvider — register it as a bean " +
+        /* Checked ahead of the host requirement: an engine with no wire has no
+         * host to be missing, so the caller needs directions, not a puzzle. */
+        type?.takeIf { !it.buildableFromProperties }?.let {
+            throw DrivineException(
+                "${it.value} engines supply their own ConnectionProvider — register it as a bean " +
                     "(or via DatabaseRegistry.register); connection properties cannot build one"
             )
+        }
+        require(!host.isNullOrBlank()) { "Host config is required" }
+
+        val provider = when (type) {
             DatabaseType.NEO4J -> buildNeo4jProvider(name)
             DatabaseType.NEPTUNE -> buildNeptuneProvider(name)
             DatabaseType.FALKORDB -> buildFalkorDbProvider(name)

@@ -9,12 +9,13 @@ import org.drivine.transaction.TransactionContextHolder
 import org.junit.jupiter.api.Test
 
 /**
- * The IN_PROCESS seam: an engine living inside the application supplies its
- * own [ConnectionProvider] instead of connection properties. The registry
- * accepts it, the persistence-manager stack builds over it generically, and
- * the property path fails with directions rather than a puzzle.
+ * The seam for an engine with no wire ([DatabaseType.buildableFromProperties]
+ * false): it supplies its own [ConnectionProvider] instead of connection
+ * properties. The registry accepts it, the persistence-manager stack builds
+ * over it generically, and the property path fails with directions rather
+ * than a puzzle.
  */
-class InProcessProviderSpiTest {
+class EmbabelEngineProviderSpiTest {
 
     private class FakeInProcessConnection : Connection {
         override fun sessionId(): String = "in-process"
@@ -30,18 +31,18 @@ class InProcessProviderSpiTest {
     }
 
     private class FakeInProcessProvider(override val name: String) : ConnectionProvider {
-        override val type: DatabaseType = DatabaseType.IN_PROCESS
+        override val type: DatabaseType = DatabaseType.EMBABEL
         override val subtypeRegistry: org.drivine.mapper.SubtypeRegistry? = null
         override fun connect(): Connection = FakeInProcessConnection()
         override fun end() = Unit
     }
 
     @Test
-    fun `an IN_PROCESS datasource entry is left for the application's provider`() {
+    fun `a wireless datasource entry is left for the application's provider`() {
         val registry = DatabaseRegistry(
             DataSourceMap(
                 mutableMapOf(
-                    "graph" to ConnectionProperties(type = DatabaseType.IN_PROCESS, host = "unused"),
+                    "graph" to ConnectionProperties(type = DatabaseType.EMBABEL),
                 ),
             ),
         )
@@ -49,7 +50,7 @@ class InProcessProviderSpiTest {
 
         registry.register(FakeInProcessProvider("graph"))
         assertThat(registry.connectionProvider("graph")).isNotNull
-        assertThat(registry.connectionProvider("graph")!!.type).isEqualTo(DatabaseType.IN_PROCESS)
+        assertThat(registry.connectionProvider("graph")!!.type).isEqualTo(DatabaseType.EMBABEL)
     }
 
     @Test
@@ -63,18 +64,26 @@ class InProcessProviderSpiTest {
             QuerySpecification.withStatement("RETURN 1").transform(String::class.java),
         )
         assertThat(rows).containsExactly("mapped-by-the-engine")
-        assertThat(manager.type).isEqualTo(DatabaseType.IN_PROCESS)
+        assertThat(manager.type).isEqualTo(DatabaseType.EMBABEL)
     }
 
     @Test
-    fun `connection properties cannot build an IN_PROCESS provider, and say so`() {
+    fun `connection properties cannot build an EMBABEL provider, and say so`() {
         val registry = DatabaseRegistry(DataSourceMap(mutableMapOf()))
         assertThatThrownBy {
             registry.builder()
-                .withType(DatabaseType.IN_PROCESS)
-                .host("irrelevant")
+                .withType(DatabaseType.EMBABEL)
                 .register("graph")
         }.isInstanceOf(DrivineException::class.java)
-            .hasMessageContaining("register it as a bean")
+            .hasMessageContaining("EMBABEL engines supply their own ConnectionProvider")
+    }
+
+    @Test
+    fun `a wire engine still requires a host`() {
+        val registry = DatabaseRegistry(DataSourceMap(mutableMapOf()))
+        assertThatThrownBy {
+            registry.builder().withType(DatabaseType.NEO4J).register("graph")
+        }.isInstanceOf(IllegalArgumentException::class.java)
+            .hasMessageContaining("Host config is required")
     }
 }

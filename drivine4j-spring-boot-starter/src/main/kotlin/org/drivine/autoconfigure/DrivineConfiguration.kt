@@ -29,7 +29,7 @@ class DrivineConfiguration {
     /**
      * [ConnectionProvider] beans register alongside the property-built
      * providers — the seam for engines connection properties cannot describe
-     * (an [org.drivine.connection.DatabaseType.IN_PROCESS] engine living in
+     * (an [org.drivine.connection.DatabaseType.EMBABEL] engine living in
      * the application itself). A bean whose name collides with a datasource
      * entry wins: application code outranks configuration.
      */

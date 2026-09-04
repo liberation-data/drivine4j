@@ -4,7 +4,8 @@ import org.drivine.query.grammar.CypherDialect
 
 data class ConnectionProperties(
     val type: DatabaseType,
-    val host: String,
+    /** Empty for engines with no wire — see [DatabaseType.buildableFromProperties]. */
+    val host: String = "",
     val port: Int? = null,
     val userName: String? = null,
     val password: String? = null,
