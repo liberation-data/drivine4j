@@ -44,6 +44,22 @@ interface PersistenceManager {
     val constraints: ConstraintManager
 
     /**
+     * Whether [indexes] and [constraints] can actually do anything on this database.
+     *
+     * Some engines have no schema DDL — Neptune and generic openCypher resolve to
+     * [org.drivine.schema.UnsupportedSchemaGrammar], which throws on every operation by design.
+     * Callers that provision schema at startup need to know that BEFORE issuing DDL, and asking
+     * the engine's identity is the wrong question: it is the grammar that can or cannot, and an
+     * engine the caller has never heard of may be perfectly capable. Ask this instead of
+     * matching [type] against a set of known-good engines.
+     *
+     * Defaults to true so existing implementations keep compiling; an engine without schema
+     * management must say so.
+     */
+    val supportsSchemaManagement: Boolean
+        get() = true
+
+    /**
      * Queries for a set of results according to the supplied specification.
      * @param spec
      * TODO: Return Map type.
