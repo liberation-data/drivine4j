@@ -1,7 +1,9 @@
 package org.drivine.schema
 
+import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProvider
 import org.slf4j.LoggerFactory
+import java.time.Duration
 
 /**
  * Idempotent, drift-aware index management for a single database.
@@ -28,6 +30,8 @@ import org.slf4j.LoggerFactory
 class IndexManager internal constructor(
     private val executor: SchemaExecutor,
     val grammar: SchemaGrammar,
+    private val asyncDropTimeout: Duration = Duration.ofSeconds(30),
+    private val asyncPollInterval: Duration = Duration.ofMillis(200),
 ) {
 
     internal constructor(connectionProvider: ConnectionProvider) :
@@ -114,8 +118,7 @@ class IndexManager internal constructor(
      */
     fun drop(spec: IndexSpec): Boolean {
         val existing = find(spec) ?: return false
-        executor.execute(grammar.dropIndex(narrowTo(existing, spec)))
-        logger.info("Dropped {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
+        dropExisting(existing, spec)
         return true
     }
 
@@ -126,7 +129,7 @@ class IndexManager internal constructor(
     fun recreate(spec: IndexSpec): EnsureResult.Recreated {
         val existing = find(spec)
         if (existing != null) {
-            executor.execute(grammar.dropIndex(narrowTo(existing, spec)))
+            dropExisting(existing, spec)
         }
         // Re-introspect after the drop: on per-label-index engines the label may still have an
         // index covering other properties, which creation must take into account
@@ -178,6 +181,33 @@ class IndexManager internal constructor(
             "Vector index {} on {}{} effective config ({}): {}",
             created.name ?: spec.effectiveName, spec.label, spec.properties, pinned, effective
         )
+    }
+
+    /**
+     * Drops [existing], narrowed to what [spec] asked for, and — on engines that tear indexes down
+     * in the background (FalkorDB) — waits until the index is actually gone. Without the wait the
+     * DDL returns while introspection still reports the index, so a caller that drops and then
+     * looks (or recreates) sees the index it just removed.
+     */
+    private fun dropExisting(existing: SchemaItemInfo, spec: IndexSpec) {
+        executor.execute(grammar.dropIndex(narrowTo(existing, spec)))
+        awaitDropped(spec)
+        logger.info("Dropped {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
+    }
+
+    /** Polls until [spec] no longer resolves to an index, on engines whose drops are asynchronous. */
+    private fun awaitDropped(spec: IndexSpec) {
+        if (!grammar.indexOperationsAreAsync) return
+        val deadline = System.currentTimeMillis() + asyncDropTimeout.toMillis()
+        while (find(spec) != null) {
+            if (System.currentTimeMillis() >= deadline) {
+                throw DrivineException(
+                    "Timed out after $asyncDropTimeout waiting for ${spec.kind} on " +
+                        "${spec.label}${spec.properties} to be dropped"
+                )
+            }
+            Thread.sleep(asyncPollInterval.toMillis())
+        }
     }
 
     /**

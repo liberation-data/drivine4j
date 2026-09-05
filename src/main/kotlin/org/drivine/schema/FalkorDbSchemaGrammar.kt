@@ -24,6 +24,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
     override val constraintsRequireBackingIndex = true
     override val constraintCreationIsAsync = true
+    override val indexOperationsAreAsync = true
 
     // ----- DDL emission -----
 

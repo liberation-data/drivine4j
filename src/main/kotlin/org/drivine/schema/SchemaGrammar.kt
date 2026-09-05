@@ -45,6 +45,14 @@ interface SchemaGrammar {
     val constraintCreationIsAsync: Boolean
         get() = false
 
+    /**
+     * Whether index creation and dropping are asynchronous — the DDL returns immediately while the
+     * engine builds or tears the index down in the background, so introspection can still report an
+     * index that has just been dropped (FalkorDB).
+     */
+    val indexOperationsAreAsync: Boolean
+        get() = false
+
     // ----- DDL emission -----
 
     /**
