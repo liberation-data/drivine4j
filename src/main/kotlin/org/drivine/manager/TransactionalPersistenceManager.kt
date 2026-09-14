@@ -7,6 +7,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
+import org.drivine.store.StoreIdentity
 import org.drivine.transaction.DrivineTransactionObject
 import org.drivine.transaction.TransactionContextHolder
 
@@ -30,6 +31,13 @@ class TransactionalPersistenceManager(
     /** False when no schema source was supplied: nothing here could run DDL even if the engine could. */
     override val supportsSchemaManagement: Boolean
         get() = schemaManagerSource?.supportsSchemaManagement ?: false
+
+    /**
+     * Routed to the non-transactional manager when there is one. Assigning an identity inside a
+     * caller's transaction would let a rollback discard the stamp the caller was just told about.
+     */
+    override val storeIdentity: StoreIdentity
+        get() = schemaManagerSource?.storeIdentity ?: super<PersistenceManager>.storeIdentity
 
     override val indexes: IndexManager
         get() = schemaManagerSource?.indexes ?: throw DrivineException(
