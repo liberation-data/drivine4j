@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.transaction.TransactionContextHolder
 import org.springframework.stereotype.Component
+import java.util.concurrent.ConcurrentHashMap
 
 
 
@@ -17,7 +18,12 @@ class PersistenceManagerFactory(
     private val registry: DatabaseRegistry,
     private val contextHolder: TransactionContextHolder
 ) {
-    private val managers: MutableMap<String, PersistenceManagerEntry> = mutableMapOf()
+    /**
+     * Concurrent, and populated atomically per name: each manager caches per-instance state (such as
+     * store identity), so two threads first-touching one database must share one entry, not race to
+     * register two.
+     */
+    private val managers = ConcurrentHashMap<String, PersistenceManagerEntry>()
 
     /**
      * Returns a PersistenceManager for the database registered under the specified name.
@@ -28,26 +34,15 @@ class PersistenceManagerFactory(
      */
     @JvmOverloads
     fun get(database: String = "default", type: PersistenceManagerType = PersistenceManagerType.DELEGATING): PersistenceManager {
-        if (!managers.containsKey(database)) {
-            register(database)
-        }
+        val entry = managers.computeIfAbsent(database, ::register)
         return when (type) {
-            PersistenceManagerType.TRANSACTIONAL -> {
-                managers[database]?.transactional
-                    ?: throw DrivineException("No transactional manager found for database: $database")
-            }
-            PersistenceManagerType.NON_TRANSACTIONAL -> {
-                managers[database]?.nonTransactional
-                    ?: throw DrivineException("No non-transactional manager found for database: $database")
-            }
-            PersistenceManagerType.DELEGATING -> {
-                managers[database]?.delegating
-                    ?: throw DrivineException("No delegating manager found for database: $database")
-            }
+            PersistenceManagerType.TRANSACTIONAL -> entry.transactional
+            PersistenceManagerType.NON_TRANSACTIONAL -> entry.nonTransactional
+            PersistenceManagerType.DELEGATING -> entry.delegating
         }
     }
 
-    private fun register(name: String) {
+    private fun register(name: String): PersistenceManagerEntry {
         val connectionProvider = registry.connectionProvider(name)
             ?: throw DrivineException("No database is registered under name: $name")
 
@@ -55,7 +50,7 @@ class PersistenceManagerFactory(
         // The non-transactional manager owns the schema managers (DDL must run in auto-commit
         // mode); the transactional manager borrows them from it.
         val nonTransactional = NonTransactionalPersistenceManager(connectionProvider, name, connectionProvider.type, registry.subtypeRegistry)
-        managers[name] = PersistenceManagerEntry(
+        return PersistenceManagerEntry(
             transactional = TransactionalPersistenceManager(contextHolder, name, connectionProvider.type, registry.subtypeRegistry, grammar, nonTransactional),
             nonTransactional = nonTransactional,
             delegating = DelegatingPersistenceManager(name, connectionProvider.type, contextHolder, this, registry.subtypeRegistry, grammar)
