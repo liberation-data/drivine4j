@@ -7,6 +7,8 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
+import org.drivine.store.StoreIdentity
+import org.drivine.store.StoreIdentityResolver
 import java.util.*
 
 interface PersistenceManager {
@@ -58,6 +60,21 @@ interface PersistenceManager {
      */
     val supportsSchemaManagement: Boolean
         get() = true
+
+    /**
+     * Stable identity of the store behind this manager — see [StoreIdentity].
+     *
+     * Ask this, not the connection string, when something must decide whether it is pointed at the
+     * store its data came from. An application that stamps its own artifacts with this value turns
+     * "is this the right database?" into an equality check; without it, a process wired to a
+     * different store than the one holding its data has no way to notice, and will provision fresh
+     * state beside data it simply cannot see.
+     *
+     * Resolved on first access and assigned if the store has never been stamped. Implementations
+     * that hold a connection cache it; the default resolves on every call.
+     */
+    val storeIdentity: StoreIdentity
+        get() = StoreIdentityResolver(this).resolve()
 
     /**
      * Queries for a set of results according to the supplied specification.
