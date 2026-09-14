@@ -4,11 +4,14 @@ import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
+import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.transform
+import org.drivine.session.SessionManager
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -218,6 +221,21 @@ class StoreIdentityNeo4jTest {
 
     @Test fun `an in-flight peer stamp is not duplicated on Neo4j`() =
         verifyInFlightPeerStampIsNotDuplicated(provider, { open() }, ::wipe)
+
+    /**
+     * Repository-style code usually holds only a [GraphObjectManager]. It must reach the same
+     * identity as the manager underneath it — a second, independently obtained answer is exactly
+     * the drift this primitive exists to rule out.
+     */
+    @Test
+    fun `a GraphObjectManager reports its manager's identity`() {
+        val pm = open()
+        val mapper = Neo4jObjectMapper.instance
+        val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+
+        assertEquals(pm.storeIdentity, gom.storeIdentity)
+        assertEquals(pm.database, gom.database)
+    }
 }
 
 @Testcontainers

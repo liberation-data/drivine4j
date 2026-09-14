@@ -25,6 +25,7 @@ import org.drivine.query.dsl.QueryIndexAdvisor
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.session.SessionManager
+import org.drivine.store.StoreIdentity
 import org.slf4j.LoggerFactory
 
 /**
@@ -58,6 +59,25 @@ class GraphObjectManager(
      */
     val database: String
         get() = persistenceManager.database
+
+    /**
+     * Stable identity of the store this manager's objects live in — see [StoreIdentity].
+     *
+     * Exposed here because [database] is not enough to answer the question callers actually have.
+     * A datasource name says which entry in the configuration was used; it says nothing about which
+     * store answered, so a process wired to the wrong one reports the same name as a process wired
+     * to the right one. Ask this when something must decide whether it is talking to the store its
+     * data came from.
+     *
+     * Repository-style code typically holds only a [GraphObjectManager]. Without this it would have
+     * to be handed a second, redundant reference to the same [PersistenceManager] purely to reach an
+     * identity this object already has — a seam that invites the two to drift apart.
+     *
+     * Resolution and caching belong to the underlying manager, which assigns an identity on first
+     * sight of an unstamped store and then holds it for the life of the manager.
+     */
+    val storeIdentity: StoreIdentity
+        get() = persistenceManager.storeIdentity
 
     private val grammar = persistenceManager.grammar
 
