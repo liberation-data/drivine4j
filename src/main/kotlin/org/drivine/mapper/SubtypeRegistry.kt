@@ -25,7 +25,7 @@ class SubtypeRegistry {
      *
      * Also registers the abstract type mapping with Jackson's ObjectMapper to enable
      * deserialization of the interface/abstract type to the concrete implementation.
-     * This is needed for SessionManager.getSnapshot() which uses Jackson's treeToValue().
+     * This is needed wherever Jackson's treeToValue() materialises the base type.
      *
      * @param baseClass The base class
      * @param name The subtype name (used to match Neo4j labels or type properties)
@@ -133,7 +133,7 @@ class SubtypeRegistry {
     /**
      * Registers an abstract type mapping with Jackson's ObjectMapper.
      * This enables Jackson to deserialize the abstract/interface type to the concrete implementation
-     * when using treeToValue() in SessionManager.getSnapshot().
+     * when using treeToValue().
      *
      * Only registers if the base class is actually abstract (interface or abstract class),
      * as Jackson's addAbstractTypeMapping() requires an abstract base type.

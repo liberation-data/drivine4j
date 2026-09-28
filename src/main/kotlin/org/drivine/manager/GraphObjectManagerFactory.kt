@@ -19,6 +19,8 @@ class GraphObjectManagerFactory(
      * individual manager can still be turned up or down after it is handed out.
      */
     private val indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN,
+    /** The session bound of every manager this factory creates. See [SessionManager.maxEntries]. */
+    private val sessionMaxEntries: Int = SessionManager.DEFAULT_MAX_ENTRIES,
 ) {
     private val managers: MutableMap<String, GraphObjectManager> = mutableMapOf()
 
@@ -32,7 +34,7 @@ class GraphObjectManagerFactory(
         val key = "$database:$type"
         if (!managers.containsKey(key)) {
             val persistenceManager = persistenceManagerFactory.get(database, type)
-            val sessionManager = SessionManager(objectMapper)
+            val sessionManager = SessionManager(objectMapper, sessionMaxEntries)
             managers[key] = GraphObjectManager(persistenceManager, sessionManager, objectMapper, subtypeRegistry)
                 .apply { indexAdvice = this@GraphObjectManagerFactory.indexAdvice }
         }

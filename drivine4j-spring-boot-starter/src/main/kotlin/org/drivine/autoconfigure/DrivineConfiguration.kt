@@ -6,6 +6,7 @@ import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.dsl.IndexAdvicePolicy
+import org.drivine.session.SessionManager
 import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
@@ -78,6 +79,7 @@ class DrivineConfiguration {
             Neo4jObjectMapper.instance,
             subtypeRegistry,
             queryProperties?.indexAdvice ?: IndexAdvicePolicy.WARN,
+            queryProperties?.sessionMaxEntries ?: SessionManager.DEFAULT_MAX_ENTRIES,
         )
     }
 }

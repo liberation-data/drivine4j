@@ -6,6 +6,7 @@ import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.GraphObjectMergeBuilder
+import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
@@ -29,6 +30,7 @@ internal class BatchSaveOperations(
     private val sessionManager: SessionManager,
     private val chunkSize: Int,
     private val grammar: CypherGrammar? = null,
+    private val storedKeys: StoredPropertyKeys? = null,
 ) {
     /**
      * Builds the statements for [items] (assumed non-empty), grouped by runtime class. Within a group
@@ -110,7 +112,7 @@ internal class BatchSaveOperations(
     }
 
     private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType, nullPolicy: NullPolicy) =
-        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar).buildMergeStatements(obj, cascade, nullPolicy)
+        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys).buildMergeStatements(obj, cascade, nullPolicy)
 
     /** Root [FragmentModel] and (for views) the root field name; mirrors the manager's snapshot metadata. */
     private fun rootMetadata(clazz: Class<*>): Pair<FragmentModel, String?> =

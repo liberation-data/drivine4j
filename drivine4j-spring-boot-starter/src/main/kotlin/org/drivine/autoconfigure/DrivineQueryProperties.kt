@@ -1,6 +1,7 @@
 package org.drivine.autoconfigure
 
 import org.drivine.query.dsl.IndexAdvicePolicy
+import org.drivine.session.SessionManager
 import org.springframework.boot.context.properties.ConfigurationProperties
 
 /**
@@ -10,6 +11,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  * drivine:
  *   query:
  *     index-advice: FAIL      # WARN (default) | OFF
+ *     session-max-entries: 100000
  * ```
  */
 @ConfigurationProperties(prefix = "drivine.query")
@@ -23,4 +25,11 @@ data class DrivineQueryProperties(
      * reasonable thing to do on a small collection.
      */
     var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN,
+
+    /**
+     * How many loaded objects each GraphObjectManager's session tracks for dirty checking. Past it the
+     * least recently used is evicted; an evicted object's next save writes all fields. An entry is a
+     * compact digest (bytes per field), so the default costs tens of megabytes at most.
+     */
+    var sessionMaxEntries: Int = SessionManager.DEFAULT_MAX_ENTRIES,
 )

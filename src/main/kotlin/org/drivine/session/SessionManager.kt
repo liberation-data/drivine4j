@@ -3,28 +3,47 @@ package org.drivine.session
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.model.FragmentModel
+import java.util.Collections
 
 /**
  * Manages session state for GraphObjectManager, tracking loaded objects
  * to enable dirty field detection and optimized saves.
  *
- * The session stores JSON snapshots of loaded objects, keyed by their ID.
- * When an object is saved, the session compares the current state with the
- * snapshot to determine which fields have changed.
+ * The session stores a [SnapshotDigest] of each loaded object, keyed by class and ID. When an object
+ * is saved, the session compares a digest of its current state with the stored one to determine which
+ * fields and relationship targets changed. A digest keeps shape and ids and hashes large values, so an
+ * entry costs bytes per field rather than a copy of the object's text and embeddings.
+ *
+ * The session outlives transactions, so a load and a later save write only what changed. It is
+ * bounded: past [maxEntries] the least recently used entry is evicted, and an evicted object is simply
+ * untracked — its next save writes all fields. Safe for concurrent use.
  */
-class SessionManager(
-    private val objectMapper: ObjectMapper
+class SessionManager @JvmOverloads constructor(
+    private val objectMapper: ObjectMapper,
+    val maxEntries: Int = DEFAULT_MAX_ENTRIES,
 ) {
+    init {
+        require(maxEntries > 0) { "maxEntries must be positive, was $maxEntries" }
+    }
+
+    private val digest = SnapshotDigest(objectMapper)
 
     /**
-     * Session storage for object snapshots, keyed by (class name + ID value).
+     * Session storage for object digests, keyed by (class name + ID value), in access order.
      * Example key: "sample.mapped.fragment.Person:550e8400-e29b-41d4-a716-446655440000"
      */
-    private val snapshots: MutableMap<String, JsonNode> = mutableMapOf()
+    private val snapshots: MutableMap<String, JsonNode> = Collections.synchronizedMap(
+        object : LinkedHashMap<String, JsonNode>(INITIAL_CAPACITY, LOAD_FACTOR, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, JsonNode>?) = size > maxEntries
+        }
+    )
+
+    /** The number of objects currently tracked. Never exceeds [maxEntries]. */
+    val size: Int
+        get() = snapshots.size
 
     /**
      * Takes a snapshot of an object and stores it in the session.
-     * The entire object is serialized to JSON for later comparison.
      *
      * @param obj The object to snapshot
      * @param fragmentModel The fragment model to extract the ID field name
@@ -35,10 +54,9 @@ class SessionManager(
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("Cannot snapshot object without @GraphNodeId field: ${obj.javaClass.name}")
 
-        // Serialize the object to JSON
-        val jsonNode = objectMapper.valueToTree<JsonNode>(obj)
+        val jsonNode = digest.of(obj)
 
-        // Extract the ID value from the JSON
+        // Extract the ID value from the digest (ids are kept verbatim)
         val idValue = if (rootFragmentFieldName != null) {
             // For GraphViews, navigate to the root fragment first (e.g., jsonNode.issue.uuid)
             jsonNode.get(rootFragmentFieldName)?.get(nodeIdField)?.asText()
@@ -49,8 +67,7 @@ class SessionManager(
                 ?: throw IllegalArgumentException("ID field '$nodeIdField' not found in object of type ${obj.javaClass.name}")
         }
 
-        val key = buildKey(obj.javaClass, idValue)
-        snapshots[key] = jsonNode
+        snapshots[buildKey(obj.javaClass, idValue)] = jsonNode
     }
 
     /**
@@ -74,23 +91,19 @@ class SessionManager(
      * @param idValue The ID value of the object
      * @return true if the object has a snapshot in this session
      */
-    fun isTracked(clazz: Class<*>, idValue: Any): Boolean {
-        val key = buildKey(clazz, idValue)
-        return snapshots.containsKey(key)
-    }
+    fun isTracked(clazz: Class<*>, idValue: Any): Boolean = snapshots.containsKey(buildKey(clazz, idValue))
 
     /**
-     * Gets the snapshot of an object from the session.
+     * Gets the stored digest of an object, or null if it is not tracked (never loaded, or evicted).
+     * Compare it with [digestOf] of the current state, never with the object itself.
      *
      * @param clazz The class of the object
      * @param idValue The ID value of the object
-     * @return The snapshot object, or null if not tracked
      */
-    fun <T : Any> getSnapshot(clazz: Class<T>, idValue: Any): T? {
-        val key = buildKey(clazz, idValue)
-        val snapshotNode = snapshots[key] ?: return null
-        return objectMapper.treeToValue(snapshotNode, clazz)
-    }
+    fun snapshotOf(clazz: Class<*>, idValue: Any): JsonNode? = snapshots[buildKey(clazz, idValue)]
+
+    /** Digests [obj] exactly as a snapshot of it would be, for comparison with [snapshotOf]. */
+    fun digestOf(obj: Any): JsonNode = digest.of(obj)
 
     /**
      * Gets the dirty fields for an object by comparing current state with snapshot.
@@ -100,26 +113,23 @@ class SessionManager(
      * @return Set of field names that have changed, or null if object is not tracked
      */
     fun <T : Any> getDirtyFields(obj: T, idValue: Any): Set<String>? {
-        val key = buildKey(obj.javaClass, idValue)
-        val snapshot = snapshots[key] ?: return null
-        return diffFields(objectMapper.valueToTree(obj), snapshot)
+        val snapshot = snapshotOf(obj.javaClass, idValue) ?: return null
+        return diffFields(digest.of(obj), snapshot)
     }
 
     /**
-     * Computes the dirty fields between two object instances by comparing their JSON
-     * representations directly, without consulting the session snapshot store.
+     * Computes the dirty fields of [current] against a previous digest, without consulting the
+     * session store.
      *
-     * This is used for fragments that are not tracked individually in the session but
-     * whose previous state is available from an enclosing GraphView's snapshot (e.g. a
-     * related fragment loaded as part of a view).
+     * This is used for fragments that are not tracked individually in the session but whose previous
+     * state is available from an enclosing GraphView's digest (e.g. a related fragment loaded as part
+     * of a view).
      *
      * @param current The current object state
-     * @param snapshot The previous object state to compare against
+     * @param snapshot The previous state's digest (a sub-tree of a [snapshotOf] result)
      * @return Set of field names that have changed
      */
-    fun computeDirtyFields(current: Any, snapshot: Any): Set<String> {
-        return diffFields(objectMapper.valueToTree(current), objectMapper.valueToTree(snapshot))
-    }
+    fun computeDirtyFields(current: Any, snapshot: JsonNode): Set<String> = diffFields(digest.of(current), snapshot)
 
     /**
      * Field-by-field diff of two JSON representations.
@@ -146,8 +156,7 @@ class SessionManager(
     }
 
     /**
-     * Clears all snapshots from the session.
-     * Typically called at transaction boundaries.
+     * Clears all snapshots from the session. Every object is untracked until it is loaded again.
      */
     fun clear() {
         snapshots.clear()
@@ -177,5 +186,13 @@ class SessionManager(
 
         field.isAccessible = true
         return field.get(obj)
+    }
+
+    companion object {
+        /** Generous by default: a digest is small, so 100k tracked objects is tens of megabytes. */
+        const val DEFAULT_MAX_ENTRIES = 100_000
+
+        private const val INITIAL_CAPACITY = 1024
+        private const val LOAD_FACTOR = 0.75f
     }
 }
