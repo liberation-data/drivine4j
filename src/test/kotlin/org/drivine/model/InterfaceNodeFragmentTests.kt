@@ -247,8 +247,8 @@ class InterfaceNodeFragmentE2ETests @Autowired constructor(
         )
         assertNotNull(timeline)
 
-        // Modify and save - this exercises SessionManager.getSnapshot() which needs
-        // Jackson to deserialize the interface type (ThreadOwner) to the concrete type (GuideUser)
+        // Modify and save - this diffs against the session's digest of a view whose relationship
+        // target is declared as an interface type (ThreadOwner) and loaded as a concrete one (GuideUser)
         val updatedTimeline = timeline.copy(
             thread = timeline.thread.copy(title = "Updated Title")
         )

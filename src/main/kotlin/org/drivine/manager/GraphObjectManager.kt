@@ -14,6 +14,7 @@ import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
 import org.drivine.query.ScoredSearchPlan
+import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
@@ -47,7 +48,7 @@ private data class QueryContext(
  */
 class GraphObjectManager(
     private val persistenceManager: PersistenceManager,
-    private val sessionManager: SessionManager,
+    internal val sessionManager: SessionManager,
     private val objectMapper: ObjectMapper,
     private val subtypeRegistry: SubtypeRegistry
 ) {
@@ -81,7 +82,29 @@ class GraphObjectManager(
 
     private val grammar = persistenceManager.grammar
 
-    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar)
+    /**
+     * Reads a node's stored property keys, so a save of an untracked object under [NullPolicy.CLEAR]
+     * can still remove the `@PropertyBag` keys it dropped. Only consulted on that path.
+     */
+    private val storedKeys = StoredPropertyKeys { labels, idProperty, id ->
+        persistenceManager.maybeGetOne(
+            QuerySpecification
+                .withStatement("MATCH (n:$labels {$idProperty: \$id}) RETURN keys(n)")
+                .bind(mapOf("id" to id))
+                .transform(List::class.java)
+        )?.map { it.toString() }?.toSet().orEmpty()
+    }
+
+    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys)
+
+    /**
+     * Forgets every tracked object: each one's next save writes all fields, until it is loaded again.
+     *
+     * The session outlives transactions and is bounded (see [SessionManager.maxEntries]), so this is
+     * never needed for memory. Call it to scope dirty tracking to a unit of work — a request or a job —
+     * so a save never diffs against a snapshot taken by earlier, unrelated work.
+     */
+    fun clearSession() = sessionManager.clear()
 
     private val indexAdvisor = QueryIndexAdvisor(persistenceManager.indexes, persistenceManager.constraints)
 
@@ -1038,7 +1061,8 @@ class GraphObjectManager(
             graphClass,
             objectMapper,
             sessionManager,
-            grammar
+            grammar,
+            storedKeys,
         )
         val statements = mergeBuilder.buildMergeStatements(obj, cascade, nullPolicy)
 

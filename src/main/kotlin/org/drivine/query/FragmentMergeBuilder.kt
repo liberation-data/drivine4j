@@ -1,5 +1,6 @@
 package org.drivine.query
 
+import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.manager.NullPolicy
 import org.drivine.mapper.toMap
@@ -16,7 +17,8 @@ import org.drivine.query.grammar.CypherGrammar
  *    [CypherGrammar.vectorPropertyLiteral], so FalkorDB stores it as its native vector type (the
  *    write-side mirror of the read-side `vecf32(...)` wrapping) — a no-op on Neo4j / Memgraph.
  * 4. Expand each `@PropertyBag` field into flat prefixed properties, and REMOVE keys that the bag
- *    no longer contains (clear-stale-then-set) when the previous state is known.
+ *    no longer contains (clear-stale-then-set) — known from the previous state, or read from the
+ *    store through [storedKeys] when the object is untracked.
  *
  * [grammar] is optional; when null (e.g. in unit tests that only assert plain SET shape) vector
  * fields are written plainly, exactly as any other field.
@@ -25,6 +27,7 @@ class FragmentMergeBuilder(
     private val fragmentModel: FragmentModel,
     private val objectMapper: ObjectMapper,
     private val grammar: CypherGrammar? = null,
+    private val storedKeys: StoredPropertyKeys? = null,
 ) {
 
     /**
@@ -32,9 +35,10 @@ class FragmentMergeBuilder(
      *
      * @param obj The object to save
      * @param dirtyFields The fields that have changed (null means save all fields)
-     * @param previousObject The prior state of [obj] (from the session snapshot), used to clear stale
-     *   `@PropertyBag` keys on update. Null when the object is not session-tracked — then current bag
-     *   entries are written but orphaned keys from a previous detached save are not removed.
+     * @param previousObject The prior state of [obj] — a session digest ([JsonNode]) or an object —
+     *   used to clear stale `@PropertyBag` keys on update. Null when the object is not session-tracked:
+     *   then, under [NullPolicy.CLEAR], the stale keys are read from the store via [storedKeys] (and
+     *   left in place when no [storedKeys] is given).
      * @param nullPolicy How null field values are treated: [NullPolicy.IGNORE] (default) skips them
      *   (merge-patch), [NullPolicy.CLEAR] writes `SET x = null` to clear them. Uniform for all fields,
      *   embeddings included — see [NullPolicy].
@@ -95,7 +99,8 @@ class FragmentMergeBuilder(
         }
 
         // ----- Property bags: expand to prefixed properties + clear stale keys -----
-        val previousProps = previousObject?.let { objectMapper.toMap(it) }
+        val previousState: JsonNode? = previousObject?.let { it as? JsonNode ?: objectMapper.valueToTree(it) }
+        val keysInStore by lazy { storedKeys?.of(labels, nodeIdProperty, idValue) }
         var bagParamIndex = 0
         fragmentModel.propertyBags.forEach { bag ->
             // On an optimized save, only touch the bag if it changed.
@@ -117,8 +122,12 @@ class FragmentMergeBuilder(
             // Remove keys present before but gone now (requires the previous state). Removal is a form of
             // clearing, so under IGNORE (merge-patch) we leave stale keys in place.
             if (nullPolicy == NullPolicy.CLEAR) {
-                val prevBag = previousProps?.get(bag.fieldName) as? Map<*, *>
-                prevBag?.keys?.map { it.toString() }?.filter { it !in currentKeys }?.forEach { staleKey ->
+                val previousKeys = if (previousState != null) {
+                    previousState.get(bag.fieldName)?.fieldNames()?.asSequence()?.toList().orEmpty()
+                } else {
+                    keysInStore.orEmpty().filter(bag::owns).map(bag::entryKey)
+                }
+                previousKeys.filter { it !in currentKeys }.forEach { staleKey ->
                     removeClauses.add("n.`${bag.storedKey(staleKey)}`")
                 }
             }
@@ -159,6 +168,14 @@ class FragmentMergeBuilder(
             pkg.startsWith("java.time") || value is java.util.Date
         }
     }
+}
+
+/**
+ * Reads the property keys a stored node currently has — so a save of an untracked object can still
+ * clear the `@PropertyBag` keys it dropped. Returns an empty set when the node does not exist.
+ */
+fun interface StoredPropertyKeys {
+    fun of(labels: String, idProperty: String, id: Any): Set<String>
 }
 
 /**

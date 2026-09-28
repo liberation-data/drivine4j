@@ -1352,6 +1352,10 @@ Deletes relationship and target only if no other relationships exist to the targ
 graphObjectManager.save(updated, CascadeType.DELETE_ORPHAN)
 ```
 
+The relationship list you save is authoritative: every relationship of that type to a target not in
+the list is removed, whether or not the view was loaded first, and including relationships another
+writer added after it was loaded.
+
 Use when: You want to clean up orphaned nodes but preserve shared ones.
 
 **Example:** Removing a person's employment at a solo startup deletes the startup (orphaned), but removing employment at a company with other employees keeps the company.
@@ -1379,6 +1383,20 @@ Use when: Target nodes are exclusively owned and should be deleted with the rela
 This means:
 - **Loaded objects**: Optimized saves (only dirty fields)
 - **New objects**: Full saves (all fields written)
+
+The session outlives transactions, so an object loaded in one request and saved in another still
+writes only what changed. It is kept small and bounded:
+
+- **Compact snapshots**: a snapshot keeps the object's shape and ids and replaces large values (long
+  strings, embeddings) with a 64-bit hash, so a tracked object costs bytes per field, not a copy of
+  its data.
+- **Bounded**: at most `drivine.query.session-max-entries` objects (default 100,000) per
+  `GraphObjectManager`; past that the least recently used is evicted. An evicted object is untracked,
+  and its next save writes all fields. `DELETE_ORPHAN` and `NullPolicy.CLEAR` do not depend on
+  tracking, so an evicted object saves correctly under both.
+- **Thread-safe**: one manager can be shared by concurrent requests.
+- **Scoping**: call `graphObjectManager.clearSession()` to end tracking for a unit of work, such as a
+  request or a job.
 
 ### Generated Cypher Examples
 
