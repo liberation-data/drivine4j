@@ -2258,7 +2258,7 @@ drivine:
 | | Neo4j | Memgraph | FalkorDB |
 |---|---|---|---|
 | Vector indexes | `CREATE VECTOR INDEX … IF NOT EXISTS` | `WITH CONFIG {…}`, uSearch metrics | `OPTIONS {…}`, unnamed |
-| Full-text indexes | `CREATE FULLTEXT INDEX … ON EACH […]` (+ analyzer) | `CREATE TEXT INDEX … ON :L(props)` | `db.idx.fulltext.createNodeIndex(label, prop)`, per-property, unnamed |
+| Full-text indexes | `CREATE FULLTEXT INDEX … ON EACH […]` (+ analyzer) | `CREATE TEXT INDEX … ON :L(props)` | `CREATE FULLTEXT INDEX FOR (n:L) ON (n.prop)`, per-property, unnamed |
 | Range indexes | Named, composite supported | Label-property style | Per-label coverage; extended incrementally |
 | Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build |
 | Item names | Yes | Vector only | No |

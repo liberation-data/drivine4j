@@ -58,16 +58,18 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
             }
         }
 
-        // Fulltext is a procedure call, one per property. FalkorDB rejects re-indexing an
-        // already-fulltext property ("Attribute 'x' is already indexed"), so — exactly like the
-        // range path — only the properties missing from [existing]'s fulltext coverage are emitted.
+        // Fulltext is Cypher DDL, one statement per property. The `db.idx.fulltext.createNodeIndex`
+        // procedure accepts only a label from FalkorDB 6.0, while this form works on 4.x and 6.x
+        // alike. FalkorDB rejects re-indexing an already-fulltext property ("Attribute 'x' is
+        // already indexed"), so — exactly like the range path — only the properties missing from
+        // [existing]'s fulltext coverage are emitted.
         is FullTextIndexSpec -> {
             val alreadyIndexed = existing?.properties?.toSet() ?: emptySet()
             spec.properties
                 .filterNot { it in alreadyIndexed }
                 .map { property ->
                     SchemaStatement.Cypher(
-                        "CALL db.idx.fulltext.createNodeIndex('${spec.label}', '$property')"
+                        "CREATE FULLTEXT INDEX FOR (n:${spec.label}) ON (n.$property)"
                     )
                 }
         }
