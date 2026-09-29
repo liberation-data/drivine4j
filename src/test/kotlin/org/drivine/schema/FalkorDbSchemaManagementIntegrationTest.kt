@@ -184,7 +184,7 @@ class FalkorDbSchemaManagementIntegrationTest {
 
     @Test
     fun `fulltext index - multi-property maps to per-property calls and reassembles into one item`() {
-        // A spec covering [title, body] becomes two `db.idx.fulltext.createNodeIndex` calls, but must
+        // A spec covering [title, body] becomes two `CREATE FULLTEXT INDEX` statements, but must
         // introspect back as ONE item covering both — otherwise ensure() would drift forever.
         val spec = FullTextIndexSpec("Article", listOf("title", "body"))
 

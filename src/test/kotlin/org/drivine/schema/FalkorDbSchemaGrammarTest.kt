@@ -75,8 +75,8 @@ class FalkorDbSchemaGrammarTest {
 
         assertEquals(
             listOf(
-                SchemaStatement.Cypher("CALL db.idx.fulltext.createNodeIndex('Chunk', 'title')"),
-                SchemaStatement.Cypher("CALL db.idx.fulltext.createNodeIndex('Chunk', 'body')"),
+                SchemaStatement.Cypher("CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.title)"),
+                SchemaStatement.Cypher("CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.body)"),
             ),
             statements
         )
@@ -90,7 +90,7 @@ class FalkorDbSchemaGrammarTest {
         val statements = grammar.createIndex(FullTextIndexSpec("Chunk", listOf("title", "body")), existing)
 
         assertEquals(
-            listOf(SchemaStatement.Cypher("CALL db.idx.fulltext.createNodeIndex('Chunk', 'body')")),
+            listOf(SchemaStatement.Cypher("CREATE FULLTEXT INDEX FOR (n:Chunk) ON (n.body)")),
             statements
         )
     }
