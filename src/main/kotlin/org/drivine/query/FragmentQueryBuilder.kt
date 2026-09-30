@@ -46,10 +46,11 @@ class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObje
 
         // Include labels for polymorphic deserialization support
         val returnClause = if (isPolymorphic) {
-            // For polymorphic types, include all properties using .*
+            // For polymorphic types, include all properties using .* — carrying the node through the
+            // WITH, because the ORDER BY after the RETURN refers to it by alias.
             """
 
-WITH properties($nodeAlias) AS props, labels($nodeAlias) AS lbls
+WITH $nodeAlias, properties($nodeAlias) AS props, labels($nodeAlias) AS lbls
 RETURN props {
     .*,
     labels: lbls
