@@ -25,6 +25,8 @@ import org.testcontainers.utility.DockerImageName
 import sample.proposition.PropositionView
 import sample.proposition.PropositionViewQueryDsl
 import sample.proposition.count
+import sample.vectorfilter.VecDocNode
+import sample.vectorfilter.VecDocNodeQueryDsl
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
@@ -148,6 +150,24 @@ private fun verify(gom: GraphObjectManager) {
     // generated-form count<T> { } injects INSTANCE and delegates correctly
     assertEquals(5L, gom.count<PropositionView> { })
     assertEquals(1L, gom.count<PropositionView> { where { query.proposition.id eq "p3" } })
+
+    verifyBagFragment(gom)
+}
+
+/**
+ * A `@PropertyBag` fragment returns through `WITH properties(n) AS props`, which dropped `n`, so an
+ * `ORDER BY n.id` after the `RETURN` referred to nothing and every ordered load of one failed.
+ * Ordered, limited and keyset-paged like a view, and the bag still comes back.
+ */
+private fun verifyBagFragment(gom: GraphObjectManager) {
+    fun docs(spec: GraphQuerySpec<VecDocNodeQueryDsl>.() -> Unit) =
+        gom.loadAll(VecDocNode::class.java, VecDocNodeQueryDsl.INSTANCE, spec)
+    fun ids(spec: GraphQuerySpec<VecDocNodeQueryDsl>.() -> Unit) = docs(spec).map { it.id }
+
+    assertEquals(listOf("d5", "d4"), ids { orderBy { query.id.desc() }; limit(2) })
+    assertEquals(listOf("d1", "d2", "d3", "d4", "d5"), ids { orderBy { query.id.asc() } })
+    assertEquals(listOf("d3", "d2"), ids { orderBy { query.id.desc() }; seek { query.id after "d4" }; limit(2) })
+    assertEquals(mapOf("source" to "three"), docs { orderBy { query.id.asc() }; skip(2); limit(1) }.single().metadata)
 }
 
 /**
@@ -185,6 +205,11 @@ private const val SEED = """
     CREATE (p4)-[:HAS_MENTION]->(m4)
     CREATE (p5)-[:HAS_MENTION]->(m5a)
     CREATE (p5)-[:HAS_MENTION]->(m5b)
+    CREATE (:VecDoc {id: 'd1', `metadata.source`: 'one'})
+    CREATE (:VecDoc {id: 'd2', `metadata.source`: 'two'})
+    CREATE (:VecDoc {id: 'd3', `metadata.source`: 'three'})
+    CREATE (:VecDoc {id: 'd4', `metadata.source`: 'four'})
+    CREATE (:VecDoc {id: 'd5', `metadata.source`: 'five'})
 """
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): GraphObjectManager {
