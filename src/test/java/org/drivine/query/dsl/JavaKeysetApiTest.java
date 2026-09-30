@@ -25,9 +25,9 @@ class JavaKeysetApiTest {
                 new JavaQueryBuilder<>(Object.class, dsl, mock(GraphObjectManager.class));
 
         JavaQueryBuilder<Object, TestDsl> result = builder
-                .orderBy(q -> q.activity.desc())
-                .orderBy(q -> q.id.desc())
-                .seek(q -> List.of(q.activity.after(42L), q.id.after("session-42")))
+                .orderBy(q -> q.activity.descending())
+                .orderBy(q -> q.id.descending())
+                .seek(q -> List.of(q.activity.cursorAfter(42L), q.id.cursorAfter("session-42")))
                 .limit(21);
 
         assertSame(builder, result);

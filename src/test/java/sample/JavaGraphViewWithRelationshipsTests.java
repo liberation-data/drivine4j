@@ -485,7 +485,7 @@ public class JavaGraphViewWithRelationshipsTests {
         //
         // graphObjectManager.loadAll(RaisedAndAssignedIssue.class, spec -> {
         //     spec.where(ctx -> {
-        //         ctx.getQuery().getRaisedBy().getPerson().getName().eq("Rod Johnson");
+        //         ctx.getQuery().getRaisedBy().getPerson().getName().isEqualTo("Rod Johnson");
         //     });
         // });
         //

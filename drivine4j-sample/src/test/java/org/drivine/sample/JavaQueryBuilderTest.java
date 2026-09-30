@@ -82,7 +82,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getState().eq("open"))
+            .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
             .loadAll();
 
         assertEquals(2, results.size(), "Should return 2 open issues");
@@ -93,7 +93,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getState().neq("closed"))
+            .where(dsl -> dsl.getIssue().getState().isNotEqualTo("closed"))
             .loadAll();
 
         assertEquals(2, results.size(), "Should return 2 non-closed issues");
@@ -107,7 +107,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getId().gt(100L))
+            .where(dsl -> dsl.getIssue().getId().isGreaterThan(100L))
             .loadAll();
 
         assertEquals(2, results.size(), "Should return issues with id > 100");
@@ -119,7 +119,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getId().gte(200L))
+            .where(dsl -> dsl.getIssue().getId().isAtLeast(200L))
             .loadAll();
 
         assertEquals(2, results.size(), "Should return issues with id >= 200");
@@ -131,7 +131,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getId().lt(300L))
+            .where(dsl -> dsl.getIssue().getId().isLessThan(300L))
             .loadAll();
 
         assertEquals(2, results.size(), "Should return issues with id < 300");
@@ -143,7 +143,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getId().lte(200L))
+            .where(dsl -> dsl.getIssue().getId().isAtMost(200L))
             .loadAll();
 
         assertEquals(2, results.size(), "Should return issues with id <= 200");
@@ -156,8 +156,8 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getId().gt(100L))
-            .where(dsl -> dsl.getIssue().getId().lt(300L))
+            .where(dsl -> dsl.getIssue().getId().isGreaterThan(100L))
+            .where(dsl -> dsl.getIssue().getId().isLessThan(300L))
             .loadAll();
 
         assertEquals(1, results.size(), "Should return 1 issue with 100 < id < 300");
@@ -171,7 +171,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getTitle().contains("in"))
+            .where(dsl -> dsl.getIssue().getTitle().hasSubstring("in"))
             .loadAll();
 
         assertEquals(1, results.size(), "Should return issue with 'in' in title");
@@ -183,7 +183,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getTitle().startsWith("Bug"))
+            .where(dsl -> dsl.getIssue().getTitle().hasPrefix("Bug"))
             .loadAll();
 
         assertEquals(1, results.size(), "Should return issue starting with 'Bug'");
@@ -195,7 +195,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getTitle().endsWith("login"))
+            .where(dsl -> dsl.getIssue().getTitle().hasSuffix("login"))
             .loadAll();
 
         assertEquals(1, results.size(), "Should return issue ending with 'login'");
@@ -209,7 +209,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getBody().isNull())
+            .where(dsl -> dsl.getIssue().getBody().isAbsent())
             .loadAll();
 
         assertEquals(2, results.size(), "Should return 2 issues with null body");
@@ -221,7 +221,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getBody().isNotNull())
+            .where(dsl -> dsl.getIssue().getBody().isPresent())
             .loadAll();
 
         assertEquals(1, results.size(), "Should return 1 issue with non-null body");
@@ -261,8 +261,8 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getState().eq("open"))
-            .where(dsl -> dsl.getIssue().getLocked().eq(false))
+            .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
+            .where(dsl -> dsl.getIssue().getLocked().isEqualTo(false))
             .loadAll();
 
         assertEquals(2, results.size());
@@ -278,8 +278,8 @@ public class JavaQueryBuilderTest {
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
             .whereAny(dsl -> java.util.Arrays.asList(
-                dsl.getIssue().getState().eq("closed"),
-                dsl.getIssue().getId().gt(250L)
+                dsl.getIssue().getState().isEqualTo("closed"),
+                dsl.getIssue().getId().isGreaterThan(250L)
             ))
             .loadAll();
 
@@ -292,10 +292,10 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getLocked().eq(false))
+            .where(dsl -> dsl.getIssue().getLocked().isEqualTo(false))
             .whereAny(dsl -> java.util.Arrays.asList(
-                dsl.getIssue().getState().eq("open"),
-                dsl.getIssue().getId().gt(250L)
+                dsl.getIssue().getState().isEqualTo("open"),
+                dsl.getIssue().getId().isGreaterThan(250L)
             ))
             .loadAll();
 
@@ -310,7 +310,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .orderBy(dsl -> dsl.getIssue().getId().asc())
+            .orderBy(dsl -> dsl.getIssue().getId().ascending())
             .loadAll();
 
         assertEquals(3, results.size());
@@ -324,7 +324,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .orderBy(dsl -> dsl.getIssue().getId().desc())
+            .orderBy(dsl -> dsl.getIssue().getId().descending())
             .loadAll();
 
         assertEquals(3, results.size());
@@ -338,8 +338,8 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getState().eq("open"))
-            .orderBy(dsl -> dsl.getIssue().getId().desc())
+            .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
+            .orderBy(dsl -> dsl.getIssue().getId().descending())
             .loadAll();
 
         assertEquals(2, results.size());
@@ -352,7 +352,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .orderBy(dsl -> dsl.getIssue().getTitle().asc())
+            .orderBy(dsl -> dsl.getIssue().getTitle().ascending())
             .loadAll();
 
         assertEquals(3, results.size());
@@ -369,7 +369,7 @@ public class JavaQueryBuilderTest {
         RaisedAndAssignedIssue result = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getState().eq("closed"))
+            .where(dsl -> dsl.getIssue().getState().isEqualTo("closed"))
             .loadFirst();
 
         assertNotNull(result);
@@ -381,7 +381,7 @@ public class JavaQueryBuilderTest {
         RaisedAndAssignedIssue result = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .orderBy(dsl -> dsl.getIssue().getId().desc())
+            .orderBy(dsl -> dsl.getIssue().getId().descending())
             .loadFirst();
 
         assertNotNull(result);
@@ -393,7 +393,7 @@ public class JavaQueryBuilderTest {
         RaisedAndAssignedIssue result = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getState().eq("nonexistent"))
+            .where(dsl -> dsl.getIssue().getState().isEqualTo("nonexistent"))
             .loadFirst();
 
         assertNull(result, "Should return null when no matches");
@@ -416,7 +416,7 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getId().gt(1000L))
+            .where(dsl -> dsl.getIssue().getId().isGreaterThan(1000L))
             .loadAll();
 
         assertTrue(results.isEmpty(), "Should return empty list for no matches");
@@ -428,10 +428,10 @@ public class JavaQueryBuilderTest {
         List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
             .query(graphObjectManager, RaisedAndAssignedIssue.class)
             .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-            .where(dsl -> dsl.getIssue().getState().eq("open"))
-            .where(dsl -> dsl.getIssue().getId().gte(100L))
-            .where(dsl -> dsl.getIssue().getLocked().eq(false))
-            .orderBy(dsl -> dsl.getIssue().getId().asc())
+            .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
+            .where(dsl -> dsl.getIssue().getId().isAtLeast(100L))
+            .where(dsl -> dsl.getIssue().getLocked().isEqualTo(false))
+            .orderBy(dsl -> dsl.getIssue().getId().ascending())
             .loadAll();
 
         assertEquals(2, results.size());

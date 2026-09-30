@@ -104,7 +104,7 @@ class QueryDslPrototypeTest {
         //         this(RaisedAndAssignedIssueQuery.issue.id gt 1000)
         //     }
         //     orderBy {
-        //         this(RaisedAndAssignedIssueQuery.issue.id.asc())
+        //         this(RaisedAndAssignedIssueQuery.issue.id.ascending())
         //     }
         // }
     }

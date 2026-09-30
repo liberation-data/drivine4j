@@ -137,7 +137,7 @@ fun extractLabelsFromNodeFragment(clazz: Class<*>): List<String> {
  * **Java usage** (methods return PropertyConditionBuilder):
  * ```java
  * graphObjectManager.query(PersonCareer.class)
- *     .where(q -> q.person().name().eq("Alice"))
+ *     .where(q -> q.person().name().isEqualTo("Alice"))
  *     .loadAll();
  * ```
  */
@@ -145,15 +145,17 @@ open class PropertyReference<T>(
     internal val alias: String,
     internal val propertyName: String
 ) {
-    // ==================== Java-friendly methods (return PropertyConditionBuilder) ====================
-    // These methods return a builder that can be used with JavaQueryBuilder.
-    // They have different signatures than the context parameter versions (Unit vs PropertyConditionBuilder).
+    // ==================== Java methods (return PropertyConditionBuilder / OrderSpec) ====================
+    // For JavaQueryBuilder, which has no context parameters. Each has a different NAME from its Kotlin
+    // context-parameter twin below, not just a different return type: from Kotlin 2.3 a context
+    // parameter no longer breaks a tie between two same-named members, so `orderBy { x.asc() }` with
+    // both an `asc(): OrderSpec` and a context `asc()` in scope stops compiling.
 
     /**
      * Equality condition: property = value
      * Returns a PropertyConditionBuilder for use with Java query builder.
      */
-    fun eq(value: T?): PropertyConditionBuilder {
+    fun isEqualTo(value: T?): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -166,7 +168,7 @@ open class PropertyReference<T>(
     /**
      * Not equals condition: property <> value
      */
-    fun neq(value: T?): PropertyConditionBuilder {
+    fun isNotEqualTo(value: T?): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -179,7 +181,7 @@ open class PropertyReference<T>(
     /**
      * Greater than condition: property > value
      */
-    fun gt(value: T): PropertyConditionBuilder {
+    fun isGreaterThan(value: T): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -192,7 +194,7 @@ open class PropertyReference<T>(
     /**
      * Greater than or equal condition: property >= value
      */
-    fun gte(value: T): PropertyConditionBuilder {
+    fun isAtLeast(value: T): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -205,7 +207,7 @@ open class PropertyReference<T>(
     /**
      * Less than condition: property < value
      */
-    fun lt(value: T): PropertyConditionBuilder {
+    fun isLessThan(value: T): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -218,7 +220,7 @@ open class PropertyReference<T>(
     /**
      * Less than or equal condition: property <= value
      */
-    fun lte(value: T): PropertyConditionBuilder {
+    fun isAtMost(value: T): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -244,7 +246,7 @@ open class PropertyReference<T>(
     /**
      * IS NULL condition: property IS NULL
      */
-    fun isNull(): PropertyConditionBuilder {
+    fun isAbsent(): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -257,7 +259,7 @@ open class PropertyReference<T>(
     /**
      * IS NOT NULL condition: property IS NOT NULL
      */
-    fun isNotNull(): PropertyConditionBuilder {
+    fun isPresent(): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$alias.$propertyName",
@@ -270,7 +272,7 @@ open class PropertyReference<T>(
     /**
      * Ascending order specification.
      */
-    fun asc(): OrderSpec {
+    fun ascending(): OrderSpec {
         return OrderSpec(
             propertyPath = "$alias.$propertyName",
             direction = OrderDirection.ASC
@@ -280,7 +282,7 @@ open class PropertyReference<T>(
     /**
      * Descending order specification.
      */
-    fun desc(): OrderSpec {
+    fun descending(): OrderSpec {
         return OrderSpec(
             propertyPath = "$alias.$propertyName",
             direction = OrderDirection.DESC
@@ -291,7 +293,7 @@ open class PropertyReference<T>(
      * Creates a Java-friendly keyset cursor value for this property. Kotlin callers normally use
      * the context-aware infix form inside `seek { property after value }`.
      */
-    fun after(value: T): SeekValueSpec {
+    fun cursorAfter(value: T): SeekValueSpec {
         require(value != null) { "Keyset cursor values must be non-null for $alias.$propertyName" }
         return SeekValueSpec("$alias.$propertyName", value)
     }
@@ -484,7 +486,7 @@ class StringPropertyReference(
      * CONTAINS condition: property CONTAINS value
      * Returns PropertyConditionBuilder for Java usage.
      */
-    fun contains(value: String): PropertyConditionBuilder {
+    fun hasSubstring(value: String): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
@@ -497,7 +499,7 @@ class StringPropertyReference(
     /**
      * STARTS WITH condition: property STARTS WITH value
      */
-    fun startsWith(value: String): PropertyConditionBuilder {
+    fun hasPrefix(value: String): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",
@@ -510,7 +512,7 @@ class StringPropertyReference(
     /**
      * ENDS WITH condition: property ENDS WITH value
      */
-    fun endsWith(value: String): PropertyConditionBuilder {
+    fun hasSuffix(value: String): PropertyConditionBuilder {
         return PropertyConditionBuilder(
             WhereCondition.PropertyCondition(
                 propertyPath = "$stringAlias.$stringPropertyName",

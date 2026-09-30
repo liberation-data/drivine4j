@@ -9,7 +9,7 @@ package org.drivine.query.dsl
  * List<RaisedAndAssignedIssue> results = graphObjectManager
  *     .query(RaisedAndAssignedIssue.class)
  *     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
- *     .where(dsl -> dsl.getIssue().getState().eq("open"))
+ *     .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
  *     .loadAll();
  * ```
  *
@@ -68,7 +68,7 @@ class QueryStarter<T : Any>(
  * List<RaisedAndAssignedIssue> results = graphObjectManager
  *     .query(RaisedAndAssignedIssue.class)
  *     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
- *     .where(dsl -> dsl.getIssue().getState().eq("open"))
+ *     .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
  *     .loadAll();
  * ```
  *
@@ -90,9 +90,9 @@ fun <T : Any> org.drivine.manager.GraphObjectManager.query(
  * List<PersonCareer> results = graphObjectManager
  *     .query(PersonCareer.class)
  *     .filterWith(PersonCareerQueryDsl.class)
- *     .where(q -> q.person().name().eq("Alice"))
- *     .where(q -> q.employmentHistory().role().contains("Engineer"))
- *     .orderBy(q -> q.person().name().asc())
+ *     .where(q -> q.person().name().isEqualTo("Alice"))
+ *     .where(q -> q.employmentHistory().role().hasSubstring("Engineer"))
+ *     .orderBy(q -> q.person().name().ascending())
  *     .loadAll();
  * ```
  *
@@ -115,7 +115,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
      *
      * Example (Java):
      * ```java
-     * builder.where(q -> q.person().name().eq("Alice"))
+     * builder.where(q -> q.person().name().isEqualTo("Alice"))
      * ```
      *
      * @param condition Function that returns a PropertyConditionBuilder from the query DSL
@@ -133,8 +133,8 @@ class JavaQueryBuilder<T : Any, Q : Any>(
      * Example (Java):
      * ```java
      * builder.whereAll(q -> Arrays.asList(
-     *     q.person().name().eq("Alice"),
-     *     q.person().bio().isNotNull()
+     *     q.person().name().isEqualTo("Alice"),
+     *     q.person().bio().isPresent()
      * ))
      * ```
      *
@@ -153,8 +153,8 @@ class JavaQueryBuilder<T : Any, Q : Any>(
      * Example (Java):
      * ```java
      * builder.whereAny(q -> Arrays.asList(
-     *     q.issue().state().eq("open"),
-     *     q.issue().state().eq("reopened")
+     *     q.issue().state().isEqualTo("open"),
+     *     q.issue().state().isEqualTo("reopened")
      * ))
      * ```
      *
@@ -172,7 +172,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
      *
      * Example (Java):
      * ```java
-     * builder.orderBy(q -> q.person().name().asc())
+     * builder.orderBy(q -> q.person().name().ascending())
      * ```
      *
      * @param order Function that returns an OrderSpec from the query DSL
@@ -254,7 +254,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
      * ```java
      * List<Scored<ChunkNode>> hits = gom.query(ChunkNode.class)
      *     .filterWith(ChunkNodeQueryDsl.class)
-     *     .where(q -> q.containerSectionId().eq("sec-1"))
+     *     .where(q -> q.containerSectionId().isEqualTo("sec-1"))
      *     .match("graph databases", 20);
      * ```
      *
