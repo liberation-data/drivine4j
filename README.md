@@ -60,14 +60,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.77")
+    implementation("org.drivine:drivine4j:0.0.87")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.77'
+    implementation 'org.drivine:drivine4j:0.0.87'
 }
 ```
 
@@ -76,7 +76,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.77</version>
+    <version>0.0.87</version>
 </dependency>
 ```
 
@@ -102,8 +102,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.77")
-    ksp("org.drivine:drivine4j-codegen:0.0.77")
+    implementation("org.drivine:drivine4j:0.0.87")
+    ksp("org.drivine:drivine4j-codegen:0.0.87")
 }
 ```
 
@@ -137,7 +137,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.77</version>
+                    <version>0.0.87</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -2561,7 +2561,8 @@ int deleted = JavaQueryBuilderKt
 
 The Java methods are named differently from their Kotlin counterparts (`isEqualTo` for `eq`, `ascending` for
 `asc`, …). Kotlin's are context-parameter members that register themselves inside a `where`/`orderBy` block;
-from Kotlin 2.3 two members sharing a name are ambiguous there, so each language gets its own.
+from Kotlin 2.3 two members sharing a name are ambiguous there, so each language gets its own. Renamed in
+0.0.87 — see [0.0.87-java-dsl-names.md](docs/0.0.87-java-dsl-names.md) for the old → new table.
 
 | Operation | Example |
 |-----------|---------|

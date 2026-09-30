@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.drivine'
-version = '0.0.86'
+version = '0.0.87'
 
 base {
 	archivesName = 'drivine4j'
