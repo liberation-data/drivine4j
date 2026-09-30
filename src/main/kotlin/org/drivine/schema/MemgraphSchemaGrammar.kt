@@ -29,7 +29,7 @@ class MemgraphSchemaGrammar(
         is VectorIndexSpec -> listOf(
             SchemaStatement.Cypher(
                 """
-                CREATE VECTOR INDEX ${spec.effectiveName} ON :${spec.label}(${spec.property})
+                CREATE VECTOR INDEX ${spec.effectiveName} ON :${id(spec.label)}(${id(spec.property)})
                 WITH CONFIG {"dimension": ${spec.dimensions}, "metric": "${metricName(spec.similarity)}", "capacity": $vectorIndexCapacity}
                 """.trimIndent()
             )
@@ -37,7 +37,7 @@ class MemgraphSchemaGrammar(
 
         is RangeIndexSpec -> listOf(
             SchemaStatement.Cypher(
-                "CREATE INDEX ON :${spec.label}(${spec.properties.joinToString(", ")})"
+                "CREATE INDEX ON :${id(spec.label)}(${ids(spec.properties)})"
             )
         )
 
@@ -45,7 +45,7 @@ class MemgraphSchemaGrammar(
         is FullTextIndexSpec -> listOf(
             SchemaStatement.Cypher(
                 "CREATE TEXT INDEX ${spec.effectiveName} " +
-                    "ON :${spec.label}(${spec.properties.joinToString(", ")})"
+                    "ON :${id(spec.label)}(${ids(spec.properties)})"
             )
         )
     }
@@ -60,23 +60,23 @@ class MemgraphSchemaGrammar(
         )
 
         else -> listOf(
-            SchemaStatement.Cypher("DROP INDEX ON :${item.label}(${item.properties.joinToString(", ")})")
+            SchemaStatement.Cypher("DROP INDEX ON :${id(item.label)}(${ids(item.properties)})")
         )
     }
 
     override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
         is UniquenessConstraintSpec -> listOf(
             SchemaStatement.Cypher(
-                "CREATE CONSTRAINT ON (n:${spec.label}) " +
-                    "ASSERT ${spec.properties.joinToString(", ") { "n.$it" }} IS UNIQUE"
+                "CREATE CONSTRAINT ON (n:${id(spec.label)}) " +
+                    "ASSERT ${spec.properties.joinToString(", ") { "n.${id(it)}" }} IS UNIQUE"
             )
         )
     }
 
     override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = listOf(
         SchemaStatement.Cypher(
-            "DROP CONSTRAINT ON (n:${item.label}) " +
-                "ASSERT ${item.properties.joinToString(", ") { "n.$it" }} IS UNIQUE"
+            "DROP CONSTRAINT ON (n:${id(item.label)}) " +
+                "ASSERT ${item.properties.joinToString(", ") { "n.${id(it)}" }} IS UNIQUE"
         )
     )
 
@@ -211,6 +211,10 @@ class MemgraphSchemaGrammar(
      * against a spec's bare label fails and every `ensure` re-creates instead of matching.
      */
     private fun normalizeLabel(raw: String): String = raw.removePrefix(":")
+
+    private fun id(name: String): String = SchemaGrammar.identifier(name)
+
+    private fun ids(names: List<String>): String = names.joinToString(", ") { id(it) }
 
     private fun defaultVectorName(item: SchemaItemInfo): String =
         "${item.label}_${item.properties.first()}_vector"

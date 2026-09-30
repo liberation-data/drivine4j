@@ -52,6 +52,15 @@ class MemgraphSchemaGrammarTest {
     }
 
     @Test
+    fun `a name that is not a plain identifier is backtick-quoted, not read as a nested path`() {
+        val create = grammar.createIndex(RangeIndexSpec("Chunk", listOf("metadata.context", "id"))).single() as SchemaStatement.Cypher
+        val constraint = grammar.createConstraint(UniquenessConstraintSpec("My Label", "metadata.key")).single() as SchemaStatement.Cypher
+
+        assertEquals("CREATE INDEX ON :Chunk(`metadata.context`, id)", create.statement)
+        assertEquals("CREATE CONSTRAINT ON (n:`My Label`) ASSERT n.`metadata.key` IS UNIQUE", constraint.statement)
+    }
+
+    @Test
     fun `fulltext index DDL uses Memgraph's named TEXT INDEX syntax`() {
         val multi = grammar.createIndex(
             FullTextIndexSpec("Chunk", listOf("title", "body"))

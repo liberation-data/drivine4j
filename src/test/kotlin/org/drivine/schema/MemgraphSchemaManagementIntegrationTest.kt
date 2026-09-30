@@ -108,6 +108,27 @@ class MemgraphSchemaManagementIntegrationTest {
         assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
     }
 
+    @Test
+    fun `range index - a dotted property name is one property, not a path`() {
+        // A property bag flattens to keys like `metadata.context`: one property whose name has a dot in it.
+        val spec = RangeIndexSpec("BagNode", "metadata.context")
+
+        val created = manager.indexes.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+
+        val again = manager.indexes.ensure(spec)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+
+        // Memgraph reads an unquoted `a.b` as a path into a nested map, which creates an index a
+        // lookup on the flat property never uses. The plan is what tells the two apart.
+        val plan = manager.query(
+            QuerySpecification
+                .withStatement("EXPLAIN MATCH (n:BagNode) WHERE n.`metadata.context` = 'x' RETURN n")
+                .transform(String::class.java)
+        ).joinToString("\n")
+        assertTrue(plan.contains("ScanAllByLabelPropert"), "expected an index scan, got:\n$plan")
+    }
+
     // ----- Fulltext (text) index lifecycle -----
 
     @Test
