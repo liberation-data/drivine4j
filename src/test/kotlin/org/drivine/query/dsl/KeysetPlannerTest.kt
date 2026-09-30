@@ -173,16 +173,16 @@ class KeysetPlannerTest {
     }
 
     @Test
-    fun `outside a seek block the same call yields a value for Java callers`() {
+    fun `the Java cursor method yields a value outside a seek block`() {
         val property = PropertyReference<String>("n", "id")
 
-        assertEquals(SeekValueSpec("n.id", "id-7"), property.after("id-7"))
+        assertEquals(SeekValueSpec("n.id", "id-7"), property.cursorAfter("id-7"))
     }
 
     @Test
     fun `null cursor values are rejected`() {
         val property = PropertyReference<String?>("n", "nullable")
-        assertThrows<IllegalArgumentException> { property.after(null) }
+        assertThrows<IllegalArgumentException> { property.cursorAfter(null) }
     }
 
     @Test

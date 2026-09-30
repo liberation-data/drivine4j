@@ -99,7 +99,7 @@ public class JavaInstanceOfTest {
         List<GuideUserWithPolymorphicWebUser> results = JavaQueryBuilderKt
             .query(graphObjectManager, GuideUserWithPolymorphicWebUser.class)
             .filterWith(GuideUserWithPolymorphicWebUserQueryDsl.class)
-            .where(dsl -> dsl.getCore().getGuideProgress().gte(5))
+            .where(dsl -> dsl.getCore().getGuideProgress().isAtLeast(5))
             .where(dsl -> dsl.getWebUser().instanceOf(AnonymousWebUser.class))
             .loadAll();
 
@@ -114,7 +114,7 @@ public class JavaInstanceOfTest {
         List<GuideUserWithPolymorphicWebUser> results = JavaQueryBuilderKt
             .query(graphObjectManager, GuideUserWithPolymorphicWebUser.class)
             .filterWith(GuideUserWithPolymorphicWebUserQueryDsl.class)
-            .where(dsl -> dsl.getCore().getGuideProgress().gte(100))
+            .where(dsl -> dsl.getCore().getGuideProgress().isAtLeast(100))
             .where(dsl -> dsl.getWebUser().instanceOf(AnonymousWebUser.class))
             .loadAll();
 

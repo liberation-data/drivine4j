@@ -355,7 +355,7 @@ class OrderBuilder<T : Any>(
 
     /**
      * Adds an order specification.
-     * Usage: this(query.issue.id.asc())
+     * Usage: this(query.issue.id.ascending())
      * Note: With context parameters, this is typically not needed as order specs auto-register.
      */
     operator fun invoke(order: OrderSpec) {

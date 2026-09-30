@@ -2403,7 +2403,7 @@ import org.drivine.query.dsl.JavaQueryBuilderKt;
 List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
     .query(graphObjectManager, RaisedAndAssignedIssue.class)
     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-    .where(dsl -> dsl.getIssue().getState().eq("open"))
+    .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
     .loadAll();
 ```
 
@@ -2417,25 +2417,25 @@ The pattern is:
 
 **Comparison:**
 ```java
-.where(dsl -> dsl.getIssue().getId().eq(100L))      // equals
-.where(dsl -> dsl.getIssue().getId().neq(100L))     // not equals
-.where(dsl -> dsl.getIssue().getId().gt(100L))      // greater than
-.where(dsl -> dsl.getIssue().getId().gte(100L))     // greater than or equal
-.where(dsl -> dsl.getIssue().getId().lt(100L))      // less than
-.where(dsl -> dsl.getIssue().getId().lte(100L))     // less than or equal
+.where(dsl -> dsl.getIssue().getId().isEqualTo(100L))      // equals
+.where(dsl -> dsl.getIssue().getId().isNotEqualTo(100L))   // not equals
+.where(dsl -> dsl.getIssue().getId().isGreaterThan(100L))  // greater than
+.where(dsl -> dsl.getIssue().getId().isAtLeast(100L))      // greater than or equal
+.where(dsl -> dsl.getIssue().getId().isLessThan(100L))     // less than
+.where(dsl -> dsl.getIssue().getId().isAtMost(100L))       // less than or equal
 ```
 
 **String Operations:**
 ```java
-.where(dsl -> dsl.getIssue().getTitle().contains("Bug"))
-.where(dsl -> dsl.getIssue().getTitle().startsWith("Feature"))
-.where(dsl -> dsl.getIssue().getTitle().endsWith("needed"))
+.where(dsl -> dsl.getIssue().getTitle().hasSubstring("Bug"))
+.where(dsl -> dsl.getIssue().getTitle().hasPrefix("Feature"))
+.where(dsl -> dsl.getIssue().getTitle().hasSuffix("needed"))
 ```
 
 **Null Checks:**
 ```java
-.where(dsl -> dsl.getIssue().getBody().isNull())
-.where(dsl -> dsl.getIssue().getBody().isNotNull())
+.where(dsl -> dsl.getIssue().getBody().isAbsent())
+.where(dsl -> dsl.getIssue().getBody().isPresent())
 ```
 
 **Collections:**
@@ -2451,9 +2451,9 @@ Chain multiple `where()` calls for AND logic:
 List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
     .query(graphObjectManager, RaisedAndAssignedIssue.class)
     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-    .where(dsl -> dsl.getIssue().getState().eq("open"))
-    .where(dsl -> dsl.getIssue().getLocked().eq(false))
-    .where(dsl -> dsl.getIssue().getId().gte(100L))
+    .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
+    .where(dsl -> dsl.getIssue().getLocked().isEqualTo(false))
+    .where(dsl -> dsl.getIssue().getId().isAtLeast(100L))
     .loadAll();
 // WHERE issue.state = 'open' AND issue.locked = false AND issue.id >= 100
 ```
@@ -2467,8 +2467,8 @@ List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
     .query(graphObjectManager, RaisedAndAssignedIssue.class)
     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
     .whereAny(dsl -> Arrays.asList(
-        dsl.getIssue().getState().eq("open"),
-        dsl.getIssue().getState().eq("reopened")
+        dsl.getIssue().getState().isEqualTo("open"),
+        dsl.getIssue().getState().isEqualTo("reopened")
     ))
     .loadAll();
 // WHERE (issue.state = 'open' OR issue.state = 'reopened')
@@ -2481,10 +2481,10 @@ Combine AND and OR:
 List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
     .query(graphObjectManager, RaisedAndAssignedIssue.class)
     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-    .where(dsl -> dsl.getIssue().getLocked().eq(false))
+    .where(dsl -> dsl.getIssue().getLocked().isEqualTo(false))
     .whereAny(dsl -> Arrays.asList(
-        dsl.getIssue().getState().eq("open"),
-        dsl.getIssue().getState().eq("reopened")
+        dsl.getIssue().getState().isEqualTo("open"),
+        dsl.getIssue().getState().isEqualTo("reopened")
     ))
     .loadAll();
 ```
@@ -2495,8 +2495,8 @@ List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
 List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
     .query(graphObjectManager, RaisedAndAssignedIssue.class)
     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-    .where(dsl -> dsl.getIssue().getState().eq("open"))
-    .orderBy(dsl -> dsl.getIssue().getId().desc())
+    .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
+    .orderBy(dsl -> dsl.getIssue().getId().descending())
     .loadAll();
 ```
 
@@ -2508,8 +2508,8 @@ Get only the first matching result:
 RaisedAndAssignedIssue result = JavaQueryBuilderKt
     .query(graphObjectManager, RaisedAndAssignedIssue.class)
     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-    .where(dsl -> dsl.getIssue().getState().eq("open"))
-    .orderBy(dsl -> dsl.getIssue().getId().desc())
+    .where(dsl -> dsl.getIssue().getState().isEqualTo("open"))
+    .orderBy(dsl -> dsl.getIssue().getId().descending())
     .loadFirst();  // Returns null if no matches
 ```
 
@@ -2532,7 +2532,7 @@ List<GuideUserWithPolymorphicWebUser> results = JavaQueryBuilderKt
 List<GuideUserWithPolymorphicWebUser> activeAnonymous = JavaQueryBuilderKt
     .query(graphObjectManager, GuideUserWithPolymorphicWebUser.class)
     .filterWith(GuideUserWithPolymorphicWebUserQueryDsl.class)
-    .where(dsl -> dsl.getCore().getGuideProgress().gte(10))
+    .where(dsl -> dsl.getCore().getGuideProgress().isAtLeast(10))
     .where(dsl -> dsl.getWebUser().instanceOf(AnonymousWebUser.class))
     .loadAll();
 
@@ -2553,23 +2553,28 @@ List<GuideUserWithPolymorphicWebUser> allUsers = JavaQueryBuilderKt
 int deleted = JavaQueryBuilderKt
     .query(graphObjectManager, RaisedAndAssignedIssue.class)
     .filterWith(RaisedAndAssignedIssueQueryDsl.class)
-    .where(dsl -> dsl.getIssue().getState().eq("closed"))
+    .where(dsl -> dsl.getIssue().getState().isEqualTo("closed"))
     .deleteAll();
 ```
 
 ### Java DSL Summary
 
+The Java methods are named differently from their Kotlin counterparts (`isEqualTo` for `eq`, `ascending` for
+`asc`, …). Kotlin's are context-parameter members that register themselves inside a `where`/`orderBy` block;
+from Kotlin 2.3 two members sharing a name are ambiguous there, so each language gets its own.
+
 | Operation | Example |
 |-----------|---------|
-| Equality | `.eq("value")`, `.neq("value")` |
-| Comparison | `.gt(n)`, `.gte(n)`, `.lt(n)`, `.lte(n)` |
-| Strings | `.contains("x")`, `.startsWith("x")`, `.endsWith("x")` |
-| Null | `.isNull()`, `.isNotNull()` |
+| Equality | `.isEqualTo("value")`, `.isNotEqualTo("value")` |
+| Comparison | `.isGreaterThan(n)`, `.isAtLeast(n)`, `.isLessThan(n)`, `.isAtMost(n)` |
+| Strings | `.hasSubstring("x")`, `.hasPrefix("x")`, `.hasSuffix("x")` |
+| Null | `.isAbsent()`, `.isPresent()` |
 | Collections | `.isIn(Arrays.asList(...))` |
 | Type filter | `.instanceOf(SubtypeClass.class)` |
 | AND | Chain multiple `.where()` |
 | OR | `.whereAny(dsl -> Arrays.asList(...))` |
-| Order | `.orderBy(dsl -> dsl.getProp().asc())` |
+| Order | `.orderBy(dsl -> dsl.getProp().ascending())`, `.descending()` |
+| Keyset cursor | `.seek(dsl -> List.of(dsl.getProp().cursorAfter(v)))` |
 
 ## Java Interoperability
 
@@ -2609,7 +2614,7 @@ data class PersonContext(
 List<PersonContext> results = JavaQueryBuilderKt
     .query(graphObjectManager, PersonContext.class)
     .filterWith(PersonContextQueryDsl.class)
-    .where(dsl -> dsl.getPerson().getName().contains("Alice"))
+    .where(dsl -> dsl.getPerson().getName().hasSubstring("Alice"))
     .loadAll();
 ```
 

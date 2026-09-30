@@ -340,7 +340,7 @@ class GraphObjectManager(
      *         this(query.issue.id gt 1000)
      *     }
      *     orderBy {
-     *         this(query.issue.id.desc())
+     *         this(query.issue.id.descending())
      *     }
      * }
      * ```
