@@ -41,6 +41,17 @@ class FalkorDbSchemaGrammarTest {
     }
 
     @Test
+    fun `a name that is not a plain identifier is backtick-quoted, in creates and drops`() {
+        val create = grammar.createIndex(RangeIndexSpec("Chunk", "metadata.context")).single() as SchemaStatement.Cypher
+        val drop = grammar.dropIndex(
+            SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Chunk", listOf("metadata.context"), null)
+        ).single() as SchemaStatement.Cypher
+
+        assertEquals("CREATE INDEX FOR (n:Chunk) ON (n.`metadata.context`)", create.statement)
+        assertEquals("DROP INDEX FOR (n:Chunk) ON (n.`metadata.context`)", drop.statement)
+    }
+
+    @Test
     fun `range index creation only emits properties missing from the existing label index`() {
         // FalkorDB rejects creating an already-indexed property, so extension is incremental
         val existing = SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Proposition", listOf("contextId"))

@@ -160,6 +160,18 @@ class FalkorDbSchemaManagementIntegrationTest {
     }
 
     @Test
+    fun `range index - a dotted property name is one property, not a path`() {
+        // A property bag flattens to keys like `metadata.context`: one property whose name has a dot in it.
+        val spec = RangeIndexSpec("BagNode", "metadata.context")
+
+        val created = manager.indexes.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+
+        val again = manager.indexes.ensure(spec)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+    }
+
+    @Test
     @Order(3)
     fun `range index - recreate one property of a composite index drops and rebuilds only that property`() {
         // FalkorDB keeps a single per-label index; build coverage over (a, b)

@@ -37,7 +37,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
         is VectorIndexSpec -> listOf(
             SchemaStatement.Cypher(
                 """
-                CREATE VECTOR INDEX FOR (n:${spec.label}) ON (n.${spec.property})
+                CREATE VECTOR INDEX FOR (n:${id(spec.label)}) ON (n.${id(spec.property)})
                 OPTIONS {${vectorIndexOptions(spec)}}
                 """.trimIndent()
             )
@@ -51,8 +51,8 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
             } else {
                 listOf(
                     SchemaStatement.Cypher(
-                        "CREATE INDEX FOR (n:${spec.label}) ON " +
-                            missing.joinToString(", ", "(", ")") { "n.$it" }
+                        "CREATE INDEX FOR (n:${id(spec.label)}) ON " +
+                            missing.joinToString(", ", "(", ")") { "n.${id(it)}" }
                     )
                 )
             }
@@ -69,7 +69,7 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                 .filterNot { it in alreadyIndexed }
                 .map { property ->
                     SchemaStatement.Cypher(
-                        "CREATE FULLTEXT INDEX FOR (n:${spec.label}) ON (n.$property)"
+                        "CREATE FULLTEXT INDEX FOR (n:${id(spec.label)}) ON (n.${id(property)})"
                     )
                 }
         }
@@ -81,15 +81,15 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
      */
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = when (item.kind) {
         SchemaItemKind.VECTOR_INDEX -> item.properties.map {
-            SchemaStatement.Cypher("DROP VECTOR INDEX FOR (n:${item.label}) ON (n.$it)")
+            SchemaStatement.Cypher("DROP VECTOR INDEX FOR (n:${id(item.label)}) ON (n.${id(it)})")
         }
 
         SchemaItemKind.FULLTEXT_INDEX -> item.properties.map {
-            SchemaStatement.Cypher("DROP FULLTEXT INDEX FOR (n:${item.label}) ON (n.$it)")
+            SchemaStatement.Cypher("DROP FULLTEXT INDEX FOR (n:${id(item.label)}) ON (n.${id(it)})")
         }
 
         else -> item.properties.map {
-            SchemaStatement.Cypher("DROP INDEX FOR (n:${item.label}) ON (n.$it)")
+            SchemaStatement.Cypher("DROP INDEX FOR (n:${id(item.label)}) ON (n.${id(it)})")
         }
     }
 
@@ -288,6 +288,8 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
             options?.efRuntime?.let { "efRuntime: $it" },
         ).joinToString(", ")
     }
+
+    private fun id(name: String): String = SchemaGrammar.identifier(name)
 
     private fun similarityName(similarity: SimilarityFunction): String = similarity.name.lowercase()
 

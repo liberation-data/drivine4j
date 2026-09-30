@@ -178,6 +178,18 @@ interface SchemaGrammar {
 
     companion object {
 
+        /**
+         * A label or property name as DDL must spell it: bare when it is a plain identifier,
+         * backtick-quoted otherwise. A property bag flattens to keys like `metadata.context`, and
+         * unquoted that is not one name: FalkorDB rejects the dot, and Memgraph reads it as a path
+         * into a nested map — creating an index that a lookup on the flat property never uses.
+         * Plain names stay bare so the DDL for them is unchanged.
+         */
+        fun identifier(name: String): String =
+            if (PLAIN_IDENTIFIER.matches(name)) name else "`${name.replace("`", "``")}`"
+
+        private val PLAIN_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
+
         /** Flattens an exception chain's messages for engine-specific violation sniffing. */
         fun messagesOf(e: Throwable): String =
             generateSequence(e) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
