@@ -22,7 +22,7 @@ open class Neo4jResultMapper(
         return rec.get(index)
     }
 
-    override fun toNative(value: Any): Any? {
+    override fun toNative(value: Any?): Any? {
         return when (value) {
             is NullValue -> null
             is NodeValue -> toNative(value.asMap())

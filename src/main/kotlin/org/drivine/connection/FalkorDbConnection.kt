@@ -3,6 +3,7 @@ package org.drivine.connection
 import org.drivine.DrivineException
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.ResultMapper
+import org.drivine.query.CollectionCoercer
 import org.drivine.query.ParameterCoercer
 import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
@@ -41,13 +42,13 @@ class FalkorDbConnection(
 
     override fun sessionId(): String = "falkordb-${System.identityHashCode(graph)}"
 
-    override fun parameterCoercers(): List<ParameterCoercer> = listOf(TemporalCoercer)
+    override fun parameterCoercers(): List<ParameterCoercer> = listOf(CollectionCoercer, TemporalCoercer)
 
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
         val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
         val compiled = SpecCompiler(finalizedSpec).compile()
-        val coercedParams = applyParameterCoercers(finalizedSpec, compiled.parameters)
-        val (statement, params) = inlineUnsendableValues(compiled.statement, coercedParams)
+        val statement = compiled.statement
+        val params = applyParameterCoercers(finalizedSpec, compiled.parameters)
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
 
@@ -60,7 +61,7 @@ class FalkorDbConnection(
             val resultSet = if (params.isEmpty()) {
                 graph.query(statement)
             } else {
-                graph.query(statement, params)
+                graph.query(statement, asClientParameters(params))
             }
 
             // Write-only queries (no RETURN) have an empty header
@@ -116,92 +117,11 @@ class FalkorDbConnection(
     }
 
     /**
-     * Splice into the query text, as a Cypher literal, every parameter jfalkordb cannot carry in
-     * its `CYPHER key=value ...` prefix, and drop it from the parameter map.
-     *
-     * Three things cannot go in the prefix:
-     *
-     * - A string containing `$` (FalkorDB/JFalkorDB#251). `$` isn't escaped, and FalkorDB's server
-     *   then reads `${...}` in a prefix value as a parameter expression, causing
-     *   `query with more than one statement is not supported`. Length-dependent, so short values
-     *   pass but real-world RAG chunks blow up.
-     *
-     * - A string containing a backslash (FalkorDB/JFalkorDB#252). Backslashes aren't escaped before
-     *   `"` is, so `{\"rows\": 5}` reaches the server as a quoted string that ends early.
-     *
-     * - A map (FalkorDB/JFalkorDB#68). jfalkordb writes it with Java's `toString()`, which is not
-     *   Cypher, and the server answers `Failed to parse the value of parameter`. This is what a
-     *   batched save sends: `UNWIND $rows`, where each row is a map.
-     *
-     * Any of these may sit inside a list or a map, so the test is made on the whole value. A value
-     * that never reaches the prefix cannot trip any of the three, and a literal in the query body
-     * is read by the Cypher parser alone, which is what [toCypherLiteral] writes for.
-     *
-     * Every reference is replaced in ONE pass over the original statement. Replacing one key at a
-     * time rescans text that has already been spliced in, so a value containing `$name` would have
-     * that `$name` replaced as if it were a reference to the parameter `name`.
-     *
-     * The cost is that a spliced statement is a different query text each time, so the server
-     * cannot reuse its plan.
-     *
-     * TODO: delete this workaround and pass every parameter through, once Drivine is on a
-     * jfalkordb that carries the fixes. All three were closed upstream on 2026-09-01:
-     * https://github.com/FalkorDB/JFalkorDB/issues/68 (maps),
-     * https://github.com/FalkorDB/JFalkorDB/issues/251 (`$`) and
-     * https://github.com/FalkorDB/JFalkorDB/issues/252 (backslash).
-     * Drivine is on jfalkordb 0.7.0. Moving to 0.13.0 is not a version bump alone: it needs a
-     * newer Jedis than this build resolves (`DefaultJedisClientConfig.Builder.autoNegotiateProtocol`
-     * is missing), and its nullability annotations change `Graph.query` and `Record.getValue`.
-     * The three parameter tests in FalkorDbConnectionIntegrationTest say when it is safe.
+     * jfalkordb declares a parameter value non-null, yet writes a null one as the Cypher `null`
+     * (`Utils.appendValue`), and there is no other way to send one. The cast states that; "a null
+     * parameter is sent as null" in FalkorDbConnectionIntegrationTest holds the client to it.
      */
-    private fun inlineUnsendableValues(
-        statement: String,
-        parameters: Map<String, Any?>
-    ): Pair<String, Map<String, Any?>> {
-        val unsendable = parameters.filterValues(::cannotGoInPrefix)
-        if (unsendable.isEmpty()) return statement to parameters
-
-        // Longest key first, so `$rows` is not taken for `$row` followed by an `s`.
-        val keys = unsendable.keys.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) }
-        val reference = Regex("\\$($keys)(?![A-Za-z0-9_])")
-        val rewritten = reference.replace(statement) { toCypherLiteral(unsendable[it.groupValues[1]]) }
-        return rewritten to parameters - unsendable.keys
-    }
-
-    private fun cannotGoInPrefix(value: Any?): Boolean = when (value) {
-        is String -> value.contains('$') || value.contains('\\')
-        is Map<*, *> -> true
-        is Iterable<*> -> value.any(::cannotGoInPrefix)
-        is Array<*> -> value.any(::cannotGoInPrefix)
-        else -> false
-    }
-
-    private fun toCypherLiteral(value: Any?): String = when (value) {
-        null -> "null"
-        is String -> toCypherStringLiteral(value)
-        is Char -> toCypherStringLiteral(value.toString())
-        is Boolean, is Number -> value.toString()
-        is Map<*, *> -> value.entries.joinToString(", ", "{", "}") { (key, item) ->
-            "`${key.toString().replace("`", "``")}`: ${toCypherLiteral(item)}"
-        }
-        is Iterable<*> -> value.joinToString(", ", "[", "]", transform = ::toCypherLiteral)
-        is Array<*> -> value.joinToString(", ", "[", "]", transform = ::toCypherLiteral)
-        is FloatArray -> value.joinToString(", ", "[", "]")
-        is DoubleArray -> value.joinToString(", ", "[", "]")
-        is IntArray -> value.joinToString(", ", "[", "]")
-        is LongArray -> value.joinToString(", ", "[", "]")
-        else -> throw IllegalArgumentException(
-            "FalkorDB cannot take a ${value::class.qualifiedName} inside a map or list parameter; it must be a string, number, boolean, list or map"
-        )
-    }
-
-    private fun toCypherStringLiteral(value: String): String {
-        val escaped = value
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", "\\n")
-            .replace("\r", "\\r")
-            .replace("\t", "\\t")
-        return "\"$escaped\""
-    }
+    @Suppress("UNCHECKED_CAST")
+    private fun asClientParameters(parameters: Map<String, Any?>): Map<String, Any> =
+        parameters as Map<String, Any>
 }
