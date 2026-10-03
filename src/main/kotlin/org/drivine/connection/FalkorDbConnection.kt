@@ -142,7 +142,17 @@ class FalkorDbConnection(
      * that `$name` replaced as if it were a reference to the parameter `name`.
      *
      * The cost is that a spliced statement is a different query text each time, so the server
-     * cannot reuse its plan. Remove the workaround for each case as jfalkordb fixes it.
+     * cannot reuse its plan.
+     *
+     * TODO: delete this workaround and pass every parameter through, once Drivine is on a
+     * jfalkordb that carries the fixes. All three were closed upstream on 2026-09-01:
+     * https://github.com/FalkorDB/JFalkorDB/issues/68 (maps),
+     * https://github.com/FalkorDB/JFalkorDB/issues/251 (`$`) and
+     * https://github.com/FalkorDB/JFalkorDB/issues/252 (backslash).
+     * Drivine is on jfalkordb 0.7.0. Moving to 0.13.0 is not a version bump alone: it needs a
+     * newer Jedis than this build resolves (`DefaultJedisClientConfig.Builder.autoNegotiateProtocol`
+     * is missing), and its nullability annotations change `Graph.query` and `Record.getValue`.
+     * The three parameter tests in FalkorDbConnectionIntegrationTest say when it is safe.
      */
     private fun inlineUnsendableValues(
         statement: String,
