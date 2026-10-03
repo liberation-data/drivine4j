@@ -109,6 +109,74 @@ class FalkorDbConnectionIntegrationTest {
     }
 
     // =========================================================================
+    // Parameters jfalkordb cannot carry: maps, and strings with `$` or a backslash
+    // =========================================================================
+
+    private fun names(conn: Connection): List<Any?> = conn.query(
+        QuerySpecification
+            .withStatement("MATCH (p:Person) RETURN {id: p.id, name: p.name} ORDER BY p.id")
+            .transform(Map::class.java)
+    ).map { (it as Map<*, *>)["name"] }
+
+    @Test
+    @Order(3)
+    fun `a list of maps is taken as a parameter`() {
+        val conn = provider.connect()
+        try {
+            val rows = listOf(
+                mapOf("id" to 1, "props" to mapOf("name" to "Ada", "tags" to listOf("a", "b"))),
+                mapOf("id" to 2, "props" to mapOf("name" to "It's \"Bob\"", "nickname" to null)),
+            )
+            conn.query<Any>(
+                QuerySpecification
+                    .withStatement("UNWIND \$rows AS row MERGE (p:Person {id: row.id}) SET p += row.props")
+                    .bind(mapOf("rows" to rows))
+            )
+
+            assertEquals(listOf<Any?>("Ada", "It's \"Bob\""), names(conn))
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(4)
+    fun `a value that names another parameter is not taken for a reference to it`() {
+        val conn = provider.connect()
+        try {
+            // Both are spliced into the query text. Replaced one key at a time, the `$name` inside
+            // the first value would be rewritten when the parameter `name` took its turn.
+            conn.query<Any>(
+                QuerySpecification
+                    .withStatement("CREATE (:Person {id: 1, name: \$label}), (:Person {id: 2, name: \$name})")
+                    .bind(mapOf("label" to "costs \$name", "name" to "a\\b"))
+            )
+
+            assertEquals(listOf<Any?>("costs \$name", "a\\b"), names(conn))
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(5)
+    fun `a map key that is not a plain name is still one key`() {
+        val conn = provider.connect()
+        try {
+            val results = conn.query(
+                QuerySpecification
+                    .withStatement("WITH \$bag AS bag RETURN {value: bag[\$key]}")
+                    .bind(mapOf("bag" to mapOf("metadata.source" to "upload"), "key" to "metadata.source"))
+                    .transform(Map::class.java)
+            )
+
+            assertEquals("upload", (results.single() as Map<*, *>)["value"])
+        } finally {
+            conn.release()
+        }
+    }
+
+    // =========================================================================
     // Transaction passthrough (WARN mode — default)
     // =========================================================================
 

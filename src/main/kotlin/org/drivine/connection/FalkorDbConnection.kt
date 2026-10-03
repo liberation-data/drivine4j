@@ -47,7 +47,7 @@ class FalkorDbConnection(
         val finalizedSpec = spec.finalizedCopy(QueryLanguage.CYPHER)
         val compiled = SpecCompiler(finalizedSpec).compile()
         val coercedParams = applyParameterCoercers(finalizedSpec, compiled.parameters)
-        val (statement, params) = inlineProblematicStrings(compiled.statement, coercedParams)
+        val (statement, params) = inlineUnsendableValues(compiled.statement, coercedParams)
         val startTime = Instant.now()
         val statementLogger = StatementLogger(sessionId())
 
@@ -116,53 +116,74 @@ class FalkorDbConnection(
     }
 
     /**
-     * For any top-level [String] parameter whose value contains characters jfalkordb can't
-     * safely put in its `CYPHER key=value ...` prefix, splice the value into the query text
-     * as a Cypher string literal and drop the key from the parameter map.
+     * Splice into the query text, as a Cypher literal, every parameter jfalkordb cannot carry in
+     * its `CYPHER key=value ...` prefix, and drop it from the parameter map.
      *
-     * WORKAROUND: Two jfalkordb bugs in `Utils.quoteString()` / `Utils.prepareQuery()`:
+     * Three things cannot go in the prefix:
      *
-     * - FalkorDB/JFalkorDB#251 — `$` isn't escaped. FalkorDB's server then interprets `${...}`
-     *   in prefix values as parameter expressions, causing
-     *   `query with more than one statement is not supported`. Length-dependent, so short
-     *   values pass but real-world RAG chunks blow up.
+     * - A string containing `$` (FalkorDB/JFalkorDB#251). `$` isn't escaped, and FalkorDB's server
+     *   then reads `${...}` in a prefix value as a parameter expression, causing
+     *   `query with more than one statement is not supported`. Length-dependent, so short values
+     *   pass but real-world RAG chunks blow up.
      *
-     * - FalkorDB/JFalkorDB#252 — backslashes aren't escaped before `"` is escaped. A value
-     *   like `{\"rows\": 5}` becomes `{\\"rows\\": 5}` in the prefix, which FalkorDB parses
-     *   as the quoted string ending early.
+     * - A string containing a backslash (FalkorDB/JFalkorDB#252). Backslashes aren't escaped before
+     *   `"` is, so `{\"rows\": 5}` reaches the server as a quoted string that ends early.
      *
-     * Both bugs go away if the problematic value never reaches the prefix. Cypher's query
-     * parser does not interpret `$` or backslash escapes inside a string literal in the
-     * query body (beyond standard Cypher escape sequences, which [toCypherStringLiteral]
-     * produces), so splicing the value in as `"..."` is correct by construction.
+     * - A map (FalkorDB/JFalkorDB#68). jfalkordb writes it with Java's `toString()`, which is not
+     *   Cypher, and the server answers `Failed to parse the value of parameter`. This is what a
+     *   batched save sends: `UNWIND $rows`, where each row is a map.
      *
-     * Only scalar `String` values are handled. Maps-as-parameter-values aren't supported by
-     * FalkorDB anyway (JFalkorDB#68), so we don't recurse into nested structures. Remove
-     * this whole workaround once jfalkordb ships fixes for #251 and #252 and we bump the
-     * dependency.
+     * Any of these may sit inside a list or a map, so the test is made on the whole value. A value
+     * that never reaches the prefix cannot trip any of the three, and a literal in the query body
+     * is read by the Cypher parser alone, which is what [toCypherLiteral] writes for.
+     *
+     * Every reference is replaced in ONE pass over the original statement. Replacing one key at a
+     * time rescans text that has already been spliced in, so a value containing `$name` would have
+     * that `$name` replaced as if it were a reference to the parameter `name`.
+     *
+     * The cost is that a spliced statement is a different query text each time, so the server
+     * cannot reuse its plan. Remove the workaround for each case as jfalkordb fixes it.
      */
-    private fun inlineProblematicStrings(
+    private fun inlineUnsendableValues(
         statement: String,
         parameters: Map<String, Any?>
     ): Pair<String, Map<String, Any?>> {
-        if (parameters.isEmpty()) return statement to parameters
+        val unsendable = parameters.filterValues(::cannotGoInPrefix)
+        if (unsendable.isEmpty()) return statement to parameters
 
-        var rewritten = statement
-        val remaining = mutableMapOf<String, Any?>()
-        for ((key, value) in parameters) {
-            if (value is String && needsInlining(value)) {
-                val literal = toCypherStringLiteral(value)
-                val reference = Regex("\\\$${Regex.escape(key)}(?![A-Za-z0-9_])")
-                rewritten = reference.replace(rewritten, Regex.escapeReplacement(literal))
-            } else {
-                remaining[key] = value
-            }
-        }
-        return rewritten to remaining
+        // Longest key first, so `$rows` is not taken for `$row` followed by an `s`.
+        val keys = unsendable.keys.sortedByDescending { it.length }.joinToString("|") { Regex.escape(it) }
+        val reference = Regex("\\$($keys)(?![A-Za-z0-9_])")
+        val rewritten = reference.replace(statement) { toCypherLiteral(unsendable[it.groupValues[1]]) }
+        return rewritten to parameters - unsendable.keys
     }
 
-    private fun needsInlining(value: String): Boolean =
-        value.contains('$') || value.contains('\\')
+    private fun cannotGoInPrefix(value: Any?): Boolean = when (value) {
+        is String -> value.contains('$') || value.contains('\\')
+        is Map<*, *> -> true
+        is Iterable<*> -> value.any(::cannotGoInPrefix)
+        is Array<*> -> value.any(::cannotGoInPrefix)
+        else -> false
+    }
+
+    private fun toCypherLiteral(value: Any?): String = when (value) {
+        null -> "null"
+        is String -> toCypherStringLiteral(value)
+        is Char -> toCypherStringLiteral(value.toString())
+        is Boolean, is Number -> value.toString()
+        is Map<*, *> -> value.entries.joinToString(", ", "{", "}") { (key, item) ->
+            "`${key.toString().replace("`", "``")}`: ${toCypherLiteral(item)}"
+        }
+        is Iterable<*> -> value.joinToString(", ", "[", "]", transform = ::toCypherLiteral)
+        is Array<*> -> value.joinToString(", ", "[", "]", transform = ::toCypherLiteral)
+        is FloatArray -> value.joinToString(", ", "[", "]")
+        is DoubleArray -> value.joinToString(", ", "[", "]")
+        is IntArray -> value.joinToString(", ", "[", "]")
+        is LongArray -> value.joinToString(", ", "[", "]")
+        else -> throw IllegalArgumentException(
+            "FalkorDB cannot take a ${value::class.qualifiedName} inside a map or list parameter; it must be a string, number, boolean, list or map"
+        )
+    }
 
     private fun toCypherStringLiteral(value: String): String {
         val escaped = value
