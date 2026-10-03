@@ -10,7 +10,7 @@ package org.drivine.query
  *
  * Connections declare their defaults via [org.drivine.connection.Connection.parameterCoercers].
  * Neo4j's native driver handles most types directly, so it returns an empty list; FalkorDB
- * supplies [TemporalCoercer] to stop [java.time.temporal.Temporal] values corrupting the query.
+ * supplies [CollectionCoercer] and [TemporalCoercer], for the values its client cannot write.
  */
 fun interface ParameterCoercer {
     fun coerce(parameters: Map<String, Any?>): Map<String, Any?>

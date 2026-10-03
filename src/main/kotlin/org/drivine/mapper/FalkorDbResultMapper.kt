@@ -15,12 +15,12 @@ class FalkorDbResultMapper(
         return rec.keys()
     }
 
-    override fun itemAtIndex(record: Any, index: Int): Any {
+    override fun itemAtIndex(record: Any, index: Int): Any? {
         val rec = record as Record
         return rec.getValue<Any>(index)
     }
 
-    override fun toNative(value: Any): Any? {
+    override fun toNative(value: Any?): Any? {
         return when (value) {
             null -> null
             is Node -> nodeToMap(value)
