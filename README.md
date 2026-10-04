@@ -1947,6 +1947,31 @@ database:
       falkor-db-transaction-mode: STRICT   # default: WARN
 ```
 
+**Jedis:** the FalkorDB client needs Jedis 8. Spring Boot's dependency management sets an older one (6.0.0 on Boot 3.5, 7.4.1 on Boot 4.1), and a managed version in your build wins over the one Drivine declares, so a FalkorDB datasource fails at start-up with `NoSuchMethodError` on `DefaultJedisClientConfig.Builder.autoNegotiateProtocol`. Set it yourself:
+
+```xml
+<!-- Maven, with the Spring Boot parent -->
+<properties>
+    <jedis.version>8.0.1</jedis.version>
+</properties>
+
+<!-- Maven, importing a BOM: declare it BEFORE the import -->
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>8.0.1</version>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+```
+
+```groovy
+// Gradle, with the Spring Boot plugin
+ext['jedis.version'] = '8.0.1'
+```
+
 **Known limitations:**
 - Nested pattern comprehensions return NULL ([FalkorDB#1888](https://github.com/FalkorDB/FalkorDB/issues/1888)) — Drivine works around this with CALL subquery prologs
 - `collect()` on null includes null maps ([FalkorDB#1889](https://github.com/FalkorDB/FalkorDB/issues/1889)) — Drivine filters with `CASE WHEN IS NOT NULL`
