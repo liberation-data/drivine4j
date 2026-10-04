@@ -236,6 +236,9 @@ public class QueryDslGenerator {
             String fieldName = field.getSimpleName().toString();
             TypeMirror fieldType = field.asType();
 
+            // @NodeLabels holds the node's labels, not a property: there is nothing to reference.
+            if (getAnnotation(field, "org.drivine.annotation.NodeLabels") != null) continue;
+
             // @PropertyBag / @CompositeProperty → a PropertyBagReference with key(name), not a scalar.
             AnnotationMirror bagAnnotation = getAnnotation(field, "org.drivine.annotation.PropertyBag");
             if (bagAnnotation == null) {
@@ -244,7 +247,11 @@ public class QueryDslGenerator {
             if (bagAnnotation != null) {
                 String prefix = getAnnotationStringValue(bagAnnotation, "prefix", "");
                 String delimiter = getAnnotationStringValue(bagAnnotation, "delimiter", ".");
-                String storedPrefix = (prefix.isEmpty() ? fieldName : prefix) + delimiter;
+                // A flat bag stores each entry under its bare key: no prefix, no delimiter.
+                boolean flat = bagAnnotation.getElementValues().entrySet().stream()
+                    .anyMatch(e -> e.getKey().getSimpleName().contentEquals("flat")
+                        && Boolean.TRUE.equals(e.getValue().getValue()));
+                String storedPrefix = flat ? "" : (prefix.isEmpty() ? fieldName : prefix) + delimiter;
                 ClassName bagReference = ClassName.get("org.drivine.query.dsl", "PropertyBagReference");
                 classBuilder.addMethod(MethodSpec.methodBuilder(fieldName)
                     .addModifiers(Modifier.PUBLIC)

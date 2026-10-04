@@ -117,6 +117,12 @@ class TransformPostProcessor<S, T>(
                     map[field.name] = map.remove(field.propertyName)
                 }
             }
+            // @NodeLabels: every projection carries the node's labels (for subtype dispatch); hand the
+            // field the ones it speaks for.
+            fragmentModel.nodeLabels?.let { model ->
+                val nodeLabels = (map[POLYMORPHIC_LABELS_KEY] ?: map["labels"]) as? List<*>
+                if (nodeLabels != null) map[model.fieldName] = model.read(nodeLabels.filterIsInstance<String>())
+            }
             if (fragmentModel.propertyBags.isEmpty()) return map
             fragmentModel.propertyBags.forEach { bag ->
                 val bagMap = mutableMapOf<String, Any?>()

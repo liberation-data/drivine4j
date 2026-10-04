@@ -5,9 +5,11 @@ import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.GraphTransient
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.NodeLabels
 import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.VectorIndex
 import java.lang.reflect.Modifier
+import java.lang.reflect.ParameterizedType
 import kotlin.reflect.KClass
 import kotlin.reflect.KMutableProperty1
 import kotlin.reflect.KProperty1
@@ -58,6 +60,11 @@ data class FragmentModel(
      * prefixed node properties. Empty for the common case.
      */
     val propertyBags: List<PropertyBagModel> = emptyList(),
+    /**
+     * The `@NodeLabels` field on this fragment, if any — a set whose contents are node labels. Like a
+     * bag it is **excluded** from [fields], so it is never written or projected as a property.
+     */
+    val nodeLabels: NodeLabelsModel? = null,
 ) {
     /**
      * Names of `@VectorIndex` (embedding) fields — the fields whose value must be written as the
@@ -92,24 +99,81 @@ data class FragmentModel(
 
             validateGraphProperty(allFields, clazz)
 
+            val nodeLabels = resolveNodeLabels(allFields, labels, clazz)
+            val declared = allFields.filter { it.propertyBag == null && it.nodeLabels == null }
+
             // Partition @PropertyBag fields out of the regular fields: they are persisted/loaded as
             // flat prefixed properties, not as a single map-valued property.
-            val propertyBags = allFields.mapNotNull { field ->
-                field.propertyBag?.let { spec ->
+            val prefixedBags = allFields.mapNotNull { field ->
+                field.propertyBag?.takeIf { !it.flat }?.let { spec ->
                     val prefix = spec.prefix.ifEmpty { field.name }
                     PropertyBagModel(fieldName = field.name, storedPrefix = "$prefix${spec.delimiter}")
                 }
             }
-            validateNonOverlappingPrefixes(propertyBags, clazz)
+            validateNonOverlappingPrefixes(prefixedBags, clazz)
+            (declared.map { it.propertyName } + prefixedBags.map { it.storedPrefix })
+                .firstOrNull { it.startsWith(NodeLabelsModel.RESERVED_PREFIX) }
+                ?.let {
+                    throw IllegalArgumentException(
+                        "${clazz.simpleName} stores a property under '$it'. Names beginning " +
+                            "'${NodeLabelsModel.RESERVED_PREFIX}' are Drivine's own; choose another."
+                    )
+                }
+            val flatBags = allFields.filter { it.propertyBag?.flat == true }.map { field ->
+                PropertyBagModel(
+                    fieldName = field.name,
+                    storedPrefix = "",
+                    flat = true,
+                    // Declared properties, the row's label keys, and the names the other bags and the labels
+                    // field are reassembled under on load — none of them is an open property.
+                    reservedKeys = declared.map { it.propertyName }.toSet() + RESERVED_RESULT_KEYS +
+                        allFields.filter { it.name != field.name && (it.propertyBag != null || it.nodeLabels != null) }.map { it.name },
+                    reservedPrefixes = prefixedBags.map { it.storedPrefix } + NodeLabelsModel.RESERVED_PREFIX,
+                )
+            }
+            require(flatBags.size <= 1) {
+                "${clazz.simpleName} has ${flatBags.size} flat @PropertyBag fields " +
+                    "(${flatBags.joinToString { "'${it.fieldName}'" }}). A flat bag owns every property nothing " +
+                    "else declares, so a fragment can have only one."
+            }
 
             return FragmentModel(
                 className = clazz.name,
                 clazz = clazz,
                 labels = labels,
-                fields = allFields.filter { it.propertyBag == null },
+                fields = declared,
                 nodeIdField = nodeIdField,
-                propertyBags = propertyBags,
+                // Prefixed bags first: on load each claims its own keys, and the flat bag takes the rest.
+                propertyBags = prefixedBags + flatBags,
+                nodeLabels = nodeLabels,
             )
+        }
+
+        /**
+         * Keys every fragment projection adds to a result row beside the node's properties — the
+         * node's labels, for subtype dispatch. A flat bag must not mistake them for properties.
+         */
+        private val RESERVED_RESULT_KEYS = setOf("labels", "__labels")
+
+        /**
+         * The fragment's `@NodeLabels` field, validated: at most one, and a closed set must not name
+         * one of the fragment's own labels — a save under `CLEAR` would otherwise remove the label the
+         * fragment is matched by.
+         */
+        private fun resolveNodeLabels(allFields: List<FragmentField>, labels: List<String>, clazz: Class<*>): NodeLabelsModel? {
+            val candidates = allFields.mapNotNull { it.nodeLabels }
+            require(candidates.size <= 1) {
+                "${clazz.simpleName} has ${candidates.size} @NodeLabels fields " +
+                    "(${candidates.joinToString { "'${it.fieldName}'" }}). A fragment may carry one."
+            }
+            val model = candidates.singleOrNull() ?: return null
+            val own = model.closedSet.orEmpty().filter { it in labels }
+            require(own.isEmpty()) {
+                "@NodeLabels field '${model.fieldName}' on ${clazz.simpleName} is a set of an enum that names " +
+                    "the fragment's own label${if (own.size > 1) "s" else ""} ${own.joinToString { "'$it'" }}. " +
+                    "A fragment's own labels are fixed; remove ${if (own.size > 1) "them" else "it"} from the enum."
+            }
+            return model
         }
 
         /**
@@ -129,7 +193,7 @@ data class FragmentModel(
                 }
             }
 
-            allFields.filter { it.propertyBag == null }
+            allFields.filter { it.propertyBag == null && it.nodeLabels == null }
                 .groupBy { it.propertyName }
                 .filterValues { it.size > 1 }
                 .forEach { (propertyName, clashing) ->
@@ -237,6 +301,7 @@ data class FragmentModel(
                         propertyBag = property.propertyBagSpec(),
                         vectorIndexed = property.isVectorIndexed(),
                         propertyName = property.graphPropertyName() ?: property.name,
+                        nodeLabels = property.nodeLabelsModel(clazz),
                     )
                 }.sortedBy { it.name }
         }
@@ -251,13 +316,35 @@ data class FragmentModel(
 
         /** Reads `@PropertyBag` / `@CompositeProperty` off a Kotlin property (or its backing field). */
         private fun KProperty1<*, *>.propertyBagSpec(): PropertyBagSpec? {
-            findAnnotation<PropertyBag>()?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
-            findAnnotation<CompositeProperty>()?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
+            findAnnotation<PropertyBag>()?.let { return PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
+            findAnnotation<CompositeProperty>()?.let { return PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
             val field = javaField
-            field?.getAnnotation(PropertyBag::class.java)?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
-            field?.getAnnotation(CompositeProperty::class.java)?.let { return PropertyBagSpec(it.prefix, it.delimiter) }
+            field?.getAnnotation(PropertyBag::class.java)?.let { return PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
+            field?.getAnnotation(CompositeProperty::class.java)?.let { return PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
             return null
         }
+
+        /** Reads `@NodeLabels` off a Kotlin property (or its backing field), resolving its element type. */
+        private fun KProperty1<*, *>.nodeLabelsModel(owner: Class<*>): NodeLabelsModel? {
+            findAnnotation<NodeLabels>() ?: javaField?.getAnnotation(NodeLabels::class.java) ?: return null
+            val element = (returnType.arguments.singleOrNull()?.type?.classifier as? KClass<*>)?.java
+            return nodeLabelsModel(name, element, returnType.toString(), owner)
+        }
+
+        /**
+         * The model for a `@NodeLabels` field whose collection holds [element]: a closed set for an
+         * enum, an open one for `String`. Anything else has no label to give and is rejected.
+         */
+        private fun nodeLabelsModel(fieldName: String, element: Class<*>?, declared: String, owner: Class<*>): NodeLabelsModel =
+            when {
+                element == String::class.java -> NodeLabelsModel(fieldName)
+                element != null && element.isEnum ->
+                    NodeLabelsModel(fieldName, element.enumConstants.map { (it as Enum<*>).name }.toSet())
+                else -> throw IllegalArgumentException(
+                    "@NodeLabels field '$fieldName' on ${owner.simpleName} is declared as $declared. " +
+                        "It must be a Set (or other collection) of String or of an enum."
+                )
+            }
 
         /**
          * True if the property is annotated [GraphTransient] on the
@@ -300,8 +387,12 @@ data class FragmentModel(
                 currentClass.declaredFields
                     .filterNot { it.isSynthetic }
                     .forEach { field ->
-                        val bag = field.getAnnotation(PropertyBag::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter) }
-                            ?: field.getAnnotation(CompositeProperty::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter) }
+                        val bag = field.getAnnotation(PropertyBag::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
+                            ?: field.getAnnotation(CompositeProperty::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
+                        val nodeLabels = field.getAnnotation(NodeLabels::class.java)?.let {
+                            val element = (field.genericType as? ParameterizedType)?.actualTypeArguments?.singleOrNull() as? Class<*>
+                            nodeLabelsModel(field.name, element, field.genericType.typeName, clazz)
+                        }
                         fields.add(
                             FragmentField(
                                 name = field.name,
@@ -312,6 +403,7 @@ data class FragmentModel(
                                 propertyBag = bag,
                                 vectorIndexed = field.isAnnotationPresent(VectorIndex::class.java),
                                 propertyName = field.getAnnotation(GraphProperty::class.java)?.value ?: field.name,
+                                nodeLabels = nodeLabels,
                             )
                         )
                     }

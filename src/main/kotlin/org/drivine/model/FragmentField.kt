@@ -60,10 +60,16 @@ data class FragmentField(
      * tracking) must use [name].
      */
     val propertyName: String = name,
+    /**
+     * When non-null, this field is a `@NodeLabels` field: its contents are node labels, not a
+     * property. The resolved model lives on [FragmentModel.nodeLabels].
+     */
+    val nodeLabels: NodeLabelsModel? = null,
 )
 
 /** The raw `@PropertyBag` / `@CompositeProperty` annotation values for a field. */
 data class PropertyBagSpec(
     val prefix: String,
     val delimiter: String,
+    val flat: Boolean = false,
 )

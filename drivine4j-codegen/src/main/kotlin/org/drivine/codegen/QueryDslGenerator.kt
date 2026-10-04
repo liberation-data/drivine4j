@@ -396,6 +396,7 @@ class QueryDslGenerator(
                     fieldKeyPaths[emitted.onDiskName] = emitted.onDiskName
                 }
                 is EmittedRef.Bag -> bagPrefixes.add(emitted.storedPrefix)
+                EmittedRef.None -> Unit
             }
         }
 
@@ -820,10 +821,15 @@ class QueryDslGenerator(
         data class Field(val logicalName: String, val onDiskName: String) : EmittedRef
         /** A `@PropertyBag` reference with its [storedPrefix] (incl. delimiter). */
         data class Bag(val storedPrefix: String) : EmittedRef
+        /** Nothing: the property is not a node property (a `@NodeLabels` field holds labels). */
+        data object None : EmittedRef
     }
 
     /** Emits one property reference, dispatching to the bag / string / scalar shape. */
     private fun addPropertyReference(classBuilder: TypeSpec.Builder, prop: KSPropertyDeclaration, aliasExpr: String): EmittedRef {
+        // @NodeLabels holds the node's labels, not a property: there is nothing to reference.
+        if (prop.annotations.any { it.shortName.asString() == "NodeLabels" }) return EmittedRef.None
+
         // @PropertyBag / @CompositeProperty → a PropertyBagReference with key(name), not a scalar.
         val bagAnnotation = prop.annotations.find {
             val name = it.shortName.asString()
@@ -866,7 +872,9 @@ class QueryDslGenerator(
     ): String {
         val prefix = (bagAnnotation.arguments.find { it.name?.asString() == "prefix" }?.value as? String) ?: ""
         val delimiter = (bagAnnotation.arguments.find { it.name?.asString() == "delimiter" }?.value as? String) ?: "."
-        val storedPrefix = "${prefix.ifEmpty { propName }}$delimiter"
+        // A flat bag stores each entry under its bare key: no prefix, no delimiter.
+        val flat = (bagAnnotation.arguments.find { it.name?.asString() == "flat" }?.value as? Boolean) ?: false
+        val storedPrefix = if (flat) "" else "${prefix.ifEmpty { propName }}$delimiter"
         val bagRefType = ClassName("org.drivine.query.dsl", "PropertyBagReference")
         classBuilder.addProperty(
             PropertySpec.builder(propName, bagRefType)

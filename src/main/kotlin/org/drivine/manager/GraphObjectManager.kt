@@ -84,16 +84,32 @@ class GraphObjectManager(
 
     /**
      * Reads a node's stored property keys, so a save of an untracked object under [NullPolicy.CLEAR]
-     * can still remove the `@PropertyBag` keys it dropped. Only consulted on that path.
+     * can still remove the `@PropertyBag` keys it dropped, and the labels an open `@NodeLabels` field
+     * recorded as its own. Only consulted on that path.
      */
-    private val storedKeys = StoredPropertyKeys { labels, idProperty, id ->
-        persistenceManager.maybeGetOne(
-            QuerySpecification
-                .withStatement("MATCH (n:$labels {$idProperty: \$id}) RETURN keys(n)")
-                .bind(mapOf("id" to id))
-                .transform(List::class.java)
-        )?.map { it.toString() }?.toSet().orEmpty()
+    private val storedKeys = object : StoredPropertyKeys {
+        override fun of(labels: String, idProperty: String, id: Any): Set<String> =
+            persistenceManager.maybeGetOne(
+                QuerySpecification
+                    .withStatement("MATCH (n:$labels {$idProperty: \$id}) RETURN keys(n)")
+                    .bind(mapOf("id" to id))
+                    .transform(List::class.java)
+            )?.map { it.toString() }?.toSet().orEmpty()
+
+        override fun ownedLabels(labels: String, idProperty: String, id: Any, property: String): List<String> =
+            persistenceManager.maybeGetOne(
+                QuerySpecification
+                    .withStatement("MATCH (n:$labels {$idProperty: \$id}) RETURN coalesce(n.`$property`, [])")
+                    .bind(mapOf("id" to id))
+                    .transform(List::class.java)
+            )?.map { it.toString() }.orEmpty()
     }
+
+    /**
+     * Relationships whose type is known only at runtime, between stored nodes — see [EdgeOperations].
+     * Kept apart from the rest of this class, which is about declared shapes.
+     */
+    val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
 
     private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys)
 
@@ -260,7 +276,7 @@ class GraphObjectManager(
      *
      * For GraphViews, also registers subtypes for relationship target types.
      */
-    private fun autoRegisterSubtypesIfNeeded(graphClass: Class<*>) {
+    internal fun autoRegisterSubtypesIfNeeded(graphClass: Class<*>) {
         // Track registered classes to avoid infinite recursion
         val registeredClasses = mutableSetOf<Class<*>>()
         autoRegisterSubtypesRecursive(graphClass, registeredClasses)
@@ -832,7 +848,7 @@ class GraphObjectManager(
      * For polymorphic results (when graphClass is abstract/sealed), snapshot each object
      * using its actual runtime class rather than the query target class.
      */
-    private fun <T : Any> snapshotResults(graphClass: Class<T>, results: List<T>) {
+    internal fun <T : Any> snapshotResults(graphClass: Class<T>, results: List<T>) {
         if (results.isEmpty()) return
 
         // Check if the graphClass is abstract or sealed (indicates polymorphic query)
