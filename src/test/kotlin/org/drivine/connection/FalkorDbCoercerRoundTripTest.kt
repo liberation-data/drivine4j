@@ -13,19 +13,17 @@ import java.time.Instant
 import kotlin.test.assertEquals
 
 /**
- * Round-trip tests for `FalkorDbConnection`'s wire-level workarounds:
+ * Round-trip tests for what `FalkorDbConnection` sends as a parameter:
  *
  * - Temporal → ISO-8601 string coercion for FalkorDB's CYPHER parameter protocol,
  *   reconstituted on the read side by Jackson's `JavaTimeModule` when mapped into typed
  *   domain objects (the path `@GraphView` and any `.transform(Class)` caller takes).
  *
- * - `$`-in-string inlining for JFalkorDB#251: any top-level String param value containing
- *   `$` is spliced into the query body as a Cypher string literal and pulled from the
- *   CYPHER prefix, sidestepping the server bug that misparses `${...}` in prefix values.
+ * - Strings holding `$`, a backslash or a quote, which jfalkordb 0.7.0 could not carry in its
+ *   `CYPHER key=value` prefix (JFalkorDB#251, #252) and Drivine used to write into the query
+ *   text instead. From jfalkordb 0.13.0 they go as parameters, and these tests hold it to that.
  *
- * Maps-as-parameter-values aren't tested here: JFalkorDB#68 tracks that FalkorDB doesn't
- * accept nested maps through jfalkordb at all, so those failures are a separate driver
- * limitation and not something this library can or should paper over.
+ * Maps as parameter values (JFalkorDB#68) are covered in FalkorDbConnectionIntegrationTest.
  */
 @Testcontainers
 class FalkorDbCoercerRoundTripTest {
@@ -205,9 +203,7 @@ class FalkorDbCoercerRoundTripTest {
     @Test
     fun `long RAG-style chunk with Kotlin template syntax and quoted code samples`() {
         // Real-world reproducer from upstream: a docs chunk containing code samples with
-        // `${input.name}` Kotlin template syntax. The pre-inlining workaround failed on
-        // inputs of this shape; the inlining path treats the whole value as an opaque
-        // string literal in the Cypher body, which FalkorDB parses correctly.
+        // `${input.name}` Kotlin template syntax, which failed on jfalkordb 0.7.0.
         val chunk = """
             val result = addTool.call("{\"a\": 5}")
             // val greetTool = Tool.fromFunction<GreetRequest, String>(name = "greet") { input ->
@@ -237,12 +233,10 @@ class FalkorDbCoercerRoundTripTest {
     }
 
     @Test
-    fun `JSON-shaped string with escaped quotes triggers JFalkorDB#252 without inlining`() {
+    fun `JSON-shaped string with escaped quotes round-trips - JFalkorDB#252`() {
         // Upstream reproducer: a docs chunk containing HTML-escaped JSON code samples
-        // like {\"rows\": 5}. jfalkordb's quoteString() escapes " without first escaping
-        // \, so the CYPHER prefix ends up with \\" and FalkorDB closes the quoted string
-        // at the wrong point. The inlining path puts the value in the query body as a
-        // properly Cypher-escaped literal, bypassing the broken prefix escaping entirely.
+        // like {\"rows\": 5}. jfalkordb 0.7.0 escaped " without first escaping \, so the
+        // CYPHER prefix ended up with \\" and FalkorDB closed the quoted string at the wrong point.
         val text = """
             Example response: {\"rows\": 5, \"cols\": 3}
             Another chunk:    {\"name\": \"Ada\", \"role\": \"engineer\"}
@@ -270,8 +264,7 @@ class FalkorDbCoercerRoundTripTest {
 
     @Test
     fun `string with embedded double quotes and backslashes is properly Cypher-escaped`() {
-        // Exercises the literal-escape rules: \, ", and $ all need the right handling for
-        // the inlined Cypher string literal to parse back to the original bytes.
+        // \, " and $ together: each needs the right handling for the value to come back as sent.
         val bio = "path\\to\\file with \"quoted\" text and a \$dollar sign"
         val conn = provider.connect()
         try {

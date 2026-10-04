@@ -109,6 +109,159 @@ class FalkorDbConnectionIntegrationTest {
     }
 
     // =========================================================================
+    // Parameters jfalkordb 0.7.0 could not carry: maps, and strings with `$` or a backslash
+    // =========================================================================
+
+    private fun names(conn: Connection): List<Any?> = conn.query(
+        QuerySpecification
+            .withStatement("MATCH (p:Person) RETURN {id: p.id, name: p.name} ORDER BY p.id")
+            .transform(Map::class.java)
+    ).map { (it as Map<*, *>)["name"] }
+
+    @Test
+    @Order(3)
+    fun `a list of maps is taken as a parameter`() {
+        val conn = provider.connect()
+        try {
+            val rows = listOf(
+                mapOf("id" to 1, "props" to mapOf("name" to "Ada", "tags" to listOf("a", "b"))),
+                mapOf("id" to 2, "props" to mapOf("name" to "It's \"Bob\"", "nickname" to null)),
+            )
+            conn.query<Any>(
+                QuerySpecification
+                    .withStatement("UNWIND \$rows AS row MERGE (p:Person {id: row.id}) SET p += row.props")
+                    .bind(mapOf("rows" to rows))
+            )
+
+            assertEquals(listOf<Any?>("Ada", "It's \"Bob\""), names(conn))
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(4)
+    fun `a value that names another parameter is not taken for a reference to it`() {
+        val conn = provider.connect()
+        try {
+            conn.query<Any>(
+                QuerySpecification
+                    .withStatement("CREATE (:Person {id: 1, name: \$label}), (:Person {id: 2, name: \$name})")
+                    .bind(mapOf("label" to "costs \$name", "name" to "a\\b"))
+            )
+
+            assertEquals(listOf<Any?>("costs \$name", "a\\b"), names(conn))
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(5)
+    fun `a map key that is not a plain name is still one key`() {
+        val conn = provider.connect()
+        try {
+            val results = conn.query(
+                QuerySpecification
+                    .withStatement("WITH \$bag AS bag RETURN {value: bag[\$key]}")
+                    .bind(mapOf("bag" to mapOf("metadata.source" to "upload"), "key" to "metadata.source"))
+                    .transform(Map::class.java)
+            )
+
+            assertEquals("upload", (results.single() as Map<*, *>)["value"])
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(6)
+    fun `a long string holding a template expression is one value`() {
+        val conn = provider.connect()
+        try {
+            // FalkorDB/JFalkorDB#251 showed only past a certain length, so this is a chunk-sized value.
+            val text = (1..400).joinToString("\n") { "val line$it = \"\${row.name} costs \$$it\"" }
+            conn.query<Any>(
+                QuerySpecification
+                    .withStatement("CREATE (:Person {id: 1, name: \$text})")
+                    .bind(mapOf("text" to text))
+            )
+
+            assertTrue(text.length > 10_000)
+            assertEquals(listOf<Any?>(text), names(conn))
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(7)
+    fun `a string holding an escaped quote is one value`() {
+        val conn = provider.connect()
+        try {
+            val json = """{\"rows\": 5, "path": "C:\\tmp\\"}"""
+            conn.query<Any>(
+                QuerySpecification
+                    .withStatement("CREATE (:Person {id: 1, name: \$json})")
+                    .bind(mapOf("json" to json))
+            )
+
+            assertEquals(listOf<Any?>(json), names(conn))
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(8)
+    fun `a null parameter is sent as null`() {
+        val conn = provider.connect()
+        try {
+            val results = conn.query(
+                QuerySpecification
+                    .withStatement("RETURN {absent: \$absent IS NULL, present: \$present}")
+                    .bind(mapOf("absent" to null, "present" to "here"))
+                    .transform(Map::class.java)
+            )
+
+            assertEquals(mapOf<String, Any?>("absent" to true, "present" to "here"), results.single())
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(9)
+    fun `a null column comes back as null`() {
+        val conn = provider.connect()
+        try {
+            conn.query<Any>(QuerySpecification.withStatement("CREATE (:Person {id: 1})"))
+
+            assertEquals(listOf<Any?>(null), names(conn))
+        } finally {
+            conn.release()
+        }
+    }
+
+    @Test
+    @Order(10)
+    fun `a set is sent as a list`() {
+        val conn = provider.connect()
+        try {
+            val results = conn.query(
+                QuerySpecification
+                    .withStatement("RETURN {matched: 2 IN \$ids, names: \$names}")
+                    .bind(mapOf("ids" to setOf(1, 2), "names" to linkedSetOf("b", "a")))
+                    .transform(Map::class.java)
+            )
+
+            assertEquals(mapOf<String, Any?>("matched" to true, "names" to listOf("b", "a")), results.single())
+        } finally {
+            conn.release()
+        }
+    }
+
+    // =========================================================================
     // Transaction passthrough (WARN mode — default)
     // =========================================================================
 

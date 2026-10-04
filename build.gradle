@@ -12,11 +12,15 @@ plugins {
 }
 
 group = 'org.drivine'
-version = '0.0.88'
+version = '0.0.90'
 
 base {
 	archivesName = 'drivine4j'
 }
+
+// jfalkordb 0.13.0 is built on Jedis 8; the Spring Boot BOM manages Jedis to 6.0.0, which lacks
+// DefaultJedisClientConfig.Builder.autoNegotiateProtocol and fails every FalkorDB connection.
+ext['jedis.version'] = '8.0.1'
 
 java {
 	toolchain {
@@ -67,7 +71,7 @@ dependencies {
 	testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
 
 	// FalkorDB driver
-	implementation 'com.falkordb:jfalkordb:0.7.0'
+	implementation 'com.falkordb:jfalkordb:0.13.0'
 
 	// Neptune IAM SigV4 authentication — optional, users bring their own AWS SDK
 	compileOnly 'software.amazon.awssdk:auth:2.31.3'

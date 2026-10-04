@@ -70,7 +70,8 @@ abstract class GraphResultMapper(
 
     abstract fun keys(record: Any): List<String>
 
-    abstract fun itemAtIndex(record: Any, index: Int): Any
+    /** The column's value as the driver gives it. FalkorDB gives `null` for a null column. */
+    abstract fun itemAtIndex(record: Any, index: Int): Any?
 
-    abstract fun toNative(value: Any): Any?
+    abstract fun toNative(value: Any?): Any?
 }
