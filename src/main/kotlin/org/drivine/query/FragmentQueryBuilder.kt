@@ -22,15 +22,28 @@ class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObje
      * @return The generated Cypher query
      */
     override fun buildQuery(whereClause: String?, orderByClause: String?): String {
-        // Get all labels from the fragment
+        // Build the MATCH clause with all labels
+        requireLabels()
+        return buildQuery("MATCH ($nodeAlias:${fragmentModel.labels.joinToString(":")})", whereClause, orderByClause)
+    }
+
+    /**
+     * Builds the load for the fragment's nodes that [matchClause] binds as `n` — the same projection
+     * as [buildQuery], over a match the caller supplies (a traversal from another node, say).
+     */
+    fun buildQueryMatching(matchClause: String): String {
+        requireLabels()
+        return buildQuery(matchClause, null, null)
+    }
+
+    private fun requireLabels() {
         if (fragmentModel.labels.isEmpty()) {
             throw IllegalArgumentException("No labels defined for fragment ${fragmentModel.className}. @GraphFragment must specify at least one label.")
         }
+    }
 
-        // Build the MATCH clause with all labels
-        val labelString = fragmentModel.labels.joinToString(":")
+    private fun buildQuery(matchClause: String, whereClause: String?, orderByClause: String?): String {
         val nodeAlias = "n"
-        val matchClause = "MATCH ($nodeAlias:$labelString)"
 
         // Build the WHERE clause if provided
         val whereSection = if (whereClause != null) {

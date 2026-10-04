@@ -43,14 +43,22 @@ package org.drivine.annotation
  * (above) when exact width matters, or coerce at the call site (`(v as Number).toInt()`). No value is
  * lost either way — only the declared width.
  *
+ * **A flat bag** ([flat]) has no prefix at all: each entry is stored under its own key, and the bag
+ * reads back every property of the node that no declared field and no other bag accounts for. It is
+ * the shape of a node whose properties are open-ended and were never namespaced. A fragment may have
+ * one; an entry whose key is a declared field's property name is rejected at save, since the two
+ * would write the same property.
+ *
  * @param prefix property-name prefix; empty (`""`) uses the field name.
  * @param delimiter separator between prefix and key (default `.`).
+ * @param flat store each entry under its bare key, with no prefix and no delimiter.
  */
 @Target(AnnotationTarget.PROPERTY, AnnotationTarget.FIELD)
 @Retention(AnnotationRetention.RUNTIME)
 annotation class PropertyBag(
     val prefix: String = "",
     val delimiter: String = ".",
+    val flat: Boolean = false,
 )
 
 /**
@@ -62,4 +70,5 @@ annotation class PropertyBag(
 annotation class CompositeProperty(
     val prefix: String = "",
     val delimiter: String = ".",
+    val flat: Boolean = false,
 )

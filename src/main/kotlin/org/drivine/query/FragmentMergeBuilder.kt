@@ -19,6 +19,8 @@ import org.drivine.query.grammar.CypherGrammar
  * 4. Expand each `@PropertyBag` field into flat prefixed properties, and REMOVE keys that the bag
  *    no longer contains (clear-stale-then-set) — known from the previous state, or read from the
  *    store through [storedKeys] when the object is untracked.
+ * 5. Write a `@NodeLabels` field as labels: its contents are added, and under [NullPolicy.CLEAR] the
+ *    members of a closed set that it no longer holds are removed.
  *
  * [grammar] is optional; when null (e.g. in unit tests that only assert plain SET shape) vector
  * fields are written plainly, exactly as any other field.
@@ -114,6 +116,11 @@ class FragmentMergeBuilder(
                 assertStorable(v, bag.storedKey(key))
                 // Under IGNORE a null bag value is skipped (never clears); under CLEAR it clears the key.
                 if (v == null && nullPolicy == NullPolicy.IGNORE) return@forEach
+                require(!bag.flat || bag.owns(key)) {
+                    "Flat @PropertyBag field '${bag.fieldName}' on ${fragmentModel.clazz.simpleName} has an entry " +
+                        "'$key', which is the property of a declared field or of another bag. Both would write " +
+                        "the same node property; remove the entry or rename the field's property."
+                }
                 val param = "_bag${bagParamIndex++}"
                 bindings[param] = v
                 setClauses.add("n.`${bag.storedKey(key)}` = \$$param")
@@ -133,14 +140,67 @@ class FragmentMergeBuilder(
             }
         }
 
+        // ----- Node labels: add what the field holds; under CLEAR, drop what it no longer holds -----
+        // Label names cannot be bound as parameters on every engine, so they are written into the
+        // statement, quoted. Null handling follows the fields above: IGNORE adds and removes nothing.
+        var addLabels = emptyList<String>()
+        var dropLabels = emptyList<String>()
+        // Under CLEAR the labels are written whether or not the field is dirty: the snapshot records
+        // what the object last said, not what the node carries, so an unchanged field can still have
+        // labels to remove.
+        fragmentModel.nodeLabels?.takeIf {
+            nullPolicy == NullPolicy.CLEAR || dirtyFields == null || it.fieldName in dirtyFields
+        }?.let { model ->
+            val current = (allProps[model.fieldName] as? Collection<*>).orEmpty().map { it.toString() }
+            current.firstOrNull { it.isBlank() }?.let {
+                throw IllegalArgumentException(
+                    "@NodeLabels field '${model.fieldName}' on ${fragmentModel.clazz.simpleName} holds a blank label."
+                )
+            }
+            addLabels = current.distinct().filter { it !in fragmentModel.labels }
+            val owned = model.ownedProperty
+            if (owned == null) {
+                if (nullPolicy == NullPolicy.CLEAR) dropLabels = model.dropped(current)
+                return@let
+            }
+            // An open set: what it may remove is what it recorded on the node. With no reader for the
+            // stored record (a relationship target), nothing is removed and the record only grows.
+            val recorded = if (nullPolicy == NullPolicy.CLEAR) storedKeys?.ownedLabels(labels, nodeIdProperty, idValue, owned) else null
+            if (recorded != null) {
+                dropLabels = recorded.filter { it !in addLabels && it !in fragmentModel.labels }
+                if (addLabels.isEmpty()) {
+                    removeClauses.add("n.`$owned`")
+                } else {
+                    setClauses.add("n.`$owned` = \$$OWNED_LABELS_PARAM")
+                    bindings[OWNED_LABELS_PARAM] = addLabels
+                }
+            } else if (addLabels.isNotEmpty()) {
+                setClauses.add(
+                    "n.`$owned` = [l IN coalesce(n.`$owned`, []) WHERE NOT l IN \$$OWNED_LABELS_PARAM] + \$$OWNED_LABELS_PARAM"
+                )
+                bindings[OWNED_LABELS_PARAM] = addLabels
+            }
+        }
+
         // ----- Assemble -----
         val query = buildString {
             append(mergeClause)
             if (setClauses.isNotEmpty()) append("\nSET ").append(setClauses.joinToString(", "))
             if (removeClauses.isNotEmpty()) append("\nREMOVE ").append(removeClauses.joinToString(", "))
+            if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
+            if (dropLabels.isNotEmpty()) append("\nREMOVE n").append(labelExpression(dropLabels))
         }
         return MergeStatement(query, bindings)
     }
+
+    private companion object {
+        /** Bind-parameter name for the labels an open `@NodeLabels` field records as its own. */
+        const val OWNED_LABELS_PARAM = "_ownedLabels"
+    }
+
+    /** `:A:B` for [labels], each quoted so a label is one label whatever characters it holds. */
+    private fun labelExpression(labels: List<String>): String =
+        labels.joinToString("") { ":${quotedIdentifier(it)}" }
 
     /** Throws a clear error if a bag value can't be stored as a node property (naming the key). */
     private fun assertStorable(value: Any?, storedKey: String) {
@@ -176,6 +236,13 @@ class FragmentMergeBuilder(
  */
 fun interface StoredPropertyKeys {
     fun of(labels: String, idProperty: String, id: Any): Set<String>
+
+    /**
+     * The labels an open `@NodeLabels` field has recorded on the stored node under [property] — what
+     * a save under `CLEAR` may remove. Empty when the node or the record does not exist; null when
+     * this reader cannot say, in which case nothing is removed.
+     */
+    fun ownedLabels(labels: String, idProperty: String, id: Any, property: String): List<String>? = null
 }
 
 /**

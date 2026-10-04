@@ -20,7 +20,8 @@ import org.drivine.session.SessionManager
  * statements (sub-linear round trips); relationship and cascade statements stay per-item, built by the
  * very same [GraphObjectMergeBuilder] the single-object [GraphObjectManager.save] uses — so per-item
  * cascade and change detection are identical. Roots carrying a `@PropertyBag` fall back to the full
- * per-item path (their clear-stale `REMOVE` needs per-object keys an UNWIND can't express); a root
+ * per-item path (their clear-stale `REMOVE` needs per-object keys an UNWIND can't express), as do
+ * roots carrying a `@NodeLabels` field (labels are written into the statement, per object); a root
  * with a `@VectorIndex` field falls back too on engines that wrap vector writes (FalkorDB), since
  * `SET n += row.props` cannot wrap one property in `vecf32(...)`. See [GraphObjectManager.saveAll]
  * for the full contract and caveats.
@@ -46,7 +47,9 @@ internal class BatchSaveOperations(
             // `SET n += row.props` can't wrap a single property in vecf32(...). Elsewhere (Neo4j /
             // Memgraph store a plain array) the UNWIND path is fine, exactly as for a plain fragment.
             val vectorNeedsPerItem = rootModel.vectorFieldNames.isNotEmpty() && grammar?.wrapsVectorLiteral == true
-            if (idField != null && rootModel.propertyBags.isEmpty() && !vectorNeedsPerItem) {
+            // A @NodeLabels root is per-item too: its labels are part of the statement text, so rows with
+            // different labels cannot share one UNWIND.
+            if (idField != null && rootModel.propertyBags.isEmpty() && rootModel.nodeLabels == null && !vectorNeedsPerItem) {
                 appendUnwindGroup(specs, clazz, group, rootModel, rootFieldName, idField, cascade, nullPolicy)
             } else {
                 group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy).forEach { specs.add(it.toSpec()) } }

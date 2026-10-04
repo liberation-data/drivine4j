@@ -60,14 +60,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.90")
+    implementation("org.drivine:drivine4j:0.0.91")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.90'
+    implementation 'org.drivine:drivine4j:0.0.91'
 }
 ```
 
@@ -76,7 +76,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.90</version>
+    <version>0.0.91</version>
 </dependency>
 ```
 
@@ -102,8 +102,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.90")
-    ksp("org.drivine:drivine4j-codegen:0.0.90")
+    implementation("org.drivine:drivine4j:0.0.91")
+    ksp("org.drivine:drivine4j-codegen:0.0.91")
 }
 ```
 
@@ -137,7 +137,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.90</version>
+                    <version>0.0.91</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -2121,6 +2121,86 @@ For a **runtime** key (not known at compile time), use the dynamic
 [`property(path)` / `field(key)`](#dynamic--runtime-key-predicates) predicates instead of `.key(...)`.
 
 Works across Neo4j, FalkorDB, and Memgraph.
+
+**A flat bag** has no prefix: each entry is stored under its bare key, and the bag reads back every
+property that no declared field and no other bag accounts for. It fits a node whose properties are
+open-ended and were never namespaced. A fragment may have one, and an entry whose key is a declared
+field's property is rejected at save.
+
+```kotlin
+@NodeFragment(labels = ["Thing"])
+data class ThingNode(
+    @NodeId val id: String,
+    val name: String,
+    @PropertyBag(flat = true) val properties: Map<String, Any?> = emptyMap(),   // -> <key> properties
+)
+```
+
+### @NodeLabels Annotation
+
+Maps a set-valued field to the node's **labels**, beyond the fixed ones the fragment declares. The
+field is filled from the node's labels on load and written as real labels on save, so
+`MATCH (n:Admin)` finds a node whose field holds `Admin`.
+
+```kotlin
+enum class Role { Admin, Reviewer, Author }
+
+@NodeFragment(labels = ["Person"])
+data class PersonNode(
+    @NodeId val id: String,
+    @NodeLabels val roles: Set<Role>,       // a closed set: only these labels are the field's
+)
+
+@NodeFragment(labels = ["Thing"])
+data class ThingNode(
+    @NodeId val id: String,
+    @NodeLabels val labels: Set<String>,    // an open set: any label
+)
+```
+
+Saving follows `NullPolicy`, as every field does:
+
+| | `IGNORE` (default) | `CLEAR` |
+|---|---|---|
+| Labels in the field | added | added |
+| Labels that are the field's and not in it | left | removed |
+
+Which labels are the field's depends on its element type:
+
+- **An enum**: its members. It reads only those, and a label outside the enum is ignored, never an
+  error. An enum may not name one of the fragment's own labels.
+- **`String`**: the labels it has itself written, which it records on the node in the list property
+  `__drivine.labels.<fieldName>`. Because the record is on the node, a `CLEAR` save removes the same
+  labels whichever process loaded the object, or if none did. It reads every label the node carries,
+  so an object loaded and then saved under `CLEAR` takes on all the labels it read.
+
+A label that is not the field's — the fragment's own, another fragment's, one written by other code —
+is never removed. Names beginning `__drivine.` are reserved: a field or bag may not use them.
+
+A fragment may carry one `@NodeLabels` field. `saveAll` saves such a fragment one statement per
+object. On a relationship target in a `@GraphView`, a `String` field adds and does not remove.
+
+### Relationships of a Runtime Type
+
+A `@GraphView` declares its relationships, type included. When the type is data — a graph whose
+relationship types are not known when the model is written — use `graphObjectManager.edges`:
+
+```kotlin
+val lyre = nodeRef<ThingNode>("lyre")
+val ada = nodeRef<PersonNode>("ada", "Author")       // must also carry the label Author
+
+gom.edges.relate(lyre, ada, type = "OWNED_BY", properties = mapOf("since" to 1990))
+gom.edges.relate(lyre, ada, type = "PLAYED_BY", mode = RelateMode.CREATE)
+
+val owners: List<PersonNode> = gom.edges.loadRelated(lyre, "OWNED_BY", Direction.OUTGOING)
+```
+
+- A `NodeRef` names a stored node by fragment class and id. Both ends are matched, never created:
+  if either is absent, or lacks a label the reference names, nothing is written and `relate`
+  returns false. Neither node is loaded and neither's properties are touched.
+- `RelateMode.MERGE` (the default) keeps at most one relationship of the type between the two nodes
+  in that direction and sets its properties; `CREATE` makes another each time.
+- `loadRelated` returns each related node once, as the target fragment.
 
 ### Cypher Dialect
 
