@@ -60,14 +60,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.88")
+    implementation("org.drivine:drivine4j:0.0.90")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.88'
+    implementation 'org.drivine:drivine4j:0.0.90'
 }
 ```
 
@@ -76,7 +76,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.88</version>
+    <version>0.0.90</version>
 </dependency>
 ```
 
@@ -102,8 +102,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.88")
-    ksp("org.drivine:drivine4j-codegen:0.0.88")
+    implementation("org.drivine:drivine4j:0.0.90")
+    ksp("org.drivine:drivine4j-codegen:0.0.90")
 }
 ```
 
@@ -137,7 +137,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.88</version>
+                    <version>0.0.90</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -1945,6 +1945,31 @@ database:
 
 ```yaml
       falkor-db-transaction-mode: STRICT   # default: WARN
+```
+
+**Jedis:** the FalkorDB client needs Jedis 8. Spring Boot's dependency management sets an older one (6.0.0 on Boot 3.5, 7.4.1 on Boot 4.1), and a managed version in your build wins over the one Drivine declares, so a FalkorDB datasource fails at start-up with `NoSuchMethodError` on `DefaultJedisClientConfig.Builder.autoNegotiateProtocol`. Set it yourself:
+
+```xml
+<!-- Maven, with the Spring Boot parent -->
+<properties>
+    <jedis.version>8.0.1</jedis.version>
+</properties>
+
+<!-- Maven, importing a BOM: declare it BEFORE the import -->
+<dependencyManagement>
+    <dependencies>
+        <dependency>
+            <groupId>redis.clients</groupId>
+            <artifactId>jedis</artifactId>
+            <version>8.0.1</version>
+        </dependency>
+    </dependencies>
+</dependencyManagement>
+```
+
+```groovy
+// Gradle, with the Spring Boot plugin
+ext['jedis.version'] = '8.0.1'
 ```
 
 **Known limitations:**
