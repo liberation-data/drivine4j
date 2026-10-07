@@ -170,6 +170,16 @@ private fun verify(gom: GraphObjectManager, pm: PersistenceManager, ownGom: () -
         mapOf("m3" to setOf(Role.Admin), "m4" to setOf(Role.Reviewer)),
         gom.loadAll(MemberNode::class.java).filter { it.id in setOf("m3", "m4") }.associate { it.id to it.roles },
     )
+
+    // ----- A node deleted behind the session comes back whole when the same object is saved again -----
+    val gone = ThingNode("gone", "Ada", setOf("Person"), mapOf("address" to "ada@example.com"))
+    gom.save(gone)
+    pm.execute(QuerySpecification.withStatement("MATCH (n {id: 'gone'}) DETACH DELETE n"))
+    gom.save(gone)
+    assertEquals(setOf("Thing", "Person"), labelsOf("gone"))
+    val back = gom.load("gone", ThingNode::class.java)!!
+    assertEquals("Ada", back.name)
+    assertEquals("ada@example.com", back.properties["address"])
 }
 
 class NodeLabelsModelTest {

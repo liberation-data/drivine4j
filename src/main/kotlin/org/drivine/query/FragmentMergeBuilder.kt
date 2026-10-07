@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.manager.NullPolicy
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
+import org.drivine.model.NodeLabelsModel
 import org.drivine.query.grammar.CypherGrammar
 
 /**
@@ -12,7 +13,9 @@ import org.drivine.query.grammar.CypherGrammar
  *
  * Generates queries that:
  * 1. MERGE on (labels + ID) - creates if not exists, matches if exists
- * 2. SET declared fields (dirty fields for optimized saves, all fields for full saves)
+ * 2. SET declared fields (dirty fields for optimized saves, all fields for full saves). What an
+ *    optimized save leaves out is written `ON CREATE`, so a node deleted since the snapshot was taken
+ *    is created whole.
  * 3. Write each `@VectorIndex` (embedding) field through the grammar's
  *    [CypherGrammar.vectorPropertyLiteral], so FalkorDB stores it as its native vector type (the
  *    write-side mirror of the read-side `vecf32(...)` wrapping) — a no-op on Neo4j / Memgraph.
@@ -68,6 +71,10 @@ class FragmentMergeBuilder(
         val bindings = mutableMapOf<String, Any?>(nodeIdField to idValue)
         val setClauses = mutableListOf<String>()
         val removeClauses = mutableListOf<String>()
+        // What a tracked save leaves out as unchanged. The snapshot says what this session last wrote,
+        // not what the store holds: when the node has since been deleted by another writer, MERGE
+        // creates it again, and these are written then, so it comes back whole.
+        val onCreateClauses = mutableListOf<String>()
 
         // ----- Declared fields (bags are excluded from fragmentModel.fields) -----
         // Null handling is driven purely by [nullPolicy] and the object — NOT by dirty-tracking — so the
@@ -89,13 +96,13 @@ class FragmentMergeBuilder(
                 // Non-null: write it, but skip an unchanged field on a tracked (dirty-diffed) save.
                 // The bind-param stays the field name (identity); the assigned property is the on-disk
                 // name. Vector fields wrap via the grammar so FalkorDB stores the native vector type.
-                if (dirtyFields != null && name !in dirtyFields) return@forEach
+                val unchanged = dirtyFields != null && name !in dirtyFields
                 val rhs = if (name in fragmentModel.vectorFieldNames) {
                     grammar?.vectorPropertyLiteral(name) ?: "\$$name"
                 } else {
                     "\$$name"
                 }
-                setClauses.add("n.${field.propertyName} = $rhs")
+                (if (unchanged) onCreateClauses else setClauses).add("n.${field.propertyName} = $rhs")
                 bindings[name] = value
             }
         }
@@ -105,8 +112,8 @@ class FragmentMergeBuilder(
         val keysInStore by lazy { storedKeys?.of(labels, nodeIdProperty, idValue) }
         var bagParamIndex = 0
         fragmentModel.propertyBags.forEach { bag ->
-            // On an optimized save, only touch the bag if it changed.
-            if (dirtyFields != null && bag.fieldName !in dirtyFields) return@forEach
+            // On an optimized save, only touch the bag if it changed — unless the node is being created.
+            val unchanged = dirtyFields != null && bag.fieldName !in dirtyFields
 
             val currentBag = (allProps[bag.fieldName] as? Map<*, *>) ?: emptyMap<Any?, Any?>()
             val currentKeys = mutableSetOf<String>()
@@ -123,8 +130,9 @@ class FragmentMergeBuilder(
                 }
                 val param = "_bag${bagParamIndex++}"
                 bindings[param] = v
-                setClauses.add("n.`${bag.storedKey(key)}` = \$$param")
+                (if (unchanged) onCreateClauses else setClauses).add("n.`${bag.storedKey(key)}` = \$$param")
             }
+            if (unchanged) return@forEach
 
             // Remove keys present before but gone now (requires the previous state). Removal is a form of
             // clearing, so under IGNORE (merge-patch) we leave stale keys in place.
@@ -151,12 +159,7 @@ class FragmentMergeBuilder(
         fragmentModel.nodeLabels?.takeIf {
             nullPolicy == NullPolicy.CLEAR || dirtyFields == null || it.fieldName in dirtyFields
         }?.let { model ->
-            val current = (allProps[model.fieldName] as? Collection<*>).orEmpty().map { it.toString() }
-            current.firstOrNull { it.isBlank() }?.let {
-                throw IllegalArgumentException(
-                    "@NodeLabels field '${model.fieldName}' on ${fragmentModel.clazz.simpleName} holds a blank label."
-                )
-            }
+            val current = labelsHeld(model, allProps)
             addLabels = current.distinct().filter { it !in fragmentModel.labels }
             val owned = model.ownedProperty
             if (owned == null) {
@@ -182,9 +185,24 @@ class FragmentMergeBuilder(
             }
         }
 
+        // An unchanged labels field is left out of a tracked save like any other; a node created again
+        // gets its labels, and the record of the ones an open set owns.
+        fragmentModel.nodeLabels?.takeIf {
+            nullPolicy != NullPolicy.CLEAR && dirtyFields != null && it.fieldName !in dirtyFields
+        }?.let { model ->
+            val held = labelsHeld(model, allProps).distinct().filter { it !in fragmentModel.labels }
+            if (held.isEmpty()) return@let
+            model.ownedProperty?.let { owned ->
+                onCreateClauses.add("n.`$owned` = \$$OWNED_LABELS_PARAM")
+                bindings[OWNED_LABELS_PARAM] = held
+            }
+            onCreateClauses.add("n${labelExpression(held)}")
+        }
+
         // ----- Assemble -----
         val query = buildString {
             append(mergeClause)
+            if (onCreateClauses.isNotEmpty()) append("\nON CREATE SET ").append(onCreateClauses.joinToString(", "))
             if (setClauses.isNotEmpty()) append("\nSET ").append(setClauses.joinToString(", "))
             if (removeClauses.isNotEmpty()) append("\nREMOVE ").append(removeClauses.joinToString(", "))
             if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
@@ -197,6 +215,16 @@ class FragmentMergeBuilder(
         /** Bind-parameter name for the labels an open `@NodeLabels` field records as its own. */
         const val OWNED_LABELS_PARAM = "_ownedLabels"
     }
+
+    /** The labels a `@NodeLabels` field holds on this object, as written. A blank one is an error. */
+    private fun labelsHeld(model: NodeLabelsModel, allProps: Map<String, Any?>): List<String> =
+        (allProps[model.fieldName] as? Collection<*>).orEmpty().map { it.toString() }.also { held ->
+            held.firstOrNull { it.isBlank() }?.let {
+                throw IllegalArgumentException(
+                    "@NodeLabels field '${model.fieldName}' on ${fragmentModel.clazz.simpleName} holds a blank label."
+                )
+            }
+        }
 
     /** `:A:B` for [labels], each quoted so a label is one label whatever characters it holds. */
     private fun labelExpression(labels: List<String>): String =
