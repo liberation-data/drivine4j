@@ -11,7 +11,7 @@ package org.drivine.query.dsl
 
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.Neo4jConnectionProvider
-import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.GraphObjectOperations
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.Neo4jObjectMapper
@@ -42,7 +42,7 @@ import kotlin.test.assertTrue
  * case that profiles worst (see the README's pagination section).
  */
 @Testcontainers
-class QueryIndexAdvisorTest {
+class StatelessQueryIndexAdvisorTest {
 
     companion object {
         private const val PASSWORD = "advisortest"
@@ -70,9 +70,9 @@ class QueryIndexAdvisorTest {
         fun teardown() = provider.end()
     }
 
-    private fun gom(): GraphObjectManager {
+    private fun gom(): StatelessGraphObjectManager {
         val mapper = Neo4jObjectMapper.instance
-        return GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        return StatelessGraphObjectManager(pm, mapper, SubtypeRegistry())
     }
 
     private fun GraphObjectOperations.orderedLoad() =

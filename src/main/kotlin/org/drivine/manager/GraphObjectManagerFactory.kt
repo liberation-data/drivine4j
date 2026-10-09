@@ -23,6 +23,7 @@ class GraphObjectManagerFactory(
     private val sessionMaxEntries: Int = SessionManager.DEFAULT_MAX_ENTRIES,
 ) {
     private val managers: MutableMap<String, GraphObjectManager> = mutableMapOf()
+    private val statelessManagers: MutableMap<String, StatelessGraphObjectManager> = mutableMapOf()
 
     /**
      * Returns a GraphObjectManager for the database registered under the specified name.
@@ -40,4 +41,16 @@ class GraphObjectManagerFactory(
         }
         return managers[key]!!
     }
+
+    /**
+     * Returns a [StatelessGraphObjectManager] for the database registered under the specified name.
+     * It keeps no session, so it can share a database with a manager from [get].
+     */
+    @JvmOverloads
+    @Synchronized
+    fun stateless(database: String = "default", type: PersistenceManagerType = PersistenceManagerType.DELEGATING): StatelessGraphObjectManager =
+        statelessManagers.getOrPut("$database:$type") {
+            StatelessGraphObjectManager(persistenceManagerFactory.get(database, type), objectMapper, subtypeRegistry)
+                .apply { indexAdvice = this@GraphObjectManagerFactory.indexAdvice }
+        }
 }

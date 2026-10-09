@@ -1,6 +1,6 @@
 package org.drivine.query.dsl
 
-import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.GraphObjectOperations
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
@@ -24,8 +24,8 @@ import kotlin.test.assertTrue
 @SpringBootTest(classes = [TestAppContext::class])
 @Transactional
 @Rollback(true)
-class QueryDslEndToEndTests @Autowired constructor(
-    private val graphObjectManager: GraphObjectManager,
+class StatelessQueryDslEndToEndTests @Autowired constructor(
+    private val graphObjectManager: StatelessGraphObjectManager,
     private val persistenceManager: PersistenceManager
 ) {
 
@@ -146,7 +146,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should filter by single property condition`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.state eq "open"
@@ -162,7 +162,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should filter by multiple property conditions`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.state eq "open"
@@ -180,7 +180,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should filter with comparison operators`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.id gt 1001
@@ -196,7 +196,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should filter with string operations`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.title.startsWith("Add")
@@ -212,7 +212,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should order by property ascending`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.state eq "open"
@@ -232,7 +232,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should order by property descending`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             orderBy {
                 query.issue.id.desc()
@@ -250,7 +250,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should combine filtering and ordering`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.id gte 1001
@@ -297,7 +297,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should filter by relationship target property`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.assignedTo.name eq "Charlie"
@@ -315,7 +315,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should filter by multiple relationship target properties`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.assignedTo.name eq "Charlie"
@@ -334,7 +334,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should combine root and relationship filters`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.state eq "open"
@@ -369,7 +369,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should combine AND and OR conditions`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.locked eq false  // AND
@@ -390,7 +390,7 @@ class QueryDslEndToEndTests @Autowired constructor(
     fun `should filter with OR on different properties`() {
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 anyOf {
@@ -413,7 +413,7 @@ class QueryDslEndToEndTests @Autowired constructor(
         // This test verifies the query runs without error, even if the logic needs refinement.
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.state eq "open"  // Add a root condition
@@ -442,7 +442,7 @@ class QueryDslEndToEndTests @Autowired constructor(
         // When sorted by name ascending, should return [Charlie, Diana]
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.id eq 1003
@@ -466,7 +466,7 @@ class QueryDslEndToEndTests @Autowired constructor(
         // When sorted by name descending, should return [Diana, Charlie]
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.id eq 1003
@@ -495,7 +495,7 @@ class QueryDslEndToEndTests @Autowired constructor(
         // When sorted by worksFor.name ascending, should return [Acme Corp, Beta Inc]
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.id eq 1001
@@ -524,7 +524,7 @@ class QueryDslEndToEndTests @Autowired constructor(
         // When sorted by worksFor.name descending, should return [Beta Inc, Acme Corp]
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.id eq 1001
@@ -548,7 +548,7 @@ class QueryDslEndToEndTests @Autowired constructor(
         // collection sorting (APOC for nested collections)
         val results = graphObjectManager.loadAll(
             RaisedAndAssignedIssue::class.java,
-            RaisedAndAssignedIssueQueryDsl.INSTANCE
+            StatelessRaisedAndAssignedIssueQueryDsl.INSTANCE
         ) {
             where {
                 query.issue.state eq "open"
@@ -575,22 +575,22 @@ class QueryDslEndToEndTests @Autowired constructor(
  * Users would define this class alongside their GraphView.
  * Instances can be created and passed to the query DSL.
  */
-class RaisedAndAssignedIssueQueryDsl {
-    val issue = RaisedIssueProperties()
+class StatelessRaisedAndAssignedIssueQueryDsl {
+    val issue = StatelessRaisedIssueProperties()
     // For relationship filtering - codegen will generate these
     val assignedTo = PersonProperties("assignedTo")
     val raisedBy = PersonContextProperties("raisedBy")
 
     companion object {
         // Singleton instance for convenience
-        val INSTANCE = RaisedAndAssignedIssueQueryDsl()
+        val INSTANCE = StatelessRaisedAndAssignedIssueQueryDsl()
     }
 }
 
 /**
  * Property references for Issue fragment.
  */
-class RaisedIssueProperties {
+class StatelessRaisedIssueProperties {
     val uuid = PropertyReference<UUID>("issue", "uuid")
     val id = PropertyReference<Long>("issue", "id")
     val state = StringPropertyReference("issue", "state")
@@ -615,7 +615,7 @@ class RaisedIssueProperties {
 // 4. IDE support - autocomplete shows available extension functions
 //
 // Generated code structure:
-// - For each @GraphView "Foo", generate extension function on GraphObjectManager
+// - For each @GraphView "Foo", generate extension function on StatelessGraphObjectManager
 // - Extension function calls the existing loadAll(Class<T>, Q, spec) method
 // - Query DSL object (FooQueryDsl.INSTANCE) is wired in by generated code
 //
@@ -630,33 +630,3 @@ class RaisedIssueProperties {
 // }
 // ```
 
-/**
- * PROOF OF CONCEPT: Extension function for RaisedAndAssignedIssue.
- * This demonstrates what code generation will produce.
- *
- * With this extension function, users can write:
- * ```kotlin
- * graphObjectManager.loadAll(RaisedAndAssignedIssue::class.java) {
- *     where { query.issue.state eq "open") }
- * }
- * ```
- *
- * Instead of:
- * ```kotlin
- * graphObjectManager.loadAll(
- *     RaisedAndAssignedIssue::class.java,
- *     RaisedAndAssignedIssueQueryDsl.INSTANCE
- * ) {
- *     where { query.issue.state eq "open") }
- * }
- * ```
- *
- * The extension function automatically provides the query DSL instance,
- * eliminating one parameter and making the API cleaner.
- */
-fun GraphObjectOperations.loadAll(
-    type: Class<RaisedAndAssignedIssue>,
-    spec: GraphQuerySpec<RaisedAndAssignedIssueQueryDsl>.() -> Unit
-): List<RaisedAndAssignedIssue> {
-    return loadAll(type, RaisedAndAssignedIssueQueryDsl.INSTANCE, spec)
-}

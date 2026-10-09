@@ -91,10 +91,27 @@ class StatelessGraphObjectManager private constructor(
     /**
      * Saves each object, in batches. Every node gets a new stamp. The saves are not checked: a batch
      * cannot say which of its rows found the stamp it expected.
+     *
+     * The batch itself is atomic. A [Replace] is applied to each object after it, and is part of the
+     * same unit of work only inside a transaction.
      */
     @JvmOverloads
-    fun <T : Any> saveAll(objs: Collection<T>, nullPolicy: NullPolicy = NullPolicy.IGNORE): List<T> =
-        objects.saveAll(objs, CascadeType.NONE, nullPolicy)
+    fun <T : Any> saveAll(
+        objs: Collection<T>,
+        relationships: RelationshipWrite = Add,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+    ): List<T> {
+        val items = objs.toList()
+        val replaced = (relationships as? Replace)?.let { replace -> items.map { it to replacedFields(it, replace) } }.orEmpty()
+        val saved = objects.saveAll(items, CascadeType.NONE, nullPolicy)
+        if (relationships is Replace) {
+            replaced.forEach { (item, fields) ->
+                val viewModel = GraphViewModel.from(item.javaClass)
+                fields.forEach { replacer.replace(item, viewModel, it, relationships.removedTargets) }
+            }
+        }
+        return saved
+    }
 
     /**
      * Loads the [graphClass] object with [id], applies [change] to it, and writes what the change
