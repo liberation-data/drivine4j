@@ -453,6 +453,7 @@ data class OrgPersonView(
 @GraphView
 data class ActorDirectors(
     @Root val actor: Actor,
+    @ReadOnly
     @GraphPath([
         Hop("ACTED_IN",    Direction.OUTGOING, label = "Movie"),  // through Movie — not mapped
         Hop("DIRECTED_BY", Direction.OUTGOING),                   // to Director
@@ -471,9 +472,12 @@ The far node is **de-duplicated** (an actor who made two movies by the same dire
 @GraphView
 data class ActorStats(
     @Root val actor: Actor,
-    @Count("ACTED_IN")                                              val movieCount: Long,
-    @Aggregate(AggregateFunction.AVG, type = "RATED", property = "score") val avgRating: Double,
-    @Aggregate(AggregateFunction.SUM, type = "RATED", property = "score") val totalRating: Double,
+    @ReadOnly @Count("ACTED_IN")
+    val movieCount: Long,
+    @ReadOnly @Aggregate(AggregateFunction.AVG, type = "RATED", property = "score")
+    val avgRating: Double,
+    @ReadOnly @Aggregate(AggregateFunction.SUM, type = "RATED", property = "score")
+    val totalRating: Double,
 )
 ```
 

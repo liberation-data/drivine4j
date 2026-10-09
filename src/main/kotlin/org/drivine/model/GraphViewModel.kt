@@ -1,6 +1,7 @@
 package org.drivine.model
 
 import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.ReadOnly
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphPath
 import org.drivine.annotation.Aggregate
@@ -13,6 +14,7 @@ import org.drivine.annotation.SortedBy
 import java.lang.reflect.Field
 import java.lang.reflect.ParameterizedType
 import kotlin.reflect.KClass
+import kotlin.reflect.jvm.javaField
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
 
@@ -202,13 +204,42 @@ data class GraphViewModel(
                 aggregateFieldModel(prop.name, prop.findAnnotation<Count>(), prop.findAnnotation<Aggregate>())
             }
 
+            val readOnlyFields = properties
+                .filter { it.findAnnotation<ReadOnly>() != null || it.javaField?.isAnnotationPresent(ReadOnly::class.java) == true }
+                .map { it.name }
+                .toSet()
+
             return GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = relationships,
+                relationships = declaredReadOnly(clazz, relationships, aggregateFields, readOnlyFields),
                 aggregateFields = aggregateFields
             )
+        }
+
+        /**
+         * Marks the relationships declared `@ReadOnly`, and rejects a field that no save can write
+         * and that does not say so: a `@GraphPath`, `@Count` or `@Aggregate` field names no single
+         * relationship, so it must be declared `@ReadOnly`.
+         */
+        private fun declaredReadOnly(
+            clazz: Class<*>,
+            relationships: List<RelationshipModel>,
+            aggregateFields: List<AggregateFieldModel>,
+            readOnlyFields: Set<String>,
+        ): List<RelationshipModel> {
+            val undeclared = relationships.filter { it.isPath }.map { it.fieldName to "@GraphPath" } +
+                aggregateFields.map { it.fieldName to "@Count or @Aggregate" }
+            undeclared.firstOrNull { (field, _) -> field !in readOnlyFields }?.let { (field, kind) ->
+                throw IllegalArgumentException(
+                    """
+                    Field '$field' of ${clazz.simpleName} is a $kind field and must also be annotated @ReadOnly.
+                    It is loaded and never written: it names no single relationship that a save could write.
+                    """.trimIndent()
+                )
+            }
+            return relationships.map { it.copy(readOnly = it.fieldName in readOnlyFields) }
         }
 
         /**
@@ -523,7 +554,10 @@ data class GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = relationships,
+                relationships = declaredReadOnly(
+                    clazz, relationships, aggregateFields,
+                    fields.filter { it.isAnnotationPresent(ReadOnly::class.java) }.map { it.name }.toSet(),
+                ),
                 aggregateFields = aggregateFields
             )
         }

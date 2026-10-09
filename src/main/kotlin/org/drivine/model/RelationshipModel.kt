@@ -130,7 +130,13 @@ data class RelationshipModel(
      * intermediate nodes and projects only the final node ([elementType]); [type]/[direction]
      * are unused (they mirror the first hop).
      */
-    val hops: List<HopModel> = emptyList()
+    val hops: List<HopModel> = emptyList(),
+
+    /**
+     * Whether the field is declared `@ReadOnly`: loaded, and skipped by every save. Always true for
+     * a path.
+     */
+    val readOnly: Boolean = false,
 ) {
 
     /** Whether this relationship is a multi-hop path (a @GraphPath rather than a @GraphRelationship). */

@@ -80,7 +80,8 @@ class GraphViewMergeBuilder(
 
         // 2. Handle each relationship, diffing the current digest against the snapshot
         val current = snapshot?.let { sessionManager.digestOf(obj) }
-        viewModel.relationships.forEach { relModel ->
+        // A read-only field (every path is one) is loaded and never written.
+        viewModel.relationships.filterNot { it.readOnly }.forEach { relModel ->
             statements.addAll(buildRelationshipStatements(obj, current, snapshot, relModel, rootFragment, rootFragmentModel, cascade))
         }
 
