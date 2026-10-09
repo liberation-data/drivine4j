@@ -5,6 +5,7 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
 import org.drivine.query.EdgeStatements
 import org.drivine.query.FragmentQueryBuilder
+import org.drivine.query.MergeStatement
 import org.drivine.query.QuerySpecification
 
 /**
@@ -49,6 +50,33 @@ class EdgeOperations internal constructor(
                 .transform(Long::class.java)
         ) > 0
     }
+
+    /**
+     * Removes every [type] relationship from [from] to [to].
+     *
+     * Neither node is deleted, loaded or changed, and neither's stamp changes.
+     *
+     * @return how many relationships were removed: 0 when there was none, or either node is absent
+     */
+    fun unrelate(from: NodeRef, to: NodeRef, type: String): Int = count(EdgeStatements.unrelate(from, to, type))
+
+    /**
+     * Removes every [type] relationship that [from] has in [direction].
+     *
+     * No node is deleted, loaded or changed, and no stamp changes.
+     *
+     * @return how many relationships were removed
+     */
+    @JvmOverloads
+    fun unrelateAll(from: NodeRef, type: String, direction: Direction = Direction.OUTGOING): Int =
+        count(EdgeStatements.unrelateAll(from, type, direction))
+
+    private fun count(statement: MergeStatement): Int = persistenceManager.getOne(
+        QuerySpecification
+            .withStatement(statement.statement)
+            .bind(statement.bindings)
+            .transform(Long::class.java)
+    ).toInt()
 
     /**
      * Loads the [targetClass] nodes joined to [from] by a [type] relationship in [direction].

@@ -6,7 +6,9 @@ import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.GraphObjectMergeBuilder
+import org.drivine.query.Stamping
 import org.drivine.query.StoredPropertyKeys
+import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
@@ -32,6 +34,7 @@ internal class BatchSaveOperations(
     private val chunkSize: Int,
     private val grammar: CypherGrammar? = null,
     private val storedKeys: StoredPropertyKeys? = null,
+    private val stamping: Stamping? = null,
 ) {
     /**
      * Builds the statements for [items] (assumed non-empty), grouped by runtime class. Within a group
@@ -107,15 +110,17 @@ internal class BatchSaveOperations(
         val id = rootProps[idField]
             ?: throw IllegalArgumentException("Cannot saveAll ${obj.javaClass.simpleName} with a null @GraphNodeId")
         val propertyNameByField = rootModel.fields.associate { it.name to it.propertyName }
+        // The stamp field's value is never written: a batched save gives each node a new stamp, unchecked.
         val props = rootProps
-            .filterKeys { it != idField }
+            .filterKeys { it != idField && it != rootModel.stampField }
             .filter { (_, value) -> value != null || nullPolicy == NullPolicy.CLEAR }
             .mapKeys { (field, _) -> propertyNameByField[field] ?: field }
-        return mapOf("id" to id, "props" to props)
+        val stamp = if (stamping != null) mapOf(Stamps.PROPERTY to Stamps.fresh()) else emptyMap()
+        return mapOf("id" to id, "props" to props + stamp)
     }
 
     private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType, nullPolicy: NullPolicy) =
-        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys).buildMergeStatements(obj, cascade, nullPolicy)
+        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys, stamping?.unchecked()).buildMergeStatements(obj, cascade, nullPolicy)
 
     /** Root [FragmentModel] and (for views) the root field name; mirrors the manager's snapshot metadata. */
     private fun rootMetadata(clazz: Class<*>): Pair<FragmentModel, String?> =

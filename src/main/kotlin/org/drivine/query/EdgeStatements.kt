@@ -36,6 +36,37 @@ internal object EdgeStatements {
     }
 
     /**
+     * Remove every [type] relationship from [from] to [to], and count them: 0 when there was none, or
+     * when either node is absent.
+     */
+    fun unrelate(from: NodeRef, to: NodeRef, type: String): MergeStatement {
+        require(type.isNotBlank()) { "A relationship needs a type." }
+        val statement = """
+            MATCH ${from.pattern("a", FROM)}-[r:${quotedIdentifier(type)}]->${to.pattern("b", TO)}
+            DELETE r
+            RETURN count(r)
+        """.trimIndent()
+        return MergeStatement(statement, mapOf(FROM to from.id, TO to to.id))
+    }
+
+    /** Remove every [type] relationship [from] has in [direction], and count them. */
+    fun unrelateAll(from: NodeRef, type: String, direction: Direction): MergeStatement {
+        require(type.isNotBlank()) { "A relationship needs a type." }
+        val edge = "[r:${quotedIdentifier(type)}]"
+        val arrow = when (direction) {
+            Direction.OUTGOING -> "-$edge->"
+            Direction.INCOMING -> "<-$edge-"
+            Direction.UNDIRECTED -> "-$edge-"
+        }
+        val statement = """
+            MATCH ${from.pattern("a", FROM)}$arrow()
+            DELETE r
+            RETURN count(r)
+        """.trimIndent()
+        return MergeStatement(statement, mapOf(FROM to from.id))
+    }
+
+    /**
      * The `MATCH` that binds, as `n`, the [targetLabels] nodes joined to [from] by [type] in
      * [direction] — each once. Engines differ on whether two such relationships to one node give one
      * row or two, so the answer is made the same everywhere.

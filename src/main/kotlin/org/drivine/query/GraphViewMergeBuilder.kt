@@ -27,7 +27,13 @@ class GraphViewMergeBuilder(
     private val sessionManager: SessionManager,
     private val grammar: CypherGrammar? = null,
     private val storedKeys: StoredPropertyKeys? = null,
+    private val stamping: Stamping? = null,
+    /** The only root-fragment fields this save may touch; null means every field. */
+    private val rootWriteFields: Set<String>? = null,
 ) : GraphObjectMergeBuilder {
+
+    /** Only the root is checked: a node reached through a relationship is written, and stamped, unchecked. */
+    private val targetStamping = stamping?.unchecked()
 
     /**
      * Builds a list of Cypher statements to save a GraphView.
@@ -66,7 +72,7 @@ class GraphViewMergeBuilder(
         // 1. Save the root fragment
         val rootFragment = extractRootFragment(obj)
         val rootFragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
-        val rootFragmentBuilder = FragmentMergeBuilder(rootFragmentModel, objectMapper, grammar, storedKeys)
+        val rootFragmentBuilder = FragmentMergeBuilder(rootFragmentModel, objectMapper, grammar, storedKeys, stamping)
 
         // Check if root fragment is dirty.
         // Prefer the enclosing view snapshot (the only place a fragment-inside-a-view's
@@ -76,7 +82,7 @@ class GraphViewMergeBuilder(
                 ?.let { sessionManager.snapshotOf(rootFragment.javaClass, it) }
         val rootDirtyFields = previousRootFragment?.let { sessionManager.computeDirtyFields(rootFragment, it) }
 
-        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields, previousRootFragment, nullPolicy))
+        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields, previousRootFragment, nullPolicy, rootWriteFields))
 
         // 2. Handle each relationship, diffing the current digest against the snapshot
         val current = snapshot?.let { sessionManager.digestOf(obj) }
@@ -189,7 +195,7 @@ class GraphViewMergeBuilder(
         return if (isView) {
             // Recurse into the nested view, diffing against the snapshot view.
             val nestedViewModel = GraphViewModel.from(targetClass)
-            val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+            val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager, stamping = targetStamping)
             nestedViewBuilder.buildMergeStatementsInternal(currentTarget, snapshotTarget, cascade)
         } else {
             // Direct fragment target: write only the dirty fields, if any.
@@ -199,7 +205,7 @@ class GraphViewMergeBuilder(
             } else {
                 // IMPORTANT: Use runtime type, not declared type, for correct labels on polymorphic types.
                 val targetFragmentModel = FragmentModel.from(currentTarget::class.java)
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar, stamping = targetStamping)
                 listOf(fragmentBuilder.buildMergeStatement(currentTarget, dirtyFields, snapshotTarget))
             }
         }
@@ -454,7 +460,7 @@ class GraphViewMergeBuilder(
             if (isView) {
                 // Handle nested GraphView - recursively build its merge statements
                 val nestedViewModel = GraphViewModel.from(targetNodeClass)
-                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager, stamping = targetStamping)
                 statements.addAll(nestedViewBuilder.buildMergeStatements(targetNode))
 
                 // Now create relationship to the nested view's root fragment with relationship properties
@@ -478,7 +484,7 @@ class GraphViewMergeBuilder(
                     sessionManager.getDirtyFields(targetNode, targetId)
                 } else null
 
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar, stamping = targetStamping)
                 statements.add(fragmentBuilder.buildMergeStatement(targetNode, targetDirtyFields))
 
                 // 2. CREATE/MERGE the relationship with properties
@@ -497,7 +503,7 @@ class GraphViewMergeBuilder(
             if (isView) {
                 // Handle nested GraphView - recursively build its merge statements
                 val nestedViewModel = GraphViewModel.from(targetClass)
-                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager, stamping = targetStamping)
                 statements.addAll(nestedViewBuilder.buildMergeStatements(targetItem))
 
                 // Now create relationship to the nested view's root fragment
@@ -520,7 +526,7 @@ class GraphViewMergeBuilder(
                     sessionManager.getDirtyFields(targetItem, targetId)
                 } else null
 
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar, stamping = targetStamping)
                 statements.add(fragmentBuilder.buildMergeStatement(targetItem, targetDirtyFields))
 
                 // 2. CREATE/MERGE the relationship

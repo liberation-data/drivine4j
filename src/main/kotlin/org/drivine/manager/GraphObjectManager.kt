@@ -14,6 +14,7 @@ import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
 import org.drivine.query.ScoredSearchPlan
+import org.drivine.query.Stamping
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
@@ -46,12 +47,21 @@ private data class QueryContext(
  *
  * Maintains a session to track loaded objects and enable dirty checking for optimized saves.
  */
-class GraphObjectManager(
+class GraphObjectManager internal constructor(
     private val persistenceManager: PersistenceManager,
     internal val sessionManager: SessionManager,
     private val objectMapper: ObjectMapper,
-    private val subtypeRegistry: SubtypeRegistry
+    private val subtypeRegistry: SubtypeRegistry,
+    /** Every save writes a new stamp on the nodes it saves. This manager does not check one. */
+    private val stamping: Stamping,
 ) {
+
+    constructor(
+        persistenceManager: PersistenceManager,
+        sessionManager: SessionManager,
+        objectMapper: ObjectMapper,
+        subtypeRegistry: SubtypeRegistry,
+    ) : this(persistenceManager, sessionManager, objectMapper, subtypeRegistry, Stamping(checked = false))
 
     private val logger = LoggerFactory.getLogger(GraphObjectManager::class.java)
 
@@ -80,14 +90,14 @@ class GraphObjectManager(
     val storeIdentity: StoreIdentity
         get() = persistenceManager.storeIdentity
 
-    private val grammar = persistenceManager.grammar
+    internal val grammar = persistenceManager.grammar
 
     /**
      * Reads a node's stored property keys, so a save of an untracked object under [NullPolicy.CLEAR]
      * can still remove the `@PropertyBag` keys it dropped, and the labels an open `@NodeLabels` field
      * recorded as its own. Only consulted on that path.
      */
-    private val storedKeys = object : StoredPropertyKeys {
+    internal val storedKeys = object : StoredPropertyKeys {
         override fun of(labels: String, idProperty: String, id: Any): Set<String> =
             persistenceManager.maybeGetOne(
                 QuerySpecification
@@ -111,7 +121,7 @@ class GraphObjectManager(
      */
     val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
 
-    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys)
+    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys, stamping)
 
     /**
      * Forgets every tracked object: each one's next save writes all fields, until it is loaded again.
@@ -1079,17 +1089,12 @@ class GraphObjectManager(
             sessionManager,
             grammar,
             storedKeys,
+            stamping,
         )
         val statements = mergeBuilder.buildMergeStatements(obj, cascade, nullPolicy)
 
         // Execute all statements in order
-        statements.forEach { statement ->
-            persistenceManager.execute(
-                QuerySpecification
-                    .withStatement(statement.statement)
-                    .bind(statement.bindings)
-            )
-        }
+        SaveExecutor(persistenceManager).execute(statements)
 
         // Update snapshot after save
         snapshotResults(graphClass, listOf(obj))

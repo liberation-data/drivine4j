@@ -6,6 +6,7 @@ import org.drivine.annotation.GraphTransient
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeLabels
+import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.VectorIndex
 import java.lang.reflect.Modifier
@@ -73,6 +74,10 @@ data class FragmentModel(
     val vectorFieldNames: Set<String>
         get() = fields.filter { it.vectorIndexed }.map { it.name }.toSet()
 
+    /** The name of the `@NodeStamp` field, or null when the fragment declares none. */
+    val stampField: String?
+        get() = fields.firstOrNull { it.stamp }?.name
+
     /**
      * The on-disk node-property name of the `@NodeId` field — the MERGE key and load-`WHERE` property.
      * Equals [nodeIdField] unless the id field carries a `@GraphProperty` override. Null when there is
@@ -98,6 +103,7 @@ data class FragmentModel(
             val nodeIdField = findNodeIdField(clazz)
 
             validateGraphProperty(allFields, clazz)
+            validateStamp(allFields, clazz)
 
             val nodeLabels = resolveNodeLabels(allFields, labels, clazz)
             val declared = allFields.filter { it.propertyBag == null && it.nodeLabels == null }
@@ -174,6 +180,19 @@ data class FragmentModel(
                     "A fragment's own labels are fixed; remove ${if (own.size > 1) "them" else "it"} from the enum."
             }
             return model
+        }
+
+        /** A fragment has at most one `@NodeStamp` field, and it is a `String`. */
+        private fun validateStamp(allFields: List<FragmentField>, clazz: Class<*>) {
+            val stamps = allFields.filter { it.stamp }
+            require(stamps.size <= 1) {
+                "${clazz.simpleName} has ${stamps.size} @NodeStamp fields (${stamps.joinToString { "'${it.name}'" }}). A node has one stamp."
+            }
+            stamps.forEach {
+                require(it.type == String::class.java && it.propertyBag == null && it.nodeLabels == null) {
+                    "@NodeStamp field '${it.name}' on ${clazz.simpleName} must be a nullable String and carry no other mapping annotation."
+                }
+            }
         }
 
         /**
@@ -300,11 +319,16 @@ data class FragmentModel(
                         typeString = returnType.toString(),
                         propertyBag = property.propertyBagSpec(),
                         vectorIndexed = property.isVectorIndexed(),
-                        propertyName = property.graphPropertyName() ?: property.name,
+                        propertyName = if (property.isNodeStamp()) Stamps.QUOTED else property.graphPropertyName() ?: property.name,
                         nodeLabels = property.nodeLabelsModel(clazz),
+                        stamp = property.isNodeStamp(),
                     )
                 }.sortedBy { it.name }
         }
+
+        /** Whether a Kotlin property (or its backing field) carries `@NodeStamp`. */
+        private fun KProperty1<*, *>.isNodeStamp(): Boolean =
+            findAnnotation<NodeStamp>() != null || javaField?.isAnnotationPresent(NodeStamp::class.java) == true
 
         /** Whether a Kotlin property (or its backing field) carries `@VectorIndex`. */
         private fun KProperty1<*, *>.isVectorIndexed(): Boolean =
@@ -402,8 +426,13 @@ data class FragmentModel(
                                 typeString = field.genericType.typeName,
                                 propertyBag = bag,
                                 vectorIndexed = field.isAnnotationPresent(VectorIndex::class.java),
-                                propertyName = field.getAnnotation(GraphProperty::class.java)?.value ?: field.name,
+                                propertyName = if (field.isAnnotationPresent(NodeStamp::class.java)) {
+                                    Stamps.QUOTED
+                                } else {
+                                    field.getAnnotation(GraphProperty::class.java)?.value ?: field.name
+                                },
                                 nodeLabels = nodeLabels,
+                                stamp = field.isAnnotationPresent(NodeStamp::class.java),
                             )
                         )
                     }

@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.manager.NullPolicy
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
+import org.drivine.model.Stamps
 import org.drivine.query.grammar.CypherGrammar
 
 /**
@@ -30,6 +31,7 @@ class FragmentMergeBuilder(
     private val objectMapper: ObjectMapper,
     private val grammar: CypherGrammar? = null,
     private val storedKeys: StoredPropertyKeys? = null,
+    private val stamping: Stamping? = null,
 ) {
 
     /**
@@ -44,6 +46,8 @@ class FragmentMergeBuilder(
      * @param nullPolicy How null field values are treated: [NullPolicy.IGNORE] (default) skips them
      *   (merge-patch), [NullPolicy.CLEAR] writes `SET x = null` to clear them. Uniform for all fields,
      *   embeddings included — see [NullPolicy].
+     * @param writeFields The only fields this save may touch, by field name: a field outside the set is
+     *   neither written nor cleared, whatever [nullPolicy] says. Null means every field.
      * @return A MergeStatement containing the query and bindings
      */
     fun <T : Any> buildMergeStatement(
@@ -51,6 +55,7 @@ class FragmentMergeBuilder(
         dirtyFields: Set<String>?,
         previousObject: Any? = null,
         nullPolicy: NullPolicy = NullPolicy.IGNORE,
+        writeFields: Set<String>? = null,
     ): MergeStatement {
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("Cannot build MERGE for fragment without @GraphNodeId field: ${fragmentModel.className}")
@@ -63,10 +68,23 @@ class FragmentMergeBuilder(
         val labels = fragmentModel.labels.joinToString(":")
         // The MERGE key uses the id field's on-disk property name; the bind-param stays the field name.
         val nodeIdProperty = fragmentModel.nodeIdProperty ?: nodeIdField
-        val mergeClause = "MERGE (n:$labels {$nodeIdProperty: \$$nodeIdField})"
+        // A checked save matches the node only while it still carries the stamp the object was loaded
+        // with. It changes nothing if the stamp differs or the node is gone, and says how many it matched.
+        val expected = fragmentModel.stampField?.takeIf { stamping?.checked == true }?.let { allProps[it] as? String }
+        val mergeClause = if (expected == null) {
+            "MERGE (n:$labels {$nodeIdProperty: \$$nodeIdField})"
+        } else {
+            "MATCH (n:$labels {$nodeIdProperty: \$$nodeIdField})\nWHERE n.${Stamps.QUOTED} = \$${Stamps.EXPECTED_PARAM}"
+        }
 
         val bindings = mutableMapOf<String, Any?>(nodeIdField to idValue)
         val setClauses = mutableListOf<String>()
+        expected?.let { bindings[Stamps.EXPECTED_PARAM] = it }
+        val written = stamping?.let { Stamps.fresh() }
+        if (written != null) {
+            setClauses.add("n.${Stamps.QUOTED} = \$${Stamps.NEW_PARAM}")
+            bindings[Stamps.NEW_PARAM] = written
+        }
         val removeClauses = mutableListOf<String>()
 
         // ----- Declared fields (bags are excluded from fragmentModel.fields) -----
@@ -75,7 +93,8 @@ class FragmentMergeBuilder(
         // clears one). Dirty-tracking only optimizes away re-writes of unchanged non-null fields, which
         // is a semantics-preserving no-op. No field is special: an embedding is just another property.
         val fieldByName = fragmentModel.fields.associateBy { it.name }
-        fragmentModel.fields.map { it.name }.filter { it != nodeIdField }.forEach { name ->
+        fun writable(field: String) = writeFields == null || field in writeFields
+        fragmentModel.fields.filterNot { it.stamp }.map { it.name }.filter { it != nodeIdField && writable(it) }.forEach { name ->
             val field = fieldByName.getValue(name)
             val value = allProps[name]
             if (value == null) {
@@ -107,6 +126,7 @@ class FragmentMergeBuilder(
         fragmentModel.propertyBags.forEach { bag ->
             // On an optimized save, only touch the bag if it changed.
             if (dirtyFields != null && bag.fieldName !in dirtyFields) return@forEach
+            if (!writable(bag.fieldName)) return@forEach
 
             val currentBag = (allProps[bag.fieldName] as? Map<*, *>) ?: emptyMap<Any?, Any?>()
             val currentKeys = mutableSetOf<String>()
@@ -149,7 +169,7 @@ class FragmentMergeBuilder(
         // what the object last said, not what the node carries, so an unchanged field can still have
         // labels to remove.
         fragmentModel.nodeLabels?.takeIf {
-            nullPolicy == NullPolicy.CLEAR || dirtyFields == null || it.fieldName in dirtyFields
+            writable(it.fieldName) && (nullPolicy == NullPolicy.CLEAR || dirtyFields == null || it.fieldName in dirtyFields)
         }?.let { model ->
             val current = (allProps[model.fieldName] as? Collection<*>).orEmpty().map { it.toString() }
             current.firstOrNull { it.isBlank() }?.let {
@@ -189,8 +209,10 @@ class FragmentMergeBuilder(
             if (removeClauses.isNotEmpty()) append("\nREMOVE ").append(removeClauses.joinToString(", "))
             if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
             if (dropLabels.isNotEmpty()) append("\nREMOVE n").append(labelExpression(dropLabels))
+            if (expected != null) append("\nRETURN count(n) AS ${Stamps.MATCHED_COLUMN}")
         }
-        return MergeStatement(query, bindings)
+        val stampWrite = written?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, it, expected) }
+        return MergeStatement(query, bindings, stampWrite)
     }
 
     private companion object {
@@ -246,9 +268,34 @@ fun interface StoredPropertyKeys {
 }
 
 /**
+ * Whether the statements a builder produces write a stamp on each node they save. When [checked],
+ * the save of an object that carries a stamp applies only if the node still has it.
+ */
+data class Stamping(val checked: Boolean) {
+    /** The same stamping without the check, for the nodes a view save reaches through a relationship. */
+    fun unchecked(): Stamping = if (checked) Stamping(false) else this
+}
+
+/**
+ * The stamp a save statement writes on one node. [expected] is the stamp the statement requires the
+ * node to carry; when it is non-null the statement is checked, and returns 0 under
+ * [Stamps.MATCHED_COLUMN] if the node has changed or gone.
+ */
+data class StampWrite(
+    val fragmentClass: Class<*>,
+    val id: Any,
+    val labels: String,
+    val idProperty: String,
+    val written: String,
+    val expected: String?,
+)
+
+/**
  * Represents a MERGE statement with its parameter bindings.
  */
 data class MergeStatement(
     val statement: String,
-    val bindings: Map<String, Any?>
+    val bindings: Map<String, Any?>,
+    /** The stamp this statement writes on a node, and the one it expects there; null when it writes none. */
+    val stamp: StampWrite? = null,
 )
