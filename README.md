@@ -60,14 +60,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.91")
+    implementation("org.drivine:drivine4j:0.1.0")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.91'
+    implementation 'org.drivine:drivine4j:0.1.0'
 }
 ```
 
@@ -76,7 +76,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.91</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
@@ -102,8 +102,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.91")
-    ksp("org.drivine:drivine4j-codegen:0.0.91")
+    implementation("org.drivine:drivine4j:0.1.0")
+    ksp("org.drivine:drivine4j-codegen:0.1.0")
 }
 ```
 
@@ -137,7 +137,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.91</version>
+                    <version>0.1.0</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -1401,6 +1401,79 @@ writes only what changed. It is kept small and bounded:
 - **Thread-safe**: one manager can be shared by concurrent requests.
 - **Scoping**: call `graphObjectManager.clearSession()` to end tracking for a unit of work, such as a
   request or a job.
+
+### StatelessGraphObjectManager
+
+`StatelessGraphObjectManager` loads, queries and deletes exactly as `GraphObjectManager` does (both implement `GraphObjectOperations`), and it keeps no session. What a save writes is decided by the object and the arguments, never by whether the object was loaded before. Use it when anything else writes to the same graph: plain Cypher, another manager, another process.
+
+```kotlin
+val stateless = graphObjectManagerFactory.stateless()
+
+stateless.save(view)                                              // every field; relationships are added, never removed
+stateless.save(view, Replace(IssueView::assignedTo))              // this field's list is the whole list
+stateless.save(view, Replace.all())                               // every relationship field is
+stateless.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
+stateless.save(person, only = setOf(Person::name))                // write just these
+stateless.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
+stateless.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
+```
+
+**Relationships.** A save adds the relationships the object holds and removes none. To remove, name the field in `Replace`: the field's list is then the whole list.
+
+- A field removes only what it loads: relationships of its type and direction, to nodes with its target's labels. Two fields can share a relationship type.
+- `Replace(field, removedTargets = DELETE_UNREFERENCED)` also deletes a removed target that no relationship points at. Anything more is a custom view or Cypher.
+- `Replace.all()` covers every relationship field. It is refused for an object that carries no stamp, because the lists of an object built from scratch are its defaults and not what the store holds.
+- `Replace` trusts that the list came from a load. A list cut short by a custom query is taken as the whole list.
+
+**`update`** loads the object, applies your change, and writes only what the change altered: the fields that differ, a field set to null, and for a view the relationships it added or dropped. A relationship another writer added in the meantime is kept.
+
+Java callers name fields as strings: `stateless.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("name"), Set.of())` and `Replace.of(Set.of("assignedTo"))`.
+
+### @NodeStamp: refusing a save when the node changed
+
+Strongly recommended on any type that is loaded, changed and saved.
+
+```kotlin
+@NodeFragment(labels = ["Person"])
+data class Person(
+    @NodeId val id: String,
+    val name: String,
+    @NodeStamp val stamp: String? = null,
+)
+```
+
+- Every object-manager save writes a new stamp on the node, under `__drivine.stamp`. Loading fills the field.
+- A stateless save of an object that carries a stamp applies only if the node still has it. Otherwise nothing is written and `StaleObjectException` says whether the node changed or was deleted. The check is part of the save statement, so it is one round trip and atomic, on an engine without transactions too.
+- A save of an object whose stamp is null is not checked: it creates the node or overwrites it.
+- `save` returns the object with its new stamp. Use the returned object: the one you passed in is now stale.
+- `update` retries on a conflict, loading again and re-applying your change.
+- In a view, the root is checked. A node reached through a relationship is written unchecked.
+- `saveAll` writes stamps and does not check them.
+- `GraphObjectManager` writes stamps and does not check them.
+
+**Cypher you write yourself** should give a stamped node a new stamp when it changes the node's mapped properties, or a checked save will not notice the change:
+
+```kotlin
+"MATCH (p:Person {id: \$id}) SET p.name = \$name, ${Stamps.setClause("p")}"
+// the same as:  SET p.name = $name, p.`__drivine.stamp` = randomUUID()
+```
+
+A node that is deleted and created again is noticed without this, because it has no stamp.
+
+### @ReadOnly: a field that is loaded and never written
+
+```kotlin
+@GraphView
+data class IssueOverview(
+    @Root val issue: Issue,
+    @GraphRelationship(type = "ASSIGNED_TO") val assignedTo: List<Person>,              // written on save
+    @ReadOnly @GraphRelationship(type = "REVIEWED_BY") val reviewers: List<Person>,     // loaded only
+)
+```
+
+Every save skips a `@ReadOnly` field: no relationship is written for it and the nodes it holds are not saved. Naming it in `Replace` is an error.
+
+It is required on `@GraphPath`, `@Count` and `@Aggregate` fields, none of which names a single relationship a save could write. A view that declares one without it fails when its model is built. To write along a path, use `edges.relate`, Cypher, or a view rooted where the hop starts.
 
 ### Generated Cypher Examples
 
