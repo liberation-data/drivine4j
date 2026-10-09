@@ -17,7 +17,7 @@ package org.drivine.query.dsl
  */
 class QueryStarter<T : Any>(
     private val graphClass: Class<T>,
-    private val graphObjectManager: org.drivine.manager.GraphObjectManager
+    private val graphObjectManager: org.drivine.manager.GraphObjectOperations
 ) {
     /**
      * Specifies the QueryDsl class to use for type-safe filtering.
@@ -76,7 +76,7 @@ class QueryStarter<T : Any>(
  * @param graphClass The GraphView class to query
  * @return A QueryStarter for fluent configuration
  */
-fun <T : Any> org.drivine.manager.GraphObjectManager.query(
+fun <T : Any> org.drivine.manager.GraphObjectOperations.query(
     graphClass: Class<T>
 ): QueryStarter<T> {
     return QueryStarter(graphClass, this)
@@ -102,7 +102,7 @@ fun <T : Any> org.drivine.manager.GraphObjectManager.query(
 class JavaQueryBuilder<T : Any, Q : Any>(
     private val graphClass: Class<T>,
     private val queryDsl: Q,
-    private val graphObjectManager: org.drivine.manager.GraphObjectManager
+    private val graphObjectManager: org.drivine.manager.GraphObjectOperations
 ) {
     private val conditions = mutableListOf<WhereCondition>()
     private val orders = mutableListOf<OrderSpec>()

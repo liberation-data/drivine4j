@@ -440,7 +440,7 @@ class QueryDslGenerator(
         funcName: String,
         returnType: TypeName,
     ): FunSpec {
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         return FunSpec.builder(funcName)
             // A final (concrete) fragment makes `reified T : Fragment` predetermined — harmless, and the
@@ -484,7 +484,7 @@ class QueryDslGenerator(
         dslClass: ClassName,
         dslClassName: String,
     ): FunSpec {
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val scoredClass = ClassName("org.drivine.manager", "Scored")
         return FunSpec.builder("loadMatching")
@@ -951,7 +951,7 @@ class QueryDslGenerator(
     private fun generateLoadAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
 
@@ -996,7 +996,7 @@ class QueryDslGenerator(
     private fun generateLoadNearestExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val scoredClass = ClassName("org.drivine.manager", "Scored")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
@@ -1058,7 +1058,7 @@ class QueryDslGenerator(
     private fun generateLoadMatchingExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val scoredClass = ClassName("org.drivine.manager", "Scored")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
@@ -1099,7 +1099,7 @@ class QueryDslGenerator(
     private fun generateCountExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
 
@@ -1160,7 +1160,7 @@ class QueryDslGenerator(
     private fun generateDeleteAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
 

@@ -25,36 +25,24 @@ import kotlin.reflect.KProperty1
  *   view, the root is checked. A node reached through a relationship is written unchecked.
  * - [update] loads an object, applies a change, and writes only what the change altered.
  */
-class StatelessGraphObjectManager(
+class StatelessGraphObjectManager private constructor(
     private val persistenceManager: PersistenceManager,
     private val objectMapper: ObjectMapper,
-    subtypeRegistry: SubtypeRegistry,
-) {
+    /** Loads, queries, deletes and batch saves: with a session that remembers nothing, each is stateless. */
+    private val objects: GraphObjectManager,
+) : GraphObjectOperations by objects {
+
+    constructor(persistenceManager: PersistenceManager, objectMapper: ObjectMapper, subtypeRegistry: SubtypeRegistry) : this(
+        persistenceManager,
+        objectMapper,
+        GraphObjectManager(persistenceManager, SessionManager.untracked(objectMapper), objectMapper, subtypeRegistry, Stamping(checked = false)),
+    )
 
     private val logger = LoggerFactory.getLogger(StatelessGraphObjectManager::class.java)
-    private val untracked = SessionManager.untracked(objectMapper)
-
-    /** Loads, queries, deletes and batch saves: with a session that remembers nothing, each is stateless. */
-    private val objects = GraphObjectManager(persistenceManager, untracked, objectMapper, subtypeRegistry, Stamping(checked = false))
+    private val untracked = objects.sessionManager
     private val executor = SaveExecutor(persistenceManager)
     private val stamps = StampedCopy(objectMapper)
     private val replacer = RelationshipReplacer(persistenceManager, objectMapper)
-
-    /** The name of the database this manager is connected to. */
-    val database: String
-        get() = persistenceManager.database
-
-    /** Relationships between stored nodes, made and removed without loading either. */
-    val edges: EdgeOperations
-        get() = objects.edges
-
-    fun <T : Any> load(id: String, graphClass: Class<T>): T? = objects.load(id, graphClass)
-
-    fun <T : Any> loadAll(graphClass: Class<T>): List<T> = objects.loadAll(graphClass)
-
-    fun <T : Any> count(graphClass: Class<T>): Long = objects.count(graphClass)
-
-    fun <T : Any> delete(id: String, graphClass: Class<T>): Int = objects.delete(id, graphClass)
 
     /**
      * Saves [obj] and returns it carrying its new stamp. Use the returned object from then on: the
@@ -207,15 +195,6 @@ class StatelessGraphObjectManager(
         }
     }
 }
-
-/** Loads a single graph object by ID, with a reified type. */
-inline fun <reified T : Any> StatelessGraphObjectManager.load(id: String): T? = load(id, T::class.java)
-
-/** Loads all instances of a graph object, with a reified type. */
-inline fun <reified T : Any> StatelessGraphObjectManager.loadAll(): List<T> = loadAll(T::class.java)
-
-/** Deletes a graph object by ID, with a reified type. */
-inline fun <reified T : Any> StatelessGraphObjectManager.delete(id: String): Int = delete(id, T::class.java)
 
 /** Loads, changes and saves a graph object, with a reified type. See [StatelessGraphObjectManager.update]. */
 inline fun <reified T : Any> StatelessGraphObjectManager.update(id: String, attempts: Int = 3, noinline change: (T) -> T): T? =

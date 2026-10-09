@@ -54,7 +54,7 @@ class GraphObjectManager internal constructor(
     private val subtypeRegistry: SubtypeRegistry,
     /** Every save writes a new stamp on the nodes it saves. This manager does not check one. */
     private val stamping: Stamping,
-) {
+) : GraphObjectOperations {
 
     constructor(
         persistenceManager: PersistenceManager,
@@ -68,7 +68,7 @@ class GraphObjectManager internal constructor(
     /**
      * The name of the database this manager is connected to.
      */
-    val database: String
+    override val database: String
         get() = persistenceManager.database
 
     /**
@@ -87,7 +87,7 @@ class GraphObjectManager internal constructor(
      * Resolution and caching belong to the underlying manager, which assigns an identity on first
      * sight of an unstamped store and then holds it for the life of the manager.
      */
-    val storeIdentity: StoreIdentity
+    override val storeIdentity: StoreIdentity
         get() = persistenceManager.storeIdentity
 
     internal val grammar = persistenceManager.grammar
@@ -119,7 +119,7 @@ class GraphObjectManager internal constructor(
      * Relationships whose type is known only at runtime, between stored nodes — see [EdgeOperations].
      * Kept apart from the rest of this class, which is about declared shapes.
      */
-    val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
+    override val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
 
     private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys, stamping)
 
@@ -142,7 +142,7 @@ class GraphObjectManager internal constructor(
      * [IndexAdvicePolicy.OFF] to say nothing — ordering without an index is correct, just unindexed,
      * and on a small collection that is a perfectly reasonable thing to do.
      */
-    var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
+    override var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
 
     /**
      * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
@@ -151,7 +151,7 @@ class GraphObjectManager internal constructor(
      * @param graphClass The graph object class to load
      * @return List of graph object instances
      */
-    fun <T : Any> loadAll(graphClass: Class<T>): List<T> {
+    override fun <T : Any> loadAll(graphClass: Class<T>): List<T> {
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -190,7 +190,7 @@ class GraphObjectManager internal constructor(
      * @param whereClause Cypher WHERE clause conditions (without the WHERE keyword)
      * @return List of graph object instances matching the criteria
      */
-    fun <T : Any> loadAll(graphClass: Class<T>, whereClause: String): List<T> {
+    override fun <T : Any> loadAll(graphClass: Class<T>, whereClause: String): List<T> {
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -219,7 +219,7 @@ class GraphObjectManager internal constructor(
      * @param graphClass The graph object class to count
      * @return The number of matching graph objects
      */
-    fun <T : Any> count(graphClass: Class<T>): Long {
+    override fun <T : Any> count(graphClass: Class<T>): Long {
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         return persistenceManager.getOne(
             QuerySpecification
@@ -236,7 +236,7 @@ class GraphObjectManager internal constructor(
      * @param whereClause Cypher WHERE clause conditions (without the WHERE keyword)
      * @return The number of matching graph objects
      */
-    fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long {
+    override fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long {
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         return persistenceManager.getOne(
             QuerySpecification
@@ -253,7 +253,7 @@ class GraphObjectManager internal constructor(
      * @param spec DSL block for building the filter
      * @return The number of matching graph objects
      */
-    fun <T : Any, Q : Any> count(
+    override fun <T : Any, Q : Any> count(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit,
@@ -380,7 +380,7 @@ class GraphObjectManager internal constructor(
      * @param spec DSL block for building the query
      * @return List of graph object instances matching the criteria
      */
-    fun <T : Any, Q : Any> loadAll(
+    override fun <T : Any, Q : Any> loadAll(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit
@@ -459,7 +459,7 @@ class GraphObjectManager internal constructor(
      * @param graphClass The graph object class to load
      * @return The graph object instance, or null if not found
      */
-    fun <T : Any> load(id: String, graphClass: Class<T>): T? {
+    override fun <T : Any> load(id: String, graphClass: Class<T>): T? {
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -511,14 +511,13 @@ class GraphObjectManager internal constructor(
      * @return scored instances, most similar first, of length `<= topK`
      * @throws UnsupportedOperationException if the backend has no native vector index
      */
-    @JvmOverloads
-    fun <T : Any> loadNearest(
+    override fun <T : Any> loadNearest(
         graphClass: Class<T>,
         vector: List<Float>,
         topK: Int,
-        threshold: Double? = null,
-        searchK: Int? = null,
-        partitionLabel: String? = null,
+        threshold: Double?,
+        searchK: Int?,
+        partitionLabel: String?,
     ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold, searchK, partitionLabel)
 
     /**
@@ -528,15 +527,14 @@ class GraphObjectManager internal constructor(
      *
      * @param property the `@VectorIndex` embedding property to search
      */
-    @JvmOverloads
-    fun <T : Any> loadNearest(
+    override fun <T : Any> loadNearest(
         graphClass: Class<T>,
         property: String?,
         vector: List<Float>,
         topK: Int,
-        threshold: Double? = null,
-        searchK: Int? = null,
-        partitionLabel: String? = null,
+        threshold: Double?,
+        searchK: Int?,
+        partitionLabel: String?,
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
         return executeScoredSearch(
@@ -574,14 +572,14 @@ class GraphObjectManager internal constructor(
      * @param queryObject the generated query DSL object providing property references
      * @param spec the `where { }` block
      */
-    fun <T : Any, Q : Any> loadNearest(
+    override fun <T : Any, Q : Any> loadNearest(
         graphClass: Class<T>,
         queryObject: Q,
         vector: List<Float>,
         topK: Int,
-        threshold: Double? = null,
-        searchK: Int? = null,
-        partitionLabel: String? = null,
+        threshold: Double?,
+        searchK: Int?,
+        partitionLabel: String?,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
@@ -629,12 +627,11 @@ class GraphObjectManager internal constructor(
      * @return scored instances, most relevant first, of length `<= topK`
      * @throws UnsupportedOperationException if the backend has no native full-text index
      */
-    @JvmOverloads
-    fun <T : Any> loadMatching(
+    override fun <T : Any> loadMatching(
         graphClass: Class<T>,
         query: String,
         topK: Int,
-        threshold: Double = 0.0,
+        threshold: Double,
     ): List<Scored<T>> = loadMatching(graphClass, null, query, topK, threshold)
 
     /**
@@ -644,13 +641,12 @@ class GraphObjectManager internal constructor(
      *
      * @param property a property covered by the `@FullTextIndex` to search
      */
-    @JvmOverloads
-    fun <T : Any> loadMatching(
+    override fun <T : Any> loadMatching(
         graphClass: Class<T>,
         property: String?,
         query: String,
         topK: Int,
-        threshold: Double = 0.0,
+        threshold: Double,
     ): List<Scored<T>> =
         executeScoredSearch(graphClass, FullTextSearchPlanner.plan(graphClass, property, query, topK, threshold, grammar))
 
@@ -676,12 +672,12 @@ class GraphObjectManager internal constructor(
      * @param query the full-text query string
      * @param spec the `where { }` block
      */
-    fun <T : Any, Q : Any> loadMatching(
+    override fun <T : Any, Q : Any> loadMatching(
         graphClass: Class<T>,
         queryObject: Q,
         query: String,
         topK: Int,
-        threshold: Double = 0.0,
+        threshold: Double,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
         val querySpec = GraphQuerySpec(queryObject).apply(spec)
@@ -885,7 +881,7 @@ class GraphObjectManager internal constructor(
      * @param graphClass The graph object class
      * @return The number of nodes deleted (0 or 1)
      */
-    fun <T : Any> delete(id: String, graphClass: Class<T>): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>): Int {
         return delete(id, graphClass, null, CascadeType.NONE)
     }
 
@@ -900,7 +896,7 @@ class GraphObjectManager internal constructor(
      * @param cascade The cascade policy (default NONE = root-only DETACH DELETE)
      * @return The number of nodes deleted (root plus any cascaded fragments)
      */
-    fun <T : Any> delete(id: String, graphClass: Class<T>, cascade: CascadeType): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>, cascade: CascadeType): Int {
         return delete(id, graphClass, null, cascade)
     }
 
@@ -919,7 +915,7 @@ class GraphObjectManager internal constructor(
      * @param whereClause Additional WHERE clause conditions (without WHERE keyword)
      * @return The number of nodes deleted (0 or 1)
      */
-    fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
         return delete(id, graphClass, whereClause, CascadeType.NONE)
     }
 
@@ -946,7 +942,7 @@ class GraphObjectManager internal constructor(
      * @param cascade The cascade policy
      * @return The number of nodes deleted (root plus any cascaded fragments)
      */
-    fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
         validateCascadeSupport(cascade)
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
@@ -982,7 +978,7 @@ class GraphObjectManager internal constructor(
      * @param graphClass The graph object class
      * @return The number of nodes deleted
      */
-    fun <T : Any> deleteAll(graphClass: Class<T>): Int {
+    override fun <T : Any> deleteAll(graphClass: Class<T>): Int {
         return deleteAll(graphClass, null as String?)
     }
 
@@ -1003,7 +999,7 @@ class GraphObjectManager internal constructor(
      * @param whereClause WHERE clause conditions (without WHERE keyword)
      * @return The number of nodes deleted
      */
-    fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
+    override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val query = builder.buildDeleteQuery(whereClause)
 
@@ -1036,7 +1032,7 @@ class GraphObjectManager internal constructor(
      * @param spec DSL block for building the query
      * @return The number of nodes deleted
      */
-    fun <T : Any, Q : Any> deleteAll(
+    override fun <T : Any, Q : Any> deleteAll(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit

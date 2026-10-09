@@ -25,7 +25,7 @@ class GeneratedLoadNearestTest {
         val src = generatedSource("SampleVectorViewQueryDsl")
         val flat = src.replace(Regex("\\s+"), " ") // KotlinPoet may line-wrap
         assertTrue(
-            flat.contains("fun <reified T : SampleVectorView> GraphObjectManager.loadNearest"),
+            flat.contains("fun <reified T : SampleVectorView> GraphObjectOperations.loadNearest"),
             "expected a generated loadNearest extension:\n$src",
         )
         // delegates to the manager method with the view's INSTANCE injected
@@ -54,7 +54,7 @@ class GeneratedLoadNearestTest {
         // count isn't gated — it applies to any view, vector-indexed or not.
         val src = generatedSource("RaisedAndAssignedIssueQueryDsl")
         val flat = src.replace(Regex("\\s+"), " ") // KotlinPoet may line-wrap the delegation
-        assertTrue(flat.contains("GraphObjectManager.count"), "expected a generated count extension:\n$src")
+        assertTrue(flat.contains("GraphObjectOperations.count"), "expected a generated count extension:\n$src")
         assertTrue(flat.contains("count(T::class.java, RaisedAndAssignedIssueQueryDsl.INSTANCE, spec)"), src)
     }
 }
