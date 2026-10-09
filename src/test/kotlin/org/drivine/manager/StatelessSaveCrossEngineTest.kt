@@ -1,0 +1,394 @@
+package org.drivine.manager
+
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+import org.drivine.StaleObjectException
+import org.drivine.annotation.Direction
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.FalkorDbConnectionProvider
+import org.drivine.connection.Neo4jConnectionProvider
+import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.mapper.SubtypeRegistry
+import org.drivine.model.Stamps
+import org.drivine.query.QuerySpecification
+import org.drivine.query.grammar.CypherDialect
+import org.drivine.session.SessionManager
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.testcontainers.containers.GenericContainer
+import org.testcontainers.containers.Neo4jContainer
+import org.testcontainers.containers.wait.strategy.Wait
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import org.testcontainers.utility.DockerImageName
+import sample.stateless.Claim
+import sample.stateless.ClaimView
+import sample.stateless.Human
+import sample.stateless.Memo
+
+/**
+ * The stamp, the choice of fields, `update` and `unrelate` on [StatelessGraphObjectManager],
+ * verified on Neo4j, FalkorDB and Memgraph.
+ *
+ * Another writer is plain Cypher run between a load and a save: the manager cannot see it. Where
+ * that writer keeps the contract it writes a new stamp, with [Stamps.setClause].
+ */
+abstract class StatelessSaveContract {
+
+    abstract val pm: NonTransactionalPersistenceManager
+
+    private val stateless: StatelessGraphObjectManager
+        get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+
+    private fun run(cypher: String) = pm.execute(QuerySpecification.withStatement(cypher))
+
+    private fun property(id: String, key: String): String? = pm.query(
+        QuerySpecification.withStatement("MATCH (n {id: \$id}) RETURN coalesce(toString(n[\$key]), '')")
+            .bind(mapOf("id" to id, "key" to key)).transform(String::class.java)
+    ).firstOrNull()?.takeIf { it.isNotEmpty() }
+
+    private fun mentioned(from: String): Set<String> = pm.query(
+        QuerySpecification.withStatement("MATCH ({id: \$from})-[:MENTIONS]->(t:Human) RETURN t.id")
+            .bind(mapOf("from" to from)).transform(String::class.java)
+    ).toSet()
+
+    @BeforeEach
+    fun clean() = run("MATCH (n) DETACH DELETE n")
+
+    // ----- The stamp -----
+
+    @Test
+    fun `a save returns the object with a new stamp, and loading gives the same one`() {
+        val saved = stateless.save(Claim("c1", "Ada founded Acme"))
+
+        val stamp = assertNotNull(saved.stamp)
+        assertEquals(stamp, stateless.load<Claim>("c1")?.stamp)
+        assertEquals(stamp, property("c1", Stamps.PROPERTY))
+
+        val again = stateless.save(saved.copy(text = "Ada founded Acme in 1999"))
+        assertNotEquals(stamp, again.stamp, "every save writes a new stamp")
+    }
+
+    @Test
+    fun `a save is refused when another writer changed the node`() {
+        val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'Bob founded Acme', ${Stamps.setClause("c")}")
+
+        val stale = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(note = "checked")) }
+
+        assertFalse(stale.deleted)
+        assertEquals(loaded.stamp, stale.expectedStamp)
+        assertEquals(property("c1", Stamps.PROPERTY), stale.foundStamp)
+        assertEquals("Bob founded Acme", property("c1", "text"), "nothing was written")
+        assertNull(property("c1", "note"))
+    }
+
+    @Test
+    fun `a save is refused when another writer deleted the node`() {
+        val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
+        run("MATCH (c:Claim {id: 'c1'}) DETACH DELETE c")
+
+        val stale = assertFailsWith<StaleObjectException> { stateless.save(loaded) }
+
+        assertTrue(stale.deleted)
+        assertNull(stateless.load<Claim>("c1"), "the node is not brought back with part of its properties")
+    }
+
+    @Test
+    fun `the object passed to save is stale afterwards`() {
+        val first = stateless.save(Claim("c1", "Ada founded Acme"))
+        stateless.save(first.copy(text = "second"))
+
+        assertFailsWith<StaleObjectException> { stateless.save(first.copy(text = "third")) }
+        assertEquals("second", property("c1", "text"))
+    }
+
+    @Test
+    fun `an object with no stamp is saved unchecked`() {
+        stateless.save(Claim("c1", "Ada founded Acme"))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'changed elsewhere', ${Stamps.setClause("c")}")
+
+        stateless.save(Claim("c1", "built from scratch"))
+
+        assertEquals("built from scratch", property("c1", "text"))
+    }
+
+    @Test
+    fun `a type with no stamp field is saved unchecked and still stamped`() {
+        stateless.save(Memo("m1", "Call Ada"))
+        val loaded = assertNotNull(stateless.load<Memo>("m1"))
+        run("MATCH (m:Memo {id: 'm1'}) SET m.text = 'changed elsewhere'")
+
+        stateless.save(loaded.copy(text = "Call Bob"))
+
+        assertEquals("Call Bob", property("m1", "text"))
+        assertNotNull(property("m1", Stamps.PROPERTY), "another manager's checked save would notice this write")
+    }
+
+    @Test
+    fun `a save through GraphObjectManager is noticed by a stateless save`() {
+        val mapper = Neo4jObjectMapper.instance
+        val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
+
+        gom.save(Claim("c1", "saved by the other manager"))
+
+        assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(note = "late")) }
+    }
+
+    @Test
+    fun `a view is checked by its root`() {
+        val view = stateless.save(ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"))))
+        assertNotNull(view.claim.stamp)
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'changed elsewhere', ${Stamps.setClause("c")}")
+
+        assertFailsWith<StaleObjectException> {
+            stateless.save(view.copy(people = view.people + Human("bob", "Bob")))
+        }
+
+        assertEquals(setOf("ada"), mentioned("c1"), "the root is saved first, so nothing else was written")
+    }
+
+    @Test
+    fun `a batch save stamps each node`() {
+        stateless.saveAll(listOf(Claim("c1", "one"), Claim("c2", "two")))
+
+        val stamps = listOf("c1", "c2").map { assertNotNull(property(it, Stamps.PROPERTY)) }
+        assertEquals(2, stamps.toSet().size)
+    }
+
+    // ----- only and except -----
+
+    @Test
+    fun `only writes just the named fields`() {
+        val saved = stateless.save(Claim("c1", "Ada founded Acme", note = "first"))
+
+        stateless.save(saved.copy(text = "ignored", note = "second"), only = setOf(Claim::note))
+
+        assertEquals("Ada founded Acme", property("c1", "text"))
+        assertEquals("second", property("c1", "note"))
+    }
+
+    @Test
+    fun `except writes every field but the named ones`() {
+        val saved = stateless.save(Claim("c1", "Ada founded Acme", note = "first"))
+
+        stateless.save(saved.copy(text = "rewritten", note = "ignored"), except = setOf(Claim::note))
+
+        assertEquals("rewritten", property("c1", "text"))
+        assertEquals("first", property("c1", "note"))
+    }
+
+    @Test
+    fun `a field left out is not cleared under CLEAR`() {
+        val saved = stateless.save(Claim("c1", "Ada founded Acme", note = "first"))
+
+        stateless.save(saved.copy(note = null), nullPolicy = NullPolicy.CLEAR, only = setOf(Claim::text))
+
+        assertEquals("first", property("c1", "note"))
+    }
+
+    @Test
+    fun `a field that does not exist is refused`() {
+        assertFailsWith<IllegalArgumentException> {
+            stateless.save(Claim("c1", "Ada founded Acme"), only = setOf(Human::name))
+        }
+        assertNull(stateless.load<Claim>("c1"), "nothing was written")
+    }
+
+    // ----- update -----
+
+    @Test
+    fun `update writes the fields the change altered and leaves the rest`() {
+        stateless.save(Claim("c1", "Ada founded Acme", note = "first"))
+
+        val updated = stateless.update<Claim>("c1") { loaded ->
+            // Another writer changes a field this change does not touch, without a new stamp.
+            run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'changed elsewhere'")
+            loaded.copy(note = "second")
+        }
+
+        assertEquals("second", updated?.note)
+        assertEquals("second", property("c1", "note"))
+        assertEquals("changed elsewhere", property("c1", "text"), "text was not altered, so it was not written")
+    }
+
+    @Test
+    fun `update clears a field the change set to null`() {
+        stateless.save(Claim("c1", "Ada founded Acme", note = "first"))
+
+        stateless.update<Claim>("c1") { it.copy(note = null) }
+
+        assertNull(property("c1", "note"))
+        assertEquals("Ada founded Acme", property("c1", "text"))
+    }
+
+    @Test
+    fun `update loads again and re-applies the change when another writer got there first`() {
+        stateless.save(Claim("c1", "Ada founded Acme"))
+        var calls = 0
+
+        val updated = stateless.update<Claim>("c1") { loaded ->
+            if (calls++ == 0) run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'Bob founded Acme', ${Stamps.setClause("c")}")
+            loaded.copy(note = "seen ${loaded.text}")
+        }
+
+        assertEquals(2, calls)
+        assertEquals("seen Bob founded Acme", updated?.note, "the change was applied to the fresh object")
+        assertEquals("Bob founded Acme", property("c1", "text"))
+    }
+
+    @Test
+    fun `update gives up after its attempts`() {
+        stateless.save(Claim("c1", "Ada founded Acme"))
+
+        assertFailsWith<StaleObjectException> {
+            stateless.update<Claim>("c1", attempts = 2) { loaded ->
+                run("MATCH (c:Claim {id: 'c1'}) SET ${Stamps.setClause("c")}")
+                loaded.copy(note = "never")
+            }
+        }
+        assertNull(property("c1", "note"))
+    }
+
+    @Test
+    fun `update returns null for a node that is not there`() {
+        assertNull(stateless.update<Claim>("missing") { it.copy(note = "x") })
+    }
+
+    @Test
+    fun `update on a view removes and adds relationships and keeps another writer's`() {
+        stateless.save(ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
+
+        stateless.update<ClaimView>("c1") { loaded ->
+            // Another writer mentions Cy after this load.
+            run("MATCH (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS]->(:Human {id: 'cy', name: 'Cy'})")
+            loaded.copy(people = loaded.people.filter { it.id != "bob" } + Human("dee", "Dee"))
+        }
+
+        assertEquals(setOf("ada", "cy", "dee"), mentioned("c1"), "Bob dropped, Dee added, Cy kept")
+    }
+
+    // ----- unrelate -----
+
+    @Test
+    fun `unrelate removes one relationship and no node`() {
+        stateless.save(ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
+        val stamp = property("c1", Stamps.PROPERTY)
+
+        val removed = stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS")
+
+        assertEquals(1, removed)
+        assertEquals(setOf("ada"), mentioned("c1"))
+        assertNotNull(stateless.load<Human>("bob"))
+        assertEquals(stamp, property("c1", Stamps.PROPERTY), "a relationship operation does not change a stamp")
+        assertEquals(0, stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS"))
+    }
+
+    @Test
+    fun `unrelateAll removes every relationship of a type in a direction`() {
+        stateless.save(ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
+
+        assertEquals(0, stateless.edges.unrelateAll(nodeRef<Claim>("c1"), "MENTIONS", Direction.INCOMING))
+        assertEquals(2, stateless.edges.unrelateAll(nodeRef<Claim>("c1"), "MENTIONS"))
+
+        assertEquals(emptySet(), mentioned("c1"))
+        assertEquals(2, stateless.loadAll<Human>().size)
+    }
+}
+
+@Testcontainers
+class StatelessSaveNeo4jTest : StatelessSaveContract() {
+    companion object {
+        private const val PASSWORD = "statelesssave"
+
+        @Container @JvmField
+        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
+            .apply { withAdminPassword(PASSWORD) }
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var manager: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "neo-stateless-save", type = DatabaseType.NEO4J,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "neo4j", password = PASSWORD, database = "neo4j",
+                config = emptyMap(), subtypeRegistry = registry, cypherDialect = CypherDialect.NEO4J_5,
+            )
+            manager = NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    override val pm: NonTransactionalPersistenceManager get() = manager
+}
+
+@Testcontainers
+class StatelessSaveFalkorDbTest : StatelessSaveContract() {
+    companion object {
+        private const val GRAPH = "statelesssave"
+
+        @Container @JvmField
+        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
+            .withExposedPorts(6379)
+
+        private lateinit var provider: FalkorDbConnectionProvider
+        lateinit var manager: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = FalkorDbConnectionProvider(
+                name = "falkor-stateless-save", host = container.host, port = container.getMappedPort(6379),
+                password = null, graphName = GRAPH, subtypeRegistry = registry,
+            )
+            manager = NonTransactionalPersistenceManager(provider, GRAPH, DatabaseType.FALKORDB, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    override val pm: NonTransactionalPersistenceManager get() = manager
+}
+
+@Testcontainers
+class StatelessSaveMemgraphTest : StatelessSaveContract() {
+    companion object {
+        @Container @JvmField
+        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
+            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var manager: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "memgraph-stateless-save", type = DatabaseType.MEMGRAPH,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "", password = "", database = null, config = emptyMap(),
+                cypherDialect = CypherDialect.MEMGRAPH, subtypeRegistry = registry,
+            )
+            manager = NonTransactionalPersistenceManager(provider, "memgraph", DatabaseType.MEMGRAPH, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    override val pm: NonTransactionalPersistenceManager get() = manager
+}

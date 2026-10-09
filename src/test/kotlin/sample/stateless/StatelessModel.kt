@@ -19,6 +19,7 @@ import org.drivine.annotation.Root
 data class Claim(
     @NodeId val id: String,
     val text: String,
+    val note: String? = null,
     @NodeStamp val stamp: String? = null,
 )
 
