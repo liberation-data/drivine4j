@@ -53,6 +53,7 @@ class StatelessGraphObjectManager private constructor(
      * @param only the only fields of the object (for a view, of its root) to write
      * @param except fields of the object (for a view, of its root) to leave unwritten
      */
+    @JvmOverloads
     fun <T : Any> save(
         obj: T,
         relationships: RelationshipWrite = Add,
@@ -61,7 +62,7 @@ class StatelessGraphObjectManager private constructor(
         except: Set<KProperty1<*, *>> = emptySet(),
     ): T = saveFields(obj, relationships, nullPolicy, only.map { it.name }.toSet(), except.map { it.name }.toSet())
 
-    /** [save] with the fields named as strings, for Java. */
+    /** [save] with the fields named as strings, for Java. A Java caller that names no field calls [save]. */
     @JvmOverloads
     fun <T : Any> saveFields(
         obj: T,
