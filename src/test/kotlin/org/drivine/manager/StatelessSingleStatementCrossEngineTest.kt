@@ -35,7 +35,9 @@ import org.testcontainers.utility.DockerImageName
 import sample.stateless.CitedBy
 import sample.stateless.Citation
 import sample.stateless.Claim
+import sample.stateless.ClaimBasis
 import sample.stateless.ClaimCitations
+import sample.stateless.ClaimDigest
 import sample.stateless.ClaimLead
 import sample.stateless.ClaimReviewers
 import sample.stateless.ClaimSupporters
@@ -86,6 +88,35 @@ abstract class StatelessSingleStatementContract {
     ).sorted()
 
     private fun ids(label: String): Set<String> = strings("MATCH (n:$label) RETURN n.id")
+
+    /** Whether there is a node with [id]: [property] is null for a node that is gone as for a property that is. */
+    private fun exists(id: String): Boolean = pm.query(
+        QuerySpecification.withStatement("MATCH (n {id: \$id}) RETURN n.id").bind(mapOf("id" to id)).transform(String::class.java)
+    ).isNotEmpty()
+
+    /**
+     * The whole graph as sorted lines: each node with its labels and every property, its stamp among
+     * them, and each relationship with its ends and its properties.
+     */
+    private fun snapshot(): List<String> {
+        fun line(values: Any?) = (values as Map<*, *>).entries.sortedBy { it.key.toString() }.joinToString { "${it.key}=${it.value}" }
+        val nodes = pm.query(
+            QuerySpecification.withStatement("MATCH (n) RETURN {labels: labels(n), properties: properties(n)} AS row").transform(Map::class.java)
+        ).map { "(${(it["labels"] as List<*>).map(Any?::toString).sorted().joinToString(":")} ${line(it["properties"])})" }
+        val relationships = pm.query(
+            QuerySpecification.withStatement(
+                "MATCH (a)-[r]->(b) RETURN {from: a.id, type: type(r), to: b.id, properties: properties(r)} AS row"
+            ).transform(Map::class.java)
+        ).map { "${it["from"]} -${it["type"]} ${line(it["properties"])}-> ${it["to"]}" }
+        return (nodes + relationships).sorted()
+    }
+
+    /** How many statements [save] runs, through a manager of its own. */
+    private fun statements(save: (StatelessGraphObjectManager) -> Unit): Int {
+        val counting = CountingStatements(pm)
+        save(StatelessGraphObjectManager(counting, Neo4jObjectMapper.instance, SubtypeRegistry()))
+        return counting.statements
+    }
 
     @BeforeEach
     fun clean() = run("MATCH (n) DETACH DELETE n")
@@ -213,7 +244,7 @@ abstract class StatelessSingleStatementContract {
     fun `saveAll refuses Replace for an object that is not a view`() {
         val failure = assertFailsWith<IllegalArgumentException> { stateless.saveAll(listOf(Memo("m1", "memo")), Replace(MemoView::people)) }
         assertContains(failure.message.orEmpty(), "Memo is not one")
-        assertNull(property("m1", "text"))
+        assertFalse(exists("m1"), "nothing was written")
     }
 
     // ----- Classes that are not data classes -----
@@ -332,11 +363,13 @@ abstract class StatelessSingleStatementContract {
             val start = CountDownLatch(1)
             val pool = Executors.newFixedThreadPool(writers)
             try {
+                // Each writer's manager is built before the start, so that only the saves race.
+                val managers = (1..writers).associateWith { stateless }
                 val outcomes = (1..writers).map { writer ->
                     pool.submit<Pair<Int, String?>?> {
                         start.await()
                         try {
-                            writer to stateless.save(loaded.copy(people = listOf(Human("$id-$writer", "W$writer"))), Replace(ClaimView::people)).claim.stamp
+                            writer to managers.getValue(writer).save(loaded.copy(people = listOf(Human("$id-$writer", "W$writer"))), Replace(ClaimView::people)).claim.stamp
                         } catch (stale: StaleObjectException) {
                             null
                         }
@@ -362,10 +395,11 @@ abstract class StatelessSingleStatementContract {
         val start = CountDownLatch(1)
         val pool = Executors.newFixedThreadPool(writers)
         try {
+            val managers = (1..writers).associateWith { stateless }
             val updates = (1..writers).map { writer ->
                 pool.submit<ClaimView?> {
                     start.await()
-                    stateless.update<ClaimView>("c1", attempts = writers * 3) { it.copy(people = it.people + Human("h$writer", "H$writer")) }
+                    managers.getValue(writer).update<ClaimView>("c1", attempts = writers * 3) { it.copy(people = it.people + Human("h$writer", "H$writer")) }
                 }
             }
             start.countDown()
@@ -461,25 +495,29 @@ abstract class StatelessSingleStatementContract {
 
     @Test
     fun `several writers adding to the same loaded view at once are all applied`() {
-        stateless.save(ClaimView(Claim("c1", "one")))
-        val loaded = assertNotNull(stateless.load<ClaimView>("c1"))
         val writers = 4
-        val pool = Executors.newFixedThreadPool(writers)
-        try {
-            val start = CountDownLatch(1)
-            val saves = (0 until writers).map { writer ->
-                pool.submit<Unit> {
-                    start.await()
-                    stateless.save(loaded.copy(people = listOf(Human("h$writer", "Human $writer"))))
+        repeat(10) { round ->
+            val id = "adds-$round"
+            stateless.save(ClaimView(Claim(id, "one")))
+            val loaded = assertNotNull(stateless.load<ClaimView>(id))
+            val pool = Executors.newFixedThreadPool(writers)
+            try {
+                val start = CountDownLatch(1)
+                val managers = (0 until writers).associateWith { stateless }
+                val saves = (0 until writers).map { writer ->
+                    pool.submit<Unit> {
+                        start.await()
+                        managers.getValue(writer).save(loaded.copy(people = listOf(Human("$id-h$writer", "Human $writer"))))
+                    }
                 }
+                start.countDown()
+                saves.forEach { it.get(60, TimeUnit.SECONDS) }
+            } finally {
+                pool.shutdownNow()
             }
-            start.countDown()
-            saves.forEach { it.get(60, TimeUnit.SECONDS) }
-        } finally {
-            pool.shutdownNow()
-        }
 
-        assertEquals((0 until writers).map { "c1->h$it" }, edges("MENTIONS"))
+            assertEquals((0 until writers).map { "$id->$id-h$it" }, edges("MENTIONS").filter { it.startsWith("$id->") }, "round $round")
+        }
     }
 
     @Test
@@ -943,7 +981,446 @@ abstract class StatelessSingleStatementContract {
         assertEquals(listOf("bob->ada"), edges("FOLLOWS"))
         assertEquals(0, stateless.edges.unrelate(nodeRef<Human>("nobody"), ada, "FOLLOWS"))
     }
+
+    // ----- One statement, whatever the shape -----
+
+    @Test
+    fun `a save is one statement, whatever the shape of the object`() {
+        val shapes: Map<String, (StatelessGraphObjectManager) -> Unit> = linkedMapOf(
+            "a fragment" to { it.save(Memo("m1", "memo")) },
+            "a fragment with a stamp" to { it.save(Claim("c1", "one")) },
+            "a fragment with a property bag" to { it.save(Tagged("t1", "one", mapOf("source" to "web"))) },
+            "a relationship with properties" to { it.save(ClaimCitations(Claim("c2", "two"), cited = listOf(Citation(7, Human("ada", "Ada"))))) },
+            "an incoming field" to { it.save(HumanClaims(Human("bob", "Bob"), claims = listOf(Claim("c3", "three")))) },
+            "an undirected field" to { it.save(Pals(Human("cy", "Cy"), pals = listOf(Human("dan", "Dan")))) },
+            "a view of views" to {
+                it.save(Dossier(Memo("m2", "memo"), claims = listOf(ClaimView(Claim("c4", "four"), people = listOf(Human("eve", "Eve"))))))
+            },
+            "a relationship that holds one node" to { it.save(ClaimLead(Claim("c5", "five"), lead = Human("fay", "Fay"))) },
+            "related nodes with a property bag" to { it.save(ClaimTags(Claim("c6", "six"), tags = listOf(Tagged("t2", "two", mapOf("k" to "v"))))) },
+            "only" to { it.save(Claim("c1", "uno", note = "noted"), only = setOf(Claim::note)) },
+            "except" to { it.save(Claim("c1", "uno", note = "left"), except = setOf(Claim::note)) },
+            "CLEAR on a node with no property bag" to { it.save(Claim("c1", "one"), nullPolicy = NullPolicy.CLEAR) },
+            "an empty list to replace" to { it.save(ClaimView(Claim("c2", "two")), Replace(ClaimView::people)) },
+        )
+
+        shapes.forEach { (shape, save) -> assertEquals(1, statements(save), shape) }
+
+        assertNull(property("c1", "note"), "only wrote the note, except left it alone, and CLEAR cleared it")
+        assertEquals("one", property("c1", "text"))
+    }
+
+    @Test
+    fun `a save under CLEAR of a node with a property bag reads its keys first, and is two statements`() {
+        stateless.save(Tagged("t1", "one", mapOf("source" to "web", "lang" to "en")))
+
+        assertEquals(2, statements { it.save(Tagged("t1", "one", mapOf("source" to "web")), nullPolicy = NullPolicy.CLEAR) })
+
+        assertNull(property("t1", "meta.lang"))
+        assertEquals("web", property("t1", "meta.source"))
+    }
+
+    @Test
+    fun `an update that changes nothing is a load and a save, and one of a node that is not there is a load`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val before = snapshot()
+
+        assertEquals(2, statements { manager -> manager.update<ClaimView>("c1") { it } })
+        assertEquals(before, snapshot(), "nothing was changed, and so no stamp was")
+
+        assertEquals(1, statements { manager -> assertNull(manager.update<ClaimView>("nobody") { it }) })
+    }
+
+    // ----- A refused save, over the whole graph -----
+
+    @Test
+    fun `a fragment save refused as stale leaves the whole graph as it was`() {
+        val loaded = stateless.save(Claim("c1", "one", note = "first"))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'other', ${Stamps.setClause("c")}")
+        val before = snapshot()
+
+        assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(text = "late", note = null), nullPolicy = NullPolicy.CLEAR) }
+
+        assertEquals(before, snapshot())
+    }
+
+    @Test
+    fun `a view save that replaces, deletes and changes a related node, refused as stale, leaves the whole graph as it was`() {
+        val loaded = stateless.save(
+            ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob")), companies = listOf(Company("acme", "Acme")))
+        )
+        val late = loaded.copy(
+            claim = loaded.claim.copy(text = "late"), people = listOf(Human("ada", "Changed"), Human("new", "New")), companies = emptyList(),
+        )
+
+        // The root's own data changed.
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'other', ${Stamps.setClause("c")}")
+        val before = snapshot()
+        assertFailsWith<StaleObjectException> { stateless.save(late, Replace.all(RemovedTargets.DELETE_UNREFERENCED)) }
+        assertEquals(before, snapshot(), "after a change to the root")
+
+        // A relationship of the root changed, and its data did not.
+        val reloaded = assertNotNull(stateless.load<ClaimView>("c1"))
+        run("MATCH (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS]->(d:Human {id: 'dan', name: 'Dan'}) SET ${Stamps.linksClause("c")}, ${Stamps.linksClause("d")}")
+        val withDan = snapshot()
+        assertFailsWith<StaleObjectException> {
+            stateless.save(
+                reloaded.copy(claim = reloaded.claim.copy(text = "late"), people = listOf(Human("ada", "Changed"), Human("new", "New"))),
+                Replace(ClaimView::people, removedTargets = RemovedTargets.DELETE_UNREFERENCED),
+            )
+        }
+        assertEquals(withDan, snapshot(), "after a relationship was added")
+    }
+
+    @Test
+    fun `a batch refused as stale leaves the whole graph as it was, on an engine that has transactions`() {
+        val loaded = stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        run("MATCH (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS]->(b:Human {id: 'bob', name: 'Bob'}) SET ${Stamps.linksClause("c")}, ${Stamps.linksClause("b")}")
+        val before = snapshot()
+
+        assertFailsWith<StaleObjectException> {
+            stateless.saveAll(
+                listOf(
+                    ClaimView(Claim("c0", "zero"), people = listOf(Human("ada", "Changed"), Human("cy", "Cy"))),
+                    loaded.copy(claim = loaded.claim.copy(text = "late"), people = emptyList()),
+                ),
+                Replace(ClaimView::people, removedTargets = RemovedTargets.DELETE_UNREFERENCED),
+            )
+        }
+
+        if (pm.type != DatabaseType.FALKORDB) {
+            assertEquals(before, snapshot())
+        } else {
+            // FalkorDB has no transactions: the view saved before the refused one stays saved, and the refused one wrote nothing.
+            assertEquals(listOf("c0->ada", "c0->cy", "c1->ada", "c1->bob"), edges("MENTIONS"))
+            assertEquals("Changed", property("ada", "name"))
+            assertEquals("one", property("c1", "text"))
+            assertTrue(exists("bob"), "no target of the refused view was deleted")
+        }
+    }
+
+    // ----- Stamps handed back, by every way a node is reached -----
+
+    @Test
+    fun `a stamped node reached through a relationship with properties is handed back its stamp`() {
+        val saved = stateless.save(
+            HumanCitations(Human("ada", "Ada"), citedBy = listOf(CitedBy(7, Claim("c1", "one")), CitedBy(8, Claim("c2", "two"))))
+        )
+        saved.citedBy.forEach { assertEquals(stamp(it.target.id), assertNotNull(it.target.stamp), it.target.id) }
+
+        val loaded = assertNotNull(stateless.load<HumanCitations>("ada"))
+        val edited = stateless.save(loaded.copy(citedBy = loaded.citedBy.map { it.copy(target = it.target.copy(text = "edited")) }))
+
+        edited.citedBy.forEach { cited ->
+            assertEquals(stamp(cited.target.id), cited.target.stamp, cited.target.id)
+            assertNotEquals(loaded.citedBy.single { it.target.id == cited.target.id }.target.stamp, cited.target.stamp)
+        }
+        stateless.save(edited.citedBy.first { it.target.id == "c1" }.target.copy(note = "saved on its own"))
+        assertEquals("saved on its own", property("c1", "note"))
+    }
+
+    @Test
+    fun `stamps are handed back at each level of a view of views`() {
+        val saved = stateless.save(
+            ClaimDigest(Memo("m1", "memo"), parts = listOf(ClaimSupports(Claim("c1", "one"), supports = listOf(Claim("c2", "two")))))
+        )
+
+        val part = saved.parts.single()
+        assertEquals(stamp("c1"), assertNotNull(part.claim.stamp), "the root of the nested view")
+        assertEquals(stamp("c2"), assertNotNull(part.supports.single().stamp), "the node the nested view holds")
+        assertEquals(listOf("c1->c2"), edges("SUPPORTS"))
+
+        // Each is as the store has it: its own data can be saved, and the nested view's list replaced.
+        stateless.save(part.supports.single().copy(text = "dos"))
+        stateless.save(part.copy(supports = emptyList()), Replace(ClaimSupports::supports))
+        assertEquals("dos", property("c2", "text"))
+        assertEquals(emptyList(), edges("SUPPORTS"))
+    }
+
+    @Test
+    fun `a stale root of a nested view is written unchecked, as any related node is, and keeps the stamp it had`() {
+        stateless.save(ClaimDigest(Memo("m1", "memo"), parts = listOf(ClaimSupports(Claim("c1", "one")))))
+        val loaded = assertNotNull(stateless.load<ClaimDigest>("m1"))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.note = 'elsewhere', ${Stamps.setClause("c")}")
+
+        val saved = stateless.save(loaded.copy(parts = loaded.parts.map { it.copy(claim = it.claim.copy(text = "late")) }))
+
+        assertEquals("late", property("c1", "text"))
+        assertEquals("elsewhere", property("c1", "note"))
+        assertEquals(loaded.parts.single().claim.stamp, saved.parts.single().claim.stamp, "it does not vouch for a change it never held")
+        assertFailsWith<StaleObjectException> { stateless.save(saved.parts.single().claim.copy(text = "later")) }
+    }
+
+    @Test
+    fun `a stamped node held by a relationship that holds one node is handed back its stamp`() {
+        val saved = stateless.save(ClaimBasis(Claim("c1", "one"), basis = Claim("c2", "two")))
+
+        assertEquals(stamp("c1"), saved.claim.stamp)
+        assertEquals(stamp("c2"), assertNotNull(saved.basis?.stamp))
+        assertEquals(listOf("c1->c2"), edges("RESTS_ON"))
+
+        stateless.save(assertNotNull(saved.basis).copy(text = "dos"))
+        assertEquals("dos", property("c2", "text"))
+        stateless.save(saved.copy(basis = null), Replace(ClaimBasis::basis))
+        assertEquals(emptyList(), edges("RESTS_ON"))
+    }
+
+    // ----- What a refusal says -----
+
+    @Test
+    fun `a Replace refused for a relationship says so, and one refused for a root that is gone says that`() {
+        val loaded = stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        run("MATCH (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS]->(b:Human {id: 'bob', name: 'Bob'}) SET ${Stamps.linksClause("c")}, ${Stamps.linksClause("b")}")
+
+        val added = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(people = emptyList()), Replace(ClaimView::people)) }
+
+        assertFalse(added.deleted)
+        assertEquals(Claim::class.java, added.type)
+        assertEquals("c1", added.id)
+        assertEquals(loaded.claim.stamp, added.expectedStamp)
+        assertEquals(stamp("c1"), added.foundStamp)
+        assertContains(added.message.orEmpty(), "Claim 'c1' had a relationship added or removed by another writer")
+
+        run("MATCH (c:Claim {id: 'c1'}) DETACH DELETE c")
+
+        val gone = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(people = emptyList()), Replace(ClaimView::people)) }
+
+        assertTrue(gone.deleted)
+        assertNull(gone.foundStamp)
+        assertContains(gone.message.orEmpty(), "Claim 'c1' was deleted by another writer")
+        assertContains(gone.message.orEmpty(), "found no node")
+        assertFalse(exists("c1"), "a refused save does not bring the node back")
+    }
+
+    // ----- Cypher that keeps the contract, on a node that has no stamp -----
+
+    @Test
+    fun `Cypher that keeps the contract gives a node that has no stamp a whole one`() {
+        run("CREATE (:Claim {id: 'c1', text: 'one'}), (:Claim {id: 'c2', text: 'two'})")
+
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'uno', ${Stamps.setClause("c")}")
+        run("MATCH (c:Claim {id: 'c2'}) SET ${Stamps.linksClause("c")}")
+
+        listOf("c1", "c2").forEach { id ->
+            assertTrue(WELL_FORMED.matches(assertNotNull(stamp(id))), "$id has ${stamp(id)}")
+            val loaded = assertNotNull(stateless.load<Claim>(id))
+            assertEquals(stamp(id), loaded.stamp)
+            stateless.save(loaded.copy(note = "checked"))
+            assertEquals("checked", property(id, "note"))
+        }
+    }
+
+    // ----- A stored stamp that is not two tokens -----
+
+    /** Stamps no save leaves: too short, too long, without its second token, and empty. */
+    private val malformed = listOf("short", "0123456789abcdef0123456789abcdef0", "0123456789abcdef:", "")
+
+    @Test
+    fun `a change by another writer is seen though the stored stamp was not two tokens`() {
+        malformed.forEachIndexed { index, stored ->
+            val id = "odd-$index"
+            run("CREATE (:Claim {id: '$id', text: 'one', ${Stamps.QUOTED}: '$stored'})")
+            val loaded = assertNotNull(stateless.load<ClaimView>(id))
+            assertEquals(stored, loaded.claim.stamp)
+
+            run("MATCH (c:Claim {id: '$id'}) SET c.note = 'elsewhere', ${Stamps.setClause("c")}")
+            assertFailsWith<StaleObjectException>("setClause on '$stored'") { stateless.save(loaded.copy(claim = loaded.claim.copy(text = "late"))) }
+
+            run("MATCH (c:Claim {id: '$id'}) SET c.${Stamps.QUOTED} = '$stored'")
+            run("MATCH (c:Claim {id: '$id'}) SET ${Stamps.linksClause("c")}")
+            assertFailsWith<StaleObjectException>("linksClause on '$stored'") {
+                stateless.save(loaded.copy(people = emptyList()), Replace(ClaimView::people))
+            }
+            assertEquals("one", property(id, "text"))
+        }
+    }
+
+    @Test
+    fun `a save over a stored stamp that is not two tokens leaves one that is, and hands it back`() {
+        val failures = malformed.mapIndexedNotNull { index, stored ->
+            val id = "odd-$index"
+            run("CREATE (:Claim {id: '$id', text: 'one', ${Stamps.QUOTED}: '$stored'})")
+            val loaded = assertNotNull(stateless.load<ClaimView>(id))
+            runCatching {
+                val saved = stateless.save(loaded.copy(claim = loaded.claim.copy(text = "two")))
+                assertEquals("two", property(id, "text"))
+                assertTrue(WELL_FORMED.matches(assertNotNull(stamp(id))), "the save left ${stamp(id)}")
+                assertEquals(stamp(id), saved.claim.stamp, "the stamp handed back")
+                stateless.save(saved.copy(people = listOf(Human("$id-h", "H"))), Replace(ClaimView::people))
+                assertEquals(listOf("$id->$id-h"), edges("MENTIONS").filter { it.startsWith("$id->") })
+            }.exceptionOrNull()?.let { "'$stored': ${it.message?.lineSequence()?.first()}" }
+        }
+
+        assertEquals(emptyList(), failures)
+    }
+
+    // ----- only and except, at their edges -----
+
+    @Test
+    fun `only and except name fields of the root, and a relationship field is refused`() {
+        val view = ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada")))
+
+        val only = assertFailsWith<IllegalArgumentException> { stateless.save(view, only = setOf(ClaimView::people)) }
+        val except = assertFailsWith<IllegalArgumentException> { stateless.save(view, except = setOf(ClaimView::people)) }
+
+        assertContains(only.message.orEmpty(), "Claim has no field 'people' to save")
+        assertContains(except.message.orEmpty(), "Claim has no field 'people' to save")
+        assertEquals(emptySet(), ids("Claim") + ids("Human"), "nothing was written")
+    }
+
+    @Test
+    fun `except on a view leaves a field of its root unwritten, and its relationships are still written`() {
+        stateless.save(ClaimView(Claim("c1", "one", note = "first")))
+
+        stateless.save(ClaimView(Claim("c1", "two", note = "second"), people = listOf(Human("ada", "Ada"))), except = setOf(Claim::note))
+
+        assertEquals("two", property("c1", "text"))
+        assertEquals("first", property("c1", "note"))
+        assertEquals(listOf("c1->ada"), edges("MENTIONS"))
+    }
+
+    @Test
+    fun `only that names the id or the stamp writes no other field, and the save is checked all the same`() {
+        val saved = stateless.save(Claim("c1", "one", note = "first"))
+
+        val byId = stateless.save(saved.copy(text = "two", note = "second"), only = setOf(Claim::id))
+        val byStamp = stateless.save(byId.copy(text = "three", stamp = byId.stamp), only = setOf(Claim::stamp))
+
+        assertEquals(setOf("c1"), ids("Claim"))
+        assertEquals("one", property("c1", "text"))
+        assertEquals("first", property("c1", "note"))
+        assertEquals(stamp("c1"), byStamp.stamp, "the stamp is the store's, never the object's")
+        assertTrue(WELL_FORMED.matches(assertNotNull(stamp("c1"))))
+
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'other', ${Stamps.setClause("c")}")
+        assertFailsWith<StaleObjectException> { stateless.save(byStamp.copy(note = "late"), only = setOf(Claim::stamp)) }
+        assertFailsWith<StaleObjectException> { stateless.save(byStamp.copy(note = "late"), except = setOf(Claim::stamp)) }
+        assertEquals("first", property("c1", "note"))
+    }
+
+    @Test
+    fun `only that names a property bag writes the bag and no other field`() {
+        stateless.save(Tagged("t1", "one", mapOf("source" to "web")))
+
+        stateless.save(Tagged("t1", "two", mapOf("source" to "wire", "lang" to "en")), only = setOf(Tagged::meta))
+        assertEquals("one", property("t1", "text"))
+        assertEquals("wire", property("t1", "meta.source"))
+        assertEquals("en", property("t1", "meta.lang"))
+
+        stateless.save(Tagged("t1", "three", mapOf("source" to "post")), except = setOf(Tagged::meta))
+        assertEquals("three", property("t1", "text"))
+        assertEquals("wire", property("t1", "meta.source"))
+    }
+
+    // ----- update, at its edges -----
+
+    @Test
+    fun `a change that throws writes nothing, and is not applied again`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val before = snapshot()
+        var applied = 0
+
+        val failure = assertFailsWith<IllegalStateException> {
+            stateless.update<ClaimView>("c1") {
+                applied++
+                error("the change failed")
+            }
+        }
+
+        assertEquals("the change failed", failure.message)
+        assertEquals(1, applied)
+        assertEquals(before, snapshot())
+    }
+
+    @Test
+    fun `a change that returns an object of another class is refused, and nothing is written`() {
+        stateless.save(Claim("c1", "one"))
+        val before = snapshot()
+        @Suppress("UNCHECKED_CAST")
+        val change = { _: Claim -> Memo("c1", "a memo") } as (Claim) -> Claim
+
+        val failure = assertFailsWith<IllegalArgumentException> { stateless.update("c1", Claim::class.java, change = change) }
+
+        assertContains(failure.message.orEmpty(), "The change returned a Memo for a Claim")
+        assertEquals(before, snapshot())
+    }
+
+    @Test
+    fun `update of a type with no stamp does not notice another writer, and writes what it altered over the change`() {
+        stateless.save(Memo("m1", "one"))
+
+        val updated = stateless.update<Memo>("m1") { loaded ->
+            run("MATCH (m:Memo {id: 'm1'}) SET m.text = 'other'")
+            loaded.copy(text = "mine")
+        }
+
+        assertEquals("mine", assertNotNull(updated).text)
+        assertEquals("mine", property("m1", "text"), "with no stamp to compare, the other writer's change is not noticed")
+    }
+
+    // ----- A manager used again -----
+
+    @Test
+    fun `a manager used again keeps nothing of what it loaded or saved`() {
+        val manager = stateless
+        manager.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val loaded = assertNotNull(manager.load<ClaimView>("c1"))
+        run(
+            """
+            MATCH (c:Claim {id: 'c1'})
+            CREATE (c)-[:MENTIONS]->(b:Human {id: 'bob', name: 'Bob'})
+            SET c.text = 'other', ${Stamps.setClause("c")}, ${Stamps.linksClause("b")}
+            """.trimIndent()
+        )
+
+        assertFailsWith<StaleObjectException> { manager.save(loaded.copy(claim = loaded.claim.copy(note = "late"))) }
+
+        val fresh = assertNotNull(manager.load<ClaimView>("c1"))
+        assertEquals("other", fresh.claim.text, "the load reads the store, not what the manager saved")
+        assertEquals(setOf("ada", "bob"), fresh.people.map { it.id }.toSet())
+        assertEquals(stamp("c1"), fresh.claim.stamp)
+
+        // An object it never loaded is written as given: nothing it loaded before decides what is removed.
+        manager.save(ClaimView(Claim("c1", "again"), people = listOf(Human("cy", "Cy"))))
+        assertEquals(listOf("c1->ada", "c1->bob", "c1->cy"), edges("MENTIONS"))
+
+        manager.save(assertNotNull(manager.load<ClaimView>("c1")).let { it.copy(people = it.people.filter { human -> human.id == "ada" }) }, Replace(ClaimView::people))
+        assertEquals(listOf("c1->ada"), edges("MENTIONS"))
+    }
+
+    // ----- edges, and the nodes it marks -----
+
+    @Test
+    fun `unrelate and unrelateAll give each node that lost a relationship a new relationship token, and no other node`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"), Human("cy", "Cy"))))
+        stateless.save(ClaimView(Claim("c2", "two"), people = listOf(Human("dan", "Dan"))))
+        val loaded = assertNotNull(stateless.load<ClaimView>("c1"))
+        val all = listOf("c1", "c2", "ada", "bob", "cy", "dan")
+        fun stamps() = all.associateWith { assertNotNull(stamp(it), it) }
+        fun changed(before: Map<String, String>, token: (String) -> String) = all.filter { token(before.getValue(it)) != token(stamps().getValue(it)) }.toSet()
+        val start = stamps()
+
+        assertEquals(1, stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("ada"), "MENTIONS"))
+
+        assertEquals(setOf("c1", "ada"), changed(start) { it.substringAfter(':') }, "both ends of the relationship removed")
+        assertEquals(emptySet(), changed(start) { it.substringBefore(':') }, "no node's own data changed")
+        val afterOne = stamps()
+
+        assertEquals(2, stateless.edges.unrelateAll(nodeRef<Claim>("c1"), "MENTIONS"))
+
+        assertEquals(setOf("c1", "bob", "cy"), changed(afterOne) { it.substringAfter(':') }, "the node and each former neighbour")
+        assertEquals(emptySet(), changed(afterOne) { it.substringBefore(':') })
+        val afterAll = stamps()
+
+        assertEquals(0, stateless.edges.unrelateAll(nodeRef<Claim>("c1"), "MENTIONS"))
+        assertEquals(afterAll, stamps(), "removing nothing marks nothing")
+        assertFailsWith<StaleObjectException> { stateless.save(loaded, Replace(ClaimView::people)) }
+        assertEquals(listOf("c2->dan"), edges("MENTIONS"))
+    }
 }
+
+/** A stamp as a save or [Stamps] leaves it: two tokens of sixteen hex digits. */
+private val WELL_FORMED = Regex("[0-9a-f]{16}:[0-9a-f]{16}")
 
 /** Decorates a [PersistenceManager], counting the statements run through it. */
 private class CountingStatements(private val delegate: PersistenceManager) : PersistenceManager by delegate {

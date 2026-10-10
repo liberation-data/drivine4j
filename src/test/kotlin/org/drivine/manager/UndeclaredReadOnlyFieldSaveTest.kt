@@ -81,7 +81,7 @@ class UndeclaredReadOnlyFieldSaveTest @Autowired constructor(
         persistenceManager.execute(
             QuerySpecification.withStatement(
                 """
-                CREATE (v:Voyage {id: ${'$'}voyage, name: 'South', `__drivine.stamp`: 'seeded'})
+                CREATE (v:Voyage {id: ${'$'}voyage, name: 'South', `__drivine.stamp`: '0123456789abcdef:fedcba9876543210'})
                 CREATE (h:Harbour {id: ${'$'}lisbon, name: 'Lisbon'})
                 CREATE (r:Realm {id: ${'$'}portugal, name: 'Portugal'})
                 CREATE (v)-[:CALLS_AT]->(h)
