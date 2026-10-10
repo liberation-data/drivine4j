@@ -16,6 +16,9 @@ object Stamps {
     /** The column a save statement returns the node's stamp under, once it has run. */
     const val STAMP_COLUMN = "stamp"
 
+    /** A property a checked save sets and removes in one statement, to hold the node's write lock while it compares. */
+    internal const val LOCK = "`__drivine.lock`"
+
     internal const val NEW_PARAM = "_stamp"
     internal const val EXPECTED_PARAM = "_expectedStamp"
 

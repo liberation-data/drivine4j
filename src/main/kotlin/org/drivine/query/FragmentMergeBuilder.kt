@@ -74,7 +74,17 @@ class FragmentMergeBuilder(
         val mergeClause = if (expected == null) {
             "MERGE (n:$labels {$nodeIdProperty: \$$nodeIdField})"
         } else {
-            "MATCH (n:$labels {$nodeIdProperty: \$$nodeIdField})\nWHERE n.${Stamps.QUOTED} = \$${Stamps.EXPECTED_PARAM}"
+            // A property is set and removed again first: that leaves the node as it was and takes its
+            // write lock. Only then is the stamp read. Without the lock, two writers holding the same
+            // stamp could both pass the comparison before either had written. The stamp itself cannot
+            // serve: a statement reads back its own write, not what another writer committed.
+            """
+            MATCH (n:$labels {$nodeIdProperty: ${'$'}$nodeIdField})
+            SET n.${Stamps.LOCK} = true
+            REMOVE n.${Stamps.LOCK}
+            WITH n
+            WHERE n.${Stamps.QUOTED} = ${'$'}${Stamps.EXPECTED_PARAM}
+            """.trimIndent()
         }
 
         val bindings = mutableMapOf<String, Any?>(nodeIdField to idValue)

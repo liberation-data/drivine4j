@@ -1,5 +1,8 @@
 package org.drivine.manager
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -164,6 +167,35 @@ abstract class StatelessSaveContract {
 
         val stamps = listOf("c1", "c2").map { assertNotNull(property(it, Stamps.PROPERTY)) }
         assertEquals(2, stamps.toSet().size)
+    }
+
+    @Test
+    fun `of several writers saving the same loaded object at once, exactly one succeeds`() {
+        val writers = 8
+        repeat(25) { round ->
+            val id = "race-$round"
+            val loaded = stateless.save(Claim(id, "start"))
+            val start = CountDownLatch(1)
+            val pool = Executors.newFixedThreadPool(writers)
+            val outcomes = (1..writers).map { writer ->
+                pool.submit<String> {
+                    start.await()
+                    try {
+                        stateless.save(loaded.copy(text = "writer $writer"))
+                        "saved by $writer"
+                    } catch (stale: StaleObjectException) {
+                        "refused"
+                    }
+                }
+            }
+            start.countDown()
+            val results = outcomes.map { it.get(60, TimeUnit.SECONDS) }
+            pool.shutdown()
+
+            val saved = results.filter { it != "refused" }
+            assertEquals(1, saved.size, "round $round: $results")
+            assertEquals("writer ${saved.single().removePrefix("saved by ")}", property(id, "text"))
+        }
     }
 
     // ----- A stamp changes only when the node does -----

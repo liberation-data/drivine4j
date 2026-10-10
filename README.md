@@ -1289,7 +1289,7 @@ data class Person(
 ```
 
 - An object-manager save that changes a node writes a new stamp on it, under `__drivine.stamp`. A save that changes nothing leaves the stamp as it is. Loading fills the field.
-- A stateless save of an object that carries a stamp applies only if the node still has it. Otherwise nothing is written and `StaleObjectException` says whether the node changed or was deleted. The check is part of the save statement, so it is one round trip and atomic, on an engine without transactions too.
+- A stateless save of an object that carries a stamp applies only if the node still has it. Otherwise nothing is written and `StaleObjectException` says whether the node changed or was deleted. The check is part of the save statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
 - A save of an object whose stamp is null is not checked: it creates the node or overwrites it.
 - `save` returns the object with the stamp the node is left with. Use the returned object: if the save changed the node, the one you passed in is now stale.
 - `update` retries on a conflict, loading again and re-applying your change.
