@@ -84,6 +84,22 @@ data class HumanClaims(
     val claims: List<Claim> = emptyList(),
 )
 
+/** The same relationship read the other way round: a person who mentions claims. */
+@GraphView
+data class HumanMentions(
+    @Root val human: Human,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.OUTGOING)
+    val claims: List<Claim> = emptyList(),
+)
+
+/** An incoming relationship between two nodes of one label. */
+@GraphView
+data class HumanFollowers(
+    @Root val human: Human,
+    @GraphRelationship(type = "FOLLOWS", direction = Direction.INCOMING)
+    val followers: List<Human> = emptyList(),
+)
+
 /** A relationship that carries a property: the page a claim cites a person on. */
 @RelationshipFragment
 data class Citation(val page: Int, val target: Human)

@@ -2792,6 +2792,25 @@ Loading, querying and deleting are the same: both managers implement `GraphObjec
 - Add a `@NodeStamp` field to each type you load, change and save.
 - A view that declares a `@GraphPath`, `@Count` or `@Aggregate` field needs `@ReadOnly` on it, with either manager.
 
+### Relationships saved through an `INCOMING` field
+
+Before 0.1.0 a view save wrote every relationship from the view's root to the target, whatever direction the field declared. A field declared `Direction.INCOMING` was therefore stored pointing the wrong way, and the view did not load it back. Saves are fixed in 0.1.0. Relationships already stored need turning round, and `RelationshipDirectionRepair` does that:
+
+```kotlin
+val repair = RelationshipDirectionRepair(persistenceManager)
+
+val findings = repair.report(PersonView::class.java, IssueView::class.java)   // every view of the model; changes nothing
+findings.forEach { println("${it.view.simpleName}.${it.field}: ${it.wrongWay} wrong way, ${it.rightWay} right way. ${it.ambiguity ?: ""}") }
+
+findings.filter { it.ambiguity == null }.forEach { repair.repair(it) }
+```
+
+- `report` gives one finding for each `INCOMING` relationship field a save writes, in the views you pass and the views nested in them. `wrongWay` counts the relationships pointing from a root to a target, which is what the old save wrote.
+- `repair` turns those relationships round, in batches, keeping their properties. Where one already points the right way between the same two nodes, the two become one. Running it again changes nothing.
+- A finding is **ambiguous** when another of the views declares the same relationship pointing away from the root, so those relationships may be meant. `repair` refuses it unless you pass `force = true`.
+- A field whose root and target can be the same nodes (a person who follows a person) cannot be repaired by the tool: nothing tells a relationship written the wrong way from one that is meant. Repair those with Cypher that knows your data.
+- Run it once, as a migration. A relationship that was added with Cypher or `edges.relate` in the direction the field reads was never wrong and is left alone.
+
 ### How we know nothing else changed
 
 Every test of `GraphObjectManager` in this repository has a mirror that runs on `StatelessGraphObjectManager`. A comparison test runs the same scenarios through both managers on Neo4j, FalkorDB and Memgraph and compares the graphs they leave: for flat targets, relationships with properties and nested views, with and without another writer in between, they match.
