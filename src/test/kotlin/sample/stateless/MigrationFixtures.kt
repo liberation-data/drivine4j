@@ -163,3 +163,23 @@ data class ThingEmployers(
     ])
     val employers: List<Company> = emptyList(),
 )
+
+/** A path from a person through the claims they mention: its first hop is the relationship `HumanClaims` reads the other way round. */
+@GraphView
+data class HumanClaimSources(
+    @Root val human: Human,
+    @GraphPath([
+        Hop("MENTIONS", Direction.OUTGOING, label = "Claim"),
+        Hop("ABOUT", Direction.OUTGOING),
+    ])
+    val companies: List<Company> = emptyList(),
+)
+
+/** The claims that mention a person, declared read-only when the model was upgraded. */
+@GraphView
+data class HumanClaimsLoaded(
+    @Root val human: Human,
+    @ReadOnly
+    @GraphRelationship(type = "MENTIONS", direction = Direction.INCOMING)
+    val claims: List<Claim> = emptyList(),
+)

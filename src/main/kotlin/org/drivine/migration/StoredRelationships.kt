@@ -126,6 +126,16 @@ internal class StoredRelationships(private val persistenceManager: PersistenceMa
             "WHERE NOT (${eitherWay(rootLabels, targetLabels)}) RETURN count(r)"
     )
 
+    /**
+     * How many of the relationships [wrongWay] counts run between two nodes that also have one from
+     * the target to the root: a repair makes one relationship of the two.
+     */
+    fun collisions(rootLabels: List<String>, type: String, targetLabels: List<String>): Long = count(
+        "MATCH ${nodePattern(rootLabels, "root")}-[r:$type]->${nodePattern(targetLabels, "target")} " +
+            "WHERE NOT (${eitherWay(rootLabels, targetLabels)}) " +
+            "MATCH (target)-[:$type]->(root) RETURN count(DISTINCT r)"
+    )
+
     /** How many relationships of [type] run from a target to a root, those that can point [eitherWay] left out. */
     fun rightWay(rootLabels: List<String>, type: String, targetLabels: List<String>): Long = count(
         "MATCH ${nodePattern(targetLabels, "target")}-[r:$type]->${nodePattern(rootLabels, "root")} " +
