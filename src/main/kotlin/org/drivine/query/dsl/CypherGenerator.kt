@@ -1,10 +1,12 @@
 package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
+import org.drivine.query.projectedKey
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.grammar.OpenCypherGrammar
 import org.drivine.query.sort.ApocSortMapsEmitter
+import org.drivine.schema.SchemaGrammar
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -26,7 +28,9 @@ object CypherGenerator {
      *   over the *already-projected* relationship collection (`any(x IN mentions WHERE …)`) instead
      *   of an `EXISTS { (root)-[…] }` subquery. Used by the vector-search path, whose filter runs
      *   after projection (the root is a map, not a node) — the same reason property predicates work
-     *   post-projection. See [buildProjectedCollectionPredicate].
+     *   post-projection. A property is then read by the key it has in the projected map, which for a
+     *   `@GraphProperty` or `@NodeStamp` field is the field name and not the stored name. See
+     *   [buildProjectedCollectionPredicate] and [renderProjectedPath].
      */
     fun buildWhereClause(
         conditions: List<WhereCondition>,
@@ -70,7 +74,8 @@ object CypherGenerator {
         return conditions.joinToString(" AND ") { condition ->
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
-                    val result = buildPropertyCondition(condition, paramIndex)
+                    val lhs = rootPath(condition.propertyPath, viewModel, projectedCollectionMode)
+                    val result = buildPropertyConditionWithLhs(condition, paramIndex, lhs)
                     if (condition.operator != ComparisonOperator.IS_NULL &&
                         condition.operator != ComparisonOperator.IS_NOT_NULL) {
                         paramIndex++
@@ -91,7 +96,8 @@ object CypherGenerator {
                     result
                 }
                 is WhereCondition.ListMembershipCondition -> {
-                    val result = buildListMembershipCondition(condition, paramIndex)
+                    val rhs = rootPath(condition.propertyPath, viewModel, projectedCollectionMode)
+                    val result = buildListMembershipCondition(condition, paramIndex, rhs)
                     paramIndex++
                     result
                 }
@@ -257,7 +263,22 @@ object CypherGenerator {
      * @param relationshipNames Set of relationship field names (to distinguish collection sorts)
      * @return OrderClauseResult with separate ORDER BY clause and collection sorts
      */
-    fun processOrders(orders: List<OrderSpec>, relationshipNames: Set<String> = emptySet()): OrderClauseResult {
+    fun processOrders(orders: List<OrderSpec>, relationshipNames: Set<String> = emptySet()): OrderClauseResult =
+        processOrders(orders, relationshipNames, viewModel = null)
+
+    /**
+     * As [processOrders], for the load of a view. A view's `ORDER BY` follows its projection, where
+     * the root alias is the projected map, so a root order is rendered by the key that map has for
+     * the property (see [renderProjectedPath]). [OrderClauseResult.rootOrders] keeps the stored
+     * names, which is what a keyset predicate on the node needs.
+     *
+     * @param viewModel The view being loaded, or null when the load is of a fragment
+     */
+    fun processOrders(
+        orders: List<OrderSpec>,
+        relationshipNames: Set<String>,
+        viewModel: GraphViewModel?,
+    ): OrderClauseResult {
         val rootOrders = mutableListOf<OrderSpec>()
         val collectionSorts = mutableListOf<CollectionSortSpec>()
 
@@ -282,7 +303,7 @@ object CypherGenerator {
         }
 
         val orderByClause = if (rootOrders.isNotEmpty()) {
-            rootOrders.joinToString(", ") { "${renderPropertyPath(it.propertyPath)} ${it.direction.name}" }
+            rootOrders.joinToString(", ") { "${rootPath(it.propertyPath, viewModel, projected = true)} ${it.direction.name}" }
         } else {
             null
         }
@@ -423,19 +444,23 @@ object CypherGenerator {
      * projected-collection mode the root is a map, so `root.listProp` is plain map access (no pattern,
      * no FalkorDB vecf32 quirk).
      */
-    private fun buildListMembershipCondition(condition: WhereCondition.ListMembershipCondition, index: Int): String {
-        val rhs = renderPropertyPath(condition.propertyPath)
+    private fun buildListMembershipCondition(
+        condition: WhereCondition.ListMembershipCondition,
+        index: Int,
+        rhs: String = renderPropertyPath(condition.propertyPath),
+    ): String {
         val paramName = generateParamName(condition.propertyPath, index)
         return "\$$paramName IN $rhs"
     }
 
     /**
      * Renders an `alias.property` path wherever it enters a statement — a condition, an `ORDER BY`, a
-     * keyset seek — backtick-quoting the property segment when it contains a dot: a `@PropertyBag` key
-     * like `proposition.metadata.source` becomes `` proposition.`metadata.source` ``, and a `@NodeStamp`
-     * field `` note.`__drivine.stamp` ``. Unquoted, `note.__drivine.stamp` reads the `stamp` of a
-     * `__drivine` that no node has, which is null for every row. Plain fields and relationship aliases
-     * are untouched. The parameter name is still derived from the raw path, so bindings stay aligned.
+     * keyset seek — backtick-quoting the property segment when it is not a plain identifier: a
+     * `@PropertyBag` key like `proposition.metadata.source` becomes `` proposition.`metadata.source` ``,
+     * and a `@NodeStamp` field `` note.`__drivine.stamp` ``. Unquoted, `note.__drivine.stamp` reads the
+     * `stamp` of a `__drivine` that no node has, which is null for every row. Plain fields and
+     * relationship aliases are untouched. The parameter name is still derived from the raw path, so
+     * bindings stay aligned.
      */
     internal fun renderPropertyPath(propertyPath: String): String {
         val dot = propertyPath.indexOf('.')
@@ -444,12 +469,35 @@ object CypherGenerator {
     }
 
     /**
-     * A property name as it is written after an alias. A dotted name (a `@PropertyBag` key, the node
-     * stamp, or a dynamic `property(path)`) is backtick-quoted; any backtick in it is doubled, as
-     * Cypher escapes them, so a runtime-supplied key can't break out of the quotes.
+     * A root property as a top-level predicate reads it: from the projected map when the predicate
+     * runs after the projection ([projected]), and from the node otherwise.
      */
-    internal fun quoteProperty(property: String): String =
-        if (property.contains('.')) "`${property.replace("`", "``")}`" else property
+    private fun rootPath(propertyPath: String, viewModel: GraphViewModel?, projected: Boolean): String =
+        if (projected && viewModel != null) renderProjectedPath(propertyPath, viewModel) else renderPropertyPath(propertyPath)
+
+    /**
+     * Renders an `alias.property` path of [viewModel]'s root where it is read **after** the view's
+     * projection — an `ORDER BY`, or the filter of a scored search. By then the root alias is the
+     * projected map, keyed by field name, so a `@GraphProperty` or `@NodeStamp` field is read by its
+     * field name: `claim.stamp`, where [renderPropertyPath] writes `` claim.`__drivine.stamp` `` for a
+     * predicate on the node. A root projected with `.*` keeps its stored names, and so does a path
+     * that is not the root's.
+     */
+    internal fun renderProjectedPath(propertyPath: String, viewModel: GraphViewModel): String {
+        val dot = propertyPath.indexOf('.')
+        val root = viewModel.rootFragment
+        if (dot < 0 || propertyPath.substring(0, dot) != root.fieldName) return renderPropertyPath(propertyPath)
+        return "${root.fieldName}.${quoteProperty(projectedKey(root.fragmentType, propertyPath.substring(dot + 1)))}"
+    }
+
+    /**
+     * A property name as it is written after an alias. A name that is not a plain identifier (a
+     * `@PropertyBag` key, the node stamp, or a dynamic `property(path)` holding a dot, a space, a
+     * hyphen or anything else) is backtick-quoted; any backtick in it is doubled, as Cypher escapes
+     * them, so a runtime-supplied key can't break out of the quotes. The rule is the one schema DDL
+     * spells names by, so a property is written the same way where it is indexed and where it is read.
+     */
+    internal fun quoteProperty(property: String): String = SchemaGrammar.identifier(property)
 
     /**
      * Renders a relationship predicate as a list predicate over the **already-projected** relationship
@@ -460,6 +508,8 @@ object CypherGenerator {
      * `none{}` (negate) → `NOT any(...)`. The inner predicate filters on the projected map keys
      * (`_e0.resolvedId`), not node properties, which is why it dodges the FalkorDB `vecf32`-Pointer
      * quirk — exactly like post-projection property predicates. Portable openCypher across engines.
+     * A `@GraphProperty` or `@NodeStamp` field of a target projected field by field is keyed by its
+     * field name, so that is the key the predicate reads (see [projectedKey]).
      *
      * An empty projected collection (optional relationship with no matches) makes `any(...)` false —
      * so `any{}` excludes such roots and `none{}` includes them, both correct.
@@ -480,7 +530,9 @@ object CypherGenerator {
         val inner = condition.targetConditions.joinToString(" AND ") { targetCondition ->
             when (targetCondition) {
                 is WhereCondition.PropertyCondition -> {
-                    val lhs = "$elemVar.${quoteProperty(targetCondition.propertyPath.substringAfter("."))}"
+                    // The element is the target as the view projected it, so it is read by projected key.
+                    val key = projectedKey(relationship.elementType, targetCondition.propertyPath.substringAfter("."))
+                    val lhs = "$elemVar.${quoteProperty(key)}"
                     val rendered = buildPropertyConditionWithLhs(targetCondition, paramIndex, lhs)
                     if (targetCondition.operator != ComparisonOperator.IS_NULL &&
                         targetCondition.operator != ComparisonOperator.IS_NOT_NULL) {
@@ -852,7 +904,8 @@ object CypherGenerator {
                         if (consumesParam) paramIndex++
                         result
                     } else {
-                        val result = buildPropertyCondition(subCondition, paramIndex)
+                        val lhs = rootPath(subCondition.propertyPath, viewModel, projectedCollectionMode)
+                        val result = buildPropertyConditionWithLhs(subCondition, paramIndex, lhs)
                         if (consumesParam) paramIndex++
                         result
                     }
@@ -879,7 +932,8 @@ object CypherGenerator {
                     result
                 }
                 is WhereCondition.ListMembershipCondition -> {
-                    val result = buildListMembershipCondition(subCondition, paramIndex)
+                    val rhs = rootPath(subCondition.propertyPath, viewModel, projectedCollectionMode)
+                    val result = buildListMembershipCondition(subCondition, paramIndex, rhs)
                     paramIndex++
                     result
                 }
@@ -923,11 +977,18 @@ object CypherGenerator {
     /**
      * Generates a unique parameter name for a property path.
      * Example: "issue.state" with index 0 -> "param_issue_state_0"
+     *
+     * Every character that cannot stand in a parameter name becomes an underscore, so a runtime key
+     * holding a hyphen, a space or a backtick still names a parameter. Two paths may then share a
+     * stem, as `a.b` and `a_b` always could; what tells their parameters apart is [index], the
+     * parameter's position among the conditions.
      */
     private fun generateParamName(propertyPath: String, index: Int): String {
-        val sanitized = propertyPath.replace(".", "_")
+        val sanitized = propertyPath.replace(NOT_IN_A_PARAMETER_NAME, "_")
         return "param_${sanitized}_$index"
     }
+
+    private val NOT_IN_A_PARAMETER_NAME = Regex("[^A-Za-z0-9_]")
 
     /**
      * Resets the parameter counter (no longer needed, kept for backwards compatibility).

@@ -90,21 +90,28 @@ interface PersistenceManager {
     fun execute(spec: QuerySpecification<*>)
 
     /**
-     * Executes a list of statements **atomically** — all succeed or none do. When already inside a
-     * transaction the statements join it; otherwise they run together in a single transaction on one
-     * connection (fewer round trips than N separate [execute] calls). Used by batch operations such as
-     * [GraphObjectManager.saveAll].
+     * Executes a list of statements together, in order. When already inside a transaction the
+     * statements join it; otherwise they run in a single transaction on one connection (fewer round
+     * trips than N separate [execute] calls). Used by batch operations such as
+     * [GraphObjectManager.saveAll] and [StatelessGraphObjectManager.saveAll].
+     *
+     * The batch is **atomic** — all succeed or none do — on an engine with multi-statement
+     * transactions (Neo4j, Memgraph). FalkorDB has none: in
+     * [org.drivine.connection.FalkorDbTransactionMode.WARN] each statement is committed as it runs,
+     * so a failure midway leaves the earlier statements applied, and in
+     * [org.drivine.connection.FalkorDbTransactionMode.STRICT] the batch is refused before any
+     * statement runs.
      *
      * The default loops [execute] (no extra atomicity — a fallback for impls that don't override);
-     * the real managers override to provide the single-transaction guarantee.
+     * the real managers override to run the statements in one transaction.
      */
     fun executeBatch(specs: List<QuerySpecification<*>>) {
         specs.forEach { execute(it) }
     }
 
     /**
-     * [executeBatch] that also returns each statement's rows, in the order of [specs]. The same
-     * atomicity holds: the real managers run the statements in one transaction.
+     * [executeBatch] that also returns each statement's rows, in the order of [specs]. The
+     * statements run the same way, and so are atomic on the same engines and no others.
      */
     fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> =
         @Suppress("UNCHECKED_CAST")

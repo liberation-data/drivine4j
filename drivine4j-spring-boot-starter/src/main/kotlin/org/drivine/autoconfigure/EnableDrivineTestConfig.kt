@@ -71,8 +71,19 @@ import kotlin.annotation.AnnotationTarget.CLASS
  *
  * ## Example
  *
+ * `@EnableDrivine` provides the [org.drivine.manager.GraphObjectManagerFactory] and no object
+ * manager, so the configuration declares the one the test asks for:
+ *
  * ```kotlin
- * @SpringBootTest
+ * @Configuration
+ * @EnableDrivine
+ * @EnableDrivineTestConfig
+ * class TestConfig {
+ *     @Bean
+ *     fun graphObjectManager(factory: GraphObjectManagerFactory): StatelessGraphObjectManager = factory.stateless()
+ * }
+ *
+ * @SpringBootTest(classes = [TestConfig::class])
  * @Transactional
  * @Rollback(true)  // Change to false to inspect DB after test
  * class MyTest @Autowired constructor(

@@ -22,7 +22,7 @@ private const val STAMP_PROPERTY = "__drivine.stamp"
  * For each @GraphView, generates:
  * 1. Properties classes for each fragment type
  * 2. QueryDsl class that aggregates all property references
- * 3. Extension function on GraphObjectManager for clean API
+ * 3. Extension function on GraphObjectOperations for clean API
  */
 class QueryDslGenerator(
     private val codeGenerator: CodeGenerator,
@@ -433,7 +433,7 @@ class QueryDslGenerator(
     }
 
     /**
-     * One `INSTANCE`-injecting reified extension on `GraphObjectManager` for a fragment, mirroring the
+     * One `INSTANCE`-injecting reified extension on `GraphObjectOperations` for a fragment, mirroring the
      * view wrappers: `inline fun <reified T : Fragment> …(spec) = …(T::class.java, DslClass.INSTANCE, spec)`.
      */
     private fun fragmentDslExtension(
@@ -473,7 +473,7 @@ class QueryDslGenerator(
      * plus a `where { }` predicate over the fragment's node properties, in one call:
      *
      * ```kotlin
-     * inline fun <reified T : ChunkNode> GraphObjectManager.loadMatching(
+     * inline fun <reified T : ChunkNode> GraphObjectOperations.loadMatching(
      *     query: String, topK: Int, threshold: Double = 0.0,
      *     noinline spec: GraphQuerySpec<ChunkNodeQueryDsl>.() -> Unit,
      * ): List<Scored<T>> = loadMatching(T::class.java, ChunkNodeQueryDsl.INSTANCE, query, topK, threshold, spec)
@@ -989,7 +989,7 @@ class QueryDslGenerator(
      * the generated `loadAll(spec)` wrapper:
      *
      * ```kotlin
-     * inline fun <reified T : PropositionView> GraphObjectManager.loadNearest(
+     * inline fun <reified T : PropositionView> GraphObjectOperations.loadNearest(
      *     vector: List<Float>, topK: Int, threshold: Double? = null, searchK: Int? = null,
      *     partitionLabel: String? = null,
      *     noinline spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit,
@@ -1053,7 +1053,7 @@ class QueryDslGenerator(
      * full-text mirror of [generateLoadNearestExtensionFunction]:
      *
      * ```kotlin
-     * inline fun <reified T : ChunkView> GraphObjectManager.loadMatching(
+     * inline fun <reified T : ChunkView> GraphObjectOperations.loadMatching(
      *     query: String, topK: Int, threshold: Double = 0.0,
      *     noinline spec: GraphQuerySpec<ChunkViewQueryDsl>.() -> Unit,
      * ): List<Scored<T>> = loadMatching(T::class.java, ChunkViewQueryDsl.INSTANCE, query, topK, threshold, spec)

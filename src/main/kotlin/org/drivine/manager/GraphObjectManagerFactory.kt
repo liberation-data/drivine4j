@@ -21,11 +21,15 @@ class GraphObjectManagerFactory(
     private val objectMapper: ObjectMapper,
     private val subtypeRegistry: SubtypeRegistry,
     /**
-     * Applied to every manager this factory creates. See [GraphObjectManager.indexAdvice]; an
-     * individual manager can still be turned up or down after it is handed out.
+     * Applied to every manager this factory creates, from [stateless] and from [get]. See
+     * [GraphObjectOperations.indexAdvice]; an individual manager can still be turned up or down
+     * after it is handed out.
      */
     private val indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN,
-    /** The session bound of every manager this factory creates. See [SessionManager.maxEntries]. */
+    /**
+     * The session bound of every manager [get] creates. See [SessionManager.maxEntries]. A manager
+     * from [stateless] keeps no session, so it has nothing to bound.
+     */
     private val sessionMaxEntries: Int = SessionManager.DEFAULT_MAX_ENTRIES,
 ) {
     private val managers: MutableMap<String, GraphObjectManager> = mutableMapOf()

@@ -117,9 +117,9 @@ interface GraphObjectOperations {
      * }
      * ```
      *
-     * **Future with Code Generation:**
-     * When code generation is implemented, query DSLs will be auto-registered via QueryDslRegistry,
-     * and you'll be able to use an even cleaner extension function syntax without passing the query object.
+     * With `drivine4j-codegen` there is no need to pass the query object: for each `@GraphView` and
+     * `@NodeFragment` it generates the query DSL and a `loadAll<T> { }` extension on
+     * [GraphObjectOperations] that supplies it.
      *
      * @param graphClass The graph object class to load
      * @param queryObject The query object providing property references

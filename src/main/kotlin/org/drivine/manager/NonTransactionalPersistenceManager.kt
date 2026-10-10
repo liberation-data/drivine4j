@@ -53,17 +53,26 @@ class NonTransactionalPersistenceManager(
 
     /**
      * Runs all [specs] on a single connection in one explicit transaction — atomic even though this
-     * manager is otherwise auto-commit. On any failure the whole transaction is rolled back.
+     * manager is otherwise auto-commit. On any failure the whole transaction is rolled back, where
+     * the engine has transactions to roll back (see [PersistenceManager.executeBatch]).
      */
     override fun executeBatch(specs: List<QuerySpecification<*>>) {
         queryBatch(specs)
     }
 
-    /** [executeBatch], returning each statement's rows. */
+    /**
+     * [executeBatch], returning each statement's rows. The connection is released however the batch
+     * ends, including when the transaction cannot be started.
+     */
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         if (specs.isEmpty()) return emptyList()
         val connection = connectionProvider.connect()
-        connection.startTransaction()
+        try {
+            connection.startTransaction()
+        } catch (e: Throwable) {
+            connection.release(e)
+            throw e
+        }
         val results = try {
             specs.map { spec ->
                 try {

@@ -330,7 +330,7 @@ class GraphObjectManager internal constructor(
         // Process ORDER BY clause - separate root orders from collection sorts
         val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
         val orderResult = if (querySpec.orders.isNotEmpty()) {
-            CypherGenerator.processOrders(querySpec.orders, relationshipNames)
+            CypherGenerator.processOrders(querySpec.orders, relationshipNames, ctx.viewModel)
         } else {
             OrderClauseResult(null, emptyList())
         }

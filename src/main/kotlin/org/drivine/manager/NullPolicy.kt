@@ -16,9 +16,11 @@ package org.drivine.manager
  * accidentally wiping a computed vector comes from the **default being [IGNORE]**, not from a hidden
  * per-field exception — so `save(chunk)` on a partially-loaded object never destroys anything.
  *
- * The policy governs null semantics independently of dirty-tracking: the session snapshot only
- * optimizes away re-writes of unchanged **non-null** fields (a no-op), and never decides whether a null
- * clears. So the observable result does not depend on whether the object is tracked.
+ * The policy is the whole of it on [StatelessGraphObjectManager], which keeps no session and writes
+ * the object as given. On the deprecated [GraphObjectManager] it governs null semantics independently
+ * of dirty-tracking: the session snapshot only optimizes away re-writes of unchanged **non-null**
+ * fields (a no-op), and never decides whether a null clears. So the observable result does not depend
+ * on whether the object is tracked.
  */
 enum class NullPolicy {
     /**
