@@ -77,7 +77,7 @@ RETURN {
 ORDER BY $scoreVar DESC""" + limitSection
         } else {
             val fieldMappings = fragmentModel.fields.joinToString(",\n        ") {
-                "${it.name}: $node.${it.propertyName}"
+                "${it.name}: $node.${it.storedReference}"
             }
             """
 

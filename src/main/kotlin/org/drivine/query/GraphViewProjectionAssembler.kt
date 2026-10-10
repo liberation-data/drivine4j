@@ -12,6 +12,7 @@ import org.drivine.model.Stamps
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.grammar.*
 import org.drivine.query.sort.*
+import org.drivine.schema.SchemaGrammar
 
 /**
  * The map-projection key under which a nested polymorphic fragment carries its node labels, so
@@ -257,8 +258,26 @@ internal class GraphViewProjectionAssembler(
     ): String {
         if (sort == null) return listComprehension
         return sortEmitter.emitNested(
-            NestedSortContext(listComprehension, sort, projectedKey(elementType, sort.propertyName))
+            NestedSortContext(listComprehension, sort, sortedKey(elementType, sort), rootKeyOf(elementType))
         )
+    }
+
+    /**
+     * The key under which a projected element of [elementType] holds its root: the root's field
+     * name when the element is a nested view, which projects its root as a map of its own, and null
+     * when it is a fragment, whose properties are the element's own keys.
+     */
+    private fun rootKeyOf(elementType: Class<*>): String? =
+        if (elementType.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(elementType).rootFragment.fieldName else null
+
+    /** The key the sorted property has in the projection of [elementType], or of its root if it is a view. */
+    private fun sortedKey(elementType: Class<*>, sort: CollectionSortSpec): String {
+        val fragmentType = if (elementType.isAnnotationPresent(GraphView::class.java)) {
+            GraphViewModel.from(elementType).rootFragment.fragmentType
+        } else {
+            elementType
+        }
+        return projectedKey(fragmentType, sort.propertyName)
     }
 
     /**
@@ -285,7 +304,8 @@ internal class GraphViewProjectionAssembler(
             targetLabelString = targetLabelString,
             projection = projection,
             sort = sort,
-            projectedKey = projectedKey(rel.elementType, sort.propertyName),
+            projectedKey = sortedKey(rel.elementType, sort),
+            rootKey = rootKeyOf(rel.elementType),
         )
         val emission = sortEmitter.emitTopLevel(ctx)
         emission.prolog?.let {
@@ -331,7 +351,7 @@ internal class GraphViewProjectionAssembler(
         if (fields.isEmpty()) {
             return varName
         }
-        val fieldMappings = fields.joinToString(",\n        ") { "${it.name}: $sourceVar.${it.propertyName}" }
+        val fieldMappings = fields.joinToString(",\n        ") { "${it.name}: $sourceVar.${it.storedReference}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
         $fieldMappings,
@@ -475,7 +495,7 @@ internal class GraphViewProjectionAssembler(
                 val projection = if (nestedFields == null) {
                     "$nestedAlias { .*, labels: labels($nestedAlias) }"
                 } else {
-                    val fieldMappings = nestedFields.joinToString(", ") { "${it.name}: $nestedAlias.${it.propertyName}" }
+                    val fieldMappings = nestedFields.joinToString(", ") { "${it.name}: $nestedAlias.${it.storedReference}" }
                     "$nestedAlias { $fieldMappings, labels: labels($nestedAlias) }"
                 }
                 NestedRelInfo(
@@ -486,7 +506,8 @@ internal class GraphViewProjectionAssembler(
                     projection = projection,
                     isCollection = nestedRel.isCollection,
                 )
-            }
+            },
+            sort = findSortForRelationship(targetAlias),
         )
 
         val result = grammar.nestedViewProjector.project(ctx)
@@ -577,7 +598,7 @@ internal class GraphViewProjectionAssembler(
                 "$rootFragmentFieldName: $depthAlias { .*, $POLYMORPHIC_LABELS_KEY: labels($depthAlias) }"
             } else {
                 val rootFieldMappings =
-                    rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.propertyName}" }
+                    rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.storedReference}" }
                 "$rootFragmentFieldName: {\n                    $rootFieldMappings\n                }"
             }
             allProjections.add(rootProjection)
@@ -765,7 +786,7 @@ internal class GraphViewProjectionAssembler(
             appendLine("CALL {")
             appendLine("    WITH $rootFieldName")
             appendLine("    OPTIONAL MATCH ($rootFieldName)$arrow($nodeVar)")
-            append("    RETURN $func($nodeVar.$property) AS ${agg.fieldName}\n}")
+            append("    RETURN $func($nodeVar.${SchemaGrammar.identifier(property)}) AS ${agg.fieldName}\n}")
         }
         context.addProlog(prolog)
         context.addBridgeVariables(listOf(agg.fieldName))
@@ -829,7 +850,7 @@ internal class GraphViewProjectionAssembler(
         }"""
         }
 
-        val fieldMappings = fields.joinToString(",\n            ") { "${it.name}: $varName.${it.propertyName}" }
+        val fieldMappings = fields.joinToString(",\n            ") { "${it.name}: $varName.${it.storedReference}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
             $fieldMappings,
@@ -862,7 +883,7 @@ internal class GraphViewProjectionAssembler(
             // Polymorphic type - use .*
             ".*"
         } else {
-            rootFragmentFields.joinToString(",\n                ") { "${it.name}: $varName.${it.propertyName}" }
+            rootFragmentFields.joinToString(",\n                ") { "${it.name}: $varName.${it.storedReference}" }
         }
         fields.add("$rootFragmentFieldName: {\n                $rootFieldMappings\n            }")
 

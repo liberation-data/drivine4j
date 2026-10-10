@@ -1,6 +1,7 @@
 package org.drivine.query.grammar
 
 import org.drivine.query.sort.CollectionSortEmitter
+import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SimilarityFunction
 
 data class FilteredExistenceResult(
@@ -234,7 +235,7 @@ class Neo4j5Grammar(
             SimilarityFunction.EUCLIDEAN -> "vector.similarity.euclidean"
         }
         return "$call\nYIELD node\n" +
-            "WITH node AS $rootAlias, $similarityFunction(node.${spec.property}, \$${spec.vectorParam}) AS $scoreAlias"
+            "WITH node AS $rootAlias, $similarityFunction(node.${SchemaGrammar.identifier(spec.property)}, \$${spec.vectorParam}) AS $scoreAlias"
     }
 
     override val supportsFullTextSearch: Boolean = true

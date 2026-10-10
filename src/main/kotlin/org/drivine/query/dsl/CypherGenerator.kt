@@ -7,6 +7,7 @@ import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.grammar.OpenCypherGrammar
 import org.drivine.query.sort.ApocSortMapsEmitter
 import org.drivine.schema.SchemaGrammar
+import java.util.IdentityHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -84,7 +85,7 @@ object CypherGenerator {
                 }
                 is WhereCondition.RelationshipCondition -> {
                     val result = buildRelationshipCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                    paramIndex += condition.targetConditions.size
+                    paramIndex += countParameters(condition.targetConditions)
                     result
                 }
                 is WhereCondition.LabelCondition -> {
@@ -627,15 +628,22 @@ object CypherGenerator {
         // Separate direct properties from nested relationship properties
         val (directConditions, nestedConditions) = separateNestedConditions(condition.targetConditions, targetAlias)
 
+        // Each target condition takes the index of its place among the block's parameters, as
+        // [extractBindings] walks them. The direct conditions are rendered before the nested ones
+        // wherever each was written, so the index is looked up and not counted while rendering.
+        val indexOf = IdentityHashMap<WhereCondition, Int>()
+        var nextIndex = startIndex
+        condition.targetConditions.forEach { targetCondition ->
+            indexOf[targetCondition] = nextIndex
+            nextIndex += countParameters(listOf(targetCondition))
+        }
+
         // Build WHERE clauses for direct target conditions
         val directWhere = if (directConditions.isNotEmpty()) {
-            var paramIndex = startIndex
             val whereClauses = directConditions.joinToString(" AND ") { targetCondition ->
                 when (targetCondition) {
                     is WhereCondition.PropertyCondition -> {
-                        val result = buildPropertyCondition(targetCondition, paramIndex)
-                        paramIndex++
-                        result
+                        buildPropertyCondition(targetCondition, indexOf.getValue(targetCondition))
                     }
                     is WhereCondition.RelationshipCondition -> {
                         throw UnsupportedOperationException("Should not reach here - nested conditions separated")
@@ -645,9 +653,7 @@ object CypherGenerator {
                         buildLabelCondition(targetCondition)
                     }
                     is WhereCondition.OrCondition -> {
-                        val result = buildOrCondition(targetCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars)
-                        paramIndex += countParameters(targetCondition.conditions)
-                        result
+                        buildOrCondition(targetCondition, viewModel, indexOf.getValue(targetCondition), grammar, ecCounter, prologs, bridgeVars)
                     }
                     is WhereCondition.ListMembershipCondition -> throw UnsupportedOperationException(
                         "hasItem (list-membership) is not supported inside a relationship any{}/none{} block; " +
@@ -679,8 +685,6 @@ object CypherGenerator {
             }
 
             if (targetViewModel != null) {
-                var paramIndex = startIndex + directConditions.size
-
                 if (grammar is OpenCypherGrammar) {
                     // Flatten: extend the relationship pattern with nested hops
                     // and add all conditions to a single WHERE
@@ -700,8 +704,7 @@ object CypherGenerator {
                         compoundParts.add("${nestedDirection}($nestedAlias)")
 
                         nestedConds.forEach { cond ->
-                            nestedWhereClauses.add(buildPropertyCondition(cond, paramIndex))
-                            paramIndex++
+                            nestedWhereClauses.add(buildPropertyCondition(cond, indexOf.getValue(cond)))
                         }
                     }
 
@@ -727,14 +730,12 @@ object CypherGenerator {
                             nestedRelationshipName = nestedRelName,
                             conditions = nestedConds,
                             targetViewModel = targetViewModel,
-                            startIndex = paramIndex,
+                            indexOf = indexOf,
                             grammar = grammar,
                             ecCounter = ecCounter,
                             prologs = prologs,
                             bridgeVars = bridgeVars,
-                        ).also {
-                            paramIndex += nestedConds.size
-                        }
+                        )
                     }
                 }
             } else {
@@ -825,7 +826,7 @@ object CypherGenerator {
         nestedRelationshipName: String,
         conditions: List<WhereCondition.PropertyCondition>,
         targetViewModel: GraphViewModel,
-        startIndex: Int,
+        indexOf: Map<WhereCondition, Int>,
         grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter()),
         ecCounter: AtomicInteger = AtomicInteger(0),
         prologs: MutableList<String> = mutableListOf(),
@@ -847,11 +848,8 @@ object CypherGenerator {
         }
 
         // Build WHERE clause for the nested conditions
-        var paramIndex = startIndex
         val whereClauses = conditions.joinToString(" AND ") { condition ->
-            buildPropertyCondition(condition, paramIndex).also {
-                paramIndex++
-            }
+            buildPropertyCondition(condition, indexOf.getValue(condition))
         }
 
         val result = grammar.filteredExistenceCheck(relationshipPattern, whereClauses, ecCounter.getAndIncrement())
@@ -912,7 +910,7 @@ object CypherGenerator {
                 }
                 is WhereCondition.RelationshipCondition -> {
                     val result = buildRelationshipCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                    paramIndex += subCondition.targetConditions.size
+                    paramIndex += countParameters(subCondition.targetConditions)
                     result
                 }
                 is WhereCondition.LabelCondition -> {
@@ -964,7 +962,7 @@ object CypherGenerator {
                     if (condition.operator == ComparisonOperator.IS_NULL ||
                         condition.operator == ComparisonOperator.IS_NOT_NULL
                     ) 0 else 1
-                is WhereCondition.RelationshipCondition -> condition.targetConditions.size
+                is WhereCondition.RelationshipCondition -> countParameters(condition.targetConditions)
                 is WhereCondition.LabelCondition -> 0  // Label conditions don't have parameters
                 is WhereCondition.OrCondition -> countParameters(condition.conditions)
                 is WhereCondition.ListMembershipCondition -> 1

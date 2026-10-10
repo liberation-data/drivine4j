@@ -106,11 +106,12 @@ class GraphViewQueryBuilder(
     override fun buildIdWhereClause(idParamName: String): String {
         val rootFragmentModel = viewModel.rootFragment
         val fragmentModel = FragmentModel.from(rootFragmentModel.fragmentType)
-        fragmentModel.nodeIdField
+        val nodeIdProperty = fragmentModel.nodeIdReference
             ?: throw IllegalArgumentException("GraphView root fragment ${rootFragmentModel.fragmentType.name} does not have a @GraphNodeId field")
         val rootFieldName = rootFragmentModel.fieldName
-        // Match on the id field's on-disk property name (differs only under a @GraphProperty id).
-        return "$rootFieldName.${fragmentModel.nodeIdProperty} = \$$idParamName"
+        // The predicate is on the node, so it names the id's on-disk property (differs only under a
+        // @GraphProperty id), as the fragment's does.
+        return "$rootFieldName.$nodeIdProperty = \$$idParamName"
     }
 
     override fun buildDeleteQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String =
