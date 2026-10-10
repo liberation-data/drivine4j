@@ -50,6 +50,7 @@ import sample.stateless.OrganizationParts
 import sample.stateless.ThingClaims
 import sample.stateless.ThingEmployers
 import sample.stateless.VipClaims
+import sample.stateless.VipFollowers
 import sample.stateless.VipMentions
 
 /**
@@ -328,7 +329,30 @@ abstract class RelationshipDirectionRepairContract {
     }
 
     @Test
-    fun `a field whose root has no label is reported and cannot be repaired`() {
+    fun `a field whose root is a kind of its target is repaired when forced, and only where the store says which end is which`() {
+        run("CREATE (:VipHuman:Human {id: 'vip', name: 'Vip'}), (:VipHuman:Human {id: 'star', name: 'Star'})")
+        // As the old save wrote a follower: from the root (a VIP) to the person.
+        run("MATCH (v:VipHuman {id: 'vip'}), (h:Human {id: 'ada'}) CREATE (v)-[:FOLLOWS]->(h)")
+        // Between two VIPs either can be the root.
+        run("MATCH (v:VipHuman {id: 'vip'}), (s:VipHuman {id: 'star'}) CREATE (s)-[:FOLLOWS]->(v)")
+
+        val finding = repair.report(VipFollowers::class.java).single()
+
+        assertEquals(1, finding.wrongWay)
+        assertEquals(1, finding.eitherWay)
+        assertNotNull(finding.ambiguity, "a VIP who follows a person may be meant")
+        assertTrue(finding.repairable, "ada is no VIP, so she cannot be the root")
+        assertFailsWith<IllegalStateException> { repair.repair(finding) }
+
+        assertEquals(1, repair.repair(finding, force = true))
+
+        assertTrue("ada -FOLLOWS-> vip" in relationships())
+        assertTrue("star -FOLLOWS-> vip" in relationships(), "left as it was")
+        assertEquals(0, repair.repair(repair.report(VipFollowers::class.java).single(), force = true), "a second run changes nothing")
+    }
+
+    @Test
+    fun `a field whose root has no label is reported, and repaired only when forced`() {
         val before = relationships()
 
         val finding = repair.report(ThingClaims::class.java).single()
@@ -338,9 +362,12 @@ abstract class RelationshipDirectionRepairContract {
         assertEquals(1, finding.rightWay)
         assertEquals(0, finding.eitherWay)
         assertNotNull(finding.ambiguity, "a node of any label can be a claim")
-        assertTrue(!finding.repairable)
-        assertFailsWith<IllegalStateException> { repair.repair(finding, force = true) }
+        assertTrue(finding.repairable, "a person is no claim, so the store says which end is the claim")
+        assertFailsWith<IllegalStateException> { repair.repair(finding) }
         assertEquals(before, relationships())
+
+        assertEquals(2, repair.repair(finding, force = true))
+        assertEquals(listOf("c1 -MENTIONS 7-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"), relationships())
     }
 
     @Test

@@ -89,8 +89,8 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
      * relationship turned round is never matched again and a second run changes nothing.
      *
      * Refused for an ambiguous finding unless [force] is set, and always refused for a finding that
-     * is not [DirectionFinding.repairable]: its root and target can be the same nodes, and there a
-     * relationship turned round still points away from a root.
+     * is not [DirectionFinding.repairable]: its root and its target have the same labels, so every
+     * relationship between them is one counted in [DirectionFinding.eitherWay].
      */
     @JvmOverloads
     fun repair(finding: DirectionFinding, force: Boolean = false, batchSize: Int = 10_000): Long {
@@ -171,9 +171,12 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
  *   have one pointing the right way. [RelationshipDirectionRepair.repair] makes one relationship of
  *   the two, and where both have a property with different values, keeps the value of the one that
  *   already pointed the right way
- * @property repairable whether [RelationshipDirectionRepair.repair] can turn the relationships round.
- *   False when a root and a target can be the same nodes, as they can when either has no label,
- *   which no `force` overrides; a finding that is ambiguous and repairable is one `force = true` repairs
+ * @property repairable whether [RelationshipDirectionRepair.repair] can turn any relationship round.
+ *   False when the root and the target have the same labels: every node that can be one can be the
+ *   other, so nothing in the store says which way a relationship should point, and no `force`
+ *   overrides that. Where one end's labels are among the other's, or an end has none, a node can be
+ *   both and the finding is ambiguous, yet the relationships counted in [wrongWay] run between two
+ *   nodes of which only one can be the root: `force = true` turns those round
  */
 data class DirectionFinding(
     val view: Class<*>,
@@ -187,5 +190,5 @@ data class DirectionFinding(
     val ambiguity: String?,
     val collisions: Long = 0,
 ) {
-    val repairable: Boolean get() = !sameLabels(rootLabels, targetLabels)
+    val repairable: Boolean get() = rootLabels.toSet() != targetLabels.toSet()
 }

@@ -77,6 +77,18 @@ class SaveExecutorTest {
     }
 
     @Test
+    fun `when every attempt of a checked save is turned away, the object is stale and the engine's error is the cause`() {
+        val first = contended()
+        val (manager, calls) = answering(first, contended(), contended(), contended(), contended(), contended())
+
+        val stale = assertFailsWith<StaleObjectException> { SaveExecutor(manager).save(statement(expected = "mine:links")) }
+
+        assertSame(first, stale.cause)
+        assertEquals("mine:links", stale.expectedStamp)
+        assertEquals(6, calls())
+    }
+
+    @Test
     fun `a failure that is not contention is thrown at once`() {
         val failure = DrivineException.withRootCause(IllegalStateException("syntax"))
         val (manager, calls) = answering(failure)
