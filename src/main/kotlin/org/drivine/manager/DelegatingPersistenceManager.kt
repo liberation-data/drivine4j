@@ -68,6 +68,9 @@ class DelegatingPersistenceManager(
         return persistenceManager().executeBatch(specs)
     }
 
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> =
+        persistenceManager().queryBatch(specs)
+
     private fun persistenceManager(): PersistenceManager {
         val type = if (contextHolder.currentTransaction != null) {
             PersistenceManagerType.TRANSACTIONAL

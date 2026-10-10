@@ -7,6 +7,15 @@ did, and this page keeps its documentation. For why it was replaced and how to m
 Loading, querying and deleting are the same on both managers and are described in the README. This
 page covers what differs: saving, the cascade on save, and the session.
 
+Three fixes in 0.1.0 apply to this manager too. A relationship field declared `INCOMING` is written
+towards the root. A `@GraphPath`, `@Count` or `@Aggregate` field is never written. An `UNDIRECTED`
+field does not add a relationship beside one stored towards the root. It also stamps the nodes it
+changes, without checking a stamp: see
+[0.1.0-stateless-object-manager.md](0.1.0-stateless-object-manager.md).
+
+Null handling is independent of dirty tracking: the `NullPolicy` alone decides, so the result never
+depends on whether the object is tracked by the session.
+
 ```kotlin
 @Bean
 fun graphObjectManager(factory: GraphObjectManagerFactory): GraphObjectManager = factory.get()

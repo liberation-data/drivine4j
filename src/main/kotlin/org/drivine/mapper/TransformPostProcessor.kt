@@ -7,6 +7,7 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
+import org.drivine.model.Stamps
 import org.drivine.query.POLYMORPHIC_LABELS_KEY
 import org.neo4j.driver.Value
 import org.neo4j.driver.internal.value.MapValue
@@ -112,9 +113,11 @@ class TransformPostProcessor<S, T>(
             }
             // @GraphProperty: rename each overridden on-disk key back to its field name. On the concrete
             // projection the map is already field-keyed, so containsKey(propertyName) is false — no-op.
+            // The stamp's property name is held quoted, as a statement writes it; a result map has it bare.
             fragmentModel.fields.forEach { field ->
-                if (field.propertyName != field.name && map.containsKey(field.propertyName)) {
-                    map[field.name] = map.remove(field.propertyName)
+                val key = if (field.stamp) Stamps.PROPERTY else field.propertyName
+                if (key != field.name && map.containsKey(key)) {
+                    map[field.name] = map.remove(key)
                 }
             }
             // @NodeLabels: every projection carries the node's labels (for subtype dispatch); hand the

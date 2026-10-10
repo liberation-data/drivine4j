@@ -103,6 +103,14 @@ interface PersistenceManager {
     }
 
     /**
+     * [executeBatch] that also returns each statement's rows, in the order of [specs]. The same
+     * atomicity holds: the real managers run the statements in one transaction.
+     */
+    fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> =
+        @Suppress("UNCHECKED_CAST")
+        specs.map { query(it as QuerySpecification<Any>) }
+
+    /**
      * Queries for a single result according to the supplied specification. Expects exactly one result or throws.
      * @param spec
      * @throws DrivineError

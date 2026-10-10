@@ -177,24 +177,26 @@ abstract class StatelessSaveContract {
             val loaded = stateless.save(Claim(id, "start"))
             val start = CountDownLatch(1)
             val pool = Executors.newFixedThreadPool(writers)
-            val outcomes = (1..writers).map { writer ->
-                pool.submit<String> {
-                    start.await()
-                    try {
-                        stateless.save(loaded.copy(text = "writer $writer"))
-                        "saved by $writer"
-                    } catch (stale: StaleObjectException) {
-                        "refused"
+            try {
+                val outcomes = (1..writers).map { writer ->
+                    pool.submit<Claim?> {
+                        start.await()
+                        try {
+                            stateless.save(loaded.copy(text = "writer $writer"))
+                        } catch (stale: StaleObjectException) {
+                            null
+                        }
                     }
                 }
-            }
-            start.countDown()
-            val results = outcomes.map { it.get(60, TimeUnit.SECONDS) }
-            pool.shutdown()
+                start.countDown()
+                val saved = outcomes.map { it.get(60, TimeUnit.SECONDS) }.filterNotNull()
 
-            val saved = results.filter { it != "refused" }
-            assertEquals(1, saved.size, "round $round: $results")
-            assertEquals("writer ${saved.single().removePrefix("saved by ")}", property(id, "text"))
+                assertEquals(1, saved.size, "round $round")
+                assertEquals(saved.single().text, property(id, "text"))
+                assertEquals(saved.single().stamp, property(id, Stamps.PROPERTY))
+            } finally {
+                pool.shutdown()
+            }
         }
     }
 
@@ -241,8 +243,11 @@ abstract class StatelessSaveContract {
         assertEquals("Robert", property("bob", "name"))
 
         val linked = stateless.save(view.copy(people = view.people + Human("cy", "Cy")))
-        assertEquals(view.claim.stamp, linked.claim.stamp, "a new relationship does not change the root")
+        assertNotEquals(view.claim.stamp, linked.claim.stamp, "a new relationship gives the root a new stamp")
         assertNotNull(property("cy", Stamps.PROPERTY), "a node the save created is stamped")
+
+        val again = stateless.save(linked)
+        assertEquals(linked.claim.stamp, again.claim.stamp, "saving the same relationships again changes nothing")
     }
 
     @Test

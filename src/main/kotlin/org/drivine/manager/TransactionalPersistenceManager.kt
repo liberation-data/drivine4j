@@ -76,10 +76,15 @@ class TransactionalPersistenceManager(
      * a failing statement propagates and the surrounding `@Transactional` rolls the whole thing back.
      */
     override fun executeBatch(specs: List<QuerySpecification<*>>) {
-        if (specs.isEmpty()) return
+        queryBatch(specs)
+    }
+
+    /** [executeBatch], returning each statement's rows. */
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
+        if (specs.isEmpty()) return emptyList()
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
-        specs.forEach { spec ->
+        return specs.map { spec ->
             try {
                 @Suppress("UNCHECKED_CAST")
                 connection.query(spec as QuerySpecification<Any>)

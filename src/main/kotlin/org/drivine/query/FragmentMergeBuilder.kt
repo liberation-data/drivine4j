@@ -32,6 +32,11 @@ class FragmentMergeBuilder(
     private val grammar: CypherGrammar? = null,
     private val storedKeys: StoredPropertyKeys? = null,
     private val stamping: Stamping? = null,
+    /**
+     * Variables a larger statement holds while this one runs as a part of it, each followed by a
+     * comma (`"_r0, _ns, "`). They are carried through this statement's own `WITH`.
+     */
+    private val carry: String = "",
 ) {
 
     /**
@@ -69,7 +74,7 @@ class FragmentMergeBuilder(
         // The MERGE key uses the id field's on-disk property name; the bind-param stays the field name.
         val nodeIdProperty = fragmentModel.nodeIdProperty ?: nodeIdField
         // A checked save matches the node only while it still carries the stamp the object was loaded
-        // with. It changes nothing if the stamp differs or the node is gone, and says how many it matched.
+        // with. It changes nothing if the stamp differs or the node is gone, and then gives no row.
         val expected = fragmentModel.stampField?.takeIf { stamping?.checked == true }?.let { allProps[it] as? String }
         val mergeClause = if (expected == null) {
             "MERGE (n:$labels {$nodeIdProperty: \$$nodeIdField})"
@@ -230,14 +235,13 @@ class FragmentMergeBuilder(
         // ----- Assemble -----
         val query = buildString {
             append(mergeClause)
-            if (offered != null) append("\nWITH n, (").append(changeTests.joinToString(" OR ")).append(") AS $CHANGED")
+            if (offered != null) append("\nWITH ${carry}n, (").append(changeTests.joinToString(" OR ")).append(") AS $CHANGED")
             if (setClauses.isNotEmpty()) append("\nSET ").append(setClauses.joinToString(", "))
             if (removeClauses.isNotEmpty()) append("\nREMOVE ").append(removeClauses.joinToString(", "))
             if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
             if (dropLabels.isNotEmpty()) append("\nREMOVE n").append(labelExpression(dropLabels))
-            if (stamping?.checked == true) append("\nRETURN n.${Stamps.QUOTED} AS ${Stamps.STAMP_COLUMN}")
         }
-        val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, stamping.checked, expected) }
+        val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, expected) }
         return MergeStatement(query, bindings, stampWrite)
     }
 
@@ -310,17 +314,14 @@ data class Stamping(val checked: Boolean) {
 }
 
 /**
- * What a save statement does about the stamp of one node. When [returned], the statement returns the
- * stamp the node is left with under [Stamps.STAMP_COLUMN]. [expected] is the stamp the statement
- * requires the node to carry: when it is non-null the statement returns no row if the node has
- * changed or gone.
+ * The node a save statement stamps. [expected] is the stamp the statement requires the node to carry:
+ * when it is non-null the statement gives no row if the node has changed or gone.
  */
 data class StampWrite(
     val fragmentClass: Class<*>,
     val id: Any,
     val labels: String,
     val idProperty: String,
-    val returned: Boolean,
     val expected: String?,
 )
 

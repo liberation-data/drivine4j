@@ -2,6 +2,9 @@
 
 Maintainer handoff for the vector-search feature added to `GraphObjectManager`.
 
+Since 0.1.0 these methods are declared on `GraphObjectOperations`, which `StatelessGraphObjectManager`
+implements too. `GraphObjectManager` is deprecated; what this page says of it holds for both.
+
 ## What it does
 
 Brings vector (approximate nearest-neighbour) search to `GraphObjectManager`, returning the same

@@ -13,7 +13,11 @@ enum class RemovedTargets {
     /** The node is kept. */
     KEEP,
 
-    /** The node is deleted when no relationship of any type points at it. */
+    /**
+     * The node is deleted when nothing else refers to it the way the field did: for an outgoing field,
+     * when no relationship of any type points at it; for an incoming field, when it points at nothing;
+     * for an undirected field, when it has no relationship at all. Its other relationships go with it.
+     */
     DELETE_UNREFERENCED,
 }
 
@@ -22,7 +26,11 @@ enum class RemovedTargets {
  * and that the object does not hold, is removed. Every other field is add-only.
  *
  * A field removes only what it loads: relationships of its type and direction, to nodes with its
- * target's labels. A `@ReadOnly` field cannot be replaced, and every `@GraphPath` field is one.
+ * target's labels. A read-only field cannot be replaced, and every `@GraphPath` field is one. A
+ * named list that is null is refused; an empty list removes every relationship of the field.
+ *
+ * The removals are part of the save's one statement. A save that removes a relationship gives the
+ * root a new stamp, so of two writers who loaded the same view, the second to replace is refused.
  */
 class Replace private constructor(
     val fields: Set<String>,
@@ -41,8 +49,9 @@ class Replace private constructor(
             Replace(fields, false, removedTargets)
 
         /**
-         * Every relationship field of the view, `@ReadOnly` fields aside. Refused for an object
-         * that carries no stamp, because its lists did not come from the store.
+         * Every relationship field of the view, read-only fields aside. Refused for an object that
+         * carries no stamp, because its lists did not come from the store, and so for a view whose
+         * root declares no `@NodeStamp` field.
          */
         @JvmStatic
         @JvmOverloads

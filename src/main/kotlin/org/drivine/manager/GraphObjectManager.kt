@@ -132,6 +132,10 @@ class GraphObjectManager internal constructor(
 
     private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys, stamping)
 
+    /** The statements that save [items] in batches, as [saveAll] runs them. */
+    internal fun batchSpecs(items: List<Any>, nullPolicy: NullPolicy): List<QuerySpecification<*>> =
+        if (items.isEmpty()) emptyList() else batchSave.buildBatchSpecs(items, CascadeType.NONE, nullPolicy)
+
     /**
      * Forgets every tracked object: each one's next save writes all fields, until it is loaded again.
      *

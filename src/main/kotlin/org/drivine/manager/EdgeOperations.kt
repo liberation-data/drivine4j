@@ -10,7 +10,7 @@ import org.drivine.query.QuerySpecification
 
 /**
  * Relationships whose type is known only at runtime, between stored nodes that are named by a
- * [NodeRef] and never created. Reached as [GraphObjectManager.edges].
+ * [NodeRef] and never created. Reached as [GraphObjectOperations.edges].
  *
  * For a relationship that is part of an object's declared shape, use a `@GraphView` with
  * `@GraphRelationship`. This is for the case where the type is data: a graph whose relationship

@@ -176,15 +176,15 @@ class StatelessSaveAllNeo4jTest {
 }
 
 
-/** Decorates a [PersistenceManager], counting [executeBatch] calls and the statements they carry. */
+/** Decorates a [PersistenceManager], counting [queryBatch] calls and the statements they carry. */
 private class StatelessCountingPersistenceManager(
     private val delegate: PersistenceManager,
 ) : PersistenceManager by delegate {
     var batchCalls = 0
     var batchSpecCount = 0
-    override fun executeBatch(specs: List<QuerySpecification<*>>) {
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         batchCalls++
         batchSpecCount += specs.size
-        delegate.executeBatch(specs)
+        return delegate.queryBatch(specs)
     }
 }

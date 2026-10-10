@@ -5,36 +5,43 @@ import org.drivine.StaleObjectException
 import org.drivine.model.Stamps
 import org.drivine.query.MergeStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 import org.neo4j.driver.exceptions.RetryableException
 
-/**
- * Runs the statements of a save, in order. A checked statement returns no row when the node is not as
- * it was when the object was loaded, and the save stops there with a [StaleObjectException].
- */
+/** Runs the statements of a save. */
 internal class SaveExecutor(private val persistenceManager: PersistenceManager) {
 
-    fun execute(statements: List<MergeStatement>) = statements.forEach { execute(it) }
-
-    /** Runs [statement]. Returns the stamp its node is left with, or null when the statement does not say. */
-    fun execute(statement: MergeStatement): String? {
-        val spec = QuerySpecification.withStatement(statement.statement).bind(statement.bindings)
-        val stamp = statement.stamp
-        if (stamp?.returned != true) {
-            persistenceManager.execute(spec)
-            return null
-        }
-        val left = whenNotContended { persistenceManager.query(spec.transform(String::class.java)).firstOrNull() }
-        if (left == null && stamp.expected != null) throw staleObject(stamp, stamp.expected)
-        return left
+    /** Runs [statements] in order, each on its own. */
+    fun execute(statements: List<MergeStatement>) = statements.forEach {
+        persistenceManager.execute(QuerySpecification.withStatement(it.statement).bind(it.bindings))
     }
 
     /**
-     * Runs a stamped statement, again if the engine turned it away because another writer was changing
-     * the same node at that moment (a conflict or a deadlock, which the driver marks as retryable).
-     * The next attempt runs after that writer, and so sees its stamp: a checked save is then refused as
-     * stale, not failed. If the attempts run out, or a later one fails some other way, the first
-     * failure is thrown.
+     * Runs a whole save. Returns the stamps it left: the root's, then one for each of the statement's
+     * stamped targets. Throws [StaleObjectException] when the root is not as it was when the object was
+     * loaded; the statement has then written nothing.
+     */
+    fun save(statement: SaveStatement): List<String> = stamps(statement, whenNotContended { persistenceManager.query(spec(statement)) })
+
+    fun spec(statement: SaveStatement): QuerySpecification<String> =
+        QuerySpecification.withStatement(statement.statement).bind(statement.bindings).transform(String::class.java)
+
+    /** The stamps in the [rows] a save statement returned. */
+    fun stamps(statement: SaveStatement, rows: List<Any?>): List<String> {
+        val row = rows.firstOrNull() as? String
+        if (row != null) return row.split(',')
+        throw statement.root.expected?.let { staleObject(statement.root, it) }
+            ?: IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
+    }
+
+    /**
+     * Runs a save, again if the engine turned it away because another writer was changing the same
+     * node at that moment (a conflict or a deadlock, which the Neo4j driver, used for Neo4j and
+     * Memgraph, marks as retryable). The next attempt runs after that writer, and so sees its stamp: a
+     * checked save is then refused as stale, not failed. If the attempts run out, or a later one fails
+     * some other way, the first failure is thrown. FalkorDB runs one write at a time and never turns
+     * one away.
      */
     private fun <T> whenNotContended(statement: () -> T): T {
         var first: DrivineException? = null

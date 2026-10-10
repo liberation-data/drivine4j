@@ -56,25 +56,30 @@ class NonTransactionalPersistenceManager(
      * manager is otherwise auto-commit. On any failure the whole transaction is rolled back.
      */
     override fun executeBatch(specs: List<QuerySpecification<*>>) {
-        if (specs.isEmpty()) return
+        queryBatch(specs)
+    }
+
+    /** [executeBatch], returning each statement's rows. */
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
+        if (specs.isEmpty()) return emptyList()
         val connection = connectionProvider.connect()
         connection.startTransaction()
-        try {
-            specs.forEach { spec ->
+        val results = try {
+            specs.map { spec ->
                 try {
                     @Suppress("UNCHECKED_CAST")
                     connection.query(spec as QuerySpecification<Any>)
                 } catch (e: Exception) {
                     throw DrivineException.withRootCause(e, spec)
                 }
-            }
-            connection.commitTransaction()
+            }.also { connection.commitTransaction() }
         } catch (e: Throwable) {
             runCatching { connection.rollbackTransaction() }
             connection.release(e)
             throw e
         }
         connection.release()
+        return results
     }
 
     override fun <T: Any> getOne(spec: QuerySpecification<T>): T {

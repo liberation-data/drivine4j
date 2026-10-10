@@ -323,12 +323,6 @@ class StatelessDemoTest @Autowired constructor(
 
     @Test
     fun `demo - CASCADE DELETE_ORPHAN - removes only orphaned nodes`() {
-        Assumptions.assumeTrue(
-            persistenceManager.grammar.supportsOrphanDelete,
-            "CASCADE DELETE_ORPHAN not supported on this backend " +
-                "(Memgraph: EXISTS in WITH not implemented)"
-        )
-
         val aliceId = UUID.randomUUID()
         val soloOrgId = UUID.randomUUID()
 

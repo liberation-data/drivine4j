@@ -342,11 +342,13 @@ class GraphViewMergeBuilder(
 
     /**
      * The relationship of [relModel] to merge between root and target, in its field's direction. An
-     * undirected field is written from the root, since a relationship is stored with a direction.
+     * undirected field is merged undirected: a relationship stored either way satisfies it, and one is
+     * made, from the root, only when there is none.
      */
     private fun mergeEdge(relModel: RelationshipModel, variable: String = ""): String = when (relModel.direction) {
         Direction.INCOMING -> "<-[$variable:${relModel.type}]-"
-        Direction.OUTGOING, Direction.UNDIRECTED -> "-[$variable:${relModel.type}]->"
+        Direction.OUTGOING -> "-[$variable:${relModel.type}]->"
+        Direction.UNDIRECTED -> "-[$variable:${relModel.type}]-"
     }
 
     /**
@@ -367,8 +369,9 @@ class GraphViewMergeBuilder(
         val target = declaredTarget(relModel)
         val rootProps = objectMapper.toMap(rootFragment)
 
-        val rootIdField = rootFragmentModel.nodeIdField!!
-        val targetIdField = target.idField
+        // Nodes are matched on the id's on-disk property name, which a @GraphProperty can make differ from the field's.
+        val rootIdField = rootFragmentModel.nodeIdProperty ?: rootFragmentModel.nodeIdField!!
+        val targetIdField = target.fragmentModel.nodeIdProperty ?: target.idField
 
         val rootLabels = rootFragmentModel.labels.joinToString(":")
         val targetLabels = target.fragmentModel.labels.joinToString(":")
@@ -401,7 +404,7 @@ class GraphViewMergeBuilder(
         return MergeStatement(
             statement = query,
             bindings = mapOf(
-                "rootId" to rootProps[rootIdField],
+                "rootId" to rootProps[rootFragmentModel.nodeIdField!!],
                 "targetId" to targetId
             )
         )
@@ -574,11 +577,12 @@ class GraphViewMergeBuilder(
         val rootProps = objectMapper.toMap(rootFragment)
         val targetProps = objectMapper.toMap(targetFragment)
 
-        val rootIdField = rootFragmentModel.nodeIdField!!
-        val targetIdField = targetFragmentModel.nodeIdField!!
+        val rootId = rootProps[rootFragmentModel.nodeIdField!!]
+        val targetId = targetProps[targetFragmentModel.nodeIdField!!]
 
-        val rootId = rootProps[rootIdField]
-        val targetId = targetProps[targetIdField]
+        // Nodes are matched on the id's on-disk property name, which a @GraphProperty can make differ from the field's.
+        val rootIdField = rootFragmentModel.nodeIdProperty ?: rootFragmentModel.nodeIdField!!
+        val targetIdField = targetFragmentModel.nodeIdProperty ?: targetFragmentModel.nodeIdField!!
 
         val rootLabels = rootFragmentModel.labels.joinToString(":")
         val targetLabels = targetFragmentModel.labels.joinToString(":")
