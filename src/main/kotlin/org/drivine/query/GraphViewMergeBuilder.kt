@@ -657,7 +657,7 @@ class GraphViewMergeBuilder(
      * removes a relationship between them; empty when this builder does not stamp. The statement has
      * a row only for a relationship it removes.
      */
-    private val relinked: String = relinked("true")
+    private val relinked: String = relinked(Stamps.ALWAYS)
 
     /**
      * As [relinked], for a statement that merges a relationship after [found]: the token is new when

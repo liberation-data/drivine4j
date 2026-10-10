@@ -16,7 +16,7 @@ internal object EdgeStatements {
     private const val MARK = "_mark"
 
     /** The `SET` item that gives the node [alias] a new relationship token: one of its relationships is made or removed. */
-    private fun relinked(alias: String): String = Stamps.relink(alias, "true", "\$$MARK")
+    private fun relinked(alias: String): String = Stamps.relink(alias, Stamps.ALWAYS, "\$$MARK")
 
     /**
      * Join [from] to [to] with a [type] relationship carrying [properties], and count the result: 0
@@ -36,7 +36,7 @@ internal object EdgeStatements {
         }
         val merges = mode == RelateMode.MERGE
         // There may be several between the two nodes, and the properties are set on them all.
-        val changes = if (merges) "_had = 0 OR _same < _had" else "true"
+        val changes = if (merges) "_had = 0 OR _same < _had" else Stamps.ALWAYS
         val assignments = written.map { (key, parameter) -> "r.$key = $parameter" } +
             Stamps.relink("a", changes, "\$$MARK") + Stamps.relink("b", changes, "\$$MARK")
         val statement = buildString {

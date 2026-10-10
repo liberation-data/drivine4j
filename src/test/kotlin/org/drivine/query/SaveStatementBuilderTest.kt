@@ -1,6 +1,8 @@
 package org.drivine.query
 
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+import kotlin.test.assertFalse
 import kotlin.test.assertNotEquals
 import org.drivine.manager.NullPolicy
 import org.drivine.manager.RemovedTargets
@@ -93,5 +95,24 @@ class SaveStatementBuilderTest {
         val one = statement(ClaimView(Claim("c1", "one"), people = people(1)))
 
         assertNotEquals(both, one)
+    }
+
+    @Test
+    fun `a fragment hands its stamp back from the merge's own scope, and a view with no stamped node without a reduce`() {
+        val fragment = builder.build(Claim("c1", "one"), checked = true, NullPolicy.IGNORE).statement
+        assertFalse("_r0" in fragment, fragment)
+        assertFalse("reduce(" in fragment, fragment)
+        assertTrue(fragment.lines().last().startsWith("RETURN "), fragment)
+
+        val view = builder.build(ClaimView(Claim("c1", "one"), people = people(2)), checked = true, NullPolicy.IGNORE).statement
+        assertFalse("reduce(" in view, view)
+    }
+
+    @Test
+    fun `a stamp that is always replaced is set without a test`() {
+        val replacing = statement(ClaimView(Claim("c1", "one"), people = people(2)), RemovedTargets.KEEP)
+
+        assertFalse("CASE WHEN (true)" in replacing, replacing)
+        assertFalse("CASE WHEN true" in replacing, replacing)
     }
 }

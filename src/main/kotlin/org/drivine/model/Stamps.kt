@@ -135,13 +135,23 @@ object Stamps {
      * it has none, or one that is not two tokens: that one is replaced whether or not [condition] holds.
      */
     internal fun restamp(alias: String, condition: String, offered: String): String =
-        "$alias.$QUOTED = CASE WHEN ($condition) OR ${twoTokensOf(alias)} IS NULL " +
-            "THEN left($offered, $TOKEN) + coalesce(right(${twoTokensOf(alias)}, ${TOKEN + 1}), right($offered, ${TOKEN + 1})) ELSE $alias.$QUOTED END"
+        "$alias.$QUOTED = " +
+            whenever(alias, condition, "left($offered, $TOKEN) + coalesce(right(${twoTokensOf(alias)}, ${TOKEN + 1}), right($offered, ${TOKEN + 1}))")
 
     /** As [restamp], for the token that speaks for the node's relationships. */
     internal fun relink(alias: String, condition: String, offered: String): String =
-        "$alias.$QUOTED = CASE WHEN ($condition) OR ${twoTokensOf(alias)} IS NULL " +
-            "THEN coalesce(left(${twoTokensOf(alias)}, ${TOKEN + 1}), left($offered, ${TOKEN + 1})) + right($offered, $TOKEN) ELSE $alias.$QUOTED END"
+        "$alias.$QUOTED = " +
+            whenever(alias, condition, "coalesce(left(${twoTokensOf(alias)}, ${TOKEN + 1}), left($offered, ${TOKEN + 1})) + right($offered, $TOKEN)")
+
+    /**
+     * [stamp] when [condition] holds or [alias] has no stamp of two tokens, else the stamp [alias]
+     * has; [stamp] alone for a condition that always holds.
+     */
+    private fun whenever(alias: String, condition: String, stamp: String): String =
+        if (condition == ALWAYS) stamp else "CASE WHEN ($condition) OR ${twoTokensOf(alias)} IS NULL THEN $stamp ELSE $alias.$QUOTED END"
+
+    /** The [restamp] or [relink] condition of a stamp that is always replaced. */
+    internal const val ALWAYS = "true"
 
     /** A random token, made by the engine. */
     private const val ENGINE_TOKEN = "left(replace(randomUUID(), '-', ''), $TOKEN)"
