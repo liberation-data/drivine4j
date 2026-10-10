@@ -87,10 +87,14 @@ jobs:
           retention-days: 30
 
       # Code coverage (optional but recommended)
+      # The sort strategy is an input of the tests: without it here the report's tests are not up to
+      # date, and the whole suite runs a second time.
       - name: Generate Coverage Report
         run: ./gradlew jacocoTestReport --no-daemon
         if: success()
         continue-on-error: true
+        env:
+          DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY: ${{ matrix.collection-sort-strategy }}
 
       - name: Upload Coverage Report
         uses: actions/upload-artifact@v4
