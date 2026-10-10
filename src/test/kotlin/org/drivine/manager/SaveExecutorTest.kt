@@ -29,7 +29,8 @@ class SaveExecutorTest {
     private fun answering(vararg outcomes: Any): Pair<PersistenceManager, () -> Int> {
         var calls = 0
         val manager = Proxy.newProxyInstance(javaClass.classLoader, arrayOf(PersistenceManager::class.java)) { _, method, _ ->
-            check(method.name == "query") { "unexpected call of ${method.name}" }
+            // Not an IllegalStateException: a test that expects one must get it from the executor.
+            if (method.name != "query") throw AssertionError("unexpected call of ${method.name}")
             when (val outcome = outcomes[calls++]) {
                 is Throwable -> throw outcome
                 else -> outcome
@@ -132,6 +133,8 @@ class SaveExecutorTest {
     fun `no row from an unchecked save is an error`() {
         val (manager, _) = answering(emptyList<String>())
 
-        assertFailsWith<IllegalStateException> { SaveExecutor(manager).save(statement(expected = null)) }
+        val failure = assertFailsWith<IllegalStateException> { SaveExecutor(manager).save(statement(expected = null)) }
+
+        assertEquals("The save of Claim 'c1' returned nothing.", failure.message)
     }
 }

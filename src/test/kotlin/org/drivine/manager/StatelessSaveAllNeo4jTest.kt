@@ -1,5 +1,6 @@
 package org.drivine.manager
 
+import org.drivine.DrivineException
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.connection.DatabaseType
@@ -123,8 +124,14 @@ class StatelessSaveAllNeo4jTest {
             UnstorableNode("bad", mapOf("nested" to mapOf("x" to 1))),
         )
 
-        assertFails { gom.saveAll(batch) }
+        val counting = StatelessCountingPersistenceManager(pm)
 
+        val failure = assertFails { gom(counting).saveAll(batch) }
+
+        // The engine refused the batch: it was sent, with the good statements ahead of the bad one.
+        assertTrue(failure is DrivineException, "was $failure")
+        assertEquals(1, counting.batchCalls)
+        assertTrue(counting.batchSpecCount > 1, "the batch held ${counting.batchSpecCount} statements")
         assertEquals(0L, gom.count(PropositionNode::class.java), "earlier good writes rolled back with the failure")
         assertEquals(0L, pm.getOne(
             QuerySpecification.withStatement("MATCH (n:BatchFail) RETURN count(n) AS c").transform(Long::class.java)
@@ -158,7 +165,7 @@ class StatelessSaveAllNeo4jTest {
         val counting = StatelessCountingPersistenceManager(pm)
         val gom = gom(counting)
         assertTrue(gom.saveAll(emptyList<PropositionNode>()).isEmpty())
-        assertEquals(0, counting.batchCalls, "no statements issued for an empty batch")
+        assertEquals(0, counting.statements, "no statements issued for an empty batch")
     }
 
     // ---- (6) homogeneous fragment batch uses a sub-linear number of statements -------------------
@@ -195,15 +202,37 @@ class StatelessSaveAllNeo4jTest {
 }
 
 
-/** Decorates a [PersistenceManager], counting [queryBatch] calls and the statements they carry. */
+/**
+ * Decorates a [PersistenceManager], counting [queryBatch] calls and the statements they carry, and
+ * in [statements] every statement run through it by any method.
+ */
 private class StatelessCountingPersistenceManager(
     private val delegate: PersistenceManager,
 ) : PersistenceManager by delegate {
     var batchCalls = 0
     var batchSpecCount = 0
+    var statements = 0
+
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         batchCalls++
         batchSpecCount += specs.size
+        statements += specs.size
         return delegate.queryBatch(specs)
     }
+
+    override fun executeBatch(specs: List<QuerySpecification<*>>) {
+        statements += specs.size
+        delegate.executeBatch(specs)
+    }
+
+    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = delegate.query(spec).also { statements++ }
+
+    override fun execute(spec: QuerySpecification<*>) = delegate.execute(spec).also { statements++ }
+
+    override fun <T : Any> getOne(spec: QuerySpecification<T>): T = delegate.getOne(spec).also { statements++ }
+
+    override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? = delegate.maybeGetOne(spec).also { statements++ }
+
+    override fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): java.util.Optional<T> =
+        delegate.optionalGetOne(spec).also { statements++ }
 }

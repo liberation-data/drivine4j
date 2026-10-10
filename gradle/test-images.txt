@@ -1,0 +1,8 @@
+# The container images the tests run against, in one place. A test names an image by its moving
+# tag, and the tests of every module run it as the image pinned here: see PinnedImages.
+# Bump a line deliberately, and run the suite.
+#
+# the image a test names        the image it runs
+neo4j:latest                    neo4j:2026.07.1
+falkordb/falkordb:latest        falkordb/falkordb:6.0.0
+memgraph/memgraph:latest        memgraph/memgraph:3.12.0

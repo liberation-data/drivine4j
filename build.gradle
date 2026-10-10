@@ -105,6 +105,13 @@ tasks.named('test') {
 	// NoClassDefFoundError on the still-pending tests, and a missing jacoco test.exec). Give it room.
 	// A ceiling, not a reservation — overridable for constrained CI via -PtestMaxHeap=1536m.
 	maxHeapSize = (project.findProperty('testMaxHeap') ?: '2g').toString()
+	// The images the tests run are pinned in one file, and each pin is an input of the tests.
+	rootProject.file('gradle/test-images.txt').readLines()
+		.collect { it.trim() }.findAll { it && !it.startsWith('#') }
+		.each { line ->
+			def (named, pinned) = line.split(/\s+/)
+			systemProperty "drivine.test.image.${named}", pinned
+		}
 	finalizedBy jacocoTestReport // Generate coverage report after tests
 }
 

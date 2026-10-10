@@ -3,6 +3,7 @@ package org.drivine.manager
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -159,6 +160,7 @@ abstract class StatelessSaveContract {
         }
 
         assertEquals(setOf("ada"), mentioned("c1"), "the root is saved first, so nothing else was written")
+        assertNull(stateless.load<Human>("bob"), "no node was made for a relationship that was not")
     }
 
     @Test
@@ -178,11 +180,13 @@ abstract class StatelessSaveContract {
             val start = CountDownLatch(1)
             val pool = Executors.newFixedThreadPool(writers)
             try {
+                // Each writer's manager is built before the start, so that only the saves race.
+                val managers = (1..writers).associateWith { stateless }
                 val outcomes = (1..writers).map { writer ->
                     pool.submit<Claim?> {
                         start.await()
                         try {
-                            stateless.save(loaded.copy(text = "writer $writer"))
+                            managers.getValue(writer).save(loaded.copy(text = "writer $writer"))
                         } catch (stale: StaleObjectException) {
                             null
                         }
@@ -225,6 +229,7 @@ abstract class StatelessSaveContract {
         assertNotEquals(first.stamp, cleared.stamp)
         assertEquals(cleared.stamp, clearedAgain.stamp)
         assertNull(property("c1", "note"))
+        assertEquals(cleared.stamp, property("c1", Stamps.PROPERTY), "the node is there, and only its note is gone")
     }
 
     @Test
@@ -393,9 +398,10 @@ abstract class StatelessSaveContract {
 
     @Test
     fun `a field that does not exist is refused`() {
-        assertFailsWith<IllegalArgumentException> {
+        val failure = assertFailsWith<IllegalArgumentException> {
             stateless.save(Claim("c1", "Ada founded Acme"), only = setOf(Human::name))
         }
+        assertContains(failure.message.orEmpty(), "Claim has no field 'name' to save")
         assertNull(stateless.load<Claim>("c1"), "nothing was written")
     }
 
@@ -452,6 +458,7 @@ abstract class StatelessSaveContract {
             }
         }
         assertNull(property("c1", "note"))
+        assertNotNull(property("c1", "text"), "the node is there, and was not written")
     }
 
     @Test
@@ -478,6 +485,8 @@ abstract class StatelessSaveContract {
     fun `unrelate removes one relationship and no node`() {
         stateless.save(ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
         val stamp = assertNotNull(property("c1", Stamps.PROPERTY))
+        val bobs = assertNotNull(property("bob", Stamps.PROPERTY))
+        val adas = assertNotNull(property("ada", Stamps.PROPERTY))
 
         val removed = stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS")
 
@@ -487,6 +496,10 @@ abstract class StatelessSaveContract {
         val after = assertNotNull(property("c1", Stamps.PROPERTY))
         assertEquals(stamp.substringBefore(':'), after.substringBefore(':'), "the node's own data is as it was")
         assertNotEquals(stamp.substringAfter(':'), after.substringAfter(':'), "it lost a relationship")
+        val bobsAfter = assertNotNull(property("bob", Stamps.PROPERTY))
+        assertEquals(bobs.substringBefore(':'), bobsAfter.substringBefore(':'))
+        assertNotEquals(bobs.substringAfter(':'), bobsAfter.substringAfter(':'), "the other end lost it too")
+        assertEquals(adas, property("ada", Stamps.PROPERTY), "a node whose relationship stayed is not marked")
         assertEquals(0, stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS"))
         assertEquals(after, property("c1", Stamps.PROPERTY), "removing nothing changes no stamp")
     }
@@ -495,10 +508,18 @@ abstract class StatelessSaveContract {
     fun `unrelateAll removes every relationship of a type in a direction`() {
         stateless.save(ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
 
+        val stamps = listOf("c1", "ada", "bob").associateWith { assertNotNull(property(it, Stamps.PROPERTY)) }
+
         assertEquals(0, stateless.edges.unrelateAll(nodeRef<Claim>("c1"), "MENTIONS", Direction.INCOMING))
+        assertEquals(stamps, stamps.keys.associateWith { property(it, Stamps.PROPERTY) }, "removing nothing changes no stamp")
         assertEquals(2, stateless.edges.unrelateAll(nodeRef<Claim>("c1"), "MENTIONS"))
 
         assertEquals(emptySet(), mentioned("c1"))
+        stamps.forEach { (id, before) ->
+            val after = assertNotNull(property(id, Stamps.PROPERTY))
+            assertEquals(before.substringBefore(':'), after.substringBefore(':'), "$id: its own data is as it was")
+            assertNotEquals(before.substringAfter(':'), after.substringAfter(':'), "$id lost a relationship")
+        }
         assertEquals(2, stateless.loadAll<Human>().size)
     }
 }
