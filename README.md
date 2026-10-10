@@ -1277,7 +1277,7 @@ See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager
 
 ### @NodeStamp: refusing a save when the node changed
 
-Strongly recommended on any type that is loaded, changed and saved.
+Strongly recommended on any type that is loaded, changed and saved. It plays the role of JPA's `@Version`: optimistic locking, with a random value in place of a counter.
 
 ```kotlin
 @NodeFragment(labels = ["Person"])
