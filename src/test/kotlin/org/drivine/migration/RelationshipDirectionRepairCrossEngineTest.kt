@@ -1,22 +1,29 @@
 package org.drivine.migration
 
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.drivine.connection.DataSourceMap
+import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.StaleObjectException
+import org.drivine.annotation.Direction
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.Replace
 import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.manager.TransactionalPersistenceManager
 import org.drivine.manager.load
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.transaction.TransactionContextHolder
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -34,6 +41,19 @@ import sample.stateless.HumanClaimSources
 import sample.stateless.HumanClaimsLoaded
 import sample.stateless.ClaimCompaniesLoaded
 import sample.stateless.ClaimEmployers
+import sample.stateless.ClaimMentionCount
+import sample.stateless.ClaimMentioners
+import sample.stateless.CompanyMemos
+import sample.stateless.HumanCitations
+import sample.stateless.HumanClaimsByEmployer
+import sample.stateless.HumanMentionCount
+import sample.stateless.HumanMentionsEitherWay
+import sample.stateless.MemoCards
+import sample.stateless.MemoCoverChain
+import sample.stateless.MemoCoveredBy
+import sample.stateless.MemoSheets
+import sample.stateless.MentioningSheet
+import sample.stateless.OrganizationTree
 import sample.stateless.ClaimOwners
 import sample.stateless.ClaimView
 import sample.stateless.CorporationStaff
@@ -389,7 +409,7 @@ abstract class RelationshipDirectionRepairContract {
         seedPath()
         val finding = PathRelationshipReport(pm).report(ClaimEmployers::class.java).single()
 
-        run(finding.removalStatement)
+        run(assertNotNull(finding.removalStatement))
 
         assertEquals(0, PathRelationshipReport(pm).report(ClaimEmployers::class.java).single().direct)
         assertEquals(listOf("ada -MENTIONS 7-> c1", "ada -MENTIONS-> c2", "bob -WORKS_AT-> acme", "c3 -MENTIONS-> bob"), relationships())
@@ -466,14 +486,15 @@ abstract class RelationshipDirectionRepairContract {
     }
 
     @Test
-    fun `the path report counts and removes for a root that has no label`() {
+    fun `the path report counts for a root that has no label, and gives its statement only when asked outright`() {
         seedPath()
 
         val finding = PathRelationshipReport(pm).report(ThingEmployers::class.java).single()
 
         assertEquals(emptyList(), finding.rootLabels)
         assertEquals(1, finding.direct)
-        run(finding.removalStatement)
+        assertNull(finding.removalStatement, "it would match a relationship from a node of any kind")
+        run(finding.forcedRemovalStatement())
         assertEquals(listOf("ada -MENTIONS 7-> c1", "ada -MENTIONS-> c2", "bob -WORKS_AT-> acme", "c3 -MENTIONS-> bob"), relationships())
     }
 
@@ -545,6 +566,329 @@ abstract class RelationshipDirectionRepairContract {
 
         assertFailsWith<StaleObjectException> { stateless.save(loaded, Replace(ClaimCircle::endorsers)) }
         assertTrue("ada -ENDORSES-> k1" in relationships(), "the relationship the repair turned round is still there")
+    }
+
+    // ----- What the views say beside their relationship fields -----
+
+    @Test
+    fun `a field is ambiguous when a count reads the same relationship pointing away from the root`() {
+        val before = relationships()
+
+        val finding = repair.report(HumanClaims::class.java, HumanMentionCount::class.java).single()
+
+        assertContains(assertNotNull(finding.ambiguity), "HumanMentionCount.mentioned")
+        assertFailsWith<IllegalStateException> { repair.repair(finding) }
+        assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a path finding is ambiguous when a count reads that relationship, and gives no statement`() {
+        seedPath()
+
+        val finding = PathRelationshipReport(pm).report(ClaimEmployers::class.java, ClaimMentionCount::class.java).single()
+
+        assertContains(assertNotNull(finding.ambiguity), "ClaimMentionCount.mentioned")
+        assertNull(finding.removalStatement)
+        assertContains(finding.forcedRemovalStatement(), "DELETE r")
+    }
+
+    @Test
+    fun `a field is ambiguous when the old save wrote a path as the same relationship pointing away from the root`() {
+        val before = relationships()
+
+        val finding = repair.report(HumanClaims::class.java, HumanClaimsByEmployer::class.java).single()
+
+        assertContains(assertNotNull(finding.ambiguity), "HumanClaimsByEmployer.claims", message = "no hop of the path is that relationship, but what was saved for it is")
+        assertFailsWith<IllegalStateException> { repair.repair(finding) }
+        assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a field is ambiguous when the old save wrote a list read over several hops as the same relationship`() {
+        val finding = repair.report(MemoCoveredBy::class.java, MemoCoverChain::class.java).single()
+
+        assertEquals("claims", finding.field, "the list itself has no finding")
+        assertContains(assertNotNull(finding.ambiguity), "MemoCoverChain.chain")
+    }
+
+    @Test
+    fun `the relationships that may be left of a list read over several hops are counted`() {
+        run("CREATE (m:Memo {id: 'm1', text: 'memo'})")
+        run("MATCH (m:Memo {id: 'm1'}), (c:Claim) WHERE c.id IN ['c1', 'c2'] CREATE (m)-[:COVERS]->(c)")
+        val before = relationships()
+
+        val finding = PathRelationshipReport(pm).reportSeveralHopLists(MemoCoverChain::class.java, HumanClaims::class.java).single()
+
+        assertEquals("chain", finding.field)
+        assertEquals("COVERS", finding.type)
+        assertEquals(Direction.INCOMING, finding.direction)
+        assertEquals(listOf("Memo"), finding.rootLabels)
+        assertEquals(listOf("Claim"), finding.targetLabels)
+        assertEquals(2, finding.direct)
+        assertEquals(before, relationships(), "the report changes nothing")
+    }
+
+    @Test
+    fun `a field is ambiguous when another view reads the same relationship either way round`() {
+        val finding = repair.report(HumanClaims::class.java, HumanMentionsEitherWay::class.java).single()
+
+        assertContains(assertNotNull(finding.ambiguity), "HumanMentionsEitherWay.claims")
+    }
+
+    @Test
+    fun `two views that read one relationship against its direction from both ends are each ambiguous`() {
+        val findings = repair.report(HumanClaims::class.java, ClaimMentioners::class.java)
+
+        assertEquals(setOf("claims", "people"), findings.map { it.field }.toSet())
+        assertContains(assertNotNull(findings.single { it.field == "claims" }.ambiguity), "ClaimMentioners.people")
+        assertContains(assertNotNull(findings.single { it.field == "people" }.ambiguity), "HumanClaims.claims")
+    }
+
+    @Test
+    fun `the report reaches an incoming field two views down`() {
+        val finding = repair.report(CompanyMemos::class.java).single()
+
+        assertEquals(HumanClaims::class.java, finding.view)
+        assertEquals(2, finding.wrongWay)
+    }
+
+    @Test
+    fun `a view nested in itself is reported once and cannot be repaired`() {
+        val finding = repair.report(OrganizationTree::class.java).single()
+
+        assertEquals("reports", finding.field)
+        assertTrue(!finding.repairable)
+    }
+
+    // ----- Views of a subtype -----
+
+    @Test
+    fun `a field is ambiguous when a subtype a sealed view names declares the relationship pointing away from the root`() {
+        val finding = repair.report(HumanClaims::class.java, MemoCards::class.java).single()
+
+        assertContains(assertNotNull(finding.ambiguity), "MentioningCard.claims")
+        assertEquals(emptyList(), repair.unexamined(HumanClaims::class.java, MemoCards::class.java))
+    }
+
+    @Test
+    fun `the report says which abstract view it could not look below, until a subtype is given`() {
+        val unexamined = repair.unexamined(HumanClaims::class.java, MemoSheets::class.java).single()
+        assertContains(unexamined, "MemoSheets.sheets")
+        assertContains(unexamined, "HumanSheet")
+        assertEquals(unexamined, PathRelationshipReport(pm).unexamined(HumanClaims::class.java, MemoSheets::class.java).single())
+        assertNull(repair.report(HumanClaims::class.java, MemoSheets::class.java).single().ambiguity)
+
+        val given = arrayOf(HumanClaims::class.java, MemoSheets::class.java, MentioningSheet::class.java)
+
+        assertEquals(emptyList(), repair.unexamined(*given))
+        assertContains(assertNotNull(repair.report(*given).single().ambiguity), "MentioningSheet.claims")
+    }
+
+    // ----- Several relationships between two nodes -----
+
+    private fun pages(from: String, to: String): List<String> = pm.query(
+        QuerySpecification.withStatement(
+            "MATCH ({id: \$from})-[r:MENTIONS]->({id: \$to}) RETURN coalesce(toString(r.page), '') + '/' + coalesce(r.note, '') ORDER BY id(r)"
+        ).bind(mapOf("from" to from, "to" to to)).transform(String::class.java)
+    )
+
+    @Test
+    fun `the report counts each of several relationships that point the wrong way between two nodes`() {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (h)-[:MENTIONS {page: 8}]->(c)")
+
+        val finding = repair.report(HumanClaims::class.java).single()
+
+        assertEquals(3, finding.wrongWay)
+        assertEquals(2, finding.collisions, "the two between ada and c1 become one, though none points the right way")
+    }
+
+    private fun `of two values the lowest id keeps its own`(batchSize: Int) {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (h)-[:MENTIONS {page: 8}]->(c)")
+        val first = pages("ada", "c1").first()
+
+        assertEquals(3, repair.repair(repair.report(HumanClaims::class.java).single(), batchSize = batchSize))
+
+        assertEquals(listOf(first), pages("c1", "ada"))
+    }
+
+    @Test
+    fun `of several that point the wrong way with different values, the one with the lowest id keeps its own`() =
+        `of two values the lowest id keeps its own`(batchSize = 10_000)
+
+    @Test
+    fun `of several that point the wrong way with different values, the same one keeps its own in batches of one`() =
+        `of two values the lowest id keeps its own`(batchSize = 1)
+
+    private fun `both keys survive`(batchSize: Int) {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (h)-[:MENTIONS {note: 'x'}]->(c)")
+
+        assertEquals(3, repair.repair(repair.report(HumanClaims::class.java).single(), batchSize = batchSize))
+
+        assertEquals(listOf("7/x"), pages("c1", "ada"))
+        assertEquals(emptyList(), pages("ada", "c1"))
+    }
+
+    @Test
+    fun `several that point the wrong way with different properties become one that has them all`() = `both keys survive`(batchSize = 10_000)
+
+    @Test
+    fun `several that point the wrong way with different properties become one that has them all in batches of one`() =
+        `both keys survive`(batchSize = 1)
+
+    @Test
+    fun `each of several that already point the right way takes the properties it lacks`() {
+        run("MATCH (h:Human {id: 'ada'})-[r:MENTIONS]->(c:Claim {id: 'c1'}) SET r.note = 'n'")
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS {page: 8}]->(h), (c)-[:MENTIONS {page: 9}]->(h)")
+
+        assertEquals(2, repair.repair(repair.report(HumanClaims::class.java).single()))
+
+        assertEquals(listOf("8/n", "9/n"), pages("c1", "ada").sorted())
+    }
+
+    // ----- Shapes -----
+
+    @Test
+    fun `a field declared through a relationship fragment is repaired with every property, a list and a date among them`() {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (h)-[:CITES {page: 3, tags: ['a', 'b'], on: date('2020-01-02')}]->(c)")
+
+        val finding = repair.report(HumanCitations::class.java).single()
+        assertEquals("citedBy", finding.field)
+        assertEquals(listOf("Claim"), finding.targetLabels)
+        assertEquals(1, finding.wrongWay)
+        assertEquals(1, repair.repair(finding))
+
+        assertEquals(
+            listOf("3/2/b/true"),
+            pm.query(
+                QuerySpecification.withStatement(
+                    "MATCH (:Claim {id: 'c1'})-[r:CITES]->(:Human {id: 'ada'}) " +
+                        "RETURN toString(r.page) + '/' + toString(size(r.tags)) + '/' + r.tags[1] + '/' + toString(r.on = date('2020-01-02'))"
+                ).transform(String::class.java)
+            ),
+        )
+        val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        assertEquals(listOf(3), assertNotNull(stateless.load<HumanCitations>("ada")).citedBy.map { it.page })
+    }
+
+    @Test
+    fun `a relationship from a node to itself that carries the labels of both ends is left alone`() {
+        seedCorporations()
+        run("MATCH (g:Company {id: 'globex'}) CREATE (g)-[:PART_OF]->(g)")
+
+        val finding = repair.report(OrganizationParts::class.java).single()
+        assertEquals(2, finding.eitherWay)
+        assertEquals(2, repair.repair(finding))
+
+        assertTrue("globex -PART_OF-> globex" in relationships())
+        assertEquals(0, repair.repair(repair.report(OrganizationParts::class.java).single()))
+    }
+
+    @Test
+    fun `a field whose root has several labels is repaired for the nodes that have them all`() {
+        run("CREATE (:VipHuman:Human {id: 'vera', name: 'Vera'})")
+        run("MATCH (h:Human {id: 'vera'}), (c:Claim {id: 'c1'}) CREATE (h)-[:MENTIONS]->(c)")
+
+        val finding = repair.report(VipClaims::class.java).single()
+        assertEquals(listOf("VipHuman", "Human"), finding.rootLabels)
+        assertEquals(1, finding.wrongWay, "ada is not a VipHuman")
+        assertEquals(1, repair.repair(finding))
+
+        assertEquals(
+            listOf("ada -MENTIONS 7-> c1", "ada -MENTIONS-> c2", "c1 -MENTIONS-> vera", "c3 -MENTIONS-> bob"),
+            relationships(),
+        )
+    }
+
+    private fun stamp(id: String): String? = pm.query(
+        QuerySpecification.withStatement("MATCH (n {id: \$id}) RETURN coalesce(n.`${Stamps.PROPERTY}`, '')")
+            .bind(mapOf("id" to id)).transform(String::class.java)
+    ).single().ifEmpty { null }
+
+    @Test
+    fun `repair gives a stamp to a node that had none, and none to a node it does not touch`() {
+        assertNull(stamp("ada"))
+
+        repair.repair(repair.report(HumanClaims::class.java).single())
+
+        assertTrue(Regex("[0-9a-f]{16}:[0-9a-f]{16}").matches(assertNotNull(stamp("ada"))), "ada's stamp is ${stamp("ada")}")
+        assertNotNull(stamp("c1"))
+        assertNull(stamp("bob"))
+    }
+
+    @Test
+    fun `the path report's statement gives both ends a new relationship token`() {
+        seedPath()
+        val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        val loaded = stateless.save(ClaimView(Claim("k1", "one")))
+        // As the old save wrote the path field: straight from the claim to the company.
+        run("MATCH (c:Claim {id: 'k1'}), (o:Company {id: 'acme'}) CREATE (c)-[:MENTIONS]->(o)")
+        val held = assertNotNull(stateless.load<ClaimView>("k1"))
+        assertEquals(listOf("acme"), held.companies.map { it.id }, "the field loads what the old save wrote for the path")
+
+        run(assertNotNull(PathRelationshipReport(pm).report(ClaimEmployers::class.java).single().removalStatement))
+
+        assertNotNull(stamp("acme"))
+        assertFailsWith<StaleObjectException> { stateless.save(held.copy(claim = loaded.claim), Replace(ClaimView::companies)) }
+        assertTrue(relationships().none { it.startsWith("k1 -MENTIONS") }, "what was removed is not written back")
+    }
+
+    @Test
+    fun `repair is refused through a manager that runs it in a transaction`() {
+        val transactional = TransactionalPersistenceManager(
+            TransactionContextHolder(DatabaseRegistry(DataSourceMap(mutableMapOf()))), pm.database, pm.type, SubtypeRegistry(), pm.grammar,
+        )
+        val finding = repair.report(HumanClaims::class.java).single()
+        val before = relationships()
+
+        val refusal = assertFailsWith<IllegalStateException> { RelationshipDirectionRepair(transactional).repair(finding) }
+
+        assertContains(assertNotNull(refusal.message), "transaction")
+        assertContains(assertNotNull(refusal.message), "NON_TRANSACTIONAL")
+        assertEquals(before, relationships())
+    }
+
+    // ----- What the save before 0.1.0 wrote, by its own statements -----
+
+    /** The statement `GraphViewMergeBuilder` built for a relationship before 0.1.0: outgoing from the root, whatever the field declared. */
+    private fun oldSave(rootLabels: String, rootId: String, type: String, targetLabels: String, targetId: String, properties: Map<String, Any?> = emptyMap()) {
+        val statement = if (properties.isNotEmpty()) {
+            """
+                MATCH (root:$rootLabels {id: ${'$'}rootId})
+                MATCH (target:$targetLabels {id: ${'$'}targetId})
+                MERGE (root)-[r:$type]->(target)
+                SET r += {${properties.keys.joinToString(", ") { "$it: \$rel_$it" }}}
+            """.trimIndent()
+        } else {
+            """
+                MATCH (root:$rootLabels {id: ${'$'}rootId})
+                MATCH (target:$targetLabels {id: ${'$'}targetId})
+                MERGE (root)-[:$type]->(target)
+            """.trimIndent()
+        }
+        pm.execute(
+            QuerySpecification.withStatement(statement)
+                .bind(mapOf("rootId" to rootId, "targetId" to targetId) + properties.mapKeys { "rel_${it.key}" })
+        )
+    }
+
+    @Test
+    fun `what the old save's own statements wrote is found, turned round and loaded`() {
+        run("MATCH ()-[r]->() DELETE r")
+        oldSave("Human", "ada", "MENTIONS", "Claim", "c1")
+        oldSave("Human", "ada", "MENTIONS", "Claim", "c2")
+        oldSave("Human", "ada", "MENTIONS", "Claim", "c1")
+        oldSave("Human", "bob", "CITES", "Claim", "c3", mapOf("page" to 12))
+        val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        assertEquals(emptyList(), assertNotNull(stateless.load<HumanClaims>("ada")).claims, "what it wrote is not loaded")
+
+        val findings = repair.report(HumanClaims::class.java, HumanCitations::class.java)
+        assertEquals(listOf(2L, 1L), findings.map { it.wrongWay })
+        assertEquals(listOf(0L, 0L), findings.map { it.collisions })
+        assertTrue(findings.all { it.ambiguity == null })
+        assertEquals(3, findings.sumOf { repair.repair(it) })
+
+        assertEquals(setOf("c1", "c2"), assertNotNull(stateless.load<HumanClaims>("ada")).claims.map { it.id }.toSet())
+        assertEquals(listOf(12 to "c3"), assertNotNull(stateless.load<HumanCitations>("bob")).citedBy.map { it.page to it.target.id })
     }
 }
 
