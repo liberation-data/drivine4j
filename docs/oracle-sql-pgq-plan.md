@@ -1,6 +1,7 @@
 # Plan: `StatelessGraphObjectManager` on Oracle (SQL/PGQ)
 
-Status: **in progress** on `feat/oracle-sql-pgq`. Target: Oracle Database 23ai / 26ai.
+Status: **phases 1 to 7 done** on `feat/oracle-sql-pgq`; 8 and part of 9 remain. Target: Oracle Database 23ai / 26ai.
+What was built, and what it showed, is under [Outcome](#outcome) at the end.
 
 Target API: everything on `GraphObjectOperations`, plus `save`, `saveAll`, `update` and `edges` on
 `StatelessGraphObjectManager`. The deprecated `GraphObjectManager.save` (session diffing,
@@ -116,7 +117,7 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 - Collections bound as JSON; a JSON column read as a document; `VECTOR` read as a list.
 - Transactions, batches, and a block that returns rows.
 
-### Phase 2 — The backend seam (no behaviour change)
+### Phase 2 — The backend seam (no behaviour change) ✅
 
 - `GraphBackend` and `CypherBackend`; both managers, `EdgeOperations`, `BatchSaveOperations` and the
   scored-search planners go through it.
@@ -127,7 +128,7 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 - `PersistenceManager` and `ConnectionProvider` expose the backend; `grammar` remains for Cypher.
 - Proof: the full existing suite, unchanged, on Neo4j, FalkorDB and Memgraph.
 
-### Phase 3 — Storage and reads
+### Phase 3 — Storage and reads ✅
 
 - `OracleGraphStore`: creates the two tables, their base indexes and the property graph when absent.
 - Load of a fragment and of a view: root, to-one and to-many relationships, nested views,
@@ -137,7 +138,7 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
   list membership, ignore-case, bag keys; ordering, collection sorts, keyset paging, `count`.
 - Proof: the read-side cross-engine contracts, their seed data supplied per engine.
 
-### Phase 4 — Writes
+### Phase 4 — Writes ✅
 
 - The save block: root (checked or unchecked), dropped relationships, related nodes and their
   relationships, nested views, relationship properties, `NullPolicy`, `only`/`except`, `update`
@@ -148,17 +149,17 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 - Proof: `StatelessSaveContract`, `StatelessSaveSoundnessContract`,
   `StatelessSingleStatementContract`, `UncheckedWriteLockContract` with an Oracle subclass each.
 
-### Phase 5 — Bookkeeping
+### Phase 5 — Bookkeeping ✅
 
 - Store identity, schema version store, `TestCleanup`, and the migration tools that apply.
 
-### Phase 6 — Indexes and constraints
+### Phase 6 — Indexes and constraints ✅
 
 - `OracleSchemaGrammar`: `@RangeIndex` as a function-based index, `@Unique` as a conditional unique
   index on (label, property), listing and drift detection from the data dictionary.
 - Generated predicates are written in the indexed form, so an index that exists is used.
 
-### Phase 7 — Vector and full-text search
+### Phase 7 — Vector and full-text search ✅ (exact, no index beneath)
 
 - `loadNearest`: exact `VECTOR_DISTANCE` first, then a side table and vector index per
   `VectorIndexSpec`; `searchK`, threshold, partition label, the `{value, score}` row.
@@ -169,7 +170,7 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 - From the annotated model, generate a view per label and a second property graph over the views,
   so `MATCH (p IS Person)` works for SQL written by hand. Read-only; Drivine does not use it.
 
-### Phase 9 — Fit and finish
+### Phase 9 — Fit and finish (README and benchmark done)
 
 - Spring Boot starter properties and test-container support, README, a benchmark against Neo4j on
   the existing manager benchmark, and `embabel-agent-rag-graph` on Oracle.
@@ -190,3 +191,50 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 3. **Size limits.** A save's description and a node's properties must be bound as `CLOB` past 32K.
 4. **Full-text scoring.** Oracle Text scores are not BM25; normalising them to the existing
    threshold semantics needs its own check.
+
+## Outcome
+
+Every stateless contract that has engine subclasses has an Oracle one: the four save contracts, and
+the read, search, label, bag, null-policy, relate, temporal, property-name and store-identity suites.
+With `ORACLE_TESTS=true`: 218 tests in 31 classes, none failing. The nine skipped are the deprecated
+manager's own save, one Memgraph-only case and the benchmark.
+
+What differed from the plan:
+
+- **A save is a plan, not generated code.** One PL/SQL block interprets a JSON array of steps. Its
+  text depends only on the kinds of node a save names, so it is compiled once for a view class.
+- **Fixtures.** The contracts seed and read back in Cypher. A small interpreter in the tests
+  (`MiniCypher`) works such a statement out over the graph, so the contracts run unchanged.
+- **Full-text search does not use Oracle Text.** The slim image the tests run on does not have it,
+  so `loadMatching` counts words in SQL. Oracle Text is the natural next step, on the full image.
+- **Vector search is exact.** An index means a side table with a `VECTOR` column; not built.
+
+What the work found that the plan did not foresee:
+
+- **A lock taken through a function-based index can hang.** `SELECT … FOR UPDATE` through the index
+  over a node's id waited for a row lock while holding a page of that index; the lock's holder, whose
+  update keeps the index, waited for the page. Oracle reports no deadlock. A node is now found without
+  a lock and locked by its key.
+- **The multivalue index over labels is chosen too eagerly.** With a label and an id in one
+  predicate, Oracle read every node of the label. Labels are tested in a form that index cannot
+  answer wherever a node is found another way.
+- **A bound JSON array named twice in one statement gave wrong counts** from `JSON_TABLE` on 23.26.
+  Full-text terms are bound one by one.
+
+Measured on 20,000 claims, 20,000 humans and 60,000 relationships, in a container on a laptop, with
+the id of each label constrained unique (median):
+
+| Workload | Time |
+|---|---|
+| load a fragment by id | 0.8 ms |
+| load a view (3 related nodes) | 1.3 ms |
+| create a fragment | 3.6 ms |
+| load, change, save a view (`update`) | 5.2 ms |
+| save a new view with 10 new related nodes | 5.9 ms |
+| save a new view with 1,000 new related nodes | 258 ms |
+| `saveAll` 1,000 new fragments | 181 ms |
+
+Not compared with Neo4j: `ManagerBenchmarkNeo4jTest` was not run alongside.
+
+Still to do: typed labels as views (phase 8), a vector index and Oracle Text, a number-typed range
+index, Spring Boot test-container support, and `embabel-agent-rag-graph` on Oracle.

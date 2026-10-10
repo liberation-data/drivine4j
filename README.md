@@ -3,7 +3,7 @@
 [![CI](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml/badge.svg)](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, and **Memgraph** with two approaches to graph mapping:
+A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph** and **Oracle** (SQL/PGQ) with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
 2. **Object manager** (`StatelessGraphObjectManager`) - High-level API with annotated models and type-safe DSL.
@@ -2137,6 +2137,7 @@ Drivine4j supports multiple graph database engines from the same codebase. Switc
 | FalkorDB | `FALKORDB` | Passthrough (no multi-statement) | CALL subquery | None |
 | Amazon Neptune | `NEPTUNE` | Full ACID | CALL subquery | IAM SigV4 or None (tunnel) |
 | Memgraph | `MEMGRAPH` | Full ACID | CALL subquery | Basic (user/pass) or None |
+| Oracle 23ai / 26ai | `ORACLE` | Full ACID | In the statement | User and password |
 
 ### Neo4j
 
@@ -2277,6 +2278,60 @@ database:
 - No APOC — use MAGE for procedures; collection sorting uses CALL subqueries by default
 - No `CascadeType.DELETE_ORPHAN`: Memgraph cannot use `EXISTS` inside `WITH`, so a save or delete that asks for it throws `UnsupportedOperationException`. On `StatelessGraphObjectManager`, `Replace(field, removedTargets = DELETE_UNREFERENCED)` works on Memgraph
 - For MAGE algorithms or Memgraph Lab, switch the image to `memgraph/memgraph-platform`
+
+### Oracle
+
+Oracle Database 23ai or later, over JDBC. Oracle does not speak Cypher: Drivine reads a graph with
+SQL/PGQ (`GRAPH_TABLE`) and writes it as rows, since Oracle refuses data manipulation through a
+property graph. Models, the query DSL and `StatelessGraphObjectManager` are the same as on the graph
+engines. Add the driver yourself: `com.oracle.database.jdbc:ojdbc11`.
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: ORACLE
+      host: localhost
+      port: 1521
+      database-name: FREEPDB1     # the service to connect to
+      user-name: app
+      password: secret
+      default-graph-path: drivine # names the property graph and its tables; this is the default
+```
+
+To use a `DataSource` the application already has, register a provider in code:
+`registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
+
+**How a graph is stored.** Two tables and the property graph over them, made when a manager first
+speaks to the graph: `<graph>_node (nid, labels, props, stamp)` and
+`<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON. Labels, property
+names and relationship types are data, so `@NodeLabels`, `@PropertyBag` and `edges.relate` work as
+they do elsewhere. To SQL written by hand the graph has one vertex label, `node`, and one edge label,
+`edge`; a Cypher label is a test on `labels` and a relationship type a test on `type`.
+
+**Notes:**
+- A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
+  bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
+  `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.
+- A statement that writes and returns rows is a PL/SQL block that hands them back with
+  `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
+- A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
+  (`issue.state = 'open'`); anything more is SQL over `issue.props`, `issue.labels` and `issue.stamp`.
+- A save is one statement and checks the stamp, as on the graph engines. Another writer that changes a
+  node in SQL should give it a new stamp too: the first sixteen characters of `stamp` for its
+  properties or labels, the last sixteen for its relationships.
+- Index the id of each node type you save: `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`
+  makes a unique index and the index a node is found by. Without one a save reads the table.
+- A range index reads a property as text. A comparison or an order by a number or a moment is correct
+  and is not served by that index.
+- `loadNearest` measures every node of the label, so it is exact and has no index beneath it yet.
+  `loadMatching` counts the query's words in the text of every node of the label; it reads words, a
+  `"phrase"`, `+must`, `-not` and a `prefix*`, and does not use Oracle Text. A vector or full-text
+  index you declare is recorded and found, and makes nothing.
+- A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate.
+- The deprecated `GraphObjectManager.save`, the `RelationshipDirectionRepair` migration and Cypher
+  statements written by hand do not run on Oracle.
+- The Oracle tests run with `ORACLE_TESTS=true`, against `gvenzl/oracle-free:23-slim-faststart`.
 
 ### @JsonPacked Annotation
 
