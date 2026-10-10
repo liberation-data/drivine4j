@@ -137,7 +137,7 @@ internal class OracleBackend(
     /** Deletes the roots [predicates] select. A node's relationships go with it: the relationship table cascades. */
     private fun deleting(select: OracleSelect, predicates: List<String>): GraphStatement =
         GraphStatement(
-            OracleSql.counted("DELETE FROM ${graph.nodes} ${select.rootAlias}\nWHERE ${select.selecting(predicates)}"),
+            OracleSql.counted("DELETE FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"),
             select.bindings(),
         )
 
@@ -146,7 +146,7 @@ internal class OracleBackend(
      * one, or with [orphansOnly] those left with no relationship once the roots are gone.
      */
     private fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
-        val roots = "${graph.nodes} ${select.rootAlias}\n    WHERE ${select.selecting(predicates)}"
+        val roots = "${graph.nodes} ${select.root}\n    WHERE ${select.selecting(predicates)}"
         val body = if (orphansOnly) {
             """
     SELECT nid BULK COLLECT INTO v_ids FROM (
@@ -161,7 +161,7 @@ internal class OracleBackend(
         } else {
             """
     SELECT nid BULK COLLECT INTO v_ids FROM (
-    SELECT ${select.rootAlias}.nid FROM $roots
+    SELECT ${select.root}.nid FROM $roots
     UNION
     $cascaded
     );

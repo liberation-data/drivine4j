@@ -1,5 +1,9 @@
 package org.drivine.oracle
 
+import org.drivine.annotation.Direction
+import org.drivine.annotation.GraphRelationship
+import org.drivine.annotation.GraphView
+import org.drivine.annotation.Root
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
@@ -69,6 +73,15 @@ class OracleReadSmokeTest {
     }
 
     @Test
+    fun `a field may have a name SQL keeps for its own`() {
+        val view = manager.loadAll(Ordered::class.java, "order.id = 'c1' AND JSON_EXISTS(order.labels, '$[*]?(@ == \"Claim\")')").single()
+
+        assertEquals("c1", view.order.id)
+        assertEquals(listOf("ada", "bob"), view.group.map { it.id }.sorted())
+        assertEquals(1, manager.delete("c1", Ordered::class.java, "order.text = 'Ada founded Acme'"))
+    }
+
+    @Test
     fun `a delete takes the node and its relationships, and says how many it took`() {
         assertEquals(1, manager.delete("c1", Claim::class.java))
         assertEquals(0, manager.delete("c1", Claim::class.java))
@@ -77,3 +90,11 @@ class OracleReadSmokeTest {
         assertEquals(emptyList(), manager.load("c2", ClaimView::class.java)!!.people)
     }
 }
+
+/** A view whose fields are named as SQL names a clause. */
+@GraphView
+data class Ordered(
+    @Root val order: Claim,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.OUTGOING)
+    val group: List<Human> = emptyList(),
+)

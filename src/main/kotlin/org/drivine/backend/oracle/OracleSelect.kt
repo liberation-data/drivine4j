@@ -55,6 +55,12 @@ internal class OracleSelect(
     /** What a predicate calls the root: `n` for a fragment, the root field's name for a view. */
     val rootAlias: String = viewModel?.rootFragment?.fieldName ?: FRAGMENT_ALIAS
 
+    /**
+     * The root's row in the statement. Not the name itself: a field may be called `user` or `order`,
+     * which SQL keeps for its own, and no name SQL keeps ends in an underscore.
+     */
+    val root: String = "${rootAlias}_"
+
     /** The names of the root's relationship fields; empty for a fragment. */
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
@@ -86,9 +92,9 @@ internal class OracleSelect(
      * @param skip and [limit] the page to return, bound as parameters so the text is the same for every page
      */
     fun load(predicates: List<String>, orders: List<OrderSpec> = emptyList(), skip: Int? = null, limit: Int? = null): GraphStatement {
-        val projection = if (viewModel != null) view(rootAlias, viewModel, mapOf(viewModel.className to 1), null) else document(rootAlias)
+        val projection = if (viewModel != null) view(root, viewModel, mapOf(viewModel.className to 1), null) else document(root)
         val text = buildString {
-            append("SELECT ").append(projection).append(" AS result\nFROM ").append(nodes(rootLabels(), rootAlias))
+            append("SELECT ").append(projection).append(" AS result\nFROM ").append(nodes(rootLabels(), root))
             append(where(predicates + requiredRelationships()))
             if (orders.isNotEmpty()) {
                 append("\nORDER BY ").append(orders.joinToString(", ") { "${ordered(it.propertyPath.substringAfter('.'))} ${it.direction.name}" })
@@ -100,11 +106,11 @@ internal class OracleSelect(
     }
 
     fun count(predicates: List<String>): GraphStatement =
-        GraphStatement("SELECT COUNT(*) FROM ${nodes(rootLabels(), rootAlias)}${where(predicates + requiredRelationships())}", bindings)
+        GraphStatement("SELECT COUNT(*) FROM ${nodes(rootLabels(), root)}${where(predicates + requiredRelationships())}", bindings)
 
-    /** The predicate that selects the roots of this statement from the node table, when it is aliased as [rootAlias]. */
+    /** The predicate that selects the roots of this statement from the node table, when it is aliased as [root]. */
     fun selecting(predicates: List<String>): String =
-        (listOfNotNull(hasLabels(rootAlias, rootLabels())) + predicates.map { "($it)" } + requiredRelationships()).joinToString("\n  AND ")
+        (listOfNotNull(hasLabels(root, rootLabels())) + predicates.map { "($it)" } + requiredRelationships()).joinToString("\n  AND ")
 
     fun bindings(): Map<String, Any?> = bindings
 
@@ -115,7 +121,7 @@ internal class OracleSelect(
      * A predicate the caller wrote, with a property of the root written as Cypher writes it,
      * `issue.state` or ``issue.`metadata.source` ``, read as that property. So the plain comparisons a
      * Cypher predicate makes are the same text here; anything more is SQL, over the root's columns
-     * `props`, `labels` and `stamp`. Text inside a string literal is left as it is.
+     * `issue.props`, `issue.labels` and `issue.stamp`. Text inside a string literal is left as it is.
      */
     fun written(predicate: String): String {
         val out = StringBuilder()
@@ -133,8 +139,9 @@ internal class OracleSelect(
             }
             val match = SHORTHAND.matchAt(predicate, at)?.takeIf { at == 0 || !predicate[at - 1].let { c -> c.isLetterOrDigit() || c == '_' || c == '.' } }
             val key = match?.let { it.groupValues[2].ifEmpty { it.groupValues[3] } }
-            if (match != null && match.groupValues[1] == rootAlias && key !in COLUMNS && predicate.getOrNull(match.range.last + 1) != '(') {
-                out.append(property(rootAlias, key!!))
+            if (match != null && match.groupValues[1] == rootAlias && predicate.getOrNull(match.range.last + 1) != '(') {
+                // One of the row's own columns is the column; any other name is a property.
+                out.append(if (key in COLUMNS) "$root.$key" else property(root, key!!))
                 at = match.range.last + 1
             } else {
                 out.append(predicate[at++])
@@ -146,12 +153,12 @@ internal class OracleSelect(
     /** The root whose id is bound as [parameter]. */
     fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
-        return "${property(rootAlias, idProperty)} = \$$parameter"
+        return "${property(root, idProperty)} = \$$parameter"
     }
 
     /** A root property as it is ordered: by the type of the field that holds it, and as text when no field does. */
     private fun ordered(key: String): String =
-        property(rootAlias, key, SqlKind.ofType(rootModel.fields.firstOrNull { it.propertyName == key }?.type))
+        property(root, key, SqlKind.ofType(rootModel.fields.firstOrNull { it.propertyName == key }?.type))
 
     // ----- Row sources -----
 
@@ -332,7 +339,7 @@ internal class OracleSelect(
     private fun requiredRelationships(): List<String> =
         viewModel?.relationships.orEmpty().filter { !it.isNullable && !it.isCollection }.map { relationship ->
             val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
-            exists(rootAlias, steps(relationship, GraphTypeLabels.labelsForType(targetType)), null)
+            exists(root, steps(relationship, GraphTypeLabels.labelsForType(targetType)), null)
         }
 
     private fun exists(parent: String, steps: List<Step>, row: String?, predicate: String? = null): String {
@@ -349,13 +356,13 @@ internal class OracleSelect(
      * nearest and then filters, as an index of the graph engines does.
      */
     fun scored(candidates: String, predicates: List<String>, threshold: Double?, limit: Int?): GraphStatement {
-        val projection = if (viewModel != null) view(rootAlias, viewModel, mapOf(viewModel.className to 1), null) else document(rootAlias)
-        val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$rootAlias.score >= ${bound(it)}" }) + predicates
+        val projection = if (viewModel != null) view(root, viewModel, mapOf(viewModel.className to 1), null) else document(root)
+        val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$root.score >= ${bound(it)}" }) + predicates
         val text = buildString {
-            append("SELECT JSON_OBJECT('value' VALUE ").append(projection).append(", 'score' VALUE ").append(rootAlias).append(".score RETURNING JSON) AS result")
-            append("\nFROM (\n").append(candidates).append("\n) ").append(rootAlias)
+            append("SELECT JSON_OBJECT('value' VALUE ").append(projection).append(", 'score' VALUE ").append(root).append(".score RETURNING JSON) AS result")
+            append("\nFROM (\n").append(candidates).append("\n) ").append(root)
             append(where(filters))
-            append("\nORDER BY ").append(rootAlias).append(".score DESC, ").append(rootAlias).append(".nid")
+            append("\nORDER BY ").append(root).append(".score DESC, ").append(root).append(".nid")
             if (limit != null) append("\nFETCH FIRST ").append(bound(limit)).append(" ROWS ONLY")
         }
         return GraphStatement(text, bindings)
@@ -417,7 +424,7 @@ internal class OracleSelect(
      */
     fun cascaded(predicates: List<String>): String? {
         val model = viewModel ?: return null
-        val roots = "SELECT $rootAlias.nid FROM ${graph.nodes} $rootAlias WHERE ${selecting(predicates)}"
+        val roots = "SELECT $root.nid FROM ${graph.nodes} $root WHERE ${selecting(predicates)}"
         val paths = mutableListOf<List<Step>>()
         fun walk(view: GraphViewModel, path: List<Step>, visits: Map<String, Int>) {
             // A read-only field (every path is one) is not the view's to delete: other code writes what it loads.
@@ -455,14 +462,14 @@ internal class OracleSelect(
             Direction.UNDIRECTED -> "-$body-"
         }
         val from = listOfNotNull("${property("a", key)} = \$$parameter", hasLabels("a", labels)).joinToString(" AND ")
-        return "$rootAlias.nid IN (SELECT $row.nid FROM GRAPH_TABLE (${graph.name} MATCH (a IS node WHERE $from) $arrow (b IS node) COLUMNS (b.nid AS nid)) $row)"
+        return "$root.nid IN (SELECT $row.nid FROM GRAPH_TABLE (${graph.name} MATCH (a IS node WHERE $from) $arrow (b IS node) COLUMNS (b.nid AS nid)) $row)"
     }
 
     // ----- Predicates from the query DSL -----
 
     /** The predicate [conditions] make on the root; null when there are none. */
     fun predicate(conditions: List<WhereCondition>): String? =
-        all(grouped(conditions), mapOf(rootAlias to rootAlias), viewModel).ifEmpty { null }
+        all(grouped(conditions), mapOf(rootAlias to root), viewModel).ifEmpty { null }
 
     /**
      * Conditions on a relationship's alias are gathered into one condition on that relationship: they
