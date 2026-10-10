@@ -341,6 +341,8 @@ fun interface StoredPropertyKeys {
  * the statement changes it, and keeps the one it has otherwise. When [checked], the save of an object
  * that carries a stamp applies only if the node's own data is as the stamp says. With [relationships],
  * its relationships must be as the stamp says too.
+ *
+ * Part of how Drivine builds its statements, and public only for that: not for callers.
  */
 data class Stamping(
     val checked: Boolean,
@@ -357,6 +359,8 @@ data class Stamping(
 /**
  * The node a save statement stamps. [expected] is the stamp the statement requires the node to carry:
  * when it is non-null the statement gives no row if the node has changed or gone.
+ *
+ * Part of how Drivine builds its statements, and public only for that: not for callers.
  */
 data class StampWrite(
     val fragmentClass: Class<*>,
@@ -370,6 +374,8 @@ data class StampWrite(
 
 /**
  * Represents a MERGE statement with its parameter bindings.
+ *
+ * Part of how Drivine builds its statements, and public only for that: not for callers.
  */
 data class MergeStatement(
     val statement: String,

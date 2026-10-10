@@ -20,7 +20,10 @@ object Stamps {
     /** [PROPERTY] as it is written in a statement. */
     const val QUOTED = "`$PROPERTY`"
 
-    /** The column a save statement returns its stamps under: the root's, then each stamped target's. */
+    /**
+     * The column a save statement returns its stamps under: the root's, then each stamped target's.
+     * Drivine's own; nothing a caller needs.
+     */
     const val STAMP_COLUMN = "stamps"
 
     /** A property a checked save sets and removes in one statement, to hold the node's write lock while it compares. */
@@ -79,7 +82,10 @@ object Stamps {
     /** [stamp] with its node token alone: it speaks for the node's own data and for none of its relationships. */
     internal fun withoutLinks(stamp: String): String = "${nodeToken(stamp)}:"
 
-    /** A new stamp: both tokens new. A statement takes from it the token it replaces. */
+    /**
+     * A new stamp: both tokens new. A statement takes from it the token it replaces. Drivine's own
+     * statements use it; Cypher of yours marks a node with [setClause] or [linksClause].
+     */
     fun fresh(): String = "${token()}:${token()}"
 
     private fun token(): String = String.format("%016x", ThreadLocalRandom.current().nextLong())
@@ -138,7 +144,9 @@ object Stamps {
      * "MATCH (p:Person {id: \$id}) SET p.name = \$name, ${Stamps.setClause("p")}"
      * ```
      *
-     * A stored stamp that is not two tokens is replaced whole.
+     * It replaces the token that speaks for the node's own data, and leaves the one that speaks for
+     * its relationships. A node with no stamp is given one, and a stored stamp that is not two tokens
+     * is replaced whole. Cypher that names the property itself quotes it, as [QUOTED] does.
      */
     @JvmStatic
     fun setClause(alias: String): String =
@@ -146,11 +154,16 @@ object Stamps {
 
     /**
      * The `SET` item that marks the relationships of the node bound to [alias] as changed, for Cypher
-     * that adds or removes a relationship without going through an object manager. Use it for both ends:
+     * that adds or removes a relationship, or changes one's properties, without going through an
+     * object manager. Use it for both ends:
      *
      * ```kotlin
      * "MATCH (a:Person {id: \$a}), (b:Person {id: \$b}) CREATE (a)-[:KNOWS]->(b) SET ${Stamps.linksClause("a")}, ${Stamps.linksClause("b")}"
      * ```
+     *
+     * It replaces the token that speaks for the node's relationships, and leaves the one that speaks
+     * for its own data. A node with no stamp is given one, and a stored stamp that is not two tokens
+     * is replaced whole.
      */
     @JvmStatic
     fun linksClause(alias: String): String =

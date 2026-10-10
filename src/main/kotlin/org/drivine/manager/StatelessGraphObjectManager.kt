@@ -86,7 +86,8 @@ class StatelessGraphObjectManager private constructor(
      * @param nullPolicy how a null field is treated; see [NullPolicy]
      * @param only the only fields of the object (for a view, of its root) to write. The relationships
      *   of a view are written whatever this names. A property of another class is refused
-     * @param except fields of the object (for a view, of its root) to leave unwritten
+     * @param except fields of the object (for a view, of its root) to leave unwritten. Give [only]
+     *   or [except], not both
      */
     @JvmOverloads
     fun <T : Any> save(
@@ -102,7 +103,19 @@ class StatelessGraphObjectManager private constructor(
         return saveFields(obj, relationships, nullPolicy, only.map { it.name }.toSet(), except.map { it.name }.toSet())
     }
 
-    /** [save] with the fields named as strings, for Java. A Java caller that names no field calls [save]. */
+    /**
+     * [save] with the fields named as strings, for Java. A Java caller that names no field calls [save].
+     *
+     * @param relationships [Add] adds the relationships the object holds and removes none; [Replace]
+     *   names the relationship fields whose list is the whole list
+     * @param nullPolicy how a null field is treated; see [NullPolicy]
+     * @param only the names of the only fields of the object (for a view, of its root) to write
+     * @param except the names of fields of the object (for a view, of its root) to leave unwritten.
+     *   Give [only] or [except], not both
+     * @throws IllegalArgumentException when a name is no field of the object, and when the object
+     *   could not be handed the stamps the save would leave; nothing is written then
+     * @throws StaleObjectException when what the save would overwrite changed after the object was loaded
+     */
     @JvmOverloads
     fun <T : Any> saveFields(
         obj: T,
@@ -127,9 +140,11 @@ class StatelessGraphObjectManager private constructor(
      *
      * With [Replace], each view that carries a stamp is checked as [save] checks it, since a replace
      * overwrites a relationship list: if the node or its relationships changed since the view was
-     * loaded, [StaleObjectException] is thrown and the batch is not applied.
+     * loaded, [StaleObjectException] is thrown and the batch is not applied, on an engine that has
+     * transactions. A batch that holds a fragment is refused with [Replace], which applies to views.
      *
-     * The objects are saved in the order given, and a view's save changes the nodes it holds. So a
+     * Fragments are saved first, and then each view in the order given, and a view's save changes the
+     * nodes it holds. So a
      * view with [Replace] whose root another object earlier in the batch holds can be refused by the
      * batch's own doing: that object's save changed the root, or a relationship of it, before the
      * view's stamp was compared. The exception then says so ([StaleObjectException.bySameBatch]).
