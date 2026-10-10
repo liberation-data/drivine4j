@@ -28,6 +28,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.drivine.manager.PersistenceManager
 
 /**
  * [StoreIdentity] verified on Neo4j, FalkorDB and Memgraph — the claim being that an identity is a
@@ -39,7 +42,7 @@ import kotlin.test.assertNotEquals
  * [verifyDistinctStoresDiffer], since two graphs on one container are two stores without needing a
  * second container or an enterprise licence.
  */
-private fun verifyStableAcrossClients(open: () -> NonTransactionalPersistenceManager) {
+private fun verifyStableAcrossClients(open: () -> PersistenceManager) {
     val first = open().storeIdentity
 
     // A second manager with its own cache, over the same store: same answer. If the identity were
@@ -61,7 +64,7 @@ private fun verifyStableAcrossClients(open: () -> NonTransactionalPersistenceMan
  * that does not match.
  */
 private fun verifyEmptiedStoreIsANewStore(
-    open: () -> NonTransactionalPersistenceManager,
+    open: () -> PersistenceManager,
     wipe: () -> Unit,
 ) {
     val before = open().storeIdentity
@@ -72,8 +75,8 @@ private fun verifyEmptiedStoreIsANewStore(
 
 /** Two stores on one server: same host, same port, same credentials, different data. */
 private fun verifyDistinctStoresDiffer(
-    open: () -> NonTransactionalPersistenceManager,
-    openOther: () -> NonTransactionalPersistenceManager,
+    open: () -> PersistenceManager,
+    openOther: () -> PersistenceManager,
 ) {
     assertNotEquals(
         open().storeIdentity.id,
@@ -89,7 +92,7 @@ private fun verifyDistinctStoresDiffer(
  * shape. Without the uniqueness constraint, two MERGEs can each create a node, and a worker that read
  * before the other write landed caches a different id from one that read after.
  */
-private fun verifyConcurrentFirstBootsAgree(open: () -> NonTransactionalPersistenceManager) {
+private fun verifyConcurrentFirstBootsAgree(open: () -> PersistenceManager) {
     val workers = 8
     val managers = List(workers) { open() }
     val start = CountDownLatch(1)
@@ -117,7 +120,7 @@ private fun verifyConcurrentFirstBootsAgree(open: () -> NonTransactionalPersiste
  * A store that already carries duplicates — from a race before the constraint existed — cannot take the
  * constraint. Resolution must still succeed, and pick the oldest stamp, rather than fail boot.
  */
-private fun verifyExistingDuplicatesStillResolve(open: () -> NonTransactionalPersistenceManager) {
+private fun verifyExistingDuplicatesStillResolve(open: () -> PersistenceManager) {
     open().constraints.drop(StoreIdentityResolver.KEY_CONSTRAINT)
     val older = UUID.randomUUID().toString()
     val newer = UUID.randomUUID().toString()
@@ -326,4 +329,29 @@ class StatelessStoreIdentityMemgraphTest {
 
     @Test fun `an in-flight peer stamp is not duplicated on Memgraph`() =
         verifyInFlightPeerStampIsNotDuplicated(provider, { open() }, ::wipe)
+}
+
+@OracleTests
+class StatelessStoreIdentityOracleTest {
+
+    /** A manager of its own each time, as a process of its own would have. */
+    private fun open(graph: String = "identity"): PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager(graph))
+
+    private fun wipe() = OracleTestDatabase.clear(OracleTestDatabase.graphManager("identity"))
+
+    @BeforeEach fun clean() = wipe()
+
+    @Test fun `identity is stable across clients on Oracle`() = verifyStableAcrossClients(::open)
+
+    @Test fun `an emptied Oracle store reports a new identity`() =
+        verifyEmptiedStoreIsANewStore(::open, ::wipe)
+
+    @Test fun `concurrent first boots agree on one identity on Oracle`() =
+        verifyConcurrentFirstBootsAgree(::open)
+
+    @Test fun `existing duplicate stamps still resolve on Oracle`() =
+        verifyExistingDuplicatesStillResolve(::open)
+
+    @Test fun `two graphs in one Oracle schema are two stores`() =
+        verifyDistinctStoresDiffer(::open) { open("identity_other") }
 }

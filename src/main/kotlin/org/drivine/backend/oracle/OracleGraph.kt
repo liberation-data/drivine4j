@@ -26,6 +26,9 @@ internal class OracleGraph(val name: String) {
     val nodes = "${name}_node"
     val edges = "${name}_edge"
 
+    /** What Drivine made of indexes and constraints: see [OracleSchemaGrammar]. */
+    val catalog = "${name}_schema"
+
     /** What makes the store, when it is not there. Each statement is safe to run again. */
     val ddl: List<String> = listOf(
         """
@@ -43,6 +46,17 @@ internal class OracleGraph(val name: String) {
             dst   NUMBER NOT NULL REFERENCES $nodes (nid) ON DELETE CASCADE,
             type  VARCHAR2(128) NOT NULL,
             props JSON DEFAULT '{}' NOT NULL
+        )
+        """,
+        """
+        CREATE TABLE IF NOT EXISTS $catalog (
+            kind        VARCHAR2(40) NOT NULL,
+            label       VARCHAR2(400) NOT NULL,
+            properties  VARCHAR2(2000) NOT NULL,
+            name        VARCHAR2(400),
+            object_name VARCHAR2(128),
+            details     JSON NOT NULL,
+            PRIMARY KEY (kind, label, properties)
         )
         """,
         "CREATE INDEX IF NOT EXISTS ${name}_edge_src ON $edges (src, type)",

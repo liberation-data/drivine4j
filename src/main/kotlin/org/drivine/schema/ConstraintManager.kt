@@ -184,19 +184,8 @@ class ConstraintManager internal constructor(
      */
     private fun sampleConflicts(spec: ConstraintSpec, limit: Int): List<Map<String, Any?>> {
         if (limit <= 0) return emptyList()
-        val notNull = spec.properties.joinToString(" AND ") { "n.$it IS NOT NULL" }
-        val keyAliases = spec.properties.mapIndexed { i, p -> "n.$p AS _k$i" }.joinToString(", ")
-        val keyMap = spec.properties.mapIndexed { i, p -> "$p: _k$i" }.joinToString(", ")
-        val cypher = """
-            MATCH (n:${spec.label})
-            WHERE $notNull
-            WITH $keyAliases, count(*) AS _count
-            WHERE _count > 1
-            RETURN {properties: {$keyMap}, count: _count}
-            LIMIT $limit
-        """.trimIndent()
         return try {
-            executor.query(cypher)
+            executor.query(grammar.sampleConflictsQuery(spec, limit))
                 .filterIsInstance<Map<*, *>>()
                 .map { row -> row.entries.associate { (key, value) -> key.toString() to value } }
         } catch (e: Exception) {

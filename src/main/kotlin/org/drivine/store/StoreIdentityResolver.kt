@@ -1,5 +1,7 @@
 package org.drivine.store
 
+import org.drivine.backend.oracle.OracleGraph
+import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
@@ -64,6 +66,28 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
      * Ensures the uniqueness constraint on the merge key. Returns whether it is in force; false degrades
      * [resolve] to best-effort convergence rather than failing boot over an identity that can still be read.
      */
+    /** The two statements in the store's language. Oracle keeps the stamp as a node of the graph, as the graph engines do. */
+    private class Statements(val assignIfAbsent: String, val readStamps: String)
+
+    private val statements: Statements by lazy {
+        if (persistenceManager.type != DatabaseType.ORACLE) return@lazy Statements(ASSIGN_IF_ABSENT, READ_STAMPS)
+        val graph = OracleGraph(persistenceManager.graphName ?: OracleGraph.DEFAULT_NAME).also { it.ensure(persistenceManager) }
+        val stored = "JSON_EXISTS(n.labels, '$[*]?(@ == \"DrivineStore\")')"
+        Statements(
+            assignIfAbsent = """
+                INSERT INTO ${graph.nodes} (labels, props)
+                SELECT '["DrivineStore"]', JSON_OBJECT('key' VALUE ${'$'}key, 'storeId' VALUE ${'$'}storeId, 'assignedAt' VALUE ${'$'}assignedAt, 'engine' VALUE ${'$'}engine)
+                FROM dual
+                WHERE NOT EXISTS (SELECT 1 FROM ${graph.nodes} n WHERE $stored AND JSON_VALUE(n.props, '$."key"') = ${'$'}key)
+            """.trimIndent(),
+            readStamps = """
+                SELECT JSON_OBJECT('id' VALUE JSON_VALUE(n.props, '$."storeId"'), 'assignedAt' VALUE JSON_VALUE(n.props, '$."assignedAt"') RETURNING JSON)
+                FROM ${graph.nodes} n WHERE $stored
+                ORDER BY JSON_VALUE(n.props, '$."assignedAt"'), JSON_VALUE(n.props, '$."storeId"')
+            """.trimIndent(),
+        )
+    }
+
     private fun ensureUniqueKey(): Boolean {
         if (!persistenceManager.supportsSchemaManagement) return false
         val constraints = persistenceManager.constraints
@@ -114,7 +138,7 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         while (true) {
             try {
                 persistenceManager.execute(
-                    QuerySpecification.withStatement(ASSIGN_IF_ABSENT).bind(
+                    QuerySpecification.withStatement(statements.assignIfAbsent).bind(
                         mapOf(
                             "key" to SINGLETON_KEY,
                             "storeId" to UUID.randomUUID().toString(),
@@ -140,7 +164,7 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
             SchemaGrammar.messagesOf(e).contains("conflicting transactions", ignoreCase = true)
 
     private fun readStamps(): List<Stamp> =
-        persistenceManager.query(QuerySpecification.withStatement(READ_STAMPS).transform<Stamp>())
+        persistenceManager.query(QuerySpecification.withStatement(statements.readStamps).transform<Stamp>())
 
     private fun identityFrom(stamps: List<Stamp>): StoreIdentity {
         if (stamps.size > 1) {

@@ -2,8 +2,12 @@ package org.drivine.connection
 
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.schema.SchemaGrammar
+import org.drivine.schema.UnsupportedSchemaGrammar
 import javax.sql.DataSource
 
 /**
@@ -22,6 +26,11 @@ class JdbcConnectionProvider(
     /** The graph the object managers read and write: it names the property graph and its tables. */
     override val graphName: String = DEFAULT_GRAPH,
 ) : ConnectionProvider, NativeDriverSource<DataSource> {
+
+    /** Oracle keeps a graph's indexes and constraints over its tables; no other JDBC store has a graph yet. */
+    override val schemaGrammar: SchemaGrammar by lazy {
+        if (type == DatabaseType.ORACLE) OracleSchemaGrammar(OracleGraph(graphName)) else UnsupportedSchemaGrammar(type.value)
+    }
 
     /** The data source behind this provider. Closed by [end] only if this provider made it. */
     override val nativeDriver: DataSource

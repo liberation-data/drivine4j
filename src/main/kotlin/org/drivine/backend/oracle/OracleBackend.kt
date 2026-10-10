@@ -45,9 +45,11 @@ internal class OracleBackend(
 
     override val orphanDeleteLimit: String? = null
 
-    /** An index over a JSON property orders rows as any index does; the advisor reads them through the schema managers. */
-    override val supportsIndexBackedOrdering: Boolean
-        get() = persistenceManager.supportsSchemaManagement
+    /**
+     * A range index reads a property as text. An order by a number or a moment reads it as that, and is
+     * not served by the index, so no index is advised for an order.
+     */
+    override val supportsIndexBackedOrdering: Boolean = false
 
     /** A save on Oracle clears a node's stale keys where it writes the node, so nothing is read ahead of it. */
     override val storedKeys: StoredPropertyKeys = StoredPropertyKeys { _, _, _ -> emptySet() }
