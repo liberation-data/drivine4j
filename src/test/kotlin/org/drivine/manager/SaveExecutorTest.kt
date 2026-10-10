@@ -1,8 +1,10 @@
 package org.drivine.manager
 
 import java.lang.reflect.Proxy
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
@@ -84,6 +86,8 @@ class SaveExecutorTest {
         val stale = assertFailsWith<StaleObjectException> { SaveExecutor(manager).save(statement(expected = "mine:links")) }
 
         assertSame(first, stale.cause)
+        assertContains(stale.message.orEmpty(), "the engine turned the save away each time it was run")
+        assertFalse("was changed by another writer" in stale.message.orEmpty(), "the save cannot tell that the object's node changed")
         assertEquals("mine:links", stale.expectedStamp)
         assertEquals(6, calls())
     }

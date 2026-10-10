@@ -29,8 +29,9 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
         val rows = try {
             whenNotContended { persistenceManager.query(spec(statement)) }
         } catch (failure: DrivineException) {
-            // Turned away every time: another writer changed the node, and the engine will not let this
-            // save write over it. For a checked save that is a stale object, and it wrote nothing.
+            // Turned away every time: another writer was changing a node this save writes, and the
+            // engine will not let it write over that. A checked save reports it as a stale object: it
+            // wrote nothing, and the answer is the same, to load again and re-apply.
             val root = statement.root
             val expected = root.expected
             if (expected == null || !failure.isRetryable()) throw failure

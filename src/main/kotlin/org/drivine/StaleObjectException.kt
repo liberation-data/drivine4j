@@ -9,11 +9,13 @@ package org.drivine
  * To carry on, load the object again and re-apply the change, which
  * `StatelessGraphObjectManager.update` does. A save of an object whose stamp is null is not checked.
  *
- * It is also what a checked save throws when the engine itself turns the save away, each time it is
- * run, because another writer changed the node: Memgraph does so inside a transaction that read the
- * node before the other writer committed, since the transaction goes on seeing the node as it was.
- * The engine's error is then the [cause], and [foundStamp] is not known. Such a transaction has
- * failed as a whole, and is to be run again from its start.
+ * It is also what a checked save throws when the engine itself turns the save away each time it is
+ * run, because another writer was changing a node the save writes. Memgraph does so inside a
+ * transaction that read the node before another writer committed, since the transaction goes on
+ * seeing the node as it was. It can also be a node the save reaches through a relationship that is
+ * contended, and not the object's own: the save cannot tell which, so it does not say the object
+ * changed. The engine's error is then the [cause], and [foundStamp] is not known. A transaction this
+ * happens in has failed as a whole, and is to be run again from its start.
  */
 class StaleObjectException(
     /** The fragment class of the node. */
@@ -25,7 +27,10 @@ class StaleObjectException(
     val foundStamp: String?,
     /** True when the node no longer exists. */
     val deleted: Boolean,
-    /** The engine's error, when it was the engine that turned the save away; null when the stamps differed. */
+    /**
+     * The engine's error, when it was the engine that turned the save away; null when the stamps
+     * differed. When it is not null, the object's node may be as it was loaded.
+     */
     cause: Throwable? = null,
 ) : RuntimeException(
     if (cause == null) {
@@ -36,8 +41,8 @@ class StaleObjectException(
         """.trimIndent()
     } else {
         """
-        ${type.simpleName} '$id' was changed by another writer, and the engine turned the save away, so it was not saved: ${cause.message}
-        Outside a transaction, load it again and re-apply the change: StatelessGraphObjectManager.update does this. Inside one, run the transaction again.
+        ${type.simpleName} '$id' was not saved: the engine turned the save away each time it was run, because another writer was changing a node it writes. ${cause.message}
+        The node may have changed since it was loaded. Outside a transaction, load it again and re-apply the change: StatelessGraphObjectManager.update does this. Inside one, run the transaction again.
         """.trimIndent()
     },
     cause,
