@@ -8,10 +8,13 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.drivine.DrivineException
 import org.drivine.StaleObjectException
+import org.drivine.connection.DatabaseType
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.AfterEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -40,6 +43,10 @@ class StatelessTransactionTests @Autowired constructor(
         )
     }
 
+    /** These tests run on the engine the datasource names. FalkorDB has no transactions, so nothing there is rolled back. */
+    private fun assumeTransactions() =
+        assumeTrue(persistenceManager.type != DatabaseType.FALKORDB, "FalkorDB has no transactions")
+
     private fun mentioned(claim: String): List<String> = persistenceManager.query(
         QuerySpecification.withStatement("MATCH (:Claim {id: \$id})-[:MENTIONS]->(h:Human) RETURN h.id")
             .bind(mapOf("id" to claim)).transform(String::class.java)
@@ -47,6 +54,7 @@ class StatelessTransactionTests @Autowired constructor(
 
     @Test
     fun `a save refused as stale rolls back what its transaction wrote before it`() {
+        assumeTransactions()
         val loaded = stateless.save(Claim("$run-c1", "one"))
         stateless.save(loaded.copy(text = "two"))
 
@@ -63,6 +71,7 @@ class StatelessTransactionTests @Autowired constructor(
 
     @Test
     fun `a view save in a transaction that rolls back leaves the graph as it was`() {
+        assumeTransactions()
         val saved = stateless.save(ClaimView(Claim("$run-c1", "one"), people = listOf(Human("$run-ada", "Ada"))))
 
         assertFailsWith<IllegalStateException> {
@@ -93,6 +102,12 @@ class StatelessTransactionTests @Autowired constructor(
                             tx.execute { stateless.save(loaded.copy(text = "writer $writer")) }?.stamp
                         } catch (stale: StaleObjectException) {
                             null
+                        } catch (conflict: DrivineException) {
+                            // Memgraph turns a transaction away when another is changing the same node. A
+                            // save outside a transaction is run again and refused as stale; inside one,
+                            // the transaction is the caller's to run again.
+                            if (persistenceManager.type != DatabaseType.MEMGRAPH) throw conflict
+                            null
                         }
                     }
                 }
@@ -111,6 +126,7 @@ class StatelessTransactionTests @Autowired constructor(
 
     @Test
     fun `saveAll joins its caller's transaction, and what it wrote goes when the transaction rolls back`() {
+        assumeTransactions()
         assertFailsWith<IllegalStateException> {
             tx.execute {
                 stateless.saveAll(
@@ -148,6 +164,7 @@ class StatelessTransactionTests @Autowired constructor(
 
     @Test
     fun `a batch refused as stale rolls back what its transaction wrote before it`() {
+        assumeTransactions()
         val loaded = stateless.save(ClaimView(Claim("$run-c1", "one"), people = listOf(Human("$run-ada", "Ada"))))
         persistenceManager.execute(
             QuerySpecification.withStatement(
