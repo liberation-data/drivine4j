@@ -24,6 +24,7 @@ import kotlin.reflect.KProperty1
  *   view, the root is checked. A node reached through a relationship is written unchecked.
  * - [update] loads an object, applies a change, and writes only what the change altered.
  */
+@Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
 class StatelessGraphObjectManager private constructor(
     private val persistenceManager: PersistenceManager,
     private val objectMapper: ObjectMapper,

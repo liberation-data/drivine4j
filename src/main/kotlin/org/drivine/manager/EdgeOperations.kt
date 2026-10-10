@@ -16,6 +16,7 @@ import org.drivine.query.QuerySpecification
  * `@GraphRelationship`. This is for the case where the type is data: a graph whose relationship
  * types are not known when the model is written.
  */
+@Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
 class EdgeOperations internal constructor(
     private val manager: GraphObjectManager,
     private val persistenceManager: PersistenceManager,

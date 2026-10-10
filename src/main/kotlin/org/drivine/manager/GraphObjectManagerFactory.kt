@@ -10,6 +10,7 @@ import org.drivine.session.SessionManager
  * Uses PersistenceManagerFactory to inject PersistenceManager instances.
  * Each GraphObjectManager gets its own SessionManager instance.
  */
+@Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
 class GraphObjectManagerFactory(
     private val persistenceManagerFactory: PersistenceManagerFactory,
     private val objectMapper: ObjectMapper,
@@ -30,6 +31,7 @@ class GraphObjectManagerFactory(
      * @param database Unique name for the registered database.
      * @param type The type of PersistenceManager to use (TRANSACTIONAL, NON_TRANSACTIONAL, or DELEGATING).
      */
+    @Deprecated("Use stateless(): GraphObjectManager is deprecated in favour of StatelessGraphObjectManager.", ReplaceWith("stateless(database, type)"))
     @JvmOverloads
     fun get(database: String = "default", type: PersistenceManagerType = PersistenceManagerType.DELEGATING): GraphObjectManager {
         val key = "$database:$type"

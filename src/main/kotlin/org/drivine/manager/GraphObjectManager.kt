@@ -46,7 +46,15 @@ private data class QueryContext(
  * Provides methods to query and retrieve graph-mapped objects from the database.
  *
  * Maintains a session to track loaded objects and enable dirty checking for optimized saves.
+ *
+ * Deprecated: a save writes what differs from the session's snapshot, which is what this manager
+ * last saw and not what the store holds. A node that anything else changed or deleted gets a partial
+ * save. [StatelessGraphObjectManager] keeps no snapshot.
  */
+@Deprecated(
+    "Use StatelessGraphObjectManager (GraphObjectManagerFactory.stateless()). A save by this manager depends on its " +
+        "session's snapshot, so a node changed elsewhere gets a partial save. See the README: Migrating from GraphObjectManager.",
+)
 class GraphObjectManager internal constructor(
     private val persistenceManager: PersistenceManager,
     internal val sessionManager: SessionManager,
@@ -63,6 +71,7 @@ class GraphObjectManager internal constructor(
         subtypeRegistry: SubtypeRegistry,
     ) : this(persistenceManager, sessionManager, objectMapper, subtypeRegistry, Stamping(checked = false))
 
+    @Suppress("DEPRECATION")
     private val logger = LoggerFactory.getLogger(GraphObjectManager::class.java)
 
     /**
