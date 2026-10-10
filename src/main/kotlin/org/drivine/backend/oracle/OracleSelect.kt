@@ -15,6 +15,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphTypeLabels
+import org.drivine.schema.SimilarityFunction
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.OrderDirection
@@ -47,6 +48,9 @@ internal class OracleSelect(
         if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
 
     private val rootModel: FragmentModel = FragmentModel.from(viewModel?.rootFragment?.fragmentType ?: graphClass)
+
+    /** The fragment the statement's roots are: the class itself, or a view's root. */
+    val rootFragment: Class<*> = viewModel?.rootFragment?.fragmentType ?: graphClass
 
     /** What a predicate calls the root: `n` for a fragment, the root field's name for a view. */
     val rootAlias: String = viewModel?.rootFragment?.fieldName ?: FRAGMENT_ALIAS
@@ -334,6 +338,74 @@ internal class OracleSelect(
     private fun exists(parent: String, steps: List<Step>, row: String?, predicate: String? = null): String {
         val alias = row ?: next("t")
         return "EXISTS (SELECT 1 FROM ${reached(steps, alias)} WHERE $alias.src = $parent.nid${predicate?.let { " AND $it" }.orEmpty()})"
+    }
+
+    // ----- Scored search -----
+
+    /**
+     * The search whose candidates are the rows of [candidates], each with a `score`: one document
+     * for each, `{value, score}`, best first. [predicates], the score's [threshold] and a view's
+     * required relationships are applied to the candidates, not before them: a search finds its
+     * nearest and then filters, as an index of the graph engines does.
+     */
+    fun scored(candidates: String, predicates: List<String>, threshold: Double?, limit: Int?): GraphStatement {
+        val projection = if (viewModel != null) view(rootAlias, viewModel, mapOf(viewModel.className to 1), null) else document(rootAlias)
+        val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$rootAlias.score >= ${bound(it)}" }) + predicates
+        val text = buildString {
+            append("SELECT JSON_OBJECT('value' VALUE ").append(projection).append(", 'score' VALUE ").append(rootAlias).append(".score RETURNING JSON) AS result")
+            append("\nFROM (\n").append(candidates).append("\n) ").append(rootAlias)
+            append(where(filters))
+            append("\nORDER BY ").append(rootAlias).append(".score DESC, ").append(rootAlias).append(".nid")
+            if (limit != null) append("\nFETCH FIRST ").append(bound(limit)).append(" ROWS ONLY")
+        }
+        return GraphStatement(text, bindings)
+    }
+
+    /** The root's nodes that also carry [also] and have [key], each with its columns and `score`, ordered and cut by [tail]. */
+    private fun candidates(also: List<String>, key: String?, score: String, tail: String): String {
+        val has = listOfNotNull(hasLabels("v", rootLabels() + also), key?.let { OracleSql.hasProperty("v", it) }).joinToString(" AND ")
+        return "SELECT c.nid, c.labels, c.props, c.stamp, $score AS score\n" +
+            "FROM GRAPH_TABLE (${graph.name} MATCH (v IS node WHERE $has) COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) c\n$tail"
+    }
+
+    /**
+     * The [nearest] nodes to [vector] by the embedding stored under [key]: every node of the label is
+     * measured, so the answer is exact. The score is the one the graph engines give: for cosine
+     * `(1 + cos) / 2`, for Euclidean `1 / (1 + d²)`, each in `[0, 1]` with higher the nearer.
+     */
+    fun nearestTo(key: String, similarity: SimilarityFunction, partitionLabel: String?, vector: List<Float>, nearest: Int): String {
+        val query = bound(vector)
+        val stored = "TO_VECTOR(JSON_QUERY(c.props, ${path(key)} RETURNING CLOB))"
+        val score = when (similarity) {
+            SimilarityFunction.COSINE -> "(2 - VECTOR_DISTANCE($stored, TO_VECTOR($query), COSINE)) / 2"
+            SimilarityFunction.EUCLIDEAN -> "1 / (1 + VECTOR_DISTANCE($stored, TO_VECTOR($query), EUCLIDEAN_SQUARED))"
+        }
+        return candidates(listOfNotNull(partitionLabel), key, score, "ORDER BY score DESC, c.nid\nFETCH FIRST ${bound(nearest)} ROWS ONLY")
+    }
+
+    /**
+     * The nodes whose text under [keys] meets [query], scored by how often its terms occur and then
+     * against the best of them, so the best scores one. Every node of the label is read.
+     *
+     * Each term is counted on its own. Counting them as the rows of one bound array, in a subquery
+     * the statement names twice, gave wrong counts on Oracle 23.26: every position of the text.
+     */
+    fun matching(keys: List<String>, query: TextQuery): String {
+        val text = keys.joinToString(" || ' ' || ") { "LOWER(JSON_VALUE(c.props, ${path(it)} RETURNING CLOB))" }
+        val occurrences = query.scored.joinToString(" + ") { "REGEXP_COUNT(s.text, ${bound(it)})" }
+        val conditions = query.required.map { "REGEXP_COUNT(s.text, ${bound(it)}) > 0" } + query.excluded.map { "REGEXP_COUNT(s.text, ${bound(it)}) = 0" }
+        val has = hasLabels("v", rootLabels())
+        return """
+            SELECT h.nid, h.labels, h.props, h.stamp, h.score / MAX(h.score) OVER () AS score
+            FROM (
+                SELECT s.nid, s.labels, s.props, s.stamp, $occurrences AS score
+                FROM (
+                    SELECT c.nid, c.labels, c.props, c.stamp, $text AS text
+                    FROM GRAPH_TABLE (${graph.name} MATCH (v IS node WHERE $has) COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) c
+                ) s${if (conditions.isEmpty()) "" else "\n                WHERE " + conditions.joinToString(" AND ")}
+            ) h
+            WHERE h.score > 0
+        """.trimIndent()
     }
 
     // ----- What a delete or a traversal on its own selects -----

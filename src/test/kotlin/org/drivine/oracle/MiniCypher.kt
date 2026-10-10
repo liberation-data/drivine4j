@@ -282,6 +282,10 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
             check(word("NULL"))
             return (left == null) != not
         }
+        if (word("IN")) {
+            val list = expression(row, evaluate)
+            return (list as? Collection<*>)?.any { same(left, it) } ?: false
+        }
         skipSpace()
         val operator = listOf("<>", ">=", "<=", "=", ">", "<").firstOrNull { text.startsWith(it, at) } ?: return left
         at += operator.length

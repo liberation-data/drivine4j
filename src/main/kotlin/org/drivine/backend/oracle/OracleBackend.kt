@@ -14,10 +14,12 @@ import org.drivine.manager.RelateMode
 import org.drivine.manager.RemovedTargets
 import org.drivine.model.FragmentModel
 import org.drivine.model.RelationshipModel
+import org.drivine.query.FullTextIndexResolver
 import org.drivine.query.SaveStatement
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
 import org.drivine.query.StoredPropertyKeys
+import org.drivine.query.VectorIndexResolver
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderDirection
@@ -97,10 +99,22 @@ internal class OracleBackend(
     override fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,
         topK: Int, threshold: Double?, searchK: Int?, partitionLabel: String?,
-    ): ScoredSearchPlan = notYet("Vector search")
+    ): ScoredSearchPlan {
+        val select = OracleSelect(graph, graphClass)
+        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        // What the search measures is the nearest searchK, and of what is left of them topK come back.
+        val candidates = select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+        val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
+        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
+    }
 
-    override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan =
-        notYet("Full-text search")
+    override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
+        val select = OracleSelect(graph, graphClass)
+        val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        val candidates = select.matching(index.properties, TextQuery.parse(text))
+        val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
+        return ScoredSearchPlan(statement.statement, statement.bindings)
+    }
 
     // ----- Deleting -----
 

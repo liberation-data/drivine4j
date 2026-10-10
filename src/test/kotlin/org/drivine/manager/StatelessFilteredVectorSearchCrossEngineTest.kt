@@ -26,6 +26,9 @@ import sample.proposition.PropositionViewQueryDsl
 import sample.proposition.loadNearest
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.BeforeEach
 
 /**
  * 0.0.49 — filtered vector search with **relationship** predicates: `loadNearest(...) { where { } }`
@@ -94,12 +97,12 @@ private fun verify(gom: StatelessGraphObjectManager) {
     assertEquals(listOf("p1", "p4"), ids(composed))
 }
 
-private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
+private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
     val mapper = Neo4jObjectMapper.instance
     return StatelessGraphObjectManager(pm, mapper, registry)
 }
 
-private fun seed(pm: NonTransactionalPersistenceManager, vec: (String) -> String) {
+private fun seed(pm: PersistenceManager, vec: (String) -> String) {
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -243,4 +246,20 @@ class StatelessFilteredVectorSearchMemgraphTest {
 
     @Test
     fun `filtered vector search on Memgraph`() = verify(gom)
+}
+
+@OracleTests
+class StatelessFilteredVectorSearchOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+    private val fixtures = OracleTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun seed() {
+        pm.indexes.ensure(VectorIndexSpec("Proposition", "embedding", 4))
+        seed(fixtures) { it }
+    }
+
+    @Test
+    fun `filtered vector search on Oracle`() = verify(buildGom(pm, registry))
 }

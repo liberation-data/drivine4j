@@ -13,10 +13,13 @@ package org.drivine.query.grammar
  * @param queryParam the bound parameter name carrying the query string (e.g. `"_fullTextQuery"`)
  * @param topKParam the bound parameter name carrying the requested K (applied as a trailing `LIMIT`,
  *   because the full-text `CALL` — unlike vector — takes no `k` argument)
+ * @param properties the properties the index covers, by the names they are stored under: what a
+ *   store with no index of its own to call searches
  */
 data class FullTextQuerySpec(
     val label: String,
     val indexName: String,
     val queryParam: String,
     val topKParam: String,
+    val properties: List<String> = emptyList(),
 )

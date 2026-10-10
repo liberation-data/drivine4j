@@ -86,7 +86,8 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         is VectorIndexSpec -> statements(
             recorded(spec, null, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}""")
         )
-        is FullTextIndexSpec -> throw UnsupportedOperationException("Full-text indexes are not yet available on Oracle.")
+        // A full-text search reads the text of every node of the label, and needs nothing made either.
+        is FullTextIndexSpec -> statements(recorded(spec, null, spec.analyzer?.let { """{"analyzer": "$it"}""" } ?: "{}"))
     }
 
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(SchemaStatement.Cypher(forgotten(item).trimIndent()))
