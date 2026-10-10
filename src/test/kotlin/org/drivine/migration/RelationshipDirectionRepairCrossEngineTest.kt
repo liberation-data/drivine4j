@@ -4,6 +4,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
@@ -24,11 +25,22 @@ import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import sample.stateless.Claim
+import sample.stateless.ClaimAnyEmployers
+import sample.stateless.ClaimCompaniesLoaded
 import sample.stateless.ClaimEmployers
 import sample.stateless.ClaimView
+import sample.stateless.CorporationStaff
+import sample.stateless.Human
 import sample.stateless.HumanClaims
 import sample.stateless.HumanFollowers
+import sample.stateless.HumanGroups
+import sample.stateless.HumanHoldings
 import sample.stateless.HumanMentions
+import sample.stateless.HumanMentionsLoaded
+import sample.stateless.MemoPeople
+import sample.stateless.VipClaims
+import sample.stateless.VipMentions
 
 /**
  * [RelationshipDirectionRepair] and [PathRelationshipReport] on Neo4j, FalkorDB and Memgraph.
@@ -125,9 +137,48 @@ abstract class RelationshipDirectionRepairContract {
     fun `a relationship that already points the right way is not duplicated`() {
         run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS]->(h)")
 
+        assertEquals(2, repair.repair(repair.report(HumanClaims::class.java).single()))
+
+        assertEquals(listOf("c1 -MENTIONS-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"), relationships())
+    }
+
+    @Test
+    fun `a relationship that already points the right way keeps its own properties`() {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS {page: 9}]->(h)")
+
         repair.repair(repair.report(HumanClaims::class.java).single())
 
-        assertEquals(listOf("c1 -MENTIONS 7-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"), relationships())
+        assertEquals(listOf("c1 -MENTIONS 9-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"), relationships())
+    }
+
+    @Test
+    fun `a batch size that is not positive is refused`() {
+        val finding = repair.report(HumanClaims::class.java).single()
+        val before = relationships()
+
+        assertFailsWith<IllegalArgumentException> { repair.repair(finding, batchSize = 0) }
+        assertFailsWith<IllegalArgumentException> { repair.repair(finding, batchSize = -1) }
+
+        assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a class that is not a view is refused`() {
+        val direction = assertFailsWith<IllegalArgumentException> { repair.report(Human::class.java) }
+        val path = assertFailsWith<IllegalArgumentException> { PathRelationshipReport(pm).report(Claim::class.java) }
+
+        assertEquals("Human is not a @GraphView.", direction.message)
+        assertEquals("Claim is not a @GraphView.", path.message)
+    }
+
+    @Test
+    fun `the report reaches an incoming field of a view nested in the one it is given`() {
+        val finding = repair.report(MemoPeople::class.java).single()
+
+        assertEquals(HumanClaims::class.java, finding.view)
+        assertEquals("claims", finding.field)
+        assertEquals(2, finding.wrongWay)
+        assertEquals(1, finding.rightWay)
     }
 
     @Test
@@ -139,6 +190,52 @@ abstract class RelationshipDirectionRepairContract {
         assertEquals(2, repair.report(HumanClaims::class.java).single().wrongWay, "a refused repair changes nothing")
 
         assertEquals(2, repair.repair(finding, force = true))
+    }
+
+    @Test
+    fun `a field is ambiguous when a view rooted at a subtype declares the relationship pointing away from the root`() {
+        run("CREATE (:VipHuman:Human {id: 'vic', name: 'Vic'})")
+        run("MATCH (h:Human {id: 'vic'}), (c:Claim {id: 'c3'}) CREATE (h)-[:MENTIONS]->(c)")
+        val before = relationships()
+
+        val finding = repair.report(HumanClaims::class.java, VipMentions::class.java).single()
+
+        assertEquals(3, finding.wrongWay)
+        assertNotNull(finding.ambiguity, "a VipHuman is a Human, and VipMentions says one mentions claims")
+        assertFailsWith<IllegalStateException> { repair.repair(finding) }
+        assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a field rooted at a subtype is ambiguous when a view of the supertype declares the relationship pointing away from the root`() {
+        val finding = repair.report(VipClaims::class.java, HumanMentions::class.java).single()
+
+        assertEquals(listOf("VipHuman", "Human"), finding.rootLabels)
+        assertNotNull(finding.ambiguity, "HumanMentions says a person mentions claims, and a VipHuman is one")
+    }
+
+    @Test
+    fun `a field is ambiguous when another view only loads the same relationship pointing away from the root`() {
+        val before = relationships()
+
+        val finding = repair.report(HumanClaims::class.java, HumanMentionsLoaded::class.java).single()
+
+        assertEquals(HumanClaims::class.java, finding.view, "a field that is only loaded is not itself reported")
+        assertNotNull(finding.ambiguity, "HumanMentionsLoaded reads a person's mentions, which other code writes")
+        assertFailsWith<IllegalStateException> { repair.repair(finding) }
+        assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a finding says whether force can repair it`() {
+        val ambiguous = repair.report(HumanClaims::class.java, HumanMentions::class.java).single()
+        val sameNodes = repair.report(HumanFollowers::class.java).single()
+
+        assertNotNull(ambiguous.ambiguity)
+        assertTrue(ambiguous.repairable, "force turns an ambiguous finding round")
+        assertNotNull(sameNodes.ambiguity)
+        assertTrue(!sameNodes.repairable, "nothing turns round a relationship between nodes of one kind")
+        assertTrue(repair.report(HumanClaims::class.java).single().repairable)
     }
 
     // ----- A path field written as a direct relationship -----
@@ -185,6 +282,46 @@ abstract class RelationshipDirectionRepairContract {
 
         assertEquals(1, finding.direct)
         assertNotNull(finding.ambiguity, "ClaimView.companies says a claim mentions companies")
+    }
+
+    @Test
+    fun `a path finding is ambiguous when a view only loads that relationship directly`() {
+        seedPath()
+
+        val finding = PathRelationshipReport(pm).report(ClaimEmployers::class.java, ClaimCompaniesLoaded::class.java).single()
+
+        assertEquals(1, finding.direct)
+        assertNotNull(finding.ambiguity, "ClaimCompaniesLoaded.companies reads a claim's companies, which other code writes")
+    }
+
+    @Test
+    fun `a path finding is ambiguous when the first hop names no label`() {
+        val finding = PathRelationshipReport(pm).report(ClaimAnyEmployers::class.java).single()
+
+        assertNotNull(finding.ambiguity, "a first hop to any node may itself reach a company")
+    }
+
+    @Test
+    fun `a path finding is ambiguous when the first hop reaches the kind of node the path ends at`() {
+        val finding = PathRelationshipReport(pm).report(HumanHoldings::class.java).single()
+
+        assertEquals("OWNS", finding.type)
+        assertNotNull(finding.ambiguity, "a person owns a company directly, as the first hop says")
+    }
+
+    @Test
+    fun `a path finding is ambiguous when a node the first hop reaches can be one the path ends at`() {
+        run("CREATE (:Company:Organization {id: 'globex', name: 'Globex'})")
+        run("MATCH (h:Human {id: 'ada'}), (o:Organization {id: 'globex'}) CREATE (h)-[:OWNS]->(o)")
+
+        assertNull(
+            PathRelationshipReport(pm).report(HumanGroups::class.java).single().ambiguity,
+            "no view given says a company can be an organization",
+        )
+        val finding = PathRelationshipReport(pm).report(HumanGroups::class.java, CorporationStaff::class.java).single()
+
+        assertEquals(1, finding.direct, "a genuine first hop, which the removal statement would delete")
+        assertNotNull(finding.ambiguity, "a Corporation is a Company and an Organization")
     }
 
     @Test

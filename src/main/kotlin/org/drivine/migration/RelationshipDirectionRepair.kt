@@ -14,7 +14,7 @@ import org.drivine.query.QuerySpecification
  *
  * [report] looks at the views it is given and counts, for each such field, the relationships that
  * point away from the root. It changes nothing. [repair] turns the relationships of one finding
- * round, keeping their properties.
+ * round, keeping their properties unless one already points the right way.
  *
  * A relationship that points away from the root is not always a mistake: other code may have meant
  * it. [DirectionFinding.ambiguity] says when the views themselves give a reason to think so. Read the
@@ -27,11 +27,12 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
     /**
      * One finding for each relationship field declared `INCOMING` that a save writes, in [views] and
      * in the views nested in them. Give every view of the model: a finding is marked ambiguous when
-     * another of the views declares the same relationship pointing away from the root.
+     * another of the views declares the same relationship pointing away from the root, between nodes
+     * that can be the same ones. A `@ReadOnly` field counts: other code writes what it loads.
      */
     fun report(vararg views: Class<*>): List<DirectionFinding> {
-        val fields = stored.writtenFields(views)
-        return fields.filter { it.relationship.direction == Direction.INCOMING }.map { field ->
+        val fields = stored.declaredFields(views)
+        return fields.filter { !it.relationship.readOnly && it.relationship.direction == Direction.INCOMING }.map { field ->
             DirectionFinding(
                 view = field.view,
                 field = field.relationship.fieldName,
@@ -41,7 +42,6 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
                 wrongWay = stored.count(field.rootLabels, field.relationship.type, field.targetLabels),
                 rightWay = stored.count(field.targetLabels, field.relationship.type, field.rootLabels),
                 ambiguity = ambiguity(field, fields),
-                sameNodes = sameNodes(field),
             )
         }
     }
@@ -49,16 +49,18 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
     /**
      * Turns round the relationships [finding] counted as pointing the wrong way, [batchSize] to a
      * statement, and returns how many it turned. A relationship's properties go with it. Where one
-     * already points the right way between the same two nodes, the two become one.
+     * already points the right way between the same two nodes, the two become one and the one that
+     * already pointed the right way wins: it keeps its properties as they are, and those of the
+     * relationship turned round are dropped. It was written since the upgrade, so it is the newer.
      *
-     * Refused for an ambiguous finding unless [force] is set, and always refused for a field whose
-     * root and target can be the same nodes: there a relationship turned round still points away from
-     * a root.
+     * Refused for an ambiguous finding unless [force] is set, and always refused for a finding that
+     * is not [DirectionFinding.repairable]: its root and target can be the same nodes, and there a
+     * relationship turned round still points away from a root.
      */
     @JvmOverloads
     fun repair(finding: DirectionFinding, force: Boolean = false, batchSize: Int = 10_000): Long {
         require(batchSize > 0) { "batchSize must be positive, was $batchSize" }
-        check(!finding.sameNodes) {
+        check(finding.repairable) {
             "${finding.view.simpleName}.${finding.field} cannot be repaired: ${finding.ambiguity}"
         }
         check(finding.ambiguity == null || force) {
@@ -68,7 +70,7 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
             MATCH (root:${finding.rootLabels.joinToString(":")})-[r:${finding.type}]->(target:${finding.targetLabels.joinToString(":")})
             WITH root, r, target LIMIT ${'$'}batch
             MERGE (target)-[turned:${finding.type}]->(root)
-            SET turned += properties(r)
+            ON CREATE SET turned += properties(r)
             DELETE r
             RETURN count(*)
         """.trimIndent()
@@ -86,9 +88,8 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
         return turned
     }
 
-    /** True when one node can be both the root and the target of [field]: one's labels include the other's. */
-    private fun sameNodes(field: ViewField): Boolean =
-        field.rootLabels.containsAll(field.targetLabels) || field.targetLabels.containsAll(field.rootLabels)
+    /** True when one node can be both the root and the target of [field]. */
+    private fun sameNodes(field: ViewField): Boolean = sameLabels(field.rootLabels, field.targetLabels)
 
     private fun ambiguity(field: ViewField, all: List<ViewField>): String? {
         if (sameNodes(field)) {
@@ -109,6 +110,9 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
  * @property rightWay how many point from a target to a root, as the field reads them
  * @property ambiguity why the relationships counted in [wrongWay] may be meant; null when the views
  *   give no reason to think so
+ * @property repairable whether [RelationshipDirectionRepair.repair] can turn the relationships round.
+ *   False when a root and a target can be the same nodes, which no `force` overrides; a finding that
+ *   is ambiguous and repairable is one `force = true` repairs
  */
 data class DirectionFinding(
     val view: Class<*>,
@@ -119,5 +123,6 @@ data class DirectionFinding(
     val wrongWay: Long,
     val rightWay: Long,
     val ambiguity: String?,
-    internal val sameNodes: Boolean = false,
-)
+) {
+    val repairable: Boolean get() = !sameLabels(rootLabels, targetLabels)
+}
