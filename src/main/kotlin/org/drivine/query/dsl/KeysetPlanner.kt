@@ -76,7 +76,7 @@ internal object KeysetPlanner {
 
         val branches = orders.indices.map { branchIndex ->
             val equalPrefix = (0 until branchIndex).map { keyIndex ->
-                "${orders[keyIndex].propertyPath} = \$${paramName(keyIndex)}"
+                "${path(orders[keyIndex])} = \$${paramName(keyIndex)}"
             }
             val tail = comparison(orders[branchIndex], strict = true, index = branchIndex)
             (equalPrefix + tail).joinToString(" AND ").let { if (branchIndex == 0) it else "($it)" }
@@ -88,7 +88,7 @@ internal object KeysetPlanner {
             branches.joinToString(" OR ", prefix = "(", postfix = ")")
         }
         val notNulls = if (guardAgainstNulls) {
-            orders.map { "${it.propertyPath} IS NOT NULL" }
+            orders.map { "${path(it)} IS NOT NULL" }
         } else {
             emptyList()
         }
@@ -116,8 +116,11 @@ internal object KeysetPlanner {
             OrderDirection.ASC -> if (strict) ">" else ">="
             OrderDirection.DESC -> if (strict) "<" else "<="
         }
-        return "${order.propertyPath} $operator \$${paramName(index)}"
+        return "${path(order)} $operator \$${paramName(index)}"
     }
+
+    /** The order's property as it is written in the predicate: a dotted property is quoted. */
+    private fun path(order: OrderSpec): String = CypherGenerator.renderPropertyPath(order.propertyPath)
 
     private fun collectionSortHint(collectionSortCount: Int): String = when (collectionSortCount) {
         0 -> ""

@@ -3,8 +3,8 @@ package org.drivine.query.grammar
 import org.drivine.query.sort.CollectionSortEmitter
 
 /**
- * Memgraph — openCypher engine with full ACID, working nested pattern comprehensions, and
- * orphan delete. Ships without APOC (uses MAGE instead).
+ * Memgraph — openCypher engine with full ACID and working nested pattern comprehensions, but no
+ * orphan delete (see [supportsOrphanDelete]). Ships without APOC (uses MAGE instead).
  *
  * Memgraph's `EXISTS { pattern }` support is more restrictive than Neo4j 5's — it rejects
  * "unbounded variables" inside EXISTS and disallows EXISTS in a WITH clause. To stay compatible

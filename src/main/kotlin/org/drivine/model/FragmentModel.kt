@@ -102,8 +102,9 @@ data class FragmentModel(
             val allFields = extractFields(clazz)
             val nodeIdField = findNodeIdField(clazz)
 
-            validateGraphProperty(allFields, clazz)
+            // The stamp first: two stamp fields share a property, and should be told so as stamps.
             validateStamp(allFields, clazz)
+            validateGraphProperty(allFields, clazz)
 
             val nodeLabels = resolveNodeLabels(allFields, labels, clazz)
             val declared = allFields.filter { it.propertyBag == null && it.nodeLabels == null }
@@ -182,7 +183,11 @@ data class FragmentModel(
             return model
         }
 
-        /** A fragment has at most one `@NodeStamp` field, and it is a `String`. */
+        /**
+         * A fragment has at most one `@NodeStamp` field, and it is a `String` that carries no other
+         * mapping annotation: it is neither a property bag nor the node's labels, and no
+         * `@GraphProperty` renames it.
+         */
         private fun validateStamp(allFields: List<FragmentField>, clazz: Class<*>) {
             val stamps = allFields.filter { it.stamp }
             require(stamps.size <= 1) {
@@ -191,6 +196,10 @@ data class FragmentModel(
             stamps.forEach {
                 require(it.type == String::class.java && it.propertyBag == null && it.nodeLabels == null) {
                     "@NodeStamp field '${it.name}' on ${clazz.simpleName} must be a nullable String and carry no other mapping annotation."
+                }
+                require(it.propertyName == Stamps.QUOTED) {
+                    "@NodeStamp field '${it.name}' on ${clazz.simpleName} also has @GraphProperty(\"${it.propertyName}\"). " +
+                        "The stamp is stored under a property of its own, so it carries no other mapping annotation: remove @GraphProperty."
                 }
             }
         }
@@ -319,12 +328,20 @@ data class FragmentModel(
                         typeString = returnType.toString(),
                         propertyBag = property.propertyBagSpec(),
                         vectorIndexed = property.isVectorIndexed(),
-                        propertyName = if (property.isNodeStamp()) Stamps.QUOTED else property.graphPropertyName() ?: property.name,
+                        propertyName = storedName(property.name, property.isNodeStamp(), property.graphPropertyName()),
                         nodeLabels = property.nodeLabelsModel(clazz),
                         stamp = property.isNodeStamp(),
                     )
                 }.sortedBy { it.name }
         }
+
+        /**
+         * The property a field is stored under: its `@GraphProperty` [override] or its own name, and
+         * for a `@NodeStamp` field the stamp's property. A stamp field keeps an [override] it should
+         * not have, which is how [validateStamp] finds it and refuses it.
+         */
+        private fun storedName(field: String, stamp: Boolean, override: String?): String =
+            if (stamp && override == null) Stamps.QUOTED else override ?: field
 
         /** Whether a Kotlin property (or its backing field) carries `@NodeStamp`. */
         private fun KProperty1<*, *>.isNodeStamp(): Boolean =
@@ -426,11 +443,11 @@ data class FragmentModel(
                                 typeString = field.genericType.typeName,
                                 propertyBag = bag,
                                 vectorIndexed = field.isAnnotationPresent(VectorIndex::class.java),
-                                propertyName = if (field.isAnnotationPresent(NodeStamp::class.java)) {
-                                    Stamps.QUOTED
-                                } else {
-                                    field.getAnnotation(GraphProperty::class.java)?.value ?: field.name
-                                },
+                                propertyName = storedName(
+                                    field.name,
+                                    field.isAnnotationPresent(NodeStamp::class.java),
+                                    field.getAnnotation(GraphProperty::class.java)?.value,
+                                ),
                                 nodeLabels = nodeLabels,
                                 stamp = field.isAnnotationPresent(NodeStamp::class.java),
                             )

@@ -282,7 +282,7 @@ object CypherGenerator {
         }
 
         val orderByClause = if (rootOrders.isNotEmpty()) {
-            rootOrders.joinToString(", ") { "${it.propertyPath} ${it.direction.name}" }
+            rootOrders.joinToString(", ") { "${renderPropertyPath(it.propertyPath)} ${it.direction.name}" }
         } else {
             null
         }
@@ -430,21 +430,26 @@ object CypherGenerator {
     }
 
     /**
-     * Renders a `alias.property` path for the left-hand side of a condition, backtick-quoting the
-     * property segment when it contains a dot — a `@PropertyBag` key like `proposition.metadata.source`
-     * becomes `` proposition.`metadata.source` ``. Plain fields and relationship aliases are untouched.
-     * The parameter name is still derived from the raw path, so bindings stay aligned.
+     * Renders an `alias.property` path wherever it enters a statement — a condition, an `ORDER BY`, a
+     * keyset seek — backtick-quoting the property segment when it contains a dot: a `@PropertyBag` key
+     * like `proposition.metadata.source` becomes `` proposition.`metadata.source` ``, and a `@NodeStamp`
+     * field `` note.`__drivine.stamp` ``. Unquoted, `note.__drivine.stamp` reads the `stamp` of a
+     * `__drivine` that no node has, which is null for every row. Plain fields and relationship aliases
+     * are untouched. The parameter name is still derived from the raw path, so bindings stay aligned.
      */
-    private fun renderPropertyPath(propertyPath: String): String {
+    internal fun renderPropertyPath(propertyPath: String): String {
         val dot = propertyPath.indexOf('.')
         if (dot < 0) return propertyPath
-        val alias = propertyPath.substring(0, dot)
-        val property = propertyPath.substring(dot + 1)
-        // A dotted property segment (a @PropertyBag key, or a dynamic `property(path)`) is backtick-
-        // quoted; escape any backtick in it (Cypher doubles them) so a runtime-supplied key can't
-        // break out of the quotes.
-        return if (property.contains('.')) "$alias.`${property.replace("`", "``")}`" else propertyPath
+        return "${propertyPath.substring(0, dot)}.${quoteProperty(propertyPath.substring(dot + 1))}"
     }
+
+    /**
+     * A property name as it is written after an alias. A dotted name (a `@PropertyBag` key, the node
+     * stamp, or a dynamic `property(path)`) is backtick-quoted; any backtick in it is doubled, as
+     * Cypher escapes them, so a runtime-supplied key can't break out of the quotes.
+     */
+    internal fun quoteProperty(property: String): String =
+        if (property.contains('.')) "`${property.replace("`", "``")}`" else property
 
     /**
      * Renders a relationship predicate as a list predicate over the **already-projected** relationship
@@ -475,7 +480,7 @@ object CypherGenerator {
         val inner = condition.targetConditions.joinToString(" AND ") { targetCondition ->
             when (targetCondition) {
                 is WhereCondition.PropertyCondition -> {
-                    val lhs = "$elemVar.${targetCondition.propertyPath.substringAfter(".")}"
+                    val lhs = "$elemVar.${quoteProperty(targetCondition.propertyPath.substringAfter("."))}"
                     val rendered = buildPropertyConditionWithLhs(targetCondition, paramIndex, lhs)
                     if (targetCondition.operator != ComparisonOperator.IS_NULL &&
                         targetCondition.operator != ComparisonOperator.IS_NOT_NULL) {

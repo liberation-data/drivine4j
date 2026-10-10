@@ -30,6 +30,9 @@ data class DrivineQueryProperties(
      * How many loaded objects each GraphObjectManager's session tracks for dirty checking. Past it the
      * least recently used is evicted; an evicted object's next save writes all fields. An entry is a
      * compact digest (bytes per field), so the default costs tens of megabytes at most.
+     *
+     * Applies only to the deprecated GraphObjectManager: a StatelessGraphObjectManager keeps no
+     * session, so this bounds nothing there.
      */
     var sessionMaxEntries: Int = SessionManager.DEFAULT_MAX_ENTRIES,
 )

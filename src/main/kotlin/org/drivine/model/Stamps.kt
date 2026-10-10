@@ -13,8 +13,8 @@ object Stamps {
     /** [PROPERTY] as it is written in a statement. */
     const val QUOTED = "`$PROPERTY`"
 
-    /** The column a save statement returns the node's stamp under, once it has run. */
-    const val STAMP_COLUMN = "stamp"
+    /** The column a save statement returns its stamps under: the root's, then each stamped target's. */
+    const val STAMP_COLUMN = "stamps"
 
     /** A property a checked save sets and removes in one statement, to hold the node's write lock while it compares. */
     internal const val LOCK = "`__drivine.lock`"

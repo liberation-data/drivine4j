@@ -213,34 +213,18 @@ data class GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = declaredReadOnly(clazz, relationships, aggregateFields, readOnlyFields),
+                relationships = markReadOnly(relationships, readOnlyFields),
                 aggregateFields = aggregateFields
             )
         }
 
         /**
-         * Marks the relationships declared `@ReadOnly`, and rejects a field that no save can write
-         * and that does not say so: a `@GraphPath`, `@Count` or `@Aggregate` field names no single
-         * relationship, so it must be declared `@ReadOnly`.
+         * Marks the relationships no save writes: those declared `@ReadOnly`, and every `@GraphPath`
+         * field, which names no single relationship that a save could write. A `@Count` or
+         * `@Aggregate` field is not a relationship and is never written either.
          */
-        private fun declaredReadOnly(
-            clazz: Class<*>,
-            relationships: List<RelationshipModel>,
-            aggregateFields: List<AggregateFieldModel>,
-            readOnlyFields: Set<String>,
-        ): List<RelationshipModel> {
-            val undeclared = relationships.filter { it.isPath }.map { it.fieldName to "@GraphPath" } +
-                aggregateFields.map { it.fieldName to "@Count or @Aggregate" }
-            undeclared.firstOrNull { (field, _) -> field !in readOnlyFields }?.let { (field, kind) ->
-                throw IllegalArgumentException(
-                    """
-                    Field '$field' of ${clazz.simpleName} is a $kind field and must also be annotated @ReadOnly.
-                    It is loaded and never written: it names no single relationship that a save could write.
-                    """.trimIndent()
-                )
-            }
-            return relationships.map { it.copy(readOnly = it.fieldName in readOnlyFields) }
-        }
+        private fun markReadOnly(relationships: List<RelationshipModel>, readOnlyFields: Set<String>): List<RelationshipModel> =
+            relationships.map { it.copy(readOnly = it.isPath || it.fieldName in readOnlyFields) }
 
         /**
          * Creates a GraphViewModel from a Kotlin class annotated with @GraphView.
@@ -554,8 +538,8 @@ data class GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = declaredReadOnly(
-                    clazz, relationships, aggregateFields,
+                relationships = markReadOnly(
+                    relationships,
                     fields.filter { it.isAnnotationPresent(ReadOnly::class.java) }.map { it.name }.toSet(),
                 ),
                 aggregateFields = aggregateFields

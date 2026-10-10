@@ -31,3 +31,62 @@ class StampFilterDslTest @Autowired constructor(
         assertEquals(listOf(saved.id), found.map { it.id })
     }
 }
+
+/**
+ * The generated DSL orders and pages by a `@NodeStamp` field. The stamp's property is dotted, so it
+ * must reach the statement quoted: unquoted it is null for every row, which orders arbitrarily and
+ * makes every keyset page empty.
+ */
+@SpringBootTest(classes = [SampleAppContext::class])
+@Transactional
+@Rollback(true)
+class StampOrderDslTest @Autowired constructor(
+    private val stateless: StatelessGraphObjectManager,
+) {
+    private val batch = UUID.randomUUID().toString()
+
+    /** Five notes of this test's own batch, and their stamps in ascending order. */
+    private fun savedStamps(): List<String> =
+        (1..5).map { assertNotNull(stateless.save(StampedNote(UUID.randomUUID().toString(), "$batch $it")).stamp) }.sorted()
+
+    @Test
+    fun `an order by the stamp field sorts by the stamp`() {
+        val stamps = savedStamps()
+
+        val ascending = stateless.loadAll<StampedNote> {
+            where { query.text startsWith batch }
+            orderBy { query.stamp.asc() }
+        }
+        val descending = stateless.loadAll<StampedNote> {
+            where { query.text startsWith batch }
+            orderBy { query.stamp.desc() }
+        }
+
+        assertEquals(stamps, ascending.map { it.stamp })
+        assertEquals(stamps.reversed(), descending.map { it.stamp })
+    }
+
+    @Test
+    fun `a keyset on the stamp field pages through every node once`() {
+        val stamps = savedStamps()
+
+        val paged = mutableListOf<String>()
+        var page = stateless.loadAll<StampedNote> {
+            where { query.text startsWith batch }
+            orderBy { query.stamp.asc() }
+            limit(2)
+        }
+        while (page.isNotEmpty()) {
+            paged += page.map { assertNotNull(it.stamp) }
+            val last = paged.last()
+            page = stateless.loadAll<StampedNote> {
+                where { query.text startsWith batch }
+                orderBy { query.stamp.asc() }
+                seek { query.stamp after last }
+                limit(2)
+            }
+        }
+
+        assertEquals(stamps, paged)
+    }
+}

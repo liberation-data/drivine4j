@@ -6,9 +6,14 @@ import org.drivine.query.dsl.IndexAdvicePolicy
 import org.drivine.session.SessionManager
 
 /**
- * Factory for creating GraphObjectManager instances.
- * Uses PersistenceManagerFactory to inject PersistenceManager instances.
- * Each GraphObjectManager gets its own SessionManager instance.
+ * Hands out the object managers of each registered database, one per database and
+ * [PersistenceManagerType], built on the [PersistenceManager] that [PersistenceManagerFactory] gives.
+ *
+ * - [stateless] returns a [StatelessGraphObjectManager], which keeps no session. Use this one.
+ * - [get] returns the deprecated [GraphObjectManager], each with a [SessionManager] of its own.
+ *
+ * The two can share a database. They do not save alike: see the README, "Migrating from
+ * GraphObjectManager".
  */
 @Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
 class GraphObjectManagerFactory(
@@ -27,26 +32,11 @@ class GraphObjectManagerFactory(
     private val statelessManagers: MutableMap<String, StatelessGraphObjectManager> = mutableMapOf()
 
     /**
-     * Returns a GraphObjectManager for the database registered under the specified name.
+     * Returns a [StatelessGraphObjectManager] for the database registered under the specified name:
+     * the same one each time for a given [database] and [type]. It keeps no session, so it can share
+     * a database with a manager from [get].
      * @param database Unique name for the registered database.
      * @param type The type of PersistenceManager to use (TRANSACTIONAL, NON_TRANSACTIONAL, or DELEGATING).
-     */
-    @Deprecated("Use stateless(): GraphObjectManager is deprecated in favour of StatelessGraphObjectManager.", ReplaceWith("stateless(database, type)"))
-    @JvmOverloads
-    fun get(database: String = "default", type: PersistenceManagerType = PersistenceManagerType.DELEGATING): GraphObjectManager {
-        val key = "$database:$type"
-        if (!managers.containsKey(key)) {
-            val persistenceManager = persistenceManagerFactory.get(database, type)
-            val sessionManager = SessionManager(objectMapper, sessionMaxEntries)
-            managers[key] = GraphObjectManager(persistenceManager, sessionManager, objectMapper, subtypeRegistry)
-                .apply { indexAdvice = this@GraphObjectManagerFactory.indexAdvice }
-        }
-        return managers[key]!!
-    }
-
-    /**
-     * Returns a [StatelessGraphObjectManager] for the database registered under the specified name.
-     * It keeps no session, so it can share a database with a manager from [get].
      */
     @JvmOverloads
     @Synchronized
@@ -54,5 +44,29 @@ class GraphObjectManagerFactory(
         statelessManagers.getOrPut("$database:$type") {
             StatelessGraphObjectManager(persistenceManagerFactory.get(database, type), objectMapper, subtypeRegistry)
                 .apply { indexAdvice = this@GraphObjectManagerFactory.indexAdvice }
+        }
+
+    /**
+     * Returns a GraphObjectManager for the database registered under the specified name: the same
+     * one each time for a given [database] and [type].
+     * @param database Unique name for the registered database.
+     * @param type The type of PersistenceManager to use (TRANSACTIONAL, NON_TRANSACTIONAL, or DELEGATING).
+     */
+    @Deprecated(
+        "GraphObjectManager is deprecated in favour of StatelessGraphObjectManager, from stateless(). " +
+            "The stateless manager saves differently: its save adds relationships and removes none unless told to, " +
+            "where this manager's removes what its session saw and the object no longer holds. " +
+            "So this is not a drop-in replacement. See the README: Migrating from GraphObjectManager."
+    )
+    @JvmOverloads
+    @Synchronized
+    fun get(database: String = "default", type: PersistenceManagerType = PersistenceManagerType.DELEGATING): GraphObjectManager =
+        managers.getOrPut("$database:$type") {
+            GraphObjectManager(
+                persistenceManagerFactory.get(database, type),
+                SessionManager(objectMapper, sessionMaxEntries),
+                objectMapper,
+                subtypeRegistry,
+            ).apply { indexAdvice = this@GraphObjectManagerFactory.indexAdvice }
         }
 }

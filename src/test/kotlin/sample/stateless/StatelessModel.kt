@@ -119,14 +119,14 @@ data class Dossier(
     val claims: List<ClaimView> = emptyList(),
 )
 
-/** Computed fields, declared read-only as they must be. */
+/** A computed field declared read-only, which it is anyway. */
 @GraphView
 data class ClaimStats(
     @Root val claim: Claim,
     @ReadOnly @Count("MENTIONS") val mentionCount: Long,
 )
 
-/** Rejected at model build: a path field that is not declared read-only. */
+/** A path field that is not declared read-only, and is read-only all the same. */
 @GraphView
 data class UndeclaredPath(
     @Root val claim: Claim,
@@ -137,14 +137,14 @@ data class UndeclaredPath(
     val employers: List<Company> = emptyList(),
 )
 
-/** Rejected at model build: a count that is not declared read-only. */
+/** A count that is not declared read-only, and is never written all the same. */
 @GraphView
 data class UndeclaredCount(
     @Root val claim: Claim,
     @Count("MENTIONS") val mentionCount: Long,
 )
 
-/** Rejected at model build: an aggregate that is not declared read-only. */
+/** An aggregate that is not declared read-only, and is never written all the same. */
 @GraphView
 data class UndeclaredAggregate(
     @Root val claim: Claim,

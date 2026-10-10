@@ -76,7 +76,7 @@ import kotlin.annotation.AnnotationTarget.CLASS
  * @Transactional
  * @Rollback(true)  // Change to false to inspect DB after test
  * class MyTest @Autowired constructor(
- *     private val graphObjectManager: GraphObjectManager
+ *     private val graphObjectManager: StatelessGraphObjectManager
  * ) {
  *     @Test
  *     fun myTest() {

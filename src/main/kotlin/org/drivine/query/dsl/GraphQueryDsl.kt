@@ -376,7 +376,8 @@ class SeekBuilder<T : Any>(
  *
  * Obtain these through the typed property references — `property after value` inside a
  * [GraphQuerySpec.seek] block, or `property.after(value)` from Java — rather than
- * constructing them directly: [propertyPath] is interpolated into Cypher verbatim.
+ * constructing them directly: [propertyPath] is interpolated into Cypher, quoted only where its
+ * property is dotted.
  */
 data class SeekValueSpec(
     val propertyPath: String,

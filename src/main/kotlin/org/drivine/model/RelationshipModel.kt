@@ -133,8 +133,8 @@ data class RelationshipModel(
     val hops: List<HopModel> = emptyList(),
 
     /**
-     * Whether the field is declared `@ReadOnly`: loaded, and skipped by every save. Always true for
-     * a path.
+     * Whether the field is loaded and skipped by every save: one declared `@ReadOnly`, or a path,
+     * which is read-only whether or not it is declared so.
      */
     val readOnly: Boolean = false,
 ) {

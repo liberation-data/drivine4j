@@ -326,13 +326,14 @@ interface GraphObjectOperations {
     /**
      * Deletes a graph object by its ID, applying a cascade policy scoped by the view.
      *
-     * Mirrors [save]'s cascade parameter on the delete path. The cascade boundary is the shape
-     * of the view passed in — see [delete] (the four-arg overload) for the full semantics.
+     * The cascade boundary is the shape of the view passed in — see [delete] (the four-arg
+     * overload) for the full semantics.
      *
      * @param id The ID value of the object to delete
      * @param graphClass The graph object class
      * @param cascade The cascade policy (default NONE = root-only DETACH DELETE)
      * @return The number of nodes deleted (root plus any cascaded fragments)
+     * @throws UnsupportedOperationException for [CascadeType.DELETE_ORPHAN] on Memgraph
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>, cascade: CascadeType): Int
 
@@ -365,8 +366,8 @@ interface GraphObjectOperations {
      *   declared relationships (honoring direction and maxDepth). Nodes the view does not include
      *   survive; DETACH merely drops the edges to them.
      * - [CascadeType.DELETE_ORPHAN] → also deletes each included related fragment, but only if it
-     *   has no relationships left once the root is removed. Requires a grammar that supports it
-     *   (see [validateCascadeSupport]).
+     *   has no relationships left once the root is removed. Throws `UnsupportedOperationException`
+     *   on Memgraph, which cannot run the check.
      *
      * Ids are always bound as parameters; nothing is interpolated into the Cypher.
      *
@@ -375,6 +376,7 @@ interface GraphObjectOperations {
      * @param whereClause Additional WHERE clause conditions (without WHERE keyword)
      * @param cascade The cascade policy
      * @return The number of nodes deleted (root plus any cascaded fragments)
+     * @throws UnsupportedOperationException for [CascadeType.DELETE_ORPHAN] on Memgraph
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int
 
@@ -440,7 +442,47 @@ interface GraphObjectOperations {
     fun <T : Any> loadNearest(graphClass: Class<T>, vector: List<Float>, topK: Int): List<Scored<T>> =
         loadNearest(graphClass, vector, topK, null, null, null)
 
+    /** [loadNearest] with a [threshold] and nothing after it, for Java. */
+    fun <T : Any> loadNearest(graphClass: Class<T>, vector: List<Float>, topK: Int, threshold: Double?): List<Scored<T>> =
+        loadNearest(graphClass, vector, topK, threshold, null, null)
+
+    /** [loadNearest] with a [threshold] and a [searchK] and no partition label, for Java. */
+    fun <T : Any> loadNearest(
+        graphClass: Class<T>,
+        vector: List<Float>,
+        topK: Int,
+        threshold: Double?,
+        searchK: Int?,
+    ): List<Scored<T>> = loadNearest(graphClass, vector, topK, threshold, searchK, null)
+
+    /** [loadNearest] on a named [property] with every optional argument left out, for Java. */
+    fun <T : Any> loadNearest(graphClass: Class<T>, property: String?, vector: List<Float>, topK: Int): List<Scored<T>> =
+        loadNearest(graphClass, property, vector, topK, null, null, null)
+
+    /** [loadNearest] on a named [property] with a [threshold] and nothing after it, for Java. */
+    fun <T : Any> loadNearest(
+        graphClass: Class<T>,
+        property: String?,
+        vector: List<Float>,
+        topK: Int,
+        threshold: Double?,
+    ): List<Scored<T>> = loadNearest(graphClass, property, vector, topK, threshold, null, null)
+
+    /** [loadNearest] on a named [property] with a [threshold] and a [searchK] and no partition label, for Java. */
+    fun <T : Any> loadNearest(
+        graphClass: Class<T>,
+        property: String?,
+        vector: List<Float>,
+        topK: Int,
+        threshold: Double?,
+        searchK: Int?,
+    ): List<Scored<T>> = loadNearest(graphClass, property, vector, topK, threshold, searchK, null)
+
     /** [loadMatching] with every optional argument left out, for Java. */
     fun <T : Any> loadMatching(graphClass: Class<T>, query: String, topK: Int): List<Scored<T>> =
         loadMatching(graphClass, query, topK, 0.0)
+
+    /** [loadMatching] on a named [property] with every optional argument left out, for Java. */
+    fun <T : Any> loadMatching(graphClass: Class<T>, property: String?, query: String, topK: Int): List<Scored<T>> =
+        loadMatching(graphClass, property, query, topK, 0.0)
 }
