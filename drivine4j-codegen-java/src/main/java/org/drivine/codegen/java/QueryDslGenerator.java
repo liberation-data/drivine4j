@@ -21,8 +21,11 @@ import java.util.*;
  */
 public class QueryDslGenerator {
 
-    /** The property a `@NodeStamp` field is stored under. Mirrors `Stamps.PROPERTY`; the query DSL quotes it. */
-    private static final String STAMP_PROPERTY = "__drivine.stamp";
+    /**
+     * The property a `@NodeStamp` field is stored under; the query DSL quotes it. A constant of the core
+     * library, which the compiler copies in: the generator needs no core class when it runs.
+     */
+    private static final String STAMP_PROPERTY = org.drivine.model.Stamps.PROPERTY;
 
     private final Elements elementUtils;
     private final Types typeUtils;
