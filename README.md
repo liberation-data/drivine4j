@@ -1406,6 +1406,8 @@ writes only what changed. It is kept small and bounded:
 
 `StatelessGraphObjectManager` loads, queries and deletes exactly as `GraphObjectManager` does (both implement `GraphObjectOperations`), and it keeps no session. What a save writes is decided by the object and the arguments, never by whether the object was loaded before. Use it when anything else writes to the same graph: plain Cypher, another manager, another process.
 
+See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the whole release, what it breaks, and a table for moving from `GraphObjectManager`.
+
 ```kotlin
 val stateless = graphObjectManagerFactory.stateless()
 

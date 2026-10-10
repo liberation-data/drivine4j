@@ -109,6 +109,26 @@ abstract class ReplaceRelationshipsContract {
         assertEquals(setOf("acme"), mentioned("c1", "Company"), "companies was not named, so its empty list removes nothing")
     }
 
+    // ----- Deleting a removed target that nothing points at -----
+
+    @Test
+    fun `DELETE_UNREFERENCED deletes a removed target that no relationship points at, and keeps one that has`() {
+        // Only this claim mentions Cy. The memo also mentions Bob.
+        run("CREATE (:Human {id: 'cy', name: 'Cy'})")
+        run("MATCH (c:Claim {id: 'c1'}), (h:Human {id: 'cy'}) CREATE (c)-[:MENTIONS]->(h)")
+        val view = assertNotNull(stateless.load<ClaimView>("c1"))
+        assertEquals(setOf("ada", "bob", "cy"), view.people.map { it.id }.toSet())
+
+        stateless.save(
+            view.copy(people = view.people.filter { it.id == "ada" }),
+            Replace(ClaimView::people, removedTargets = RemovedTargets.DELETE_UNREFERENCED),
+        )
+
+        assertEquals(setOf("ada"), mentioned("c1", "Human"))
+        assertEquals(setOf("ada", "bob"), nodes("Human"), "nothing points at Cy any more; the memo still mentions Bob")
+        assertEquals(setOf("acme"), mentioned("c1", "Company"), "the companies field was not named")
+    }
+
     // ----- A path field -----
 
     @Test
