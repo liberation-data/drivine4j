@@ -213,6 +213,19 @@ abstract class StatelessSaveReviewContract {
     }
 
     @Test
+    fun `update of a stamped node deleted after its load returns null on its only attempt`() {
+        stateless.save(Claim("c1", "one"))
+
+        val updated = stateless.update<Claim>("c1", attempts = 1) {
+            run("MATCH (c:Claim {id: 'c1'}) DETACH DELETE c")
+            it.copy(text = "two")
+        }
+
+        assertNull(updated)
+        assertEquals(emptyList(), strings("MATCH (c:Claim) RETURN c.id"))
+    }
+
+    @Test
     fun `update of a stamped node deleted after its load returns null`() {
         stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
 

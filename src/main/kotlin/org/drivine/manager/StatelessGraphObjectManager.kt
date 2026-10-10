@@ -292,6 +292,11 @@ class StatelessGraphObjectManager private constructor(
             try {
                 return saveChanged(loadedClass, before, loadedStamp, changed)
             } catch (stale: StaleObjectException) {
+                // A stamped node that was deleted is found stale, not gone: there is no node to try again on.
+                if (stale.deleted) {
+                    logger.debug("{} '{}' was deleted during update", graphClass.simpleName, id, stale)
+                    return null
+                }
                 last = stale
                 logger.debug("{} '{}' changed during update, attempt {} of {}", graphClass.simpleName, id, attempt + 1, attempts, stale)
             } catch (gone: SaveExecutor.RootGone) {
