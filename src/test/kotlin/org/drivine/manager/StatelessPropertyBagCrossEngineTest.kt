@@ -27,6 +27,8 @@ import sample.propertybag.TypedBagNode
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * `@PropertyBag` round-trip verified on Neo4j, FalkorDB, and Memgraph: a multi-entry bag persists as
@@ -236,4 +238,19 @@ class StatelessPropertyBagMemgraphTest {
 
     @Test
     fun `property bag round-trips on Memgraph`() = verify(buildGom(pm, SubtypeRegistry()))
+}
+
+@OracleTests
+class StatelessPropertyBagOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test
+    fun `property bag round-trips on Oracle`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `typed property bags round-trip on Oracle`() = verifyTypedBags(buildGom(pm, SubtypeRegistry()))
 }

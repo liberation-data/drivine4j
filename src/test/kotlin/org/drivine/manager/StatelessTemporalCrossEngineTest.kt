@@ -20,6 +20,8 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * Cross-engine temporal consistency: every temporal type saved via `save()` must round-trip, be
@@ -108,4 +110,15 @@ class StatelessTemporalFalkorDbTest {
     }
 
     @Test fun `temporal round-trip and range on FalkorDB (ISO string via coercer)`() = verifyTemporal(gom, pm)
+}
+
+@OracleTests
+class StatelessTemporalOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test fun `temporal round-trip and range on Oracle`() = verifyTemporal(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
 }

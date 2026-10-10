@@ -22,6 +22,9 @@ import sample.nullpolicy.VecSaveNode
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.BeforeEach
 
 /**
  * Null-write policy verified against Neo4j / FalkorDB / Memgraph, one uniform contract for every field.
@@ -36,7 +39,7 @@ import kotlin.test.assertTrue
 private val VEC = listOf(1.0f, 0.0f, 0.0f, 0.0f)
 
 /** (title, hasEmbedding) read straight from the stored node, engine-agnostic. */
-private fun probe(pm: NonTransactionalPersistenceManager): Pair<String?, Boolean> {
+private fun probe(pm: PersistenceManager): Pair<String?, Boolean> {
     val rows = pm.query(
         QuerySpecification
             .withStatement("MATCH (n:VecSave {id: 'x'}) RETURN {title: n.title, hasEmbedding: n.embedding IS NOT NULL} AS r")
@@ -47,7 +50,7 @@ private fun probe(pm: NonTransactionalPersistenceManager): Pair<String?, Boolean
     return (row["title"] as String?) to (row["hasEmbedding"] as Boolean)
 }
 
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
     // Seed: a node with a computed embedding.
@@ -172,4 +175,15 @@ class StatelessNullPolicyMemgraphTest {
     }
 
     @Test fun `null-write policy on Memgraph`() = verify(buildGom(pm, registry), pm)
+}
+
+@OracleTests
+class StatelessNullPolicyOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test fun `null-write policy on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
 }

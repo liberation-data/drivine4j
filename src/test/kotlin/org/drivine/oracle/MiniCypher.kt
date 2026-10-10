@@ -53,17 +53,11 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
             when {
                 word("MATCH") -> {
                     val patterns = patterns()
-                    val where = if (word("WHERE")) at.also { expression(emptyMap(), evaluate = false); if (take('=')) expression(emptyMap(), evaluate = false) } else null
+                    val where = if (word("WHERE")) at.also { condition(emptyMap(), evaluate = false) } else null
                     rows = rows.flatMap { row -> patterns.fold(listOf(row)) { matched, pattern -> matched.flatMap { match(pattern, it) } } }
                     if (where != null) {
                         val end = at
-                        rows = rows.filter { row ->
-                            at = where
-                            val left = expression(row)
-                            val holds = if (take('=')) left == expression(row) else left == true
-                            at = end
-                            holds
-                        }
+                        rows = rows.filter { row -> at = where; (condition(row) == true).also { at = end } }
                     }
                 }
                 word("CREATE") -> patterns().let { patterns -> rows = rows.map { row -> patterns.fold(row) { bound, pattern -> create(pattern, bound) } } }
@@ -83,10 +77,36 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                     val variable = name()!!
                     rows.forEach { row -> delete(row.getValue(variable) as Node) }
                 }
+                word("UNWIND") -> {
+                    val lists = each(rows) { row, evaluate -> expression(row, evaluate) }
+                    check(word("AS"))
+                    val variable = name()!!
+                    rows = rows.zip(lists).flatMap { (row, list) -> (list as? Collection<*>).orEmpty().map { row + (variable to it) } }
+                }
                 word("RETURN") -> {
-                    val start = at
-                    returned = rows.map { row -> at = start; expression(row) }
-                    if (rows.isEmpty()) expression(emptyMap(), evaluate = false)
+                    skipSpace()
+                    if (text.startsWith("count(", at)) {
+                        at += "count(".length
+                        returned = listOf(each(rows) { row, evaluate -> condition(row, evaluate) }.count { it != null }.toLong())
+                        expect(')')
+                        if (word("AS")) name()
+                    } else {
+                        val values = each(rows) { row, evaluate -> condition(row, evaluate) }
+                        if (word("AS")) name()
+                        returned = if (word("ORDER")) {
+                            check(word("BY"))
+                            val keys = each(rows) { row, evaluate -> expression(row, evaluate) }
+                            val descending = word("DESC")
+                            word("ASC")
+                            val ordered = values.zip(keys).sortedWith { a, b ->
+                                // An absent key sorts last, as the graph engines sort a null.
+                                if (a.second == null || b.second == null) compareValues(a.second == null, b.second == null) else order(a.second!!, b.second!!)
+                            }.map { it.first }
+                            if (descending) ordered.reversed() else ordered
+                        } else {
+                            values
+                        }
+                    }
                 }
                 else -> fail("a clause")
             }
@@ -95,6 +115,13 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         }
         store()
         return returned.orEmpty()
+    }
+
+    /** What the expression at this point gives for each of [rows]; it is read past once when there are none. */
+    private fun each(rows: List<Map<String, Any?>>, read: (Map<String, Any?>, Boolean) -> Any?): List<Any?> {
+        val start = at
+        if (rows.isEmpty()) read(emptyMap(), false)
+        return rows.map { row -> at = start; read(row, true) }
     }
 
     // ----- Matching and changing the graph in memory -----
@@ -223,11 +250,67 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
 
     private fun assign(row: Map<String, Any?>, evaluate: Boolean = true) {
         val variable = name() ?: fail("a variable")
+        if (peek() == ':') {
+            // `SET n:Label`: the labels are added to the node.
+            while (take(':')) {
+                val label = name() ?: fail("a label")
+                (row[variable] as? Node)?.takeIf { evaluate && label !in it.labels }?.let { it.labels += label; it.changed = true }
+            }
+            return
+        }
         expect('.')
         val key = name() ?: fail("a property name")
         expect('=')
         val value = expression(row, evaluate)
         if (evaluate) write(row[variable], key, value)
+    }
+
+    /** Comparisons joined by `AND`. */
+    private fun condition(row: Map<String, Any?>, evaluate: Boolean = true): Any? {
+        var value = comparison(row, evaluate)
+        while (word("AND")) {
+            val right = comparison(row, evaluate)
+            value = value == true && right == true
+        }
+        return value
+    }
+
+    private fun comparison(row: Map<String, Any?>, evaluate: Boolean): Any? {
+        val left = expression(row, evaluate)
+        if (word("IS")) {
+            val not = word("NOT")
+            check(word("NULL"))
+            return (left == null) != not
+        }
+        skipSpace()
+        val operator = listOf("<>", ">=", "<=", "=", ">", "<").firstOrNull { text.startsWith(it, at) } ?: return left
+        at += operator.length
+        val right = expression(row, evaluate)
+        return when {
+            !evaluate -> null
+            operator == "=" -> same(left, right)
+            left == null || right == null -> false
+            operator == "<>" -> !same(left, right)
+            operator == ">=" -> order(left, right) >= 0
+            operator == "<=" -> order(left, right) <= 0
+            operator == ">" -> order(left, right) > 0
+            else -> order(left, right) < 0
+        }
+    }
+
+    /** How two values order: numbers by size, moments by time whether held as text or not, anything else as text. */
+    private fun order(a: Any, b: Any): Int {
+        if (a is Number && b is Number) return a.toDouble().compareTo(b.toDouble())
+        val (x, y) = moment(a) to moment(b)
+        return if (x != null && y != null) x.compareTo(y) else a.toString().compareTo(b.toString())
+    }
+
+    private fun moment(value: Any): java.time.Instant? = when (value) {
+        is java.time.Instant -> value
+        is java.time.ZonedDateTime -> value.toInstant()
+        is java.time.OffsetDateTime -> value.toInstant()
+        is String -> runCatching { java.time.OffsetDateTime.parse(value).toInstant() }.getOrNull()
+        else -> null
     }
 
     /** Terms joined by `+`. Without [evaluate] the expression is read past, and gives nothing. */
@@ -258,6 +341,19 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                     expect(']')
                 }
                 items
+            }
+            c == '{' -> {
+                at++
+                val entries = linkedMapOf<String, Any?>()
+                if (!take('}')) {
+                    do {
+                        val key = name() ?: fail("a key")
+                        expect(':')
+                        entries[key] = condition(row, evaluate)
+                    } while (take(','))
+                    expect('}')
+                }
+                entries
             }
             c == '-' || c.isDigit() -> {
                 val start = at++
@@ -291,6 +387,12 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         "coalesce" -> arguments.firstOrNull { it != null }
         "type" -> (arguments[0] as? Edge)?.type
         "labels" -> (arguments[0] as? Node)?.labels
+        // The stamp is a property on the graph engines, and a node that has one lists it.
+        "keys" -> when (val element = arguments[0]) {
+            is Node -> element.properties.keys.toList() + listOfNotNull(Stamps.PROPERTY.takeIf { element.stamp != null })
+            is Edge -> element.properties.keys.toList()
+            else -> null
+        }
         "left" -> (arguments[0] as String?)?.take((arguments[1] as Number).toInt())
         "right" -> (arguments[0] as String?)?.takeLast((arguments[1] as Number).toInt())
         "replace" -> (arguments[0] as String?)?.replace(arguments[1] as String, arguments[2] as String)
@@ -392,7 +494,12 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                     )
                 ).single().let { (it as Number).toLong() }
             } else if (node.changed) {
-                pm.execute(sql("UPDATE ${graph}_node SET props = \$props, stamp = \$stamp WHERE nid = \$nid", "props" to node.properties, "stamp" to node.stamp, "nid" to node.nid))
+                pm.execute(
+                    sql(
+                        "UPDATE ${graph}_node SET labels = \$labels, props = \$props, stamp = \$stamp WHERE nid = \$nid",
+                        "labels" to node.labels.sorted(), "props" to node.properties, "stamp" to node.stamp, "nid" to node.nid,
+                    )
+                )
             }
         }
         edges.forEach { edge ->

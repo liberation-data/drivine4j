@@ -7,6 +7,8 @@ import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
+import org.drivine.mapper.JdbcResultMapper
+import org.drivine.mapper.JdbcRow
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
@@ -72,8 +74,15 @@ object OracleTestDatabase {
         @Suppress("UNCHECKED_CAST")
         override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
             val text = spec.statement!!.text.trim()
-            return if (MiniCypher.reads(text)) MiniCypher(pm, text, spec.parameters).run() as List<T> else pm.query(spec)
+            if (!MiniCypher.reads(text)) return pm.query(spec)
+            // Each row is one value, mapped as the row of a statement the store ran would be.
+            val rows = MiniCypher(pm, text, spec.parameters).run().map { JdbcRow(listOf("value"), listOf(it)) }
+            return JdbcResultMapper().mapQueryResults(rows, spec)
         }
+
+        override fun <T : Any> getOne(spec: QuerySpecification<T>): T = query(spec).single()
+
+        override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? = query(spec).singleOrNull()
     }
 
     /**
