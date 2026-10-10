@@ -107,3 +107,59 @@ data class CorporationStaff(
     @GraphRelationship(type = "EMPLOYS", direction = Direction.OUTGOING)
     val staff: List<Human> = emptyList(),
 )
+
+/** The companies that are part of an organization, read against their direction. A `Corporation` is both. */
+@GraphView
+data class OrganizationParts(
+    @Root val organization: Organization,
+    @GraphRelationship(type = "PART_OF", direction = Direction.INCOMING)
+    val parts: List<Company> = emptyList(),
+)
+
+/** A path whose first hop is the relationship `ClaimEmployers.employers` was written as: a claim mentions a company. */
+@GraphView
+data class ClaimOwners(
+    @Root val claim: Claim,
+    @ReadOnly
+    @GraphPath([
+        Hop("MENTIONS", Direction.OUTGOING, label = "Company"),
+        Hop("OWNED_BY", Direction.OUTGOING),
+    ])
+    val owners: List<Human> = emptyList(),
+)
+
+/** A path whose first hop points at the root, from the kind of node the path ends at. */
+@GraphView
+data class HumanBackers(
+    @Root val human: Human,
+    @ReadOnly
+    @GraphPath([
+        Hop("BACKS", Direction.INCOMING, label = "Company"),
+        Hop("OWNS", Direction.OUTGOING),
+    ])
+    val holdings: List<Company> = emptyList(),
+)
+
+/** A fragment with no label: any node is one. */
+@NodeFragment
+data class Thing(@NodeId val id: String)
+
+/** The claims that mention a node of any label. */
+@GraphView
+data class ThingClaims(
+    @Root val thing: Thing,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.INCOMING)
+    val claims: List<Claim> = emptyList(),
+)
+
+/** A path from a node of any label. */
+@GraphView
+data class ThingEmployers(
+    @Root val thing: Thing,
+    @ReadOnly
+    @GraphPath([
+        Hop("MENTIONS", Direction.OUTGOING, label = "Human"),
+        Hop("WORKS_AT", Direction.OUTGOING),
+    ])
+    val employers: List<Company> = emptyList(),
+)

@@ -29,9 +29,11 @@ import sample.stateless.Claim
 import sample.stateless.ClaimAnyEmployers
 import sample.stateless.ClaimCompaniesLoaded
 import sample.stateless.ClaimEmployers
+import sample.stateless.ClaimOwners
 import sample.stateless.ClaimView
 import sample.stateless.CorporationStaff
 import sample.stateless.Human
+import sample.stateless.HumanBackers
 import sample.stateless.HumanClaims
 import sample.stateless.HumanFollowers
 import sample.stateless.HumanGroups
@@ -39,6 +41,9 @@ import sample.stateless.HumanHoldings
 import sample.stateless.HumanMentions
 import sample.stateless.HumanMentionsLoaded
 import sample.stateless.MemoPeople
+import sample.stateless.OrganizationParts
+import sample.stateless.ThingClaims
+import sample.stateless.ThingEmployers
 import sample.stateless.VipClaims
 import sample.stateless.VipMentions
 
@@ -238,6 +243,116 @@ abstract class RelationshipDirectionRepairContract {
         assertTrue(repair.report(HumanClaims::class.java).single().repairable)
     }
 
+    @Test
+    fun `relationships that already point the right way are not counted, however many there are`() {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS {page: 8}]->(h), (c)-[:MENTIONS {page: 9}]->(h)")
+
+        assertEquals(2, repair.repair(repair.report(HumanClaims::class.java).single()), "the two that pointed the wrong way")
+
+        assertEquals(
+            listOf("c1 -MENTIONS 8-> ada", "c1 -MENTIONS 9-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"),
+            relationships(),
+        )
+    }
+
+    @Test
+    fun `several relationships that point the wrong way between two nodes become one, and each is counted`() {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (h)-[:MENTIONS {page: 7}]->(c)")
+        val finding = repair.report(HumanClaims::class.java).single()
+        assertEquals(3, finding.wrongWay)
+
+        assertEquals(3, repair.repair(finding))
+
+        assertEquals(listOf("c1 -MENTIONS 7-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"), relationships())
+    }
+
+    // Both ends of a relationship between two corporations are an organization and a company.
+    private fun seedCorporations() {
+        run("CREATE (:Organization {id: 'group', name: 'Group'}), (:Company {id: 'acme', name: 'Acme'})")
+        run("CREATE (:Company:Organization {id: 'globex', name: 'Globex'}), (:Company:Organization {id: 'hooli', name: 'Hooli'})")
+        // As the old save wrote them: from the root (an organization) to the company.
+        run("MATCH (o:Organization {id: 'group'}), (c:Company {id: 'acme'}) CREATE (o)-[:PART_OF]->(c)")
+        run("MATCH (o:Organization {id: 'group'}), (c:Company {id: 'globex'}) CREATE (o)-[:PART_OF]->(c)")
+        // As the field reads them.
+        run("MATCH (c:Company {id: 'acme'}), (o:Organization {id: 'hooli'}) CREATE (c)-[:PART_OF]->(o)")
+        run("MATCH (c:Company {id: 'globex'}), (o:Organization {id: 'hooli'}) CREATE (c)-[:PART_OF]->(o)")
+    }
+
+    @Test
+    fun `the report counts apart a relationship between two nodes that each carry the labels of both ends`() {
+        seedCorporations()
+
+        val finding = repair.report(OrganizationParts::class.java).single()
+
+        assertEquals(2, finding.wrongWay)
+        assertEquals(1, finding.rightWay)
+        assertEquals(1, finding.eitherWay, "globex and hooli are each a company and an organization")
+        assertNull(finding.ambiguity)
+        assertTrue(finding.repairable)
+    }
+
+    @Test
+    fun `repair leaves alone a relationship between two nodes that each carry the labels of both ends`() {
+        seedCorporations()
+
+        assertEquals(2, repair.repair(repair.report(OrganizationParts::class.java).single()))
+
+        assertEquals(
+            listOf(
+                "acme -PART_OF-> group", "acme -PART_OF-> hooli", "ada -MENTIONS 7-> c1", "ada -MENTIONS-> c2",
+                "c3 -MENTIONS-> bob", "globex -PART_OF-> group", "globex -PART_OF-> hooli",
+            ),
+            relationships(),
+        )
+    }
+
+    @Test
+    fun `repairing twice changes nothing the second time where nodes carry the labels of both ends`() {
+        seedCorporations()
+        repair.repair(repair.report(OrganizationParts::class.java).single())
+        val after = relationships()
+
+        val again = repair.report(OrganizationParts::class.java).single()
+        assertEquals(0, again.wrongWay)
+        assertEquals(1, again.eitherWay)
+        assertEquals(0, repair.repair(again))
+        assertEquals(0, repair.repair(again, force = true), "forced or not")
+
+        assertEquals(after, relationships())
+    }
+
+    @Test
+    fun `a field whose root has no label is reported and cannot be repaired`() {
+        val before = relationships()
+
+        val finding = repair.report(ThingClaims::class.java).single()
+
+        assertEquals(emptyList(), finding.rootLabels)
+        assertEquals(2, finding.wrongWay)
+        assertEquals(1, finding.rightWay)
+        assertEquals(0, finding.eitherWay)
+        assertNotNull(finding.ambiguity, "a node of any label can be a claim")
+        assertTrue(!finding.repairable)
+        assertFailsWith<IllegalStateException> { repair.repair(finding, force = true) }
+        assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a finding built by hand is refused for its labels, and the refusal says why`() {
+        run("MATCH (a:Human {id: 'ada'}), (b:Human {id: 'bob'}) CREATE (a)-[:FOLLOWS]->(b)")
+        val before = relationships()
+        val finding = repair.report(HumanFollowers::class.java).single().copy(ambiguity = null)
+
+        val refused = assertFailsWith<IllegalStateException> { repair.repair(finding) }
+
+        assertEquals(
+            "HumanFollowers.followers cannot be repaired: its root and its target can be the same nodes, " +
+                "so nothing tells a relationship written the wrong way from one that is meant.",
+            refused.message,
+        )
+        assertEquals(before, relationships())
+    }
+
     // ----- A path field written as a direct relationship -----
 
     private fun seedPath() {
@@ -322,6 +437,38 @@ abstract class RelationshipDirectionRepairContract {
 
         assertEquals(1, finding.direct, "a genuine first hop, which the removal statement would delete")
         assertNotNull(finding.ambiguity, "a Corporation is a Company and an Organization")
+    }
+
+    @Test
+    fun `a path finding is ambiguous when another path's first hop is that relationship`() {
+        seedPath()
+
+        assertNull(PathRelationshipReport(pm).report(ClaimEmployers::class.java).single().ambiguity)
+        val finding = PathRelationshipReport(pm).report(ClaimEmployers::class.java, ClaimOwners::class.java)
+            .single { it.field == "employers" }
+
+        assertEquals(1, finding.direct, "what may be a first hop of ClaimOwners.owners, which the removal statement would delete")
+        assertNotNull(finding.ambiguity, "ClaimOwners.owners goes from a claim to a company by MENTIONS")
+    }
+
+    @Test
+    fun `a path finding is not ambiguous for a first hop that points at the root`() {
+        val finding = PathRelationshipReport(pm).report(HumanBackers::class.java).single()
+
+        assertEquals("BACKS", finding.type)
+        assertNull(finding.ambiguity, "the first hop runs from a company to a person, and the old save wrote from a person to a company")
+    }
+
+    @Test
+    fun `the path report counts and removes for a root that has no label`() {
+        seedPath()
+
+        val finding = PathRelationshipReport(pm).report(ThingEmployers::class.java).single()
+
+        assertEquals(emptyList(), finding.rootLabels)
+        assertEquals(1, finding.direct)
+        run(finding.removalStatement)
+        assertEquals(listOf("ada -MENTIONS 7-> c1", "ada -MENTIONS-> c2", "bob -WORKS_AT-> acme", "c3 -MENTIONS-> bob"), relationships())
     }
 
     @Test
