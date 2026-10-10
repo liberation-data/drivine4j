@@ -1,8 +1,11 @@
 package org.drivine.migration
 
+import com.fasterxml.jackson.annotation.JsonSubTypes
+import java.lang.reflect.Modifier
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
 import org.drivine.manager.PersistenceManager
+import org.drivine.model.AggregateFieldModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
@@ -73,8 +76,35 @@ internal class PathHop(val type: String, val direction: Direction, val startLabe
         storedFrom(direction, startLabels, endLabels, from, to, labelSets)
 }
 
+/**
+ * A `@Count` or `@Aggregate` field of a view, with the labels of the view's root. It reads the
+ * relationships of its type on the root's side it declares, to a node of any label.
+ */
+internal class AggregateField(val view: Class<*>, val aggregate: AggregateFieldModel, val rootLabels: List<String>) {
+
+    /**
+     * Whether this field reads relationships stored from nodes labelled [from] to nodes labelled [to],
+     * or from nodes that can be the same as those.
+     */
+    fun storesFrom(from: List<String>, to: List<String>, labelSets: Set<List<String>>): Boolean =
+        storedFrom(aggregate.direction, rootLabels, emptyList(), from, to, labelSets)
+}
+
 /** A relationship or path field of a view, with the labels of the nodes at its two ends. */
 internal class ViewField(val view: Class<*>, val relationship: RelationshipModel, val rootLabels: List<String>, val targetLabels: List<String>) {
+
+    /**
+     * Whether a save before 0.1.0 wrote this field as a relationship of [type] from nodes labelled
+     * [from] to nodes labelled [to], or from nodes that can be the same as those. That save wrote a
+     * `@GraphPath` field as one relationship of its first hop's type, and each node of a list read
+     * over several hops as one relationship of the field's type, from the root straight to the node
+     * in both cases, whatever direction was declared.
+     */
+    fun wasWrittenDirect(type: String, from: List<String>, to: List<String>, labelSets: Set<List<String>>): Boolean {
+        val written = if (relationship.isPath) relationship.hops.first().type else relationship.type
+        return (relationship.isPath || relationship.readsSeveralHops) && written == type &&
+            canBeSame(rootLabels, from, labelSets) && canBeSame(targetLabels, to, labelSets)
+    }
 
     /**
      * Whether this field reads relationships stored from nodes labelled [from] to nodes labelled [to],
@@ -109,8 +139,18 @@ internal class StoredRelationships(private val persistenceManager: PersistenceMa
     /** The `@GraphPath` fields in [views] and in the views nested in them. */
     fun pathFields(views: Array<out Class<*>>): List<ViewField> = declared(views).fields.filter { it.relationship.isPath }
 
+    /** The `@Count` and `@Aggregate` fields in [views] and in the views nested in them. */
+    fun aggregateFields(views: Array<out Class<*>>): List<AggregateField> = declared(views).aggregates
+
     /** The labels of each kind of node [views] name: their roots and the targets of their fields, nested views included. */
     fun labelSets(views: Array<out Class<*>>): Set<List<String>> = declared(views).labelSets
+
+    /**
+     * What of [views] could not be looked at: a field whose target is a view that is abstract or an
+     * interface, with no subtype the class names and none among [views]. A view of such a subtype
+     * may declare relationships of its own, and nothing here has seen them.
+     */
+    fun unexamined(views: Array<out Class<*>>): List<String> = declared(views).unexamined.toList()
 
     /** How many relationships of [type] run from a node labelled [from] to a node labelled [to]. */
     fun count(from: List<String>, type: String, to: List<String>): Long =
@@ -127,13 +167,16 @@ internal class StoredRelationships(private val persistenceManager: PersistenceMa
     )
 
     /**
-     * How many of the relationships [wrongWay] counts run between two nodes that also have one from
-     * the target to the root: a repair makes one relationship of the two.
+     * How many of the relationships [wrongWay] counts run between two nodes that have another of the
+     * type between them, pointing either way: a repair makes one relationship of them all.
      */
     fun collisions(rootLabels: List<String>, type: String, targetLabels: List<String>): Long = count(
         "MATCH ${nodePattern(rootLabels, "root")}-[r:$type]->${nodePattern(targetLabels, "target")} " +
             "WHERE NOT (${eitherWay(rootLabels, targetLabels)}) " +
-            "MATCH (target)-[:$type]->(root) RETURN count(DISTINCT r)"
+            "WITH root, target, count(r) AS wrong " +
+            "OPTIONAL MATCH (target)-[k:$type]->(root) " +
+            "WITH root, target, wrong, count(k) AS right " +
+            "RETURN coalesce(sum(CASE WHEN wrong + right > 1 THEN wrong ELSE 0 END), 0)"
     )
 
     /** How many relationships of [type] run from a target to a root, those that can point [eitherWay] left out. */
@@ -153,20 +196,22 @@ internal class StoredRelationships(private val persistenceManager: PersistenceMa
 
     private class Declared {
         val fields = mutableListOf<ViewField>()
+        val aggregates = mutableListOf<AggregateField>()
         val labelSets = linkedSetOf<List<String>>()
+        val unexamined = linkedSetOf<String>()
     }
 
     private fun declared(views: Array<out Class<*>>): Declared {
         val seen = mutableSetOf<Class<*>>()
-        return Declared().also { into -> views.forEach { collect(it, seen, into) } }
+        return Declared().also { into -> views.forEach { collect(it, seen, into, views) } }
     }
 
-    private fun collect(view: Class<*>, seen: MutableSet<Class<*>>, into: Declared) {
+    private fun collect(view: Class<*>, seen: MutableSet<Class<*>>, into: Declared, given: Array<out Class<*>>) {
         if (!seen.add(view)) return
         require(view.isAnnotationPresent(GraphView::class.java)) { "${view.simpleName} is not a @GraphView." }
         val model = GraphViewModel.from(view)
-        val rootLabels = FragmentModel.from(model.rootFragment.fragmentType).labels
-        into.labelSets += rootLabels
+        val rootLabels = labelsOf(model.rootFragment.fragmentType, into)
+        model.aggregateFields.forEach { into.aggregates += AggregateField(view, it, rootLabels) }
         model.relationships.forEach { relationship ->
             val target = if (relationship.isRelationshipFragment) {
                 requireNotNull(relationship.targetNodeType) { "Relationship fragment '${relationship.fieldName}' has no target" }
@@ -175,10 +220,41 @@ internal class StoredRelationships(private val persistenceManager: PersistenceMa
             }
             val nested = target.isAnnotationPresent(GraphView::class.java)
             val targetFragment = if (nested) GraphViewModel.from(target).rootFragment.fragmentType else target
-            val targetLabels = FragmentModel.from(targetFragment).labels
-            into.labelSets += targetLabels
+            val targetLabels = labelsOf(targetFragment, into)
             into.fields += ViewField(view, relationship, rootLabels, targetLabels)
-            if (nested) collect(target, seen, into)
+            if (nested) {
+                collect(target, seen, into, given)
+                // A view of a subtype declares relationships of its own.
+                val subtypes = subtypesOf(target).filter { it.isAnnotationPresent(GraphView::class.java) }
+                subtypes.forEach { collect(it, seen, into, given) }
+                if (isAbstract(target) && subtypes.isEmpty() && given.none { it != target && target.isAssignableFrom(it) }) {
+                    into.unexamined += "${view.simpleName}.${relationship.fieldName} holds ${target.simpleName}, which is abstract " +
+                        "and names no subtype: the views of its subtypes were not examined. Give them to the report."
+                }
+            }
         }
+        // A view given by its supertype is its subtypes' views too.
+        subtypesOf(view).filter { it.isAnnotationPresent(GraphView::class.java) }.forEach { collect(it, seen, into, given) }
     }
+
+    /** The labels of [fragment], recorded with those of each subtype it names: a node of the subtype is one of [fragment]'s. */
+    private fun labelsOf(fragment: Class<*>, into: Declared): List<String> {
+        val labels = FragmentModel.from(fragment).labels
+        into.labelSets += labels
+        subtypesOf(fragment).forEach { subtype -> runCatching { FragmentModel.from(subtype).labels }.onSuccess { into.labelSets += it } }
+        return labels
+    }
+
+    /**
+     * The subtypes [type] names, and theirs: the subclasses of a sealed class and the classes of a
+     * `@JsonSubTypes`. A subtype registered only at run time is not among them.
+     */
+    private fun subtypesOf(type: Class<*>, found: MutableSet<Class<*>> = linkedSetOf()): Set<Class<*>> {
+        val named = type.getAnnotation(JsonSubTypes::class.java)?.value?.map { it.value.java }.orEmpty() +
+            runCatching { type.kotlin.sealedSubclasses.map { it.java } }.getOrDefault(emptyList())
+        named.forEach { if (it != type && found.add(it)) subtypesOf(it, found) }
+        return found
+    }
+
+    private fun isAbstract(type: Class<*>): Boolean = type.isInterface || Modifier.isAbstract(type.modifiers)
 }

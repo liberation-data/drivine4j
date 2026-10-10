@@ -1,5 +1,6 @@
 package sample.stateless
 
+import org.drivine.annotation.Count
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphPath
 import org.drivine.annotation.GraphRelationship
@@ -190,4 +191,124 @@ data class VipFollowers(
     @Root val vip: VipHuman,
     @GraphRelationship(type = "FOLLOWS", direction = Direction.INCOMING)
     val followers: List<Human> = emptyList(),
+)
+
+/** A person and how many relationships they have to anything they mention: a count names no target. */
+@GraphView
+data class HumanMentionCount(
+    @Root val human: Human,
+    @Count("MENTIONS") val mentioned: Long = 0,
+)
+
+/** A claim and how many relationships it has to anything it mentions. */
+@GraphView
+data class ClaimMentionCount(
+    @Root val claim: Claim,
+    @Count("MENTIONS") val mentioned: Long = 0,
+)
+
+/**
+ * A path from a person to claims, whose hops are not the relationship `HumanClaims` reads: the old
+ * save wrote it as one all the same, a `MENTIONS` from the person straight to each claim.
+ */
+@GraphView
+data class HumanClaimsByEmployer(
+    @Root val human: Human,
+    @GraphPath([
+        Hop("MENTIONS", Direction.OUTGOING, label = "Company"),
+        Hop("ABOUT", Direction.OUTGOING),
+    ])
+    val claims: List<Claim> = emptyList(),
+)
+
+/** The relationship `HumanClaims` reads, read either way round. */
+@GraphView
+data class HumanMentionsEitherWay(
+    @Root val human: Human,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.UNDIRECTED)
+    val claims: List<Claim> = emptyList(),
+)
+
+/** `HumanClaims` from its other end, read against its direction too: the people a claim is mentioned by. */
+@GraphView
+data class ClaimMentioners(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.INCOMING)
+    val people: List<Human> = emptyList(),
+)
+
+/** A view of views of views: `HumanClaims` is two levels down. */
+@GraphView
+data class CompanyMemos(
+    @Root val company: Company,
+    @GraphRelationship(type = "FILES", direction = Direction.OUTGOING)
+    val memos: List<MemoPeople> = emptyList(),
+)
+
+/** A view nested in itself, read against its direction: an organization and those that report to it. */
+@GraphView
+data class OrganizationTree(
+    @Root val organization: Organization,
+    @GraphRelationship(type = "REPORTS_TO", direction = Direction.INCOMING)
+    val reports: List<OrganizationTree> = emptyList(),
+)
+
+/** The claims that cover a memo, read against their direction. */
+@GraphView
+data class MemoCoveredBy(
+    @Root val memo: Memo,
+    @GraphRelationship(type = "COVERS", direction = Direction.INCOMING)
+    val claims: List<Claim> = emptyList(),
+)
+
+/** The same, read over several hops: the old save wrote each claim as one `COVERS` from the memo. */
+@GraphView
+data class MemoCoverChain(
+    @Root val memo: Memo,
+    @GraphRelationship(type = "COVERS", direction = Direction.INCOMING, maxDepth = 5)
+    val chain: List<Claim> = emptyList(),
+)
+
+/** A kind of view that names its subtypes. */
+@GraphView
+sealed class HumanCard {
+    abstract val human: Human
+}
+
+/** One of them, which declares the relationship `HumanClaims` reads, pointing away from the root. */
+@GraphView
+data class MentioningCard(
+    @Root override val human: Human,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.OUTGOING)
+    val claims: List<Claim> = emptyList(),
+) : HumanCard()
+
+/** A view that holds views of that kind. */
+@GraphView
+data class MemoCards(
+    @Root val memo: Memo,
+    @GraphRelationship(type = "SHOWS", direction = Direction.OUTGOING)
+    val cards: List<HumanCard> = emptyList(),
+)
+
+/** A kind of view that names no subtype: nothing says which views are of this kind. */
+@GraphView
+abstract class HumanSheet {
+    abstract val human: Human
+}
+
+/** One of them. */
+@GraphView
+data class MentioningSheet(
+    @Root override val human: Human,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.OUTGOING)
+    val claims: List<Claim> = emptyList(),
+) : HumanSheet()
+
+/** A view that holds views of that kind. */
+@GraphView
+data class MemoSheets(
+    @Root val memo: Memo,
+    @GraphRelationship(type = "SHOWS", direction = Direction.OUTGOING)
+    val sheets: List<HumanSheet> = emptyList(),
 )
