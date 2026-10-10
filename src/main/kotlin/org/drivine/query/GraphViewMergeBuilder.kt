@@ -333,6 +333,22 @@ class GraphViewMergeBuilder(
         }
     }
 
+    /** The relationship `r` of [relModel] between root and target, as its field's direction reads it. */
+    private fun matchEdge(relModel: RelationshipModel): String = when (relModel.direction) {
+        Direction.OUTGOING -> "-[r:${relModel.type}]->"
+        Direction.INCOMING -> "<-[r:${relModel.type}]-"
+        Direction.UNDIRECTED -> "-[r:${relModel.type}]-"
+    }
+
+    /**
+     * The relationship of [relModel] to merge between root and target, in its field's direction. An
+     * undirected field is written from the root, since a relationship is stored with a direction.
+     */
+    private fun mergeEdge(relModel: RelationshipModel, variable: String = ""): String = when (relModel.direction) {
+        Direction.INCOMING -> "<-[$variable:${relModel.type}]-"
+        Direction.OUTGOING, Direction.UNDIRECTED -> "-[$variable:${relModel.type}]->"
+    }
+
     /**
      * Builds a DELETE statement for a relationship whose target [targetId] was in the snapshot and is
      * no longer present. Behavior depends on cascade policy:
@@ -363,7 +379,7 @@ class GraphViewMergeBuilder(
                 """
                     MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                     MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                    MATCH (root)-[r:${relModel.type}]->(target)
+                    MATCH (root)${matchEdge(relModel)}(target)
                     DELETE r
                 """.trimIndent()
             }
@@ -410,7 +426,7 @@ class GraphViewMergeBuilder(
         val targetLabels = target.fragmentModel.labels.joinToString(":")
 
         val query = """
-            MATCH (root:$rootLabels {$rootIdProperty: ${'$'}rootId})-[r:${relModel.type}]->(target:$targetLabels)
+            MATCH (root:$rootLabels {$rootIdProperty: ${'$'}rootId})${matchEdge(relModel)}(target:$targetLabels)
             WHERE NOT target.$targetIdProperty IN ${'$'}keepIds
             DELETE r
             WITH DISTINCT target
@@ -583,7 +599,7 @@ class GraphViewMergeBuilder(
             """
                 MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                MERGE (root)-[r:${relModel.type}]->(target)
+                MERGE (root)${mergeEdge(relModel, "r")}(target)
                 SET r += {$relPropsString}
             """.trimIndent()
         } else {
@@ -591,7 +607,7 @@ class GraphViewMergeBuilder(
             """
                 MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                MERGE (root)-[:${relModel.type}]->(target)
+                MERGE (root)${mergeEdge(relModel)}(target)
             """.trimIndent()
         }
 

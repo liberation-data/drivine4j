@@ -75,6 +75,14 @@ data class ClaimReviewers(
     val reviewers: List<Human> = emptyList(),
 )
 
+/** A relationship read against its direction: the claims that mention a person. */
+@GraphView
+data class HumanClaims(
+    @Root val human: Human,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.INCOMING)
+    val claims: List<Claim> = emptyList(),
+)
+
 /** Computed fields, declared read-only as they must be. */
 @GraphView
 data class ClaimStats(

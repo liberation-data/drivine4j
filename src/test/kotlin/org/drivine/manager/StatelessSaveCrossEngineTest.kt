@@ -19,6 +19,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -31,6 +32,7 @@ import org.testcontainers.utility.DockerImageName
 import sample.stateless.Claim
 import sample.stateless.ClaimView
 import sample.stateless.Human
+import sample.stateless.HumanClaims
 import sample.stateless.Memo
 
 /**
@@ -241,6 +243,47 @@ abstract class StatelessSaveContract {
         gom.save(Claim("c1", "Ada founded Acme"))
 
         stateless.save(loaded.copy(note = "still current"))
+    }
+
+    // ----- An incoming relationship field -----
+
+    private fun mentions(): Set<String> = pm.query(
+        QuerySpecification.withStatement("MATCH (a)-[:MENTIONS]->(b) RETURN a.id + '->' + b.id").transform(String::class.java)
+    ).toSet()
+
+    @Test
+    fun `an incoming relationship field is written towards the root and loads back`() {
+        stateless.save(HumanClaims(Human("ada", "Ada"), claims = listOf(Claim("c1", "Ada founded Acme"))))
+
+        assertEquals(setOf("c1->ada"), mentions())
+        assertEquals(listOf("c1"), stateless.load<HumanClaims>("ada")?.claims?.map { it.id })
+    }
+
+    @Test
+    fun `GraphObjectManager removes an incoming relationship dropped from a loaded view`() {
+        val mapper = Neo4jObjectMapper.instance
+        val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        run("CREATE (:Human {id: 'ada', name: 'Ada'}), (:Claim {id: 'c1', text: 'one'}), (:Claim {id: 'c2', text: 'two'})")
+        run("MATCH (c:Claim), (h:Human {id: 'ada'}) CREATE (c)-[:MENTIONS]->(h)")
+        val loaded = assertNotNull(gom.load("ada", HumanClaims::class.java))
+
+        gom.save(loaded.copy(claims = loaded.claims.filter { it.id == "c1" }))
+
+        assertEquals(setOf("c1->ada"), mentions())
+    }
+
+    @Test
+    fun `GraphObjectManager reconciles an incoming relationship field under DELETE_ORPHAN`() {
+        assumeTrue(pm.type != DatabaseType.MEMGRAPH, "Memgraph has no DELETE_ORPHAN")
+        val mapper = Neo4jObjectMapper.instance
+        val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        run("CREATE (:Human {id: 'ada', name: 'Ada'}), (:Claim {id: 'c1', text: 'one'}), (:Claim {id: 'c2', text: 'two'})")
+        run("MATCH (c:Claim), (h:Human {id: 'ada'}) CREATE (c)-[:MENTIONS]->(h)")
+
+        gom.save(HumanClaims(Human("ada", "Ada"), claims = listOf(Claim("c1", "one"))), CascadeType.DELETE_ORPHAN)
+
+        assertEquals(setOf("c1->ada"), mentions())
+        assertEquals(listOf("c1"), stateless.loadAll<Claim>().map { it.id })
     }
 
     // ----- only and except -----
