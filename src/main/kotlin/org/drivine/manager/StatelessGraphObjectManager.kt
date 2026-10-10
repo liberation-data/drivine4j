@@ -61,6 +61,13 @@ class StatelessGraphObjectManager private constructor(
      * A relationship the save adds or removes, or whose properties it changes, gives the node at each
      * end a new relationship token in its stamp. Only a save with [Replace] compares that token.
      *
+     * A stamp is handed back with the node's relationship token only if the node's relationships were
+     * as the object's stamp says when the save began. Otherwise another writer added or removed one the
+     * object does not hold, and the object keeps the token it had: a [Replace] of it is still refused.
+     *
+     * A node reached through a relationship is written whole and unchecked, a null field left alone
+     * whatever [nullPolicy] says: the policy governs the root. [update] writes only what was altered.
+     *
      * @param relationships [Add] (the default) adds the relationships the object holds and removes
      *   none. [Replace] names the relationship fields whose list is the whole list.
      * @param nullPolicy how a null field is treated; see [NullPolicy]
@@ -138,7 +145,9 @@ class StatelessGraphObjectManager private constructor(
     /**
      * Loads the [graphClass] object with [id], applies [change] to it, and writes what the change
      * altered: the fields that differ, a field the change set to null, and for a view the
-     * relationships it added or dropped and the related nodes it altered. A relationship another
+     * relationships it added or dropped and the related nodes it altered. Of a related node that was
+     * loaded, the fields that differ are written and one set to null is cleared; the rest are left, so
+     * another writer's change to a field [change] did not touch stands. A relationship another
      * writer added in the meantime is kept. [change] may return a changed copy, or change the object
      * it is given and return that.
      *
@@ -244,7 +253,7 @@ class StatelessGraphObjectManager private constructor(
                 Load the object first, or name the fields to replace: Replace(${clazz.simpleName}::field).
                 """.trimIndent()
             }
-            return relationships.filterNot { it.readOnly }
+            return relationships.filterNot { it.readOnly }.onEach { requireList(obj, it) }
         }
         return replace.fields.map { name ->
             val relationship = relationships.firstOrNull { it.fieldName == name }
@@ -252,13 +261,16 @@ class StatelessGraphObjectManager private constructor(
             require(!relationship.readOnly) {
                 "Field '$name' of ${clazz.simpleName} is read-only: it is loaded and never written, so it cannot be replaced."
             }
-            // A list that was never set is not an empty list: replacing with it would remove everything.
-            require(!relationship.isCollection || read(obj, name) != null) {
-                "Field '$name' of this ${clazz.simpleName} is null. To remove every relationship of the field, give it an empty list."
-            }
+            requireList(obj, relationship)
             relationship
         }
     }
+
+    /** A list that was never set is not an empty list: replacing with it would remove everything. */
+    private fun requireList(obj: Any, relationship: RelationshipModel) =
+        require(!relationship.isCollection || read(obj, relationship.fieldName) != null) {
+            "Field '${relationship.fieldName}' of this ${obj.javaClass.simpleName} is null. To remove every relationship of the field, give it an empty list."
+        }
 }
 
 /** Loads, changes and saves a graph object, with a reified type. See [StatelessGraphObjectManager.update]. */

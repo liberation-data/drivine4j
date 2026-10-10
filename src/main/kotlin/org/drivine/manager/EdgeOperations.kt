@@ -27,8 +27,9 @@ class EdgeOperations internal constructor(
      *
      * Both nodes are matched, never created: if either is absent, or lacks a label its [NodeRef]
      * names, nothing is written and the result is false. Neither node is loaded, and neither's own
-     * properties are touched. Both get a new relationship token in their stamp, so a save that replaces
-     * a relationship list of either, from an object loaded before this call, is refused.
+     * properties are touched. When the relationship is made, or its properties change, both get a new
+     * relationship token in their stamp, so a save that replaces a relationship list of either, from an
+     * object loaded before this call, is refused. A call that finds the relationship as it is marks neither.
      *
      * Under [RelateMode.MERGE] (the default) there is at most one [type] relationship from [from] to
      * [to], and its [properties] are set whether it was made or found. Under [RelateMode.CREATE] each

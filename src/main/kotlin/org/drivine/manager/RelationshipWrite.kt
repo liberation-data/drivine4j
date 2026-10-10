@@ -17,6 +17,7 @@ enum class RemovedTargets {
      * The node is deleted when nothing else refers to it the way the field did: for an outgoing field,
      * when no relationship of any type points at it; for an incoming field, when it points at nothing;
      * for an undirected field, when it has no relationship at all. Its other relationships go with it.
+     * The root of the save is never deleted, though a relationship from it to itself is removed.
      */
     DELETE_UNREFERENCED,
 }
@@ -27,7 +28,8 @@ enum class RemovedTargets {
  *
  * A field removes only what it loads: relationships of its type and direction, to nodes with its
  * target's labels. A read-only field cannot be replaced, and every `@GraphPath` field is one. A
- * named list that is null is refused; an empty list removes every relationship of the field.
+ * list that is null is refused; an empty list removes every relationship of the field. The fields
+ * are those of the view that is saved: the lists of a view nested in it only add.
  *
  * The removals are part of the save's one statement. On a root that carries a stamp, the save is
  * refused if any relationship of the root was added or removed since the object was loaded, from
@@ -52,7 +54,7 @@ class Replace private constructor(
         /**
          * Every relationship field of the view, read-only fields aside. Refused for an object that
          * carries no stamp, because its lists did not come from the store, and so for a view whose
-         * root declares no `@NodeStamp` field.
+         * root declares no `@NodeStamp` field. Refused too when one of the lists is null.
          */
         @JvmStatic
         @JvmOverloads

@@ -40,6 +40,12 @@ object Stamps {
     /** The token of [stamp] that speaks for the node's properties and labels. */
     internal fun nodeToken(stamp: String): String = stamp.substringBefore(':')
 
+    /** The token of [stamp] that speaks for the node's relationships; null when [stamp] is not two tokens. */
+    internal fun linksToken(stamp: String): String? = stamp.substringAfter(':', "").ifEmpty { null }
+
+    /** The expression for the relationship token of the stamp [alias] carries. */
+    internal fun linksTokenOf(alias: String): String = "right($alias.$QUOTED, $TOKEN)"
+
     /** The expression for the node token of the stamp [alias] carries. */
     internal fun nodeTokenOf(alias: String): String = "left($alias.$QUOTED, $TOKEN)"
 

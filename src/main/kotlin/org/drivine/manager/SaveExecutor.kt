@@ -18,7 +18,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
     }
 
     /**
-     * Runs a whole save. Returns the stamps it left: the root's, then that of each of the statement's
+     * Runs a whole save. Returns the stamps to hand back: the root's, then that of each of the statement's
      * stamped targets, in their order. Throws [StaleObjectException] when the root is not as it was when the object was
      * loaded; the statement has then written nothing.
      */
@@ -32,8 +32,18 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
         val row = rows.firstOrNull() as? String
         if (row != null) {
             val returned = row.split(',')
-            val byIndex = returned.drop(1).associate { it.substringBefore('=').toInt() to it.substringAfter('=') }
-            return listOf(returned.first()) + statement.stamped.indices.map { byIndex.getValue(it) }
+            // Each related node's is keyed `index/found`: found is the relationship token it had before the save.
+            val byIndex = returned.drop(1).associate { entry ->
+                val (key, stamp) = entry.split('=', limit = 2)
+                key.substringBefore('/').toInt() to (key.substringAfter('/') to stamp)
+            }
+            return listOf(returned.first()) + statement.stamped.indices.map { index ->
+                val (found, stamp) = byIndex.getValue(index)
+                // A node whose relationships changed since its object was loaded keeps the object's token:
+                // the stamp handed back does not vouch for relationships the object never held.
+                val carried = statement.carriedLinks[index]
+                if (carried == null || carried == found) stamp else "${Stamps.nodeToken(stamp)}:$carried"
+            }
         }
         throw statement.root.expected?.let { staleObject(statement.root, it) }
             ?: IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")

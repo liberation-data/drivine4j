@@ -40,14 +40,17 @@ import sample.stateless.ClaimLead
 import sample.stateless.ClaimReviewers
 import sample.stateless.ClaimSupporters
 import sample.stateless.ClaimSupports
+import sample.stateless.ClaimTags
 import sample.stateless.ClaimView
 import sample.stateless.Company
+import sample.stateless.Dossier
 import sample.stateless.Draft
 import sample.stateless.DraftBoard
 import sample.stateless.Frozen
 import sample.stateless.Human
 import sample.stateless.HumanCitations
 import sample.stateless.HumanClaims
+import sample.stateless.HumanFollowers
 import sample.stateless.Memo
 import sample.stateless.MemoView
 import sample.stateless.Pals
@@ -734,7 +737,173 @@ abstract class StatelessSingleStatementContract {
         assertEquals(emptySet(), ids("Claim") + ids("Memo"))
     }
 
+    // ----- What a stamp handed back vouches for -----
+
+    @Test
+    fun `a save that adds hands back a stamp Replace refuses, when another writer added a relationship first`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val loaded = assertNotNull(stateless.load<ClaimView>("c1"))
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("bob", "Bob"))))
+
+        val saved = stateless.save(loaded.copy(claim = loaded.claim.copy(note = "edited")))
+
+        assertEquals(nodeToken(stamp("c1")), nodeToken(saved.claim.stamp), "the node's own data is as the object has it")
+        assertEquals(linkToken(loaded.claim.stamp), linkToken(saved.claim.stamp), "the object never held bob")
+        assertFailsWith<StaleObjectException> { stateless.save(saved, Replace(ClaimView::people)) }
+        assertEquals(listOf("c1->ada", "c1->bob"), edges("MENTIONS"))
+        // Its own data can still be saved.
+        stateless.save(saved.copy(claim = saved.claim.copy(note = "again")))
+        assertEquals("again", property("c1", "note"))
+    }
+
+    @Test
+    fun `a save that adds hands back a stamp Replace accepts, when no other writer came between`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val loaded = assertNotNull(stateless.load<ClaimView>("c1"))
+
+        val saved = stateless.save(loaded.copy(people = loaded.people + Human("bob", "Bob")))
+
+        assertEquals(stamp("c1"), saved.claim.stamp)
+        stateless.save(saved.copy(people = saved.people.filter { it.id == "bob" }), Replace(ClaimView::people))
+        assertEquals(listOf("c1->bob"), edges("MENTIONS"))
+    }
+
+    @Test
+    fun `update hands back a stamp Replace refuses, when another writer added a relationship as it ran`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+
+        val updated = assertNotNull(
+            stateless.update<ClaimView>("c1") { loaded ->
+                stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("bob", "Bob"))))
+                loaded.copy(people = loaded.people + Human("cy", "Cy"))
+            }
+        )
+
+        assertFailsWith<StaleObjectException> { stateless.save(updated, Replace(ClaimView::people)) }
+        assertEquals(listOf("c1->ada", "c1->bob", "c1->cy"), edges("MENTIONS"))
+    }
+
+    @Test
+    fun `a related node is handed back with the relationship token it was loaded with`() {
+        stateless.save(HumanClaims(Human("ada", "Ada"), claims = listOf(Claim("c1", "one"))))
+        stateless.save(Human("bob", "Bob"))
+        val loaded = assertNotNull(stateless.load<HumanClaims>("ada"))
+        stateless.edges.relate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS")
+
+        val saved = stateless.save(loaded.copy(claims = loaded.claims.map { it.copy(note = "edited") }))
+
+        val claim = saved.claims.single()
+        assertEquals(nodeToken(stamp("c1")), nodeToken(claim.stamp))
+        assertEquals(linkToken(loaded.claims.single().stamp), linkToken(claim.stamp), "the claim was loaded before it mentioned bob")
+        assertNotEquals(linkToken(stamp("c1")), linkToken(claim.stamp))
+    }
+
+    // ----- update, on a related node -----
+
+    @Test
+    fun `update clears a field set to null on a related node, and leaves a field another writer changed`() {
+        stateless.save(HumanClaims(Human("ada", "Ada"), claims = listOf(Claim("c1", "one", note = "first"), Claim("c2", "two", note = "kept"))))
+
+        stateless.update<HumanClaims>("ada") { loaded ->
+            run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'changed elsewhere'")
+            run("MATCH (c:Claim {id: 'c2'}) SET c.text = 'changed elsewhere'")
+            loaded.copy(claims = loaded.claims.map { if (it.id == "c1") it.copy(note = null) else it })
+        }
+
+        assertNull(property("c1", "note"))
+        assertEquals("changed elsewhere", property("c1", "text"), "text was not altered, so it was not written")
+        assertEquals("changed elsewhere", property("c2", "text"), "c2 was not altered at all")
+        assertEquals("kept", property("c2", "note"))
+    }
+
+    @Test
+    fun `update writes what the change altered on a related node with a property bag, and drops a key it removed`() {
+        stateless.save(ClaimTags(Claim("c1", "one"), tags = listOf(Tagged("t1", "tag", mapOf("source" to "web", "lang" to "en")))))
+
+        stateless.update<ClaimTags>("c1") { loaded ->
+            run("MATCH (t:Tagged {id: 't1'}) SET t.text = 'changed elsewhere'")
+            loaded.copy(tags = loaded.tags.map { it.copy(meta = mapOf("source" to "web")) })
+        }
+
+        assertNull(property("t1", "meta.lang"))
+        assertEquals("web", property("t1", "meta.source"))
+        assertEquals("changed elsewhere", property("t1", "text"))
+    }
+
+    @Test
+    fun `update clears a field set to null on the root of a nested view`() {
+        stateless.save(Dossier(Memo("m1", "memo"), claims = listOf(ClaimView(Claim("c1", "one", note = "first"), people = listOf(Human("ada", "Ada"))))))
+
+        stateless.update<Dossier>("m1") { loaded ->
+            run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'changed elsewhere'")
+            loaded.copy(claims = loaded.claims.map { it.copy(claim = it.claim.copy(note = null)) })
+        }
+
+        assertNull(property("c1", "note"))
+        assertEquals("changed elsewhere", property("c1", "text"))
+        assertEquals(listOf("c1->ada"), edges("MENTIONS"))
+    }
+
+    @Test
+    fun `update of a node that dropped a property-bag key is a load and a save, and reads nothing else`() {
+        stateless.save(Tagged("t1", "one", mapOf("source" to "web", "lang" to "en")))
+        val counting = CountingStatements(pm)
+        val manager = StatelessGraphObjectManager(counting, Neo4jObjectMapper.instance, SubtypeRegistry())
+
+        manager.update<Tagged>("t1") { it.copy(meta = mapOf("source" to "web")) }
+
+        assertEquals(2, counting.statements)
+        assertNull(property("t1", "meta.lang"))
+        assertEquals("web", property("t1", "meta.source"))
+    }
+
+    // ----- Replace, at its edges -----
+
+    @Test
+    fun `Replace all is refused for a list that is null`() {
+        val saved = stateless.save(DraftBoard(Draft("d1", "one"), mutableListOf(Human("ada", "Ada"))))
+        DraftBoard::class.java.getDeclaredField("people").apply { isAccessible = true }.set(saved, null)
+
+        val failure = assertFailsWith<IllegalArgumentException> { stateless.save(saved, Replace.all()) }
+
+        assertContains(failure.message.orEmpty(), "is null")
+        assertEquals(listOf("d1->ada"), edges("MENTIONS"))
+    }
+
+    @Test
+    fun `DELETE_UNREFERENCED removes a relationship from the root to itself, and keeps the root`() {
+        run("CREATE (a:Human {id: 'ada', name: 'Ada'}), (b:Human {id: 'bob', name: 'Bob'}), (a)-[:FOLLOWS]->(a), (b)-[:FOLLOWS]->(a)")
+
+        stateless.save(HumanFollowers(Human("ada", "Ada")), Replace(HumanFollowers::followers, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+
+        assertEquals(emptyList(), edges("FOLLOWS"))
+        assertEquals(setOf("ada"), ids("Human"), "bob followed nothing else and is deleted; ada is the root")
+    }
+
     // ----- edges -----
+
+    @Test
+    fun `relate marks both nodes when it makes a relationship or changes its properties, and neither when it finds it as it is`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val claim = nodeRef<Claim>("c1")
+        val ada = nodeRef<Human>("ada")
+        val (claimStamp, adaStamp) = stamp("c1") to stamp("ada")
+
+        assertEquals(true, stateless.edges.relate(claim, ada, "MENTIONS"))
+        assertEquals(claimStamp, stamp("c1"))
+        assertEquals(adaStamp, stamp("ada"))
+
+        stateless.edges.relate(claim, ada, "MENTIONS", mapOf("page" to 3))
+        assertNotEquals(linkToken(claimStamp), linkToken(stamp("c1")))
+        assertNotEquals(linkToken(adaStamp), linkToken(stamp("ada")))
+        val (marked, adaMarked) = stamp("c1") to stamp("ada")
+
+        stateless.edges.relate(claim, ada, "MENTIONS", mapOf("page" to 3))
+        assertEquals(marked, stamp("c1"))
+        assertEquals(adaMarked, stamp("ada"))
+        assertEquals(listOf("c1->ada"), edges("MENTIONS"))
+        assertEquals(false, stateless.edges.relate(claim, nodeRef<Human>("nobody"), "MENTIONS"))
+    }
 
     @Test
     fun `unrelateAll removes incoming and undirected relationships, and leaves other types`() {
@@ -767,6 +936,16 @@ private class CountingStatements(private val delegate: PersistenceManager) : Per
     override fun execute(spec: QuerySpecification<*>) {
         statements++
         delegate.execute(spec)
+    }
+
+    override fun <T : Any> getOne(spec: QuerySpecification<T>): T {
+        statements++
+        return delegate.getOne(spec)
+    }
+
+    override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? {
+        statements++
+        return delegate.maybeGetOne(spec)
     }
 }
 

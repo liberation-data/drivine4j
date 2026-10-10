@@ -47,12 +47,23 @@ class SaveExecutorTest {
 
     @Test
     fun `the stamps of related nodes are handed back in the statement's order, however the row lists them`() {
-        val (manager, _) = answering(listOf("root,1=second,0=first"))
+        val (manager, _) = answering(listOf("root,1/b=second,0/a=first"))
         val statement = SaveStatement(
             "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null), listOf(Claim("a", "a"), Claim("b", "b")),
         )
 
         assertEquals(listOf("root", "first", "second"), SaveExecutor(manager).save(statement))
+    }
+
+    @Test
+    fun `a related node whose relationships changed since it was loaded keeps the token it carried`() {
+        val (manager, _) = answering(listOf("root,0/found=node0:now,1/other=node1:now,2/found=node2:now"))
+        val statement = SaveStatement(
+            "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null),
+            listOf(Claim("a", "a"), Claim("b", "b"), Claim("c", "c")), listOf("found", "carried", null),
+        )
+
+        assertEquals(listOf("root", "node0:now", "node1:carried", "node2:now"), SaveExecutor(manager).save(statement))
     }
 
     @Test

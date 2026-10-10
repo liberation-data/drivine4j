@@ -1,7 +1,7 @@
 # `GraphObjectManager` (deprecated)
 
-`GraphObjectManager` is deprecated in favour of `StatelessGraphObjectManager`. It behaves as it always
-did, and this page keeps its documentation. For why it was replaced and how to move, see
+`GraphObjectManager` is deprecated in favour of `StatelessGraphObjectManager`. Apart from the fixes below it behaves as it
+always did, and this page keeps its documentation. For why it was replaced and how to move, see
 [Migrating from GraphObjectManager](../README.md#migrating-from-graphobjectmanager).
 
 Loading, querying and deleting are the same on both managers and are described in the README. This

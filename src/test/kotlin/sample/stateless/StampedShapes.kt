@@ -82,3 +82,11 @@ data class ClaimSupporters(
     @GraphRelationship(type = "SUPPORTS", direction = Direction.INCOMING)
     val supporters: List<Claim> = emptyList(),
 )
+
+/** A view whose related nodes carry a property bag, which no batch of rows can write. */
+@GraphView
+data class ClaimTags(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "TAGGED", direction = Direction.OUTGOING)
+    val tags: List<Tagged> = emptyList(),
+)

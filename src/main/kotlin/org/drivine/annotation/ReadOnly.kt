@@ -9,6 +9,8 @@ package org.drivine.annotation
  * read-only with or without it, because none of them names a single relationship that a save could
  * write; there the annotation is allowed and changes nothing. To write along a path, relate the
  * nodes, run Cypher, or save a view rooted where the hop starts.
+ *
+ * On any other field, a view's `@Root` or a property of a fragment, it has no effect.
  */
 @Target(AnnotationTarget.PROPERTY, AnnotationTarget.FIELD)
 @Retention(AnnotationRetention.RUNTIME)

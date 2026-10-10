@@ -248,7 +248,8 @@ class FragmentMergeBuilder(
             if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
             if (dropLabels.isNotEmpty()) append("\nREMOVE n").append(labelExpression(dropLabels))
         }
-        val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, expected) }
+        val carried = fragmentModel.stampField?.let { allProps[it] as? String }
+        val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, expected, carried) }
         return MergeStatement(query, bindings, stampWrite)
     }
 
@@ -330,6 +331,8 @@ data class StampWrite(
     val labels: String,
     val idProperty: String,
     val expected: String?,
+    /** The stamp the object carried, whether or not the statement requires it. */
+    val carried: String? = null,
 )
 
 /**
