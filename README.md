@@ -271,6 +271,8 @@ This way `.transform(MyDto::class.java)` can map the result directly to a data c
 
 `GraphObjectManager` provides a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.
 
+`StatelessGraphObjectManager` has the same loading, querying and deleting API and keeps no session. It is the one to use for new code: see [Saving Data](#saving-data). The examples below that load, query or delete work on either.
+
 ### Key Concepts
 
 #### 1. NodeFragment - Mapping Nodes
@@ -1188,6 +1190,95 @@ where {
 
 ### Saving Data
 
+There are two object managers. They load, query and delete in the same way (both implement `GraphObjectOperations`), and differ in how they save.
+
+| | `StatelessGraphObjectManager` | `GraphObjectManager` |
+|---|---|---|
+| Remembers what it loaded | No | Yes, in a session that outlives transactions |
+| A save writes | What the object holds, or the fields you name | What differs from the session's snapshot |
+| A relationship is removed | When you ask: `Replace`, `update`, `unrelate` | When the snapshot held it and the object no longer does |
+| Another writer changed the node | The save is refused, on a type with a `@NodeStamp` field | Not noticed: the save can be partial |
+
+Use `StatelessGraphObjectManager` for new code, and wherever anything else writes to the same graph. `GraphObjectManager` is described under [Saving with GraphObjectManager](#saving-with-graphobjectmanager).
+
+### StatelessGraphObjectManager
+
+`StatelessGraphObjectManager` loads, queries and deletes exactly as `GraphObjectManager` does (both implement `GraphObjectOperations`), and it keeps no session. What a save writes is decided by the object and the arguments, never by whether the object was loaded before. Use it when anything else writes to the same graph: plain Cypher, another manager, another process.
+
+See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the whole release, what it breaks, and a table for moving from `GraphObjectManager`.
+
+```kotlin
+val stateless = graphObjectManagerFactory.stateless()
+
+stateless.save(view)                                              // every field; relationships are added, never removed
+stateless.save(view, Replace(IssueView::assignedTo))              // this field's list is the whole list
+stateless.save(view, Replace.all())                               // every relationship field is
+stateless.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
+stateless.save(person, only = setOf(Person::name))                // write just these
+stateless.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
+stateless.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
+```
+
+**Relationships.** A save adds the relationships the object holds and removes none. To remove, name the field in `Replace`: the field's list is then the whole list.
+
+- A field removes only what it loads: relationships of its type and direction, to nodes with its target's labels. Two fields can share a relationship type.
+- `Replace(field, removedTargets = DELETE_UNREFERENCED)` also deletes a removed target that no relationship points at. Anything more is a custom view or Cypher.
+- `Replace.all()` covers every relationship field. It is refused for an object that carries no stamp, because the lists of an object built from scratch are its defaults and not what the store holds.
+- `Replace` trusts that the list came from a load. A list cut short by a custom query is taken as the whole list.
+
+**`update`** loads the object, applies your change, and writes only what the change altered: the fields that differ, a field set to null, and for a view the relationships it added or dropped. A relationship another writer added in the meantime is kept.
+
+From Java: `stateless.save(view)`, `stateless.save(view, Replace.of(Set.of("assignedTo")))`, and with fields named as strings `stateless.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("name"))`.
+
+A null field is treated as [`NullPolicy`](#null-write-policy-nullpolicy) says, on both managers.
+
+### @NodeStamp: refusing a save when the node changed
+
+Strongly recommended on any type that is loaded, changed and saved.
+
+```kotlin
+@NodeFragment(labels = ["Person"])
+data class Person(
+    @NodeId val id: String,
+    val name: String,
+    @NodeStamp val stamp: String? = null,
+)
+```
+
+- An object-manager save that changes a node writes a new stamp on it, under `__drivine.stamp`. A save that changes nothing leaves the stamp as it is. Loading fills the field.
+- A stateless save of an object that carries a stamp applies only if the node still has it. Otherwise nothing is written and `StaleObjectException` says whether the node changed or was deleted. The check is part of the save statement, so it is one round trip and atomic, on an engine without transactions too.
+- A save of an object whose stamp is null is not checked: it creates the node or overwrites it.
+- `save` returns the object with the stamp the node is left with. Use the returned object: if the save changed the node, the one you passed in is now stale.
+- `update` retries on a conflict, loading again and re-applying your change.
+- In a view, the root is checked. A node reached through a relationship is written unchecked, and keeps its stamp unless the save changes one of its properties. Adding or removing a relationship changes no stamp.
+- `saveAll` and `GraphObjectManager` stamp the nodes they change and do not check a stamp.
+
+**Cypher you write yourself** should give a stamped node a new stamp when it changes the node's mapped properties, or a checked save will not notice the change:
+
+```kotlin
+"MATCH (p:Person {id: \$id}) SET p.name = \$name, ${Stamps.setClause("p")}"
+// the same as:  SET p.name = $name, p.`__drivine.stamp` = randomUUID()
+```
+
+A node that is deleted and created again is noticed without this, because it has no stamp.
+
+### @ReadOnly: a field that is loaded and never written
+
+```kotlin
+@GraphView
+data class IssueOverview(
+    @Root val issue: Issue,
+    @GraphRelationship(type = "ASSIGNED_TO") val assignedTo: List<Person>,              // written on save
+    @ReadOnly @GraphRelationship(type = "REVIEWED_BY") val reviewers: List<Person>,     // loaded only
+)
+```
+
+Every save skips a `@ReadOnly` field: no relationship is written for it and the nodes it holds are not saved. Naming it in `Replace` is an error.
+
+It is required on `@GraphPath`, `@Count` and `@Aggregate` fields, none of which names a single relationship a save could write. A view that declares one without it fails when its model is built. To write along a path, use `edges.relate`, Cypher, or a view rooted where the hop starts.
+
+### Saving with GraphObjectManager
+
 #### Simple Save (Dirty Tracking)
 
 GraphObjectManager tracks loaded objects and only saves changed fields:
@@ -1401,80 +1492,6 @@ writes only what changed. It is kept small and bounded:
 - **Thread-safe**: one manager can be shared by concurrent requests.
 - **Scoping**: call `graphObjectManager.clearSession()` to end tracking for a unit of work, such as a
   request or a job.
-
-### StatelessGraphObjectManager
-
-`StatelessGraphObjectManager` loads, queries and deletes exactly as `GraphObjectManager` does (both implement `GraphObjectOperations`), and it keeps no session. What a save writes is decided by the object and the arguments, never by whether the object was loaded before. Use it when anything else writes to the same graph: plain Cypher, another manager, another process.
-
-See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the whole release, what it breaks, and a table for moving from `GraphObjectManager`.
-
-```kotlin
-val stateless = graphObjectManagerFactory.stateless()
-
-stateless.save(view)                                              // every field; relationships are added, never removed
-stateless.save(view, Replace(IssueView::assignedTo))              // this field's list is the whole list
-stateless.save(view, Replace.all())                               // every relationship field is
-stateless.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
-stateless.save(person, only = setOf(Person::name))                // write just these
-stateless.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
-stateless.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
-```
-
-**Relationships.** A save adds the relationships the object holds and removes none. To remove, name the field in `Replace`: the field's list is then the whole list.
-
-- A field removes only what it loads: relationships of its type and direction, to nodes with its target's labels. Two fields can share a relationship type.
-- `Replace(field, removedTargets = DELETE_UNREFERENCED)` also deletes a removed target that no relationship points at. Anything more is a custom view or Cypher.
-- `Replace.all()` covers every relationship field. It is refused for an object that carries no stamp, because the lists of an object built from scratch are its defaults and not what the store holds.
-- `Replace` trusts that the list came from a load. A list cut short by a custom query is taken as the whole list.
-
-**`update`** loads the object, applies your change, and writes only what the change altered: the fields that differ, a field set to null, and for a view the relationships it added or dropped. A relationship another writer added in the meantime is kept.
-
-Java callers name fields as strings: `stateless.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("name"), Set.of())` and `Replace.of(Set.of("assignedTo"))`.
-
-### @NodeStamp: refusing a save when the node changed
-
-Strongly recommended on any type that is loaded, changed and saved.
-
-```kotlin
-@NodeFragment(labels = ["Person"])
-data class Person(
-    @NodeId val id: String,
-    val name: String,
-    @NodeStamp val stamp: String? = null,
-)
-```
-
-- An object-manager save that changes a node writes a new stamp on it, under `__drivine.stamp`. A save that changes nothing leaves the stamp as it is. Loading fills the field.
-- A stateless save of an object that carries a stamp applies only if the node still has it. Otherwise nothing is written and `StaleObjectException` says whether the node changed or was deleted. The check is part of the save statement, so it is one round trip and atomic, on an engine without transactions too.
-- A save of an object whose stamp is null is not checked: it creates the node or overwrites it.
-- `save` returns the object with the stamp the node is left with. Use the returned object: if the save changed the node, the one you passed in is now stale.
-- `update` retries on a conflict, loading again and re-applying your change.
-- In a view, the root is checked. A node reached through a relationship is written unchecked, and keeps its stamp unless the save changes one of its properties. Adding or removing a relationship changes no stamp.
-- `saveAll` and `GraphObjectManager` stamp the nodes they change and do not check a stamp.
-
-**Cypher you write yourself** should give a stamped node a new stamp when it changes the node's mapped properties, or a checked save will not notice the change:
-
-```kotlin
-"MATCH (p:Person {id: \$id}) SET p.name = \$name, ${Stamps.setClause("p")}"
-// the same as:  SET p.name = $name, p.`__drivine.stamp` = randomUUID()
-```
-
-A node that is deleted and created again is noticed without this, because it has no stamp.
-
-### @ReadOnly: a field that is loaded and never written
-
-```kotlin
-@GraphView
-data class IssueOverview(
-    @Root val issue: Issue,
-    @GraphRelationship(type = "ASSIGNED_TO") val assignedTo: List<Person>,              // written on save
-    @ReadOnly @GraphRelationship(type = "REVIEWED_BY") val reviewers: List<Person>,     // loaded only
-)
-```
-
-Every save skips a `@ReadOnly` field: no relationship is written for it and the nodes it holds are not saved. Naming it in `Replace` is an error.
-
-It is required on `@GraphPath`, `@Count` and `@Aggregate` fields, none of which names a single relationship a save could write. A view that declares one without it fails when its model is built. To write along a path, use `edges.relate`, Cypher, or a view rooted where the hop starts.
 
 ### Generated Cypher Examples
 
