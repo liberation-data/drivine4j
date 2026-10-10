@@ -185,10 +185,20 @@ interface SchemaGrammar {
          * into a nested map — creating an index that a lookup on the flat property never uses.
          * Plain names stay bare so the DDL for them is unchanged.
          */
-        fun identifier(name: String): String =
-            if (PLAIN_IDENTIFIER.matches(name)) name else "`${name.replace("`", "``")}`"
+        fun identifier(name: String): String = if (PLAIN_IDENTIFIER.matches(name)) name else quoted(name)
+
+        /**
+         * [name] between backticks, as one identifier whatever it holds: a backtick in it is doubled,
+         * as Cypher escapes them. Neo4j decodes a `\uXXXX` escape before it reads the statement, inside
+         * backticks as outside, so the escape of a backtick ends the quotes as a backtick does. It is
+         * doubled as one, and a name can end its own quotes in neither spelling.
+         */
+        fun quoted(name: String): String = "`${name.replace(ESCAPED_BACKTICK, "`").replace("`", "``")}`"
 
         private val PLAIN_IDENTIFIER = Regex("[A-Za-z_][A-Za-z0-9_]*")
+
+        /** The Unicode escape of a backtick, with as many `u` as an escape may have. */
+        private val ESCAPED_BACKTICK = Regex("\\\\u+0060")
 
         /** Flattens an exception chain's messages for engine-specific violation sniffing. */
         fun messagesOf(e: Throwable): String =
