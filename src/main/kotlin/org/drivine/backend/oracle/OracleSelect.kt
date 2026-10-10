@@ -64,6 +64,12 @@ internal class OracleSelect(
     /** The names of the root's relationship fields; empty for a fragment. */
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
+    /**
+     * Whether the roots are found by something narrower than their labels: an id, or the node they are
+     * related to. The labels are then tested on what is found, and not used to find it.
+     */
+    private var narrowed = false
+
     private val bindings = mutableMapOf<String, Any?>()
     private var names = 0
 
@@ -110,7 +116,7 @@ internal class OracleSelect(
 
     /** The predicate that selects the roots of this statement from the node table, when it is aliased as [root]. */
     fun selecting(predicates: List<String>): String =
-        (listOfNotNull(hasLabels(root, rootLabels())) + predicates.map { "($it)" } + requiredRelationships()).joinToString("\n  AND ")
+        (listOfNotNull(hasLabels(root, rootLabels(), scanned = !narrowed)) + predicates.map { "($it)" } + requiredRelationships()).joinToString("\n  AND ")
 
     fun bindings(): Map<String, Any?> = bindings
 
@@ -153,6 +159,7 @@ internal class OracleSelect(
     /** The root whose id is bound as [parameter]. */
     fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
+        narrowed = true
         return "${property(root, idProperty)} = \$$parameter"
     }
 
@@ -164,7 +171,7 @@ internal class OracleSelect(
 
     /** The nodes that carry [labels], as rows named [alias]. */
     private fun nodes(labels: List<String>, alias: String): String =
-        "GRAPH_TABLE (${graph.name} MATCH (v IS node${hasLabels("v", labels)?.let { " WHERE $it" }.orEmpty()}) " +
+        "GRAPH_TABLE (${graph.name} MATCH (v IS node${hasLabels("v", labels, scanned = !narrowed)?.let { " WHERE $it" }.orEmpty()}) " +
             "COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) $alias"
 
     /**
@@ -370,7 +377,7 @@ internal class OracleSelect(
 
     /** The root's nodes that also carry [also] and have [key], each with its columns and `score`, ordered and cut by [tail]. */
     private fun candidates(also: List<String>, key: String?, score: String, tail: String): String {
-        val has = listOfNotNull(hasLabels("v", rootLabels() + also), key?.let { OracleSql.hasProperty("v", it) }).joinToString(" AND ")
+        val has = listOfNotNull(hasLabels("v", rootLabels() + also, scanned = true), key?.let { OracleSql.hasProperty("v", it) }).joinToString(" AND ")
         return "SELECT c.nid, c.labels, c.props, c.stamp, $score AS score\n" +
             "FROM GRAPH_TABLE (${graph.name} MATCH (v IS node WHERE $has) COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) c\n$tail"
     }
@@ -401,7 +408,7 @@ internal class OracleSelect(
         val text = keys.joinToString(" || ' ' || ") { "LOWER(JSON_VALUE(c.props, ${path(it)} RETURNING CLOB))" }
         val occurrences = query.scored.joinToString(" + ") { "REGEXP_COUNT(s.text, ${bound(it)})" }
         val conditions = query.required.map { "REGEXP_COUNT(s.text, ${bound(it)}) > 0" } + query.excluded.map { "REGEXP_COUNT(s.text, ${bound(it)}) = 0" }
-        val has = hasLabels("v", rootLabels())
+        val has = hasLabels("v", rootLabels(), scanned = true)
         return """
             SELECT h.nid, h.labels, h.props, h.stamp, h.score / MAX(h.score) OVER () AS score
             FROM (
@@ -454,6 +461,7 @@ internal class OracleSelect(
      * to by a relationship of [type] in [direction].
      */
     fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
+        narrowed = true
         val row = next("t")
         val body = "[e IS edge WHERE e.type = ${literal(type)}]"
         val arrow = when (direction) {

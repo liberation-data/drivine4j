@@ -45,6 +45,9 @@ class JdbcConnectionProvider(
     companion object {
         const val DEFAULT_GRAPH = "drivine"
 
+        /** The statements the Oracle driver keeps prepared on each connection. */
+        private const val STATEMENT_CACHE = 64
+
         /** A provider over a connection pool of its own, closed by [end]. */
         @JvmStatic
         @JvmOverloads
@@ -68,6 +71,8 @@ class JdbcConnectionProvider(
                 poolMax?.let { maximumPoolSize = it }
                 connectionTimeoutMillis?.let { connectionTimeout = it.toLong() }
                 idleTimeoutMillis?.let { idleTimeout = it.toLong() }
+                // A save is the same block each time. Kept by the driver, it is neither sent nor parsed again.
+                if (type == DatabaseType.ORACLE) addDataSourceProperty("oracle.jdbc.implicitStatementCacheSize", STATEMENT_CACHE.toString())
             }
             return JdbcConnectionProvider(name, type, HikariDataSource(config), subtypeRegistry, ownsDataSource = true, graphName = graphName)
         }

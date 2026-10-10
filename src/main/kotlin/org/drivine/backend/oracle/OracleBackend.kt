@@ -15,6 +15,7 @@ import org.drivine.manager.RemovedTargets
 import org.drivine.model.FragmentModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.FullTextIndexResolver
+import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveStatement
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
@@ -198,6 +199,13 @@ END;""".trim()
         after: JsonNode?,
     ): SaveStatement = saves.build(obj, checked, nullPolicy, rootWriteFields, replaced, before, after)
 
+    /** A batch of fragments is one block for each [BATCH] of them: a step each, and a row each. */
+    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
+        fragments.chunked(BATCH).map { chunk ->
+            val (text, bindings) = saves.together(chunk, nullPolicy)
+            QuerySpecification.withStatement(text).bind(bindings).transform(String::class.java)
+        }
+
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
@@ -228,7 +236,7 @@ END;""".trim()
     private fun counting(type: String, steps: WritePlan.() -> Unit): GraphStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
         val plan = WritePlan(graph).apply(steps)
-        return GraphStatement(plan.text(stamps = false), plan.bindings())
+        return GraphStatement(plan.text(OracleWriteBlock.Returns.COUNT), plan.bindings())
     }
 
     override fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement = counting(type) {
@@ -256,5 +264,8 @@ END;""".trim()
     private companion object {
         val CONTENTION = setOf(60, 8177, 30006, 54)
         const val FROM_PARAM = "_fromId"
+
+        /** The fragments one block saves: enough that a round trip is not what a batch costs, and a plan stays small. */
+        const val BATCH = 500
     }
 }

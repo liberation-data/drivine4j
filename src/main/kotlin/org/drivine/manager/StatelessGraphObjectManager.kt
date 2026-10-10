@@ -176,10 +176,12 @@ class StatelessGraphObjectManager private constructor(
         }
         // A stamp is handed back by a statement that returns it: one for a batch of fragments, and one
         // for each view, and each fragment a batch cannot write.
-        // A store that does not speak Cypher has no UNWIND to save rows with: each fragment is a statement.
-        val unwinds = objects.grammar != null
-        val (stamped, plain) = fragments.partition { !unwinds || FragmentModel.from(it.value.javaClass).stampField != null }
-        val (batched, alone) = stamped.partition { unwinds && FragmentModel.from(it.value.javaClass).savedByUnwind(objects.grammar) }
+        // A backend may save the fragments together in statements of its own. Cypher's saves as the
+        // rows of an UNWIND the ones it can, and each of the others alone.
+        val together = backend.saveTogether(fragments, nullPolicy)
+        val apart = if (together != null) emptyList() else fragments
+        val (stamped, plain) = apart.partition { FragmentModel.from(it.value.javaClass).stampField != null }
+        val (batched, alone) = stamped.partition { FragmentModel.from(it.value.javaClass).savedByUnwind(objects.grammar) }
         val single = views + alone.map { it.value }
         // A view whose list is replaced is checked, as a save of it is: a replace overwrites the
         // list, and must not remove a relationship the object never held.
@@ -188,7 +190,7 @@ class StatelessGraphObjectManager private constructor(
         batched.forEach { stamps.requireStampable(it.value, listOf(it.value)) }
         single.forEachIndexed { index, item -> requireStampable(item, singles[index]) }
         val plainSpecs = objects.batchSpecs(plain.map { it.value }, nullPolicy)
-        val batchedSpecs = objects.stampedBatchSpecs(batched, nullPolicy)
+        val batchedSpecs = together ?: objects.stampedBatchSpecs(batched, nullPolicy)
         val rows = executor.batch(
             plainSpecs + batchedSpecs + singles.map { executor.spec(it, inBatch = true) },
             offered = singles.flatMap { it.offered },

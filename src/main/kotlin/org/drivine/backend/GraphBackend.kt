@@ -100,6 +100,14 @@ internal interface GraphBackend {
         createsRoot: Boolean = true,
     ): SaveStatement
 
+    /**
+     * The statements that save [fragments] several at a time, unchecked, each fragment under its
+     * index. Each returns a row for every fragment it saves, `index/found=stamp`: `found` the stamp the
+     * node carried before, empty when it had none. Null when the backend saves each fragment as a
+     * statement of its own.
+     */
+    fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>>? = null
+
     /** Reads the stamp the node of [root] carries, as `''` when it has none; no row when the node is gone. */
     fun foundStamp(root: StampWrite): GraphStatement
 

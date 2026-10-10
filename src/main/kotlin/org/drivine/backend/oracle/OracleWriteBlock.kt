@@ -26,12 +26,23 @@ internal data class NodeShape(val labels: List<String>, val key: String)
  *   it changes what joins them.
  *
  * A node is locked before it is read, so what a step compares is what the last writer committed; a
- * relationship is written only by a step that holds the lock of the node at each end.
+ * relationship is written only by a step that holds the lock of the node at each end. A lock is always
+ * taken by the node's key, never through an index over its properties: see `find`.
  *
- * @param stamps whether the block returns the stamps a save hands back, or the number of
- *   relationships its steps counted
+ * @param returns what the block gives back when its steps have run
  */
-internal class OracleWriteBlock(private val graph: OracleGraph, private val shapes: List<NodeShape>, private val stamps: Boolean) {
+internal class OracleWriteBlock(private val graph: OracleGraph, private val shapes: List<NodeShape>, private val returns: Returns) {
+
+    enum class Returns {
+        /** One row: the stamps a save hands back, the root's first. No row when a checked root is stale. */
+        STAMPS,
+
+        /** A row for each node whose stamp is handed back, `index/found=stamp`: what a batch of fragments returns. */
+        EACH_STAMP,
+
+        /** One row: the number of relationships the steps counted. */
+        COUNT,
+    }
 
     /** The statement. Its parameters are [PLAN] and [MARK]. */
     fun text(): String = """
@@ -42,6 +53,8 @@ DECLARE
     TYPE t_counts IS TABLE OF PLS_INTEGER INDEX BY VARCHAR2(40);
     TYPE t_ids IS TABLE OF NUMBER;
     TYPE t_keys IS TABLE OF VARCHAR2(4000);
+    TYPE t_docs IS TABLE OF CLOB;
+    TYPE t_flags IS TABLE OF BOOLEAN INDEX BY PLS_INTEGER;
     v_plan    JSON_ARRAY_T := JSON_ARRAY_T.parse(${'$'}$PLAN);
     v_mark    VARCHAR2(33) := ${'$'}$MARK;
     v_op      JSON_OBJECT_T;
@@ -49,37 +62,102 @@ DECLARE
     v_h_index t_texts;
     v_h_found t_texts;
     v_h_node  t_numbers;
+    v_relinks t_flags;
     v_root    NUMBER;
     v_was     VARCHAR2(33);
     v_carried VARCHAR2(33);
     v_stamp   VARCHAR2(33);
     v_count   NUMBER := 0;
     v_result  CLOB;
+    v_each    JSON_ARRAY_T;
     v_rows    SYS_REFCURSOR;
     e_stale   EXCEPTION;
     e_absent  EXCEPTION;
 
     -- Finds the node of a shape by its id, and locks it. A null o_nid says there is none.
+    --
+    -- The node is found without a lock, then locked by its key and looked at again. To lock it as it
+    -- is found would wait for another writer's lock while holding the page of the index it was found
+    -- through, and that writer, whose update keeps the same index, would wait for the page: each for
+    -- the other, and the database sees no deadlock in a held page.
     PROCEDURE find(p_shape NUMBER, p_id VARCHAR2, o_nid OUT NUMBER, o_stamp OUT VARCHAR2, o_labels OUT VARCHAR2, o_props OUT CLOB) IS
+        v_nid   NUMBER;
+        v_still NUMBER;
     BEGIN
-        o_nid := NULL;
-        CASE p_shape
+        LOOP
+            CASE p_shape
 ${shapes.withIndex().joinToString("\n") { (index, shape) -> finder(index, shape) }}
-        END CASE;
+            END CASE;
+            IF v_nid IS NULL THEN
+                o_nid := NULL;
+                RETURN;
+            END IF;
+            BEGIN
+                SELECT n.nid, n.stamp, JSON_SERIALIZE(n.labels), JSON_SERIALIZE(n.props RETURNING CLOB)
+                INTO o_nid, o_stamp, o_labels, o_props
+                FROM ${graph.nodes} n WHERE n.nid = v_nid FOR UPDATE;
+                -- Locked: is it still the node that was looked for? Another writer may have changed it meanwhile.
+                CASE p_shape
+${shapes.withIndex().joinToString("\n") { (index, shape) -> verifier(index, shape) }}
+                END CASE;
+                IF v_still > 0 THEN
+                    RETURN;
+                END IF;
+            EXCEPTION WHEN NO_DATA_FOUND THEN
+                NULL; -- deleted between the two: look again
+            END;
+        END LOOP;
     END;
 
     -- The targets of a shape that a node is joined to by relationships of a type, with each relationship.
+    -- Each direction is a statement of its own, so each reads the index on its end of a relationship.
     PROCEDURE joined(p_shape NUMBER, p_from NUMBER, p_type VARCHAR2, p_dir VARCHAR2, o_eids OUT t_ids, o_nids OUT t_ids, o_keys OUT t_keys) IS
+        v_eids t_ids := t_ids();
+        v_nids t_ids := t_ids();
+        v_keys t_keys := t_keys();
     BEGIN
-        CASE p_shape
-${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape) }}
-        END CASE;
+        o_eids := t_ids();
+        o_nids := t_ids();
+        o_keys := t_keys();
+        IF p_dir IN ('OUT', 'BOTH') THEN
+            CASE p_shape
+${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape, outgoing = true) }}
+            END CASE;
+            o_eids := v_eids; o_nids := v_nids; o_keys := v_keys;
+        END IF;
+        IF p_dir IN ('IN', 'BOTH') THEN
+            CASE p_shape
+${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape, outgoing = false) }}
+            END CASE;
+            o_eids := o_eids MULTISET UNION ALL v_eids; o_nids := o_nids MULTISET UNION ALL v_nids; o_keys := o_keys MULTISET UNION ALL v_keys;
+        END IF;
     END;
 
-    -- Gives a node a new second token: a relationship of it was made, removed or changed.
+    -- Marks a node for a new second token: a relationship of it was made, removed or changed.
+    -- It is given once, when every step has run, however many of the node's relationships changed.
     PROCEDURE relink(p_nid NUMBER) IS
     BEGIN
-        UPDATE ${graph.nodes} SET stamp = NVL(SUBSTR(stamp, 1, 17), SUBSTR(v_mark, 1, 17)) || SUBSTR(v_mark, 18) WHERE nid = p_nid;
+        v_relinks(p_nid) := TRUE;
+    END;
+
+    PROCEDURE relink_marked IS
+        v_nid PLS_INTEGER := v_relinks.FIRST;
+    BEGIN
+        WHILE v_nid IS NOT NULL LOOP
+            UPDATE ${graph.nodes} SET stamp = NVL(SUBSTR(stamp, 1, 17), SUBSTR(v_mark, 1, 17)) || SUBSTR(v_mark, 18) WHERE nid = v_nid;
+            v_nid := v_relinks.NEXT(v_nid);
+        END LOOP;
+    END;
+
+    -- The relationships of a type from one node to another.
+    PROCEDURE spanning(p_src NUMBER, p_dst NUMBER, p_type VARCHAR2, o_eids IN OUT NOCOPY t_ids, o_props IN OUT NOCOPY t_docs) IS
+        v_eids  t_ids;
+        v_props t_docs;
+    BEGIN
+        SELECT eid, JSON_SERIALIZE(props RETURNING CLOB) BULK COLLECT INTO v_eids, v_props
+        FROM ${graph.edges} WHERE src = p_src AND dst = p_dst AND type = p_type;
+        o_eids := o_eids MULTISET UNION ALL v_eids;
+        o_props := o_props MULTISET UNION ALL v_props;
     END;
 
     FUNCTION members(p_array JSON_ARRAY_T) RETURN t_set IS
@@ -132,134 +210,156 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape)
         v_keys      JSON_KEY_LIST;
         v_have      t_set;
         v_keep      t_set;
-        v_add       t_set := members(op.get_array('add'));
-        v_drop      t_set := members(op.get_array('drop'));
+        v_add       t_set;
+        v_drop      t_set;
         v_recorded  t_set;
         v_label     VARCHAR2(4000);
-        v_relabel   BOOLEAN := FALSE;
+        v_made      BOOLEAN;
+        v_relabel   BOOLEAN;
         v_same      NUMBER;
     BEGIN
         LOOP
             find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);
-            EXIT WHEN v_nid IS NOT NULL;
-            -- A checked save does not make the node again: it is gone, and the object is stale.
-            IF v_expect IS NOT NULL THEN
+            v_made := v_nid IS NULL;
+            IF v_made THEN
+                -- A checked save does not make the node again: it is gone, and the object is stale.
+                IF v_expect IS NOT NULL THEN
+                    RAISE e_stale;
+                END IF;
+                v_labels := op.get_array('labels').to_string;
+                v_o := JSON_OBJECT_T();
+                v_o.put(op.get_string('key'), op.get('id'));
+                v_stamp := NULL;
+            ELSE
+                v_o := JSON_OBJECT_T.parse(v_props);
+            END IF;
+            v_found := v_stamp;
+            IF v_expect IS NOT NULL AND (v_stamp IS NULL OR
+                    CASE WHEN NVL(op.get_boolean('whole'), FALSE) THEN v_stamp ELSE SUBSTR(v_stamp, 1, 16) END <> v_expect) THEN
                 RAISE e_stale;
             END IF;
-            v_labels := op.get_array('labels').to_string;
-            v_o := JSON_OBJECT_T();
-            v_o.put(op.get_string('key'), op.get('id'));
-            v_props := v_o.to_clob;
-            BEGIN
-                INSERT INTO ${graph.nodes} (labels, props) VALUES (v_labels, v_props) RETURNING nid INTO v_nid;
-                v_stamp := NULL;
-                EXIT;
-            EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
-                NULL; -- another writer made it at this moment: find theirs, and lock it
-            END;
-        END LOOP;
-        v_found := v_stamp;
-        IF v_expect IS NOT NULL AND (v_stamp IS NULL OR
-                CASE WHEN NVL(op.get_boolean('whole'), FALSE) THEN v_stamp ELSE SUBSTR(v_stamp, 1, 16) END <> v_expect) THEN
-            RAISE e_stale;
-        END IF;
 
-        v_o := JSON_OBJECT_T.parse(v_props);
-        IF v_set IS NOT NULL THEN
-            v_keys := v_set.get_keys;
-            IF v_keys IS NOT NULL THEN
-                FOR i IN 1 .. v_keys.COUNT LOOP
-                    v_o.put(v_keys(i), v_set.get(v_keys(i)));
-                END LOOP;
-            END IF;
-        END IF;
-        v_array := op.get_array('unset');
-        IF v_array IS NOT NULL THEN
-            FOR i IN 0 .. v_array.get_size - 1 LOOP
-                v_o.remove(v_array.get_string(i));
-            END LOOP;
-        END IF;
-        -- The keys of a property bag that the object no longer holds.
-        IF v_bags IS NOT NULL THEN
-            FOR b IN 0 .. v_bags.get_size - 1 LOOP
-                v_keep := members(TREAT(v_bags.get(b) AS JSON_OBJECT_T).get_array('keep'));
-                v_keys := v_o.get_keys;
+            IF v_set IS NOT NULL THEN
+                v_keys := v_set.get_keys;
                 IF v_keys IS NOT NULL THEN
                     FOR i IN 1 .. v_keys.COUNT LOOP
-                        IF NOT v_keep.EXISTS(v_keys(i)) AND owns(TREAT(v_bags.get(b) AS JSON_OBJECT_T), v_keys(i)) THEN
-                            v_o.remove(v_keys(i));
-                        END IF;
+                        v_o.put(v_keys(i), v_set.get(v_keys(i)));
                     END LOOP;
                 END IF;
-            END LOOP;
-        END IF;
-        -- The labels an open label field holds are recorded on the node, so it knows which are its own.
-        IF v_owned IS NOT NULL THEN
-            v_recorded := members(v_o.get_array(v_owned.get_string('prop')));
-            IF NVL(v_owned.get_boolean('clear'), FALSE) THEN
-                v_keep := members(v_owned.get_array('base'));
-                v_label := v_recorded.FIRST;
-                WHILE v_label IS NOT NULL LOOP
-                    IF NOT v_add.EXISTS(v_label) AND NOT v_keep.EXISTS(v_label) THEN
-                        v_drop(v_label) := TRUE;
-                    END IF;
-                    v_label := v_recorded.NEXT(v_label);
+            END IF;
+            v_array := op.get_array('unset');
+            IF v_array IS NOT NULL THEN
+                FOR i IN 0 .. v_array.get_size - 1 LOOP
+                    v_o.remove(v_array.get_string(i));
                 END LOOP;
-                IF v_add.COUNT = 0 THEN
-                    v_o.remove(v_owned.get_string('prop'));
-                ELSE
-                    v_o.put(v_owned.get_string('prop'), op.get_array('add'));
+            END IF;
+            -- The keys of a property bag that the object no longer holds.
+            IF v_bags IS NOT NULL THEN
+                FOR b IN 0 .. v_bags.get_size - 1 LOOP
+                    v_keep := members(TREAT(v_bags.get(b) AS JSON_OBJECT_T).get_array('keep'));
+                    v_keys := v_o.get_keys;
+                    IF v_keys IS NOT NULL THEN
+                        FOR i IN 1 .. v_keys.COUNT LOOP
+                            IF NOT v_keep.EXISTS(v_keys(i)) AND owns(TREAT(v_bags.get(b) AS JSON_OBJECT_T), v_keys(i)) THEN
+                                v_o.remove(v_keys(i));
+                            END IF;
+                        END LOOP;
+                    END IF;
+                END LOOP;
+            END IF;
+            -- The labels an open label field holds are recorded on the node, so it knows which are its own.
+            v_add := members(op.get_array('add'));
+            v_drop := members(op.get_array('drop'));
+            IF v_owned IS NOT NULL THEN
+                v_recorded := members(v_o.get_array(v_owned.get_string('prop')));
+                IF NVL(v_owned.get_boolean('clear'), FALSE) THEN
+                    v_keep := members(v_owned.get_array('base'));
+                    v_label := v_recorded.FIRST;
+                    WHILE v_label IS NOT NULL LOOP
+                        IF NOT v_add.EXISTS(v_label) AND NOT v_keep.EXISTS(v_label) THEN
+                            v_drop(v_label) := TRUE;
+                        END IF;
+                        v_label := v_recorded.NEXT(v_label);
+                    END LOOP;
+                    IF v_add.COUNT = 0 THEN
+                        v_o.remove(v_owned.get_string('prop'));
+                    ELSE
+                        v_o.put(v_owned.get_string('prop'), op.get_array('add'));
+                    END IF;
+                ELSIF v_add.COUNT > 0 THEN
+                    v_array := JSON_ARRAY_T();
+                    v_label := v_recorded.FIRST;
+                    WHILE v_label IS NOT NULL LOOP
+                        IF NOT v_add.EXISTS(v_label) THEN
+                            v_array.append(v_label);
+                        END IF;
+                        v_label := v_recorded.NEXT(v_label);
+                    END LOOP;
+                    FOR i IN 0 .. op.get_array('add').get_size - 1 LOOP
+                        v_array.append(op.get_array('add').get_string(i));
+                    END LOOP;
+                    v_o.put(v_owned.get_string('prop'), v_array);
                 END IF;
-            ELSIF v_add.COUNT > 0 THEN
-                v_array := JSON_ARRAY_T();
-                v_label := v_recorded.FIRST;
+            END IF;
+
+            v_relabel := FALSE;
+            IF v_add.COUNT > 0 OR v_drop.COUNT > 0 THEN
+                v_have := members(JSON_ARRAY_T.parse(v_labels));
+                v_label := v_add.FIRST;
                 WHILE v_label IS NOT NULL LOOP
-                    IF NOT v_add.EXISTS(v_label) THEN
-                        v_array.append(v_label);
+                    IF NOT v_have.EXISTS(v_label) THEN
+                        v_have(v_label) := TRUE;
+                        v_relabel := TRUE;
                     END IF;
-                    v_label := v_recorded.NEXT(v_label);
+                    v_label := v_add.NEXT(v_label);
                 END LOOP;
-                FOR i IN 0 .. op.get_array('add').get_size - 1 LOOP
-                    v_array.append(op.get_array('add').get_string(i));
+                v_label := v_drop.FIRST;
+                WHILE v_label IS NOT NULL LOOP
+                    IF v_have.EXISTS(v_label) THEN
+                        v_have.DELETE(v_label);
+                        v_relabel := TRUE;
+                    END IF;
+                    v_label := v_drop.NEXT(v_label);
                 END LOOP;
-                v_o.put(v_owned.get_string('prop'), v_array);
+                IF v_relabel THEN
+                    v_array := JSON_ARRAY_T();
+                    v_label := v_have.FIRST;
+                    WHILE v_label IS NOT NULL LOOP
+                        v_array.append(v_label);
+                        v_label := v_have.NEXT(v_label);
+                    END LOOP;
+                    v_labels := v_array.to_string;
+                END IF;
             END IF;
-        END IF;
 
-        v_have := members(JSON_ARRAY_T.parse(v_labels));
-        v_label := v_add.FIRST;
-        WHILE v_label IS NOT NULL LOOP
-            IF NOT v_have.EXISTS(v_label) THEN
-                v_have(v_label) := TRUE;
-                v_relabel := TRUE;
+            v_new_props := v_o.to_clob;
+            IF v_made THEN
+                -- A node that is made is written once, whole, with a stamp of its own.
+                v_stamp := v_fresh;
+                BEGIN
+                    INSERT INTO ${graph.nodes} (labels, props, stamp) VALUES (v_labels, v_new_props, v_stamp) RETURNING nid INTO v_nid;
+                    EXIT;
+                EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
+                    NULL; -- another writer made it at this moment: find theirs, lock it, and write to that
+                END;
+            ELSE
+                -- A new first token only if the step changes the node, or the node has no stamp yet.
+                SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
+                IF v_stamp IS NULL OR v_same = 0 OR v_relabel THEN
+                    v_stamp := SUBSTR(v_fresh, 1, 16) || NVL(SUBSTR(v_stamp, 17), SUBSTR(v_fresh, 17));
+                    -- Each column is written only when it changes: the labels and the properties are each indexed.
+                    IF v_relabel THEN
+                        UPDATE ${graph.nodes} SET labels = v_labels WHERE nid = v_nid;
+                    END IF;
+                    IF v_same = 0 THEN
+                        UPDATE ${graph.nodes} SET props = v_new_props, stamp = v_stamp WHERE nid = v_nid;
+                    ELSE
+                        UPDATE ${graph.nodes} SET stamp = v_stamp WHERE nid = v_nid;
+                    END IF;
+                END IF;
+                EXIT;
             END IF;
-            v_label := v_add.NEXT(v_label);
         END LOOP;
-        v_label := v_drop.FIRST;
-        WHILE v_label IS NOT NULL LOOP
-            IF v_have.EXISTS(v_label) THEN
-                v_have.DELETE(v_label);
-                v_relabel := TRUE;
-            END IF;
-            v_label := v_drop.NEXT(v_label);
-        END LOOP;
-        IF v_relabel THEN
-            v_array := JSON_ARRAY_T();
-            v_label := v_have.FIRST;
-            WHILE v_label IS NOT NULL LOOP
-                v_array.append(v_label);
-                v_label := v_have.NEXT(v_label);
-            END LOOP;
-            v_labels := v_array.to_string;
-        END IF;
-
-        -- A new first token only if the step changes the node, or the node has no stamp yet.
-        v_new_props := v_o.to_clob;
-        SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
-        IF v_stamp IS NULL OR v_same = 0 OR v_relabel THEN
-            v_stamp := SUBSTR(v_fresh, 1, 16) || NVL(SUBSTR(v_stamp, 17), SUBSTR(v_fresh, 17));
-            UPDATE ${graph.nodes} SET labels = v_labels, props = v_new_props, stamp = v_stamp WHERE nid = v_nid;
-        END IF;
 
         v_nodes(op.get_number('r')) := v_nid;
         IF op.has('i') THEN
@@ -296,9 +396,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape)
         v_props  JSON_OBJECT_T := op.get_object('props');
         v_clear  JSON_ARRAY_T := op.get_array('clear');
         v_keys   JSON_KEY_LIST;
+        v_eids   t_ids := t_ids();
+        v_docs   t_docs := t_docs();
         v_x      JSON_OBJECT_T;
         v_text   CLOB;
-        v_had    PLS_INTEGER := 0;
         v_same   PLS_INTEGER := 0;
         v_match  BOOLEAN;
     BEGIN
@@ -310,47 +411,51 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape)
         END IF;
         v_keys := v_props.get_keys;
         IF NOT NVL(op.get_boolean('always'), FALSE) THEN
-            FOR e IN (
-                SELECT eid, JSON_SERIALIZE(props RETURNING CLOB) AS props FROM ${graph.edges}
-                WHERE type = v_type
-                  AND ((v_dir IN ('OUT', 'BOTH') AND src = v_from AND dst = v_to) OR (v_dir IN ('IN', 'BOTH') AND src = v_to AND dst = v_from))
-            ) LOOP
-                v_had := v_had + 1;
-                v_x := JSON_OBJECT_T.parse(e.props);
+            IF v_dir IN ('OUT', 'BOTH') THEN
+                spanning(v_from, v_to, v_type, v_eids, v_docs);
+            END IF;
+            -- A node's relationship to itself is one relationship, whichever way it is read.
+            IF v_dir = 'IN' OR (v_dir = 'BOTH' AND v_from <> v_to) THEN
+                spanning(v_to, v_from, v_type, v_eids, v_docs);
+            END IF;
+            FOR e IN 1 .. v_eids.COUNT LOOP
                 v_match := TRUE;
-                IF v_keys IS NOT NULL THEN
-                    FOR i IN 1 .. v_keys.COUNT LOOP
-                        IF NOT v_x.has(v_keys(i)) OR v_x.get(v_keys(i)).to_string <> v_props.get(v_keys(i)).to_string THEN
+                IF (v_keys IS NOT NULL AND v_keys.COUNT > 0) OR v_clear.get_size > 0 THEN
+                    v_x := JSON_OBJECT_T.parse(v_docs(e));
+                    IF v_keys IS NOT NULL THEN
+                        FOR i IN 1 .. v_keys.COUNT LOOP
+                            IF NOT v_x.has(v_keys(i)) OR v_x.get(v_keys(i)).to_string <> v_props.get(v_keys(i)).to_string THEN
+                                v_match := FALSE;
+                                v_x.put(v_keys(i), v_props.get(v_keys(i)));
+                            END IF;
+                        END LOOP;
+                    END IF;
+                    FOR i IN 0 .. v_clear.get_size - 1 LOOP
+                        IF v_x.has(v_clear.get_string(i)) THEN
                             v_match := FALSE;
-                            v_x.put(v_keys(i), v_props.get(v_keys(i)));
+                            v_x.remove(v_clear.get_string(i));
                         END IF;
                     END LOOP;
                 END IF;
-                FOR i IN 0 .. v_clear.get_size - 1 LOOP
-                    IF v_x.has(v_clear.get_string(i)) THEN
-                        v_match := FALSE;
-                        v_x.remove(v_clear.get_string(i));
-                    END IF;
-                END LOOP;
                 IF v_match THEN
                     v_same := v_same + 1;
                 ELSE
                     v_text := v_x.to_clob;
-                    UPDATE ${graph.edges} SET props = v_text WHERE eid = e.eid;
+                    UPDATE ${graph.edges} SET props = v_text WHERE eid = v_eids(e);
                 END IF;
             END LOOP;
         END IF;
-        IF v_had = 0 THEN
+        IF v_eids.COUNT = 0 THEN
             -- An undirected field is satisfied by a relationship either way, and makes one from the first node.
             v_text := v_props.to_clob;
             INSERT INTO ${graph.edges} (src, dst, type, props)
             VALUES (CASE WHEN v_dir = 'IN' THEN v_to ELSE v_from END, CASE WHEN v_dir = 'IN' THEN v_from ELSE v_to END, v_type, v_text);
         END IF;
-        IF v_had = 0 OR v_same < v_had THEN
+        IF v_eids.COUNT = 0 OR v_same < v_eids.COUNT THEN
             relink(v_from);
             relink(v_to);
         END IF;
-        v_count := v_count + GREATEST(v_had, 1);
+        v_count := v_count + GREATEST(v_eids.COUNT, 1);
     END;
 
     -- Removes a field's relationships to the targets whose ids the step names, or to every target but those.
@@ -388,12 +493,22 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape)
         WHILE v_target IS NOT NULL LOOP
             SELECT nid INTO v_lock FROM ${graph.nodes} WHERE nid = TO_NUMBER(v_target) FOR UPDATE;
             -- What refers to a target is a relationship on the side this field reaches it from: counted before any is removed.
-            SELECT COUNT(*) INTO v_refs FROM ${graph.edges}
-            WHERE (v_dir IN ('OUT', 'BOTH') AND dst = v_lock) OR (v_dir IN ('IN', 'BOTH') AND src = v_lock);
-            relink(v_lock);
+            v_refs := 0;
+            IF v_delete THEN
+                IF v_dir IN ('OUT', 'BOTH') THEN
+                    SELECT COUNT(*) INTO v_refs FROM ${graph.edges} WHERE dst = v_lock;
+                END IF;
+                IF v_dir IN ('IN', 'BOTH') THEN
+                    -- A relationship from the node to itself is counted once.
+                    SELECT v_refs + COUNT(*) INTO v_refs FROM ${graph.edges} WHERE src = v_lock AND (v_dir = 'IN' OR dst <> v_lock);
+                END IF;
+            END IF;
             -- The root is never deleted, and nor is a node the object still holds in another field.
             IF v_delete AND v_lock <> v_from AND v_refs = v_removed(v_target) AND NOT v_held.EXISTS(v_key_of(v_lock)) THEN
+                v_relinks.DELETE(v_lock);
                 DELETE FROM ${graph.nodes} WHERE nid = v_lock;
+            ELSE
+                relink(v_lock);
             END IF;
             v_target := v_removed.NEXT(v_target);
         END LOOP;
@@ -403,19 +518,28 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape)
         v_count := v_count + v_gone.COUNT;
     END;
 
-    -- Removes the relationships of a type from one node to another, or with `all` to any node in a direction.
+    -- Removes the relationships of a type from one node to another, or with no other node named to any in a direction.
     PROCEDURE cut(op JSON_OBJECT_T) IS
         v_from  NUMBER := v_nodes(op.get_number('from'));
         v_to    NUMBER := CASE WHEN op.has('to') THEN v_nodes(op.get_number('to')) END;
         v_type  VARCHAR2(128) := op.get_string('type');
         v_dir   VARCHAR2(4) := op.get_string('dir');
-        v_eids  t_ids;
-        v_ends  t_ids;
+        v_eids  t_ids := t_ids();
+        v_ends  t_ids := t_ids();
+        v_more  t_ids;
+        v_far   t_ids;
         v_lock  NUMBER;
     BEGIN
-        SELECT eid, CASE WHEN src = v_from THEN dst ELSE src END BULK COLLECT INTO v_eids, v_ends FROM ${graph.edges}
-        WHERE type = v_type
-          AND ((v_dir IN ('OUT', 'BOTH') AND src = v_from AND (v_to IS NULL OR dst = v_to)) OR (v_dir IN ('IN', 'BOTH') AND dst = v_from AND (v_to IS NULL OR src = v_to)));
+        IF v_dir IN ('OUT', 'BOTH') THEN
+            SELECT eid, dst BULK COLLECT INTO v_eids, v_ends FROM ${graph.edges}
+            WHERE src = v_from AND type = v_type AND (v_to IS NULL OR dst = v_to);
+        END IF;
+        IF v_dir IN ('IN', 'BOTH') THEN
+            SELECT eid, src BULK COLLECT INTO v_more, v_far FROM ${graph.edges}
+            WHERE dst = v_from AND type = v_type AND (v_to IS NULL OR src = v_to) AND (v_dir = 'IN' OR src <> v_from);
+            v_eids := v_eids MULTISET UNION ALL v_more;
+            v_ends := v_ends MULTISET UNION ALL v_far;
+        END IF;
         IF v_eids.COUNT = 0 THEN
             RETURN;
         END IF;
@@ -440,12 +564,25 @@ BEGIN
                 WHEN 'cut' THEN cut(v_op);
             END CASE;
         END LOOP;
-${if (stamps) STAMPS.replace(NODES, graph.nodes) else ""}
+        relink_marked;
+${
+        when (returns) {
+            Returns.STAMPS -> STAMPS.replace(NODES, graph.nodes)
+            Returns.EACH_STAMP -> EACH_STAMP.replace(NODES, graph.nodes)
+            Returns.COUNT -> ""
+        }
+    }
     EXCEPTION
         WHEN e_stale THEN v_result := NULL; -- raised before anything was written
         WHEN e_absent THEN v_count := 0; -- a node the plan refers to is not there: nothing was written
     END;
-    OPEN v_rows FOR ${if (stamps) "SELECT v_result FROM dual WHERE v_result IS NOT NULL" else "SELECT v_count FROM dual"};
+    OPEN v_rows FOR ${
+        when (returns) {
+            Returns.STAMPS -> "SELECT v_result FROM dual WHERE v_result IS NOT NULL"
+            Returns.EACH_STAMP -> "SELECT v FROM JSON_TABLE(v_result, '$[*]' COLUMNS (v VARCHAR2(400) PATH '$'))"
+            Returns.COUNT -> "SELECT v_count FROM dual"
+        }
+    };
     DBMS_SQL.RETURN_RESULT(v_rows);
 END;
 """.trim()
@@ -454,22 +591,20 @@ END;
         listOfNotNull("JSON_VALUE($alias.props, ${path(shape.key)}) = p_id", hasLabels(alias, shape.labels)).joinToString(" AND ")
 
     private fun finder(index: Int, shape: NodeShape): String = """
-            WHEN $index THEN
-                FOR c IN (
-                    SELECT n.nid, n.stamp, JSON_SERIALIZE(n.labels) AS labels, JSON_SERIALIZE(n.props RETURNING CLOB) AS props
-                    FROM ${graph.nodes} n WHERE ${identified("n", shape)} FOR UPDATE
-                ) LOOP
-                    o_nid := c.nid; o_stamp := c.stamp; o_labels := c.labels; o_props := c.props;
-                    EXIT;
-                END LOOP;
+                WHEN $index THEN
+                    SELECT MIN(n.nid) INTO v_nid FROM ${graph.nodes} n WHERE ${identified("n", shape)};
     """.trimEnd().trimStart('\n')
 
-    private fun joiner(index: Int, shape: NodeShape): String = """
-            WHEN $index THEN
-                SELECT e.eid, t.nid, JSON_VALUE(t.props, ${path(shape.key)}) BULK COLLECT INTO o_eids, o_nids, o_keys
-                FROM ${graph.edges} e JOIN ${graph.nodes} t
-                  ON (p_dir IN ('OUT', 'BOTH') AND e.src = p_from AND t.nid = e.dst) OR (p_dir IN ('IN', 'BOTH') AND e.dst = p_from AND t.nid = e.src)
-                WHERE e.type = p_type${hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()};
+    private fun verifier(index: Int, shape: NodeShape): String = """
+                    WHEN $index THEN
+                        SELECT COUNT(*) INTO v_still FROM ${graph.nodes} n WHERE n.nid = v_nid AND ${identified("n", shape)};
+    """.trimEnd().trimStart('\n')
+
+    private fun joiner(index: Int, shape: NodeShape, outgoing: Boolean): String = """
+                WHEN $index THEN
+                    SELECT e.eid, t.nid, JSON_VALUE(t.props, ${path(shape.key)}) BULK COLLECT INTO v_eids, v_nids, v_keys
+                    FROM ${graph.edges} e JOIN ${graph.nodes} t ON t.nid = e.${if (outgoing) "dst" else "src"}
+                    WHERE e.${if (outgoing) "src" else "dst"} = p_from AND e.type = p_type${hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()};
     """.trimEnd().trimStart('\n')
 
     companion object {
@@ -492,6 +627,15 @@ END;
             SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_h_node(i);
             v_result := v_result || ',' || v_h_index(i) || '/' || v_h_found(i) || '=' || v_stamp;
         END LOOP;"""
+
+        /** The stamp of each node whose stamp is handed back, as a JSON array for the block to return as rows. */
+        private val EACH_STAMP = """
+        v_each := JSON_ARRAY_T();
+        FOR i IN 0 .. v_h_node.COUNT - 1 LOOP
+            SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_h_node(i);
+            v_each.append(v_h_index(i) || '/' || v_h_found(i) || '=' || v_stamp);
+        END LOOP;
+        v_result := v_each.to_clob;"""
 
         private const val NODES = "#NODES#"
     }

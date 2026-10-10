@@ -41,7 +41,7 @@ internal class WritePlan(private val graph: OracleGraph) {
             "props" to properties.takeIf { it.isNotEmpty() }, "clear" to clear.takeIf { it.isNotEmpty() }, "always" to always.takeIf { it },
         )
 
-    fun text(stamps: Boolean): String = OracleWriteBlock(graph, shapes.keys.toList(), stamps).text()
+    fun text(returns: OracleWriteBlock.Returns): String = OracleWriteBlock(graph, shapes.keys.toList(), returns).text()
 
     fun bindings(): Map<String, Any?> = mapOf(OracleWriteBlock.PLAN to steps, OracleWriteBlock.MARK to Stamps.fresh())
 }
@@ -73,13 +73,23 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         after: JsonNode?,
     ): SaveStatement = Composition(checked, nullPolicy, rootWriteFields, replaced).compose(obj, before, after)
 
+    /**
+     * The statement that saves [fragments] together, unchecked, each a step of one plan. It returns a
+     * row for each, `index/found=stamp`, under the index the fragment is given here.
+     */
+    fun together(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): Pair<String, Map<String, Any?>> {
+        val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null })
+        fragments.forEach { (index, fragment) -> composition.fragment(fragment, index) }
+        return composition.plan.text(OracleWriteBlock.Returns.EACH_STAMP) to composition.plan.bindings()
+    }
+
     private inner class Composition(
         private val checked: Boolean,
         private val nullPolicy: NullPolicy,
         private val rootWriteFields: Set<String>?,
         private val replaced: (RelationshipModel) -> RemovedTargets?,
     ) {
-        private val plan = WritePlan(graph)
+        val plan = WritePlan(graph)
         private val stamped = mutableListOf<Any>()
         private val carried = mutableListOf<String?>()
         private lateinit var root: StampWrite
@@ -93,7 +103,13 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             } else {
                 rootNode(obj, FragmentModel.from(obj.javaClass), replaces = false, before)
             }
-            return SaveStatement(plan.text(stamps = true), plan.bindings(), root, stamped, carried)
+            return SaveStatement(plan.text(OracleWriteBlock.Returns.STAMPS), plan.bindings(), root, stamped, carried)
+        }
+
+        /** One fragment of a batch: saved as the root of a save on its own is, and returned under [index]. */
+        fun fragment(fragment: Any, index: Int) {
+            val model = FragmentModel.from(fragment.javaClass)
+            node(fragment, model, objectMapper.toMap(fragment), null, nullPolicy, null, readsStore = true, "i" to index.toString())
         }
 
         /** The root of [view], then each relationship field it writes. Gives the root's number. */

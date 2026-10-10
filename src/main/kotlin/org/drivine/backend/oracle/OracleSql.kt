@@ -61,13 +61,30 @@ internal object OracleSql {
     /** The path of the property [key], as a SQL literal. */
     fun path(key: String, suffix: String = ""): String = literal("$.${step(key)}$suffix")
 
-    /** Whether the node [alias] carries [label]. A label is data, so it is written into the path, quoted. */
+    /**
+     * Whether the node [alias] carries [label], written so the index over labels can answer it: the
+     * form for a statement that reads every node of a label. A label is data, so it is written into
+     * the path, quoted.
+     */
     fun hasLabel(alias: String, label: String): String =
         "JSON_EXISTS($alias.labels, ${literal("$[*]?(@ == ${step(label)})")})"
 
-    /** Whether the node [alias] carries every one of [labels]; null when there are none to carry. */
-    fun hasLabels(alias: String, labels: Collection<String>): String? =
-        labels.takeIf { it.isNotEmpty() }?.joinToString(" AND ") { hasLabel(alias, it) }
+    /**
+     * Whether the node [alias] carries [label], written so the index over labels cannot answer it:
+     * the form for a node that is found some other way, by its id or at the end of a relationship.
+     * Given the choice, Oracle reads every node of the label and tests each for the id, where the
+     * index over the id gives the one node. The label is looked for as JSON writes it, in quotes,
+     * among the labels as JSON writes them.
+     */
+    fun carriesLabel(alias: String, label: String): String =
+        "INSTR(JSON_SERIALIZE($alias.labels), ${literal(step(label))}) > 0"
+
+    /**
+     * Whether the node [alias] carries every one of [labels]; null when there are none to carry.
+     * [scanned] says the statement reads every node of the labels, and so may use the index over them.
+     */
+    fun hasLabels(alias: String, labels: Collection<String>, scanned: Boolean = false): String? =
+        labels.takeIf { it.isNotEmpty() }?.joinToString(" AND ") { if (scanned) hasLabel(alias, it) else carriesLabel(alias, it) }
 
     /** The property [key] of the node or relationship [alias], read as [kind]. The stamp is a column. */
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String =
