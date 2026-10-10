@@ -286,6 +286,40 @@ abstract class StatelessSaveContract {
         assertEquals(listOf("c1"), stateless.loadAll<Claim>().map { it.id })
     }
 
+    @Test
+    fun `GraphObjectManager deletes a view by id under DELETE_ORPHAN`() {
+        assumeTrue(pm.type != DatabaseType.MEMGRAPH, "Memgraph has no DELETE_ORPHAN")
+        val mapper = Neo4jObjectMapper.instance
+        val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        run("CREATE (:Claim {id: 'c1', text: 'one'}), (:Claim {id: 'c2', text: 'two'}), (:Human {id: 'ada', name: 'Ada'}), (:Human {id: 'bob', name: 'Bob'})")
+        run("MATCH (c:Claim {id: 'c1'}), (h:Human) CREATE (c)-[:MENTIONS]->(h)")
+        run("MATCH (c:Claim {id: 'c2'}), (h:Human {id: 'bob'}) CREATE (c)-[:MENTIONS]->(h)")
+
+        gom.delete("c1", ClaimView::class.java, null, CascadeType.DELETE_ORPHAN)
+
+        assertEquals(listOf("bob"), stateless.loadAll<Human>().map { it.id }, "ada was left with no relationship, bob is still mentioned")
+        assertEquals(listOf("c2"), stateless.loadAll<Claim>().map { it.id })
+    }
+
+    @Test
+    fun `DELETE_ORPHAN is refused on an engine without it, naming the engine's limit`() {
+        assumeTrue(pm.type == DatabaseType.MEMGRAPH, "every other engine has DELETE_ORPHAN")
+        val mapper = Neo4jObjectMapper.instance
+        val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        run("CREATE (:Claim {id: 'c1', text: 'one'})")
+
+        val onSave = assertFailsWith<UnsupportedOperationException> {
+            gom.save(ClaimView(Claim("c1", "one")), CascadeType.DELETE_ORPHAN)
+        }
+        assertFailsWith<UnsupportedOperationException> {
+            gom.delete("c1", ClaimView::class.java, null, CascadeType.DELETE_ORPHAN)
+        }
+
+        assertTrue("Memgraph" in onSave.message.orEmpty(), onSave.message)
+        assertFalse("FalkorDB" in onSave.message.orEmpty(), onSave.message)
+        assertEquals(listOf("c1"), stateless.loadAll<Claim>().map { it.id })
+    }
+
     // ----- only and except -----
 
     @Test

@@ -2122,6 +2122,7 @@ database:
 - Full ACID transactions (`startTransaction` / `commit` / `rollback` all work as expected)
 - `EXISTS { pattern }` and nested pattern comprehensions are supported, so `@GraphView` queries use the same inline projector as Neo4j
 - No APOC — use MAGE for procedures; collection sorting uses CALL subqueries by default
+- No `CascadeType.DELETE_ORPHAN`: Memgraph cannot use `EXISTS` inside `WITH`, so a save or delete that asks for it throws `UnsupportedOperationException`. On `StatelessGraphObjectManager`, `Replace(field, removedTargets = DELETE_UNREFERENCED)` works on Memgraph
 - For MAGE algorithms or Memgraph Lab, switch the image to `memgraph/memgraph-platform`
 
 ### @JsonPacked Annotation

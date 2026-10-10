@@ -867,8 +867,7 @@ class GraphObjectManager internal constructor(
         if (cascade == CascadeType.DELETE_ORPHAN && !grammar.supportsOrphanDelete) {
             throw UnsupportedOperationException(
                 "CASCADE DELETE_ORPHAN is not supported on this database. " +
-                "FalkorDB does not correctly handle DELETE followed by a pattern " +
-                "predicate in the same query (see FalkorDB/FalkorDB#1890). " +
+                grammar.orphanDeleteLimit?.let { "$it " }.orEmpty() +
                 "Use CASCADE DELETE_ALL or CASCADE NONE instead."
             )
         }

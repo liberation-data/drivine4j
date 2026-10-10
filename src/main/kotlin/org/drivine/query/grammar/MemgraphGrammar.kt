@@ -21,6 +21,8 @@ class MemgraphGrammar(
     // be used within WITH!") which is what the CASCADE DELETE_ORPHAN query emits. Opt out so
     // callers get a clean UnsupportedOperationException instead of a cryptic server error.
     override val supportsOrphanDelete: Boolean = false
+    override val orphanDeleteLimit: String =
+        "Memgraph cannot use EXISTS inside WITH, which the check for a target's remaining relationships needs."
 
     /**
      * Memgraph cannot execute the `CALL { WITH rootAlias ... RETURN count(x) AS _ec0 }` pattern

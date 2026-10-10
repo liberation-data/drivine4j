@@ -30,11 +30,15 @@ interface CypherGrammar {
         get() = InlineNestedViewProjector()
 
     /**
-     * Whether this engine supports CASCADE DELETE_ORPHAN — a DELETE followed by
-     * a pattern predicate check in the same query. FalkorDB does not (FalkorDB/FalkorDB#1890).
+     * Whether this engine supports CASCADE DELETE_ORPHAN — a DELETE followed by a check for
+     * remaining relationships in the same query. Memgraph does not: see [orphanDeleteLimit].
      */
     val supportsOrphanDelete: Boolean
         get() = true
+
+    /** Why this engine has no CASCADE DELETE_ORPHAN, for the message that refuses it. Null when it has. */
+    val orphanDeleteLimit: String?
+        get() = null
 
 
     /**
