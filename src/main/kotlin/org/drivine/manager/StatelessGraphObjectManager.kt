@@ -19,6 +19,8 @@ import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
 import java.util.IdentityHashMap
 import kotlin.reflect.KProperty1
+import kotlin.reflect.jvm.javaField
+import kotlin.reflect.jvm.javaGetter
 
 /**
  * An object manager that remembers nothing between calls. What a save writes is decided by the
@@ -67,6 +69,15 @@ class StatelessGraphObjectManager private constructor(
      * as the object's stamp says when the save began. Otherwise another writer added or removed one the
      * object does not hold, and the object keeps the token it had: a [Replace] of it is still refused.
      *
+     * An object that carries no stamp is handed the whole stamp of a node its save made. Of a node
+     * that was already there it is handed the token for the node's own data alone, on the root and
+     * on a related node alike: its lists did not come from the store, so a [Replace] of the returned
+     * object is refused until the object is loaded. A save of it that only adds is applied.
+     *
+     * An object that cannot be handed its stamps is refused before anything is written: a class that
+     * is neither a Kotlin data class nor has fields that can be set, and that the object mapper
+     * cannot rebuild.
+     *
      * A node reached through a relationship is written whole and unchecked, a null field left alone
      * whatever [nullPolicy] says: the policy governs the root. [update] writes only what was altered.
      *
@@ -74,7 +85,7 @@ class StatelessGraphObjectManager private constructor(
      *   none. [Replace] names the relationship fields whose list is the whole list.
      * @param nullPolicy how a null field is treated; see [NullPolicy]
      * @param only the only fields of the object (for a view, of its root) to write. The relationships
-     *   of a view are written whatever this names
+     *   of a view are written whatever this names. A property of another class is refused
      * @param except fields of the object (for a view, of its root) to leave unwritten
      */
     @JvmOverloads
@@ -84,7 +95,12 @@ class StatelessGraphObjectManager private constructor(
         nullPolicy: NullPolicy = NullPolicy.IGNORE,
         only: Set<KProperty1<*, *>> = emptySet(),
         except: Set<KProperty1<*, *>> = emptySet(),
-    ): T = saveFields(obj, relationships, nullPolicy, only.map { it.name }.toSet(), except.map { it.name }.toSet())
+    ): T {
+        // First that each names a field at all, then that it is a field of the class that is saved.
+        writeFields(obj, only.map { it.name }.toSet(), except.map { it.name }.toSet())
+        (only + except).forEach { requireFieldOf(obj, it) }
+        return saveFields(obj, relationships, nullPolicy, only.map { it.name }.toSet(), except.map { it.name }.toSet())
+    }
 
     /** [save] with the fields named as strings, for Java. A Java caller that names no field calls [save]. */
     @JvmOverloads
@@ -95,8 +111,10 @@ class StatelessGraphObjectManager private constructor(
         only: Set<String> = emptySet(),
         except: Set<String> = emptySet(),
     ): T {
-        // Everything is validated before anything is written.
+        // Everything is validated before anything is written: the arguments, and that the object can
+        // be handed its stamps.
         val statement = statementFor(obj, relationships, nullPolicy, writeFields(obj, only, except), checked = true)
+        requireStampable(obj, statement)
         return stamped(obj, statement, executor.save(statement))
     }
 
@@ -111,12 +129,22 @@ class StatelessGraphObjectManager private constructor(
      * overwrites a relationship list: if the node or its relationships changed since the view was
      * loaded, [StaleObjectException] is thrown and the batch is not applied.
      *
+     * The objects are saved in the order given, and a view's save changes the nodes it holds. So a
+     * view with [Replace] whose root another object earlier in the batch holds can be refused by the
+     * batch's own doing: that object's save changed the root, or a relationship of it, before the
+     * view's stamp was compared. The exception then says so ([StaleObjectException.bySameBatch]).
+     * Give such a view before the objects that hold its root, or save them one at a time, each from
+     * what the save before it returned.
+     *
      * The whole call is atomic: inside a transaction it joins it, and otherwise it runs in one of its
      * own, on an engine that has transactions. A [Replace] is part of it. FalkorDB has none: there
      * each statement is atomic, and what the batch saved before a failure or a refusal stays saved.
+     * Inside a caller's transaction, a refusal undoes the batch only if the caller's transaction is
+     * rolled back, as it is when the exception leaves it.
      * A batch the engine turns away because another writer was changing the same nodes is run again.
      *
-     * Fragments are saved in batches. A view is saved by a statement of its own.
+     * Fragments are saved in batches. A view is saved by a statement of its own. An object the batch
+     * holds more than once is handed the stamp its node is left with each time.
      */
     @JvmOverloads
     fun <T : Any> saveAll(
@@ -139,24 +167,75 @@ class StatelessGraphObjectManager private constructor(
         // A view whose list is replaced is checked, as a save of it is: a replace overwrites the
         // list, and must not remove a relationship the object never held.
         val singles = single.map { statementFor(it, relationships, nullPolicy, null, checked = relationships is Replace) }
+        // That each object can be handed its stamps is known before anything is written.
+        batched.forEach { stamps.requireStampable(it.value, listOf(it.value)) }
+        single.forEachIndexed { index, item -> requireStampable(item, singles[index]) }
         val plainSpecs = objects.batchSpecs(plain.map { it.value }, nullPolicy)
         val batchedSpecs = objects.stampedBatchSpecs(batched, nullPolicy)
-        val rows = executor.batch(plainSpecs + batchedSpecs + singles.map { executor.spec(it, inBatch = true) })
+        val rows = executor.batch(
+            plainSpecs + batchedSpecs + singles.map { executor.spec(it, inBatch = true) },
+            offered = singles.flatMap { it.offered },
+        )
 
-        val saved = IdentityHashMap<Any, Any>()
-        rows.subList(plainSpecs.size, plainSpecs.size + batchedSpecs.size).flatten().forEach { row ->
+        // A node the batch holds more than once is written by more than one row, and a later row
+        // finds what an earlier one wrote: what the node carried before the batch is what the first
+        // found, and what it is left with is what the last wrote.
+        val batchedRows = rows.subList(plainSpecs.size, plainSpecs.size + batchedSpecs.size).flatten().map { row ->
             val (key, stamp) = (row as String).split('=', limit = 2)
-            val item = items[key.substringBefore('/').toInt()]
+            Triple(items[key.substringBefore('/').toInt()], key.substringAfter('/'), stamp)
+        }
+        val found = linkedMapOf<Pair<Class<*>, Any?>, String>()
+        val left = linkedMapOf<Pair<Class<*>, Any?>, String>()
+        fun nodeOf(item: Any) = item.javaClass to objectMapper.toMap(item)[FragmentModel.from(item.javaClass).nodeIdField]
+        batchedRows.forEach { (item, itemFound, stamp) ->
+            found.putIfAbsent(nodeOf(item), itemFound)
+            left[nodeOf(item)] = stamp
+        }
+        // The stamp each object is handed, keyed by the object: one given twice is handed it once.
+        val handed = IdentityHashMap<Any, String>()
+        batchedRows.forEach { (item, _, _) ->
             // A batch is not checked, so the node may not have been as the object's stamp says. Then
             // the object keeps its own token: the stamp handed back does not vouch for data or
             // relationships that changed after the object was loaded.
-            val handedBack = Stamps.handedBack(stamps.stampOf(item), key.substringAfter('/'), stamp)
-            saved[item] = stamps.of(item, IdentityHashMap<Any, String>().apply { put(item, handedBack) })
+            handed[item] = Stamps.handedBack(stamps.stampOf(item), found.getValue(nodeOf(item)), left.getValue(nodeOf(item)))
         }
+        val saved = IdentityHashMap<Any, Any>()
+        handed.forEach { (item, stamp) -> saved[item] = stamps.of(item, IdentityHashMap<Any, String>().apply { put(item, stamp) }) }
+
         val singleRows = rows.takeLast(singles.size)
-        single.forEachIndexed { index, item -> saved[item] = stamped(item, singles[index], executor.stamps(singles[index], singleRows[index])) }
+        val singleStamps = singles.indices.map { executor.stamps(singles[it], singleRows[it]).toMutableList() }
+        carryForward(singles, singleRows, singleStamps)
+        single.forEachIndexed { index, item -> saved[item] = stamped(item, singles[index], singleStamps[index]) }
         @Suppress("UNCHECKED_CAST")
         return items.map { (saved[it] ?: it) as T }
+    }
+
+    /**
+     * Brings the root stamp each statement of a batch handed back up to what the statements after it
+     * left. A later statement that holds an earlier one's root as a related node may change that node
+     * or a relationship of it: the earlier object is handed the token the later one left, when the
+     * later one found the node carrying the token the earlier was handed. Otherwise another writer
+     * came between, and the object keeps what it has.
+     */
+    private fun carryForward(statements: List<SaveStatement>, rows: List<List<Any?>>, handed: List<MutableList<String>>) {
+        statements.forEachIndexed { later, statement ->
+            val returned = (rows[later].firstOrNull() as? String)?.split(',')?.drop(1).orEmpty().associate { entry ->
+                val (key, stamp) = entry.split('=', limit = 2)
+                key.substringBefore('/').toInt() to (key.substringAfter('/') to stamp)
+            }
+            statement.keys.forEachIndexed { index, key ->
+                val (found, now) = returned[index] ?: return@forEachIndexed
+                if (key == null) return@forEachIndexed
+                for (earlier in 0 until later) {
+                    if (statements[earlier].root.fragmentClass.let { FragmentModel.from(it).stampField } == null) continue
+                    if (!statements[earlier].rootKey.sameNodeAs(key)) continue
+                    val has = handed[earlier][0]
+                    val node = if (Stamps.nodeToken(has) == Stamps.nodeToken(found)) Stamps.nodeToken(now) else Stamps.nodeToken(has)
+                    val links = Stamps.linksToken(has)?.let { if (it == Stamps.linksToken(found)) Stamps.linksToken(now) else it }
+                    handed[earlier][0] = "$node:${links.orEmpty()}"
+                }
+            }
+        }
     }
 
     /**
@@ -175,6 +254,12 @@ class StatelessGraphObjectManager private constructor(
      * applied to the fresh one: [attempts] tries in all, and the last failure is thrown. That needs a
      * `@NodeStamp` field: without one a change by another writer is not noticed.
      *
+     * An update writes to the node it loaded and never makes one. If the node is deleted between the
+     * load and the save, nothing is written and null is returned, as when it was not there to load.
+     *
+     * A [StaleObjectException] that [change] itself throws, from a save of its own, is thrown on: only
+     * the update's own save is tried again.
+     *
      * @return the saved object, or null when there is no such node
      */
     @JvmOverloads
@@ -187,11 +272,16 @@ class StatelessGraphObjectManager private constructor(
             val loadedClass = loaded.javaClass
             val before = digests.digestOf(loaded)
             val loadedStamp = stamps.stampOf(loaded)
+            // Outside the try: a stale save the change makes itself is not this update's to try again.
+            val changed = change(loaded)
             try {
-                return saveChanged(loadedClass, before, loadedStamp, change(loaded))
+                return saveChanged(loadedClass, before, loadedStamp, changed)
             } catch (stale: StaleObjectException) {
                 last = stale
                 logger.debug("{} '{}' changed during update, attempt {} of {}", graphClass.simpleName, id, attempt + 1, attempts, stale)
+            } catch (gone: SaveExecutor.RootGone) {
+                logger.debug("{} '{}' was deleted during update", graphClass.simpleName, id, gone)
+                return null
             }
         }
         throw checkNotNull(last)
@@ -226,9 +316,11 @@ class StatelessGraphObjectManager private constructor(
         val rootAfter = requireNotNull(stamps.rootOf(changed)) { "Root fragment $rootField is null" }
         val dirty = digests.computeDirtyFields(rootAfter, rootBefore)
 
+        // The node was loaded, so it is written only if it is still there: an update makes no node.
         val statement = statements.build(
-            changed, checked = true, NullPolicy.CLEAR, dirty, before = before, after = digests.digestOf(changed),
+            changed, checked = true, NullPolicy.CLEAR, dirty, before = before, after = digests.digestOf(changed), createsRoot = false,
         )
+        requireStampable(changed, statement)
         return stamped(changed, statement, executor.save(statement))
     }
 
@@ -241,12 +333,29 @@ class StatelessGraphObjectManager private constructor(
         )
     }
 
-    /** [obj] carrying the stamps its save returned: the root's first, then each stamped target's. */
+    /** [obj] carrying the stamps its save returned: the root's first, then each stamped target's, then each repeat's. */
     private fun <T : Any> stamped(obj: T, statement: SaveStatement, returned: List<String>): T {
         val bySaved = IdentityHashMap<Any, String>()
+        handedStamps(statement).forEachIndexed { index, fragment -> returned.getOrNull(index + 1)?.let { bySaved[fragment] = it } }
+        // The root last: where the object holds its own root in a list too, both are handed the same.
         stamps.rootOf(obj)?.let { bySaved[it] = returned.first() }
-        statement.stamped.forEachIndexed { index, fragment -> returned.getOrNull(index + 1)?.let { bySaved[fragment] = it } }
         return stamps.of(obj, bySaved)
+    }
+
+    /** The fragments [statement] hands a stamp back to, the root aside, in the order [SaveExecutor.stamps] gives them. */
+    private fun handedStamps(statement: SaveStatement): List<Any> = statement.stamped + statement.repeats.map { it.fragment }
+
+    /** Refuses [obj] before its save when it could not be handed the stamps the save would leave. */
+    private fun requireStampable(obj: Any, statement: SaveStatement) =
+        stamps.requireStampable(obj, handedStamps(statement) + listOfNotNull(stamps.rootOf(obj)))
+
+    /** A property names a field of the object that is saved: of a view, of its root. */
+    private fun requireFieldOf(obj: Any, property: KProperty1<*, *>) {
+        val owner = property.javaField?.declaringClass ?: property.javaGetter?.declaringClass ?: return
+        val root = stamps.rootOf(obj)?.javaClass ?: return
+        require(owner.isAssignableFrom(root)) {
+            "${owner.simpleName}::${property.name} is not a field of ${root.simpleName}, which is what is saved. Name fields of ${root.simpleName}."
+        }
     }
 
     private fun rootModel(clazz: Class<*>): FragmentModel =

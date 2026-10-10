@@ -49,7 +49,7 @@ class SaveExecutorTest {
 
     @Test
     fun `the stamps of related nodes are handed back in the statement's order, however the row lists them`() {
-        val (manager, _) = answering(listOf("root,1/b=second,0/a=first"))
+        val (manager, _) = answering(listOf("root,1/=second,0/=first"))
         val statement = SaveStatement(
             "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null), listOf(Claim("a", "a"), Claim("b", "b")),
         )
@@ -65,7 +65,8 @@ class SaveExecutorTest {
             listOf(Claim("a", "a"), Claim("b", "b"), Claim("c", "c")), listOf("n0:found", "n1:carried", null),
         )
 
-        assertEquals(listOf("root", "node0:now", "node1:carried", "node2:now"), SaveExecutor(manager).save(statement))
+        // The third carried no stamp, and the node was there: it is handed the node token alone.
+        assertEquals(listOf("root", "node0:now", "node1:carried", "node2:"), SaveExecutor(manager).save(statement))
     }
 
     @Test

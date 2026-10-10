@@ -34,10 +34,15 @@ enum class RemovedTargets {
  * The removals are part of the save's one statement. On a root that carries a stamp, the save is
  * refused if any relationship of the root was added or removed since the object was loaded, from
  * either end: a replace of an object that carries a stamp never removes a relationship it did not
- * load. An object whose stamp is null, or whose root declares none, is not checked.
+ * load. An object whose stamp is null, or whose root declares none, is not checked. An object that
+ * was saved over a node it had not loaded carries a stamp with no relationship token, and a replace
+ * of it is refused: load it first.
  *
- * With [RemovedTargets.DELETE_UNREFERENCED], a node the object still holds in another of its fields
- * is never deleted.
+ * A relationship that another field of the view holds, of the same type and direction to a node both
+ * fields read, is that field's to keep and is not removed.
+ *
+ * With [RemovedTargets.DELETE_UNREFERENCED], a node the object still holds in another of its fields,
+ * or in a view nested in one, is never deleted.
  */
 class Replace private constructor(
     val fields: Set<String>,

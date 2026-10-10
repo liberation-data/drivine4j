@@ -83,8 +83,8 @@ internal class SnapshotDigest(private val objectMapper: ObjectMapper) {
     private fun hash(bytes: ByteArray): JsonNode =
         LongNode.valueOf(ByteBuffer.wrap(sha256.get().digest(bytes)).getLong())
 
-    private fun fieldValue(obj: Any, name: String): Any? =
-        obj.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(obj)
+    /** Wherever in the class hierarchy the field is declared: a view may inherit its root or a relationship field. */
+    private fun fieldValue(obj: Any, name: String): Any? = org.drivine.query.read(obj, name)
 
     private companion object {
         /** Strings up to this length are kept verbatim: storing them costs about what a hash does. */

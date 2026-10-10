@@ -193,9 +193,11 @@ data class FragmentModel(
             require(stamps.size <= 1) {
                 "${clazz.simpleName} has ${stamps.size} @NodeStamp fields (${stamps.joinToString { "'${it.name}'" }}). A node has one stamp."
             }
+            // A Java field does not say whether it can be null, and it can: only a Kotlin class is held to it.
+            val declaresNullability = clazz.isAnnotationPresent(Metadata::class.java)
             stamps.forEach {
                 // Nullable: a new object has no stamp yet, and neither has a node saved before 0.1.0.
-                require(it.type == String::class.java && it.nullable && it.propertyBag == null && it.nodeLabels == null) {
+                require(it.type == String::class.java && (it.nullable || !declaresNullability) && it.propertyBag == null && it.nodeLabels == null) {
                     "@NodeStamp field '${it.name}' on ${clazz.simpleName} must be a nullable String and carry no other mapping annotation."
                 }
                 require(it.propertyName == Stamps.QUOTED) {

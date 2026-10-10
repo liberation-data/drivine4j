@@ -29,6 +29,17 @@ internal class StampedCopy(private val objectMapper: ObjectMapper) {
         return stamped(obj, stamps) as T
     }
 
+    /**
+     * Refuses [obj] if it could not be handed a stamp on each of [fragments], the stamped fragments its
+     * save hands one back to. It is called before the save, so an object that cannot carry its new
+     * stamp is refused with nothing written, and not after a save that was applied.
+     */
+    fun requireStampable(obj: Any, fragments: Collection<Any>) {
+        val probe = IdentityHashMap<Any, String>()
+        fragments.forEach { probe[it] = PROBE }
+        stamped(obj, probe, dry = true)
+    }
+
     /** The stamp [obj]'s root carries, or null when it has none or declares no stamp field. */
     fun stampOf(obj: Any): String? {
         val fragment = rootOf(obj) ?: return null
@@ -44,40 +55,46 @@ internal class StampedCopy(private val objectMapper: ObjectMapper) {
             obj
         }
 
-    private fun stamped(obj: Any, stamps: IdentityHashMap<Any, String>): Any {
+    /**
+     * [obj] with [stamps] set. When [dry], no field of an object is set: each copy that would be made
+     * is made and dropped, so a class that cannot be copied is found out and [obj] is left as it is.
+     */
+    private fun stamped(obj: Any, stamps: IdentityHashMap<Any, String>, dry: Boolean = false): Any {
         if (!obj.javaClass.isAnnotationPresent(GraphView::class.java)) {
             val stamp = stamps[obj] ?: return obj
             val field = FragmentModel.from(obj.javaClass).stampField ?: return obj
-            return with(obj, mapOf(field to stamp))
+            return with(obj, mapOf(field to stamp), dry)
         }
         val model = GraphViewModel.from(obj.javaClass)
         val changes = linkedMapOf<String, Any?>()
         read(obj, model.rootFragment.fieldName)?.let { root ->
-            stamped(root, stamps).takeIf { it !== root }?.let { changes[model.rootFragment.fieldName] = it }
+            stamped(root, stamps, dry).takeIf { it !== root }?.let { changes[model.rootFragment.fieldName] = it }
         }
         model.relationships.filterNot { it.readOnly }.forEach { relationship ->
             val value = read(obj, relationship.fieldName) ?: return@forEach
-            val now = if (relationship.isCollection) items(value as Collection<*>, relationship, stamps) else item(value, relationship, stamps)
+            val now = if (relationship.isCollection) items(value as Collection<*>, relationship, stamps, dry) else item(value, relationship, stamps, dry)
             if (now !== value) changes[relationship.fieldName] = now
         }
-        return if (changes.isEmpty()) obj else with(obj, changes)
+        return if (changes.isEmpty()) obj else with(obj, changes, dry)
     }
 
-    private fun items(items: Collection<*>, relationship: RelationshipModel, stamps: IdentityHashMap<Any, String>): Collection<*> {
-        val now = items.map { it?.let { item -> item(item, relationship, stamps) } }
-        if (now.indices.all { now[it] === items.elementAt(it) }) return items
+    private fun items(items: Collection<*>, relationship: RelationshipModel, stamps: IdentityHashMap<Any, String>, dry: Boolean): Collection<*> {
+        val was = items.toList()
+        val now = was.map { it?.let { item -> item(item, relationship, stamps, dry) } }
+        if (now.indices.all { now[it] === was[it] }) return items
         return if (items is Set<*>) now.toCollection(LinkedHashSet()) else now
     }
 
-    private fun item(item: Any, relationship: RelationshipModel, stamps: IdentityHashMap<Any, String>): Any {
-        if (!relationship.isRelationshipFragment) return stamped(item, stamps)
+    private fun item(item: Any, relationship: RelationshipModel, stamps: IdentityHashMap<Any, String>, dry: Boolean): Any {
+        if (!relationship.isRelationshipFragment) return stamped(item, stamps, dry)
         val targetField = requireNotNull(relationship.targetFieldName)
         val target = read(item, targetField) ?: return item
-        val now = stamped(target, stamps)
-        return if (now === target) item else with(item, mapOf(targetField to now))
+        val now = stamped(target, stamps, dry)
+        return if (now === target) item else with(item, mapOf(targetField to now), dry)
     }
 
-    private fun <T : Any> with(obj: T, changes: Map<String, Any?>): T {
+    /** [obj] with the fields [changes] names set to its values. When [dry], an object whose fields can be set is left as it is. */
+    private fun <T : Any> with(obj: T, changes: Map<String, Any?>, dry: Boolean): T {
         val kClass = obj::class
         val copy = kClass.memberFunctions.firstOrNull { it.name == "copy" }.takeIf { kClass.isData }
         val parameters = copy?.let { function -> changes.keys.map { name -> function.parameters.firstOrNull { it.name == name } } }
@@ -90,18 +107,23 @@ internal class StampedCopy(private val objectMapper: ObjectMapper) {
         }
         val fields = changes.keys.map { name -> field(obj.javaClass, name) }
         if (fields.none { it == null || Modifier.isFinal(it.modifiers) }) {
-            fields.filterNotNull().forEach { it.apply { isAccessible = true }.set(obj, changes[it.name]) }
+            if (!dry) fields.filterNotNull().forEach { it.apply { isAccessible = true }.set(obj, changes[it.name]) }
             return obj
         }
         return try {
             objectMapper.convertValue(objectMapper.toMap(obj) + changes, obj.javaClass)
         } catch (failure: IllegalArgumentException) {
-            throw IllegalStateException(
-                "${obj.javaClass.simpleName} was saved, but a copy carrying its new stamp could not be made. " +
-                    "Make it a Kotlin data class, or give it fields that can be set.",
+            throw IllegalArgumentException(
+                "${obj.javaClass.simpleName} cannot be handed the stamp its save would leave, so it was not saved: " +
+                    "a copy of it carrying the stamp could not be made. Make it a Kotlin data class, or give it fields that can be set.",
                 failure,
             )
         }
+    }
+
+    private companion object {
+        /** A stamp that stands for the one a save would leave, while it is tried whether an object can carry it. */
+        const val PROBE = "probe"
     }
 
     private fun field(type: Class<*>, name: String): java.lang.reflect.Field? =
