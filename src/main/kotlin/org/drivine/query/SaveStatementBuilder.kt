@@ -15,8 +15,8 @@ import org.drivine.query.grammar.CypherGrammar
 
 /**
  * A whole save as one statement. It returns one row holding the stamps the save left, joined by commas:
- * the root's, then `index/found=stamp` for each of [stamped] by its index, `found` being the
- * relationship token the node carried before the save wrote a relationship to it. It returns no row
+ * the root's, then `index/found=stamp` for each of [stamped] by its index, `found` being the stamp
+ * the node carried before the save wrote anything to it, empty when it had none. It returns no row
  * when [root] expected a stamp the node no longer carries, and then it has written nothing.
  */
 internal class SaveStatement(
@@ -25,8 +25,8 @@ internal class SaveStatement(
     val root: StampWrite,
     /** The fragments reached through a relationship that declare a `@NodeStamp` field, as saved. */
     val stamped: List<Any>,
-    /** For each of [stamped], the relationship token of the stamp it carried; null when it carried none. */
-    val carriedLinks: List<String?> = stamped.map { null },
+    /** For each of [stamped], the stamp it carried; null when it carried none. */
+    val carried: List<String?> = stamped.map { null },
 )
 
 /**
@@ -37,7 +37,7 @@ internal class SaveStatement(
  * The statement is a chain of parts. Each part leaves exactly one row, so the next one runs once, and
  * the nodes later parts need are carried from part to part: `_r0` is the root, `_r1` the root of a view
  * nested in it, and so on; `_ns` lists the stamped nodes reached through a relationship and `_is` the
- * index of each; `_links` is the relationship token the root carried before the save wrote anything.
+ * index of each; `_was` is the stamp the root carried before the save wrote anything.
  * Only the root part can leave no row, when the root is stale, and then no later part runs.
  *
  * The related fragments of one field are saved by one part, as the rows of an `UNWIND`, so the
@@ -50,11 +50,12 @@ internal class SaveStatement(
  * A relationship the save makes or removes, or whose properties it changes, replaces the relationship
  * token of the stamp at both of its ends. See [Stamps].
  *
- * A stamp is handed back with the relationship token the node carries only if the node's
- * relationships were as the object's stamp says when the save began. Otherwise another writer has
- * added or removed one that the object does not hold, and the stamp handed back keeps the object's
- * own token: a later save of it that replaces a list is refused, as a save of the object itself is.
- * That holds for the root, and for each related node whose stamp is handed back.
+ * A stamp is handed back with a token the node carries only if what that token speaks for was as
+ * the object's stamp says when the save began: the node's own data for the first, its relationships
+ * for the second. Otherwise another writer has changed what the object does not hold, and the stamp
+ * handed back keeps the object's own token: a later save of it that would overwrite that change is
+ * refused, as a save of the object itself is. That holds for the root, and for each related node
+ * whose stamp is handed back. See [Stamps.handedBack].
  */
 internal class SaveStatementBuilder(
     private val objectMapper: ObjectMapper,
@@ -94,7 +95,7 @@ internal class SaveStatementBuilder(
         private val text = StringBuilder()
         private val bindings = mutableMapOf<String, Any?>(MARK_PARAM to Stamps.fresh())
         private val stamped = mutableListOf<Any>()
-        private val carriedLinks = mutableListOf<String?>()
+        private val carried = mutableListOf<String?>()
         private var parts = 0
         private lateinit var root: StampWrite
 
@@ -109,18 +110,20 @@ internal class SaveStatementBuilder(
             }
             // One string and not a list: every engine's driver hands a string back the same way.
             line("RETURN reduce(s = ${rootStamp()}, k IN range(0, size(_ns) - 1) | s + ',' + _is[k] + '=' + (_ns[k]).$STAMP) AS ${Stamps.STAMP_COLUMN}")
-            return SaveStatement(text.toString(), bindings, root, stamped, carriedLinks)
+            return SaveStatement(text.toString(), bindings, root, stamped, carried)
         }
 
         /**
-         * The root's stamp as it is handed back: the node's, unless the object carried a stamp whose
-         * relationship token the node no longer had when the save began. Then the object's token is
-         * kept, so the stamp does not vouch for relationships the object never held.
+         * The root's stamp as it is handed back: the node's, unless the object carried a stamp and the
+         * node no longer had one of its tokens when the save began. Then the object's token is kept, so
+         * the stamp does not vouch for data or relationships the object never held.
          */
         private fun rootStamp(): String {
-            val carried = root.carried?.let { Stamps.linksToken(it) } ?: return "_r0.$STAMP"
-            bindings[CARRIED_LINKS_PARAM] = carried
-            return "CASE WHEN _links = \$$CARRIED_LINKS_PARAM THEN _r0.$STAMP ELSE ${Stamps.nodeTokenOf("_r0")} + ':' + \$$CARRIED_LINKS_PARAM END"
+            val carried = root.carried ?: return "_r0.$STAMP"
+            bindings[CARRIED_NODE_PARAM] = Stamps.nodeToken(carried)
+            bindings[CARRIED_LINKS_PARAM] = Stamps.linksToken(carried).orEmpty()
+            return "CASE WHEN left(_was, ${Stamps.TOKEN}) = \$$CARRIED_NODE_PARAM THEN ${Stamps.nodeTokenOf("_r0")} ELSE \$$CARRIED_NODE_PARAM END + ':' + " +
+                "CASE WHEN right(_was, ${Stamps.TOKEN}) = \$$CARRIED_LINKS_PARAM THEN ${Stamps.linksTokenOf("_r0")} ELSE \$$CARRIED_LINKS_PARAM END"
         }
 
         /** The root of the view at [depth], then each relationship field it writes. Leaves `_r<depth>` carried. */
@@ -134,11 +137,18 @@ internal class SaveStatementBuilder(
             )
 
             // A read-only field (every path is one) is loaded and never written.
-            model.relationships.filterNot { it.readOnly }.forEach { relationship ->
+            val written = model.relationships.filterNot { it.readOnly }.map { relationship ->
                 val target = targetOf(relationship)
                 val value = read(view, relationship.fieldName)
-                val items = if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value)
+                Triple(relationship, target, if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value))
+            }
+            // Every node the object holds, in any field: none of them is deleted as unreferenced,
+            // though the field it is dropped from holds the only relationship the store has to it yet.
+            val held = written.flatMap { (_, target, items) -> items.filterNotNull().map { target.fragmentOf(it) } }
+            written.forEach { (relationship, target, items) ->
                 val ids = items.map { item -> item?.let { target.idOf(it) } }
+                // A node the field holds more than once is written once, as the last of them says.
+                val last = ids.withIndex().filter { it.value != null }.associate { it.value to it.index }
                 val itemsNow = after?.let { digestItems(it.get(relationship.fieldName), relationship) }
                 val itemsBefore = before?.let { digest ->
                     digestItems(digest.get(relationship.fieldName), relationship).filterNotNull()
@@ -147,14 +157,19 @@ internal class SaveStatementBuilder(
 
                 if (itemsBefore != null) {
                     val gone = itemsBefore.keys - ids.filterNotNull().map { it.toString() }.toSet()
-                    if (gone.isNotEmpty()) removalPart(relationship, target, depth, gone.toList(), keep = false, RemovedTargets.KEEP)
+                    // Bound as the id is stored, a number as a number: a string does not equal one.
+                    val goneIds = gone.mapNotNull { id -> target.storedIdOf(itemsBefore.getValue(id)) }
+                    if (goneIds.isNotEmpty()) removalPart(relationship, target, depth, goneIds, keep = false, RemovedTargets.KEEP, emptyList())
                 } else if (depth == 0) {
-                    replaced(relationship)?.let { removalPart(relationship, target, depth, ids.filterNotNull(), keep = true, it) }
+                    replaced(relationship)?.let { removedTargets ->
+                        val heldIds = held.filter { target.model.clazz.isInstance(it) }.mapNotNull { target.idOfFragment(it) }.distinct()
+                        removalPart(relationship, target, depth, ids.filterNotNull(), keep = true, removedTargets, heldIds)
+                    }
                 }
 
                 val groups = linkedMapOf<Group, MutableList<Map<String, Any?>>>()
                 items.forEachIndexed { index, item ->
-                    if (item == null) return@forEachIndexed
+                    if (item == null || last[ids[index]]?.let { it != index } == true) return@forEachIndexed
                     val was = ids[index]?.let { itemsBefore?.get(it.toString()) }
                     val now = itemsNow?.getOrNull(index)
                     // As it was when loaded: the relationship and its target are left alone.
@@ -188,8 +203,8 @@ internal class SaveStatementBuilder(
                     .buildMergeStatement(fragment, null, before, nullPolicy, rootWriteFields)
                 add(statement)
                 root = requireNotNull(statement.stamp)
-                // Read before any relationship is written: the root part leaves this token as it found it.
-                line("WITH ${Stamps.linksTokenOf("n")} AS _links, n AS _r0, [] AS _ns, [] AS _is")
+                // The stamp the root part found, before it wrote anything.
+                line("WITH ${Stamps.FOUND} AS _was, n AS _r0, [] AS _ns, [] AS _is")
             } else {
                 add(fragmentPart(fragment, model, carry(depth - 1), before, after))
                 line("WITH ${roots(depth - 1)}, n AS _r$depth, ${collected(fragment, model)}")
@@ -253,11 +268,12 @@ internal class SaveStatementBuilder(
             bindings["p${part}_rows"] = rows
             line("UNWIND \$p${part}_rows AS row")
             line("MERGE (n:${model.labels.joinToString(":")} {${model.nodeIdProperty ?: model.nodeIdField}: row.id})")
-            line("WITH $carried, row, n, $ROW_CHANGES_NODE AS _changed")
+            // The stamp the node is found with, read before anything is written to it.
+            line("WITH $carried, row, n, row.i + '/' + coalesce(n.$STAMP, '') AS _i, $ROW_CHANGES_NODE AS _changed")
             line("SET n += row.props, ${Stamps.restamp("n", "_changed", MARK)}")
             if (!group.link) {
                 if (handsBack) {
-                    line("WITH ${roots(depth)}, _ns, _is, collect(n) AS _n, collect(row.i + '/' + ${Stamps.linksTokenOf("n")}) AS _j")
+                    line("WITH ${roots(depth)}, _ns, _is, collect(n) AS _n, collect(_i) AS _j")
                     line("WITH ${roots(depth)}, _ns + _n AS _ns, _is + _j AS _is")
                 } else {
                     line("WITH $carried, count(n) AS _saved")
@@ -274,11 +290,10 @@ internal class SaveStatementBuilder(
             // The row's values are carried by name: a row is a map, and not every engine groups by one.
             val values = names.mapIndexed { index, name -> "row.rel.$name AS _q$index" }
             val held = (listOf("n", "_i") + names.indices.map { "_q$it" }).joinToString(", ")
-            line("WITH $carried, row, n")
+            line("WITH $carried, row, n, _i")
             line("OPTIONAL MATCH ($rootVariable)${edge(relationship, "x")}(n)")
             line(
-                // The node's relationship token is read here, before the relationship to it is written.
-                "WITH $carried, n, row.i + '/' + ${Stamps.linksTokenOf("n")} AS _i, ${(values + "count(x) AS _had").joinToString(", ")}, " +
+                "WITH $carried, n, _i, ${(values + "count(x) AS _had").joinToString(", ")}, " +
                     "sum(CASE WHEN ${same.joinToString(" AND ")} THEN 1 ELSE 0 END) AS _same"
             )
             if (relationship.direction == Direction.UNDIRECTED) {
@@ -375,9 +390,13 @@ internal class SaveStatementBuilder(
         /**
          * Removes the relationships of a field from the root at [depth] to the targets whose ids are
          * [ids], or when [keep] to every target but those. The root, and each target that loses a
-         * relationship, gets a new relationship token.
+         * relationship, gets a new relationship token. A target whose id is among [heldIds], those of
+         * the nodes the object holds in any of its fields, is never deleted as unreferenced: a later
+         * part of the statement joins it.
          */
-        private fun removalPart(relationship: RelationshipModel, target: Target, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets) {
+        private fun removalPart(
+            relationship: RelationshipModel, target: Target, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>,
+        ) {
             val part = parts++
             val rootVariable = "_r$depth"
             val carried = carry(depth)
@@ -400,7 +419,11 @@ internal class SaveStatementBuilder(
             line("FOREACH (t IN CASE WHEN target IS NOT NULL AND size(_rs) > 0 THEN [target] ELSE [] END | SET ${Stamps.relink("t", "true", MARK)})")
             if (removedTargets == RemovedTargets.DELETE_UNREFERENCED) {
                 // The root is never deleted: a relationship from it to itself is removed, and it stays.
-                line("FOREACH (t IN CASE WHEN target IS NOT NULL AND target <> $rootVariable AND _refs = size(_rs) THEN [target] ELSE [] END | DETACH DELETE t)")
+                bindings["p${part}_held"] = heldIds
+                line(
+                    "FOREACH (t IN CASE WHEN target IS NOT NULL AND target <> $rootVariable AND _refs = size(_rs) " +
+                        "AND NOT target.${target.idProperty} IN \$p${part}_held THEN [target] ELSE [] END | DETACH DELETE t)"
+                )
             }
             line("WITH $carried, sum(size(_rs)) AS _removed")
             line("SET ${Stamps.relink(rootVariable, "_removed > 0", MARK)}")
@@ -409,20 +432,20 @@ internal class SaveStatementBuilder(
 
         /**
          * `_ns` and `_is`, with the node `n` added when its fragment declares a stamp to hand back. It
-         * is added with the relationship token it has now, before a relationship to it is written.
+         * is added with the stamp its part found it with, before anything was written to it.
          */
         private fun collected(fragment: Any, model: FragmentModel): String =
             if (model.stampField == null) {
                 "_ns, _is"
             } else {
                 val index = handedBack(fragment, model, objectMapper.toMap(fragment))
-                "_ns + [n] AS _ns, _is + ['$index/' + ${Stamps.linksTokenOf("n")}] AS _is"
+                "_ns + [n] AS _ns, _is + ['$index/' + ${Stamps.FOUND}] AS _is"
             }
 
         /** Records [fragment], whose fields are [values], as a node whose stamp is handed back; gives its index. */
         private fun handedBack(fragment: Any, model: FragmentModel, values: Map<String, Any?>): Int {
             stamped.add(fragment)
-            carriedLinks.add((values[model.stampField] as? String)?.let { Stamps.linksToken(it) })
+            carried.add(values[model.stampField] as? String)
             return stamped.size - 1
         }
 
@@ -442,8 +465,8 @@ internal class SaveStatementBuilder(
             text.append(clause)
         }
 
-        /** The roots down to [depth], and with them the relationship token the object's root was found with. */
-        private fun roots(depth: Int): String = "_links, " + (0..depth).joinToString(", ") { "_r$it" }
+        /** The roots down to [depth], and with them the stamp the object's root was found with. */
+        private fun roots(depth: Int): String = "_was, " + (0..depth).joinToString(", ") { "_r$it" }
 
         /** What is carried while the items of the view at [depth] are saved. */
         private fun carry(depth: Int): String = "${roots(depth)}, _ns, _is"
@@ -484,10 +507,21 @@ internal class SaveStatementBuilder(
         fun nodeOf(item: JsonNode): JsonNode? =
             if (relationship.isRelationshipFragment) item.get(relationship.targetFieldName!!) else item
 
-        fun idOf(item: Any): Any? {
+        /** The fragment [item] points at: of a nested view, its root. */
+        fun fragmentOf(item: Any): Any {
             val node = nodeOf(item)
-            val fragment = view?.let { read(node, it.rootFragment.fieldName) } ?: node
-            return objectMapper.toMap(fragment)[idField]
+            return view?.let { read(node, it.rootFragment.fieldName) } ?: node
+        }
+
+        fun idOf(item: Any): Any? = idOfFragment(fragmentOf(item))
+
+        fun idOfFragment(fragment: Any): Any? = objectMapper.toMap(fragment)[idField]
+
+        /** The id of a digested item as it is stored: a number as a number, anything else as text. */
+        fun storedIdOf(item: JsonNode): Any? {
+            val node = nodeOf(item)
+            val id = (view?.let { node?.get(it.rootFragment.fieldName) } ?: node)?.get(idField)?.takeUnless { it.isNull } ?: return null
+            return if (id.isNumber) id.numberValue() else id.asText()
         }
 
         fun idOf(item: JsonNode): String? {
@@ -520,6 +554,9 @@ internal class SaveStatementBuilder(
 
         /** The relationship token of the stamp the object's root carried. */
         const val CARRIED_LINKS_PARAM = "_carriedLinks"
+
+        /** The node token of the stamp the object's root carried. */
+        const val CARRIED_NODE_PARAM = "_carriedNode"
     }
 }
 

@@ -219,12 +219,14 @@ data class GraphViewModel(
         }
 
         /**
-         * Marks the relationships no save writes: those declared `@ReadOnly`, and every `@GraphPath`
-         * field, which names no single relationship that a save could write. A `@Count` or
-         * `@Aggregate` field is not a relationship and is never written either.
+         * Marks the relationships no save writes: those declared `@ReadOnly`, every `@GraphPath`
+         * field, which names no single relationship that a save could write, and every list of
+         * fragments that reads more than one hop (`maxDepth` above 1), whose items are not all a
+         * single relationship away. A `@Count` or `@Aggregate` field is not a relationship and is
+         * never written either.
          */
         private fun markReadOnly(relationships: List<RelationshipModel>, readOnlyFields: Set<String>): List<RelationshipModel> =
-            relationships.map { it.copy(readOnly = it.isPath || it.fieldName in readOnlyFields) }
+            relationships.map { it.copy(readOnly = it.isPath || it.readsSeveralHops || it.fieldName in readOnlyFields) }
 
         /**
          * Creates a GraphViewModel from a Kotlin class annotated with @GraphView.

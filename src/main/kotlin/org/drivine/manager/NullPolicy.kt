@@ -2,7 +2,8 @@ package org.drivine.manager
 
 /**
  * How a **null** field value is treated on save (`save` / `saveAll`) — the single, declared contract for
- * null handling, applied identically across single/batch, bagged/bagless, and every engine.
+ * null handling of the object saved (for a view, its root), applied identically across single/batch,
+ * bagged/bagless, and every engine.
  *
  * Previously the answer was emergent from hidden axes (single vs batch, bagged vs bagless, a
  * vector-wrapping engine vs not, tracked vs detached) — a caller couldn't reason about whether a null
@@ -17,7 +18,10 @@ package org.drivine.manager
  * per-field exception — so `save(chunk)` on a partially-loaded object never destroys anything.
  *
  * The policy is the whole of it on [StatelessGraphObjectManager], which keeps no session and writes
- * the object as given. On the deprecated [GraphObjectManager] it governs null semantics independently
+ * the object as given. It governs the object's own fields, and for a view its root's. A node reached
+ * through a relationship is written as under [IGNORE] whatever the policy, a null property of a
+ * relationship fragment clears the property on the relationship, and `update` clears what the change
+ * set to null. On the deprecated [GraphObjectManager] it governs null semantics independently
  * of dirty-tracking: the session snapshot only optimizes away re-writes of unchanged **non-null**
  * fields (a no-op), and never decides whether a null clears. So the observable result does not depend
  * on whether the object is tracked.

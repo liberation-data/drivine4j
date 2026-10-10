@@ -97,6 +97,9 @@ kotlin {
 // Use JUnit 5
 tasks.named('test') {
 	useJUnitPlatform()
+	// CI runs the suite once for each collection sort strategy. Gradle does not track the
+	// environment, so without this the second run is up to date and runs nothing.
+	inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
 	// The full suite runs many Spring contexts + testcontainer integration tests in one JVM; the
 	// default heap is too small and the worker OOM-crashes mid-run (surfacing as a cascade of
 	// NoClassDefFoundError on the still-pending tests, and a missing jacoco test.exec). Give it room.

@@ -33,13 +33,23 @@ enum class RemovedTargets {
  *
  * The removals are part of the save's one statement. On a root that carries a stamp, the save is
  * refused if any relationship of the root was added or removed since the object was loaded, from
- * either end: a replace never removes a relationship it did not load.
+ * either end: a replace of an object that carries a stamp never removes a relationship it did not
+ * load. An object whose stamp is null, or whose root declares none, is not checked.
+ *
+ * With [RemovedTargets.DELETE_UNREFERENCED], a node the object still holds in another of its fields
+ * is never deleted.
  */
 class Replace private constructor(
     val fields: Set<String>,
     val everyField: Boolean,
     val removedTargets: RemovedTargets,
 ) : RelationshipWrite {
+
+    init {
+        require(everyField || fields.isNotEmpty()) {
+            "Replace names no field, so it would replace nothing. Name the fields, as Replace(View::field), or use Replace.all()."
+        }
+    }
 
     constructor(vararg fields: KProperty1<*, *>, removedTargets: RemovedTargets = RemovedTargets.KEEP) :
         this(fields.map { it.name }.toSet(), false, removedTargets)

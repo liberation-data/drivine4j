@@ -11,6 +11,7 @@ import java.lang.reflect.Modifier
 import java.util.IdentityHashMap
 import kotlin.reflect.full.instanceParameter
 import kotlin.reflect.full.memberFunctions
+import kotlin.reflect.jvm.isAccessible
 
 /**
  * Gives a saved object the stamps its save left: on its root, and on each related node that declares a
@@ -82,6 +83,8 @@ internal class StampedCopy(private val objectMapper: ObjectMapper) {
         val parameters = copy?.let { function -> changes.keys.map { name -> function.parameters.firstOrNull { it.name == name } } }
         if (copy != null && parameters != null && parameters.none { it == null }) {
             val arguments = mapOf(requireNotNull(copy.instanceParameter) to obj) + parameters.filterNotNull().associateWith { changes[it.name] }
+            // A data class need not be public for its copy to be called.
+            copy.isAccessible = true
             @Suppress("UNCHECKED_CAST")
             return copy.callBy(arguments) as T
         }

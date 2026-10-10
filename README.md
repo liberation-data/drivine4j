@@ -1231,6 +1231,9 @@ A save adds the relationships the object holds and removes none. To remove, name
 - `Replace` is refused, on a root that carries a stamp, if any relationship of the root was added or removed since the object was loaded: from this end or the other, by a view, `edges` or `GraphObjectManager`. A save that only adds is not: two writers who loaded the same view can each add to it. See [`@NodeStamp`](#nodestamp-refusing-a-save-when-the-node-changed).
 - A save is one statement whose text does not grow with a list: the related nodes of a field are its rows. Index the id of each node type you save, as for any `MERGE`.
 - An `UNDIRECTED` field is satisfied by a relationship stored in either direction. One is made, from the root, only when there is none.
+- A node a field holds more than once is written once, as the last of them says, and joined once.
+- `DELETE_UNREFERENCED` never deletes a node the object still holds in another of its fields: a target moved from one list to another is kept.
+- A null property of a relationship fragment clears the property on the relationship, whatever the `NullPolicy`: the policy governs the root's fields.
 - `edges.unrelate(from, to, type)` removes the relationships of a type from one node to another, and `edges.unrelateAll(from, type, direction)` every one of a type. Neither deletes a node or touches a node's own properties.
 
 #### Load, Change and Save (`update`)
@@ -1268,7 +1271,7 @@ left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-writ
 
 #### Batch Save (`saveAll`)
 
-Persist a collection in **one atomic round-trip group**. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back. FalkorDB has no multi-statement transactions: there each object's save is atomic and the batch is not.
+Persist a collection in one group of statements. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back. FalkorDB has no multi-statement transactions: there each statement is atomic and the batch is not, and with `falkorDbTransactionMode` set to `STRICT` a batch is refused, as any transaction is.
 
 ```kotlin
 val saved = graphObjectManager.saveAll(views)
@@ -1278,9 +1281,11 @@ val replaced = graphObjectManager.saveAll(views, Replace(PropositionView::mentio
 - Fragments collapse into chunked `UNWIND … MERGE` statements (sub-linear round trips), with or without a `@NodeStamp` field. A view is saved by a statement of its own, as `save` does it.
 - Heterogeneous collections are grouped by runtime class, and the returned list preserves input order.
 - Fragments with a `@PropertyBag` or a `@NodeLabels` field are saved one statement each.
-- A batch does not check stamps: an object that carries a stale stamp is written all the same.
-- The returned objects carry the stamps the batch left, so each can be saved again.
-- A `Replace` is part of the batch.
+- A batch that only adds does not check stamps: an object that carries a stale stamp is written all the same. The object handed back then keeps the stamp it had, so a later `save` of it is refused: it does not hold what the other writer left.
+- Otherwise the returned objects carry the stamps the batch left, so each can be saved again.
+- A `Replace` is part of the batch, and is checked as `save` checks it: a view that carries a stamp is refused with `StaleObjectException` if the node or its relationships changed since it was loaded, and then the batch is not applied. A view that carries no stamp is not checked, as with `save`.
+- A batch the engine turns away because another writer was changing the same nodes is run again, as a save is.
+- A fragment with a `@VectorIndex` field is saved one statement each on FalkorDB, which stores a vector in a form a batch of rows cannot write.
 - Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy), as for `save`.
 
 #### Saving from Java
@@ -1325,15 +1330,15 @@ data class Person(
 - The first token speaks for the node's own data. A save that changes a property, or adds or drops a label, replaces it. A save that changes nothing leaves it as it is.
 - The second token speaks for the node's relationships. It is replaced, at both ends, when a relationship is added or removed or its properties change: by a view saved from either end, by `edges`, or by `GraphObjectManager`.
 - A save is refused when what it would overwrite has changed since the object was loaded. Every save of an object that carries a stamp compares the first token. A save with `Replace` overwrites a relationship list, so it compares the second too.
-- So a node's own data can be saved while others attach relationships to it, two writers can each add a relationship to the same node, and a `Replace` never removes a relationship it did not load.
+- So a node's own data can be saved while others attach relationships to it, two writers can each add a relationship to the same node, and a `Replace` of an object that carries a stamp never removes a relationship it did not load. An object whose stamp is null, or whose root declares none, is not checked.
 - The second token covers every relationship of the node. A `Replace` of one list is refused when a relationship of another type was added to the same node; load again, or use `update`.
 - A refused save writes nothing, to that node or any other, and `StaleObjectException` says what happened. The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
 - A save of an object whose stamp is null is not checked: it creates the node or overwrites it.
-- `save` returns the object with the stamps the save left: the root's, and that of each related node that declares a stamp field. Use the returned object: if the save changed the node, the one you passed in is now stale. A stamp handed back carries the node's relationship token only if the node's relationships were as the object's stamp says when the save began. Otherwise another writer added or removed one the object does not hold, and the object keeps the token it had: its own data can still be saved, and a `Replace` of it is refused until it is loaded again.
-- `update` retries on a conflict, loading again and re-applying your change.
+- `save` returns the object with the stamps the save left: the root's, and that of each related node that declares a stamp field. Use the returned object: if the save changed the node, the one you passed in is now stale. A stamp handed back carries a token of the node's only if what the token speaks for was as the object's stamp says when the save began. If another writer added or removed a relationship the object does not hold, the object keeps the relationship token it had: its own data can still be saved, and a `Replace` of it is refused until it is loaded again. If another writer changed the data of a node that was written unchecked (a related node, or an object in a `saveAll`), the object keeps the node token it had, and a save of it is refused until it is loaded again.
+- `update` retries on a conflict, loading again and re-applying your change. It is checked against the stamp it loaded, whatever the change does with the object's, and refuses a change that gives the object another id.
 - In a view, the root is checked. A node reached through a relationship is written unchecked. `save` writes every field of it that is not null, so a stale copy of a related node overwrites another writer's change to it. `update` writes only the fields the change altered.
-- `edges.relate`, `unrelate` and `unrelateAll` write the token at both ends, and `relate` leaves both alone when it finds the relationship there as it is. On Memgraph two of them that touch the same node at once can conflict; `edges` does not retry, and the engine's error reaches the caller.
-- `saveAll` stamps the nodes it changes, hands the stamps back as `save` does, and does not check one. The deprecated `GraphObjectManager` stamps the nodes and relationships it changes too, so a checked save notices its writes.
+- `edges.relate`, `unrelate` and `unrelateAll` write the token at both ends, and `relate` leaves both alone when it finds the relationship there as it is. On Memgraph two of them that touch the same node at once can conflict; `edges` does not retry, and the engine's error reaches the caller. The same holds for a save by the deprecated `GraphObjectManager`.
+- `saveAll` stamps the nodes it changes and hands the stamps back as `save` does. It checks a view saved with `Replace`, and nothing else. The deprecated `GraphObjectManager` stamps the nodes and relationships it changes too, so a checked save notices its writes.
 - Deleting a node removes its relationships without marking the nodes at their other ends.
 - Indexes and constraints are not affected. A checked save sets and removes a property `__drivine.lock` within its statement, to hold the node's write lock; it is never left on a node. A flat `@PropertyBag` does not read a property beginning `__drivine.`.
 
@@ -2269,7 +2274,8 @@ graphObjectManager.edges.unrelateAll(lyre, "OWNED_BY")        // every OWNED_BY 
 - `loadRelated` returns each related node once, as the target fragment.
 - `unrelate` and `unrelateAll` remove relationships and return how many. No node is deleted.
 - `relate`, `unrelate` and `unrelateAll` give the nodes at both ends a new relationship token in
-  their stamp, so a `Replace` from an object loaded before is refused.
+  their stamp when they change something, so a `Replace` from an object loaded before is refused.
+  A `relate` that finds the relationship there as it is, and an `unrelate` that finds none, mark neither.
 
 ### Cypher Dialect
 
@@ -2808,7 +2814,7 @@ List<PersonContext> results = JavaQueryBuilderKt
 
 ## Migrating from GraphObjectManager
 
-`GraphObjectManager` is deprecated in favour of `StatelessGraphObjectManager`. It still works as it did, and is described in [docs/legacy-graph-object-manager.md](docs/legacy-graph-object-manager.md).
+`GraphObjectManager` is deprecated in favour of `StatelessGraphObjectManager`. It still works, with the fixes and the stamping listed below, and is described in [docs/legacy-graph-object-manager.md](docs/legacy-graph-object-manager.md).
 
 ### Why
 
@@ -2852,9 +2858,11 @@ Loading, querying and deleting are the same: both managers implement `GraphObjec
 
 - `DELETE_UNREFERENCED` deletes a removed target that nothing else refers to the way the field did: see [Relationships](#relationships). `DELETE_ORPHAN` deletes one with no relationship in either direction. A removed target that nothing points at, and that points at something itself, is deleted by the first through an outgoing field and kept by the second.
 - Add a `@NodeStamp` field to each type you load, change and save.
-- A `@GraphPath`, `@Count` or `@Aggregate` field is read-only with either manager, whether or not it is declared `@ReadOnly`: it is loaded and never written.
+- A `@GraphPath`, `@Count` or `@Aggregate` field is read-only with either manager, whether or not it is declared `@ReadOnly`: it is loaded and never written. So is a list of fragments read over several hops (`maxDepth` above 1): a save used to write each item as a direct relationship from the root.
+- A cascading delete no longer follows a read-only field. Before, `delete(id, View::class.java, CascadeType.DELETE_ALL)` deleted the nodes of a `@ReadOnly` field, and for a `@GraphPath` field the nodes a direct relationship of the first hop's type led to.
+- A view whose root id is stored under another name (`@NodeId @GraphProperty("…")`) is now loaded, updated and deleted by id. Before, the lookup used the field's name and found nothing.
 - A view save through an `UNDIRECTED` field no longer adds a second relationship beside one stored towards the root.
-- Nodes saved by either manager now carry the property `__drivine.stamp`. Cypher of your own that returns every property of a node, such as `properties(n)`, returns it too. That is harmless; names beginning `__drivine.` are Drivine's own, should your code need to tell them from its own.
+- Nodes saved by either manager, and the node at each end of a relationship either manager or `edges` writes or removes, now carry the property `__drivine.stamp`, whether or not their type declares a `@NodeStamp` field. It cannot be turned off. A test that compares a node's whole property map, and Cypher that copies one node's properties to another, will see it. Cypher of your own that returns every property of a node, such as `properties(n)`, returns it too. That is harmless; names beginning `__drivine.` are Drivine's own, should your code need to tell them from its own.
 
 ### Relationships saved through an `INCOMING` field
 
@@ -2869,11 +2877,14 @@ findings.forEach { println("${it.view.simpleName}.${it.field}: ${it.wrongWay} wr
 findings.filter { it.ambiguity == null }.forEach { repair.repair(it) }
 ```
 
-- `report` gives one finding for each `INCOMING` relationship field a save writes, in the views you pass and the views nested in them. `wrongWay` counts the relationships pointing from a root to a target, which is what the old save wrote.
+- Back the store up first, and run the repair once nothing built on a version before 0.1.0 is still writing: what such a writer saves afterwards points the wrong way again.
+- `report` gives one finding for each `INCOMING` relationship field, in the views you pass and the views nested in them. A field you have since declared `@ReadOnly` has one too, because the old save wrote it as it wrote every other. A list read over several hops (`maxDepth` above 1) has none. `wrongWay` counts the relationships pointing from a root to a target, which is what the old save wrote.
 - A relationship between two nodes that each carry the labels of both the root and the target is counted in `eitherWay` instead, and in neither `wrongWay` nor `rightWay`: either node can be the root, so it may already point the right way. `repair` never turns one of those, forced or not. Where a view rooted at `Organization` reads `PART_OF` from a `Company`, a relationship between two nodes labelled `Company:Organization` is one.
-- `repair` turns round the relationships counted in `wrongWay`, keeping their properties. Where one already points the right way between the same two nodes, that one is kept as it is, properties and all, and the stale one is dropped. Several that point the wrong way between the same two nodes become one, with the properties of one of them: whichever the store gives first. A relationship turned round is not matched again, so running the repair a second time changes nothing.
+- `repair` turns round the relationships counted in `wrongWay`, keeping their properties. Where one already points the right way between the same two nodes, the two become one: the one that already pointed the right way keeps every property it has, and takes from the other the properties it lacks. Nothing in the store says which of the two is the newer, so where both have a property with different values, the value on the one turned round is lost. `collisions` counts those relationships in the report, before anything is changed. Several that point the wrong way between the same two nodes become one as well, with the properties of them all. A relationship turned round is not matched again, so running the repair a second time changes nothing.
+- The node at each end of a relationship the repair deals with gets a new relationship token in its stamp, so a `Replace` of an object loaded before the repair is refused and does not remove what the repair turned round.
 - `repair(finding, force, batchSize)` runs one statement for each batch, 10,000 relationships by default, and returns how many wrong-way relationships it dealt with: each one it turned round and each one it dropped for another between the same two nodes. Relationships that already pointed the right way are not counted. Run it outside a transaction, so each batch is committed as it finishes.
-- A finding is **ambiguous** when another of the views declares the same relationship pointing away from the root, so those relationships may be meant. A read-only field counts, and so does a view rooted at a subtype: its nodes carry the root's labels too. `repair` refuses an ambiguous finding unless you pass `force = true`.
+- A finding is **ambiguous** when another of the views declares the same relationship pointing away from the root, so those relationships may be meant, or has a `@GraphPath` field with a hop that is stored that way, so they may be hops of the path. A read-only field counts, and so does a view rooted at a subtype: its nodes carry the root's labels too. `repair` refuses an ambiguous finding unless you pass `force = true`.
+- Where a view has a `@GraphPath` field as well, run `PathRelationshipReport` (below) first and deal with what it finds. A relationship the old save wrote for a path field also points away from the root, and turned round it would be loaded by an `INCOMING` field of the same type.
 - A field whose root and target can be the same nodes (a person who follows a person, or a field with a root or a target whose fragment has no label) cannot be repaired by the tool: nothing tells a relationship written the wrong way from one that is meant. `finding.repairable` is false, and `force` does not change that. Repair those with Cypher that knows your data.
 - The counts are by label and type. The tool cannot tell a relationship a save wrote from one made some other way between the same kinds of node.
 - Run it once, as a migration. A relationship that was added with Cypher or `edges.relate` in the direction the field reads was never wrong and is left alone.
