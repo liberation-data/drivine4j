@@ -210,7 +210,8 @@ abstract class StatelessSaveContract {
         val fromScratch = stateless.save(Claim("c1", "Ada founded Acme"))
 
         assertEquals(first.stamp, again.stamp)
-        assertEquals(first.stamp, fromScratch.stamp, "a null field is not written, so nothing changed")
+        // An object built from scratch is handed the node token alone: its lists did not come from the store.
+        assertEquals(first.stamp?.substringBefore(':') + ":", fromScratch.stamp, "a null field is not written, so nothing changed")
         assertEquals(first.stamp, property("c1", Stamps.PROPERTY))
         stateless.save(first.copy(text = "the first object is still current"))
     }
@@ -271,7 +272,8 @@ abstract class StatelessSaveContract {
 
         val saved = stateless.save(Claim("c1", "Ada founded Acme"))
 
-        assertEquals(assertNotNull(saved.stamp), property("c1", Stamps.PROPERTY))
+        // The node was there, and the object did not load it: it is handed the node token alone.
+        assertEquals(assertNotNull(saved.stamp), property("c1", Stamps.PROPERTY)?.substringBefore(':') + ":")
     }
 
     @Test

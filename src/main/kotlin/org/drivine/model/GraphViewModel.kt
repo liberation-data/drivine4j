@@ -7,6 +7,7 @@ import org.drivine.annotation.GraphPath
 import org.drivine.annotation.Aggregate
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Count
+import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.Root
@@ -64,6 +65,7 @@ data class GraphViewModel(
         fun from(clazz: Class<*>): GraphViewModel {
             clazz.getAnnotation(GraphView::class.java)
                 ?: throw IllegalArgumentException("Class ${clazz.name} is not annotated with @GraphView")
+            requireNoStamp(clazz, "@GraphView", "its root fragment")
 
             // Try Kotlin reflection first, fall back to Java reflection if needed
             val kClass = clazz.kotlin
@@ -138,6 +140,7 @@ data class GraphViewModel(
                         val sortedByAnnotation = prop.findAnnotation<SortedBy>()
 
                         if (isRelationshipFragment) {
+                            requireNoStamp(elementType, "@RelationshipFragment", "the fragment it points at")
                             // Extract relationship fragment metadata
                             val fragmentKClass = elementType.kotlin
                             val fragmentProperties = fragmentKClass.memberProperties
@@ -232,6 +235,23 @@ data class GraphViewModel(
          * Creates a GraphViewModel from a Kotlin class annotated with @GraphView.
          */
         fun from(kClass: KClass<*>): GraphViewModel = from(kClass.java)
+
+        /**
+         * A stamp belongs to a node, so `@NodeStamp` is declared on a `@NodeFragment`. On a class that
+         * is [kind] it would be neither loaded nor compared, and a save would go unchecked unnoticed.
+         */
+        private fun requireNoStamp(clazz: Class<*>, kind: String, where: String) {
+            val onProperty = clazz.kotlin.memberProperties.filter { it.findAnnotation<NodeStamp>() != null }.map { it.name }
+            val onField = generateSequence<Class<*>>(clazz) { it.superclass }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter { it.isAnnotationPresent(NodeStamp::class.java) }.map { it.name }.toList()
+            (onProperty + onField).firstOrNull()?.let { field ->
+                throw IllegalArgumentException(
+                    "@NodeStamp field '$field' on ${clazz.simpleName}, which is a $kind: a stamp is a node's, " +
+                        "so it is declared on a @NodeFragment. Here it would be neither loaded nor compared. Declare it on $where."
+                )
+            }
+        }
 
         /**
          * Builds a [RelationshipModel] for a @GraphPath field. Shared by the Kotlin and Java
@@ -469,6 +489,7 @@ data class GraphViewModel(
                         val sortedByAnnotation = field.getAnnotation(SortedBy::class.java)
 
                         if (isRelationshipFragment) {
+                            requireNoStamp(elementType, "@RelationshipFragment", "the fragment it points at")
                             // Extract relationship fragment metadata using Java reflection
                             val fragmentFields = elementType.declaredFields.filter { !it.isSynthetic }
 

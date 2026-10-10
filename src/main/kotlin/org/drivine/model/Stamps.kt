@@ -35,20 +35,49 @@ object Stamps {
     /** The variable a statement that stamps a node holds the stamp it found the node with: empty when it had none. */
     internal const val FOUND = "_found"
 
+    /** A property a save sets on a node it creates and removes again in the same statement, to tell it from one it found. */
+    internal const val MADE = "`__drivine.made`"
+
+    /** What a statement reports as the stamp it found on a node that was there and had none. A node it made reports none at all. */
+    internal const val NEVER_STAMPED = "-"
+
+    /** Follows a `MERGE` of [alias]: marks the node when the statement made it. [unmark] removes the mark. */
+    internal fun onCreate(alias: String): String = "ON CREATE SET $alias.$MADE = true"
+
+    /** The `REMOVE` item that takes the mark of [onCreate] off again. */
+    internal fun unmark(alias: String): String = "$alias.$MADE"
+
+    /**
+     * The expression for the stamp [alias] was found with, after a `MERGE` followed by [onCreate]:
+     * empty for a node the statement made, [NEVER_STAMPED] for one that was there without a stamp.
+     */
+    internal fun foundOf(alias: String): String =
+        "CASE WHEN $alias.$MADE IS NOT NULL THEN '' ELSE coalesce($alias.$QUOTED, '$NEVER_STAMPED') END"
+
     /**
      * The stamp a save hands back for a node that now carries [now], to an object that [carried] a
      * stamp when the node was [found] with one, before the save wrote anything. Each token of [now]
      * is handed back only if what it speaks for was as the object's stamp says: the node's own data
      * for the first, its relationships for the second. Otherwise the object keeps its own token, so a
-     * later save of it that would overwrite what another writer changed is refused. An object that
-     * carried no stamp is handed the node's.
+     * later save of it that would overwrite what another writer changed is refused.
+     *
+     * An object that carried no stamp is handed the whole stamp of a node the save made, [found]
+     * being empty then. Of a node that was already there it is handed the node token alone: its
+     * lists did not come from the store, so its stamp does not vouch for the node's relationships,
+     * and a save of it that replaces a relationship list is refused until it is loaded.
      */
     internal fun handedBack(carried: String?, found: String, now: String): String {
-        if (carried == null) return now
+        if (carried == null) return if (found.isEmpty()) now else withoutLinks(now)
+        // Found exactly as loaded, whatever shape the stamp had: a stored stamp that is not two
+        // tokens is replaced whole, and the object is handed what replaced it.
+        if (carried == found) return now
         val node = if (nodeToken(carried) == nodeToken(found)) nodeToken(now) else nodeToken(carried)
         val links = if (linksToken(carried) == linksToken(found)) linksToken(now) else linksToken(carried)
         return "$node:${links.orEmpty()}"
     }
+
+    /** [stamp] with its node token alone: it speaks for the node's own data and for none of its relationships. */
+    internal fun withoutLinks(stamp: String): String = "${nodeToken(stamp)}:"
 
     /** A new stamp: both tokens new. A statement takes from it the token it replaces. */
     fun fresh(): String = "${token()}:${token()}"
@@ -67,16 +96,36 @@ object Stamps {
     /** The expression for the node token of the stamp [alias] carries. */
     internal fun nodeTokenOf(alias: String): String = "left($alias.$QUOTED, $TOKEN)"
 
+    /** Whether [stamp] is two tokens joined by a colon, as every stamp a save leaves is. */
+    internal fun isTwoTokens(stamp: String): Boolean = stamp.length == 2 * TOKEN + 1 && stamp[TOKEN] == ':'
+
+    /**
+     * Whether [stamp] has a node token to compare on its own: a token and a colon, whatever follows.
+     * A stamp of another shape, as only something other than a save can have stored, is compared whole.
+     */
+    internal fun hasNodeToken(stamp: String): Boolean = stamp.length > TOKEN && stamp[TOKEN] == ':'
+
+    /**
+     * The expression for the stamp [alias] carries when it is two tokens joined by a colon, and null
+     * otherwise. A stored stamp of any other shape, which no save leaves, counts as none: whatever
+     * is written to it replaces it whole, so a node never keeps a part of one.
+     */
+    internal fun twoTokensOf(alias: String): String =
+        "CASE WHEN size($alias.$QUOTED) = ${2 * TOKEN + 1} AND substring($alias.$QUOTED, $TOKEN, 1) = ':' THEN $alias.$QUOTED ELSE null END"
+
     /**
      * The `SET` item that replaces the node token of [alias]'s stamp with that of [offered] when
-     * [condition] holds. [offered] is an expression for a whole stamp, which a node that has none takes whole.
+     * [condition] holds. [offered] is an expression for a whole stamp, which a node takes whole when
+     * it has none, or one that is not two tokens: that one is replaced whether or not [condition] holds.
      */
     internal fun restamp(alias: String, condition: String, offered: String): String =
-        "$alias.$QUOTED = CASE WHEN $condition THEN left($offered, $TOKEN) + coalesce(right($alias.$QUOTED, ${TOKEN + 1}), right($offered, ${TOKEN + 1})) ELSE $alias.$QUOTED END"
+        "$alias.$QUOTED = CASE WHEN ($condition) OR ${twoTokensOf(alias)} IS NULL " +
+            "THEN left($offered, $TOKEN) + coalesce(right(${twoTokensOf(alias)}, ${TOKEN + 1}), right($offered, ${TOKEN + 1})) ELSE $alias.$QUOTED END"
 
     /** As [restamp], for the token that speaks for the node's relationships. */
     internal fun relink(alias: String, condition: String, offered: String): String =
-        "$alias.$QUOTED = CASE WHEN $condition THEN coalesce(left($alias.$QUOTED, ${TOKEN + 1}), left($offered, ${TOKEN + 1})) + right($offered, $TOKEN) ELSE $alias.$QUOTED END"
+        "$alias.$QUOTED = CASE WHEN ($condition) OR ${twoTokensOf(alias)} IS NULL " +
+            "THEN coalesce(left(${twoTokensOf(alias)}, ${TOKEN + 1}), left($offered, ${TOKEN + 1})) + right($offered, $TOKEN) ELSE $alias.$QUOTED END"
 
     /** A random token, made by the engine. */
     private const val ENGINE_TOKEN = "left(replace(randomUUID(), '-', ''), $TOKEN)"
@@ -88,10 +137,12 @@ object Stamps {
      * ```kotlin
      * "MATCH (p:Person {id: \$id}) SET p.name = \$name, ${Stamps.setClause("p")}"
      * ```
+     *
+     * A stored stamp that is not two tokens is replaced whole.
      */
     @JvmStatic
     fun setClause(alias: String): String =
-        "$alias.$QUOTED = $ENGINE_TOKEN + ':' + coalesce(right($alias.$QUOTED, $TOKEN), $ENGINE_TOKEN)"
+        "$alias.$QUOTED = $ENGINE_TOKEN + ':' + coalesce(right(${twoTokensOf(alias)}, $TOKEN), $ENGINE_TOKEN)"
 
     /**
      * The `SET` item that marks the relationships of the node bound to [alias] as changed, for Cypher
@@ -103,5 +154,5 @@ object Stamps {
      */
     @JvmStatic
     fun linksClause(alias: String): String =
-        "$alias.$QUOTED = coalesce(left($alias.$QUOTED, $TOKEN), $ENGINE_TOKEN) + ':' + $ENGINE_TOKEN"
+        "$alias.$QUOTED = coalesce(left(${twoTokensOf(alias)}, $TOKEN), $ENGINE_TOKEN) + ':' + $ENGINE_TOKEN"
 }
