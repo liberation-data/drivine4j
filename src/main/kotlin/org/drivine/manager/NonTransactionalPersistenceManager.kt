@@ -62,7 +62,8 @@ class NonTransactionalPersistenceManager(
 
     /**
      * [executeBatch], returning each statement's rows. The connection is released however the batch
-     * ends, including when the transaction cannot be started.
+     * ends, including when the transaction cannot be started. A commit that fails is reported as a
+     * failing statement is, as a [DrivineException] with the engine's error as its cause.
      */
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         if (specs.isEmpty()) return emptyList()
@@ -81,7 +82,13 @@ class NonTransactionalPersistenceManager(
                 } catch (e: Exception) {
                     throw DrivineException.withRootCause(e, spec)
                 }
-            }.also { connection.commitTransaction() }
+            }.also {
+                try {
+                    connection.commitTransaction()
+                } catch (e: Exception) {
+                    throw DrivineException.withRootCause(e)
+                }
+            }
         } catch (e: Throwable) {
             runCatching { connection.rollbackTransaction() }
             connection.release(e)

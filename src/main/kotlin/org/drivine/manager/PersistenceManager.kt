@@ -110,8 +110,14 @@ interface PersistenceManager {
     }
 
     /**
-     * [executeBatch] that also returns each statement's rows, in the order of [specs]. The
-     * statements run the same way, and so are atomic on the same engines and no others.
+     * [executeBatch] that also returns each statement's rows, in the order of [specs]. On the managers
+     * Drivine provides the statements run the same way, and so are atomic on the same engines and no
+     * others.
+     *
+     * **The default is not atomic.** It loops [query], each statement on its own, and does not go
+     * through [executeBatch]: an implementation that overrides only [executeBatch] to run its
+     * statements in one transaction must override this too, or
+     * [StatelessGraphObjectManager.saveAll], which calls this, saves a batch that can be applied in part.
      */
     fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> =
         @Suppress("UNCHECKED_CAST")

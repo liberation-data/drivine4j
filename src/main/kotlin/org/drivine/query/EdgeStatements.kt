@@ -24,7 +24,8 @@ internal object EdgeStatements {
      * null field.
      *
      * Both nodes get a new relationship token when a relationship is made or its properties change. A
-     * `MERGE` that finds the relationship there, carrying these properties already, changes neither.
+     * `MERGE` that finds every such relationship there, carrying these properties already, changes
+     * neither; one that finds several and rewrites any of them changes both.
      */
     fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): MergeStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
