@@ -12,6 +12,7 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.ReadOnly
+import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.Root
 
 /** Fixtures for `StatelessGraphObjectManager`: Claim -[:MENTIONS]-> Human | Company, Human -[:WORKS_AT]-> Company. */
@@ -81,6 +82,25 @@ data class HumanClaims(
     @Root val human: Human,
     @GraphRelationship(type = "MENTIONS", direction = Direction.INCOMING)
     val claims: List<Claim> = emptyList(),
+)
+
+/** A relationship that carries a property: the page a claim cites a person on. */
+@RelationshipFragment
+data class Citation(val page: Int, val target: Human)
+
+@GraphView
+data class ClaimCitations(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "CITES", direction = Direction.OUTGOING)
+    val cited: List<Citation> = emptyList(),
+)
+
+/** A view of views: a memo and the claims it covers, each with the people it mentions. */
+@GraphView
+data class Dossier(
+    @Root val memo: Memo,
+    @GraphRelationship(type = "COVERS", direction = Direction.OUTGOING)
+    val claims: List<ClaimView> = emptyList(),
 )
 
 /** Computed fields, declared read-only as they must be. */
