@@ -1226,9 +1226,10 @@ A save adds the relationships the object holds and removes none. To remove, name
 - `Replace.all()` covers every relationship field. It is refused for an object that carries no stamp, because the lists of an object built from scratch are its defaults and not what the store holds. A view whose root declares no `@NodeStamp` field therefore names its fields.
 - A named list that is null is refused. An empty list removes every relationship of the field.
 - `Replace` trusts that the list came from a load. A list cut short by a custom query is taken as the whole list.
-- A save that adds or removes a relationship of the root, or changes a relationship's properties, gives the root a new stamp. Of two writers who loaded the same view, the second to save with `Replace` is refused.
+- `Replace` is refused, on a root that carries a stamp, if any relationship of the root was added or removed since the object was loaded: from this end or the other, by a view, `edges` or `GraphObjectManager`. A save that only adds is not: two writers who loaded the same view can each add to it. See [`@NodeStamp`](#nodestamp-refusing-a-save-when-the-node-changed).
+- A save is one statement whose text does not grow with a list: the related nodes of a field are its rows. Index the id of each node type you save, as for any `MERGE`.
 - An `UNDIRECTED` field is satisfied by a relationship stored in either direction. One is made, from the root, only when there is none.
-- `edges.unrelate(from, to, type)` removes the relationships of a type from one node to another, and `edges.unrelateAll(from, type, direction)` every one of a type. Neither deletes a node or changes a stamp.
+- `edges.unrelate(from, to, type)` removes the relationships of a type from one node to another, and `edges.unrelateAll(from, type, direction)` every one of a type. Neither deletes a node or touches a node's own properties.
 
 #### Load, Change and Save (`update`)
 
@@ -1268,7 +1269,7 @@ val saved = graphObjectManager.saveAll(views)
 val replaced = graphObjectManager.saveAll(views, Replace(PropositionView::mentions))
 ```
 
-- Fragments with no `@NodeStamp` field collapse into chunked `UNWIND … MERGE` statements (sub-linear round trips). A view, and a fragment that declares a stamp, is saved by a statement of its own, as `save` does it.
+- Fragments collapse into chunked `UNWIND … MERGE` statements (sub-linear round trips), with or without a `@NodeStamp` field. A view is saved by a statement of its own, as `save` does it.
 - Heterogeneous collections are grouped by runtime class, and the returned list preserves input order.
 - Fragments with a `@PropertyBag` or a `@NodeLabels` field are saved one statement each.
 - A batch does not check stamps: an object that carries a stale stamp is written all the same.
@@ -1296,7 +1297,7 @@ graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), ne
 - Java names fields as strings, so it calls `saveFields` where Kotlin passes property references to `save`.
 - A Java object whose fields can be set is given its new stamp in place, and `save` returns that same object. `update`'s function may change the object it is given and return it, or return another.
 - A refused save throws `StaleObjectException`: `getDeleted()` says whether the node is gone, and `getFoundStamp()` gives the stamp it carries now.
-- `Stamps.setClause("p")` gives the `SET` item for Cypher of your own.
+- `Stamps.setClause("p")` and `Stamps.linksClause("p")` give the `SET` items for Cypher of your own.
 
 See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the release that introduced this manager and what it changed.
 
@@ -1314,21 +1315,31 @@ data class Person(
 )
 ```
 
-- An object-manager save that changes a node writes a new stamp on it, under `__drivine.stamp`. A node changes when a property differs or a label is added or dropped. The root of a view also changes when a stateless save adds or removes one of its relationships, or changes a relationship's properties. A save that changes nothing leaves the stamp as it is. Loading fills the field.
-- A stateless save of an object that carries a stamp applies only if the node still has it. Otherwise nothing is written, to that node or any other, and `StaleObjectException` says whether the node changed or was deleted. The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
+- The stamp is two random tokens, stored on the node under `__drivine.stamp` as `3fa9c1d27b40e8a6:91d0f4b2c7ee5a13`. Loading fills the field. Treat it as opaque.
+- The first token speaks for the node's own data. A save that changes a property, or adds or drops a label, replaces it. A save that changes nothing leaves it as it is.
+- The second token speaks for the node's relationships. It is replaced, at both ends, when a relationship is added or removed or its properties change: by a view saved from either end, by `edges`, or by `GraphObjectManager`.
+- A save is refused when what it would overwrite has changed since the object was loaded. Every save of an object that carries a stamp compares the first token. A save with `Replace` overwrites a relationship list, so it compares the second too.
+- So a node's own data can be saved while others attach relationships to it, two writers can each add a relationship to the same node, and a `Replace` never removes a relationship it did not load.
+- The second token covers every relationship of the node. A `Replace` of one list is refused when a relationship of another type was added to the same node; load again, or use `update`.
+- A refused save writes nothing, to that node or any other, and `StaleObjectException` says what happened. The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
 - A save of an object whose stamp is null is not checked: it creates the node or overwrites it.
 - `save` returns the object with the stamps the save left: the root's, and that of each related node that declares a stamp field. Use the returned object: if the save changed the node, the one you passed in is now stale.
 - `update` retries on a conflict, loading again and re-applying your change.
-- In a view, the root is checked. A node reached through a relationship is written unchecked, and keeps its stamp unless the save changes one of its properties.
-- A relationship changes the stamp of the view root it was saved through, and not of the node at its other end. `edges.relate` and `edges.unrelate` change no stamp.
-- `saveAll` stamps the nodes it changes, hands the stamps back, and does not check one. The deprecated `GraphObjectManager` stamps the nodes it changes too, so a checked save notices its writes.
+- In a view, the root is checked. A node reached through a relationship is written unchecked.
+- `saveAll` stamps the nodes it changes, hands the stamps back, and does not check one. The deprecated `GraphObjectManager` stamps the nodes and relationships it changes too, so a checked save notices its writes.
+- Deleting a node removes its relationships without marking the nodes at their other ends.
 - Indexes and constraints are not affected. A checked save sets and removes a property `__drivine.lock` within its statement, to hold the node's write lock; it is never left on a node. A flat `@PropertyBag` does not read a property beginning `__drivine.`.
 
-**Cypher you write yourself** should give a stamped node a new stamp when it changes the node's mapped properties, or a checked save will not notice the change:
+**Cypher you write yourself** should mark what it changes, or a checked save will not notice the change. `Stamps.setClause` marks a node whose mapped properties it changes; `Stamps.linksClause` marks each end of a relationship it adds or removes:
 
 ```kotlin
 "MATCH (p:Person {id: \$id}) SET p.name = \$name, ${Stamps.setClause("p")}"
-// the same as:  SET p.name = $name, p.`__drivine.stamp` = randomUUID()
+
+"""
+MATCH (a:Person {id: \$a}), (b:Person {id: \$b})
+CREATE (a)-[:KNOWS]->(b)
+SET ${Stamps.linksClause("a")}, ${Stamps.linksClause("b")}
+"""
 ```
 
 A node that is deleted and created again is noticed without this, because it has no stamp. For the same reason, Cypher that replaces every property of a node (`SET n = $props`) removes its stamp, and the next checked save of an object loaded before is refused as changed.
@@ -2249,8 +2260,9 @@ graphObjectManager.edges.unrelateAll(lyre, "OWNED_BY")        // every OWNED_BY 
 - `RelateMode.MERGE` (the default) keeps at most one relationship of the type between the two nodes
   in that direction and sets its properties; `CREATE` makes another each time.
 - `loadRelated` returns each related node once, as the target fragment.
-- `unrelate` and `unrelateAll` remove relationships and return how many. No node is deleted, and no
-  stamp changes.
+- `unrelate` and `unrelateAll` remove relationships and return how many. No node is deleted.
+- `relate`, `unrelate` and `unrelateAll` give the nodes at both ends a new relationship token in
+  their stamp, so a `Replace` from an object loaded before is refused.
 
 ### Cypher Dialect
 

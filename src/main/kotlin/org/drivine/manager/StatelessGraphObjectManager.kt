@@ -12,6 +12,7 @@ import org.drivine.query.SaveStatement
 import org.drivine.query.SaveStatementBuilder
 import org.drivine.query.Stamping
 import org.drivine.query.read
+import org.drivine.query.savedByUnwind
 import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
 import java.util.IdentityHashMap
@@ -26,8 +27,9 @@ import kotlin.reflect.KProperty1
  * - A save is one statement: the root, the relationships it drops, each related node and the
  *   relationship to it. It is applied whole or not at all, with or without a transaction.
  * - A fragment that declares a `@NodeStamp` field is checked: a save of an object that carries a
- *   stamp applies only if the node still has it, and otherwise throws [StaleObjectException]. In a
- *   view, the root is checked. A node reached through a relationship is written unchecked.
+ *   stamp applies only if the node's own data is as it was loaded, and with [Replace] its
+ *   relationships too, and otherwise throws [StaleObjectException]. In a view, the root is checked.
+ *   A node reached through a relationship is written unchecked.
  * - [update] loads an object, applies a change, and writes only what the change altered.
  */
 @Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
@@ -56,8 +58,8 @@ class StatelessGraphObjectManager private constructor(
      * it had otherwise. Use the returned object from then on. A Kotlin data class is returned as a
      * copy; a class whose fields can be set is given its stamps in place and returned itself.
      *
-     * The root's stamp also changes when the save adds or removes one of its relationships, or
-     * changes a relationship's properties.
+     * A relationship the save adds or removes, or whose properties it changes, gives the node at each
+     * end a new relationship token in its stamp. Only a save with [Replace] compares that token.
      *
      * @param relationships [Add] (the default) adds the relationships the object holds and removes
      *   none. [Replace] names the relationship fields whose list is the whole list.
@@ -96,8 +98,7 @@ class StatelessGraphObjectManager private constructor(
      * The whole call is atomic: inside a transaction it joins it, and otherwise it runs in one of its
      * own, on an engine that has transactions. A [Replace] is part of it.
      *
-     * Fragments with no `@NodeStamp` field are saved in batches. A view, and a fragment that declares
-     * a stamp, is saved by a statement of its own, which is what hands its stamps back.
+     * Fragments are saved in batches. A view is saved by a statement of its own.
      */
     @JvmOverloads
     fun <T : Any> saveAll(
@@ -107,23 +108,32 @@ class StatelessGraphObjectManager private constructor(
     ): List<T> {
         val items = objs.toList()
         if (items.isEmpty()) return emptyList()
-        val (single, batched) = items.partition { savedAlone(it) }
-        require(relationships !is Replace || batched.isEmpty()) {
-            "Replace applies to the relationship fields of a @GraphView, and ${batched.first().javaClass.simpleName} is not one."
+        val views = items.filter { it.javaClass.isAnnotationPresent(GraphView::class.java) }
+        val fragments = items.withIndex().filterNot { it.value.javaClass.isAnnotationPresent(GraphView::class.java) }
+        require(relationships !is Replace || fragments.isEmpty()) {
+            "Replace applies to the relationship fields of a @GraphView, and ${fragments.first().value.javaClass.simpleName} is not one."
         }
+        // A stamp is handed back by a statement that returns it: one for a batch of fragments, and one
+        // for each view, and each fragment a batch cannot write.
+        val (stamped, plain) = fragments.partition { FragmentModel.from(it.value.javaClass).stampField != null }
+        val (batched, alone) = stamped.partition { FragmentModel.from(it.value.javaClass).savedByUnwind(objects.grammar) }
+        val single = views + alone.map { it.value }
         val singles = single.map { statementFor(it, relationships, nullPolicy, null, checked = false) }
-        val rows = persistenceManager.queryBatch(objects.batchSpecs(batched, nullPolicy) + singles.map { executor.spec(it) })
-            .takeLast(singles.size)
+        val plainSpecs = objects.batchSpecs(plain.map { it.value }, nullPolicy)
+        val batchedSpecs = objects.stampedBatchSpecs(batched, nullPolicy)
+        val rows = persistenceManager.queryBatch(plainSpecs + batchedSpecs + singles.map { executor.spec(it) })
 
         val saved = IdentityHashMap<Any, Any>()
-        single.forEachIndexed { index, item -> saved[item] = stamped(item, singles[index], executor.stamps(singles[index], rows[index])) }
+        rows.subList(plainSpecs.size, plainSpecs.size + batchedSpecs.size).flatten().forEach { row ->
+            val (index, stamp) = (row as String).split('=', limit = 2)
+            val item = items[index.toInt()]
+            saved[item] = stamps.of(item, IdentityHashMap<Any, String>().apply { put(item, stamp) })
+        }
+        val singleRows = rows.takeLast(singles.size)
+        single.forEachIndexed { index, item -> saved[item] = stamped(item, singles[index], executor.stamps(singles[index], singleRows[index])) }
         @Suppress("UNCHECKED_CAST")
         return items.map { (saved[it] ?: it) as T }
     }
-
-    /** Whether [obj] is saved by a statement of its own in a [saveAll]: it has relationships, or a stamp to hand back. */
-    private fun savedAlone(obj: Any): Boolean =
-        obj.javaClass.isAnnotationPresent(GraphView::class.java) || FragmentModel.from(obj.javaClass).stampField != null
 
     /**
      * Loads the [graphClass] object with [id], applies [change] to it, and writes what the change

@@ -66,3 +66,19 @@ data class HumanCitations(
     @GraphRelationship(type = "CITES", direction = Direction.INCOMING)
     val citedBy: List<CitedBy> = emptyList(),
 )
+
+/** A claim and the claims it supports. */
+@GraphView
+data class ClaimSupports(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "SUPPORTS", direction = Direction.OUTGOING)
+    val supports: List<Claim> = emptyList(),
+)
+
+/** The same relationship from its other end: a claim and the claims that support it. */
+@GraphView
+data class ClaimSupporters(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "SUPPORTS", direction = Direction.INCOMING)
+    val supporters: List<Claim> = emptyList(),
+)

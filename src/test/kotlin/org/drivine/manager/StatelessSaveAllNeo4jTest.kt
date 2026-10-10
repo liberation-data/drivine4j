@@ -18,6 +18,7 @@ import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.proposition.Mention
+import sample.stateless.Claim
 import sample.proposition.PropositionNode
 import sample.proposition.PropositionView
 import kotlin.test.assertEquals
@@ -25,7 +26,7 @@ import kotlin.test.assertFails
 import kotlin.test.assertTrue
 
 /**
- * Acceptance tests for [GraphObjectManager.saveAll] against a real Neo4j. Covers the documented
+ * Acceptance tests for [StatelessGraphObjectManager.saveAll] against a real Neo4j. Covers the documented
  * contract: per-item cascade & MERGE identity preserved, input order returned, all-or-nothing
  * atomicity (a mid-batch failure rolls the whole call back), equivalence with sequential [save],
  * empty no-op, and the sub-linear round-trip count of the homogeneous-fragment UNWIND path.
@@ -172,6 +173,24 @@ class StatelessSaveAllNeo4jTest {
         assertEquals(1, counting.batchCalls, "one atomic batch")
         assertTrue(counting.batchSpecCount < n, "fragment roots collapse into UNWIND: ${counting.batchSpecCount} statements for $n nodes")
         assertEquals(1, counting.batchSpecCount, "a single UNWIND chunk covers the whole homogeneous fragment batch")
+    }
+
+    // ---- (7) stamped fragments are batched too, and each is handed its stamp ---------------------
+    @Test
+    fun `saveAll of stamped fragments is one statement, and hands each its stamp`() {
+        val counting = StatelessCountingPersistenceManager(pm)
+        val gom = gom(counting)
+        val n = 50
+
+        val saved = gom.saveAll((1..n).map { Claim("c$it", "claim $it") })
+
+        assertEquals(1, counting.batchSpecCount, "a single UNWIND covers the batch")
+        assertEquals((1..n).map { "c$it" }, saved.map { it.id })
+        val stored = pm.query(
+            QuerySpecification.withStatement("MATCH (c:Claim) RETURN c.id + '=' + c.`__drivine.stamp`").transform(String::class.java)
+        ).associate { it.substringBefore('=') to it.substringAfter('=') }
+        assertEquals(stored, saved.associate { it.id to it.stamp })
+        gom.save(saved.first().copy(text = "saved again"))
     }
 }
 

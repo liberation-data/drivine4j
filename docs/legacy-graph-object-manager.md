@@ -71,8 +71,8 @@ via `saveAll(objs, nullPolicy = …)`.
 
 What `GraphObjectManager` does not do:
 
-- It does not check a `@NodeStamp`. It writes a new stamp on each node it changes, so a
-  `StatelessGraphObjectManager` save notices its writes.
+- It does not check a `@NodeStamp`. It marks the stamp of each node it changes, and of both ends of
+  each relationship it writes or removes, so a `StatelessGraphObjectManager` save notices its writes.
 - It does not notice a node that anything else changed or deleted. Its snapshot is what it last saw,
   not what the store holds.
 

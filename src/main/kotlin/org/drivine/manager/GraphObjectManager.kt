@@ -136,6 +136,10 @@ class GraphObjectManager internal constructor(
     internal fun batchSpecs(items: List<Any>, nullPolicy: NullPolicy): List<QuerySpecification<*>> =
         if (items.isEmpty()) emptyList() else batchSave.buildBatchSpecs(items, CascadeType.NONE, nullPolicy)
 
+    /** The statements that save stamped fragments in batches, each returned row an item's `index=stamp`. */
+    internal fun stampedBatchSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
+        batchSave.buildStampedSpecs(items, nullPolicy)
+
     /**
      * Forgets every tracked object: each one's next save writes all fields, until it is loaded again.
      *

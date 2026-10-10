@@ -18,8 +18,8 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
     }
 
     /**
-     * Runs a whole save. Returns the stamps it left: the root's, then one for each of the statement's
-     * stamped targets. Throws [StaleObjectException] when the root is not as it was when the object was
+     * Runs a whole save. Returns the stamps it left: the root's, then that of each of the statement's
+     * stamped targets, in their order. Throws [StaleObjectException] when the root is not as it was when the object was
      * loaded; the statement has then written nothing.
      */
     fun save(statement: SaveStatement): List<String> = stamps(statement, whenNotContended { persistenceManager.query(spec(statement)) })
@@ -30,7 +30,11 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
     /** The stamps in the [rows] a save statement returned. */
     fun stamps(statement: SaveStatement, rows: List<Any?>): List<String> {
         val row = rows.firstOrNull() as? String
-        if (row != null) return row.split(',')
+        if (row != null) {
+            val returned = row.split(',')
+            val byIndex = returned.drop(1).associate { it.substringBefore('=').toInt() to it.substringAfter('=') }
+            return listOf(returned.first()) + statement.stamped.indices.map { byIndex.getValue(it) }
+        }
         throw statement.root.expected?.let { staleObject(statement.root, it) }
             ?: IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
     }

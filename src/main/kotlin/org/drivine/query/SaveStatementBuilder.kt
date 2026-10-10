@@ -15,8 +15,8 @@ import org.drivine.query.grammar.CypherGrammar
 
 /**
  * A whole save as one statement. It returns one row holding the stamps the save left, joined by commas:
- * the root's, then that of each of [stamped] in order. It returns no row when [root] expected a stamp
- * the node no longer carries, and then it has written nothing.
+ * the root's, then `index=stamp` for each of [stamped] by its index. It returns no row when [root]
+ * expected a stamp the node no longer carries, and then it has written nothing.
  */
 internal class SaveStatement(
     val statement: String,
@@ -33,14 +33,18 @@ internal class SaveStatement(
  *
  * The statement is a chain of parts. Each part leaves exactly one row, so the next one runs once, and
  * the nodes later parts need are carried from part to part: `_r0` is the root, `_r1` the root of a view
- * nested in it, and so on; `_ns` lists the stamped nodes reached through a relationship. Only the root
- * part can leave no row, when the root is stale, and then no later part runs.
+ * nested in it, and so on; `_ns` lists the stamped nodes reached through a relationship and `_is` the
+ * index of each. Only the root part can leave no row, when the root is stale, and then no later part runs.
+ *
+ * The related fragments of one field are saved by one part, as the rows of an `UNWIND`, so the
+ * statement's text does not grow with a list and an engine plans it once. A related view, and a
+ * fragment an `UNWIND` cannot write (see [savedByUnwind]), has a part of its own.
  *
  * The nodes are carried, and not matched again by id where they are needed: FalkorDB gives no row for
  * two `MATCH` clauses that follow an aggregation in one statement.
  *
- * A view's root gets a new stamp when the save adds or removes one of its relationships, or changes a
- * relationship's properties, as it does when the save changes its properties.
+ * A relationship the save makes or removes, or whose properties it changes, replaces the relationship
+ * token of the stamp at both of its ends. See [Stamps].
  */
 internal class SaveStatementBuilder(
     private val objectMapper: ObjectMapper,
@@ -67,6 +71,9 @@ internal class SaveStatementBuilder(
         after: JsonNode? = null,
     ): SaveStatement = Composition(checked, nullPolicy, rootWriteFields, replaced).compose(obj, before, after)
 
+    /** The related fragments of one field that one `UNWIND` part saves: one class, joined or not. */
+    private data class Group(val model: FragmentModel, val link: Boolean)
+
     private inner class Composition(
         private val checked: Boolean,
         private val nullPolicy: NullPolicy,
@@ -74,28 +81,31 @@ internal class SaveStatementBuilder(
         private val replaced: (RelationshipModel) -> RemovedTargets?,
     ) {
         private val text = StringBuilder()
-        private val bindings = mutableMapOf<String, Any?>()
+        private val bindings = mutableMapOf<String, Any?>(MARK_PARAM to Stamps.fresh())
         private val stamped = mutableListOf<Any>()
         private var parts = 0
         private lateinit var root: StampWrite
 
         fun compose(obj: Any, before: JsonNode?, after: JsonNode?): SaveStatement {
             if (obj.javaClass.isAnnotationPresent(GraphView::class.java)) {
-                view(obj, GraphViewModel.from(obj.javaClass), 0, before, after)
+                val model = GraphViewModel.from(obj.javaClass)
+                // A save that replaces a list overwrites the root's relationships, so they are checked too.
+                val replaces = before == null && model.relationships.any { !it.readOnly && replaced(it) != null }
+                view(obj, model, 0, before, after, replaces)
             } else {
-                rootPart(obj, FragmentModel.from(obj.javaClass), 0)
+                rootPart(obj, FragmentModel.from(obj.javaClass), 0, replaces = false)
             }
             // One string and not a list: every engine's driver hands a string back the same way.
-            line("RETURN reduce(s = _r0.$STAMP, x IN _ns | s + ',' + x.$STAMP) AS ${Stamps.STAMP_COLUMN}")
+            line("RETURN reduce(s = _r0.$STAMP, k IN range(0, size(_ns) - 1) | s + ',' + _is[k] + '=' + (_ns[k]).$STAMP) AS ${Stamps.STAMP_COLUMN}")
             return SaveStatement(text.toString(), bindings, root, stamped)
         }
 
         /** The root of the view at [depth], then each relationship field it writes. Leaves `_r<depth>` carried. */
-        private fun view(view: Any, model: GraphViewModel, depth: Int, before: JsonNode?, after: JsonNode?) {
+        private fun view(view: Any, model: GraphViewModel, depth: Int, before: JsonNode?, after: JsonNode?, replaces: Boolean = false) {
             val rootFragment = requireNotNull(read(view, model.rootFragment.fieldName)) {
                 "Root fragment ${model.rootFragment.fieldName} is null"
             }
-            rootPart(rootFragment, FragmentModel.from(model.rootFragment.fragmentType), depth)
+            rootPart(rootFragment, FragmentModel.from(model.rootFragment.fragmentType), depth, replaces)
 
             // A read-only field (every path is one) is loaded and never written.
             model.relationships.filterNot { it.readOnly }.forEach { relationship ->
@@ -116,6 +126,7 @@ internal class SaveStatementBuilder(
                     replaced(relationship)?.let { removalPart(relationship, target, depth, ids.filterNotNull(), keep = true, it) }
                 }
 
+                val groups = linkedMapOf<Group, MutableList<Map<String, Any?>>>()
                 items.forEachIndexed { index, item ->
                     if (item == null) return@forEachIndexed
                     val was = ids[index]?.let { itemsBefore?.get(it.toString()) }
@@ -125,25 +136,114 @@ internal class SaveStatementBuilder(
                     // A relationship that was loaded is not made again: if another writer has removed it
                     // since, it stays removed. Its node is written, and it too if its properties changed.
                     val link = was == null || relationship.relationshipProperties.any { was.get(it) != now?.get(it) }
-                    relatedPart(relationship, target, item, depth, link, was?.let { target.nodeOf(it) }, now?.let { target.nodeOf(it) })
+                    val node = target.nodeOf(item)
+                    // The runtime type, not the declared one: a subtype has labels of its own.
+                    val nodeModel = if (target.view == null) FragmentModel.from(node.javaClass) else null
+                    if (nodeModel != null && nodeModel.savedByUnwind(grammar)) {
+                        groups.getOrPut(Group(nodeModel, link)) { mutableListOf() }.add(row(relationship, item, node, nodeModel))
+                    } else {
+                        relatedPart(relationship, target, item, depth, link, was?.let { target.nodeOf(it) }, now?.let { target.nodeOf(it) })
+                    }
                 }
+                groups.forEach { (group, rows) -> groupPart(relationship, group, rows, depth) }
             }
         }
 
         /** Saves a root: the object's own at depth 0, a nested view's below it. */
-        private fun rootPart(fragment: Any, model: FragmentModel, depth: Int) {
+        private fun rootPart(fragment: Any, model: FragmentModel, depth: Int, replaces: Boolean) {
             if (depth == 0) {
-                val statement = FragmentMergeBuilder(model, objectMapper, grammar, storedKeys, Stamping(checked))
+                val statement = FragmentMergeBuilder(model, objectMapper, grammar, storedKeys, Stamping(checked, relationships = replaces))
                     .buildMergeStatement(fragment, null, null, nullPolicy, rootWriteFields)
                 add(statement)
                 root = requireNotNull(statement.stamp)
-                line("WITH n AS _r0, [] AS _ns")
+                line("WITH n AS _r0, [] AS _ns, [] AS _is")
             } else {
                 add(
                     FragmentMergeBuilder(model, objectMapper, grammar, stamping = Stamping(false), carry = carry(depth - 1) + ", ")
                         .buildMergeStatement(fragment, null)
                 )
                 line("WITH ${roots(depth - 1)}, n AS _r$depth, ${collected(fragment, model)}")
+            }
+        }
+
+        /** The `UNWIND` row that saves [node], the fragment [item] points at, and the relationship to it. */
+        private fun row(relationship: RelationshipModel, item: Any, node: Any, model: FragmentModel): Map<String, Any?> {
+            val values = objectMapper.toMap(node)
+            val id = values[model.nodeIdField]
+                ?: throw IllegalArgumentException("Cannot build MERGE for fragment with null ID: ${model.className}")
+            val properties = if (relationship.isRelationshipFragment) {
+                val all = objectMapper.toMap(item)
+                relationship.relationshipProperties.associateWith { all[it] }
+            } else {
+                emptyMap()
+            }
+            // The index the node's stamp is returned under; empty when its fragment declares no stamp.
+            val index = if (model.stampField == null) "" else stamped.size.toString().also { stamped.add(node) }
+            return mapOf("id" to id, "i" to index, "props" to model.unwindProps(values, NullPolicy.IGNORE), "rel" to properties)
+        }
+
+        /**
+         * Saves the fragments of one class that a field holds, as [rows], and when [Group.link] joins
+         * each to the root at [depth].
+         */
+        private fun groupPart(relationship: RelationshipModel, group: Group, rows: List<Map<String, Any?>>, depth: Int) {
+            val part = parts++
+            val model = group.model
+            val rootVariable = "_r$depth"
+            val carried = carry(depth)
+            val handsBack = model.stampField != null
+            bindings["p${part}_rows"] = rows
+            line("UNWIND \$p${part}_rows AS row")
+            line("MERGE (n:${model.labels.joinToString(":")} {${model.nodeIdProperty ?: model.nodeIdField}: row.id})")
+            line("WITH $carried, row, n, $ROW_CHANGES_NODE AS _changed")
+            line("SET n += row.props, ${Stamps.restamp("n", "_changed", MARK)}")
+            if (!group.link) {
+                if (handsBack) {
+                    line("WITH ${roots(depth)}, _ns, _is, collect(n) AS _n, collect(row.i) AS _j")
+                    line("WITH ${roots(depth)}, _ns + _n AS _ns, _is + _j AS _is")
+                } else {
+                    line("WITH $carried, count(n) AS _saved")
+                    line("WITH $carried")
+                }
+                return
+            }
+
+            val type = relationship.type
+            val names = relationship.relationshipProperties
+            val same = listOf("x IS NOT NULL") + names.map { name ->
+                "CASE WHEN row.rel.$name IS NULL THEN x.$name IS NULL ELSE coalesce(x.$name = row.rel.$name, false) END"
+            }
+            // The row's values are carried by name: a row is a map, and not every engine groups by one.
+            val values = names.mapIndexed { index, name -> "row.rel.$name AS _q$index" }
+            val held = (listOf("n", "_i") + names.indices.map { "_q$it" }).joinToString(", ")
+            line("WITH $carried, row, n")
+            line("OPTIONAL MATCH ($rootVariable)${edge(relationship, "x")}(n)")
+            line(
+                "WITH $carried, n, row.i AS _i, ${(values + "count(x) AS _had").joinToString(", ")}, " +
+                    "sum(CASE WHEN ${same.joinToString(" AND ")} THEN 1 ELSE 0 END) AS _same"
+            )
+            if (relationship.direction == Direction.UNDIRECTED) {
+                // A relationship is stored with a direction, and either one satisfies the field: it is
+                // made, from the root, only when there is none.
+                line("FOREACH (_ IN CASE WHEN _had = 0 THEN [1] ELSE [] END | CREATE ($rootVariable)-[:$type]->(n))")
+                if (names.isNotEmpty()) {
+                    line("WITH $carried, $held, _same")
+                    line("MATCH ($rootVariable)-[r:$type]-(n)")
+                }
+            } else {
+                line("MERGE ($rootVariable)${edge(relationship, "r")}(n)")
+            }
+            val sets = names.mapIndexed { index, name -> "r.$name = _q$index" } + Stamps.relink("n", "_same = 0", MARK)
+            line("SET ${sets.joinToString(", ")}")
+            val made = "sum(CASE WHEN _same = 0 THEN 1 ELSE 0 END) AS _made"
+            if (handsBack) {
+                line("WITH ${roots(depth)}, _ns, _is, collect(n) AS _n, collect(_i) AS _j, $made")
+                line("SET ${Stamps.relink(rootVariable, "_made > 0", MARK)}")
+                line("WITH ${roots(depth)}, _ns + _n AS _ns, _is + _j AS _is")
+            } else {
+                line("WITH $carried, $made")
+                line("SET ${Stamps.relink(rootVariable, "_made > 0", MARK)}")
+                line("WITH $carried")
             }
         }
 
@@ -155,7 +255,6 @@ internal class SaveStatementBuilder(
                 view(node, nested, depth + 1, before, after)
                 if (link) relationshipPart(relationship, item, depth, "_r${depth + 1}") else line("WITH ${carry(depth)}")
             } else {
-                // The runtime type, not the declared one: a subtype has labels of its own.
                 val model = FragmentModel.from(node.javaClass)
                 add(
                     FragmentMergeBuilder(model, objectMapper, grammar, stamping = Stamping(false), carry = carry(depth) + ", ")
@@ -171,8 +270,8 @@ internal class SaveStatementBuilder(
         }
 
         /**
-         * Joins the root at [depth] to [targetVariable]. The root gets a new stamp if the relationship
-         * was not there, or was there with other properties.
+         * Joins the root at [depth] to [targetVariable]. Both get a new relationship token if the
+         * relationship was not there, or was there with other properties.
          */
         private fun relationshipPart(relationship: RelationshipModel, item: Any, depth: Int, targetVariable: String) {
             val part = parts++
@@ -209,7 +308,8 @@ internal class SaveStatementBuilder(
             }
             val sets = listOfNotNull(
                 properties.takeIf { it.isNotEmpty() }?.let { all -> "r += {${all.joinToString(", ") { (name, parameter) -> "$name: \$$parameter" }}}" },
-                restamp(rootVariable, "_same = 0", part),
+                Stamps.relink(rootVariable, "_same = 0", MARK),
+                Stamps.relink(targetVariable, "_same = 0", MARK),
             )
             line("SET ${sets.joinToString(", ")}")
             // An undirected field can match a relationship each way, and so two rows.
@@ -218,7 +318,8 @@ internal class SaveStatementBuilder(
 
         /**
          * Removes the relationships of a field from the root at [depth] to the targets whose ids are
-         * [ids], or when [keep] to every target but those. The root gets a new stamp if any was removed.
+         * [ids], or when [keep] to every target but those. The root, and each target that loses a
+         * relationship, gets a new relationship token.
          */
         private fun removalPart(relationship: RelationshipModel, target: Target, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets) {
             val part = parts++
@@ -240,27 +341,22 @@ internal class SaveStatementBuilder(
                 line("WITH $carried, target, _rs, CASE WHEN target IS NULL THEN 0 ELSE size([ $references | 1 ]) END AS _refs")
             }
             line("FOREACH (x IN _rs | DELETE x)")
+            line("FOREACH (t IN CASE WHEN target IS NOT NULL AND size(_rs) > 0 THEN [target] ELSE [] END | SET ${Stamps.relink("t", "true", MARK)})")
             if (removedTargets == RemovedTargets.DELETE_UNREFERENCED) {
                 line("FOREACH (t IN CASE WHEN target IS NOT NULL AND _refs = size(_rs) THEN [target] ELSE [] END | DETACH DELETE t)")
             }
             line("WITH $carried, sum(size(_rs)) AS _removed")
-            line("SET ${restamp(rootVariable, "_removed > 0", part)}")
+            line("SET ${Stamps.relink(rootVariable, "_removed > 0", MARK)}")
             line("WITH $carried")
         }
 
-        /** The `SET` item that gives [variable] a new stamp when [condition] holds. */
-        private fun restamp(variable: String, condition: String, part: Int): String {
-            bindings["p${part}_stamp"] = Stamps.fresh()
-            return "$variable.$STAMP = CASE WHEN $condition THEN \$p${part}_stamp ELSE $variable.$STAMP END"
-        }
-
-        /** `_ns`, with the node `n` added when its fragment declares a stamp to hand back. */
+        /** `_ns` and `_is`, with the node `n` added when its fragment declares a stamp to hand back. */
         private fun collected(fragment: Any, model: FragmentModel): String =
             if (model.stampField == null) {
-                "_ns"
+                "_ns, _is"
             } else {
                 stamped.add(fragment)
-                "_ns + [n] AS _ns"
+                "_ns + [n] AS _ns, _is + ['${stamped.size - 1}'] AS _is"
             }
 
         /** Appends a statement of its own as a part, its parameters renamed so no two parts share one. */
@@ -282,7 +378,7 @@ internal class SaveStatementBuilder(
         private fun roots(depth: Int): String = (0..depth).joinToString(", ") { "_r$it" }
 
         /** What is carried while the items of the view at [depth] are saved. */
-        private fun carry(depth: Int): String = "${roots(depth)}, _ns"
+        private fun carry(depth: Int): String = "${roots(depth)}, _ns, _is"
     }
 
     /** The relationship of [relationship] as `variable`, between root and target, as its field's direction reads it. */
@@ -349,6 +445,10 @@ internal class SaveStatementBuilder(
 
     private companion object {
         const val STAMP = Stamps.QUOTED
+
+        /** The stamp a statement offers every node whose relationships it changes, and every related fragment it changes. */
+        const val MARK_PARAM = "_mark"
+        const val MARK = "\$$MARK_PARAM"
     }
 }
 

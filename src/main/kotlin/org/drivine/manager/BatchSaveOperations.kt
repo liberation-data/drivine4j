@@ -6,7 +6,10 @@ import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.GraphObjectMergeBuilder
+import org.drivine.query.ROW_CHANGES_NODE
 import org.drivine.query.Stamping
+import org.drivine.query.savedByUnwind
+import org.drivine.query.unwindProps
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
@@ -46,13 +49,8 @@ internal class BatchSaveOperations(
         items.groupBy { it.javaClass }.forEach { (clazz, group) ->
             val (rootModel, rootFieldName) = rootMetadata(clazz)
             val idField = rootModel.nodeIdField
-            // A vector-bearing root needs per-item saves on engines that wrap vector writes (FalkorDB):
-            // `SET n += row.props` can't wrap a single property in vecf32(...). Elsewhere (Neo4j /
-            // Memgraph store a plain array) the UNWIND path is fine, exactly as for a plain fragment.
-            val vectorNeedsPerItem = rootModel.vectorFieldNames.isNotEmpty() && grammar?.wrapsVectorLiteral == true
-            // A @NodeLabels root is per-item too: its labels are part of the statement text, so rows with
-            // different labels cannot share one UNWIND.
-            if (idField != null && rootModel.propertyBags.isEmpty() && rootModel.nodeLabels == null && !vectorNeedsPerItem) {
+            // A root an UNWIND cannot write is saved per item: see [savedByUnwind].
+            if (idField != null && rootModel.savedByUnwind(grammar)) {
                 appendUnwindGroup(specs, clazz, group, rootModel, rootFieldName, idField, cascade, nullPolicy)
             } else {
                 group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy).forEach { specs.add(it.toSpec()) } }
@@ -89,16 +87,27 @@ internal class BatchSaveOperations(
     }
 
     /**
-     * The UNWIND upsert that gives a node a new stamp only when the row changes it: a property that
-     * differs, one cleared that held a value, or a node with no stamp yet. A comparison that cannot
-     * tell counts as a change.
+     * The statements that save stamped fragments in batches and hand each one's stamp back: every
+     * returned row is `index=stamp`, the index being the item's. Each of [items] is a fragment that
+     * [savedByUnwind] allows.
      */
+    fun buildStampedSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
+        items.groupBy { it.value.javaClass }.flatMap { (clazz, group) ->
+            val model = FragmentModel.from(clazz)
+            val idField = requireNotNull(model.nodeIdField)
+            val statement = stampedUnwind(model.labels.joinToString(":"), model.nodeIdProperty ?: idField) +
+                "\nRETURN row.i + '=' + n.${Stamps.QUOTED}"
+            group.map { (index, obj) -> unwindRootRow(obj, model, null, idField, nullPolicy) + ("i" to index.toString()) }
+                .chunked(chunkSize)
+                .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf("rows" to chunk)).transform(String::class.java) }
+        }
+
+    /** The UNWIND upsert that gives a node a new stamp only when the row changes it. */
     private fun stampedUnwind(labels: String, idProperty: String): String = """
         UNWIND ${'$'}rows AS row
         MERGE (n:$labels {$idProperty: row.id})
-        WITH n, row, (n.${Stamps.QUOTED} IS NULL OR any(k IN keys(row.props) WHERE
-            CASE WHEN row.props[k] IS NULL THEN n[k] IS NOT NULL ELSE NOT coalesce(n[k] = row.props[k], false) END)) AS changed
-        SET n += row.props, n.${Stamps.QUOTED} = CASE WHEN changed THEN row.stamp ELSE n.${Stamps.QUOTED} END
+        WITH n, row, $ROW_CHANGES_NODE AS changed
+        SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}
     """.trimIndent()
 
     /**
@@ -122,12 +131,7 @@ internal class BatchSaveOperations(
         }
         val id = rootProps[idField]
             ?: throw IllegalArgumentException("Cannot saveAll ${obj.javaClass.simpleName} with a null @GraphNodeId")
-        val propertyNameByField = rootModel.fields.associate { it.name to it.propertyName }
-        // The stamp field's value is never written: the row offers a new stamp, taken if the row changes the node.
-        val props = rootProps
-            .filterKeys { it != idField && it != rootModel.stampField }
-            .filter { (_, value) -> value != null || nullPolicy == NullPolicy.CLEAR }
-            .mapKeys { (field, _) -> propertyNameByField[field] ?: field }
+        val props = rootModel.unwindProps(rootProps, nullPolicy)
         val stamp = if (stamping != null) mapOf("stamp" to Stamps.fresh()) else emptyMap()
         return mapOf("id" to id, "props" to props) + stamp
     }

@@ -9,6 +9,7 @@ import org.drivine.mapper.toMap
 import org.drivine.model.GraphViewModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.RelationshipModel
+import org.drivine.model.Stamps
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 
@@ -384,6 +385,7 @@ class GraphViewMergeBuilder(
                     MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
                     MATCH (root)${matchEdge(relModel)}(target)
                     DELETE r
+                    $relinked
                 """.trimIndent()
             }
             CascadeType.DELETE_ALL -> {
@@ -406,7 +408,7 @@ class GraphViewMergeBuilder(
             bindings = mapOf(
                 "rootId" to rootProps[rootFragmentModel.nodeIdField!!],
                 "targetId" to targetId
-            )
+            ) + mark()
         )
     }
 
@@ -432,6 +434,7 @@ class GraphViewMergeBuilder(
             MATCH (root:$rootLabels {$rootIdProperty: ${'$'}rootId})${matchEdge(relModel)}(target:$targetLabels)
             WHERE NOT target.$targetIdProperty IN ${'$'}keepIds
             DELETE r
+            $relinked
             WITH DISTINCT target
             WHERE NOT (target)<-[]-() AND NOT (target)-[]-()
             DETACH DELETE target
@@ -442,7 +445,7 @@ class GraphViewMergeBuilder(
             bindings = mapOf(
                 "rootId" to objectMapper.toMap(rootFragment)[rootIdField],
                 "keepIds" to currentItems.mapNotNull { targetId(it, relModel) },
-            )
+            ) + mark()
         )
     }
 
@@ -605,6 +608,7 @@ class GraphViewMergeBuilder(
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
                 MERGE (root)${mergeEdge(relModel, "r")}(target)
                 SET r += {$relPropsString}
+                $relinked
             """.trimIndent()
         } else {
             // Direct target reference: simple MERGE with no properties
@@ -612,14 +616,25 @@ class GraphViewMergeBuilder(
                 MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
                 MERGE (root)${mergeEdge(relModel)}(target)
+                $relinked
             """.trimIndent()
         }
 
         return MergeStatement(
             statement = query,
-            bindings = bindings
+            bindings = bindings + mark()
         )
     }
+
+    /**
+     * The clause that gives `root` and `target` a new relationship token, appended to a statement that
+     * writes or removes a relationship between them; empty when this builder does not stamp. This
+     * manager does not look at whether the relationship was already as written.
+     */
+    private val relinked: String =
+        if (stamping == null) "" else "SET ${Stamps.relink("root", "true", "\$$MARK")}, ${Stamps.relink("target", "true", "\$$MARK")}"
+
+    private fun mark(): Map<String, Any?> = if (stamping == null) emptyMap() else mapOf(MARK to Stamps.fresh())
 
     /**
      * Extracts the root fragment from a nested GraphView object.
@@ -641,3 +656,6 @@ class GraphViewMergeBuilder(
             ?: throw IllegalArgumentException("Root fragment ${viewModel.rootFragment.fieldName} is null")
     }
 }
+
+/** The parameter a relationship statement takes a new relationship token from. */
+private const val MARK = "_mark"

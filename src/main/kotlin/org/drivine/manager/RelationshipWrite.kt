@@ -29,8 +29,9 @@ enum class RemovedTargets {
  * target's labels. A read-only field cannot be replaced, and every `@GraphPath` field is one. A
  * named list that is null is refused; an empty list removes every relationship of the field.
  *
- * The removals are part of the save's one statement. A save that removes a relationship gives the
- * root a new stamp, so of two writers who loaded the same view, the second to replace is refused.
+ * The removals are part of the save's one statement. On a root that carries a stamp, the save is
+ * refused if any relationship of the root was added or removed since the object was loaded, from
+ * either end: a replace never removes a relationship it did not load.
  */
 class Replace private constructor(
     val fields: Set<String>,

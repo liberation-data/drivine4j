@@ -11,6 +11,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 import org.drivine.StaleObjectException
 import org.drivine.annotation.Direction
 import org.drivine.connection.DatabaseType
@@ -37,6 +38,8 @@ import sample.stateless.Claim
 import sample.stateless.ClaimCitations
 import sample.stateless.ClaimLead
 import sample.stateless.ClaimReviewers
+import sample.stateless.ClaimSupporters
+import sample.stateless.ClaimSupports
 import sample.stateless.ClaimView
 import sample.stateless.Company
 import sample.stateless.Draft
@@ -397,6 +400,160 @@ abstract class StatelessSingleStatementContract {
         assertNotEquals(saved.claim.stamp, changed.claim.stamp)
         assertEquals(setOf("9"), strings("MATCH (:Claim)-[r:CITES]->(:Human) RETURN toString(r.page)"))
         assertEquals(listOf("c1->ada"), edges("CITES"))
+    }
+
+    // ----- The two tokens of a stamp -----
+
+    private fun nodeToken(stamp: String?) = assertNotNull(stamp).substringBefore(':')
+    private fun linkToken(stamp: String?) = assertNotNull(stamp).substringAfter(':')
+
+    @Test
+    fun `a stamp is two tokens, and a save replaces the one for what it changed`() {
+        val saved = stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        assertTrue(Regex("[0-9a-f]{16}:[0-9a-f]{16}").matches(assertNotNull(saved.claim.stamp)), "was ${saved.claim.stamp}")
+
+        val edited = stateless.save(saved.copy(claim = saved.claim.copy(text = "two")))
+        assertNotEquals(nodeToken(saved.claim.stamp), nodeToken(edited.claim.stamp))
+        assertEquals(linkToken(saved.claim.stamp), linkToken(edited.claim.stamp))
+
+        val linked = stateless.save(edited.copy(people = edited.people + Human("bob", "Bob")))
+        assertEquals(nodeToken(edited.claim.stamp), nodeToken(linked.claim.stamp))
+        assertNotEquals(linkToken(edited.claim.stamp), linkToken(linked.claim.stamp))
+        assertEquals(stamp("c1"), linked.claim.stamp)
+    }
+
+    @Test
+    fun `a save that adds is applied though another writer added a relationship since it was loaded`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val mine = assertNotNull(stateless.load<ClaimView>("c1"))
+        val theirs = assertNotNull(stateless.load<ClaimView>("c1"))
+
+        stateless.save(theirs.copy(people = theirs.people + Human("bob", "Bob")))
+        stateless.save(mine.copy(claim = mine.claim.copy(note = "mine"), people = mine.people + Human("cy", "Cy")))
+
+        assertEquals(listOf("c1->ada", "c1->bob", "c1->cy"), edges("MENTIONS"))
+        assertEquals("mine", property("c1", "note"))
+    }
+
+    @Test
+    fun `several writers adding to the same loaded view at once are all applied`() {
+        stateless.save(ClaimView(Claim("c1", "one")))
+        val loaded = assertNotNull(stateless.load<ClaimView>("c1"))
+        val writers = 4
+        val pool = Executors.newFixedThreadPool(writers)
+        try {
+            val start = CountDownLatch(1)
+            val saves = (0 until writers).map { writer ->
+                pool.submit<Unit> {
+                    start.await()
+                    stateless.save(loaded.copy(people = listOf(Human("h$writer", "Human $writer"))))
+                }
+            }
+            start.countDown()
+            saves.forEach { it.get(60, TimeUnit.SECONDS) }
+        } finally {
+            pool.shutdownNow()
+        }
+
+        assertEquals((0 until writers).map { "c1->h$it" }, edges("MENTIONS"))
+    }
+
+    @Test
+    fun `a node's own data is saved though a relationship to it was written from its other end`() {
+        val hub = stateless.save(Claim("hub", "Hub"))
+
+        stateless.save(ClaimSupports(Claim("c1", "one"), supports = listOf(hub)))
+        assertEquals(nodeToken(hub.stamp), nodeToken(stamp("hub")))
+        assertNotEquals(linkToken(hub.stamp), linkToken(stamp("hub")))
+
+        stateless.save(hub.copy(text = "Hub, renamed"))
+        assertEquals("Hub, renamed", property("hub", "text"))
+        assertEquals(listOf("c1->hub"), edges("SUPPORTS"))
+    }
+
+    @Test
+    fun `Replace is refused when a relationship was written from the other end`() {
+        stateless.save(ClaimSupporters(Claim("hub", "Hub"), supporters = listOf(Claim("s1", "one"))))
+        val mine = assertNotNull(stateless.load<ClaimSupporters>("hub"))
+
+        stateless.save(ClaimSupports(Claim("s2", "two"), supports = listOf(mine.claim)))
+
+        assertFailsWith<StaleObjectException> { stateless.save(mine, Replace(ClaimSupporters::supporters)) }
+        assertEquals(listOf("s1->hub", "s2->hub"), edges("SUPPORTS"))
+
+        val fresh = assertNotNull(stateless.load<ClaimSupporters>("hub"))
+        stateless.save(fresh.copy(supporters = fresh.supporters.filter { it.id == "s2" }), Replace(ClaimSupporters::supporters))
+        assertEquals(listOf("s2->hub"), edges("SUPPORTS"))
+    }
+
+    @Test
+    fun `a target that loses a relationship to Replace gets a new relationship token`() {
+        stateless.save(ClaimSupports(Claim("c1", "one"), supports = listOf(Claim("s1", "one"), Claim("s2", "two"))))
+        val s1 = stamp("s1")
+        val s2 = stamp("s2")
+
+        val loaded = assertNotNull(stateless.load<ClaimSupports>("c1"))
+        stateless.save(loaded.copy(supports = loaded.supports.filter { it.id == "s1" }), Replace(ClaimSupports::supports))
+
+        assertEquals(s1, stamp("s1"))
+        assertEquals(nodeToken(s2), nodeToken(stamp("s2")))
+        assertNotEquals(linkToken(s2), linkToken(stamp("s2")))
+    }
+
+    @Test
+    fun `Replace is refused after edges adds or removes a relationship, and a save that adds is not`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
+        stateless.save(Human("cy", "Cy"))
+
+        val beforeRemoval = assertNotNull(stateless.load<ClaimView>("c1"))
+        stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS")
+        assertFailsWith<StaleObjectException> { stateless.save(beforeRemoval, Replace(ClaimView::people)) }
+
+        val beforeAddition = assertNotNull(stateless.load<ClaimView>("c1"))
+        stateless.edges.relate(nodeRef<Claim>("c1"), nodeRef<Human>("cy"), "MENTIONS")
+        assertFailsWith<StaleObjectException> { stateless.save(beforeAddition, Replace(ClaimView::people)) }
+        assertEquals(listOf("c1->ada", "c1->cy"), edges("MENTIONS"))
+
+        stateless.save(beforeAddition.copy(claim = beforeAddition.claim.copy(note = "still saved")))
+        assertEquals("still saved", property("c1", "note"))
+    }
+
+    @Test
+    fun `Replace is refused after GraphObjectManager wrote a relationship`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val mine = assertNotNull(stateless.load<ClaimView>("c1"))
+
+        @Suppress("DEPRECATION")
+        val gom = GraphObjectManager(pm, org.drivine.session.SessionManager(Neo4jObjectMapper.instance), Neo4jObjectMapper.instance, SubtypeRegistry())
+        gom.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
+
+        assertFailsWith<StaleObjectException> { stateless.save(mine, Replace(ClaimView::people)) }
+        assertEquals(listOf("c1->ada", "c1->bob"), edges("MENTIONS"))
+    }
+
+    @Test
+    fun `Cypher that keeps the contract marks what it changed, and each save checks its own part`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        stateless.save(Human("bob", "Bob"))
+        val loaded = assertNotNull(stateless.load<ClaimView>("c1"))
+
+        run(
+            """
+            MATCH (c:Claim {id: 'c1'}), (h:Human {id: 'bob'})
+            CREATE (c)-[:MENTIONS]->(h)
+            SET ${Stamps.linksClause("c")}, ${Stamps.linksClause("h")}
+            """.trimIndent()
+        )
+        assertEquals(nodeToken(loaded.claim.stamp), nodeToken(stamp("c1")))
+        assertFailsWith<StaleObjectException> { stateless.save(loaded, Replace(ClaimView::people)) }
+        stateless.save(loaded.copy(claim = loaded.claim.copy(note = "saved")))
+
+        val again = assertNotNull(stateless.load<ClaimView>("c1"))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'elsewhere', ${Stamps.setClause("c")}")
+        val marked = assertNotNull(stamp("c1"))
+        assertTrue(Regex("[0-9a-f]{16}:[0-9a-f]{16}").matches(marked), "was $marked")
+        assertEquals(linkToken(again.claim.stamp), linkToken(marked))
+        assertFailsWith<StaleObjectException> { stateless.save(again) }
     }
 
     // ----- Replace -----

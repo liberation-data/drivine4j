@@ -3,6 +3,7 @@ package org.drivine.query
 import org.drivine.annotation.Direction
 import org.drivine.manager.NodeRef
 import org.drivine.manager.RelateMode
+import org.drivine.model.Stamps
 
 /**
  * Statements for a relationship whose type is known only at runtime — between two stored nodes that
@@ -12,6 +13,10 @@ internal object EdgeStatements {
 
     private const val FROM = "_fromId"
     private const val TO = "_toId"
+    private const val MARK = "_mark"
+
+    /** The `SET` item that gives the node [alias] a new relationship token: one of its relationships is made or removed. */
+    private fun relinked(alias: String): String = Stamps.relink(alias, "true", "\$$MARK")
 
     /**
      * Join [from] to [to] with a [type] relationship carrying [properties], and count the result: 0
@@ -20,16 +25,16 @@ internal object EdgeStatements {
      */
     fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): MergeStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
-        val bindings = mutableMapOf<String, Any?>(FROM to from.id, TO to to.id)
+        val bindings = mutableMapOf<String, Any?>(FROM to from.id, TO to to.id, MARK to Stamps.fresh())
         val assignments = properties.filterValues { it != null }.entries.mapIndexed { i, (key, value) ->
             bindings["_rel$i"] = value
             "r.${quotedIdentifier(key)} = \$_rel$i"
-        }
+        } + relinked("a") + relinked("b")
         val statement = buildString {
             append("MATCH ").append(from.pattern("a", FROM))
             append("\nMATCH ").append(to.pattern("b", TO))
             append("\n").append(mode.name).append(" (a)-[r:").append(quotedIdentifier(type)).append("]->(b)")
-            if (assignments.isNotEmpty()) append("\nSET ").append(assignments.joinToString(", "))
+            append("\nSET ").append(assignments.joinToString(", "))
             append("\nRETURN count(r)")
         }
         return MergeStatement(statement, bindings)
@@ -44,9 +49,10 @@ internal object EdgeStatements {
         val statement = """
             MATCH ${from.pattern("a", FROM)}-[r:${quotedIdentifier(type)}]->${to.pattern("b", TO)}
             DELETE r
+            SET ${relinked("a")}, ${relinked("b")}
             RETURN count(r)
         """.trimIndent()
-        return MergeStatement(statement, mapOf(FROM to from.id, TO to to.id))
+        return MergeStatement(statement, mapOf(FROM to from.id, TO to to.id, MARK to Stamps.fresh()))
     }
 
     /** Remove every [type] relationship [from] has in [direction], and count them. */
@@ -59,11 +65,12 @@ internal object EdgeStatements {
             Direction.UNDIRECTED -> "-$edge-"
         }
         val statement = """
-            MATCH ${from.pattern("a", FROM)}$arrow()
+            MATCH ${from.pattern("a", FROM)}$arrow(b)
             DELETE r
+            SET ${relinked("a")}, ${relinked("b")}
             RETURN count(r)
         """.trimIndent()
-        return MergeStatement(statement, mapOf(FROM to from.id))
+        return MergeStatement(statement, mapOf(FROM to from.id, MARK to Stamps.fresh()))
     }
 
     /**

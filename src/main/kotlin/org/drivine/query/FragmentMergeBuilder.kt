@@ -76,6 +76,13 @@ class FragmentMergeBuilder(
         // A checked save matches the node only while it still carries the stamp the object was loaded
         // with. It changes nothing if the stamp differs or the node is gone, and then gives no row.
         val expected = fragmentModel.stampField?.takeIf { stamping?.checked == true }?.let { allProps[it] as? String }
+        // The token for the node's own data is always compared; the whole stamp, and so the token for its
+        // relationships too, when the save replaces a relationship list.
+        val stillAsLoaded = if (stamping?.relationships == true) {
+            "n.${Stamps.QUOTED} = ${'$'}${Stamps.EXPECTED_PARAM}"
+        } else {
+            "${Stamps.nodeTokenOf("n")} = ${'$'}${Stamps.EXPECTED_PARAM}"
+        }
         val mergeClause = if (expected == null) {
             "MERGE (n:$labels {$nodeIdProperty: \$$nodeIdField})"
         } else {
@@ -88,13 +95,13 @@ class FragmentMergeBuilder(
             SET n.${Stamps.LOCK} = true
             REMOVE n.${Stamps.LOCK}
             WITH n
-            WHERE n.${Stamps.QUOTED} = ${'$'}${Stamps.EXPECTED_PARAM}
+            WHERE $stillAsLoaded
             """.trimIndent()
         }
 
         val bindings = mutableMapOf<String, Any?>(nodeIdField to idValue)
         val setClauses = mutableListOf<String>()
-        expected?.let { bindings[Stamps.EXPECTED_PARAM] = it }
+        expected?.let { bindings[Stamps.EXPECTED_PARAM] = if (stamping?.relationships == true) it else Stamps.nodeToken(it) }
         // The node gets a new stamp only if this statement changes it. Each write adds the test that
         // says whether it does; the tests are evaluated before anything is set. A test that cannot
         // tell (a comparison that gives null) counts as a change.
@@ -103,7 +110,7 @@ class FragmentMergeBuilder(
         fun differs(property: String, value: String) = "NOT coalesce(n.$property = $value, false)"
         fun present(property: String) = "n.$property IS NOT NULL"
         if (offered != null) {
-            setClauses.add("n.${Stamps.QUOTED} = CASE WHEN $CHANGED THEN \$${Stamps.NEW_PARAM} ELSE n.${Stamps.QUOTED} END")
+            setClauses.add(Stamps.restamp("n", CHANGED, "\$${Stamps.NEW_PARAM}"))
             bindings[Stamps.NEW_PARAM] = offered
         }
         val removeClauses = mutableListOf<String>()
@@ -305,10 +312,10 @@ fun interface StoredPropertyKeys {
 /**
  * Whether the statements a builder produces stamp the nodes they save. A node gets a new stamp when
  * the statement changes it, and keeps the one it has otherwise. When [checked], the save of an object
- * that carries a stamp applies only if the node still has it, and the statement returns the stamp the
- * node is left with.
+ * that carries a stamp applies only if the node's own data is as the stamp says. With [relationships],
+ * its relationships must be as the stamp says too.
  */
-data class Stamping(val checked: Boolean) {
+data class Stamping(val checked: Boolean, val relationships: Boolean = false) {
     /** The same stamping without the check, for the nodes a view save reaches through a relationship. */
     fun unchecked(): Stamping = if (checked) Stamping(false) else this
 }

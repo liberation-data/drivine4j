@@ -26,8 +26,9 @@ class EdgeOperations internal constructor(
      * Joins [from] to [to] with a [type] relationship.
      *
      * Both nodes are matched, never created: if either is absent, or lacks a label its [NodeRef]
-     * names, nothing is written and the result is false. Neither node is loaded, and neither's
-     * properties are touched.
+     * names, nothing is written and the result is false. Neither node is loaded, and neither's own
+     * properties are touched. Both get a new relationship token in their stamp, so a save that replaces
+     * a relationship list of either, from an object loaded before this call, is refused.
      *
      * Under [RelateMode.MERGE] (the default) there is at most one [type] relationship from [from] to
      * [to], and its [properties] are set whether it was made or found. Under [RelateMode.CREATE] each
@@ -55,7 +56,8 @@ class EdgeOperations internal constructor(
     /**
      * Removes every [type] relationship from [from] to [to].
      *
-     * Neither node is deleted, loaded or changed, and neither's stamp changes.
+     * Neither node is deleted or loaded, and neither's own properties are touched. Both get a new
+     * relationship token in their stamp when a relationship was removed.
      *
      * @return how many relationships were removed: 0 when there was none, or either node is absent
      */
@@ -64,7 +66,8 @@ class EdgeOperations internal constructor(
     /**
      * Removes every [type] relationship that [from] has in [direction].
      *
-     * No node is deleted, loaded or changed, and no stamp changes.
+     * No node is deleted or loaded, and none's own properties are touched. [from], and each node it
+     * was joined to, gets a new relationship token in its stamp.
      *
      * @return how many relationships were removed
      */

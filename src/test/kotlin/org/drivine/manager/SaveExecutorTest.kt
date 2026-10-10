@@ -39,10 +39,20 @@ class SaveExecutorTest {
 
     @Test
     fun `a save the engine turned away is run again`() {
-        val (manager, calls) = answering(contended(), contended(depth = 3), listOf("s1,s2"))
+        val (manager, calls) = answering(contended(), contended(depth = 3), listOf("s1"))
 
-        assertEquals(listOf("s1", "s2"), SaveExecutor(manager).save(statement(expected = null)))
+        assertEquals(listOf("s1"), SaveExecutor(manager).save(statement(expected = null)))
         assertEquals(3, calls())
+    }
+
+    @Test
+    fun `the stamps of related nodes are handed back in the statement's order, however the row lists them`() {
+        val (manager, _) = answering(listOf("root,1=second,0=first"))
+        val statement = SaveStatement(
+            "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null), listOf(Claim("a", "a"), Claim("b", "b")),
+        )
+
+        assertEquals(listOf("root", "first", "second"), SaveExecutor(manager).save(statement))
     }
 
     @Test

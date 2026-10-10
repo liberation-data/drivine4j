@@ -238,12 +238,15 @@ abstract class StatelessSaveContract {
             ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Robert")))
         )
 
-        assertEquals(ada, property("ada", Stamps.PROPERTY), "ada was linked, not changed")
-        assertNotEquals(bob, property("bob", Stamps.PROPERTY), "bob's name changed")
+        val adaNow = assertNotNull(property("ada", Stamps.PROPERTY))
+        assertEquals(ada.substringBefore(':'), adaNow.substringBefore(':'), "ada was linked, not changed")
+        assertNotEquals(ada.substringAfter(':'), adaNow.substringAfter(':'), "ada has a new relationship")
+        assertNotEquals(bob.substringBefore(':'), property("bob", Stamps.PROPERTY)?.substringBefore(':'), "bob's name changed")
         assertEquals("Robert", property("bob", "name"))
 
         val linked = stateless.save(view.copy(people = view.people + Human("cy", "Cy")))
-        assertNotEquals(view.claim.stamp, linked.claim.stamp, "a new relationship gives the root a new stamp")
+        assertEquals(view.claim.stamp?.substringBefore(':'), linked.claim.stamp?.substringBefore(':'), "the root's own data is as it was")
+        assertNotEquals(view.claim.stamp, linked.claim.stamp, "a new relationship gives the root a new relationship token")
         assertNotNull(property("cy", Stamps.PROPERTY), "a node the save created is stamped")
 
         val again = stateless.save(linked)
@@ -474,15 +477,18 @@ abstract class StatelessSaveContract {
     @Test
     fun `unrelate removes one relationship and no node`() {
         stateless.save(ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
-        val stamp = property("c1", Stamps.PROPERTY)
+        val stamp = assertNotNull(property("c1", Stamps.PROPERTY))
 
         val removed = stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS")
 
         assertEquals(1, removed)
         assertEquals(setOf("ada"), mentioned("c1"))
         assertNotNull(stateless.load<Human>("bob"))
-        assertEquals(stamp, property("c1", Stamps.PROPERTY), "a relationship operation does not change a stamp")
+        val after = assertNotNull(property("c1", Stamps.PROPERTY))
+        assertEquals(stamp.substringBefore(':'), after.substringBefore(':'), "the node's own data is as it was")
+        assertNotEquals(stamp.substringAfter(':'), after.substringAfter(':'), "it lost a relationship")
         assertEquals(0, stateless.edges.unrelate(nodeRef<Claim>("c1"), nodeRef<Human>("bob"), "MENTIONS"))
+        assertEquals(after, property("c1", Stamps.PROPERTY), "removing nothing changes no stamp")
     }
 
     @Test
