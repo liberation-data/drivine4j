@@ -57,6 +57,9 @@ import sample.stateless.Memo
 import sample.stateless.MemoView
 import sample.stateless.Pals
 import sample.stateless.Tagged
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * A stateless save as one statement, verified on Neo4j, FalkorDB and Memgraph: what it writes and
@@ -64,7 +67,7 @@ import sample.stateless.Tagged
  */
 abstract class StatelessSingleStatementContract {
 
-    abstract val pm: NonTransactionalPersistenceManager
+    abstract val pm: PersistenceManager
 
     private val stateless: StatelessGraphObjectManager
         get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
@@ -582,6 +585,7 @@ abstract class StatelessSingleStatementContract {
 
     @Test
     fun `Replace is refused after GraphObjectManager wrote a relationship`() {
+        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
         stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
         val mine = assertNotNull(stateless.load<ClaimView>("c1"))
 
@@ -736,6 +740,7 @@ abstract class StatelessSingleStatementContract {
     @Test
     @Suppress("DEPRECATION")
     fun `GraphObjectManager does not double an undirected relationship stored towards the root`() {
+        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
         run("CREATE (:Human {id: 'bob', name: 'Bob'})-[:KNOWS]->(:Human {id: 'ada', name: 'Ada'})")
         val gom = GraphObjectManager(pm, org.drivine.session.SessionManager(Neo4jObjectMapper.instance), Neo4jObjectMapper.instance, SubtypeRegistry())
 
@@ -1549,4 +1554,9 @@ class StatelessSingleStatementMemgraphTest : StatelessSingleStatementContract() 
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+}
+
+@OracleTests
+class StatelessSingleStatementOracleTest : StatelessSingleStatementContract() {
+    override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
 }

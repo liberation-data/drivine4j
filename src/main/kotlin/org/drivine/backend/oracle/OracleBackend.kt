@@ -12,6 +12,7 @@ import org.drivine.manager.NullPolicy
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.RelateMode
 import org.drivine.manager.RemovedTargets
+import org.drivine.model.FragmentModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.SaveStatement
 import org.drivine.query.ScoredSearchPlan
@@ -31,10 +32,12 @@ import java.sql.SQLException
  */
 internal class OracleBackend(
     private val persistenceManager: PersistenceManager,
-    @Suppress("unused") private val objectMapper: ObjectMapper,
+    objectMapper: ObjectMapper,
 ) : GraphBackend {
 
     private val graph = OracleGraph(persistenceManager.graphName ?: OracleGraph.DEFAULT_NAME).also { it.ensure(persistenceManager) }
+
+    private val saves = OracleSavePlan(graph, objectMapper)
 
     override val cypherGrammar: CypherGrammar? = null
 
@@ -100,9 +103,10 @@ internal class OracleBackend(
     // ----- Deleting -----
 
     override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement {
-        if (cascade != CascadeType.NONE) notYet("A cascading delete")
         val select = OracleSelect(graph, graphClass)
-        return deleting(select, listOfNotNull(select.hasId(GraphBackend.ID_PARAM), where?.let(select::written)))
+        val predicates = listOfNotNull(select.hasId(GraphBackend.ID_PARAM), where?.let(select::written))
+        val cascaded = if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) select.cascaded(predicates) else null
+        return if (cascaded == null) deleting(select, predicates) else cascading(select, predicates, cascaded, orphansOnly = cascade == CascadeType.DELETE_ORPHAN)
     }
 
     override fun deleteAll(graphClass: Class<*>, where: String?): GraphStatement =
@@ -121,6 +125,47 @@ internal class OracleBackend(
             select.bindings(),
         )
 
+    /**
+     * Deletes the roots [predicates] select, and of the nodes [cascaded] reaches from them either every
+     * one, or with [orphansOnly] those left with no relationship once the roots are gone.
+     */
+    private fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
+        val roots = "${graph.nodes} ${select.rootAlias}\n    WHERE ${select.selecting(predicates)}"
+        val body = if (orphansOnly) {
+            """
+    SELECT nid BULK COLLECT INTO v_ids FROM (
+    $cascaded
+    );
+    DELETE FROM $roots;
+    v_count := SQL%ROWCOUNT;
+    FOR i IN 1 .. v_ids.COUNT LOOP
+        DELETE FROM ${graph.nodes} n WHERE n.nid = v_ids(i) AND NOT EXISTS (SELECT 1 FROM ${graph.edges} e WHERE e.src = n.nid OR e.dst = n.nid);
+        v_count := v_count + SQL%ROWCOUNT;
+    END LOOP;"""
+        } else {
+            """
+    SELECT nid BULK COLLECT INTO v_ids FROM (
+    SELECT ${select.rootAlias}.nid FROM $roots
+    UNION
+    $cascaded
+    );
+    FORALL i IN 1 .. v_ids.COUNT
+        DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);
+    v_count := v_ids.COUNT;"""
+        }
+        val text = """
+DECLARE
+    TYPE t_ids IS TABLE OF NUMBER;
+    v_ids   t_ids;
+    v_count NUMBER := 0;
+    v_rows  SYS_REFCURSOR;
+BEGIN$body
+    OPEN v_rows FOR SELECT v_count FROM dual;
+    DBMS_SQL.RETURN_RESULT(v_rows);
+END;""".trim()
+        return GraphStatement(text, select.bindings())
+    }
+
     /** A seek walks an order, which a count or a delete does not have: it would be ignored, and a delete would take every match. */
     private fun requireNoSeek(query: GraphQuerySpec<*>) =
         require(query.seekValues.isEmpty()) { "seek is only supported by loadAll; this operation would ignore the cursor" }
@@ -135,9 +180,14 @@ internal class OracleBackend(
         replaced: (RelationshipModel) -> RemovedTargets?,
         before: JsonNode?,
         after: JsonNode?,
-    ): SaveStatement = notYet("Saving")
+    ): SaveStatement = saves.build(obj, checked, nullPolicy, rootWriteFields, replaced, before, after)
 
-    override fun foundStamp(root: StampWrite): GraphStatement = notYet("Saving")
+    /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
+    override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
+        "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
+            listOfNotNull("${OracleSql.property("n", root.idProperty)} = \$id", OracleSql.hasLabels("n", root.labels.split(':'))).joinToString(" AND "),
+        mapOf("id" to root.id.toString()),
+    )
 
     /**
      * A deadlock (`ORA-00060`), a serialization failure (`ORA-08177`) or a wait that ran out
@@ -147,17 +197,48 @@ internal class OracleBackend(
 
     // ----- Relationships on their own -----
 
-    override fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement = notYet("edges.relate")
+    /** The step that finds the node [ref] names, which must be there. Gives the number later steps know it by. */
+    private fun WritePlan.found(ref: NodeRef): Int {
+        val model = FragmentModel.from(ref.fragmentClass)
+        val node = node()
+        add("ref", "r" to node, "s" to shape((model.labels + ref.labels).distinct(), keyOf(ref, model)), "k" to ref.id.toString())
+        return node
+    }
 
-    override fun unrelate(from: NodeRef, to: NodeRef, type: String): GraphStatement = notYet("edges.unrelate")
+    private fun keyOf(ref: NodeRef, model: FragmentModel): String = requireNotNull(model.nodeIdProperty) {
+        "${ref.fragmentClass.simpleName} has no @NodeId field, so a node of it cannot be referred to by id."
+    }
 
-    override fun unrelateAll(from: NodeRef, type: String, direction: Direction): GraphStatement = notYet("edges.unrelateAll")
+    private fun counting(type: String, steps: WritePlan.() -> Unit): GraphStatement {
+        require(type.isNotBlank()) { "A relationship needs a type." }
+        val plan = WritePlan(graph).apply(steps)
+        return GraphStatement(plan.text(stamps = false), plan.bindings())
+    }
 
-    override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement = notYet("edges.loadRelated")
+    override fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement = counting(type) {
+        link(found(from), found(to), type, Direction.OUTGOING, properties.filterValues { it != null }, always = mode == RelateMode.CREATE)
+    }
+
+    override fun unrelate(from: NodeRef, to: NodeRef, type: String): GraphStatement = counting(type) {
+        add("cut", "from" to found(from), "to" to found(to), "type" to type, "dir" to Direction.OUTGOING.code)
+    }
+
+    override fun unrelateAll(from: NodeRef, type: String, direction: Direction): GraphStatement = counting(type) {
+        add("cut", "from" to found(from), "type" to type, "dir" to direction.code)
+    }
+
+    override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement {
+        require(type.isNotBlank()) { "A relationship needs a type." }
+        val model = FragmentModel.from(from.fragmentClass)
+        val select = OracleSelect(graph, targetClass)
+        val statement = select.load(listOf(select.relatedTo((model.labels + from.labels).distinct(), keyOf(from, model), FROM_PARAM, type, direction)))
+        return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to from.id.toString()))
+    }
 
     private fun notYet(what: String): Nothing = throw UnsupportedOperationException("$what is not yet available on Oracle.")
 
     private companion object {
         val CONTENTION = setOf(60, 8177, 30006, 54)
+        const val FROM_PARAM = "_fromId"
     }
 }

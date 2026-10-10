@@ -23,7 +23,7 @@ import org.drivine.query.dsl.SeekValueSpec
 import org.drivine.query.dsl.WhereCondition
 
 /** One step from a node to the nodes it is related to: the relationship's type and direction, and the labels the far node carries. */
-internal class Step(val type: String, val direction: Direction, val labels: List<String>)
+internal class Step(val type: String, val direction: Direction, val labels: List<String>, val maxDepth: Int = 1)
 
 /**
  * Writes one statement that reads a graph kept by Oracle: a load, a count, or the predicate of a
@@ -158,11 +158,11 @@ internal class OracleSelect(
 
     /**
      * The nodes reached by [steps], as rows named [alias]: `src` is the node the path starts from.
-     * A single step also gives the relationship, as `eid` and `eprops`. With [maxDepth] above one
-     * the step is taken from one to that many times, and a node may be reached more than once.
+     * A single step also gives the relationship, as `eid` and `eprops`. A step with a depth above one
+     * is taken from one to that many times, and a node may then be reached more than once.
      */
-    private fun reached(steps: List<Step>, alias: String, maxDepth: Int = 1): String {
-        val single = steps.size == 1 && maxDepth == 1
+    private fun reached(steps: List<Step>, alias: String): String {
+        val single = steps.size == 1 && steps.single().maxDepth == 1
         val pattern = buildString {
             append("(a IS node)")
             steps.forEachIndexed { i, step ->
@@ -175,7 +175,7 @@ internal class OracleSelect(
                         Direction.UNDIRECTED -> " -$body-"
                     }
                 )
-                if (maxDepth > 1) append("{1,$maxDepth}")
+                if (step.maxDepth > 1) append("{1,${step.maxDepth}}")
                 val node = if (i == steps.lastIndex) "b" else "m$i"
                 append(" ($node IS node").append(hasLabels(node, step.labels)?.let { " WHERE $it" }.orEmpty()).append(")")
             }
@@ -185,13 +185,13 @@ internal class OracleSelect(
             "COLUMNS (a.nid AS src, ${relationship}b.nid AS nid, b.labels AS labels, b.props AS props, b.stamp AS stamp)) $alias"
     }
 
-    private fun steps(relationship: RelationshipModel, targetLabels: List<String>): List<Step> =
+    private fun steps(relationship: RelationshipModel, targetLabels: List<String>, maxDepth: Int = 1): List<Step> =
         if (relationship.isPath) {
             relationship.hops.mapIndexed { i, hop ->
                 Step(hop.type, hop.direction, if (i == relationship.hops.lastIndex) targetLabels else listOfNotNull(hop.intermediateLabel))
             }
         } else {
-            listOf(Step(relationship.type, relationship.direction, targetLabels))
+            listOf(Step(relationship.type, relationship.direction, targetLabels, maxDepth))
         }
 
     // ----- Projection -----
@@ -225,13 +225,13 @@ internal class OracleSelect(
         val targetIsView = targetType.isAnnotationPresent(GraphView::class.java)
         val sort = sortOf(relationship, parentField)
 
-        if (relationship.isPath) return distinct(parent, relationship, steps(relationship, labels), 1, targetType, visits)
+        if (relationship.isPath) return distinct(parent, relationship, steps(relationship, labels), targetType, visits)
         if (relationship.isRecursive) {
             return if (depth == 0) nothing else recursive(parent, relationship, labels, visits, 1, depth, sort)
         }
         if (targetIsView && (visits[targetType.name] ?: 0) >= depth && targetType.name in visits) return nothing
         if (relationship.isCollection && !targetIsView && !relationship.isRelationshipFragment && depth > 1) {
-            return distinct(parent, relationship, steps(relationship, labels), depth, targetType, visits)
+            return distinct(parent, relationship, steps(relationship, labels, depth), targetType, visits)
         }
 
         val row = next("t")
@@ -263,13 +263,13 @@ internal class OracleSelect(
 
     /**
      * A field that holds each node reached once, however many ways lead to it: a path of several
-     * steps, or one step taken up to [maxDepth] times.
+     * steps, or one step taken up to a depth.
      */
-    private fun distinct(parent: String, relationship: RelationshipModel, steps: List<Step>, maxDepth: Int, targetType: Class<*>, visits: Map<String, Int>): String {
+    private fun distinct(parent: String, relationship: RelationshipModel, steps: List<Step>, targetType: Class<*>, visits: Map<String, Int>): String {
         val path = next("r")
         val row = next("x")
         val value = element(row, targetType, visits, relationship.fieldName)
-        val reachedIds = "SELECT $path.nid FROM ${reached(steps, path, maxDepth)} WHERE $path.src = $parent.nid"
+        val reachedIds = "SELECT $path.nid FROM ${reached(steps, path)} WHERE $path.src = $parent.nid"
         val from = "${graph.nodes} $row WHERE $row.nid IN ($reachedIds)"
         return if (relationship.isCollection) {
             "COALESCE((SELECT JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON) FROM $from), $EMPTY_ARRAY)"
@@ -334,6 +334,56 @@ internal class OracleSelect(
     private fun exists(parent: String, steps: List<Step>, row: String?, predicate: String? = null): String {
         val alias = row ?: next("t")
         return "EXISTS (SELECT 1 FROM ${reached(steps, alias)} WHERE $alias.src = $parent.nid${predicate?.let { " AND $it" }.orEmpty()})"
+    }
+
+    // ----- What a delete or a traversal on its own selects -----
+
+    /**
+     * The ids of the nodes a cascading delete takes with the roots that meet [predicates]: every node
+     * reached through a relationship field the view declares and writes, and through those of the views
+     * nested in it. A field that holds views of its own class is followed to its depth.
+     */
+    fun cascaded(predicates: List<String>): String? {
+        val model = viewModel ?: return null
+        val roots = "SELECT $rootAlias.nid FROM ${graph.nodes} $rootAlias WHERE ${selecting(predicates)}"
+        val paths = mutableListOf<List<Step>>()
+        fun walk(view: GraphViewModel, path: List<Step>, visits: Map<String, Int>) {
+            // A read-only field (every path is one) is not the view's to delete: other code writes what it loads.
+            view.relationships.filterNot { it.readOnly }.forEach { relationship ->
+                val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
+                val labels = GraphTypeLabels.labelsForType(targetType)
+                if (labels.isEmpty()) return@forEach
+                val depth = if (relationship.isRecursive) relationship.maxDepth.coerceAtLeast(1) else 1
+                val reached = path + Step(relationship.type, relationship.direction, labels, depth)
+                paths += reached
+                val visited = visits[targetType.name] ?: 0
+                if (!relationship.isRecursive && targetType.isAnnotationPresent(GraphView::class.java) && visited < relationship.maxDepth) {
+                    walk(GraphViewModel.from(targetType), reached, visits + (targetType.name to visited + 1))
+                }
+            }
+        }
+        walk(model, emptyList(), mapOf(model.className to 1))
+        if (paths.isEmpty()) return null
+        return paths.joinToString("\n    UNION\n    ") { steps ->
+            val row = next("c")
+            "SELECT $row.nid FROM ${reached(steps, row)} WHERE $row.src IN ($roots)"
+        }
+    }
+
+    /**
+     * Whether the root is a node that the node of [labels] whose id is bound as [parameter] is related
+     * to by a relationship of [type] in [direction].
+     */
+    fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
+        val row = next("t")
+        val body = "[e IS edge WHERE e.type = ${literal(type)}]"
+        val arrow = when (direction) {
+            Direction.OUTGOING -> "-$body->"
+            Direction.INCOMING -> "<-$body-"
+            Direction.UNDIRECTED -> "-$body-"
+        }
+        val from = listOfNotNull("${property("a", key)} = \$$parameter", hasLabels("a", labels)).joinToString(" AND ")
+        return "$rootAlias.nid IN (SELECT $row.nid FROM GRAPH_TABLE (${graph.name} MATCH (a IS node WHERE $from) $arrow (b IS node) COLUMNS (b.nid AS nid)) $row)"
     }
 
     // ----- Predicates from the query DSL -----

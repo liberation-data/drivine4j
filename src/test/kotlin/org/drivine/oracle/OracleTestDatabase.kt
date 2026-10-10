@@ -1,6 +1,8 @@
 package org.drivine.oracle
 
 import org.drivine.backend.oracle.OracleGraph
+import org.drivine.connection.Connection
+import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
@@ -49,41 +51,48 @@ object OracleTestDatabase {
     }
 
     /** Writes the nodes and relationships a Cypher `CREATE` fixture describes to the graph [pm] speaks to. */
-    fun seed(pm: NonTransactionalPersistenceManager, cypher: String) {
-        val graph = requireNotNull(pm.graphName)
-        val seed = CypherSeed.parse(cypher)
-        val insert = """
-            DECLARE
-                v_nid NUMBER;
-                v_rows SYS_REFCURSOR;
-            BEGIN
-                INSERT INTO ${graph}_node (labels, props) VALUES (${'$'}labels, ${'$'}props) RETURNING nid INTO v_nid;
-                OPEN v_rows FOR SELECT v_nid FROM dual;
-                DBMS_SQL.RETURN_RESULT(v_rows);
-            END;
-        """.trimIndent()
-        val ids = seed.nodes.map { node ->
-            pm.getOne(QuerySpecification.withStatement(insert).bind(mapOf("labels" to node.labels.sorted(), "props" to node.properties)).transform(Long::class.java))
-        }
-        seed.edges.forEach { edge ->
-            pm.execute(
-                QuerySpecification.withStatement("INSERT INTO ${graph}_edge (src, dst, type, props) VALUES (\$src, \$dst, \$type, \$props)")
-                    .bind(mapOf("src" to ids[edge.from], "dst" to ids[edge.to], "type" to edge.type, "props" to edge.properties))
-            )
-        }
+    fun seed(pm: PersistenceManager, cypher: String) {
+        MiniCypher(pm, cypher.trim(), emptyMap()).run()
     }
 
     /**
-     * [pm] as the cross-engine tests use a manager for their fixtures: a Cypher `CREATE` is written
-     * as rows, and the statement that empties a graph empties this one. Anything else is the store's.
+     * [pm] as the cross-engine tests use a manager: a statement in Cypher is one of a test's fixtures,
+     * and is worked out by [MiniCypher]; any other is the store's own, an object manager's among them.
      */
     fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = object : PersistenceManager by pm {
         override fun execute(spec: QuerySpecification<*>) {
             val text = spec.statement!!.text.trim()
             when {
-                text.startsWith("CREATE", ignoreCase = true) -> seed(pm, text)
                 text == "MATCH (n) DETACH DELETE n" -> clear(pm)
+                MiniCypher.reads(text) -> MiniCypher(pm, text, spec.parameters).run()
                 else -> pm.execute(spec)
+            }
+        }
+
+        @Suppress("UNCHECKED_CAST")
+        override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
+            val text = spec.statement!!.text.trim()
+            return if (MiniCypher.reads(text)) MiniCypher(pm, text, spec.parameters).run() as List<T> else pm.query(spec)
+        }
+    }
+
+    /**
+     * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own.
+     * A Cypher read on one is a fixture's, and is answered by a read of the store on that connection.
+     */
+    fun connections(pm: NonTransactionalPersistenceManager): ConnectionProvider {
+        val provider = JdbcConnectionProvider(pm.database, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = requireNotNull(pm.graphName))
+        return object : ConnectionProvider by provider {
+            override fun connect(): Connection = provider.connect().let { connection ->
+                object : Connection by connection {
+                    @Suppress("UNCHECKED_CAST")
+                    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> =
+                        if (MiniCypher.reads(spec.statement!!.text)) {
+                            connection.query(QuerySpecification.withStatement("SELECT COUNT(*) FROM ${pm.graphName}_node")) as List<T>
+                        } else {
+                            connection.query(spec)
+                        }
+                }
             }
         }
     }

@@ -61,8 +61,15 @@ internal class OracleGraph(val name: String) {
     /**
      * Makes the store if it is not there. Schema statements commit as they run, so they go on a
      * connection of their own and never on the caller's transaction.
+     *
+     * The property graph is made last, so one that is there says the rest is. It is looked for
+     * before anything is run: a schema statement wants its table to itself, and would be turned
+     * away by a writer at work on a store that needs nothing made.
      */
-    fun ensure(persistenceManager: PersistenceManager) = ddl.forEach { persistenceManager.indexes.run(it) }
+    fun ensure(persistenceManager: PersistenceManager) {
+        val made = persistenceManager.indexes.run("SELECT COUNT(*) FROM user_property_graphs WHERE graph_name = '${name.uppercase()}'")
+        if ((made.single() as Number).toInt() == 0) ddl.forEach { persistenceManager.indexes.run(it) }
+    }
 
     companion object {
         const val DEFAULT_NAME = JdbcConnectionProvider.DEFAULT_GRAPH

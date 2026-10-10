@@ -21,7 +21,6 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
-import org.drivine.query.SaveStatementBuilder
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -60,6 +59,9 @@ import sample.stateless.Ticket
 import sample.stateless.UndeclaredPath
 import sample.stateless.Widget
 import sample.stateless.WidgetView
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * What a stateless save must not do, verified on Neo4j, FalkorDB and Memgraph: write a relationship
@@ -68,7 +70,7 @@ import sample.stateless.WidgetView
  */
 abstract class StatelessSaveSoundnessContract {
 
-    abstract val pm: NonTransactionalPersistenceManager
+    abstract val pm: PersistenceManager
 
     abstract val connections: ConnectionProvider
 
@@ -402,6 +404,7 @@ abstract class StatelessSaveSoundnessContract {
 
     @Test
     fun `GraphObjectManager marks neither end when it saves a relationship that is there as it is`() {
+        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
         val mapper = Neo4jObjectMapper.instance
         fun legacy() = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
         val view = ClaimSupports(Claim("c1", "one"), supports = listOf(Claim("c2", "two")))
@@ -495,8 +498,7 @@ abstract class StatelessSaveSoundnessContract {
                     throw DrivineException.withRootCause(failure, spec)
                 }
             }
-            val statement = SaveStatementBuilder(Neo4jObjectMapper.instance, pm.grammar, null)
-                .build(loaded.copy(text = "late"), checked = true, NullPolicy.IGNORE)
+            val statement = GraphBackends.of(pm, Neo4jObjectMapper.instance).save(loaded.copy(text = "late"), checked = true, NullPolicy.IGNORE)
 
             assertFailsWith<StaleObjectException> { SaveExecutor(inTransaction, GraphBackends.of(inTransaction, Neo4jObjectMapper.instance)).save(statement) }
         } finally {
@@ -632,4 +634,11 @@ class StatelessSaveSoundnessMemgraphTest : StatelessSaveSoundnessContract() {
 
     override val pm: NonTransactionalPersistenceManager get() = manager
     override val connections: ConnectionProvider get() = provider
+}
+
+@OracleTests
+class StatelessSaveSoundnessOracleTest : StatelessSaveSoundnessContract() {
+    private val store = OracleTestDatabase.graphManager("contracts")
+    override val pm: PersistenceManager = OracleTestDatabase.fixtures(store)
+    override val connections: ConnectionProvider = OracleTestDatabase.connections(store)
 }
