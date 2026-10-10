@@ -13,8 +13,11 @@ import com.squareup.kotlinpoet.ksp.writeTo
 
 @OptIn(ExperimentalKotlinPoetApi::class)
 
-/** The property a `@NodeStamp` field is stored under. Mirrors `Stamps.PROPERTY`; the query DSL quotes it. */
-private const val STAMP_PROPERTY = "__drivine.stamp"
+/**
+ * The property a `@NodeStamp` field is stored under; the query DSL quotes it. A constant of the core
+ * library, which the compiler copies in: the generator needs no core class when it runs.
+ */
+private const val STAMP_PROPERTY = org.drivine.model.Stamps.PROPERTY
 
 /**
  * Generates query DSL classes and extension functions for a @GraphView annotated class.
@@ -404,15 +407,17 @@ class QueryDslGenerator(
         }
 
         val stringType = String::class.asClassName()
-        val mapInit = if (fieldKeyPaths.isEmpty()) "emptyMap()" else
-            "mapOf(${fieldKeyPaths.entries.joinToString(", ") { "\"${it.key}\" to \"${it.value}\"" }})"
+        // Each name is written as a string literal, with what a literal must escape escaped: a stored
+        // name may hold a `$`, a quote or a backslash.
+        val mapInit = if (fieldKeyPaths.isEmpty()) CodeBlock.of("emptyMap()") else
+            CodeBlock.of("mapOf(%L)", fieldKeyPaths.entries.map { CodeBlock.of("%S to %S", it.key, it.value) }.joinToCode(", "))
         classBuilder.addProperty(
             PropertySpec.builder("fieldKeyPaths", Map::class.asClassName().parameterizedBy(stringType, stringType))
                 .addModifiers(KModifier.OVERRIDE)
                 .initializer(mapInit)
                 .build()
         )
-        val listInit = "listOf(${bagPrefixes.joinToString(", ") { "\"$it\"" }})"
+        val listInit = CodeBlock.of("listOf(%L)", bagPrefixes.map { CodeBlock.of("%S", it) }.joinToCode(", "))
         classBuilder.addProperty(
             PropertySpec.builder("bagPrefixes", List::class.asClassName().parameterizedBy(stringType))
                 .addModifiers(KModifier.OVERRIDE)
@@ -865,7 +870,9 @@ class QueryDslGenerator(
 
         classBuilder.addProperty(
             PropertySpec.builder(propName, propertyRefType)
-                .initializer("$propertyRefType($aliasExpr, \"$onDiskName\")")
+                // The stored name as a string literal: a `@GraphProperty` may name anything, and a `$`
+                // in it is no template, nor a `%` a directive of the generator.
+                .initializer("%L(%L, %S)", propertyRefType.toString(), aliasExpr, onDiskName)
                 .build()
         )
         return EmittedRef.Field(propName, onDiskName)
@@ -886,7 +893,7 @@ class QueryDslGenerator(
         val bagRefType = ClassName("org.drivine.query.dsl", "PropertyBagReference")
         classBuilder.addProperty(
             PropertySpec.builder(propName, bagRefType)
-                .initializer("%T($aliasExpr, \"$storedPrefix\")", bagRefType)
+                .initializer("%T(%L, %S)", bagRefType, aliasExpr, storedPrefix)
                 .build()
         )
         return storedPrefix
