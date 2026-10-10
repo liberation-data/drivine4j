@@ -33,6 +33,8 @@ data class NestedRelInfo(
     val labelString: String,
     val projection: String,
     val isCollection: Boolean,
+    /** The order asked of this collection, by a stored property of its target; null for none. */
+    val sort: CollectionSortSpec? = null,
 )
 
 /**
@@ -91,6 +93,17 @@ class CallSubqueryNestedViewProjector : NestedViewProjector {
             sb.appendLine("    OPTIONAL MATCH (${ctx.targetAlias})${nested.direction}(${nested.alias}:${nested.labelString})")
             val collectVar = "${ctx.targetAlias}_${nested.fieldName}_c"
             collectVars.add(nested.fieldName to collectVar)
+        }
+
+        // A sorted collection inside the view is collected from rows ordered by its own target: the
+        // rows are every pairing of the targets of the view's relationships, so each collection meets
+        // its targets in the order asked of it, and DISTINCT keeps the first of each.
+        val nestedOrder = ctx.nestedRelationships.filter { it.isCollection && it.sort != null }.joinToString(", ") {
+            "${it.alias}.${CypherGenerator.quoteProperty(it.sort!!.propertyName)} ${if (it.sort.ascending) "ASC" else "DESC"}"
+        }
+        if (nestedOrder.isNotEmpty()) {
+            val carried = listOf(ctx.targetAlias) + ctx.nestedRelationships.map { it.alias }
+            sb.appendLine("    WITH ${carried.joinToString(", ")} ORDER BY $nestedOrder")
         }
 
         // A sorted collection is collected from rows ordered by the target node, which is the nested

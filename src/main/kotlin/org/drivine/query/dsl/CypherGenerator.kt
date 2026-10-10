@@ -2,6 +2,7 @@ package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
 import org.drivine.query.projectedKey
+import org.drivine.query.projectedKeyOrNull
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.grammar.OpenCypherGrammar
@@ -71,12 +72,22 @@ object CypherGenerator {
         bridgeVars: MutableList<String>,
         projectedCollectionMode: Boolean,
     ): String {
+        val relationshipNames = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
         var paramIndex = startIndex
         return conditions.joinToString(" AND ") { condition ->
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
-                    val lhs = rootPath(condition.propertyPath, viewModel, projectedCollectionMode)
-                    val result = buildPropertyConditionWithLhs(condition, paramIndex, lhs)
+                    // At the top level a property of a relationship's target has been grouped into a
+                    // relationship condition already. Inside a `not { }` it has not, and it is one
+                    // there as well: the target is no variable of the statement.
+                    val relationship = relationshipOf(condition.propertyPath, relationshipNames)
+                    val result = if (relationship != null) {
+                        val relCondition = WhereCondition.RelationshipCondition(relationship, listOf(condition))
+                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                    } else {
+                        val lhs = rootPath(condition.propertyPath, viewModel, projectedCollectionMode)
+                        buildPropertyConditionWithLhs(condition, paramIndex, lhs)
+                    }
                     if (condition.operator != ComparisonOperator.IS_NULL &&
                         condition.operator != ComparisonOperator.IS_NOT_NULL) {
                         paramIndex++
@@ -89,7 +100,12 @@ object CypherGenerator {
                     result
                 }
                 is WhereCondition.LabelCondition -> {
-                    buildLabelCondition(condition)
+                    if (condition.alias in relationshipNames) {
+                        val relCondition = WhereCondition.RelationshipCondition(condition.alias, listOf(condition))
+                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
+                    } else {
+                        buildLabelCondition(condition)
+                    }
                 }
                 is WhereCondition.OrCondition -> {
                     val result = buildOrCondition(condition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
@@ -116,7 +132,21 @@ object CypherGenerator {
         }
     }
 
-    /** `NOT ( … )` — renders the (raw, un-regrouped) inner conditions AND-joined, then negates. */
+    /**
+     * The relationship of the view that [propertyPath] reads a target of — `assignedTo` for
+     * `assignedTo.name`, and for `assignedTo_worksFor.name`, a relationship of the target — or null
+     * when the path is the root's.
+     */
+    private fun relationshipOf(propertyPath: String, relationshipNames: Set<String>): String? {
+        val alias = propertyPath.substringBefore(".")
+        return alias.takeIf { it in relationshipNames } ?: alias.substringBefore("_").takeIf { "_" in alias && it in relationshipNames }
+    }
+
+    /**
+     * `NOT ( … )` — renders the (raw, un-regrouped) inner conditions AND-joined, then negates. A
+     * property of a relationship's target is rendered as a predicate on the relationship, each by
+     * itself, so the parameters keep the order the conditions were written in.
+     */
     private fun buildNotCondition(
         condition: WhereCondition.NotCondition,
         viewModel: GraphViewModel?,
@@ -483,22 +513,38 @@ object CypherGenerator {
      * field name: `claim.stamp`, where [renderPropertyPath] writes `` claim.`__drivine.stamp` `` for a
      * predicate on the node. A root projected with `.*` keeps its stored names, and so does a path
      * that is not the root's.
+     *
+     * @throws IllegalArgumentException when the root is projected field by field and no field is
+     *   stored as the property: the map does not hold it, and the statement would read null
      */
     internal fun renderProjectedPath(propertyPath: String, viewModel: GraphViewModel): String {
         val dot = propertyPath.indexOf('.')
         val root = viewModel.rootFragment
         if (dot < 0 || propertyPath.substring(0, dot) != root.fieldName) return renderPropertyPath(propertyPath)
-        return "${root.fieldName}.${quoteProperty(projectedKey(root.fragmentType, propertyPath.substring(dot + 1)))}"
+        val property = propertyPath.substring(dot + 1)
+        val key = projectedKeyOrNull(root.fragmentType, property) ?: throw IllegalArgumentException(
+            "${viewModel.className} cannot be ordered, paged or filtered in a scored search by '$propertyPath': " +
+                "${root.fragmentType.simpleName} declares no field stored as '$property', so the view does not project " +
+                "it, and what is read after the projection would be null for every row. Declare the property as a " +
+                "field of ${root.fragmentType.simpleName}; a where { } of a plain load reads the node and needs no field."
+        )
+        return "${root.fieldName}.${quoteProperty(key)}"
     }
 
     /**
      * A property name as it is written after an alias. A name that is not a plain identifier (a
      * `@PropertyBag` key, the node stamp, or a dynamic `property(path)` holding a dot, a space, a
      * hyphen or anything else) is backtick-quoted; any backtick in it is doubled, as Cypher escapes
-     * them, so a runtime-supplied key can't break out of the quotes. The rule is the one schema DDL
-     * spells names by, so a property is written the same way where it is indexed and where it is read.
+     * them, and so is the Unicode escape of one, which Neo4j reads as a backtick: a runtime-supplied
+     * key can't break out of the quotes. The rule is the one schema DDL spells names by, so a property
+     * is written the same way where it is indexed and where it is read.
+     *
+     * @throws IllegalArgumentException for an empty name, which no engine reads as a property
      */
-    internal fun quoteProperty(property: String): String = SchemaGrammar.identifier(property)
+    internal fun quoteProperty(property: String): String {
+        require(property.isNotEmpty()) { "A property name is empty: an empty name is no property a statement can read." }
+        return SchemaGrammar.identifier(property)
+    }
 
     /**
      * Renders a relationship predicate as a list predicate over the **already-projected** relationship
@@ -511,6 +557,17 @@ object CypherGenerator {
      * quirk — exactly like post-projection property predicates. Portable openCypher across engines.
      * A `@GraphProperty` or `@NodeStamp` field of a target projected field by field is keyed by its
      * field name, so that is the key the predicate reads (see [projectedKey]).
+     *
+     * The element is read as the view projected it:
+     * - a fragment's properties are the element's own keys: `_e0.resolvedId`;
+     * - a nested view holds its root one map down, under the root's field name: `_e0.entry.title`;
+     * - a relationship of a nested view is a key beside that root, read as a list of its own —
+     *   `any(_e1 IN _e0.markers WHERE _e1.name = $p)`, the conditions on one relationship holding of
+     *   one of its targets — or, when it holds one node, as that node's map: `_e0.owner.name`.
+     *
+     * A relationship that holds one node is projected as that node's map, or null, and no list, so
+     * it is read as a list of the one, or of none: `any(_e0 IN CASE WHEN assignee IS NULL THEN [] ELSE
+     * [assignee] END WHERE …)`.
      *
      * An empty projected collection (optional relationship with no matches) makes `any(...)` false —
      * so `any{}` excludes such roots and `none{}` includes them, both correct.
@@ -526,31 +583,90 @@ object CypherGenerator {
     ): String {
         val collectionAlias = relationship.fieldName // the projected list, e.g. "mentions"
         val elemVar = "_e${ecCounter.getAndIncrement()}"
+        val nestedView = relationship.elementType.takeIf { it.isAnnotationPresent(org.drivine.annotation.GraphView::class.java) }
+            ?.let { GraphViewModel.from(it) }
 
+        // Where a property of an element of [type] is read from [element]: one map down, in the
+        // root, when the element is a view.
+        fun keyOf(element: String, type: Class<*>, property: String): String {
+            val view = type.takeIf { it.isAnnotationPresent(org.drivine.annotation.GraphView::class.java) }?.let { GraphViewModel.from(it) }
+            return if (view == null) {
+                "$element.${quoteProperty(projectedKey(type, property))}"
+            } else {
+                "$element.${quoteProperty(view.rootFragment.fieldName)}.${quoteProperty(projectedKey(view.rootFragment.fragmentType, property))}"
+            }
+        }
+
+        // The conditions on a collection inside the element, by that collection: they hold of one
+        // of its targets, and so are rendered together, where the first of them was written.
+        val nestedParts = linkedMapOf<String, MutableList<String>>()
+        val parts = mutableListOf<Any>() // a rendered condition, or the NestedSlot of a collection's conditions
         var paramIndex = startIndex
-        val inner = condition.targetConditions.joinToString(" AND ") { targetCondition ->
-            when (targetCondition) {
-                is WhereCondition.PropertyCondition -> {
-                    // The element is the target as the view projected it, so it is read by projected key.
-                    val key = projectedKey(relationship.elementType, targetCondition.propertyPath.substringAfter("."))
-                    val lhs = "$elemVar.${quoteProperty(key)}"
-                    val rendered = buildPropertyConditionWithLhs(targetCondition, paramIndex, lhs)
-                    if (targetCondition.operator != ComparisonOperator.IS_NULL &&
-                        targetCondition.operator != ComparisonOperator.IS_NOT_NULL) {
-                        paramIndex++
-                    }
-                    rendered
-                }
-                else -> throw UnsupportedOperationException(
+        condition.targetConditions.forEach { targetCondition ->
+            if (targetCondition !is WhereCondition.PropertyCondition) {
+                throw UnsupportedOperationException(
                     "Only property predicates are supported inside any{}/none{} on the vector-search path; " +
                     "got ${targetCondition::class.simpleName} for relationship '${condition.relationshipName}'."
                 )
             }
+            val alias = targetCondition.propertyPath.substringBefore(".")
+            val property = targetCondition.propertyPath.substringAfter(".")
+            val index = paramIndex
+            if (targetCondition.operator != ComparisonOperator.IS_NULL &&
+                targetCondition.operator != ComparisonOperator.IS_NOT_NULL) {
+                paramIndex++
+            }
+            if (alias == collectionAlias || !alias.startsWith("${collectionAlias}_")) {
+                // The element is the target as the view projected it, so it is read by projected key.
+                parts.add(buildPropertyConditionWithLhs(targetCondition, index, keyOf(elemVar, relationship.elementType, property)))
+                return@forEach
+            }
+            val nestedName = alias.substringAfter("${collectionAlias}_")
+            val nestedRel = nestedView?.relationships?.find { it.fieldName == nestedName } ?: throw IllegalArgumentException(
+                "Cannot filter on '${targetCondition.propertyPath}': " + if (nestedView == null) {
+                    "${relationship.elementType.simpleName} is not a @GraphView, so '${condition.relationshipName}' has no relationship '$nestedName'."
+                } else {
+                    "nested relationship '$nestedName' not found in ${nestedView.className}. " +
+                        "Available relationships: ${nestedView.relationships.map { it.fieldName }}"
+                }
+            )
+            val nestedSource = "$elemVar.${quoteProperty(nestedRel.fieldName)}"
+            if (nestedRel.isCollection) {
+                val slot = "$nestedSource/_n${nestedRel.fieldName}"
+                val nestedVar = nestedParts.keys.indexOf(slot).takeIf { it >= 0 } ?: nestedParts.size
+                val nestedElem = "${elemVar}_$nestedVar"
+                if (slot !in nestedParts) {
+                    nestedParts[slot] = mutableListOf()
+                    parts.add(NestedSlot(slot, nestedSource, nestedElem))
+                }
+                nestedParts.getValue(slot).add(
+                    buildPropertyConditionWithLhs(targetCondition, index, keyOf(nestedElem, nestedRel.elementType, property))
+                )
+            } else {
+                parts.add(buildPropertyConditionWithLhs(targetCondition, index, keyOf(nestedSource, nestedRel.elementType, property)))
+            }
         }
 
-        val quantifier = "any($elemVar IN $collectionAlias WHERE $inner)"
+        val inner = parts.joinToString(" AND ") { part ->
+            when (part) {
+                is NestedSlot -> "any(${part.element} IN ${part.source} WHERE ${nestedParts.getValue(part.slot).joinToString(" AND ")})"
+                else -> part.toString()
+            }
+        }
+
+        // The one node as a list of one, and of none when it is absent: `any` over a null element
+        // is null, which `none { }` would negate to null and so drop the root.
+        val source = if (relationship.isCollection) {
+            collectionAlias
+        } else {
+            "CASE WHEN $collectionAlias IS NULL THEN [] ELSE [$collectionAlias] END"
+        }
+        val quantifier = "any($elemVar IN $source WHERE $inner)"
         return if (condition.negate) "NOT $quantifier" else quantifier
     }
+
+    /** Where the conditions on one collection inside a projected element are rendered: see [buildProjectedCollectionPredicate]. */
+    private class NestedSlot(val slot: String, val source: String, val element: String)
 
     /**
      * Like [buildPropertyCondition], but renders against an explicit left-hand side (e.g. a list

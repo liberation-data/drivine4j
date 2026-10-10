@@ -40,11 +40,21 @@ internal class GraphViewLoadBuilder(
         val rootFieldName = assembler.rootFieldName
         val matchClause = "MATCH ($rootFieldName:${assembler.matchLabelString()})"
 
-        // Build the WITH projection first — it accumulates the prologs/bridge variables the
-        // prolog section then reads.
+        // The prologs the where clause brought are all the context holds yet. Building the WITH
+        // projection adds its own: a sorted collection, a path, a count, a nested view.
+        val wherePrologs = context.prologs.toList()
+        val whereBridgeVariables = context.bridgeVariables.toList()
         val withSections = assembler.projectionSections()
-        val whereSection = assembler.whereSection(whereClause, assembler.requiredRelationshipChecks())
-        val prologSection = prologSection(rootFieldName)
+        val projectionPrologs = context.prologs.drop(wherePrologs.size)
+        val projectionBridgeVariables = context.bridgeVariables.drop(whereBridgeVariables.size)
+
+        // The WHERE stands before the projection's prologs, so each is computed for the roots the
+        // load keeps and no others, and the WHERE follows the MATCH, or the WITH of the where
+        // clause's own prologs, as it did before there were any. Memgraph reads a pattern in the
+        // WHERE of a WITH as true for every row, so a pattern check must not be carried past one.
+        val whereSection = assembler.whereSection(whereClause, assembler.requiredRelationshipPatternChecks())
+        val prologSection = prologSection(rootFieldName, wherePrologs, whereBridgeVariables)
+        val projectionPrologSection = projectionPrologSection(rootFieldName, projectionPrologs, projectionBridgeVariables)
 
         val withClause = "\n\nWITH\n" + withSections.joinToString(",\n\n")
 
@@ -56,7 +66,7 @@ ${assembler.valueFieldEntries("    ").joinToString(",\n")}
 
         val orderBySection = if (orderByClause != null) "\nORDER BY $orderByClause" else ""
 
-        return matchClause + prologSection + whereSection + withClause + returnClause + orderBySection
+        return matchClause + prologSection + whereSection + projectionPrologSection + withClause + returnClause + orderBySection
     }
 
     /**
@@ -75,17 +85,39 @@ ${assembler.valueFieldEntries("    ").joinToString(",\n")}
     }
 
     /**
-     * The `CALL { }` prolog section emitted between MATCH and WHERE. When bridge variables exist
-     * (from filtered existence checks on openCypher), a `WITH` carries the root and those variables
-     * into WHERE scope.
+     * The `CALL { }` prolog section emitted between MATCH and WHERE: the prologs of the where clause
+     * itself. When bridge variables exist (from filtered existence checks on openCypher), a `WITH`
+     * carries the root and those variables into WHERE scope.
      */
-    private fun prologSection(rootFieldName: String): String {
-        if (context.prologs.isEmpty()) return ""
-        val prologs = "\n" + context.prologs.joinToString("\n")
-        return if (context.bridgeVariables.isNotEmpty()) {
-            "$prologs\nWITH $rootFieldName, ${context.bridgeVariables.joinToString(", ")}"
+    private fun prologSection(
+        rootFieldName: String,
+        prologs: List<String> = context.prologs,
+        bridgeVariables: List<String> = context.bridgeVariables,
+    ): String {
+        if (prologs.isEmpty()) return ""
+        val section = "\n" + prologs.joinToString("\n")
+        return if (bridgeVariables.isNotEmpty()) {
+            "$section\nWITH $rootFieldName, ${bridgeVariables.joinToString(", ")}"
         } else {
-            prologs
+            section
         }
+    }
+
+    /**
+     * The prologs of the projection, emitted after the WHERE. A required path is known to be there
+     * only once its prolog has run, so its check follows them, in the `WHERE` of a `WITH` that
+     * carries the root and what the prologs computed: a null check on a value, which every engine
+     * reads there.
+     */
+    private fun projectionPrologSection(rootFieldName: String, prologs: List<String>, bridgeVariables: List<String>): String {
+        val pathChecks = assembler.requiredPathChecks()
+        if (prologs.isEmpty()) {
+            check(pathChecks.isEmpty()) { "A required path has no prolog to compute it" }
+            return ""
+        }
+        val section = "\n" + prologs.joinToString("\n")
+        if (pathChecks.isEmpty()) return section
+        return "$section\nWITH ${(listOf(rootFieldName) + bridgeVariables).joinToString(", ")}\nWHERE " +
+            pathChecks.joinToString("\n  AND ")
     }
 }
