@@ -1174,7 +1174,9 @@ The `@SortedBy` annotation:
 
 When the property to filter isn't known at compile time (an arbitrary `@PropertyBag` key, or a
 caller/tool-supplied filter key), reach for the untyped escape hatch instead of a generated accessor.
-Values still bind as parameters (no injection); a dotted `@PropertyBag` path is backtick-quoted for you.
+Values still bind as parameters (no injection). A key that is not a plain identifier, such as a dotted
+`@PropertyBag` path or one with a hyphen or a space, is backtick-quoted for you. FalkorDB refuses a
+key that holds a backtick.
 
 ```kotlin
 import org.drivine.query.dsl.property     // stored-path form
@@ -1331,7 +1333,7 @@ data class Person(
 - `update` retries on a conflict, loading again and re-applying your change.
 - In a view, the root is checked. A node reached through a relationship is written unchecked. `save` writes every field of it that is not null, so a stale copy of a related node overwrites another writer's change to it. `update` writes only the fields the change altered.
 - `edges.relate`, `unrelate` and `unrelateAll` write the token at both ends, and `relate` leaves both alone when it finds the relationship there as it is. On Memgraph two of them that touch the same node at once can conflict; `edges` does not retry, and the engine's error reaches the caller.
-- `saveAll` stamps the nodes it changes, hands the stamps back, and does not check one. The deprecated `GraphObjectManager` stamps the nodes and relationships it changes too, so a checked save notices its writes.
+- `saveAll` stamps the nodes it changes, hands the stamps back as `save` does, and does not check one. The deprecated `GraphObjectManager` stamps the nodes and relationships it changes too, so a checked save notices its writes.
 - Deleting a node removes its relationships without marking the nodes at their other ends.
 - Indexes and constraints are not affected. A checked save sets and removes a property `__drivine.lock` within its statement, to hold the node's write lock; it is never left on a node. A flat `@PropertyBag` does not read a property beginning `__drivine.`.
 

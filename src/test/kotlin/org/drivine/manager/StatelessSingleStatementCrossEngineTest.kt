@@ -173,6 +173,25 @@ abstract class StatelessSingleStatementContract {
     }
 
     @Test
+    fun `saveAll hands back a stamp that does not vouch for a relationship added since the object was loaded`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        val loaded = assertNotNull(stateless.load<Claim>("c1"))
+        stateless.edges.relate(nodeRef<Claim>("c1"), nodeRef<Human>("ada"), "REVIEWED_BY")
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("bob", "Bob"))))
+
+        val saved = stateless.saveAll(listOf(loaded.copy(text = "mine"))).single()
+
+        assertEquals("mine", property("c1", "text"))
+        assertEquals(stamp("c1")?.substringBefore(':'), saved.stamp?.substringBefore(':'))
+        assertEquals(loaded.stamp?.substringAfter(':'), saved.stamp?.substringAfter(':'))
+        assertFailsWith<StaleObjectException> {
+            stateless.save(ClaimView(saved, people = listOf(Human("ada", "Ada"))), Replace(ClaimView::people))
+        }
+        assertEquals(listOf("c1->ada", "c1->bob"), edges("MENTIONS"))
+        stateless.save(saved.copy(note = "its own data is still saved"))
+    }
+
+    @Test
     fun `saveAll replaces the relationships of each view`() {
         stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"), Human("bob", "Bob"))))
         stateless.save(ClaimView(Claim("c2", "two"), people = listOf(Human("ada", "Ada"))))

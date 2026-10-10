@@ -56,6 +56,7 @@ graphObjectManager.save(updated, CascadeType.NONE)
 Persist a collection in **one atomic round-trip group**, with `save`'s per-item semantics unchanged
 (cascade, dirty tracking, MERGE identity). Within an ambient `@Transactional` the statements join it;
 otherwise they run together in a single transaction — a failure on any item rolls the whole call back.
+On FalkorDB, which has no transactions, each statement is atomic and the batch is not.
 
 ```kotlin
 val saved = graphObjectManager.saveAll(views, CascadeType.DELETE_ORPHAN)

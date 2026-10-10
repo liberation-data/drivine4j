@@ -8,6 +8,7 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
+import org.drivine.model.Stamps
 import org.drivine.query.SaveStatement
 import org.drivine.query.SaveStatementBuilder
 import org.drivine.query.Stamping
@@ -100,7 +101,9 @@ class StatelessGraphObjectManager private constructor(
 
     /**
      * Saves each object, and returns each carrying the stamps its save left, as [save] does. The saves
-     * are not checked: an object that carries a stale stamp is written all the same.
+     * are not checked: an object that carries a stale stamp is written all the same. As with [save], a
+     * stamp is handed back with the node's relationship token only if the node's relationships were as
+     * the object's stamp says.
      *
      * The whole call is atomic: inside a transaction it joins it, and otherwise it runs in one of its
      * own, on an engine that has transactions. A [Replace] is part of it.
@@ -134,7 +137,12 @@ class StatelessGraphObjectManager private constructor(
         rows.subList(plainSpecs.size, plainSpecs.size + batchedSpecs.size).flatten().forEach { row ->
             val (index, stamp) = (row as String).split('=', limit = 2)
             val item = items[index.toInt()]
-            saved[item] = stamps.of(item, IdentityHashMap<Any, String>().apply { put(item, stamp) })
+            // A batch writes no relationship, so the node's relationship token is as it was found. An
+            // object that carried another keeps its own: the stamp handed back does not vouch for
+            // relationships that were added or removed after the object was loaded.
+            val carried = stamps.stampOf(item)?.let { Stamps.linksToken(it) }
+            val handedBack = if (carried == null || carried == Stamps.linksToken(stamp)) stamp else "${Stamps.nodeToken(stamp)}:$carried"
+            saved[item] = stamps.of(item, IdentityHashMap<Any, String>().apply { put(item, handedBack) })
         }
         val singleRows = rows.takeLast(singles.size)
         single.forEachIndexed { index, item -> saved[item] = stamped(item, singles[index], executor.stamps(singles[index], singleRows[index])) }
