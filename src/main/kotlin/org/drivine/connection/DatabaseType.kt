@@ -21,6 +21,12 @@ enum class DatabaseType(
     MEMGRAPH("MEMGRAPH"),
 
     /**
+     * Oracle Database, 23ai or later, over JDBC. It speaks SQL: a graph is a SQL property graph
+     * over tables, read with `GRAPH_TABLE` and written as rows of those tables.
+     */
+    ORACLE("ORACLE"),
+
+    /**
      * Embabel's Cypher engine — compiler, evaluator and store living inside the
      * application process, with no wire and no container. Connection properties
      * cannot build one, so the application supplies its own [ConnectionProvider]

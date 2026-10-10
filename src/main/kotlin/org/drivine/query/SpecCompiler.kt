@@ -21,16 +21,18 @@ class SpecCompiler(private val spec: QuerySpecification<*>) {
         return "$rendered ${skipClause()} ${limitClause()}"
     }
 
+    /** SQL pages with the standard `OFFSET … ROWS FETCH NEXT … ROWS ONLY`, which Oracle and Postgres both read. */
+    private val sql: Boolean
+        get() = spec.statement!!.language == QueryLanguage.SQL
+
     private fun skipClause(): String {
-        return if (spec._skip != null) {
-            "${if (spec.statement!!.language == QueryLanguage.CYPHER) "SKIP" else "OFFSET"} ${spec._skip}"
-        } else {
-            ""
-        }
+        val skip = spec._skip ?: return ""
+        return if (sql) "OFFSET $skip ROWS" else "SKIP $skip"
     }
 
     private fun limitClause(): String {
-        return spec._limit?.let { "LIMIT $it" } ?: ""
+        val limit = spec._limit ?: return ""
+        return if (sql) "FETCH NEXT $limit ROWS ONLY" else "LIMIT $limit"
     }
 
     private fun renderTemplate(text: String, renderParams: Map<String, Any>): String {

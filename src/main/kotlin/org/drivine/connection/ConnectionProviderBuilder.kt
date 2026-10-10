@@ -71,6 +71,7 @@ class ConnectionProviderBuilder(
             DatabaseType.NEPTUNE -> buildNeptuneProvider(name)
             DatabaseType.FALKORDB -> buildFalkorDbProvider(name)
             DatabaseType.MEMGRAPH -> buildMemgraphProvider(name)
+            DatabaseType.ORACLE -> buildOracleProvider(name)
             else -> throw DrivineException("Type $type is not supported by ConnectionProviderBuilder")
         }
 
@@ -156,6 +157,24 @@ class ConnectionProviderBuilder(
             ).filterValues { it != null }.mapValues { it.value as Any },
             subtypeRegistry = subtypeRegistry,
             cypherDialect = cypherDialect ?: CypherDialect.MEMGRAPH,
+        )
+    }
+
+    private fun buildOracleProvider(name: String): ConnectionProvider {
+        requireNotNull(userName) { "Oracle requires a username" }
+        val resolvedPort = port ?: 1521
+        // The database name is the service to connect to: the pluggable database, not the container.
+        val url = JdbcConnectionProvider.oracleUrl(host!!, resolvedPort, this.name ?: "FREEPDB1")
+        return JdbcConnectionProvider.pooled(
+            name = name,
+            type = type!!,
+            jdbcUrl = url,
+            user = userName,
+            password = password,
+            poolMax = poolMax,
+            connectionTimeoutMillis = connectionTimeout,
+            idleTimeoutMillis = idleTimeout,
+            subtypeRegistry = subtypeRegistry,
         )
     }
 
