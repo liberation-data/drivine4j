@@ -24,7 +24,8 @@ internal object EdgeStatements {
      * null field.
      *
      * Both nodes get a new relationship token when a relationship is made or its properties change. A
-     * `MERGE` that finds the relationship there, carrying these properties already, changes neither.
+     * `MERGE` that finds every such relationship there, carrying these properties already, changes
+     * neither; one that finds several and rewrites any of them changes both.
      */
     fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): MergeStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }
@@ -34,17 +35,17 @@ internal object EdgeStatements {
             quotedIdentifier(key) to "\$_rel$i"
         }
         val merges = mode == RelateMode.MERGE
-        val changes = if (merges) "_same = 0" else "true"
+        val changes = if (merges) "_all = 0 OR _same < _all" else "true"
         val assignments = written.map { (key, parameter) -> "r.$key = $parameter" } +
             Stamps.relink("a", changes, "\$$MARK") + Stamps.relink("b", changes, "\$$MARK")
         val statement = buildString {
             append("MATCH ").append(from.pattern("a", FROM))
             append("\nMATCH ").append(to.pattern("b", TO))
             if (merges) {
-                // Counted before the MERGE: whether a relationship is there that already carries the properties.
+                // Counted before the MERGE: the relationships there, and those that already carry the properties.
                 val same = (listOf("x IS NOT NULL") + written.map { (key, parameter) -> "coalesce(x.$key = $parameter, false)" })
                 append("\nOPTIONAL MATCH (a)-[x:").append(quotedIdentifier(type)).append("]->(b)")
-                append("\nWITH a, b, sum(CASE WHEN ").append(same.joinToString(" AND ")).append(" THEN 1 ELSE 0 END) AS _same")
+                append("\nWITH a, b, sum(CASE WHEN ").append(same.joinToString(" AND ")).append(" THEN 1 ELSE 0 END) AS _same, count(x) AS _all")
             }
             append("\n").append(mode.name).append(" (a)-[r:").append(quotedIdentifier(type)).append("]->(b)")
             append("\nSET ").append(assignments.joinToString(", "))

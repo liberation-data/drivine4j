@@ -31,9 +31,11 @@ class EdgeOperations internal constructor(
      * relationship token in their stamp, so a save that replaces a relationship list of either, from an
      * object loaded before this call, is refused. A call that finds the relationship as it is marks neither.
      *
-     * Under [RelateMode.MERGE] (the default) there is at most one [type] relationship from [from] to
-     * [to], and its [properties] are set whether it was made or found. Under [RelateMode.CREATE] each
-     * call makes another. A null property value is left out.
+     * Under [RelateMode.MERGE] (the default) a [type] relationship from [from] to [to] is made only
+     * when there is none, and its [properties] are set whether it was made or found. Where several
+     * were made, as [RelateMode.CREATE] makes them, each takes the properties, and both nodes are
+     * marked unless every one carried them already. Under [RelateMode.CREATE] each call makes
+     * another. A null property value is left out.
      *
      * @return whether the two nodes were found and joined
      */
