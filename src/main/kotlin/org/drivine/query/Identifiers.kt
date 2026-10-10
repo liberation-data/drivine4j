@@ -9,7 +9,7 @@ import org.drivine.schema.SchemaGrammar
  * it is one identifier whatever characters it holds. Names that cannot be bound as parameters — a
  * label or type known only at runtime — reach the statement through here and nowhere else.
  */
-internal fun quotedIdentifier(name: String): String = "`${name.replace("`", "``")}`"
+internal fun quotedIdentifier(name: String): String = SchemaGrammar.quoted(name)
 
 /**
  * The property this field is stored under, as a load spells it after an alias: bare when it is a

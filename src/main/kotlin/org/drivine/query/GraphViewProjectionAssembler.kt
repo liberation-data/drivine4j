@@ -57,11 +57,17 @@ internal fun projectedFields(fragmentType: Class<*>): List<FragmentField>? {
  * Whatever is evaluated after the projection reads the map, and so must name this key, where a
  * predicate on the node itself names [storedProperty].
  */
-internal fun projectedKey(fragmentType: Class<*>, storedProperty: String): String {
+internal fun projectedKey(fragmentType: Class<*>, storedProperty: String): String =
+    projectedKeyOrNull(fragmentType, storedProperty) ?: storedProperty
+
+/**
+ * As [projectedKey], and null when the fragment is projected field by field and none of its fields
+ * is stored as [storedProperty]: the map then has no key for the property at all.
+ */
+internal fun projectedKeyOrNull(fragmentType: Class<*>, storedProperty: String): String? {
     if (fragmentType.isAnnotationPresent(GraphView::class.java)) return storedProperty
     val fields = projectedFields(fragmentType) ?: return storedProperty
     return fields.firstOrNull { (if (it.stamp) Stamps.PROPERTY else it.propertyName) == storedProperty }?.name
-        ?: storedProperty
 }
 
 /**
@@ -197,9 +203,20 @@ internal class GraphViewProjectionAssembler(
      * Builds EXISTS checks for non-nullable, non-collection relationships, ensuring the query only
      * returns root nodes that have the required relationships.
      */
-    fun requiredRelationshipChecks(): List<String> {
+    fun requiredRelationshipChecks(): List<String> = requiredChecks { true }
+
+    /** The checks of [requiredRelationshipChecks] that are a pattern on the root: every one but a path's. */
+    fun requiredRelationshipPatternChecks(): List<String> = requiredChecks { !it.isPath }
+
+    /**
+     * The checks of [requiredRelationshipChecks] for required paths: a null check on the value the
+     * path's prolog computed, and so one that can only follow that prolog.
+     */
+    fun requiredPathChecks(): List<String> = requiredChecks { it.isPath }
+
+    private fun requiredChecks(include: (RelationshipModel) -> Boolean): List<String> {
         return viewModel.relationships
-            .filter { rel -> !rel.isNullable && !rel.isCollection }
+            .filter { rel -> !rel.isNullable && !rel.isCollection && include(rel) }
             .map { rel ->
                 if (rel.isPath) {
                     // The path's CALL prolog already computed the (single) target via head(collect(…)),
@@ -310,8 +327,7 @@ internal class GraphViewProjectionAssembler(
         val emission = sortEmitter.emitTopLevel(ctx)
         emission.prolog?.let {
             context.addProlog(it)
-            // The prolog sits between the MATCH and the WHERE, so the WITH that carries the root to
-            // the WHERE must carry the sorted collection with it: `CALL { } WHERE` is no statement.
+            // Whatever WITH follows the prolog must carry the sorted collection with the root.
             context.addBridgeVariables(listOf(emission.projectionExpression))
         }
         return emission.projectionExpression
@@ -505,6 +521,7 @@ internal class GraphViewProjectionAssembler(
                     labelString = nestedLabels.joinToString(":"),
                     projection = projection,
                     isCollection = nestedRel.isCollection,
+                    sort = findSortForNestedRelationship(targetAlias, nestedRel.fieldName),
                 )
             },
             sort = findSortForRelationship(targetAlias),
@@ -611,19 +628,20 @@ internal class GraphViewProjectionAssembler(
             return "[($parentVar)${direction}($depthAlias:$targetLabelString) |\n            $projection\n        ]"
         }
 
+        // A recursive collection is one comprehension inside another, to the depth asked for. A sort
+        // of it would have to order every level, and no emitter writes that: it is refused, where
+        // sorting the outermost level alone would hand back a tree in two orders.
+        findSortForRelationship(targetAlias)?.let { sort ->
+            throw UnsupportedOperationException(
+                "A recursive relationship collection cannot be sorted in the query " +
+                "(sort target: ${sort.relationshipPath}.${sort.propertyName} of ${viewModel.className}). " +
+                "Use client-side @SortedBy on the relationship field instead: it orders every level."
+            )
+        }
+
         val pattern = buildAtDepth(1, rootFieldName)
 
-        return if (rel.isCollection) {
-            val sort = findSortForRelationship(targetAlias)
-            if (sort != null) {
-                val expr = emitTopLevelSort(rootFieldName, rel, targetAlias, pattern, sort)
-                "$expr AS $targetAlias"
-            } else {
-                "$pattern AS $targetAlias"
-            }
-        } else {
-            "$pattern[0] AS $targetAlias"
-        }
+        return if (rel.isCollection) "$pattern AS $targetAlias" else "$pattern[0] AS $targetAlias"
     }
 
     /**
