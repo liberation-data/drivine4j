@@ -6,7 +6,7 @@
 A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, and **Memgraph** with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
-2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL.
+2. **Object manager** (`StatelessGraphObjectManager`) - High-level API with annotated models and type-safe DSL.
 
 Drivine4j is the graph database client library for [Embabel](https://hub.embabel.com) - Agentic AI for the JVM. 
 
@@ -51,7 +51,7 @@ Composition lets us mix and match as needed.
 - **Java 21+**
 - **Kotlin:**
   - For PersistenceManager API: Any Kotlin version
-  - For GraphObjectManager API: **Kotlin 2.2.0+** (requires context parameters feature)
+  - For the object manager API: **Kotlin 2.2.0+** (requires context parameters feature)
 
 ## Installation
 
@@ -80,9 +80,9 @@ dependencies {
 </dependency>
 ```
 
-### Code Generation (For GraphObjectManager with Type-Safe DSL)
+### Code Generation (For the Type-Safe Query DSL)
 
-If you want to use `GraphObjectManager` with the type-safe query DSL, you need to add the code generation processor.
+If you want to use the object manager with the type-safe query DSL, you need to add the code generation processor.
 
 > **Note for Java Projects:** Both Java and Kotlin are fully supported at runtime. The code generator (KSP) produces Kotlin DSL extensions, but a Java-friendly query builder API is also available. Define your `@GraphView` and `@NodeFragment` classes in either language. See the [Java Interoperability](#java-interoperability) section for details.
 
@@ -267,11 +267,20 @@ RETURN {
 
 This way `.transform(MyDto::class.java)` can map the result directly to a data class.
 
-## GraphObjectManager - Type-Safe Graph Mapping
+## Object Manager - Type-Safe Graph Mapping
 
-`GraphObjectManager` provides a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.
+`StatelessGraphObjectManager` is a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.
 
-`StatelessGraphObjectManager` has the same loading, querying and deleting API and keeps no session. It is the one to use for new code: see [Saving Data](#saving-data). The examples below that load, query or delete work on either.
+It keeps no state between calls. What a load returns is what the store holds, and what a save writes depends only on the object and the arguments you pass.
+
+Get one from the `GraphObjectManagerFactory`, which the Spring Boot starter provides:
+
+```kotlin
+@Bean
+fun graphObjectManager(factory: GraphObjectManagerFactory): StatelessGraphObjectManager = factory.stateless()
+```
+
+> Earlier releases documented `GraphObjectManager`, which tracks what it loads in a session. It is deprecated: see [Migrating from GraphObjectManager](#migrating-from-graphobjectmanager).
 
 ### Key Concepts
 
@@ -494,7 +503,7 @@ data class ActorStats(
 ```kotlin
 @Component
 class PersonService @Autowired constructor(
-    private val graphObjectManager: GraphObjectManager
+    private val graphObjectManager: StatelessGraphObjectManager
 ) {
     fun getAllPeople(): List<PersonCareer> {
         return graphObjectManager.loadAll<PersonCareer>()
@@ -1190,47 +1199,81 @@ where {
 
 ### Saving Data
 
-There are two object managers. They load, query and delete in the same way (both implement `GraphObjectOperations`), and differ in how they save.
-
-| | `StatelessGraphObjectManager` | `GraphObjectManager` |
-|---|---|---|
-| Remembers what it loaded | No | Yes, in a session that outlives transactions |
-| A save writes | What the object holds, or the fields you name | What differs from the session's snapshot |
-| A relationship is removed | When you ask: `Replace`, `update`, `unrelate` | When the snapshot held it and the object no longer does |
-| Another writer changed the node | The save is refused, on a type with a `@NodeStamp` field | Not noticed: the save can be partial |
-
-Use `StatelessGraphObjectManager` for new code, and wherever anything else writes to the same graph. `GraphObjectManager` is described under [Saving with GraphObjectManager](#saving-with-graphobjectmanager).
-
-### StatelessGraphObjectManager
-
-`StatelessGraphObjectManager` loads, queries and deletes exactly as `GraphObjectManager` does (both implement `GraphObjectOperations`), and it keeps no session. What a save writes is decided by the object and the arguments, never by whether the object was loaded before. Use it when anything else writes to the same graph: plain Cypher, another manager, another process.
-
-See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the whole release, what it breaks, and a table for moving from `GraphObjectManager`.
+A save writes what the object holds. It does not depend on whether the object was loaded first, or on anything the manager remembers, because the manager remembers nothing.
 
 ```kotlin
-val stateless = graphObjectManagerFactory.stateless()
-
-stateless.save(view)                                              // every field; relationships are added, never removed
-stateless.save(view, Replace(IssueView::assignedTo))              // this field's list is the whole list
-stateless.save(view, Replace.all())                               // every relationship field is
-stateless.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
-stateless.save(person, only = setOf(Person::name))                // write just these
-stateless.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
-stateless.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
+graphObjectManager.save(view)                                              // every field; relationships are added, never removed
+graphObjectManager.save(view, Replace(IssueView::assignedTo))              // this field's list is the whole list
+graphObjectManager.save(view, Replace.all())                               // every relationship field is
+graphObjectManager.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
+graphObjectManager.save(person, only = setOf(Person::name))                // write just these
+graphObjectManager.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
+graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
 ```
 
-**Relationships.** A save adds the relationships the object holds and removes none. To remove, name the field in `Replace`: the field's list is then the whole list.
+`save` returns the saved object. On a type with a [`@NodeStamp`](#nodestamp-refusing-a-save-when-the-node-changed) field, use the returned object from then on: it carries the node's current stamp.
+
+#### Relationships
+
+A save adds the relationships the object holds and removes none. To remove, name the field in `Replace`: the field's list is then the whole list.
 
 - A field removes only what it loads: relationships of its type and direction, to nodes with its target's labels. Two fields can share a relationship type.
 - `Replace(field, removedTargets = DELETE_UNREFERENCED)` also deletes a removed target that no relationship points at. Anything more is a custom view or Cypher.
 - `Replace.all()` covers every relationship field. It is refused for an object that carries no stamp, because the lists of an object built from scratch are its defaults and not what the store holds.
 - `Replace` trusts that the list came from a load. A list cut short by a custom query is taken as the whole list.
+- `edges.unrelate(from, to, type)` removes one relationship, and `edges.unrelateAll(from, type, direction)` every one of a type. Neither deletes a node.
 
-**`update`** loads the object, applies your change, and writes only what the change altered: the fields that differ, a field set to null, and for a view the relationships it added or dropped. A relationship another writer added in the meantime is kept.
+#### Load, Change and Save (`update`)
 
-From Java: `stateless.save(view)`, `stateless.save(view, Replace.of(Set.of("assignedTo")))`, and with fields named as strings `stateless.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("name"))`.
+`update` loads the object, applies your change, and writes only what the change altered: the fields that differ, a field set to null, and for a view the relationships it added or dropped. A relationship another writer added in the meantime is kept. If the node changed between the load and the save, `update` loads it again and re-applies your change, three times by default.
 
-A null field is treated as [`NullPolicy`](#null-write-policy-nullpolicy) says, on both managers.
+#### Null-Write Policy (`NullPolicy`)
+
+How a **null** field is treated on save is one declared, uniform contract (`save`, `saveAll`, every
+engine, bagged or not) — defined purely on the object you pass:
+
+```kotlin
+graphObjectManager.save(chunk)                                   // IGNORE (default): merge-patch
+graphObjectManager.save(chunk, nullPolicy = NullPolicy.CLEAR)    // full overwrite: nulls clear
+```
+
+- **`IGNORE` (default)** — writes only non-null fields; nulls are left untouched. A partially-loaded
+  object never destroys stored data — including a `@VectorIndex` embedding (a `ChunkNode` reconstructed
+  without its embedding won't wipe the stored vector). This is the safe default; no field is special.
+- **`CLEAR`** — the object is authoritative: null fields clear the corresponding property (a full
+  overwrite). Reach for it only with a complete object.
+
+`saveAll(..., nullPolicy = …)` behaves identically. Under
+`CLEAR`, a `@PropertyBag` also drops keys absent from the current map; under `IGNORE` those keys are
+left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-write-policy.md).
+
+#### Batch Save (`saveAll`)
+
+Persist a collection in **one atomic round-trip group**. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back.
+
+```kotlin
+val saved = graphObjectManager.saveAll(views)
+val replaced = graphObjectManager.saveAll(views, Replace(PropositionView::mentions))
+```
+
+- Homogeneous root upserts collapse into chunked `UNWIND … MERGE` statements (sub-linear round trips); relationship statements stay per-item.
+- Heterogeneous collections are grouped by runtime class, and the returned list preserves input order.
+- Roots with a `@PropertyBag` or a `@NodeLabels` field fall back to the per-item path.
+- A batch does not check stamps: it cannot say which of its rows found the stamp it expected.
+- A `Replace` is applied to each object after the batch, and is part of the same unit of work only inside a transaction.
+- Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy), as for `save`.
+
+#### Saving from Java
+
+```java
+graphObjectManager.save(view);
+graphObjectManager.save(view, Replace.of(Set.of("assignedTo")));
+graphObjectManager.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("name"));   // fields named as strings
+graphObjectManager.update(id, Person.class, p -> p.withName("Ada"));
+```
+
+See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the release that introduced this manager and what it changed.
+
 
 ### @NodeStamp: refusing a save when the node changed
 
@@ -1251,7 +1294,7 @@ data class Person(
 - `save` returns the object with the stamp the node is left with. Use the returned object: if the save changed the node, the one you passed in is now stale.
 - `update` retries on a conflict, loading again and re-applying your change.
 - In a view, the root is checked. A node reached through a relationship is written unchecked, and keeps its stamp unless the save changes one of its properties. Adding or removing a relationship changes no stamp.
-- `saveAll` and `GraphObjectManager` stamp the nodes they change and do not check a stamp.
+- `saveAll` stamps the nodes it changes and does not check a stamp. The deprecated `GraphObjectManager` does the same, so a checked save notices its writes.
 
 **Cypher you write yourself** should give a stamped node a new stamp when it changes the node's mapped properties, or a checked save will not notice the change:
 
@@ -1277,77 +1320,9 @@ Every save skips a `@ReadOnly` field: no relationship is written for it and the 
 
 It is required on `@GraphPath`, `@Count` and `@Aggregate` fields, none of which names a single relationship a save could write. A view that declares one without it fails when its model is built. To write along a path, use `edges.relate`, Cypher, or a view rooted where the hop starts.
 
-### Saving with GraphObjectManager
-
-#### Simple Save (Dirty Tracking)
-
-GraphObjectManager tracks loaded objects and only saves changed fields:
-
-```kotlin
-// Load an object
-val person = graphObjectManager.loadOrThrow<PersonCareer>(uuid)
-
-// Modify it
-val updated = person.copy(
-    person = person.person.copy(bio = "Updated bio")
-)
-
-// Save - only dirty fields are written!
-graphObjectManager.save(updated)
-```
-
-#### Null-Write Policy (`NullPolicy`)
-
-How a **null** field is treated on save is one declared, uniform contract (`save`, `saveAll`, every
-engine, bagged or not) — defined purely on the object you pass:
-
-```kotlin
-graphObjectManager.save(chunk)                                   // IGNORE (default): merge-patch
-graphObjectManager.save(chunk, nullPolicy = NullPolicy.CLEAR)    // full overwrite: nulls clear
-```
-
-- **`IGNORE` (default)** — writes only non-null fields; nulls are left untouched. A partially-loaded
-  object never destroys stored data — including a `@VectorIndex` embedding (a `ChunkNode` reconstructed
-  without its embedding won't wipe the stored vector). This is the safe default; no field is special.
-- **`CLEAR`** — the object is authoritative: null fields clear the corresponding property (a full
-  overwrite). Reach for it only with a complete object.
-
-Null handling is independent of dirty-tracking — the policy alone decides, so the result never depends
-on whether the object is session-tracked. `saveAll(..., nullPolicy = …)` behaves identically. Under
-`CLEAR`, a `@PropertyBag` also drops keys absent from the current map; under `IGNORE` those keys are
-left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-write-policy.md).
-
-#### Save with Relationship Changes
-
-```kotlin
-val person = graphObjectManager.loadOrThrow<PersonCareer>(uuid)
-
-// Remove all employment history
-val updated = person.copy(employmentHistory = emptyList())
-
-graphObjectManager.save(updated, CascadeType.NONE)
-```
-
-#### Batch Save (`saveAll`)
-
-Persist a collection in **one atomic round-trip group**, with `save`'s per-item semantics unchanged
-(cascade, dirty tracking, MERGE identity). Within an ambient `@Transactional` the statements join it;
-otherwise they run together in a single transaction — a failure on any item rolls the whole call back.
-
-```kotlin
-val saved = graphObjectManager.saveAll(views, CascadeType.DELETE_ORPHAN)
-```
-
-Homogeneous root upserts collapse into chunked `UNWIND … MERGE … SET n += row.props` statements
-(sub-linear round trips); relationship/cascade statements stay per-item. Heterogeneous collections are
-grouped by runtime class; the returned list preserves input order. Roots with a `@PropertyBag` fall
-back to the per-item path. Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy)
-uniformly with `save` — `IGNORE` (default) leaves nulls, `CLEAR` clears them —
-via `saveAll(objs, nullPolicy = …)`.
-
 ### Deleting Data
 
-GraphObjectManager provides type-safe methods for deleting graph objects.
+The object manager provides type-safe methods for deleting graph objects.
 
 #### Delete by ID
 
@@ -1425,73 +1400,19 @@ graphObjectManager.delete<RaisedAndAssignedIssue>(issueUuid)
 val person = graphObjectManager.load<Person>(personUuid)  // Still there!
 ```
 
-### CASCADE Policies
+#### Delete with a Cascade
 
-When saving `@GraphView` objects with modified relationships, `CascadeType` determines what happens to target nodes:
-
-#### CascadeType.NONE (Default - Safest)
-
-Only deletes the relationship, leaves target nodes intact:
+Deleting a `@GraphView` by id can also delete the nodes the view reaches:
 
 ```kotlin
-graphObjectManager.save(updated, CascadeType.NONE)
+graphObjectManager.delete<SessionView>(sessionId)                               // NONE: the root only
+graphObjectManager.delete<SessionView>(sessionId, CascadeType.DELETE_ORPHAN)    // and each node in the view left with no relationship
+graphObjectManager.delete<SessionView>(sessionId, CascadeType.DELETE_ALL)       // and every node in the view
 ```
 
-Use when: Target nodes are shared or should persist independently.
-
-#### CascadeType.DELETE_ORPHAN (Safe Deletion)
-
-Deletes relationship and target only if no other relationships exist to the target:
-
-```kotlin
-graphObjectManager.save(updated, CascadeType.DELETE_ORPHAN)
-```
-
-The relationship list you save is authoritative: every relationship of that type to a target not in
-the list is removed, whether or not the view was loaded first, and including relationships another
-writer added after it was loaded.
-
-Use when: You want to clean up orphaned nodes but preserve shared ones.
-
-**Example:** Removing a person's employment at a solo startup deletes the startup (orphaned), but removing employment at a company with other employees keeps the company.
-
-#### CascadeType.DELETE_ALL (Destructive)
-
-Always deletes both the relationship and target nodes:
-
-```kotlin
-graphObjectManager.save(updated, CascadeType.DELETE_ALL)
-```
-
-⚠️ **Warning:** Permanently deletes data. Use with caution.
-
-Use when: Target nodes are exclusively owned and should be deleted with the relationship.
-
-### Session and Dirty Tracking
-
-`GraphObjectManager` maintains a session that tracks loaded objects:
-
-1. **On Load**: Takes a snapshot of the object's state
-2. **On Save**: Compares current state to snapshot
-3. **Optimization**: Only writes changed fields (dirty checking)
-
-This means:
-- **Loaded objects**: Optimized saves (only dirty fields)
-- **New objects**: Full saves (all fields written)
-
-The session outlives transactions, so an object loaded in one request and saved in another still
-writes only what changed. It is kept small and bounded:
-
-- **Compact snapshots**: a snapshot keeps the object's shape and ids and replaces large values (long
-  strings, embeddings) with a 64-bit hash, so a tracked object costs bytes per field, not a copy of
-  its data.
-- **Bounded**: at most `drivine.query.session-max-entries` objects (default 100,000) per
-  `GraphObjectManager`; past that the least recently used is evicted. An evicted object is untracked,
-  and its next save writes all fields. `DELETE_ORPHAN` and `NullPolicy.CLEAR` do not depend on
-  tracking, so an evicted object saves correctly under both.
-- **Thread-safe**: one manager can be shared by concurrent requests.
-- **Scoping**: call `graphObjectManager.clearSession()` to end tracking for a unit of work, such as a
-  request or a job.
+- The cascade follows the view's declared relationships, through nested views. A node outside the view is never deleted.
+- `DELETE_ALL` permanently deletes nodes that other nodes may still point at. Use it for nodes the root owns.
+- `DELETE_ORPHAN` is not available on Memgraph.
 
 ### Generated Cypher Examples
 
@@ -1991,7 +1912,7 @@ The Neo4j ObjectMapper automatically:
 To exclude nulls on specific properties, use `@JsonInclude(JsonInclude.Include.NON_NULL)`.
 
 > This governs the low-level `PersistenceManager` binding only. Whether a null field **clears** a
-> property on a `GraphObjectManager` `save`/`saveAll` is governed by
+> property on an object-manager `save`/`saveAll` is governed by
 > [`NullPolicy`](#null-write-policy-nullpolicy) (default `IGNORE` — nulls are left untouched).
 
 ## Supported Engines
@@ -2785,7 +2706,7 @@ from Kotlin 2.3 two members sharing a name are ambiguous there, so each language
 The code generator (KSP) only processes **Kotlin source files**. For the best experience:
 - Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
 - Your `@NodeFragment` classes can be in Java or Kotlin
-- At runtime, both Java and Kotlin classes work fully with `GraphObjectManager`
+- At runtime, both Java and Kotlin classes work fully with the object manager
 
 ### Recommended Pattern
 
@@ -2832,6 +2753,48 @@ List<PersonContext> results = JavaQueryBuilderKt
 | DSL generation | ⚠️ Kotlin only | Define `@GraphView` in Kotlin |
 | Generic collections | ✅ Full | Java reflection handles `List<T>`, `Set<T>` |
 | Polymorphic types | ✅ Full | Works with sealed classes or `@JsonSubTypes` |
+
+## Migrating from GraphObjectManager
+
+`GraphObjectManager` is deprecated in favour of `StatelessGraphObjectManager`. It still works as it did, and is described in [docs/legacy-graph-object-manager.md](docs/legacy-graph-object-manager.md).
+
+### Why
+
+`GraphObjectManager` keeps a snapshot of every object it loads or saves, and a save writes only what differs from the snapshot. Whether a save was correct therefore depended on things you could not see from the call: whether this manager had loaded the object, whether it was still in the session, and whether anything else had written to the node since. Each of those produced a real bug:
+
+- A node deleted by plain Cypher and saved again came back with only some of its properties.
+- A relationship dropped from a list was removed or kept depending on whether the object had been evicted from the session.
+- A view the manager had not loaded wrote a path field as a direct relationship.
+
+A library should make the graph easier to work with, not require forensics to save an object safely. A `StatelessGraphObjectManager` save depends only on the object and the arguments you pass, and with a `@NodeStamp` field it is refused when another writer got there first.
+
+### What you give up
+
+- **Dirty-only writes are no longer automatic.** Ask for them with `update { }`, `only` or `except`.
+- **Saving with `CascadeType.DELETE_ALL` has no equivalent.** Delete the nodes with `delete` or Cypher.
+
+### What changes in your code
+
+Loading, querying and deleting are the same: both managers implement `GraphObjectOperations`, and the generated query DSL works on either. Saves change as follows.
+
+| With `GraphObjectManager` | With `StatelessGraphObjectManager` |
+|---|---|
+| `factory.get()` | `factory.stateless()` |
+| `save(obj)` of a new object | `save(obj)` |
+| load, change a field, `save` | `update(id) { it.copy(...) }`, or `save` of the loaded object |
+| load, drop an item from a list, `save` | `update(id) { ... }`, or `save(obj, Replace(View::field))` |
+| `save(obj, CascadeType.DELETE_ORPHAN)` | `save(obj, Replace(View::field, removedTargets = DELETE_UNREFERENCED))` |
+| `save(obj, CascadeType.PRESERVE)` | `save(obj)` |
+| `save(obj, CascadeType.DELETE_ALL)` | no equivalent |
+| `clearSession()` | not needed |
+
+- `DELETE_UNREFERENCED` deletes a removed target that no relationship points at. `DELETE_ORPHAN` deletes one with no relationship in either direction.
+- Add a `@NodeStamp` field to each type you load, change and save.
+- A view that declares a `@GraphPath`, `@Count` or `@Aggregate` field needs `@ReadOnly` on it, with either manager.
+
+### How we know nothing else changed
+
+Every test of `GraphObjectManager` in this repository has a mirror that runs on `StatelessGraphObjectManager`. A comparison test runs the same scenarios through both managers on Neo4j, FalkorDB and Memgraph and compares the graphs they leave: for flat targets, relationships with properties and nested views, with and without another writer in between, they match.
 
 ## Building from Source
 
