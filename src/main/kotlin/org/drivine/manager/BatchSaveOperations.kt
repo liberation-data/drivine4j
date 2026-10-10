@@ -89,14 +89,15 @@ internal class BatchSaveOperations(
     /**
      * The statements that save stamped fragments in batches and hand each one's stamp back: every
      * returned row is `index/found=stamp`, the index being the item's and `found` the stamp the node
-     * had before the batch wrote to it, empty when it had none. Each of [items] is a fragment that
+     * had before the row wrote to it: empty for a node the row made, [Stamps.NEVER_STAMPED] for one
+     * that was there without a stamp. Each of [items] is a fragment that
      * [savedByUnwind] allows.
      */
     fun buildStampedSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
         items.groupBy { it.value.javaClass }.flatMap { (clazz, group) ->
             val model = FragmentModel.from(clazz)
             val idField = requireNotNull(model.nodeIdField)
-            val statement = stampedUnwind(model.labels.joinToString(":"), model.nodeIdProperty ?: idField) +
+            val statement = stampedUnwind(model.labels.joinToString(":"), model.nodeIdProperty ?: idField, handsBack = true) +
                 "\nRETURN row.i + '/' + ${Stamps.FOUND} + '=' + n.${Stamps.QUOTED}"
             group.map { (index, obj) -> unwindRootRow(obj, model, null, idField, nullPolicy) + ("i" to index.toString()) }
                 .chunked(chunkSize)
@@ -107,13 +108,16 @@ internal class BatchSaveOperations(
      * The UNWIND upsert that gives a node a new stamp only when the row changes it. It takes the
      * node's lock before it reads the node to say so: see [Stamps.lock].
      */
-    private fun stampedUnwind(labels: String, idProperty: String): String = """
-        UNWIND ${'$'}rows AS row
-        MERGE (n:$labels {$idProperty: row.id})
-        ${Stamps.lock("n")}
-        WITH n, row, coalesce(n.${Stamps.QUOTED}, '') AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed
-        SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}
-    """.trimIndent()
+    private fun stampedUnwind(labels: String, idProperty: String, handsBack: Boolean = false): String = listOfNotNull(
+        "UNWIND \$rows AS row",
+        "MERGE (n:$labels {$idProperty: row.id})",
+        // A node the statement makes is told from one it finds, for the stamp that is handed back.
+        Stamps.onCreate("n").takeIf { handsBack },
+        Stamps.lock("n"),
+        "WITH n, row, ${if (handsBack) Stamps.foundOf("n") else "coalesce(n.${Stamps.QUOTED}, '')"} AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed",
+        "SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}",
+        "REMOVE ${Stamps.unmark("n")}".takeIf { handsBack },
+    ).joinToString("\n")
 
     /**
      * One `{ id, props }` UNWIND row for an UNWIND-eligible root (id excluded). The `props` map is keyed
