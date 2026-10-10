@@ -13,6 +13,9 @@ import com.squareup.kotlinpoet.ksp.writeTo
 
 @OptIn(ExperimentalKotlinPoetApi::class)
 
+/** The property a `@NodeStamp` field is stored under. Mirrors `Stamps.PROPERTY`; the query DSL quotes it. */
+private const val STAMP_PROPERTY = "__drivine.stamp"
+
 /**
  * Generates query DSL classes and extension functions for a @GraphView annotated class.
  *
@@ -843,10 +846,15 @@ class QueryDslGenerator(
         val propName = prop.simpleName.asString()
         // @GraphProperty overrides the on-disk property name in the WHERE LHS; the accessor keeps the
         // Kotlin field name. The bind-param derives from this path (now the on-disk name) — internal.
-        val onDiskName = prop.annotations
-            .find { it.shortName.asString() == "GraphProperty" }
-            ?.arguments?.firstOrNull()?.value as? String
-            ?: propName
+        // A @NodeStamp field is stored under the stamp's own property, whatever the field is called.
+        val onDiskName = if (prop.annotations.any { it.shortName.asString() == "NodeStamp" }) {
+            STAMP_PROPERTY
+        } else {
+            prop.annotations
+                .find { it.shortName.asString() == "GraphProperty" }
+                ?.arguments?.firstOrNull()?.value as? String
+                ?: propName
+        }
         val propType = prop.type.resolve()
         val propertyRefType = if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
             ClassName("org.drivine.query.dsl", "StringPropertyReference")

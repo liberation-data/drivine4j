@@ -21,6 +21,9 @@ import java.util.*;
  */
 public class QueryDslGenerator {
 
+    /** The property a `@NodeStamp` field is stored under. Mirrors `Stamps.PROPERTY`; the query DSL quotes it. */
+    private static final String STAMP_PROPERTY = "__drivine.stamp";
+
     private final Elements elementUtils;
     private final Types typeUtils;
     private final Filer filer;
@@ -265,9 +268,12 @@ public class QueryDslGenerator {
             // @GraphProperty overrides the on-disk property name in the WHERE LHS; the accessor keeps
             // the Java field name. The bind-param derives from this path (now the on-disk name) — internal.
             AnnotationMirror graphProperty = getAnnotation(field, "org.drivine.annotation.GraphProperty");
-            String onDiskName = graphProperty != null
-                ? getAnnotationStringValue(graphProperty, "value", fieldName)
-                : fieldName;
+            // A @NodeStamp field is stored under the stamp's own property, whatever the field is called.
+            String onDiskName = getAnnotation(field, "org.drivine.annotation.NodeStamp") != null
+                ? STAMP_PROPERTY
+                : graphProperty != null
+                    ? getAnnotationStringValue(graphProperty, "value", fieldName)
+                    : fieldName;
 
             TypeName propRefType;
             if (isStringType(fieldType)) {
