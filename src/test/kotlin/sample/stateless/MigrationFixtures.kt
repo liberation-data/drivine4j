@@ -183,3 +183,11 @@ data class HumanClaimsLoaded(
     @GraphRelationship(type = "MENTIONS", direction = Direction.INCOMING)
     val claims: List<Claim> = emptyList(),
 )
+
+/** The people who follow a person of one kind: the root is a kind of its target. */
+@GraphView
+data class VipFollowers(
+    @Root val vip: VipHuman,
+    @GraphRelationship(type = "FOLLOWS", direction = Direction.INCOMING)
+    val followers: List<Human> = emptyList(),
+)
