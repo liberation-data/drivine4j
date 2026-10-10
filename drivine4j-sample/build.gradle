@@ -65,4 +65,6 @@ kotlin {
 
 test {
     useJUnitPlatform()
+    // See the root build: the collection sort strategy is an input of the tests.
+    inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
 }
