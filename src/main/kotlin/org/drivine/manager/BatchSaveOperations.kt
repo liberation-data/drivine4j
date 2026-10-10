@@ -88,7 +88,8 @@ internal class BatchSaveOperations(
 
     /**
      * The statements that save stamped fragments in batches and hand each one's stamp back: every
-     * returned row is `index=stamp`, the index being the item's. Each of [items] is a fragment that
+     * returned row is `index/found=stamp`, the index being the item's and `found` the stamp the node
+     * had before the batch wrote to it, empty when it had none. Each of [items] is a fragment that
      * [savedByUnwind] allows.
      */
     fun buildStampedSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
@@ -96,7 +97,7 @@ internal class BatchSaveOperations(
             val model = FragmentModel.from(clazz)
             val idField = requireNotNull(model.nodeIdField)
             val statement = stampedUnwind(model.labels.joinToString(":"), model.nodeIdProperty ?: idField) +
-                "\nRETURN row.i + '=' + n.${Stamps.QUOTED}"
+                "\nRETURN row.i + '/' + ${Stamps.FOUND} + '=' + n.${Stamps.QUOTED}"
             group.map { (index, obj) -> unwindRootRow(obj, model, null, idField, nullPolicy) + ("i" to index.toString()) }
                 .chunked(chunkSize)
                 .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf("rows" to chunk)).transform(String::class.java) }
@@ -106,7 +107,7 @@ internal class BatchSaveOperations(
     private fun stampedUnwind(labels: String, idProperty: String): String = """
         UNWIND ${'$'}rows AS row
         MERGE (n:$labels {$idProperty: row.id})
-        WITH n, row, $ROW_CHANGES_NODE AS changed
+        WITH n, row, coalesce(n.${Stamps.QUOTED}, '') AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed
         SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}
     """.trimIndent()
 

@@ -169,7 +169,9 @@ abstract class StatelessSingleStatementContract {
         assertEquals("mine", property("c1", "text"))
         assertEquals("two", property("c2", "text"))
         assertEquals("memo", property("m1", "text"))
-        assertEquals(stamp("c1"), (saved[0] as Claim).stamp)
+        // The object never held what the other writer left, so its stamp does not come to vouch for it.
+        assertEquals(loaded.stamp, (saved[0] as Claim).stamp)
+        assertEquals(stamp("c2"), (saved[1] as Claim).stamp)
     }
 
     @Test
@@ -965,6 +967,21 @@ private class CountingStatements(private val delegate: PersistenceManager) : Per
     override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? {
         statements++
         return delegate.maybeGetOne(spec)
+    }
+
+    override fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): java.util.Optional<T> {
+        statements++
+        return delegate.optionalGetOne(spec)
+    }
+
+    override fun executeBatch(specs: List<QuerySpecification<*>>) {
+        statements += specs.size
+        delegate.executeBatch(specs)
+    }
+
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
+        statements += specs.size
+        return delegate.queryBatch(specs)
     }
 }
 

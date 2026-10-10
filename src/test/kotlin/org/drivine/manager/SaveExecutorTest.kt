@@ -9,6 +9,7 @@ import org.drivine.StaleObjectException
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 import org.junit.jupiter.api.Test
+import org.neo4j.driver.exceptions.ServiceUnavailableException
 import org.neo4j.driver.exceptions.TransientException
 import sample.stateless.Claim
 
@@ -57,10 +58,10 @@ class SaveExecutorTest {
 
     @Test
     fun `a related node whose relationships changed since it was loaded keeps the token it carried`() {
-        val (manager, _) = answering(listOf("root,0/found=node0:now,1/other=node1:now,2/found=node2:now"))
+        val (manager, _) = answering(listOf("root,0/n0:found=node0:now,1/n1:other=node1:now,2/n2:found=node2:now"))
         val statement = SaveStatement(
             "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null),
-            listOf(Claim("a", "a"), Claim("b", "b"), Claim("c", "c")), listOf("found", "carried", null),
+            listOf(Claim("a", "a"), Claim("b", "b"), Claim("c", "c")), listOf("n0:found", "n1:carried", null),
         )
 
         assertEquals(listOf("root", "node0:now", "node1:carried", "node2:now"), SaveExecutor(manager).save(statement))
@@ -82,6 +83,26 @@ class SaveExecutorTest {
 
         assertSame(failure, assertFailsWith<DrivineException> { SaveExecutor(manager).save(statement(expected = null)) })
         assertEquals(1, calls())
+    }
+
+    @Test
+    fun `a lost connection is not run again, for the save may have been applied`() {
+        val failure = DrivineException.withRootCause(ServiceUnavailableException("connection reset"))
+        val (manager, calls) = answering(failure)
+
+        assertSame(failure, assertFailsWith<DrivineException> { SaveExecutor(manager).save(statement(expected = null)) })
+        assertEquals(1, calls())
+    }
+
+    @Test
+    fun `a related node whose data changed since it was loaded keeps the token it carried`() {
+        val (manager, _) = answering(listOf("root,0/n0:l0=new0:l0,1/other:l1=new1:l1,2/=new2:l2"))
+        val statement = SaveStatement(
+            "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null),
+            listOf(Claim("a", "a"), Claim("b", "b"), Claim("c", "c")), listOf("n0:l0", "n1:l1", null),
+        )
+
+        assertEquals(listOf("root", "new0:l0", "n1:l1", "new2:l2"), SaveExecutor(manager).save(statement))
     }
 
     @Test
