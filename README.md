@@ -2791,6 +2791,7 @@ Loading, querying and deleting are the same: both managers implement `GraphObjec
 - `DELETE_UNREFERENCED` deletes a removed target that no relationship points at. `DELETE_ORPHAN` deletes one with no relationship in either direction.
 - Add a `@NodeStamp` field to each type you load, change and save.
 - A view that declares a `@GraphPath`, `@Count` or `@Aggregate` field needs `@ReadOnly` on it, with either manager.
+- Nodes saved by either manager now carry the property `__drivine.stamp`. Cypher of your own that returns every property of a node, such as `properties(n)`, returns it too: leave out names beginning `__drivine.`, which are Drivine's own.
 
 ### Relationships saved through an `INCOMING` field
 
