@@ -11,7 +11,6 @@ import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
 import org.drivine.query.SaveStatement
-import org.drivine.query.SaveStatementBuilder
 import org.drivine.query.Stamping
 import org.drivine.query.read
 import org.drivine.query.savedByUnwind
@@ -53,9 +52,9 @@ class StatelessGraphObjectManager private constructor(
 
     private val logger = LoggerFactory.getLogger(StatelessGraphObjectManager::class.java)
     private val digests = objects.sessionManager
-    private val executor = SaveExecutor(persistenceManager)
+    private val backend = objects.backend
+    private val executor = SaveExecutor(persistenceManager, backend)
     private val stamps = StampedCopy(objectMapper)
-    private val statements = SaveStatementBuilder(objectMapper, objects.grammar, objects.storedKeys)
 
     /**
      * Saves [obj] and returns it carrying the stamps the save left: on its root, and on each related
@@ -177,8 +176,10 @@ class StatelessGraphObjectManager private constructor(
         }
         // A stamp is handed back by a statement that returns it: one for a batch of fragments, and one
         // for each view, and each fragment a batch cannot write.
-        val (stamped, plain) = fragments.partition { FragmentModel.from(it.value.javaClass).stampField != null }
-        val (batched, alone) = stamped.partition { FragmentModel.from(it.value.javaClass).savedByUnwind(objects.grammar) }
+        // A store that does not speak Cypher has no UNWIND to save rows with: each fragment is a statement.
+        val unwinds = objects.grammar != null
+        val (stamped, plain) = fragments.partition { !unwinds || FragmentModel.from(it.value.javaClass).stampField != null }
+        val (batched, alone) = stamped.partition { unwinds && FragmentModel.from(it.value.javaClass).savedByUnwind(objects.grammar) }
         val single = views + alone.map { it.value }
         // A view whose list is replaced is checked, as a save of it is: a replace overwrites the
         // list, and must not remove a relationship the object never held.
@@ -343,7 +344,7 @@ class StatelessGraphObjectManager private constructor(
         val dirty = digests.computeDirtyFields(rootAfter, rootBefore)
 
         // The node was loaded, so it is written only if it is still there: an update makes no node.
-        val statement = statements.build(
+        val statement = backend.save(
             changed, checked = true, NullPolicy.CLEAR, dirty, before = before, after = digests.digestOf(changed), createsRoot = false,
         )
         requireStampable(changed, statement)
@@ -353,7 +354,7 @@ class StatelessGraphObjectManager private constructor(
     private fun statementFor(obj: Any, relationships: RelationshipWrite, nullPolicy: NullPolicy, writeFields: Set<String>?, checked: Boolean): SaveStatement {
         val replace = relationships as? Replace
         val replaced = replace?.let { replacedFields(obj, it) }.orEmpty().map { it.fieldName }.toSet()
-        return statements.build(
+        return backend.save(
             obj, checked, nullPolicy, writeFields,
             replaced = { relationship -> replace?.removedTargets?.takeIf { relationship.fieldName in replaced } },
         )

@@ -3,43 +3,28 @@ package org.drivine.manager
 import com.fasterxml.jackson.annotation.JsonSubTypes
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.GraphView
+import org.drivine.backend.GraphBackend
+import org.drivine.backend.GraphBackends
 import org.drivine.annotation.NodeFragment
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.mapper.TransformPostProcessor
-import org.drivine.query.FullTextSearchPlanner
 import org.drivine.query.GraphObjectMergeBuilder
-import org.drivine.query.GraphObjectQueryBuilder
-import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.Stamping
 import org.drivine.query.StoredPropertyKeys
-import org.drivine.query.VectorSearchPlanner
-import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
-import org.drivine.query.dsl.OrderClauseResult
-import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.IndexAdvicePolicy
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.QueryIndexAdvisor
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 import org.drivine.store.StoreIdentity
 import org.slf4j.LoggerFactory
-
-/**
- * Context for DSL-based queries containing the resolved view model, WHERE clause, and bindings.
- */
-private data class QueryContext(
-    val viewModel: GraphViewModel?,
-    val whereClause: String?,
-    val bindings: Map<String, Any?>,
-    val prologs: List<String> = emptyList(),
-    val bridgeVariables: List<String> = emptyList(),
-)
 
 /**
  * Manager for working with graph objects (GraphViews and GraphFragments).
@@ -99,30 +84,20 @@ class GraphObjectManager internal constructor(
     override val storeIdentity: StoreIdentity
         get() = persistenceManager.storeIdentity
 
-    internal val grammar = persistenceManager.grammar
+    /** What writes each operation as a statement in the store's language. */
+    internal val backend: GraphBackend = GraphBackends.of(persistenceManager, objectMapper)
+
+    /** The grammar of a store that speaks Cypher; null for one that does not. */
+    internal val grammar: CypherGrammar?
+        get() = backend.cypherGrammar
 
     /**
      * Reads a node's stored property keys, so a save of an untracked object under [NullPolicy.CLEAR]
      * can still remove the `@PropertyBag` keys it dropped, and the labels an open `@NodeLabels` field
      * recorded as its own. Only consulted on that path.
      */
-    internal val storedKeys = object : StoredPropertyKeys {
-        override fun of(labels: String, idProperty: String, id: Any): Set<String> =
-            persistenceManager.maybeGetOne(
-                QuerySpecification
-                    .withStatement("MATCH (n:$labels {$idProperty: \$id}) RETURN keys(n)")
-                    .bind(mapOf("id" to id))
-                    .transform(List::class.java)
-            )?.map { it.toString() }?.toSet().orEmpty()
-
-        override fun ownedLabels(labels: String, idProperty: String, id: Any, property: String): List<String> =
-            persistenceManager.maybeGetOne(
-                QuerySpecification
-                    .withStatement("MATCH (n:$labels {$idProperty: \$id}) RETURN coalesce(n.`$property`, [])")
-                    .bind(mapOf("id" to id))
-                    .transform(List::class.java)
-            )?.map { it.toString() }.orEmpty()
-    }
+    internal val storedKeys: StoredPropertyKeys
+        get() = backend.storedKeys
 
     /**
      * Relationships whose type is known only at runtime, between stored nodes — see [EdgeOperations].
@@ -162,60 +137,28 @@ class GraphObjectManager internal constructor(
     override var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
 
     override fun <T : Any> loadAll(graphClass: Class<T>): List<T> {
-        // Auto-register subtypes if this is a sealed/abstract class
+        // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val query = builder.buildQuery()
-
-        val results = persistenceManager.query(
-            QuerySpecification
-                .withStatement(query)
-                .transform(graphClass)
-        )
-
-        // Snapshot loaded objects for dirty tracking
+        val results = persistenceManager.query(backend.loadAll(graphClass).spec().transform(graphClass))
         snapshotResults(graphClass, results)
-
         return results
     }
 
     override fun <T : Any> loadAll(graphClass: Class<T>, whereClause: String): List<T> {
-        // Auto-register subtypes if this is a sealed/abstract class
+        // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val query = builder.buildQuery(whereClause, null)
-
-        val results = persistenceManager.query(
-            QuerySpecification
-                .withStatement(query)
-                .transform(graphClass)
-        )
-
-        // Snapshot loaded objects for dirty tracking
+        val results = persistenceManager.query(backend.loadAll(graphClass, whereClause).spec().transform(graphClass))
         snapshotResults(graphClass, results)
-
         return results
     }
 
-    override fun <T : Any> count(graphClass: Class<T>): Long {
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        return persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(builder.buildCountQuery())
-                .transform(Long::class.java)
-        )
-    }
+    override fun <T : Any> count(graphClass: Class<T>): Long =
+        persistenceManager.getOne(backend.count(graphClass).spec().transform(Long::class.java))
 
-    override fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long {
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        return persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(builder.buildCountQuery(whereClause))
-                .transform(Long::class.java)
-        )
-    }
+    override fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long =
+        persistenceManager.getOne(backend.count(graphClass, whereClause).spec().transform(Long::class.java))
 
     override fun <T : Any, Q : Any> count(
         graphClass: Class<T>,
@@ -224,17 +167,7 @@ class GraphObjectManager internal constructor(
     ): Long {
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
-
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val ctx = buildQueryContext(graphClass, querySpec)
-        val query = builder.buildCountQuery(ctx.whereClause, ctx.prologs, ctx.bridgeVariables)
-
-        return persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(query)
-                .bind(ctx.bindings)
-                .transform(Long::class.java)
-        )
+        return persistenceManager.getOne(backend.count(graphClass, querySpec).spec().transform(Long::class.java))
     }
 
     /**
@@ -318,92 +251,30 @@ class GraphObjectManager internal constructor(
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit
     ): List<T> {
-        // Auto-register subtypes if this is a sealed/abstract class
+        // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val ctx = buildQueryContext(graphClass, querySpec, supportsSeek = true)
+        val plan = backend.loadAll(graphClass, querySpec)
+        adviseOnIndexes(graphClass, plan.rootOrders, querySpec, isKeyset = plan.keyset)
 
-        // Process ORDER BY clause - separate root orders from collection sorts
-        val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
-        val orderResult = if (querySpec.orders.isNotEmpty()) {
-            CypherGenerator.processOrders(querySpec.orders, relationshipNames, ctx.viewModel)
-        } else {
-            OrderClauseResult(null, emptyList())
-        }
-
-        require(querySpec.seekValues.isEmpty() || querySpec.skip == null) {
-            "seek and skip cannot be used together"
-        }
-        val keysetPlan = if (querySpec.seekValues.isNotEmpty()) {
-            KeysetPlanner.plan(
-                orderResult.rootOrders,
-                querySpec.seekValues,
-                orderResult.collectionSorts.size,
-                guardAgainstNulls = grammar.indexesExcludeNulls,
-            )
-        } else {
-            null
-        }
-        val effectiveWhereClause = listOfNotNull(ctx.whereClause, keysetPlan?.predicate)
-            .joinToString(" AND ") { "($it)" }
-            .takeIf { it.isNotEmpty() }
-        keysetPlan?.bindings?.keys?.forEach { reserved ->
-            require(reserved !in ctx.bindings) {
-                "Keyset cursor parameter \$$reserved collides with a where-clause binding"
-            }
-        }
-        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
-
-        adviseOnIndexes(graphClass, ctx.viewModel, orderResult.rootOrders, querySpec, isKeyset = keysetPlan != null)
-
-        val baseQuery = if (querySpec.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
-            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, querySpec.depthOverrides, ctx.prologs, ctx.bridgeVariables)
-        } else {
-            builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, ctx.prologs, ctx.bridgeVariables)
-        }
-
-        // SKIP/LIMIT are the final clauses, after RETURN … ORDER BY …. For a @GraphView each root is
-        // one row (relationships are pattern comprehensions in the projection), so LIMIT bounds root
-        // entities and keeps their collections intact.
-        val (query, bindings) = applyPagination(baseQuery, effectiveBindings, querySpec.skip, querySpec.limit)
-
-        val results = persistenceManager.query(
-            QuerySpecification
-                .withStatement(query)
-                .bind(bindings)
-                .transform(graphClass)
-        )
-
-        // Snapshot loaded objects for dirty tracking
+        val results = persistenceManager.query(plan.statement.spec().transform(graphClass))
         snapshotResults(graphClass, results)
-
         return results
     }
 
     override fun <T : Any> load(id: String, graphClass: Class<T>): T? {
-        // Auto-register subtypes if this is a sealed/abstract class
+        // Auto-register subtypes for sealed classes (both top-level and nested relationship targets)
         autoRegisterSubtypesIfNeeded(graphClass)
 
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val whereClause = builder.buildIdWhereClause("id")
-        val query = builder.buildQuery(whereClause)
-
         val result = persistenceManager.maybeGetOne(
-            QuerySpecification
-                .withStatement(query)
-                .bind(mapOf("id" to id))
-                .transform(graphClass)
+            backend.load(graphClass).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(graphClass)
         )
-
-        // Snapshot the loaded object for dirty tracking
         if (result != null) {
             snapshotResults(graphClass, listOf(result))
         }
-
         return result
     }
 
@@ -426,10 +297,7 @@ class GraphObjectManager internal constructor(
         partitionLabel: String?,
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
-        return executeScoredSearch(
-            graphClass,
-            VectorSearchPlanner.plan(graphClass, property, vector, topK, threshold, grammar, searchK, partitionLabel),
-        )
+        return executeScoredSearch(graphClass, backend.nearest(graphClass, property, null, vector, topK, threshold, searchK, partitionLabel))
     }
 
     override fun <T : Any, Q : Any> loadNearest(
@@ -444,12 +312,7 @@ class GraphObjectManager internal constructor(
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
         val querySpec = GraphQuerySpec(queryObject).apply(spec)
-        return executeScoredSearch(
-            graphClass,
-            VectorSearchPlanner.planFiltered(
-                graphClass, querySpec, vector, topK, threshold, grammar, searchK, partitionLabel,
-            ),
-        )
+        return executeScoredSearch(graphClass, backend.nearest(graphClass, null, querySpec, vector, topK, threshold, searchK, partitionLabel))
     }
 
     /**
@@ -479,7 +342,7 @@ class GraphObjectManager internal constructor(
         topK: Int,
         threshold: Double,
     ): List<Scored<T>> =
-        executeScoredSearch(graphClass, FullTextSearchPlanner.plan(graphClass, property, query, topK, threshold, grammar))
+        executeScoredSearch(graphClass, backend.matching(graphClass, property, null, query, topK, threshold))
 
     override fun <T : Any, Q : Any> loadMatching(
         graphClass: Class<T>,
@@ -490,10 +353,7 @@ class GraphObjectManager internal constructor(
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
         val querySpec = GraphQuerySpec(queryObject).apply(spec)
-        return executeScoredSearch(
-            graphClass,
-            FullTextSearchPlanner.planFiltered(graphClass, querySpec, query, topK, threshold, grammar),
-        )
+        return executeScoredSearch(graphClass, backend.matching(graphClass, null, querySpec, query, topK, threshold))
     }
 
     /**
@@ -567,17 +427,14 @@ class GraphObjectManager internal constructor(
      */
     private fun <Q : Any> adviseOnIndexes(
         graphClass: Class<*>,
-        viewModel: GraphViewModel?,
         rootOrders: List<OrderSpec>,
         querySpec: GraphQuerySpec<Q>,
         isKeyset: Boolean,
     ) {
         if (indexAdvice == IndexAdvicePolicy.OFF || rootOrders.isEmpty()) return
-        // Only Neo4j can turn an index into an ordered seek that stops at the page boundary. On the
-        // other engines a blocking sort sits between scan and limit whatever is indexed, so there is
-        // no index worth recommending.
-        if (!grammar.supportsIndexBackedOrdering) return
+        if (!backend.supportsIndexBackedOrdering) return
 
+        val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
         val fragmentType = viewModel?.rootFragment?.fragmentType ?: graphClass
         val fragmentModel = FragmentModel.from(fragmentType)
         val label = fragmentModel.labels.firstOrNull() ?: return
@@ -589,6 +446,8 @@ class GraphObjectManager internal constructor(
             properties = rootOrders.map { it.propertyPath.substringAfter(".") },
             operation = if (isKeyset) "seek" else "orderBy",
             pinnedBy = pinningEqualities(querySpec, rootAlias),
+            // The node id is unique by the model's own contract (it is the MERGE key and the load
+            // key), so it terminates an ordering whether or not anyone declared a constraint on it.
             uniqueByContract = setOfNotNull(fragmentModel.nodeIdProperty),
         )
     }
@@ -607,41 +466,6 @@ class GraphObjectManager internal constructor(
             .filter { rootAlias == null || it.propertyPath.substringBefore(".") == rootAlias }
             .map { it.propertyPath.substringAfter(".") }
             .toSet()
-
-    /**
-     * Builds query context from a GraphQuerySpec, extracting the view model, WHERE clause, and bindings.
-     *
-     * @param supportsSeek whether the calling operation applies [GraphQuerySpec.seek]. Only
-     *   `loadAll` does; every other path would silently ignore the cursor and return (or delete, or
-     *   count) the whole unpaginated result, so they reject it here instead.
-     */
-    private fun <Q : Any> buildQueryContext(
-        graphClass: Class<*>,
-        querySpec: GraphQuerySpec<Q>,
-        supportsSeek: Boolean = false,
-    ): QueryContext {
-        require(supportsSeek || querySpec.seekValues.isEmpty()) {
-            "seek is only supported by loadAll; this operation would ignore the cursor"
-        }
-
-        val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) {
-            GraphViewModel.from(graphClass)
-        } else {
-            null
-        }
-
-        val whereResult = if (querySpec.conditions.isNotEmpty()) {
-            CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar)
-        } else null
-
-        val bindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
-
-        return QueryContext(
-            viewModel, whereResult?.whereClause, bindings,
-            whereResult?.prologs ?: emptyList(),
-            whereResult?.bridgeVariables ?: emptyList()
-        )
-    }
 
     /**
      * Extracts fragment model and root field name for snapshotting.
@@ -696,28 +520,8 @@ class GraphObjectManager internal constructor(
 
     override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
         validateCascadeSupport(cascade)
-
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val idCondition = builder.buildIdWhereClause("id")
-
-        val fullWhereClause = if (whereClause != null) {
-            "$idCondition AND $whereClause"
-        } else {
-            idCondition
-        }
-
-        val query = if (cascade == CascadeType.NONE) {
-            // Preserve the legacy root-only delete byte-for-byte.
-            builder.buildDeleteQuery(fullWhereClause)
-        } else {
-            builder.buildCascadeDeleteQuery(fullWhereClause, cascade)
-        }
-
         return persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(query)
-                .bind(mapOf("id" to id))
-                .transform(Int::class.java)
+            backend.delete(graphClass, whereClause, cascade).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java)
         )
     }
 
@@ -725,16 +529,8 @@ class GraphObjectManager internal constructor(
         return deleteAll(graphClass, null as String?)
     }
 
-    override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val query = builder.buildDeleteQuery(whereClause)
-
-        return persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(query)
-                .transform(Int::class.java)
-        )
-    }
+    override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int =
+        persistenceManager.getOne(backend.deleteAll(graphClass, whereClause).spec().transform(Int::class.java))
 
     override fun <T : Any, Q : Any> deleteAll(
         graphClass: Class<T>,
@@ -743,17 +539,7 @@ class GraphObjectManager internal constructor(
     ): Int {
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
-
-        val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
-        val ctx = buildQueryContext(graphClass, querySpec)
-        val query = builder.buildDeleteQuery(ctx.whereClause, ctx.prologs, ctx.bridgeVariables)
-
-        return persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(query)
-                .bind(ctx.bindings)
-                .transform(Int::class.java)
-        )
+        return persistenceManager.getOne(backend.deleteAll(graphClass, querySpec).spec().transform(Int::class.java))
     }
 
     /**
@@ -780,6 +566,7 @@ class GraphObjectManager internal constructor(
      */
     @JvmOverloads
     fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): T {
+        requireCypher()
         validateCascadeSupport(cascade)
         val graphClass = obj.javaClass
 
@@ -794,7 +581,7 @@ class GraphObjectManager internal constructor(
         val statements = mergeBuilder.buildMergeStatements(obj, cascade, nullPolicy)
 
         // Execute all statements in order
-        SaveExecutor(persistenceManager).execute(statements)
+        SaveExecutor(persistenceManager, backend).execute(statements)
 
         // Update snapshot after save
         snapshotResults(graphClass, listOf(obj))
@@ -830,6 +617,7 @@ class GraphObjectManager internal constructor(
      */
     @JvmOverloads
     fun <T : Any> saveAll(objs: Collection<T>, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): List<T> {
+        requireCypher()
         validateCascadeSupport(cascade)
         val items = objs.toList()
         if (items.isEmpty()) return emptyList()
@@ -843,48 +631,29 @@ class GraphObjectManager internal constructor(
         return items
     }
 
-    /**
-     * Appends `SKIP $_skip` / `LIMIT $_limit` (bound, not inlined) after the query's `RETURN … ORDER
-     * BY …` tail. A no-op when neither is set. SKIP precedes LIMIT, per Cypher.
-     */
-    private fun applyPagination(
-        query: String,
-        bindings: Map<String, Any?>,
-        skip: Int?,
-        limit: Int?,
-    ): Pair<String, Map<String, Any?>> {
-        if (skip == null && limit == null) return query to bindings
-        val merged = bindings.toMutableMap()
-        val sb = StringBuilder(query)
-        if (skip != null) {
-            sb.append("\nSKIP \$$SKIP_PARAM")
-            merged[SKIP_PARAM] = skip
-        }
-        if (limit != null) {
-            sb.append("\nLIMIT \$$LIMIT_PARAM")
-            merged[LIMIT_PARAM] = limit
-        }
-        return sb.toString() to merged
-    }
-
     private companion object {
         // Scored-search bound-parameter names now live on their planners (VectorSearchPlanner /
         // FullTextSearchPlanner), which build those queries.
-
-        // Bound-parameter names for DSL pagination.
-        const val SKIP_PARAM = "_skip"
-        const val LIMIT_PARAM = "_limit"
 
         // Max rows per UNWIND statement in saveAll — caps server-side batch size; each chunk is one
         // statement (and, when not in an ambient transaction, still within the single batch transaction).
         const val UNWIND_CHUNK_SIZE = 1000
     }
 
+    /** This manager's own save is written in Cypher alone: it is deprecated, and was not carried to other stores. */
+    private fun requireCypher() {
+        if (grammar == null) {
+            throw UnsupportedOperationException(
+                "GraphObjectManager.save is not available on ${persistenceManager.type}. Use StatelessGraphObjectManager, from GraphObjectManagerFactory.stateless()."
+            )
+        }
+    }
+
     private fun validateCascadeSupport(cascade: CascadeType) {
-        if (cascade == CascadeType.DELETE_ORPHAN && !grammar.supportsOrphanDelete) {
+        if (cascade == CascadeType.DELETE_ORPHAN && !backend.supportsOrphanDelete) {
             throw UnsupportedOperationException(
                 "CASCADE DELETE_ORPHAN is not supported on this database. " +
-                grammar.orphanDeleteLimit?.let { "$it " }.orEmpty() +
+                backend.orphanDeleteLimit?.let { "$it " }.orEmpty() +
                 "Use CASCADE DELETE_ALL or CASCADE NONE instead."
             )
         }

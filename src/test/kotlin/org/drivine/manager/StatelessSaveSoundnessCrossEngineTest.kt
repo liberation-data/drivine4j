@@ -12,6 +12,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
+import org.drivine.backend.GraphBackends
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
@@ -497,7 +498,7 @@ abstract class StatelessSaveSoundnessContract {
             val statement = SaveStatementBuilder(Neo4jObjectMapper.instance, pm.grammar, null)
                 .build(loaded.copy(text = "late"), checked = true, NullPolicy.IGNORE)
 
-            assertFailsWith<StaleObjectException> { SaveExecutor(inTransaction).save(statement) }
+            assertFailsWith<StaleObjectException> { SaveExecutor(inTransaction, GraphBackends.of(inTransaction, Neo4jObjectMapper.instance)).save(statement) }
         } finally {
             runCatching { connection.rollbackTransaction() }
             connection.release()

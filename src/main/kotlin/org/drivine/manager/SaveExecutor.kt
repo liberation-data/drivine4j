@@ -2,6 +2,7 @@ package org.drivine.manager
 
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
+import org.drivine.backend.GraphBackend
 import org.drivine.mapper.ResultPostProcessor
 import org.drivine.model.Stamps
 import org.drivine.query.MergeStatement
@@ -9,10 +10,9 @@ import org.drivine.query.NodeKey
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
-import org.neo4j.driver.exceptions.TransientException
 
 /** Runs the statements of a save. */
-internal class SaveExecutor(private val persistenceManager: PersistenceManager) {
+internal class SaveExecutor(private val persistenceManager: PersistenceManager, private val backend: GraphBackend) {
 
     /** Runs [statements] in order, each on its own. */
     fun execute(statements: List<MergeStatement>) = statements.forEach {
@@ -140,11 +140,11 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
 
     /**
      * Runs a save, or any one statement that writes, again if the engine turned it away because another writer was changing the same
-     * node at that moment (a conflict or a deadlock, which the Neo4j driver, used for Neo4j and
-     * Memgraph, reports as transient). The next attempt runs after that writer, and so sees its stamp: a
-     * checked save is then refused as stale, not failed: a later attempt of a batch that is refused
-     * so is thrown as that refusal. If the attempts run out, or a later one fails some other way, the
-     * first failure is thrown. FalkorDB runs one write at a time and never turns one away.
+     * node at that moment (a conflict or a deadlock: see [GraphBackend.contended]). The next attempt
+     * runs after that writer, and so sees its stamp: a checked save is then refused as stale, not
+     * failed: a later attempt of a batch that is refused so is thrown as that refusal. If the attempts
+     * run out, or a later one fails some other way, the first failure is thrown. FalkorDB runs one
+     * write at a time and never turns one away.
      *
      * Inside a caller's transaction the engine has usually failed the transaction with the statement,
      * so the later attempts fail too and the first failure is what the caller sees.
@@ -171,7 +171,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
     }
 
     private fun DrivineException.isRetryable(): Boolean =
-        generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any { it is TransientException }
+        generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
 
     private companion object {
         const val CONTENDED_ATTEMPTS = 6
@@ -181,13 +181,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
 
     /** Says why a checked save matched nothing: the node is gone, or carries another stamp. */
     private fun staleObject(stamp: StampWrite, expected: String): StaleObjectException {
-        // An absent stamp is read as '' so a node without one still gives a row on every engine.
-        val found = persistenceManager.query(
-            QuerySpecification
-                .withStatement("MATCH (n:${stamp.labels} {${stamp.idProperty}: \$id}) RETURN coalesce(n.${Stamps.QUOTED}, '')")
-                .bind(mapOf("id" to stamp.id))
-                .transform(String::class.java)
-        )
+        val found = persistenceManager.query(backend.foundStamp(stamp).spec().transform(String::class.java))
         return StaleObjectException(
             type = stamp.fragmentClass,
             id = stamp.id,

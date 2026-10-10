@@ -14,6 +14,13 @@ import org.junit.jupiter.api.Test
 import org.neo4j.driver.exceptions.ServiceUnavailableException
 import org.neo4j.driver.exceptions.TransientException
 import sample.stateless.Claim
+import org.drivine.backend.CypherBackend
+import org.drivine.query.grammar.CypherDialect
+import org.drivine.mapper.Neo4jObjectMapper
+
+/** An executor over [manager] as the object managers build one for an engine that speaks Cypher. */
+private fun SaveExecutor(manager: PersistenceManager) =
+    SaveExecutor(manager, CypherBackend(manager, CypherDialect.NEO4J_5.grammar(), Neo4jObjectMapper.instance))
 
 /** What [SaveExecutor] does when the engine turns a save away, and when a save returns nothing. */
 class SaveExecutorTest {

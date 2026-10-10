@@ -2,11 +2,7 @@ package org.drivine.manager
 
 import org.drivine.annotation.Direction
 import org.drivine.annotation.NodeFragment
-import org.drivine.model.FragmentModel
-import org.drivine.query.EdgeStatements
-import org.drivine.query.FragmentQueryBuilder
-import org.drivine.query.MergeStatement
-import org.drivine.query.QuerySpecification
+import org.drivine.backend.GraphStatement
 
 /**
  * Relationships whose type is known only at runtime, between stored nodes that are named by a
@@ -23,7 +19,8 @@ class EdgeOperations internal constructor(
 ) {
 
     /** Runs a statement again when the engine turns it away because another writer was changing the same node. */
-    private val executor = SaveExecutor(persistenceManager)
+    private val backend = manager.backend
+    private val executor = SaveExecutor(persistenceManager, backend)
 
     /**
      * Joins [from] to [to] with a [type] relationship.
@@ -50,15 +47,8 @@ class EdgeOperations internal constructor(
         properties: Map<String, Any?> = emptyMap(),
         mode: RelateMode = RelateMode.MERGE,
     ): Boolean {
-        val statement = EdgeStatements.relate(from, to, type, properties, mode)
-        return executor.whenNotContended {
-            persistenceManager.getOne(
-                QuerySpecification
-                    .withStatement(statement.statement)
-                    .bind(statement.bindings)
-                    .transform(Long::class.java)
-            )
-        } > 0
+        val statement = backend.relate(from, to, type, properties, mode)
+        return executor.whenNotContended { persistenceManager.getOne(statement.spec().transform(Long::class.java)) } > 0
     }
 
     /**
@@ -69,7 +59,7 @@ class EdgeOperations internal constructor(
      *
      * @return how many relationships were removed: 0 when there was none, or either node is absent
      */
-    fun unrelate(from: NodeRef, to: NodeRef, type: String): Int = count(EdgeStatements.unrelate(from, to, type))
+    fun unrelate(from: NodeRef, to: NodeRef, type: String): Int = count(backend.unrelate(from, to, type))
 
     /**
      * Removes every [type] relationship that [from] has in [direction].
@@ -81,16 +71,10 @@ class EdgeOperations internal constructor(
      */
     @JvmOverloads
     fun unrelateAll(from: NodeRef, type: String, direction: Direction = Direction.OUTGOING): Int =
-        count(EdgeStatements.unrelateAll(from, type, direction))
+        count(backend.unrelateAll(from, type, direction))
 
-    private fun count(statement: MergeStatement): Int = executor.whenNotContended {
-        persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(statement.statement)
-                .bind(statement.bindings)
-                .transform(Long::class.java)
-        )
-    }.toInt()
+    private fun count(statement: GraphStatement): Int =
+        executor.whenNotContended { persistenceManager.getOne(statement.spec().transform(Long::class.java)) }.toInt()
 
     /**
      * Loads the [targetClass] nodes joined to [from] by a [type] relationship in [direction].
@@ -103,14 +87,7 @@ class EdgeOperations internal constructor(
             "loadRelated loads a @NodeFragment; ${targetClass.simpleName} is not one."
         }
         manager.autoRegisterSubtypesIfNeeded(targetClass)
-        val model = FragmentModel.from(targetClass)
-        val match = EdgeStatements.relatedMatch(from, type, direction, model.labels)
-        val results = persistenceManager.query(
-            QuerySpecification
-                .withStatement(FragmentQueryBuilder(model).buildQueryMatching(match.statement))
-                .bind(match.bindings)
-                .transform(targetClass)
-        )
+        val results = persistenceManager.query(backend.related(from, type, direction, targetClass).spec().transform(targetClass))
         manager.snapshotResults(targetClass, results)
         return results
     }
