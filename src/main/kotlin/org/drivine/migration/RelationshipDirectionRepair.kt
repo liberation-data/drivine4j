@@ -1,11 +1,7 @@
 package org.drivine.migration
 
 import org.drivine.annotation.Direction
-import org.drivine.annotation.GraphView
 import org.drivine.manager.PersistenceManager
-import org.drivine.model.FragmentModel
-import org.drivine.model.GraphViewModel
-import org.drivine.model.RelationshipModel
 import org.drivine.query.QuerySpecification
 
 /**
@@ -26,13 +22,15 @@ import org.drivine.query.QuerySpecification
  */
 class RelationshipDirectionRepair(private val persistenceManager: PersistenceManager) {
 
+    private val stored = StoredRelationships(persistenceManager)
+
     /**
      * One finding for each relationship field declared `INCOMING` that a save writes, in [views] and
      * in the views nested in them. Give every view of the model: a finding is marked ambiguous when
      * another of the views declares the same relationship pointing away from the root.
      */
     fun report(vararg views: Class<*>): List<DirectionFinding> {
-        val fields = views.flatMap { fieldsOf(it, mutableSetOf()) }.distinctBy { it.view to it.relationship.fieldName }
+        val fields = stored.writtenFields(views)
         return fields.filter { it.relationship.direction == Direction.INCOMING }.map { field ->
             DirectionFinding(
                 view = field.view,
@@ -40,8 +38,8 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
                 type = field.relationship.type,
                 rootLabels = field.rootLabels,
                 targetLabels = field.targetLabels,
-                wrongWay = count(field.rootLabels, field.relationship.type, field.targetLabels),
-                rightWay = count(field.targetLabels, field.relationship.type, field.rootLabels),
+                wrongWay = stored.count(field.rootLabels, field.relationship.type, field.targetLabels),
+                rightWay = stored.count(field.targetLabels, field.relationship.type, field.rootLabels),
                 ambiguity = ambiguity(field, fields),
                 sameNodes = sameNodes(field),
             )
@@ -76,7 +74,7 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
         """.trimIndent()
         // No more statements than the count needs, so a relationship is never turned twice.
         var turned = 0L
-        var remaining = count(finding.rootLabels, finding.type, finding.targetLabels)
+        var remaining = stored.count(finding.rootLabels, finding.type, finding.targetLabels)
         while (remaining > 0) {
             val batch = persistenceManager.getOne(
                 QuerySpecification.withStatement(statement).bind(mapOf("batch" to batchSize)).transform(Long::class.java)
@@ -88,54 +86,20 @@ class RelationshipDirectionRepair(private val persistenceManager: PersistenceMan
         return turned
     }
 
-    private class Field(val view: Class<*>, val relationship: RelationshipModel, val rootLabels: List<String>, val targetLabels: List<String>)
-
-    /** The relationship fields a save writes, in [view] and in the views nested in it. */
-    private fun fieldsOf(view: Class<*>, seen: MutableSet<Class<*>>): List<Field> {
-        if (!seen.add(view)) return emptyList()
-        require(view.isAnnotationPresent(GraphView::class.java)) { "${view.simpleName} is not a @GraphView." }
-        val model = GraphViewModel.from(view)
-        val rootLabels = FragmentModel.from(model.rootFragment.fragmentType).labels
-        return model.relationships.filterNot { it.readOnly }.flatMap { relationship ->
-            val target = if (relationship.isRelationshipFragment) {
-                requireNotNull(relationship.targetNodeType) { "Relationship fragment '${relationship.fieldName}' has no target" }
-            } else {
-                relationship.elementType
-            }
-            val nested = target.isAnnotationPresent(GraphView::class.java)
-            val targetFragment = if (nested) GraphViewModel.from(target).rootFragment.fragmentType else target
-            listOf(Field(view, relationship, rootLabels, FragmentModel.from(targetFragment).labels)) +
-                if (nested) fieldsOf(target, seen) else emptyList()
-        }
-    }
-
     /** True when one node can be both the root and the target of [field]: one's labels include the other's. */
-    private fun sameNodes(field: Field): Boolean =
+    private fun sameNodes(field: ViewField): Boolean =
         field.rootLabels.containsAll(field.targetLabels) || field.targetLabels.containsAll(field.rootLabels)
 
-    private fun ambiguity(field: Field, all: List<Field>): String? {
+    private fun ambiguity(field: ViewField, all: List<ViewField>): String? {
         if (sameNodes(field)) {
             return "its root and its target can be the same nodes, so nothing tells a relationship written the wrong way from one that is meant."
         }
         // Another field that stores the same relationship from this field's root to its target.
-        val other = all.firstOrNull { it !== field && it.relationship.type == field.relationship.type && storesFrom(it, field.rootLabels, field.targetLabels) }
+        val other = all.firstOrNull { it !== field && it.relationship.type == field.relationship.type && it.storesFrom(field.rootLabels, field.targetLabels) }
             ?: return null
         return "${other.view.simpleName}.${other.relationship.fieldName} declares ${field.relationship.type} from " +
             "${field.rootLabels.joinToString(":")} to ${field.targetLabels.joinToString(":")}, so relationships pointing that way may be meant."
     }
-
-    /** Whether [field] reads relationships stored from nodes labelled [from] to nodes labelled [to]. */
-    private fun storesFrom(field: Field, from: List<String>, to: List<String>): Boolean = when (field.relationship.direction) {
-        Direction.OUTGOING -> field.rootLabels == from && field.targetLabels == to
-        Direction.INCOMING -> field.targetLabels == from && field.rootLabels == to
-        Direction.UNDIRECTED -> (field.rootLabels == from && field.targetLabels == to) || (field.targetLabels == from && field.rootLabels == to)
-    }
-
-    private fun count(from: List<String>, type: String, to: List<String>): Long = persistenceManager.getOne(
-        QuerySpecification
-            .withStatement("MATCH (:${from.joinToString(":")})-[r:$type]->(:${to.joinToString(":")}) RETURN count(r)")
-            .transform(Long::class.java)
-    )
 }
 
 /**

@@ -2811,6 +2811,19 @@ findings.filter { it.ambiguity == null }.forEach { repair.repair(it) }
 - A field whose root and target can be the same nodes (a person who follows a person) cannot be repaired by the tool: nothing tells a relationship written the wrong way from one that is meant. Repair those with Cypher that knows your data.
 - Run it once, as a migration. A relationship that was added with Cypher or `edges.relate` in the direction the field reads was never wrong and is left alone.
 
+### A path field that was written as a relationship
+
+Before 0.1.0, saving a view the manager had not loaded wrote a `@GraphPath` field as one direct relationship, of the first hop's type, from the root to each node the field held. Saves no longer write a path field. `PathRelationshipReport` counts what was left behind:
+
+```kotlin
+PathRelationshipReport(persistenceManager).report(ClaimEmployers::class.java, ClaimView::class.java).forEach {
+    println("${it.view.simpleName}.${it.field}: ${it.direct} direct ${it.type} relationships. ${it.ambiguity ?: ""}")
+    println("  to remove them: ${it.removalStatement}")
+}
+```
+
+It reports and does not remove. A direct relationship of that type to that kind of node is often meant, and a finding says so when one of the views declares it. Each finding carries the Cypher that would remove what it counted, for you to run once you have looked.
+
 ### How we know nothing else changed
 
 Every test of `GraphObjectManager` in this repository has a mirror that runs on `StatelessGraphObjectManager`. A comparison test runs the same scenarios through both managers on Neo4j, FalkorDB and Memgraph and compares the graphs they leave: for flat targets, relationships with properties and nested views, with and without another writer in between, they match.

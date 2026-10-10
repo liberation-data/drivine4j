@@ -24,13 +24,14 @@ import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import sample.stateless.ClaimEmployers
 import sample.stateless.ClaimView
 import sample.stateless.HumanClaims
 import sample.stateless.HumanFollowers
 import sample.stateless.HumanMentions
 
 /**
- * [RelationshipDirectionRepair] on Neo4j, FalkorDB and Memgraph.
+ * [RelationshipDirectionRepair] and [PathRelationshipReport] on Neo4j, FalkorDB and Memgraph.
  *
  * Before 0.1.0 a view save wrote a relationship field declared `INCOMING` as outgoing. The graphs
  * here hold such relationships, written with Cypher as the old save wrote them: from the view's root
@@ -138,6 +139,52 @@ abstract class RelationshipDirectionRepairContract {
         assertEquals(2, repair.report(HumanClaims::class.java).single().wrongWay, "a refused repair changes nothing")
 
         assertEquals(2, repair.repair(finding, force = true))
+    }
+
+    // ----- A path field written as a direct relationship -----
+
+    private fun seedPath() {
+        run("CREATE (:Company {id: 'acme', name: 'Acme'}), (:Company {id: 'initech', name: 'Initech'})")
+        run("MATCH (c:Claim {id: 'c3'}), (h:Human {id: 'bob'}), (o:Company {id: 'acme'}) CREATE (h)-[:WORKS_AT]->(o)")
+        // As the old save wrote the path field: straight from the claim to the company.
+        run("MATCH (c:Claim {id: 'c3'}), (o:Company {id: 'acme'}) CREATE (c)-[:MENTIONS]->(o)")
+    }
+
+    @Test
+    fun `the path report counts direct relationships of the first hop's type to the path's end`() {
+        seedPath()
+        val before = relationships()
+
+        val finding = PathRelationshipReport(pm).report(ClaimEmployers::class.java).single()
+
+        assertEquals("employers", finding.field)
+        assertEquals("MENTIONS", finding.type)
+        assertEquals(listOf("Claim"), finding.rootLabels)
+        assertEquals(listOf("Company"), finding.targetLabels)
+        assertEquals(1, finding.direct)
+        assertNull(finding.ambiguity)
+        assertEquals(before, relationships(), "the report changes nothing")
+    }
+
+    @Test
+    fun `the path report's statement removes what it counted and nothing else`() {
+        seedPath()
+        val finding = PathRelationshipReport(pm).report(ClaimEmployers::class.java).single()
+
+        run(finding.removalStatement)
+
+        assertEquals(0, PathRelationshipReport(pm).report(ClaimEmployers::class.java).single().direct)
+        assertEquals(listOf("ada -MENTIONS 7-> c1", "ada -MENTIONS-> c2", "bob -WORKS_AT-> acme", "c3 -MENTIONS-> bob"), relationships())
+    }
+
+    @Test
+    fun `a path finding is ambiguous when a view declares that relationship directly`() {
+        seedPath()
+
+        val finding = PathRelationshipReport(pm).report(ClaimEmployers::class.java, ClaimView::class.java).single()
+
+        assertEquals(1, finding.direct)
+        assertNotNull(finding.ambiguity, "ClaimView.companies says a claim mentions companies")
     }
 
     @Test
