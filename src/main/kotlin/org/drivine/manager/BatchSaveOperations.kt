@@ -103,10 +103,14 @@ internal class BatchSaveOperations(
                 .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf("rows" to chunk)).transform(String::class.java) }
         }
 
-    /** The UNWIND upsert that gives a node a new stamp only when the row changes it. */
+    /**
+     * The UNWIND upsert that gives a node a new stamp only when the row changes it. It takes the
+     * node's lock before it reads the node to say so: see [Stamps.lock].
+     */
     private fun stampedUnwind(labels: String, idProperty: String): String = """
         UNWIND ${'$'}rows AS row
         MERGE (n:$labels {$idProperty: row.id})
+        ${Stamps.lock("n")}
         WITH n, row, coalesce(n.${Stamps.QUOTED}, '') AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed
         SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}
     """.trimIndent()

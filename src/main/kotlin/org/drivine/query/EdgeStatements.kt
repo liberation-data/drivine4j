@@ -41,6 +41,10 @@ internal object EdgeStatements {
             append("MATCH ").append(from.pattern("a", FROM))
             append("\nMATCH ").append(to.pattern("b", TO))
             if (merges) {
+                // Both nodes' locks are taken before the relationships between them are read, so what
+                // is counted is still so when the MERGE runs: see [Stamps.lock].
+                append("\n").append(Stamps.lock("a", "b"))
+                append("\nWITH a, b")
                 // Counted before the MERGE: whether a relationship is there that already carries the properties.
                 val same = (listOf("x IS NOT NULL") + written.map { (key, parameter) -> "coalesce(x.$key = $parameter, false)" })
                 append("\nOPTIONAL MATCH (a)-[x:").append(quotedIdentifier(type)).append("]->(b)")

@@ -26,6 +26,16 @@ object Stamps {
     /** A property a checked save sets and removes in one statement, to hold the node's write lock while it compares. */
     internal const val LOCK = "`__drivine.lock`"
 
+    /**
+     * The clauses that take the write lock of each node in [aliases] and leave it as it was: a property
+     * is set and removed again. What a statement reads of a node after this is what the last writer
+     * committed, and stays so until the statement ends. Without it, a statement can decide what it
+     * changes from a node another writer is changing at that moment. The stamp itself cannot serve: a
+     * statement reads back its own write, not what another writer committed.
+     */
+    internal fun lock(vararg aliases: String): String =
+        "SET ${aliases.joinToString(", ") { "$it.$LOCK = true" }} REMOVE ${aliases.joinToString(", ") { "$it.$LOCK" }}"
+
     internal const val NEW_PARAM = "_stamp"
     internal const val EXPECTED_PARAM = "_expectedStamp"
 

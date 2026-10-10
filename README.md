@@ -1340,7 +1340,7 @@ data class Person(
 - `edges.relate`, `unrelate` and `unrelateAll` write the token at both ends, and `relate` leaves both alone when it finds the relationship there as it is. On Memgraph two of them that touch the same node at once can conflict; `edges` does not retry, and the engine's error reaches the caller. The same holds for a save by the deprecated `GraphObjectManager`.
 - `saveAll` stamps the nodes it changes and hands the stamps back as `save` does. It checks a view saved with `Replace`, and nothing else. The deprecated `GraphObjectManager` stamps the nodes and relationships it changes too, so a checked save notices its writes.
 - Deleting a node removes its relationships without marking the nodes at their other ends.
-- Indexes and constraints are not affected. A checked save sets and removes a property `__drivine.lock` within its statement, to hold the node's write lock; it is never left on a node. A flat `@PropertyBag` does not read a property beginning `__drivine.`.
+- Indexes and constraints are not affected. A save sets and removes a property `__drivine.lock` on each node it writes, within its statement, to hold the node's write lock while it compares; it is never left on a node. An unchecked write takes the lock too, so that it says truly whether it changed a node another writer is changing at the same moment. `edges.relate` does the same for both nodes. A flat `@PropertyBag` does not read a property beginning `__drivine.`.
 
 **Cypher you write yourself** should mark what it changes, or a checked save will not notice the change. `Stamps.setClause` marks a node whose mapped properties it changes; `Stamps.linksClause` marks each end of a relationship it adds or removes:
 

@@ -268,6 +268,8 @@ internal class SaveStatementBuilder(
             bindings["p${part}_rows"] = rows
             line("UNWIND \$p${part}_rows AS row")
             line("MERGE (n:${model.labels.joinToString(":")} {${model.nodeIdProperty ?: model.nodeIdField}: row.id})")
+            // The node's lock is taken before the row is compared with it: see [Stamps.lock].
+            line(Stamps.lock("n"))
             // The stamp the node is found with, read before anything is written to it.
             line("WITH $carried, row, n, row.i + '/' + coalesce(n.$STAMP, '') AS _i, $ROW_CHANGES_NODE AS _changed")
             line("SET n += row.props, ${Stamps.restamp("n", "_changed", MARK)}")

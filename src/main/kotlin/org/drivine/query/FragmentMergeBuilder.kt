@@ -83,20 +83,16 @@ class FragmentMergeBuilder(
         } else {
             "${Stamps.nodeTokenOf("n")} = ${'$'}${Stamps.EXPECTED_PARAM}"
         }
-        val mergeClause = if (expected == null) {
-            "MERGE (n:$labels {$nodeIdProperty: \$$nodeIdField})"
-        } else {
-            // A property is set and removed again first: that leaves the node as it was and takes its
-            // write lock. Only then is the stamp read. Without the lock, two writers holding the same
-            // stamp could both pass the comparison before either had written. The stamp itself cannot
-            // serve: a statement reads back its own write, not what another writer committed.
-            """
-            MATCH (n:$labels {$nodeIdProperty: ${'$'}$nodeIdField})
-            SET n.${Stamps.LOCK} = true
-            REMOVE n.${Stamps.LOCK}
-            WITH n
-            WHERE $stillAsLoaded
-            """.trimIndent()
+        val match = "(n:$labels {$nodeIdProperty: \$$nodeIdField})"
+        val mergeClause = when {
+            stamping == null -> "MERGE $match"
+            // The node's lock is taken before the statement reads it to say whether it changes it.
+            // Without the lock, a writer that changes the node at the same moment can be missed: the
+            // node is then left changed, carrying a stamp that speaks for what it held before.
+            expected == null -> "MERGE $match\n${Stamps.lock("n")}"
+            // And before the stamp is compared. Without the lock, two writers holding the same stamp
+            // could both pass the comparison before either had written.
+            else -> "MATCH $match\n${Stamps.lock("n")}\nWITH n\nWHERE $stillAsLoaded"
         }
 
         val bindings = mutableMapOf<String, Any?>(nodeIdField to idValue)
