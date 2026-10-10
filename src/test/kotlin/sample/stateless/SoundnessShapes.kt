@@ -8,6 +8,7 @@ import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
+import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.Root
 
 /** Two lists of one kind of node, each over a relationship of its own: a person is in the backlog, or is done. */
@@ -76,4 +77,26 @@ data class ClaimTickets(
     @Root val claim: Claim,
     @GraphRelationship(type = "TRACKS", direction = Direction.OUTGOING)
     val tickets: List<Ticket> = emptyList(),
+)
+
+/** A relationship with a property that can be null. */
+@RelationshipFragment
+data class Remark(val note: String?, val target: Human)
+
+@GraphView
+data class ClaimRemarks(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "REMARKS", direction = Direction.OUTGOING)
+    val remarks: List<Remark> = emptyList(),
+)
+
+/** The same, to a node with a property bag, which has a part of the statement to itself. */
+@RelationshipFragment
+data class TagRemark(val note: String?, val target: Tagged)
+
+@GraphView
+data class ClaimTagRemarks(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "TAG_REMARKS", direction = Direction.OUTGOING)
+    val remarks: List<TagRemark> = emptyList(),
 )

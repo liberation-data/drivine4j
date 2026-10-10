@@ -602,21 +602,27 @@ class GraphViewMergeBuilder(
                 bindings["rel_$propName"] = relProps[propName]
                 "$propName: \$rel_$propName"
             }
+            // A null clears the relationship's property, so the relationship is as written where it has none.
+            val same = relModel.relationshipProperties.map { propName ->
+                if (relProps[propName] == null) "x.$propName IS NULL" else "coalesce(x.$propName = \$rel_$propName, false)"
+            }
 
             """
                 MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+                ${found(relModel, same)}
                 MERGE (root)${mergeEdge(relModel, "r")}(target)
                 SET r += {$relPropsString}
-                $relinked
+                $relinkedIfWritten
             """.trimIndent()
         } else {
             // Direct target reference: simple MERGE with no properties
             """
                 MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
+                ${found(relModel, emptyList())}
                 MERGE (root)${mergeEdge(relModel)}(target)
-                $relinked
+                $relinkedIfWritten
             """.trimIndent()
         }
 
@@ -627,9 +633,34 @@ class GraphViewMergeBuilder(
     }
 
     /**
+     * The clauses that count, before a relationship between `root` and `target` is merged, how many
+     * there are (`_had`) and how many of them carry the properties about to be written (`_same`),
+     * [same] being the test of each property on `x`. Empty when this builder does not stamp.
+     */
+    private fun found(relModel: RelationshipModel, same: List<String>): String =
+        if (stamping == null) {
+            ""
+        } else {
+            "OPTIONAL MATCH (root)${mergeEdge(relModel, "x")}(target)\n" +
+                "WITH root, target, count(x) AS _had, sum(CASE WHEN ${(listOf("x IS NOT NULL") + same).joinToString(" AND ")} THEN 1 ELSE 0 END) AS _same"
+        }
+
+    /**
+     * The clause that gives `root` and `target` a new relationship token when the merge after [found]
+     * made the relationship or changed a property of one: a relationship that was there as it is
+     * marks neither end. Empty when this builder does not stamp.
+     */
+    private val relinkedIfWritten: String =
+        if (stamping == null) {
+            ""
+        } else {
+            val written = "_had = 0 OR _same < _had"
+            "SET ${Stamps.relink("root", written, "\$$MARK")}, ${Stamps.relink("target", written, "\$$MARK")}"
+        }
+
+    /**
      * The clause that gives `root` and `target` a new relationship token, appended to a statement that
-     * writes or removes a relationship between them; empty when this builder does not stamp. This
-     * manager does not look at whether the relationship was already as written.
+     * removes a relationship between them; empty when this builder does not stamp.
      */
     private val relinked: String =
         if (stamping == null) "" else "SET ${Stamps.relink("root", "true", "\$$MARK")}, ${Stamps.relink("target", "true", "\$$MARK")}"

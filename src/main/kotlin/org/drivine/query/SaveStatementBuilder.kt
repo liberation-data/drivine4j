@@ -145,6 +145,9 @@ internal class SaveStatementBuilder(
             // Every node the object holds, in any field: none of them is deleted as unreferenced,
             // though the field it is dropped from holds the only relationship the store has to it yet.
             val held = written.flatMap { (_, target, items) -> items.filterNotNull().map { target.fragmentOf(it) } }
+            // A save leaves a relationship's property alone where the object's is null, as it leaves a
+            // related node's. A save of what a change altered clears one the change set to null.
+            val clears = before != null
             written.forEach { (relationship, target, items) ->
                 val ids = items.map { item -> item?.let { target.idOf(it) } }
                 // A node the field holds more than once is written once, as the last of them says.
@@ -184,10 +187,10 @@ internal class SaveStatementBuilder(
                         val altered = altered(was?.let { target.nodeOf(it) }, now?.let { target.nodeOf(it) })
                         groups.getOrPut(Group(nodeModel, link)) { mutableListOf() }.add(row(relationship, item, node, nodeModel, altered))
                     } else {
-                        relatedPart(relationship, target, item, depth, link, was?.let { target.nodeOf(it) }, now?.let { target.nodeOf(it) })
+                        relatedPart(relationship, target, item, depth, link, clears, was?.let { target.nodeOf(it) }, now?.let { target.nodeOf(it) })
                     }
                 }
-                groups.forEach { (group, rows) -> groupPart(relationship, group, rows, depth) }
+                groups.forEach { (group, rows) -> groupPart(relationship, group, rows, depth, clears) }
             }
         }
 
@@ -259,7 +262,7 @@ internal class SaveStatementBuilder(
          * Saves the fragments of one class that a field holds, as [rows], and when [Group.link] joins
          * each to the root at [depth].
          */
-        private fun groupPart(relationship: RelationshipModel, group: Group, rows: List<Map<String, Any?>>, depth: Int) {
+        private fun groupPart(relationship: RelationshipModel, group: Group, rows: List<Map<String, Any?>>, depth: Int, clears: Boolean) {
             val part = parts++
             val model = group.model
             val rootVariable = "_r$depth"
@@ -287,7 +290,8 @@ internal class SaveStatementBuilder(
             val type = relationship.type
             val names = relationship.relationshipProperties
             val same = listOf("x IS NOT NULL") + names.map { name ->
-                "CASE WHEN row.rel.$name IS NULL THEN x.$name IS NULL ELSE coalesce(x.$name = row.rel.$name, false) END"
+                val absent = if (clears) "x.$name IS NULL" else "true"
+                "CASE WHEN row.rel.$name IS NULL THEN $absent ELSE coalesce(x.$name = row.rel.$name, false) END"
             }
             // The row's values are carried by name: a row is a map, and not every engine groups by one.
             val values = names.mapIndexed { index, name -> "row.rel.$name AS _q$index" }
@@ -298,6 +302,9 @@ internal class SaveStatementBuilder(
                 "WITH $carried, n, _i, ${(values + "count(x) AS _had").joinToString(", ")}, " +
                     "sum(CASE WHEN ${same.joinToString(" AND ")} THEN 1 ELSE 0 END) AS _same"
             )
+            // There may be several between the two nodes, and the properties are set on them all: the
+            // relationship is as the row says only if every one of them is.
+            line("WITH $carried, $held, _had, $ALL_SAME")
             if (relationship.direction == Direction.UNDIRECTED) {
                 // A relationship is stored with a direction, and either one satisfies the field: it is
                 // made, from the root, only when there is none.
@@ -309,7 +316,8 @@ internal class SaveStatementBuilder(
             } else {
                 line("MERGE ($rootVariable)${edge(relationship, "r")}(n)")
             }
-            val sets = names.mapIndexed { index, name -> "r.$name = _q$index" } + Stamps.relink("n", "_same = 0", MARK)
+            val sets = names.mapIndexed { index, name -> if (clears) "r.$name = _q$index" else "r.$name = coalesce(_q$index, r.$name)" } +
+                Stamps.relink("n", "_same = 0", MARK)
             line("SET ${sets.joinToString(", ")}")
             val made = "sum(CASE WHEN _same = 0 THEN 1 ELSE 0 END) AS _made"
             if (handsBack) {
@@ -324,18 +332,20 @@ internal class SaveStatementBuilder(
         }
 
         /** Saves the node [item] points at, then when [link] the relationship to it from the root at [depth]. */
-        private fun relatedPart(relationship: RelationshipModel, target: Target, item: Any, depth: Int, link: Boolean, before: JsonNode?, after: JsonNode?) {
+        private fun relatedPart(
+            relationship: RelationshipModel, target: Target, item: Any, depth: Int, link: Boolean, clears: Boolean, before: JsonNode?, after: JsonNode?,
+        ) {
             val node = target.nodeOf(item)
             val nested = target.view
             if (nested != null) {
                 view(node, nested, depth + 1, before, after)
-                if (link) relationshipPart(relationship, item, depth, "_r${depth + 1}") else line("WITH ${carry(depth)}")
+                if (link) relationshipPart(relationship, item, depth, "_r${depth + 1}", clears) else line("WITH ${carry(depth)}")
             } else {
                 val model = FragmentModel.from(node.javaClass)
                 add(fragmentPart(node, model, carry(depth), before, after))
                 if (link) {
                     line("WITH ${roots(depth)}, n, ${collected(node, model)}")
-                    relationshipPart(relationship, item, depth, "n")
+                    relationshipPart(relationship, item, depth, "n", clears)
                 } else {
                     line("WITH ${roots(depth)}, ${collected(node, model)}")
                 }
@@ -346,14 +356,15 @@ internal class SaveStatementBuilder(
          * Joins the root at [depth] to [targetVariable]. Both get a new relationship token if the
          * relationship was not there, or was there with other properties.
          */
-        private fun relationshipPart(relationship: RelationshipModel, item: Any, depth: Int, targetVariable: String) {
+        private fun relationshipPart(relationship: RelationshipModel, item: Any, depth: Int, targetVariable: String, clears: Boolean) {
             val part = parts++
             val rootVariable = "_r$depth"
             val scope = "${carry(depth)}, $targetVariable"
             val type = relationship.type
             val properties = if (relationship.isRelationshipFragment) {
                 val values = objectMapper.toMap(item)
-                relationship.relationshipProperties.map { name ->
+                // A property that is null is left alone, unless the save clears what was set to null.
+                relationship.relationshipProperties.filter { clears || values[it] != null }.map { name ->
                     val parameter = "p${part}_rel_$name"
                     bindings[parameter] = values[name]
                     Triple(name, parameter, values[name])
@@ -368,6 +379,8 @@ internal class SaveStatementBuilder(
 
             line("OPTIONAL MATCH ($rootVariable)${edge(relationship, "x")}($targetVariable)")
             line("WITH $scope, count(x) AS _had, sum(CASE WHEN ${same.joinToString(" AND ")} THEN 1 ELSE 0 END) AS _same")
+            // As in a group: as the item says only if every relationship between the two nodes is.
+            line("WITH $scope, _had, $ALL_SAME")
             if (undirected) {
                 // A relationship is stored with a direction, and either one satisfies the field: it is
                 // made, from the root, only when there is none.
@@ -553,6 +566,9 @@ internal class SaveStatementBuilder(
         /** The stamp a statement offers every node whose relationships it changes, and every related fragment it changes. */
         const val MARK_PARAM = "_mark"
         const val MARK = "\$$MARK_PARAM"
+
+        /** Whether every relationship counted in `_had` was counted in `_same` too, and there was one: 1 or 0, as `_same`. */
+        const val ALL_SAME = "CASE WHEN _had > 0 AND _same = _had THEN 1 ELSE 0 END AS _same"
 
         /** The relationship token of the stamp the object's root carried. */
         const val CARRIED_LINKS_PARAM = "_carriedLinks"

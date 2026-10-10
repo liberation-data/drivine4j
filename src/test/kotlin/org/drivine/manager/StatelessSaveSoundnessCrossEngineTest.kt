@@ -1,10 +1,17 @@
 package org.drivine.manager
 
+import java.util.UUID
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import org.drivine.DrivineException
 import org.drivine.StaleObjectException
+import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
@@ -12,6 +19,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
+import org.drivine.query.SaveStatementBuilder
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -25,7 +33,16 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.flatexpand.SeqExpandView
 import sample.stateless.Claim
+import org.drivine.session.SessionManager
+import sample.stateless.Citation
 import sample.stateless.ClaimCircle
+import sample.stateless.ClaimCitations
+import sample.stateless.ClaimRemarks
+import sample.stateless.ClaimSupports
+import sample.stateless.ClaimTagRemarks
+import sample.stateless.Remark
+import sample.stateless.TagRemark
+import sample.stateless.Tagged
 import sample.stateless.ClaimPeers
 import sample.stateless.ClaimQueues
 import sample.stateless.ClaimReviewers
@@ -50,6 +67,8 @@ import sample.stateless.WidgetView
 abstract class StatelessSaveSoundnessContract {
 
     abstract val pm: NonTransactionalPersistenceManager
+
+    abstract val connections: ConnectionProvider
 
     private val stateless: StatelessGraphObjectManager
         get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
@@ -297,6 +316,191 @@ abstract class StatelessSaveSoundnessContract {
         assertEquals(emptyList(), edges("MENTIONS"))
     }
 
+    // ----- A relationship's own properties -----
+
+    private fun note(type: String): String? = strings("MATCH (:Claim {id: 'c1'})-[r:$type]->() RETURN coalesce(r.note, '')").single().ifEmpty { null }
+
+    @Test
+    fun `a save leaves a relationship's property alone where the object's is null`() {
+        stateless.save(ClaimRemarks(Claim("c1", "one"), remarks = listOf(Remark("kept", Human("ada", "Ada")))))
+
+        stateless.save(ClaimRemarks(Claim("c1", "one"), remarks = listOf(Remark(null, Human("ada", "Ada")))))
+
+        assertEquals("kept", note("REMARKS"))
+    }
+
+    @Test
+    fun `a save leaves a relationship's property alone where the object's is null, for a node with a part to itself`() {
+        stateless.save(ClaimTagRemarks(Claim("c1", "one"), remarks = listOf(TagRemark("kept", Tagged("t1", "tag")))))
+
+        stateless.save(ClaimTagRemarks(Claim("c1", "one"), remarks = listOf(TagRemark(null, Tagged("t1", "tag")))))
+
+        assertEquals("kept", note("TAG_REMARKS"))
+    }
+
+    @Test
+    fun `update clears a relationship's property the change set to null`() {
+        stateless.save(ClaimRemarks(Claim("c1", "one"), remarks = listOf(Remark("gone", Human("ada", "Ada")))))
+
+        stateless.update<ClaimRemarks>("c1") { view -> view.copy(remarks = view.remarks.map { it.copy(note = null) }) }
+
+        assertNull(note("REMARKS"))
+    }
+
+    // ----- Several relationships between two nodes -----
+
+    private fun linksToken(id: String): String? = property(id, Stamps.PROPERTY)?.substringAfter(':')
+
+    @Test
+    fun `relate marks both ends when it changes the properties of one of several relationships`() {
+        stateless.save(Claim("c1", "one"))
+        stateless.save(Claim("c2", "two"))
+        val from = nodeRef<Claim>("c1")
+        val to = nodeRef<Claim>("c2")
+        stateless.edges.relate(from, to, "SUPPORTS", mapOf("weight" to 1), RelateMode.CREATE)
+        stateless.edges.relate(from, to, "SUPPORTS", mapOf("weight" to 2), RelateMode.CREATE)
+        val before = linksToken("c1") to linksToken("c2")
+
+        stateless.edges.relate(from, to, "SUPPORTS", mapOf("weight" to 1))
+
+        assertEquals(listOf("1", "1"), strings("MATCH (:Claim {id: 'c1'})-[r:SUPPORTS]->() RETURN toString(r.weight)"))
+        assertNotEquals(before.first, linksToken("c1"), "one relationship's weight changed")
+        assertNotEquals(before.second, linksToken("c2"))
+    }
+
+    @Test
+    fun `a save marks the root when it changes the properties of one of several relationships`() {
+        stateless.save(ClaimCitations(Claim("c1", "one"), cited = listOf(Citation(1, Human("ada", "Ada")))))
+        run("MATCH (c:Claim {id: 'c1'}), (h:Human {id: 'ada'}) CREATE (c)-[:CITES {page: 2}]->(h)")
+        val before = linksToken("c1")
+
+        stateless.save(ClaimCitations(Claim("c1", "one"), cited = listOf(Citation(1, Human("ada", "Ada")))))
+
+        assertEquals(listOf("1", "1"), strings("MATCH (:Claim {id: 'c1'})-[r:CITES]->() RETURN toString(r.page)"))
+        assertNotEquals(before, linksToken("c1"), "one relationship's page changed")
+    }
+
+    // ----- The other manager -----
+
+    @Test
+    fun `GraphObjectManager marks neither end when it saves a relationship that is there as it is`() {
+        val mapper = Neo4jObjectMapper.instance
+        fun legacy() = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        val view = ClaimSupports(Claim("c1", "one"), supports = listOf(Claim("c2", "two")))
+        legacy().save(view)
+        val before = linksToken("c1") to linksToken("c2")
+        assertNotNull(before.first, "the first save marked the root")
+
+        legacy().save(view)
+
+        assertEquals(before, linksToken("c1") to linksToken("c2"))
+    }
+
+    // ----- Two writers at once -----
+
+    /** Runs [first] and [second] at the same moment, and gives what each returned. */
+    private fun <A, B> together(first: () -> A, second: () -> B): Pair<A, B> {
+        val pool = Executors.newFixedThreadPool(2)
+        try {
+            val ready = CountDownLatch(2)
+            val go = CountDownLatch(1)
+            fun <T> started(work: () -> T) = pool.submit<T> { ready.countDown(); go.await(); work() }
+            val one = started(first)
+            val two = started(second)
+            ready.await()
+            go.countDown()
+            return one.get(30, TimeUnit.SECONDS) to two.get(30, TimeUnit.SECONDS)
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `a related node written by two saves at once never keeps a stamp for data it no longer holds`() {
+        repeat(40) { round ->
+            val id = "k$round"
+            stateless.save(Claim(id, "A"))
+            // One save writes the text the node has, and so changes nothing if it runs first; the other changes it.
+            val (_, changed) = together(
+                { stateless.save(HumanClaims(Human("keeps$round", "Keeps"), claims = listOf(Claim(id, "A")))) },
+                { stateless.save(HumanClaims(Human("changes$round", "Changes"), claims = listOf(Claim(id, "B")))) },
+            )
+
+            if (property(id, "text") == "A") {
+                // The save that wrote A ran last, over B: the node's token is not the one B was stamped with.
+                assertNotEquals(
+                    changed.claims.single().stamp?.substringBefore(':'), property(id, Stamps.PROPERTY)?.substringBefore(':'),
+                    "round $round: the node holds A under the stamp it was given for B",
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a relationship made again while a replace removes it marks the node it is made on`() {
+        repeat(40) { round ->
+            val claim = "r$round"
+            val human = "p$round"
+            val loaded = stateless.save(ClaimView(Claim(claim, "one"), people = listOf(Human(human, "Person"))))
+            val (_, replaced) = together(
+                { stateless.edges.relate(nodeRef<Claim>(claim), nodeRef<Human>(human), "MENTIONS") },
+                { stateless.save(loaded.copy(people = emptyList()), Replace(ClaimView::people)) },
+            )
+
+            if (edges("MENTIONS").contains("$claim->$human")) {
+                // relate ran last and made the relationship again: a replace of what the other save
+                // handed back, which holds no relationship, must not pass for current.
+                assertNotEquals(
+                    replaced.claim.stamp?.substringAfter(':'), linksToken(claim),
+                    "round $round: the claim has a relationship its stamp does not speak for",
+                )
+            }
+        }
+    }
+
+    // ----- Inside a transaction -----
+
+    @Test
+    fun `a save in a transaction that read the node before another writer changed it is refused, and writes nothing`() {
+        val loaded = stateless.save(Claim("c1", "one"))
+        val connection = connections.connect()
+        connection.startTransaction()
+        try {
+            // The transaction's first read. On Memgraph this is the snapshot it sees from here on.
+            connection.query(QuerySpecification.withStatement("MATCH (c:Claim {id: 'c1'}) RETURN c.text").transform(String::class.java))
+            run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'other', ${Stamps.setClause("c")}")
+            val inTransaction = object : PersistenceManager by pm {
+                // As a manager bound to a transaction runs a statement, and reports its failure.
+                override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = try {
+                    connection.query(spec)
+                } catch (failure: Exception) {
+                    throw DrivineException.withRootCause(failure, spec)
+                }
+            }
+            val statement = SaveStatementBuilder(Neo4jObjectMapper.instance, pm.grammar, null)
+                .build(loaded.copy(text = "late"), checked = true, NullPolicy.IGNORE)
+
+            assertFailsWith<StaleObjectException> { SaveExecutor(inTransaction).save(statement) }
+        } finally {
+            runCatching { connection.rollbackTransaction() }
+            connection.release()
+        }
+
+        assertEquals("other", property("c1", "text"))
+    }
+
+    // ----- An id that is a UUID -----
+
+    @Test
+    fun `update takes the id as a UUID`() {
+        val id = UUID.randomUUID()
+        stateless.save(Claim(id.toString(), "one"))
+
+        assertNotNull(stateless.update<Claim>(id) { it.copy(text = "two") })
+
+        assertEquals("two", property(id.toString(), "text"))
+    }
+
     // ----- What a cascading delete follows -----
 
     @Test
@@ -349,6 +553,7 @@ class StatelessSaveSoundnessNeo4jTest : StatelessSaveSoundnessContract() {
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+    override val connections: ConnectionProvider get() = provider
 }
 
 @Testcontainers
@@ -378,6 +583,7 @@ class StatelessSaveSoundnessFalkorDbTest : StatelessSaveSoundnessContract() {
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+    override val connections: ConnectionProvider get() = provider
 }
 
 @Testcontainers
@@ -407,4 +613,5 @@ class StatelessSaveSoundnessMemgraphTest : StatelessSaveSoundnessContract() {
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+    override val connections: ConnectionProvider get() = provider
 }

@@ -18,6 +18,7 @@ import org.drivine.query.savedByUnwind
 import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
 import java.util.IdentityHashMap
+import java.util.UUID
 import kotlin.reflect.KProperty1
 
 /**
@@ -197,6 +198,11 @@ class StatelessGraphObjectManager private constructor(
         throw checkNotNull(last)
     }
 
+    /** [update] of the object whose id is [id] as a string. */
+    @JvmOverloads
+    fun <T : Any> update(id: UUID, graphClass: Class<T>, attempts: Int = 3, change: (T) -> T): T? =
+        update(id.toString(), graphClass, attempts, change)
+
     /**
      * Saves what differs between an object as it was loaded, digested as [before] and carrying
      * [loadedStamp], and as the change returned it.
@@ -312,4 +318,8 @@ class StatelessGraphObjectManager private constructor(
 
 /** Loads, changes and saves a graph object, with a reified type. See [StatelessGraphObjectManager.update]. */
 inline fun <reified T : Any> StatelessGraphObjectManager.update(id: String, attempts: Int = 3, noinline change: (T) -> T): T? =
+    update(id, T::class.java, attempts, change)
+
+/** [update] of the object whose id is [id] as a string, with a reified type. */
+inline fun <reified T : Any> StatelessGraphObjectManager.update(id: UUID, attempts: Int = 3, noinline change: (T) -> T): T? =
     update(id, T::class.java, attempts, change)

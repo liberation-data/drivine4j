@@ -34,7 +34,8 @@ internal object EdgeStatements {
             quotedIdentifier(key) to "\$_rel$i"
         }
         val merges = mode == RelateMode.MERGE
-        val changes = if (merges) "_same = 0" else "true"
+        // There may be several between the two nodes, and the properties are set on them all.
+        val changes = if (merges) "_had = 0 OR _same < _had" else "true"
         val assignments = written.map { (key, parameter) -> "r.$key = $parameter" } +
             Stamps.relink("a", changes, "\$$MARK") + Stamps.relink("b", changes, "\$$MARK")
         val statement = buildString {
@@ -45,10 +46,10 @@ internal object EdgeStatements {
                 // is counted is still so when the MERGE runs: see [Stamps.lock].
                 append("\n").append(Stamps.lock("a", "b"))
                 append("\nWITH a, b")
-                // Counted before the MERGE: whether a relationship is there that already carries the properties.
+                // Counted before the MERGE: how many relationships are there, and how many carry the properties already.
                 val same = (listOf("x IS NOT NULL") + written.map { (key, parameter) -> "coalesce(x.$key = $parameter, false)" })
                 append("\nOPTIONAL MATCH (a)-[x:").append(quotedIdentifier(type)).append("]->(b)")
-                append("\nWITH a, b, sum(CASE WHEN ").append(same.joinToString(" AND ")).append(" THEN 1 ELSE 0 END) AS _same")
+                append("\nWITH a, b, count(x) AS _had, sum(CASE WHEN ").append(same.joinToString(" AND ")).append(" THEN 1 ELSE 0 END) AS _same")
             }
             append("\n").append(mode.name).append(" (a)-[r:").append(quotedIdentifier(type)).append("]->(b)")
             append("\nSET ").append(assignments.joinToString(", "))

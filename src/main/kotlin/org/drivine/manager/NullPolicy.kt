@@ -19,9 +19,8 @@ package org.drivine.manager
  *
  * The policy is the whole of it on [StatelessGraphObjectManager], which keeps no session and writes
  * the object as given. It governs the object's own fields, and for a view its root's. A node reached
- * through a relationship is written as under [IGNORE] whatever the policy, a null property of a
- * relationship fragment clears the property on the relationship, and `update` clears what the change
- * set to null. On the deprecated [GraphObjectManager] it governs null semantics independently
+ * through a relationship is written as under [IGNORE] whatever the policy, and so is a relationship
+ * fragment's own property; `update` clears what the change set to null. On the deprecated [GraphObjectManager] it governs null semantics independently
  * of dirty-tracking: the session snapshot only optimizes away re-writes of unchanged **non-null**
  * fields (a no-op), and never decides whether a null clears. So the observable result does not depend
  * on whether the object is tracked.

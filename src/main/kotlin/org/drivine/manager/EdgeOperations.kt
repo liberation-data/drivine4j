@@ -22,6 +22,9 @@ class EdgeOperations internal constructor(
     private val persistenceManager: PersistenceManager,
 ) {
 
+    /** Runs a statement again when the engine turns it away because another writer was changing the same node. */
+    private val executor = SaveExecutor(persistenceManager)
+
     /**
      * Joins [from] to [to] with a [type] relationship.
      *
@@ -46,12 +49,14 @@ class EdgeOperations internal constructor(
         mode: RelateMode = RelateMode.MERGE,
     ): Boolean {
         val statement = EdgeStatements.relate(from, to, type, properties, mode)
-        return persistenceManager.getOne(
-            QuerySpecification
-                .withStatement(statement.statement)
-                .bind(statement.bindings)
-                .transform(Long::class.java)
-        ) > 0
+        return executor.whenNotContended {
+            persistenceManager.getOne(
+                QuerySpecification
+                    .withStatement(statement.statement)
+                    .bind(statement.bindings)
+                    .transform(Long::class.java)
+            )
+        } > 0
     }
 
     /**
@@ -76,12 +81,14 @@ class EdgeOperations internal constructor(
     fun unrelateAll(from: NodeRef, type: String, direction: Direction = Direction.OUTGOING): Int =
         count(EdgeStatements.unrelateAll(from, type, direction))
 
-    private fun count(statement: MergeStatement): Int = persistenceManager.getOne(
-        QuerySpecification
-            .withStatement(statement.statement)
-            .bind(statement.bindings)
-            .transform(Long::class.java)
-    ).toInt()
+    private fun count(statement: MergeStatement): Int = executor.whenNotContended {
+        persistenceManager.getOne(
+            QuerySpecification
+                .withStatement(statement.statement)
+                .bind(statement.bindings)
+                .transform(Long::class.java)
+        )
+    }.toInt()
 
     /**
      * Loads the [targetClass] nodes joined to [from] by a [type] relationship in [direction].

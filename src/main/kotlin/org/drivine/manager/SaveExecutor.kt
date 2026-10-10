@@ -21,9 +21,23 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
     /**
      * Runs a whole save. Returns the stamps to hand back: the root's, then that of each of the statement's
      * stamped targets, in their order. Throws [StaleObjectException] when the root is not as it was when the object was
-     * loaded; the statement has then written nothing.
+     * loaded; the statement has then written nothing. That is so too when the engine turns a checked
+     * save away each time it is run: inside a transaction that read the node before another writer
+     * changed it, Memgraph refuses the write itself.
      */
-    fun save(statement: SaveStatement): List<String> = stamps(statement, whenNotContended { persistenceManager.query(spec(statement)) })
+    fun save(statement: SaveStatement): List<String> {
+        val rows = try {
+            whenNotContended { persistenceManager.query(spec(statement)) }
+        } catch (failure: DrivineException) {
+            // Turned away every time: another writer changed the node, and the engine will not let this
+            // save write over it. For a checked save that is a stale object, and it wrote nothing.
+            val root = statement.root
+            val expected = root.expected
+            if (expected == null || !failure.isRetryable()) throw failure
+            throw StaleObjectException(root.fragmentClass, root.id, expected, foundStamp = null, deleted = false, cause = failure)
+        }
+        return stamps(statement, rows)
+    }
 
     /**
      * Runs [specs] as one batch, again if the engine turned it away as it does a contended [save]. A
@@ -77,7 +91,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
     }
 
     /**
-     * Runs a save, again if the engine turned it away because another writer was changing the same
+     * Runs a save, or any one statement that writes, again if the engine turned it away because another writer was changing the same
      * node at that moment (a conflict or a deadlock, which the Neo4j driver, used for Neo4j and
      * Memgraph, reports as transient). The next attempt runs after that writer, and so sees its stamp: a
      * checked save is then refused as stale, not failed. If the attempts run out, or a later one fails
@@ -88,7 +102,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
      * been applied before the connection went, and a second run would find its own stamp and report
      * a save that was applied as refused.
      */
-    private fun <T> whenNotContended(statement: () -> T): T {
+    fun <T> whenNotContended(statement: () -> T): T {
         var first: DrivineException? = null
         repeat(CONTENDED_ATTEMPTS) { attempt ->
             try {
