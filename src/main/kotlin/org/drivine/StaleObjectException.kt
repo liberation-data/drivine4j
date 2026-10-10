@@ -3,7 +3,7 @@ package org.drivine
 /**
  * A save found that the node is not as it was when the object was loaded: something else changed or
  * deleted it in between, or, for a save that replaces a relationship list, added or removed one of its
- * relationships. The save is one statement, and it wrote nothing: not the node, not a related node, not
+ * relationships or changed one's properties. The save is one statement, and it wrote nothing: not the node, not a related node, not
  * a relationship.
  *
  * To carry on, load the object again and re-apply the change, which
@@ -16,10 +16,12 @@ package org.drivine
  * contended, and not the object's own: the save cannot tell which, so it does not say the object
  * changed. The engine's error is then the [cause], and [foundStamp] is not known. A transaction this
  * happens in has failed as a whole, and is to be run again from its start.
+ * This is a [RuntimeException] and not a `DrivineException`: a handler for the latter does not catch it.
  */
 class StaleObjectException(
     /** The fragment class of the node. */
     val type: Class<*>,
+    /** The id of the node, as the object carried it. */
     val id: Any,
     /** The stamp the object carried. */
     val expectedStamp: String,

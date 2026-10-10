@@ -7,16 +7,16 @@ always did, and this page keeps its documentation. For why it was replaced and h
 Loading, querying and deleting are the same on both managers and are described in the README. This
 page covers what differs: saving, the cascade on save, and the session.
 
-Three fixes in 0.1.0 apply to this manager too. A relationship field declared `INCOMING` is written
-towards the root. A `@GraphPath`, `@Count` or `@Aggregate` field is never written. An `UNDIRECTED`
-field does not add a relationship beside one stored towards the root. It also stamps the nodes it
-changes, without checking a stamp: see
-[0.1.0-stateless-object-manager.md](0.1.0-stateless-object-manager.md).
+The fixes 0.1.0 made to saving apply to this manager too, and are listed under
+[What changed](0.1.0-stateless-object-manager.md#what-changed). The ones that alter what a save
+writes: a relationship field declared `INCOMING` is written towards the root; a `@GraphPath`,
+`@Count` or `@Aggregate` field, and a list of fragments read over several hops, is never written;
+an `UNDIRECTED` field does not add a relationship beside one stored towards the root.
 
-Null handling is independent of dirty tracking: the `NullPolicy` alone decides, so the result never
-depends on whether the object is tracked by the session.
+It also stamps what it changes, without checking a stamp: see [Stamps](#stamps) below.
 
 ```kotlin
+@Suppress("DEPRECATION")
 @Bean
 fun graphObjectManager(factory: GraphObjectManagerFactory): GraphObjectManager = factory.get()
 ```
@@ -69,13 +69,28 @@ back to the per-item path. Null handling follows [`NullPolicy`](../README.md#nul
 uniformly with `save` — `IGNORE` (default) leaves nulls, `CLEAR` clears them —
 via `saveAll(objs, nullPolicy = …)`.
 
+### Null handling
 
-What `GraphObjectManager` does not do:
+Null handling is independent of dirty tracking: the `NullPolicy` alone decides, so the result never
+depends on whether the object is tracked by the session.
 
-- It does not check a `@NodeStamp`. It marks the stamp of each node it changes, and of both ends of
-  each relationship it writes or removes, so a `StatelessGraphObjectManager` save notices its writes.
-- It does not notice a node that anything else changed or deleted. Its snapshot is what it last saw,
-  not what the store holds.
+### Stamps
+
+`GraphObjectManager` does not check a `@NodeStamp`, and does not hand one back. It marks what it
+changes, so a `StatelessGraphObjectManager` save notices its writes:
+
+- the data token of each node whose properties or labels it changes;
+- the relationship token at both ends of each relationship it makes or removes, or whose properties
+  it changes. A relationship it finds as it would write it is left unmarked, so saving a view again
+  with nothing changed does not refuse another writer's `Replace`.
+
+It does not run a statement again when the engine turns it away because another writer was changing
+the same node. The engine's error reaches the caller.
+
+### What it does not notice
+
+It does not notice a node that anything else changed or deleted. Its snapshot is what it last saw,
+not what the store holds.
 
 ## Cascade on save
 
@@ -119,7 +134,15 @@ graphObjectManager.save(updated, CascadeType.DELETE_ALL)
 
 Use when: Target nodes are exclusively owned and should be deleted with the relationship.
 
-`CascadeType.PRESERVE` skips removals: relationships are added and none is removed.
+### CascadeType.PRESERVE
+
+Skips removals: relationships are added and none is removed.
+
+```kotlin
+graphObjectManager.save(updated, CascadeType.PRESERVE)
+```
+
+### Engines
 
 `DELETE_ORPHAN` is not available on Memgraph.
 
