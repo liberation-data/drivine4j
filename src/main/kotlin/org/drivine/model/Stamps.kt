@@ -82,11 +82,18 @@ object Stamps {
      * [condition] holds. [offered] is an expression for a whole stamp, which a node that has none takes whole.
      */
     internal fun restamp(alias: String, condition: String, offered: String): String =
-        "$alias.$QUOTED = CASE WHEN $condition THEN left($offered, $TOKEN) + coalesce(right($alias.$QUOTED, ${TOKEN + 1}), right($offered, ${TOKEN + 1})) ELSE $alias.$QUOTED END"
+        "$alias.$QUOTED = ${whenever(alias, condition, "left($offered, $TOKEN) + coalesce(right($alias.$QUOTED, ${TOKEN + 1}), right($offered, ${TOKEN + 1}))")}"
 
     /** As [restamp], for the token that speaks for the node's relationships. */
     internal fun relink(alias: String, condition: String, offered: String): String =
-        "$alias.$QUOTED = CASE WHEN $condition THEN coalesce(left($alias.$QUOTED, ${TOKEN + 1}), left($offered, ${TOKEN + 1})) + right($offered, $TOKEN) ELSE $alias.$QUOTED END"
+        "$alias.$QUOTED = ${whenever(alias, condition, "coalesce(left($alias.$QUOTED, ${TOKEN + 1}), left($offered, ${TOKEN + 1})) + right($offered, $TOKEN)")}"
+
+    /** [stamp] when [condition] holds, else the stamp [alias] has; [stamp] alone for a condition that always holds. */
+    private fun whenever(alias: String, condition: String, stamp: String): String =
+        if (condition == ALWAYS) stamp else "CASE WHEN $condition THEN $stamp ELSE $alias.$QUOTED END"
+
+    /** The [restamp] or [relink] condition of a stamp that is always replaced. */
+    internal const val ALWAYS = "true"
 
     /** A random token, made by the engine. */
     private const val ENGINE_TOKEN = "left(replace(randomUUID(), '-', ''), $TOKEN)"

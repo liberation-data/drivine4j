@@ -607,23 +607,23 @@ class GraphViewMergeBuilder(
                 if (relProps[propName] == null) "x.$propName IS NULL" else "coalesce(x.$propName = \$rel_$propName, false)"
             }
 
-            """
-                MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
-                MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                ${found(relModel, same)}
-                MERGE (root)${mergeEdge(relModel, "r")}(target)
-                SET r += {$relPropsString}
-                $relinkedIfWritten
-            """.trimIndent()
+            lines(
+                "MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})",
+                "MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})",
+                found(relModel, same),
+                "MERGE (root)${mergeEdge(relModel, "r")}(target)",
+                "SET r += {$relPropsString}",
+                relinkedIfWritten,
+            )
         } else {
             // Direct target reference: simple MERGE with no properties
-            """
-                MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
-                MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                ${found(relModel, emptyList())}
-                MERGE (root)${mergeEdge(relModel)}(target)
-                $relinkedIfWritten
-            """.trimIndent()
+            lines(
+                "MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})",
+                "MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})",
+                found(relModel, emptyList()),
+                "MERGE (root)${mergeEdge(relModel)}(target)",
+                relinkedIfWritten,
+            )
         }
 
         return MergeStatement(
@@ -631,6 +631,9 @@ class GraphViewMergeBuilder(
             bindings = bindings + mark()
         )
     }
+
+    /** The [clauses] that are not empty, one to a line. */
+    private fun lines(vararg clauses: String): String = clauses.filter { it.isNotEmpty() }.joinToString("\n")
 
     /**
      * The clauses that count, before a relationship between `root` and `target` is merged, how many
@@ -663,7 +666,7 @@ class GraphViewMergeBuilder(
      * removes a relationship between them; empty when this builder does not stamp.
      */
     private val relinked: String =
-        if (stamping == null) "" else "SET ${Stamps.relink("root", "true", "\$$MARK")}, ${Stamps.relink("target", "true", "\$$MARK")}"
+        if (stamping == null) "" else "SET ${Stamps.relink("root", Stamps.ALWAYS, "\$$MARK")}, ${Stamps.relink("target", Stamps.ALWAYS, "\$$MARK")}"
 
     private fun mark(): Map<String, Any?> = if (stamping == null) emptyMap() else mapOf(MARK to Stamps.fresh())
 

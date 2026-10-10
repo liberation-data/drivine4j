@@ -37,7 +37,8 @@ internal class SaveStatement(
  * The statement is a chain of parts. Each part leaves exactly one row, so the next one runs once, and
  * the nodes later parts need are carried from part to part: `_r0` is the root, `_r1` the root of a view
  * nested in it, and so on; `_ns` lists the stamped nodes reached through a relationship and `_is` the
- * index of each; `_was` is the stamp the root carried before the save wrote anything.
+ * index of each; `_was` is the stamp the root carried before the save wrote anything, carried only
+ * when the object's own is compared with it. A fragment is its root part alone, and carries nothing.
  * Only the root part can leave no row, when the root is stale, and then no later part runs.
  *
  * The related fragments of one field are saved by one part, as the rows of an `UNWIND`, so the
@@ -105,25 +106,39 @@ internal class SaveStatementBuilder(
                 // A save that replaces a list overwrites the root's relationships, so they are checked too.
                 val replaces = before == null && model.relationships.any { !it.readOnly && replaced(it) != null }
                 view(obj, model, 0, before, after, replaces)
+                line(returned(rootStamp("_r0", "_was")))
             } else {
+                // A fragment is its root part alone: the stamp is handed back from the merge's own scope.
                 rootPart(obj, FragmentModel.from(obj.javaClass), 0, replaces = false, before, after)
+                line(returned(rootStamp("n", Stamps.FOUND)))
             }
-            // One string and not a list: every engine's driver hands a string back the same way.
-            line("RETURN reduce(s = ${rootStamp()}, k IN range(0, size(_ns) - 1) | s + ',' + _is[k] + '=' + (_ns[k]).$STAMP) AS ${Stamps.STAMP_COLUMN}")
             return SaveStatement(text.toString(), bindings, root, stamped, carried)
         }
 
         /**
-         * The root's stamp as it is handed back: the node's, unless the object carried a stamp and the
-         * node no longer had one of its tokens when the save began. Then the object's token is kept, so
-         * the stamp does not vouch for data or relationships the object never held.
+         * The stamps the save hands back, as one string and not a list: every engine's driver hands a
+         * string back the same way. The root's alone when no related node's is handed back; else the
+         * root's, then each related node's keyed by its index and the stamp it was found with.
          */
-        private fun rootStamp(): String {
-            val carried = root.carried ?: return "_r0.$STAMP"
+        private fun returned(rootStamp: String): String =
+            if (stamped.isEmpty()) {
+                "RETURN $rootStamp AS ${Stamps.STAMP_COLUMN}"
+            } else {
+                "RETURN reduce(s = $rootStamp, k IN range(0, size(_ns) - 1) | s + ',' + _is[k] + '=' + (_ns[k]).$STAMP) AS ${Stamps.STAMP_COLUMN}"
+            }
+
+        /**
+         * The stamp of the root [node] as it is handed back: the node's, unless the object carried a
+         * stamp and the node no longer had one of its tokens when the save began, as [was] says. Then
+         * the object's token is kept, so the stamp does not vouch for data or relationships the object
+         * never held.
+         */
+        private fun rootStamp(node: String, was: String): String {
+            val carried = root.carried ?: return "$node.$STAMP"
             bindings[CARRIED_NODE_PARAM] = Stamps.nodeToken(carried)
             bindings[CARRIED_LINKS_PARAM] = Stamps.linksToken(carried).orEmpty()
-            return "CASE WHEN left(_was, ${Stamps.TOKEN}) = \$$CARRIED_NODE_PARAM THEN ${Stamps.nodeTokenOf("_r0")} ELSE \$$CARRIED_NODE_PARAM END + ':' + " +
-                "CASE WHEN right(_was, ${Stamps.TOKEN}) = \$$CARRIED_LINKS_PARAM THEN ${Stamps.linksTokenOf("_r0")} ELSE \$$CARRIED_LINKS_PARAM END"
+            return "CASE WHEN left($was, ${Stamps.TOKEN}) = \$$CARRIED_NODE_PARAM THEN ${Stamps.nodeTokenOf(node)} ELSE \$$CARRIED_NODE_PARAM END + ':' + " +
+                "CASE WHEN right($was, ${Stamps.TOKEN}) = \$$CARRIED_LINKS_PARAM THEN ${Stamps.linksTokenOf(node)} ELSE \$$CARRIED_LINKS_PARAM END"
         }
 
         /** The root of the view at [depth], then each relationship field it writes. Leaves `_r<depth>` carried. */
@@ -135,6 +150,8 @@ internal class SaveStatementBuilder(
                 rootFragment, FragmentModel.from(model.rootFragment.fragmentType), depth, replaces,
                 before?.get(model.rootFragment.fieldName), after?.get(model.rootFragment.fieldName),
             )
+            // The stamp the root part found is carried only when the object's own is compared with it at the end.
+            if (depth == 0) line("WITH ${if (root.carried == null) "" else "${Stamps.FOUND} AS _was, "}n AS _r0, [] AS _ns, [] AS _is")
 
             // A read-only field (every path is one) is loaded and never written.
             val written = model.relationships.filterNot { it.readOnly }.map { relationship ->
@@ -206,8 +223,6 @@ internal class SaveStatementBuilder(
                     .buildMergeStatement(fragment, null, before, nullPolicy, rootWriteFields)
                 add(statement)
                 root = requireNotNull(statement.stamp)
-                // The stamp the root part found, before it wrote anything.
-                line("WITH ${Stamps.FOUND} AS _was, n AS _r0, [] AS _ns, [] AS _is")
             } else {
                 add(fragmentPart(fragment, model, carry(depth - 1), before, after))
                 line("WITH ${roots(depth - 1)}, n AS _r$depth, ${collected(fragment, model)}")
@@ -431,7 +446,7 @@ internal class SaveStatementBuilder(
                 line("WITH $carried, target, _rs, CASE WHEN target IS NULL THEN 0 ELSE size([ $references | 1 ]) END AS _refs")
             }
             line("FOREACH (x IN _rs | DELETE x)")
-            line("FOREACH (t IN CASE WHEN target IS NOT NULL AND size(_rs) > 0 THEN [target] ELSE [] END | SET ${Stamps.relink("t", "true", MARK)})")
+            line("FOREACH (t IN CASE WHEN target IS NOT NULL AND size(_rs) > 0 THEN [target] ELSE [] END | SET ${Stamps.relink("t", Stamps.ALWAYS, MARK)})")
             if (removedTargets == RemovedTargets.DELETE_UNREFERENCED) {
                 // The root is never deleted: a relationship from it to itself is removed, and it stays.
                 bindings["p${part}_held"] = heldIds
@@ -480,8 +495,9 @@ internal class SaveStatementBuilder(
             text.append(clause)
         }
 
-        /** The roots down to [depth], and with them the stamp the object's root was found with. */
-        private fun roots(depth: Int): String = "_was, " + (0..depth).joinToString(", ") { "_r$it" }
+        /** The roots down to [depth], and before them, when the object carried a stamp, the one its root was found with. */
+        private fun roots(depth: Int): String =
+            (if (root.carried == null) "" else "_was, ") + (0..depth).joinToString(", ") { "_r$it" }
 
         /** What is carried while the items of the view at [depth] are saved. */
         private fun carry(depth: Int): String = "${roots(depth)}, _ns, _is"
