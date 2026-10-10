@@ -24,7 +24,8 @@ internal fun FragmentModel.savedByUnwind(grammar: CypherGrammar?): Boolean =
 internal fun FragmentModel.unwindProps(values: Map<String, Any?>, nullPolicy: NullPolicy): Map<String, Any?> {
     val propertyNameByField = fields.associate { it.name to it.propertyName }
     return values
-        .filterKeys { it != nodeIdField && it != stampField }
+        // Only the fragment's own fields: the mapper also gives what is declared `@GraphTransient`.
+        .filterKeys { it in propertyNameByField && it != nodeIdField && it != stampField }
         .filter { (_, value) -> value != null || nullPolicy == NullPolicy.CLEAR }
         .mapKeys { (field, _) -> propertyNameByField[field] ?: field }
 }

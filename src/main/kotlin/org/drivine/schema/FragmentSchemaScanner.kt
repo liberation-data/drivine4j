@@ -7,6 +7,7 @@ import org.drivine.annotation.RangeIndex
 import org.drivine.annotation.Unique
 import org.drivine.annotation.VectorIndex
 import org.drivine.model.FragmentModel
+import org.drivine.model.Stamps
 import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.javaField
 
@@ -40,7 +41,8 @@ internal object FragmentSchemaScanner {
     /** Maps a fragment field name to its on-disk property name (`@GraphProperty`), identity otherwise. */
     private fun onDiskNameResolver(fragmentClass: Class<*>): (String) -> String {
         val byField = try {
-            FragmentModel.from(fragmentClass).fields.associate { it.name to it.propertyName }
+            // A stamp field's property name is held as a statement writes it, quoted; a schema item names the property itself.
+            FragmentModel.from(fragmentClass).fields.associate { it.name to if (it.stamp) Stamps.PROPERTY else it.propertyName }
         } catch (e: Exception) {
             emptyMap()
         }

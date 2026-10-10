@@ -30,7 +30,25 @@ object Stamps {
     internal const val EXPECTED_PARAM = "_expectedStamp"
 
     /** The length of one token; a stamp is two, and the colon between them. */
-    private const val TOKEN = 16
+    internal const val TOKEN = 16
+
+    /** The variable a statement that stamps a node holds the stamp it found the node with: empty when it had none. */
+    internal const val FOUND = "_found"
+
+    /**
+     * The stamp a save hands back for a node that now carries [now], to an object that [carried] a
+     * stamp when the node was [found] with one, before the save wrote anything. Each token of [now]
+     * is handed back only if what it speaks for was as the object's stamp says: the node's own data
+     * for the first, its relationships for the second. Otherwise the object keeps its own token, so a
+     * later save of it that would overwrite what another writer changed is refused. An object that
+     * carried no stamp is handed the node's.
+     */
+    internal fun handedBack(carried: String?, found: String, now: String): String {
+        if (carried == null) return now
+        val node = if (nodeToken(carried) == nodeToken(found)) nodeToken(now) else nodeToken(carried)
+        val links = if (linksToken(carried) == linksToken(found)) linksToken(now) else linksToken(carried)
+        return "$node:${links.orEmpty()}"
+    }
 
     /** A new stamp: both tokens new. A statement takes from it the token it replaces. */
     fun fresh(): String = "${token()}:${token()}"

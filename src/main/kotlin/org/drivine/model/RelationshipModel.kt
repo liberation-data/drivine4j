@@ -133,14 +133,24 @@ data class RelationshipModel(
     val hops: List<HopModel> = emptyList(),
 
     /**
-     * Whether the field is loaded and skipped by every save: one declared `@ReadOnly`, or a path,
-     * which is read-only whether or not it is declared so.
+     * Whether the field is loaded and skipped by every save: one declared `@ReadOnly`, or a path or
+     * a list of fragments read over more than one hop, which are read-only whether or not they are
+     * declared so.
      */
     val readOnly: Boolean = false,
 ) {
 
     /** Whether this relationship is a multi-hop path (a @GraphPath rather than a @GraphRelationship). */
     val isPath: Boolean get() = hops.isNotEmpty()
+
+    /**
+     * Whether the field is a flat list read over a variable-length pattern (`maxDepth` above 1), so
+     * that its items are not all a single relationship away. A view nested in itself is not one:
+     * each level of it is one relationship from the level above.
+     */
+    val readsSeveralHops: Boolean
+        get() = maxDepth > 1 && (if (isRelationshipFragment) targetNodeType else elementType)
+            ?.isAnnotationPresent(org.drivine.annotation.GraphView::class.java) != true
     /**
      * Returns the field name to use as the target alias in queries.
      * Simply uses the field name as-is for clarity.

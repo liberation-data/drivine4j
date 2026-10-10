@@ -8,7 +8,9 @@ import kotlin.test.assertTrue
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
+import org.drivine.StaleObjectException
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.manager.Replace
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.load
 import org.drivine.mapper.Neo4jObjectMapper
@@ -27,6 +29,9 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.stateless.Claim
 import sample.stateless.ClaimAnyEmployers
+import sample.stateless.ClaimCircle
+import sample.stateless.HumanClaimSources
+import sample.stateless.HumanClaimsLoaded
 import sample.stateless.ClaimCompaniesLoaded
 import sample.stateless.ClaimEmployers
 import sample.stateless.ClaimOwners
@@ -144,7 +149,8 @@ abstract class RelationshipDirectionRepairContract {
 
         assertEquals(2, repair.repair(repair.report(HumanClaims::class.java).single()))
 
-        assertEquals(listOf("c1 -MENTIONS-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"), relationships())
+        // One relationship, with the page the one turned round held and the other lacked.
+        assertEquals(listOf("c1 -MENTIONS 7-> ada", "c2 -MENTIONS-> ada", "c3 -MENTIONS-> bob"), relationships())
     }
 
     @Test
@@ -481,6 +487,64 @@ abstract class RelationshipDirectionRepairContract {
         assertNotNull(finding.ambiguity)
         assertFailsWith<IllegalStateException> { repair.repair(finding, force = true) }
         assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a field is ambiguous when a path's hop is the same relationship pointing away from the root`() {
+        val before = relationships()
+
+        val finding = repair.report(HumanClaims::class.java, HumanClaimSources::class.java).single()
+
+        assertNotNull(finding.ambiguity, "a person's mentions may be the first hop of HumanClaimSources.companies")
+        assertFailsWith<IllegalStateException> { repair.repair(finding) }
+        assertEquals(before, relationships())
+    }
+
+    @Test
+    fun `a field declared read-only is reported, for the old save wrote it too`() {
+        val finding = repair.report(HumanClaimsLoaded::class.java).single()
+
+        assertEquals("claims", finding.field)
+        assertEquals(2, finding.wrongWay)
+    }
+
+    @Test
+    fun `the report counts the relationships a repair would merge into one that already points the right way`() {
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS {page: 9}]->(h)")
+
+        val finding = repair.report(HumanClaims::class.java).single()
+
+        assertEquals(2, finding.wrongWay)
+        assertEquals(1, finding.collisions, "ada and c1 have one each way")
+    }
+
+    @Test
+    fun `a relationship merged into one that points the right way gives it the properties it lacks`() {
+        run("MATCH (h:Human {id: 'ada'})-[r:MENTIONS]->(c:Claim {id: 'c1'}) SET r.note = 'kept'")
+        run("MATCH (h:Human {id: 'ada'}), (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS {page: 9}]->(h)")
+
+        repair.repair(repair.report(HumanClaims::class.java).single())
+
+        assertEquals(
+            listOf("9/kept"),
+            pm.query(
+                QuerySpecification.withStatement("MATCH (:Claim {id: 'c1'})-[r:MENTIONS]->(:Human {id: 'ada'}) RETURN toString(r.page) + '/' + r.note")
+                    .transform(String::class.java)
+            ),
+        )
+    }
+
+    @Test
+    fun `repair gives both ends a new relationship token, so a replace of an object loaded before it is refused`() {
+        val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        val loaded = stateless.save(ClaimCircle(Claim("k1", "one")))
+        // As the old save wrote an endorser: from the root (the claim) to the person.
+        run("MATCH (c:Claim {id: 'k1'}), (h:Human {id: 'ada'}) CREATE (c)-[:ENDORSES]->(h)")
+
+        assertEquals(1, repair.repair(repair.report(ClaimCircle::class.java).single()))
+
+        assertFailsWith<StaleObjectException> { stateless.save(loaded, Replace(ClaimCircle::endorsers)) }
+        assertTrue("ada -ENDORSES-> k1" in relationships(), "the relationship the repair turned round is still there")
     }
 }
 

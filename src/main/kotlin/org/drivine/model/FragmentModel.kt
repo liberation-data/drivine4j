@@ -184,7 +184,7 @@ data class FragmentModel(
         }
 
         /**
-         * A fragment has at most one `@NodeStamp` field, and it is a `String` that carries no other
+         * A fragment has at most one `@NodeStamp` field, and it is a nullable `String` that carries no other
          * mapping annotation: it is neither a property bag nor the node's labels, and no
          * `@GraphProperty` renames it.
          */
@@ -194,7 +194,8 @@ data class FragmentModel(
                 "${clazz.simpleName} has ${stamps.size} @NodeStamp fields (${stamps.joinToString { "'${it.name}'" }}). A node has one stamp."
             }
             stamps.forEach {
-                require(it.type == String::class.java && it.propertyBag == null && it.nodeLabels == null) {
+                // Nullable: a new object has no stamp yet, and neither has a node saved before 0.1.0.
+                require(it.type == String::class.java && it.nullable && it.propertyBag == null && it.nodeLabels == null) {
                     "@NodeStamp field '${it.name}' on ${clazz.simpleName} must be a nullable String and carry no other mapping annotation."
                 }
                 require(it.propertyName == Stamps.QUOTED) {

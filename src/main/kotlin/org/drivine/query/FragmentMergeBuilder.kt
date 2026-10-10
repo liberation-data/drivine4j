@@ -173,8 +173,10 @@ class FragmentMergeBuilder(
                 }
                 val param = "_bag${bagParamIndex++}"
                 bindings[param] = v
-                setClauses.add("n.`${bag.storedKey(key)}` = \$$param")
-                changeTests.add(if (v == null) present("`${bag.storedKey(key)}`") else differs("`${bag.storedKey(key)}`", "\$$param"))
+                // A key is the caller's data: quoted, and a backtick in it escaped.
+                val property = quotedIdentifier(bag.storedKey(key))
+                setClauses.add("n.$property = \$$param")
+                changeTests.add(if (v == null) present(property) else differs(property, "\$$param"))
             }
 
             // Remove keys present before but gone now (requires the previous state). Removal is a form of
@@ -186,8 +188,8 @@ class FragmentMergeBuilder(
                     keysInStore.orEmpty().filter(bag::owns).map(bag::entryKey)
                 }
                 previousKeys.filter { it !in currentKeys }.forEach { staleKey ->
-                    removeClauses.add("n.`${bag.storedKey(staleKey)}`")
-                    changeTests.add(present("`${bag.storedKey(staleKey)}`"))
+                    removeClauses.add("n.${quotedIdentifier(bag.storedKey(staleKey))}")
+                    changeTests.add(present(quotedIdentifier(bag.storedKey(staleKey))))
                 }
             }
         }
@@ -242,7 +244,11 @@ class FragmentMergeBuilder(
         // ----- Assemble -----
         val query = buildString {
             append(mergeClause)
-            if (offered != null) append("\nWITH ${carry}n, (").append(changeTests.joinToString(" OR ")).append(") AS $CHANGED")
+            // The stamp the node is found with is held too, for a statement this one is a part of.
+            if (offered != null) {
+                append("\nWITH ${carry}n, coalesce(n.${Stamps.QUOTED}, '') AS ${Stamps.FOUND}, (")
+                    .append(changeTests.joinToString(" OR ")).append(") AS $CHANGED")
+            }
             if (setClauses.isNotEmpty()) append("\nSET ").append(setClauses.joinToString(", "))
             if (removeClauses.isNotEmpty()) append("\nREMOVE ").append(removeClauses.joinToString(", "))
             if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
