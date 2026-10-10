@@ -4,6 +4,7 @@ import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
@@ -113,7 +114,10 @@ abstract class StatelessSaveSoundnessContract {
         run("CREATE (:Seq {id: 's1'})-[:NEXT]->(:Seq {id: 's2'})")
         val loaded = assertNotNull(stateless.load("s1", SeqExpandView::class.java))
 
-        assertFailsWith<IllegalArgumentException> { stateless.save(loaded, Replace(SeqExpandView::following)) }
+        val failure = assertFailsWith<IllegalArgumentException> { stateless.save(loaded, Replace(SeqExpandView::following)) }
+
+        assertContains(failure.message.orEmpty(), "Field 'following' of SeqExpandView is read-only")
+        assertEquals(listOf("s1->s2"), edges("NEXT"))
     }
 
     // ----- Targets a replace deletes -----
@@ -155,7 +159,12 @@ abstract class StatelessSaveSoundnessContract {
     fun `a replace that names no field is refused`() {
         val view = ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada")))
 
-        assertFailsWith<IllegalArgumentException> { stateless.save(view, Replace(removedTargets = RemovedTargets.DELETE_UNREFERENCED)) }
+        val failure = assertFailsWith<IllegalArgumentException> {
+            stateless.save(view, Replace(removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        }
+
+        assertContains(failure.message.orEmpty(), "Replace names no field")
+        assertEquals(emptyList(), ids("Claim"), "nothing was written")
     }
 
     // ----- An id stored under another name -----
@@ -228,7 +237,11 @@ abstract class StatelessSaveSoundnessContract {
     fun `update refuses a change that gives the object another id`() {
         stateless.save(Claim("c1", "one"))
 
-        assertFailsWith<IllegalArgumentException> { stateless.update<Claim>("c1") { it.copy(id = "c9", text = "moved") } }
+        val failure = assertFailsWith<IllegalArgumentException> {
+            stateless.update<Claim>("c1") { it.copy(id = "c9", text = "moved") }
+        }
+
+        assertContains(failure.message.orEmpty(), "gave the Claim loaded as 'c1' the id 'c9'")
 
         assertEquals(listOf("c1"), ids("Claim"))
         assertEquals("one", property("c1", "text"))
@@ -302,7 +315,11 @@ abstract class StatelessSaveSoundnessContract {
 
         assertEquals(listOf("c1->ada", "c1->bob"), edges("MENTIONS"), "no relationship the view never loaded was removed")
         // FalkorDB has no transactions: what the batch saved before the refusal stays.
-        if (pm.type != DatabaseType.FALKORDB) assertEquals(emptyList(), ids("Memo"), "the batch was applied whole or not at all")
+        if (pm.type != DatabaseType.FALKORDB) {
+            assertEquals(emptyList(), ids("Memo"), "the batch was applied whole or not at all")
+        } else {
+            assertEquals(listOf("m1"), ids("Memo"), "what the batch saved before the refusal stays")
+        }
     }
 
     @Test

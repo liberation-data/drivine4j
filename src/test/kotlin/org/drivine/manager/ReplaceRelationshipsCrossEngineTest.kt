@@ -1,7 +1,9 @@
 package org.drivine.manager
 
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
@@ -43,6 +45,9 @@ import sample.stateless.MemoView
  * (c1:Claim)-[:REVIEWED_BY]->(bob:Human)
  * ```
  */
+/** The stamp the seeded claim carries: two tokens, as a save leaves them. */
+private const val SEEDED = "0123456789abcdef:fedcba9876543210"
+
 abstract class ReplaceRelationshipsContract {
 
     abstract val pm: NonTransactionalPersistenceManager
@@ -67,7 +72,7 @@ abstract class ReplaceRelationshipsContract {
         run("MATCH (n) DETACH DELETE n")
         run(
             """
-            CREATE (c:Claim {id: 'c1', text: 'Ada and Bob met at Acme', `__drivine.stamp`: 'seeded'})
+            CREATE (c:Claim {id: 'c1', text: 'Ada and Bob met at Acme', `__drivine.stamp`: '$SEEDED'})
             CREATE (m:Memo {id: 'm1', text: 'Call Ada and Bob'})
             CREATE (ada:Human {id: 'ada', name: 'Ada'})
             CREATE (bob:Human {id: 'bob', name: 'Bob'})
@@ -136,9 +141,10 @@ abstract class ReplaceRelationshipsContract {
         val view = assertNotNull(stateless.load<ClaimEmployers>("c1"))
         assertEquals(setOf("initech"), view.employers.map { it.id }.toSet())
 
-        assertFailsWith<IllegalArgumentException> {
+        val failure = assertFailsWith<IllegalArgumentException> {
             stateless.save(view.copy(employers = emptyList()), Replace(ClaimEmployers::employers))
         }
+        assertContains(failure.message.orEmpty(), "Field 'employers' of ClaimEmployers is read-only")
 
         assertEquals(setOf("ada", "bob"), mentioned("c1", "Human"), "a refused save writes nothing")
         assertEquals(setOf("initech"), nodes("Company") - "acme")
@@ -234,9 +240,10 @@ abstract class ReplaceRelationshipsContract {
     fun `a read-only relationship field cannot be replaced`() {
         val view = assertNotNull(stateless.load<ClaimReviewers>("c1"))
 
-        assertFailsWith<IllegalArgumentException> {
+        val failure = assertFailsWith<IllegalArgumentException> {
             stateless.save(view.copy(reviewers = emptyList()), Replace(ClaimReviewers::reviewers))
         }
+        assertContains(failure.message.orEmpty(), "Field 'reviewers' of ClaimReviewers is read-only")
 
         assertEquals(setOf("bob"), reviewers(), "a refused save writes nothing")
     }
@@ -257,8 +264,12 @@ abstract class ReplaceRelationshipsContract {
     fun `replacing every field applies each relationship field of a loaded object`() {
         val view = assertNotNull(stateless.load<ClaimView>("c1"))
 
-        stateless.save(view.copy(people = view.people.filter { it.id == "ada" }, companies = emptyList()), Replace.all())
+        val saved = stateless.save(view.copy(people = view.people.filter { it.id == "ada" }, companies = emptyList()), Replace.all())
 
+        val stamp = assertNotNull(saved.claim.stamp)
+        assertEquals(SEEDED.substringBefore(':'), stamp.substringBefore(':'), "the claim's own data is as it was")
+        assertNotEquals(SEEDED.substringAfter(':'), stamp.substringAfter(':'), "it lost relationships")
+        assertEquals(stamp, assertNotNull(stateless.load<ClaimView>("c1")).claim.stamp)
         assertEquals(setOf("ada"), mentioned("c1", "Human"))
         assertEquals(emptySet(), mentioned("c1", "Company"))
         assertEquals(setOf("acme", "initech"), nodes("Company"), "removed targets are kept by default")
@@ -269,7 +280,9 @@ abstract class ReplaceRelationshipsContract {
         // Its lists are the declared defaults, not what the store holds.
         val view = ClaimView(Claim("c1", "Ada and Bob met at Acme"))
 
-        assertFailsWith<IllegalArgumentException> { stateless.save(view, Replace.all()) }
+        val failure = assertFailsWith<IllegalArgumentException> { stateless.save(view, Replace.all()) }
+
+        assertContains(failure.message.orEmpty(), "needs an object that carries a stamp, and this ClaimView has none")
 
         assertEquals(setOf("ada", "bob"), mentioned("c1", "Human"))
         assertEquals(setOf("acme"), mentioned("c1", "Company"))
@@ -279,7 +292,9 @@ abstract class ReplaceRelationshipsContract {
     fun `replacing every field is refused for a type with no stamp field`() {
         val view = assertNotNull(stateless.load<MemoView>("m1"))
 
-        assertFailsWith<IllegalArgumentException> { stateless.save(view.copy(people = emptyList()), Replace.all()) }
+        val failure = assertFailsWith<IllegalArgumentException> { stateless.save(view.copy(people = emptyList()), Replace.all()) }
+
+        assertContains(failure.message.orEmpty(), "the root of MemoView declares none")
 
         assertEquals(setOf("ada", "bob"), mentioned("m1", "Human"))
     }
@@ -314,7 +329,7 @@ abstract class ReplaceRelationshipsContract {
                 """.trimIndent()
             ).transform(ClaimView::class.java)
         ).single()
-        assertEquals("seeded", view.claim.stamp)
+        assertEquals(SEEDED, view.claim.stamp)
         assertEquals(listOf(Human("ada", "Ada")), view.people)
 
         stateless.save(view, Replace.all())
