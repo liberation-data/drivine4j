@@ -8,7 +8,6 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphObjectMergeBuilder
-import org.drivine.query.MergeStatement
 import org.drivine.query.Stamping
 import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
@@ -45,8 +44,8 @@ class StatelessGraphObjectManager private constructor(
     private val replacer = RelationshipReplacer(persistenceManager, objectMapper)
 
     /**
-     * Saves [obj] and returns it carrying its new stamp. Use the returned object from then on: the
-     * one passed in still carries the stamp the node no longer has.
+     * Saves [obj] and returns it carrying the stamp the node is left with: a new one if the save
+     * changed the node, the one it had otherwise. Use the returned object from then on.
      *
      * @param relationships [Add] (the default) adds the relationships the object holds and removes
      *   none. [Replace] names the relationship fields whose list is the whole list.
@@ -79,17 +78,17 @@ class StatelessGraphObjectManager private constructor(
         ).buildMergeStatements(obj, CascadeType.NONE, nullPolicy)
 
         // The root first: if it is stale, nothing else is written.
-        executor.execute(statements.first())
+        val stamp = executor.execute(statements.first())
         if (relationships is Replace) {
             val viewModel = GraphViewModel.from(obj.javaClass)
             replaced.forEach { replacer.replace(obj, viewModel, it, relationships.removedTargets) }
         }
         executor.execute(statements.drop(1))
-        return stamped(obj, statements)
+        return stamp?.let { stamps.of(obj, it) } ?: obj
     }
 
     /**
-     * Saves each object, in batches. Every node gets a new stamp. The saves are not checked: a batch
+     * Saves each object, in batches. A node the batch changes gets a new stamp. The saves are not checked: a batch
      * cannot say which of its rows found the stamp it expected.
      *
      * The batch itself is atomic. A [Replace] is applied to each object after it, and is part of the
@@ -159,12 +158,10 @@ class StatelessGraphObjectManager private constructor(
         val statements = GraphObjectMergeBuilder.forClass(
             clazz, objectMapper, session, objects.grammar, objects.storedKeys, Stamping(checked = true), dirty,
         ).buildMergeStatements(changed, CascadeType.NONE, NullPolicy.CLEAR)
-        executor.execute(statements)
-        return stamped(changed, statements)
+        val stamp = executor.execute(statements.first())
+        executor.execute(statements.drop(1))
+        return stamp?.let { stamps.of(obj = changed, stamp = it) } ?: changed
     }
-
-    private fun <T : Any> stamped(obj: T, statements: List<MergeStatement>): T =
-        statements.first().stamp?.let { stamps.of(obj, it.written) } ?: obj
 
     private fun rootModel(clazz: Class<*>): FragmentModel =
         if (clazz.isAnnotationPresent(GraphView::class.java)) {

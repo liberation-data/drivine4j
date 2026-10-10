@@ -1442,14 +1442,13 @@ data class Person(
 )
 ```
 
-- Every object-manager save writes a new stamp on the node, under `__drivine.stamp`. Loading fills the field.
+- An object-manager save that changes a node writes a new stamp on it, under `__drivine.stamp`. A save that changes nothing leaves the stamp as it is. Loading fills the field.
 - A stateless save of an object that carries a stamp applies only if the node still has it. Otherwise nothing is written and `StaleObjectException` says whether the node changed or was deleted. The check is part of the save statement, so it is one round trip and atomic, on an engine without transactions too.
 - A save of an object whose stamp is null is not checked: it creates the node or overwrites it.
-- `save` returns the object with its new stamp. Use the returned object: the one you passed in is now stale.
+- `save` returns the object with the stamp the node is left with. Use the returned object: if the save changed the node, the one you passed in is now stale.
 - `update` retries on a conflict, loading again and re-applying your change.
-- In a view, the root is checked. A node reached through a relationship is written unchecked.
-- `saveAll` writes stamps and does not check them.
-- `GraphObjectManager` writes stamps and does not check them.
+- In a view, the root is checked. A node reached through a relationship is written unchecked, and keeps its stamp unless the save changes one of its properties. Adding or removing a relationship changes no stamp.
+- `saveAll` and `GraphObjectManager` stamp the nodes they change and do not check a stamp.
 
 **Cypher you write yourself** should give a stamped node a new stamp when it changes the node's mapped properties, or a checked save will not notice the change:
 

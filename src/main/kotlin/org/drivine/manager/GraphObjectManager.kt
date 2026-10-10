@@ -52,7 +52,7 @@ class GraphObjectManager internal constructor(
     internal val sessionManager: SessionManager,
     private val objectMapper: ObjectMapper,
     private val subtypeRegistry: SubtypeRegistry,
-    /** Every save writes a new stamp on the nodes it saves. This manager does not check one. */
+    /** A save writes a new stamp on each node it changes. This manager does not check one. */
     private val stamping: Stamping,
 ) : GraphObjectOperations {
 

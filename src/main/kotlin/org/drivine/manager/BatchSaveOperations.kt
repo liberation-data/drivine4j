@@ -79,7 +79,7 @@ internal class BatchSaveOperations(
         rows.chunked(chunkSize).forEach { chunk ->
             specs.add(
                 QuerySpecification
-                    .withStatement("UNWIND \$rows AS row\nMERGE (n:$labels {$idProperty: row.id})\nSET n += row.props")
+                    .withStatement(if (stamping == null) "UNWIND \$rows AS row\nMERGE (n:$labels {$idProperty: row.id})\nSET n += row.props" else stampedUnwind(labels, idProperty))
                     .bind(mapOf("rows" to chunk))
             )
         }
@@ -87,6 +87,19 @@ internal class BatchSaveOperations(
         // is always the root upsert — see GraphViewMergeBuilder / FragmentMergeBuilderAdapter).
         group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy).drop(1).forEach { specs.add(it.toSpec()) } }
     }
+
+    /**
+     * The UNWIND upsert that gives a node a new stamp only when the row changes it: a property that
+     * differs, one cleared that held a value, or a node with no stamp yet. A comparison that cannot
+     * tell counts as a change.
+     */
+    private fun stampedUnwind(labels: String, idProperty: String): String = """
+        UNWIND ${'$'}rows AS row
+        MERGE (n:$labels {$idProperty: row.id})
+        WITH n, row, (n.${Stamps.QUOTED} IS NULL OR any(k IN keys(row.props) WHERE
+            CASE WHEN row.props[k] IS NULL THEN n[k] IS NOT NULL ELSE NOT coalesce(n[k] = row.props[k], false) END)) AS changed
+        SET n += row.props, n.${Stamps.QUOTED} = CASE WHEN changed THEN row.stamp ELSE n.${Stamps.QUOTED} END
+    """.trimIndent()
 
     /**
      * One `{ id, props }` UNWIND row for an UNWIND-eligible root (id excluded). The `props` map is keyed
@@ -110,13 +123,13 @@ internal class BatchSaveOperations(
         val id = rootProps[idField]
             ?: throw IllegalArgumentException("Cannot saveAll ${obj.javaClass.simpleName} with a null @GraphNodeId")
         val propertyNameByField = rootModel.fields.associate { it.name to it.propertyName }
-        // The stamp field's value is never written: a batched save gives each node a new stamp, unchecked.
+        // The stamp field's value is never written: the row offers a new stamp, taken if the row changes the node.
         val props = rootProps
             .filterKeys { it != idField && it != rootModel.stampField }
             .filter { (_, value) -> value != null || nullPolicy == NullPolicy.CLEAR }
             .mapKeys { (field, _) -> propertyNameByField[field] ?: field }
-        val stamp = if (stamping != null) mapOf(Stamps.PROPERTY to Stamps.fresh()) else emptyMap()
-        return mapOf("id" to id, "props" to props + stamp)
+        val stamp = if (stamping != null) mapOf("stamp" to Stamps.fresh()) else emptyMap()
+        return mapOf("id" to id, "props" to props) + stamp
     }
 
     private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType, nullPolicy: NullPolicy) =

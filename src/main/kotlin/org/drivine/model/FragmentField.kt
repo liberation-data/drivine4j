@@ -68,7 +68,7 @@ data class FragmentField(
 
     /**
      * Whether this field is the `@NodeStamp` field. Its [propertyName] is the stamp's own property,
-     * quoted; a save never writes the field's value, it writes a new stamp.
+     * quoted; a save never writes the field's value, it writes a new stamp when it changes the node.
      */
     val stamp: Boolean = false,
 )

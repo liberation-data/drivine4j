@@ -7,22 +7,24 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.StampWrite
 
 /**
- * Runs the statements of a save, in order. A checked statement reports how many nodes it matched:
- * none means the node is not as it was when the object was loaded, and the save stops there with a
- * [StaleObjectException].
+ * Runs the statements of a save, in order. A checked statement returns no row when the node is not as
+ * it was when the object was loaded, and the save stops there with a [StaleObjectException].
  */
 internal class SaveExecutor(private val persistenceManager: PersistenceManager) {
 
-    fun execute(statements: List<MergeStatement>) = statements.forEach(::execute)
+    fun execute(statements: List<MergeStatement>) = statements.forEach { execute(it) }
 
-    fun execute(statement: MergeStatement) {
+    /** Runs [statement]. Returns the stamp its node is left with, or null when the statement does not say. */
+    fun execute(statement: MergeStatement): String? {
         val spec = QuerySpecification.withStatement(statement.statement).bind(statement.bindings)
         val stamp = statement.stamp
-        if (stamp?.expected == null) {
+        if (stamp?.returned != true) {
             persistenceManager.execute(spec)
-        } else if (persistenceManager.getOne(spec.transform(Int::class.java)) == 0) {
-            throw staleObject(stamp, stamp.expected)
+            return null
         }
+        val left = persistenceManager.query(spec.transform(String::class.java)).firstOrNull()
+        if (left == null && stamp.expected != null) throw staleObject(stamp, stamp.expected)
+        return left
     }
 
     /** Says why a checked save matched nothing: the node is gone, or carries another stamp. */

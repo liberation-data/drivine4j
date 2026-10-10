@@ -73,7 +73,7 @@ abstract class StatelessSaveContract {
         assertEquals(stamp, property("c1", Stamps.PROPERTY))
 
         val again = stateless.save(saved.copy(text = "Ada founded Acme in 1999"))
-        assertNotEquals(stamp, again.stamp, "every save writes a new stamp")
+        assertNotEquals(stamp, again.stamp, "a save that changes the node writes a new stamp")
     }
 
     @Test
@@ -162,6 +162,85 @@ abstract class StatelessSaveContract {
 
         val stamps = listOf("c1", "c2").map { assertNotNull(property(it, Stamps.PROPERTY)) }
         assertEquals(2, stamps.toSet().size)
+    }
+
+    // ----- A stamp changes only when the node does -----
+
+    @Test
+    fun `a save that changes nothing keeps the stamp`() {
+        val first = stateless.save(Claim("c1", "Ada founded Acme", note = "checked"))
+
+        val again = stateless.save(first)
+        val fromScratch = stateless.save(Claim("c1", "Ada founded Acme"))
+
+        assertEquals(first.stamp, again.stamp)
+        assertEquals(first.stamp, fromScratch.stamp, "a null field is not written, so nothing changed")
+        assertEquals(first.stamp, property("c1", Stamps.PROPERTY))
+        stateless.save(first.copy(text = "the first object is still current"))
+    }
+
+    @Test
+    fun `clearing a field changes the stamp only when the field held a value`() {
+        val first = stateless.save(Claim("c1", "Ada founded Acme", note = "checked"))
+
+        val cleared = stateless.save(first.copy(note = null), nullPolicy = NullPolicy.CLEAR)
+        val clearedAgain = stateless.save(cleared, nullPolicy = NullPolicy.CLEAR)
+
+        assertNotEquals(first.stamp, cleared.stamp)
+        assertEquals(cleared.stamp, clearedAgain.stamp)
+        assertNull(property("c1", "note"))
+    }
+
+    @Test
+    fun `a view save keeps the stamp of a node it did not change`() {
+        stateless.save(Human("ada", "Ada"))
+        stateless.save(Human("bob", "Bob"))
+        val ada = assertNotNull(property("ada", Stamps.PROPERTY))
+        val bob = assertNotNull(property("bob", Stamps.PROPERTY))
+
+        val view = stateless.save(
+            ClaimView(Claim("c1", "Ada founded Acme"), people = listOf(Human("ada", "Ada"), Human("bob", "Robert")))
+        )
+
+        assertEquals(ada, property("ada", Stamps.PROPERTY), "ada was linked, not changed")
+        assertNotEquals(bob, property("bob", Stamps.PROPERTY), "bob's name changed")
+        assertEquals("Robert", property("bob", "name"))
+
+        val linked = stateless.save(view.copy(people = view.people + Human("cy", "Cy")))
+        assertEquals(view.claim.stamp, linked.claim.stamp, "a new relationship does not change the root")
+        assertNotNull(property("cy", Stamps.PROPERTY), "a node the save created is stamped")
+    }
+
+    @Test
+    fun `a batch save keeps the stamp of a node it did not change`() {
+        stateless.saveAll(listOf(Claim("c1", "one"), Claim("c2", "two")))
+        val before = listOf("c1", "c2").map { assertNotNull(property(it, Stamps.PROPERTY)) }
+
+        stateless.saveAll(listOf(Claim("c1", "one"), Claim("c2", "two, changed"), Claim("c3", "three")))
+
+        assertEquals(before[0], property("c1", Stamps.PROPERTY))
+        assertNotEquals(before[1], property("c2", Stamps.PROPERTY))
+        assertNotNull(property("c3", Stamps.PROPERTY))
+    }
+
+    @Test
+    fun `a node saved before stamps existed is stamped by a save that changes nothing else`() {
+        run("CREATE (:Claim {id: 'c1', text: 'Ada founded Acme'})")
+
+        val saved = stateless.save(Claim("c1", "Ada founded Acme"))
+
+        assertEquals(assertNotNull(saved.stamp), property("c1", Stamps.PROPERTY))
+    }
+
+    @Test
+    fun `GraphObjectManager keeps the stamp of a node it did not change`() {
+        val mapper = Neo4jObjectMapper.instance
+        val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
+        val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
+
+        gom.save(Claim("c1", "Ada founded Acme"))
+
+        stateless.save(loaded.copy(note = "still current"))
     }
 
     // ----- only and except -----

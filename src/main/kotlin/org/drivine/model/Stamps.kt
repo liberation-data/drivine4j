@@ -3,8 +3,8 @@ package org.drivine.model
 import java.util.UUID
 
 /**
- * The stamp Drivine keeps on a node: a value every object-manager save replaces, so a later save can
- * tell whether the node is as it was when the object was loaded.
+ * The stamp Drivine keeps on a node: a value an object-manager save replaces when it changes the
+ * node, so a later save can tell whether the node is as it was when the object was loaded.
  */
 object Stamps {
     /** The node property the stamp is stored under. */
@@ -13,8 +13,8 @@ object Stamps {
     /** [PROPERTY] as it is written in a statement. */
     const val QUOTED = "`$PROPERTY`"
 
-    /** The column a checked save returns: how many nodes it matched, 0 when the node changed or went. */
-    const val MATCHED_COLUMN = "matched"
+    /** The column a save statement returns the node's stamp under, once it has run. */
+    const val STAMP_COLUMN = "stamp"
 
     internal const val NEW_PARAM = "_stamp"
     internal const val EXPECTED_PARAM = "_expectedStamp"

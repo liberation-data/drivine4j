@@ -80,10 +80,16 @@ class FragmentMergeBuilder(
         val bindings = mutableMapOf<String, Any?>(nodeIdField to idValue)
         val setClauses = mutableListOf<String>()
         expected?.let { bindings[Stamps.EXPECTED_PARAM] = it }
-        val written = stamping?.let { Stamps.fresh() }
-        if (written != null) {
-            setClauses.add("n.${Stamps.QUOTED} = \$${Stamps.NEW_PARAM}")
-            bindings[Stamps.NEW_PARAM] = written
+        // The node gets a new stamp only if this statement changes it. Each write adds the test that
+        // says whether it does; the tests are evaluated before anything is set. A test that cannot
+        // tell (a comparison that gives null) counts as a change.
+        val offered = stamping?.let { Stamps.fresh() }
+        val changeTests = mutableListOf("n.${Stamps.QUOTED} IS NULL")
+        fun differs(property: String, value: String) = "NOT coalesce(n.$property = $value, false)"
+        fun present(property: String) = "n.$property IS NOT NULL"
+        if (offered != null) {
+            setClauses.add("n.${Stamps.QUOTED} = CASE WHEN $CHANGED THEN \$${Stamps.NEW_PARAM} ELSE n.${Stamps.QUOTED} END")
+            bindings[Stamps.NEW_PARAM] = offered
         }
         val removeClauses = mutableListOf<String>()
 
@@ -102,6 +108,7 @@ class FragmentMergeBuilder(
                 // there's no invalid vecf32(null)).
                 if (nullPolicy == NullPolicy.CLEAR) {
                     setClauses.add("n.${field.propertyName} = \$$name")
+                    changeTests.add(present(field.propertyName))
                     bindings[name] = null
                 }
             } else {
@@ -115,6 +122,7 @@ class FragmentMergeBuilder(
                     "\$$name"
                 }
                 setClauses.add("n.${field.propertyName} = $rhs")
+                changeTests.add(differs(field.propertyName, rhs))
                 bindings[name] = value
             }
         }
@@ -144,6 +152,7 @@ class FragmentMergeBuilder(
                 val param = "_bag${bagParamIndex++}"
                 bindings[param] = v
                 setClauses.add("n.`${bag.storedKey(key)}` = \$$param")
+                changeTests.add(if (v == null) present("`${bag.storedKey(key)}`") else differs("`${bag.storedKey(key)}`", "\$$param"))
             }
 
             // Remove keys present before but gone now (requires the previous state). Removal is a form of
@@ -156,6 +165,7 @@ class FragmentMergeBuilder(
                 }
                 previousKeys.filter { it !in currentKeys }.forEach { staleKey ->
                     removeClauses.add("n.`${bag.storedKey(staleKey)}`")
+                    changeTests.add(present("`${bag.storedKey(staleKey)}`"))
                 }
             }
         }
@@ -190,39 +200,50 @@ class FragmentMergeBuilder(
                 dropLabels = recorded.filter { it !in addLabels && it !in fragmentModel.labels }
                 if (addLabels.isEmpty()) {
                     removeClauses.add("n.`$owned`")
+                    changeTests.add(present("`$owned`"))
                 } else {
                     setClauses.add("n.`$owned` = \$$OWNED_LABELS_PARAM")
+                    changeTests.add(differs("`$owned`", "\$$OWNED_LABELS_PARAM"))
                     bindings[OWNED_LABELS_PARAM] = addLabels
                 }
             } else if (addLabels.isNotEmpty()) {
                 setClauses.add(
                     "n.`$owned` = [l IN coalesce(n.`$owned`, []) WHERE NOT l IN \$$OWNED_LABELS_PARAM] + \$$OWNED_LABELS_PARAM"
                 )
+                changeTests.add("NOT all(l IN \$$OWNED_LABELS_PARAM WHERE l IN coalesce(n.`$owned`, []))")
                 bindings[OWNED_LABELS_PARAM] = addLabels
             }
         }
+        addLabels.forEach { changeTests.add("NOT ${stringLiteral(it)} IN labels(n)") }
+        dropLabels.forEach { changeTests.add("${stringLiteral(it)} IN labels(n)") }
 
         // ----- Assemble -----
         val query = buildString {
             append(mergeClause)
+            if (offered != null) append("\nWITH n, (").append(changeTests.joinToString(" OR ")).append(") AS $CHANGED")
             if (setClauses.isNotEmpty()) append("\nSET ").append(setClauses.joinToString(", "))
             if (removeClauses.isNotEmpty()) append("\nREMOVE ").append(removeClauses.joinToString(", "))
             if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
             if (dropLabels.isNotEmpty()) append("\nREMOVE n").append(labelExpression(dropLabels))
-            if (expected != null) append("\nRETURN count(n) AS ${Stamps.MATCHED_COLUMN}")
+            if (stamping?.checked == true) append("\nRETURN n.${Stamps.QUOTED} AS ${Stamps.STAMP_COLUMN}")
         }
-        val stampWrite = written?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, it, expected) }
+        val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, stamping.checked, expected) }
         return MergeStatement(query, bindings, stampWrite)
     }
 
     private companion object {
         /** Bind-parameter name for the labels an open `@NodeLabels` field records as its own. */
         const val OWNED_LABELS_PARAM = "_ownedLabels"
+
+        /** The variable a stamping statement holds its answer in: whether it changes the node. */
+        const val CHANGED = "_changed"
     }
 
     /** `:A:B` for [labels], each quoted so a label is one label whatever characters it holds. */
     private fun labelExpression(labels: List<String>): String =
         labels.joinToString("") { ":${quotedIdentifier(it)}" }
+
+    private fun stringLiteral(value: String): String = "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
 
     /** Throws a clear error if a bag value can't be stored as a node property (naming the key). */
     private fun assertStorable(value: Any?, storedKey: String) {
@@ -268,8 +289,10 @@ fun interface StoredPropertyKeys {
 }
 
 /**
- * Whether the statements a builder produces write a stamp on each node they save. When [checked],
- * the save of an object that carries a stamp applies only if the node still has it.
+ * Whether the statements a builder produces stamp the nodes they save. A node gets a new stamp when
+ * the statement changes it, and keeps the one it has otherwise. When [checked], the save of an object
+ * that carries a stamp applies only if the node still has it, and the statement returns the stamp the
+ * node is left with.
  */
 data class Stamping(val checked: Boolean) {
     /** The same stamping without the check, for the nodes a view save reaches through a relationship. */
@@ -277,16 +300,17 @@ data class Stamping(val checked: Boolean) {
 }
 
 /**
- * The stamp a save statement writes on one node. [expected] is the stamp the statement requires the
- * node to carry; when it is non-null the statement is checked, and returns 0 under
- * [Stamps.MATCHED_COLUMN] if the node has changed or gone.
+ * What a save statement does about the stamp of one node. When [returned], the statement returns the
+ * stamp the node is left with under [Stamps.STAMP_COLUMN]. [expected] is the stamp the statement
+ * requires the node to carry: when it is non-null the statement returns no row if the node has
+ * changed or gone.
  */
 data class StampWrite(
     val fragmentClass: Class<*>,
     val id: Any,
     val labels: String,
     val idProperty: String,
-    val written: String,
+    val returned: Boolean,
     val expected: String?,
 )
 
@@ -296,6 +320,6 @@ data class StampWrite(
 data class MergeStatement(
     val statement: String,
     val bindings: Map<String, Any?>,
-    /** The stamp this statement writes on a node, and the one it expects there; null when it writes none. */
+    /** What this statement does about the node's stamp; null when it does not stamp. */
     val stamp: StampWrite? = null,
 )
