@@ -27,6 +27,8 @@ import sample.polytree.ContentElementNodeQueryDsl
 import sample.polytree.DocumentNode
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * The generated bare-`@NodeFragment` query DSL behaviour, verified cross-engine (Neo4j / FalkorDB /
@@ -34,7 +36,7 @@ import kotlin.test.assertTrue
  * targeting node properties directly (parameterized, incl. a `@GraphProperty` on-disk name),
  * `instanceOf()` filtering a sealed fragment to one subtype, and polymorphic per-node dispatch.
  */
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
     pm.execute(
         QuerySpecification.withStatement(
             """
@@ -175,4 +177,14 @@ class StatelessFragmentDslMemgraphTest {
     @BeforeEach fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
     @Test fun `bare fragment DSL on Memgraph`() = verify(buildGom(pm, registry), pm)
+}
+
+@OracleTests
+class StatelessFragmentDslOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test fun `bare fragment DSL on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
 }

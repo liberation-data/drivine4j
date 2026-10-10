@@ -39,6 +39,14 @@ interface ConnectionProvider {
     val supportsSchemaManagement: Boolean
         get() = schemaGrammar !is UnsupportedSchemaGrammar
 
+    /**
+     * The graph this provider's connections read and write, on a store that keeps a graph under a
+     * name: on Oracle it names the property graph and the tables beneath it. Null where the
+     * connection itself selects the graph.
+     */
+    val graphName: String?
+        get() = null
+
     fun connect(): Connection
     fun end()
 }

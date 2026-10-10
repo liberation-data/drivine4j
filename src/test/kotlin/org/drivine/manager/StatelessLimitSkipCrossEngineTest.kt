@@ -29,6 +29,8 @@ import sample.vectorfilter.VecDocNode
 import sample.vectorfilter.VecDocNodeQueryDsl
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * `limit` / `skip` in the query DSL, verified on Neo4j, FalkorDB, and Memgraph. Proves the
@@ -331,4 +333,22 @@ class StatelessLimitSkipMemgraphTest {
 
     @Test
     fun `index advice stays silent on Memgraph`() = verifyAdviceIsSilent(buildGom(pm, SubtypeRegistry()))
+}
+
+@OracleTests
+class StatelessLimitSkipOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun seed() {
+        OracleTestDatabase.clear(pm)
+        OracleTestDatabase.seed(pm, SEED)
+    }
+
+    @Test
+    fun `limit and skip on Oracle`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `index advice stays silent on Oracle`() = verifyAdviceIsSilent(buildGom(pm, registry))
 }

@@ -25,6 +25,9 @@ class NonTransactionalPersistenceManager(
     override val supportsSchemaManagement: Boolean
         get() = connectionProvider.supportsSchemaManagement
 
+    override val graphName: String?
+        get() = connectionProvider.graphName
+
     /** Cached: the stamp cannot change under a live connection, and every caller wants the same answer. */
     override val storeIdentity: StoreIdentity by lazy { StoreIdentityResolver(this).resolve() }
 

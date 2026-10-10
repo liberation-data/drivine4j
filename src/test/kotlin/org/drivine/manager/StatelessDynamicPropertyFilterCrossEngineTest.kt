@@ -35,6 +35,8 @@ import org.testcontainers.utility.DockerImageName
 import sample.dynamicfilter.RecordNode
 import sample.dynamicfilter.RecordNodeQueryDsl
 import kotlin.test.assertEquals
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * The dynamic-predicate escape hatch ([property] / [predicate]) verified cross-engine (Neo4j /
@@ -42,7 +44,7 @@ import kotlin.test.assertEquals
  * properties (`metadata.<key>`) — resolves to the backtick-quoted property on every engine, covers the
  * comparison + string operators, composes with a typed accessor, and matches the typed `key()` form.
  */
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager, supportsRegex: Boolean = true) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, supportsRegex: Boolean = true) {
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -267,4 +269,12 @@ class StatelessDynamicPropertyFilterMemgraphTest {
     @BeforeEach fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
     @Test fun `dynamic property filters resolve on Memgraph`() = verify(buildGom(pm, registry), pm)
+}
+
+@OracleTests
+class StatelessDynamicPropertyFilterOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @Test fun `dynamic property filters resolve on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
 }

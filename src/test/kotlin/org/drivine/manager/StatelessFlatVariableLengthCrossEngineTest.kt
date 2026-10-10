@@ -28,13 +28,15 @@ import sample.flatexpand.SeqWindow2View
 import sample.flatexpand.TextElem
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * `maxDepth` on a flat `List<Fragment>` relationship — a variable-length `*1..N` traversal returning
  * the transitive N-hop neighbourhood as a de-duplicated flat list. Verified on Neo4j, FalkorDB, and
  * Memgraph.
  */
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
     // Chain c1 → c2 → c3 → c4 → c5, plus a diamond a → {b,c} → d, and a polymorphic chain.
     pm.execute(
         QuerySpecification.withStatement(
@@ -182,4 +184,14 @@ class StatelessFlatVariableLengthMemgraphTest {
     @BeforeEach fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
     @Test fun `flat variable-length list on Memgraph`() = verify(buildGom(pm, registry), pm)
+}
+
+@OracleTests
+class StatelessFlatVariableLengthOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test fun `flat variable-length list on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
 }

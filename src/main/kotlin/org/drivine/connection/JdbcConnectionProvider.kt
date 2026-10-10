@@ -19,6 +19,8 @@ class JdbcConnectionProvider(
     override val subtypeRegistry: SubtypeRegistry? = null,
     /** Whether [end] closes [dataSource]. False for a data source the application made. */
     private val ownsDataSource: Boolean = false,
+    /** The graph the object managers read and write: it names the property graph and its tables. */
+    override val graphName: String = DEFAULT_GRAPH,
 ) : ConnectionProvider, NativeDriverSource<DataSource> {
 
     /** The data source behind this provider. Closed by [end] only if this provider made it. */
@@ -32,6 +34,8 @@ class JdbcConnectionProvider(
     }
 
     companion object {
+        const val DEFAULT_GRAPH = "drivine"
+
         /** A provider over a connection pool of its own, closed by [end]. */
         @JvmStatic
         @JvmOverloads
@@ -45,6 +49,7 @@ class JdbcConnectionProvider(
             connectionTimeoutMillis: Int? = null,
             idleTimeoutMillis: Int? = null,
             subtypeRegistry: SubtypeRegistry? = null,
+            graphName: String = DEFAULT_GRAPH,
         ): JdbcConnectionProvider {
             val config = HikariConfig().apply {
                 this.jdbcUrl = jdbcUrl
@@ -55,7 +60,7 @@ class JdbcConnectionProvider(
                 connectionTimeoutMillis?.let { connectionTimeout = it.toLong() }
                 idleTimeoutMillis?.let { idleTimeout = it.toLong() }
             }
-            return JdbcConnectionProvider(name, type, HikariDataSource(config), subtypeRegistry, ownsDataSource = true)
+            return JdbcConnectionProvider(name, type, HikariDataSource(config), subtypeRegistry, ownsDataSource = true, graphName = graphName)
         }
 
         /** The thin-driver URL of an Oracle service. */

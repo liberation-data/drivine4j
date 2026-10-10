@@ -76,6 +76,10 @@ interface PersistenceManager {
     val storeIdentity: StoreIdentity
         get() = StoreIdentityResolver(this).resolve()
 
+    /** The graph this manager reads and writes, where the store names it. See [org.drivine.connection.ConnectionProvider.graphName]. */
+    val graphName: String?
+        get() = null
+
     /**
      * Queries for a set of results according to the supplied specification.
      * @param spec

@@ -39,6 +39,9 @@ class IndexManager internal constructor(
 
     private val logger = LoggerFactory.getLogger(IndexManager::class.java)
 
+    /** Runs a schema statement that is not an index: on a connection of its own, committed as it runs. */
+    internal fun run(statement: String): List<Any?> = executor.query(statement)
+
     /**
      * Ensures an index matching [spec] exists. Idempotent — safe to call on every startup.
      *

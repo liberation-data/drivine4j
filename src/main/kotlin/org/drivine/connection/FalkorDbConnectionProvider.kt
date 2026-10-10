@@ -15,7 +15,7 @@ class FalkorDbConnectionProvider(
     private val host: String,
     private val port: Int,
     private val password: String?,
-    private val graphName: String,
+    override val graphName: String,
     private val transactionMode: FalkorDbTransactionMode = FalkorDbTransactionMode.WARN,
     override val subtypeRegistry: SubtypeRegistry? = null,
     override val cypherDialect: CypherDialect = CypherDialect.FALKORDB,

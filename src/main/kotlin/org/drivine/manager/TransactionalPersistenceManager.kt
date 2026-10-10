@@ -28,6 +28,9 @@ class TransactionalPersistenceManager(
 
     private val finderOperations: FinderOperations = FinderOperations(this)
 
+    override val graphName: String?
+        get() = schemaManagerSource?.graphName
+
     /** False when no schema source was supplied: nothing here could run DDL even if the engine could. */
     override val supportsSchemaManagement: Boolean
         get() = schemaManagerSource?.supportsSchemaManagement ?: false

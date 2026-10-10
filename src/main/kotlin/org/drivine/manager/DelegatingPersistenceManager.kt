@@ -29,6 +29,9 @@ class DelegatingPersistenceManager(
         get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).supportsSchemaManagement
 
     /** Routed to the non-transactional manager, which caches it and never resolves it mid-transaction. */
+    override val graphName: String?
+        get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).graphName
+
     override val storeIdentity: StoreIdentity
         get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).storeIdentity
 

@@ -46,6 +46,7 @@ class ConnectionProviderBuilder(
         properties.port?.let { port(it) }
         properties.databaseName?.let { databaseName(it) }
         properties.protocol?.let { protocol(it) }
+        properties.defaultGraphPath?.let { defaultGraphPath(it) }
         properties.cypherDialect?.let { cypherDialect(it) }
         properties.falkorDbTransactionMode?.let { falkorDbTransactionMode = it }
         properties.region?.let { region = it }
@@ -175,6 +176,7 @@ class ConnectionProviderBuilder(
             connectionTimeoutMillis = connectionTimeout,
             idleTimeoutMillis = idleTimeout,
             subtypeRegistry = subtypeRegistry,
+            graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
         )
     }
 
