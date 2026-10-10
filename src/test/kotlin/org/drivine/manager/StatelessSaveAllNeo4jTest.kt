@@ -1,0 +1,238 @@
+package org.drivine.manager
+
+import org.drivine.DrivineException
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.Neo4jConnectionProvider
+import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.QuerySpecification
+import org.drivine.query.grammar.CypherDialect
+import org.drivine.session.SessionManager
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.testcontainers.containers.Neo4jContainer
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import org.testcontainers.utility.DockerImageName
+import sample.proposition.Mention
+import sample.stateless.Claim
+import sample.proposition.PropositionNode
+import sample.proposition.PropositionView
+import kotlin.test.assertEquals
+import kotlin.test.assertFails
+import kotlin.test.assertTrue
+
+/**
+ * Acceptance tests for [StatelessGraphObjectManager.saveAll] against a real Neo4j. Covers the documented
+ * contract: per-item cascade & MERGE identity preserved, input order returned, all-or-nothing
+ * atomicity (a mid-batch failure rolls the whole call back), equivalence with sequential [save],
+ * empty no-op, and the sub-linear round-trip count of the homogeneous-fragment UNWIND path.
+ */
+@Testcontainers
+class StatelessSaveAllNeo4jTest {
+    companion object {
+        private const val PASSWORD = "saveAllTest"
+
+        @Container @JvmField
+        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
+            .apply { withAdminPassword(PASSWORD) }
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var pm: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "neo-saveall", type = DatabaseType.NEO4J,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "neo4j", password = PASSWORD, database = "neo4j",
+                config = emptyMap(), subtypeRegistry = registry, cypherDialect = CypherDialect.NEO4J_5,
+            )
+            pm = NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    @BeforeEach
+    fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+
+    private fun gom(pmOverride: PersistenceManager = pm): StatelessGraphObjectManager {
+        val mapper = Neo4jObjectMapper.instance
+        return StatelessGraphObjectManager(pmOverride, mapper, SubtypeRegistry())
+    }
+
+    private fun proposition(id: String, status: String = "active") =
+        PropositionNode(id = id, contextId = "ctx", status = status, level = 1)
+
+    private fun view(id: String, mentionIds: List<String>, status: String = "active") =
+        PropositionView(
+            proposition = proposition(id, status),
+            mentions = mentionIds.map { Mention(id = it, resolvedId = null, role = "subject") },
+        )
+
+    /** id -> sorted mention ids, for whole-graph equivalence comparison. */
+    private fun fingerprint(gom: StatelessGraphObjectManager): Map<String, List<String>> =
+        gom.loadAll(PropositionView::class.java)
+            .associate { it.proposition.id to it.mentions.map(Mention::id).sorted() }
+
+    // ---- (1) N nodes persist; returned list matches input order ----------------------------------
+    @Test
+    fun `saveAll persists every node and returns them in input order`() {
+        val gom = gom()
+        val input = (1..5).map { proposition("p$it") }
+        val returned = gom.saveAll(input)
+
+        assertEquals(input.map { it.id }, returned.map { it.id }, "input order is preserved")
+        assertEquals(5L, gom.count(PropositionNode::class.java))
+    }
+
+    // ---- (2) relationships persist with cascade: DELETE_ORPHAN reconciles, re-save is idempotent --
+    @Test
+    fun `saveAll persists relationships with per-item cascade and is idempotent`() {
+        val gom = gom()
+        // Initial: p1 -> [m1, m2]
+        gom.saveAll(listOf(view("p1", listOf("m1", "m2"))), Replace(PropositionView::mentions, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        assertEquals(listOf("m1", "m2"), gom.load("p1", PropositionView::class.java)!!.mentions.map(Mention::id).sorted())
+        assertEquals(2L, gom.count(Mention::class.java))
+
+        // Re-saveAll the SAME set: idempotent, no duplicate mentions.
+        gom.saveAll(listOf(view("p1", listOf("m1", "m2"))), Replace(PropositionView::mentions, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        assertEquals(2L, gom.count(Mention::class.java), "re-saving the same set must not duplicate")
+
+        // Drop m2 with DELETE_ORPHAN: the now-orphaned mention is reconciled away.
+        gom.saveAll(listOf(view("p1", listOf("m1"))), Replace(PropositionView::mentions, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        assertEquals(listOf("m1"), gom.load("p1", PropositionView::class.java)!!.mentions.map(Mention::id))
+        assertEquals(1L, gom.count(Mention::class.java), "orphaned m2 deleted")
+    }
+
+    // ---- (3) mid-batch failure rolls the whole call back -----------------------------------------
+    @Test
+    fun `saveAll is atomic - a mid-batch failure persists nothing`() {
+        val gom = gom()
+        // A good homogeneous group runs first, then a node with an unstorable (nested-map) property
+        // forces a Cypher error on its UNWIND. The whole batch must roll back.
+        val batch = listOf<Any>(
+            proposition("ok1"),
+            proposition("ok2"),
+            UnstorableNode("bad", mapOf("nested" to mapOf("x" to 1))),
+        )
+
+        val counting = StatelessCountingPersistenceManager(pm)
+
+        val failure = assertFails { gom(counting).saveAll(batch) }
+
+        // The engine refused the batch: it was sent, with the good statements ahead of the bad one.
+        assertTrue(failure is DrivineException, "was $failure")
+        assertEquals(1, counting.batchCalls)
+        assertTrue(counting.batchSpecCount > 1, "the batch held ${counting.batchSpecCount} statements")
+        assertEquals(0L, gom.count(PropositionNode::class.java), "earlier good writes rolled back with the failure")
+        assertEquals(0L, pm.getOne(
+            QuerySpecification.withStatement("MATCH (n:BatchFail) RETURN count(n) AS c").transform(Long::class.java)
+        ))
+    }
+
+    // ---- (4) equivalence: saveAll(listOf(a, b)) == save(a); save(b) ------------------------------
+    @Test
+    fun `saveAll yields the same graph as sequential save`() {
+        val a = view("p1", listOf("m1", "m2"))
+        val b = view("p2", listOf("m3"))
+
+        val batched = gom()
+        batched.saveAll(listOf(a, b), Replace(PropositionView::mentions, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        val batchedFingerprint = fingerprint(batched)
+
+        clean()
+
+        val sequential = gom()
+        sequential.save(a, Replace(PropositionView::mentions, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        sequential.save(b, Replace(PropositionView::mentions, removedTargets = RemovedTargets.DELETE_UNREFERENCED))
+        val sequentialFingerprint = fingerprint(sequential)
+
+        assertEquals(sequentialFingerprint, batchedFingerprint)
+        assertEquals(mapOf("p1" to listOf("m1", "m2"), "p2" to listOf("m3")), batchedFingerprint)
+    }
+
+    // ---- (5) empty collection is a no-op ---------------------------------------------------------
+    @Test
+    fun `saveAll of an empty collection is a no-op returning an empty list`() {
+        val counting = StatelessCountingPersistenceManager(pm)
+        val gom = gom(counting)
+        assertTrue(gom.saveAll(emptyList<PropositionNode>()).isEmpty())
+        assertEquals(0, counting.statements, "no statements issued for an empty batch")
+    }
+
+    // ---- (6) homogeneous fragment batch uses a sub-linear number of statements -------------------
+    @Test
+    fun `saveAll of a homogeneous fragment batch is sub-linear in round trips`() {
+        val counting = StatelessCountingPersistenceManager(pm)
+        val gom = gom(counting)
+        val n = 50
+        gom.saveAll((1..n).map { proposition("p$it") })
+
+        assertEquals(n.toLong(), gom.count(PropositionNode::class.java))
+        assertEquals(1, counting.batchCalls, "one atomic batch")
+        assertTrue(counting.batchSpecCount < n, "fragment roots collapse into UNWIND: ${counting.batchSpecCount} statements for $n nodes")
+        assertEquals(1, counting.batchSpecCount, "a single UNWIND chunk covers the whole homogeneous fragment batch")
+    }
+
+    // ---- (7) stamped fragments are batched too, and each is handed its stamp ---------------------
+    @Test
+    fun `saveAll of stamped fragments is one statement, and hands each its stamp`() {
+        val counting = StatelessCountingPersistenceManager(pm)
+        val gom = gom(counting)
+        val n = 50
+
+        val saved = gom.saveAll((1..n).map { Claim("c$it", "claim $it") })
+
+        assertEquals(1, counting.batchSpecCount, "a single UNWIND covers the batch")
+        assertEquals((1..n).map { "c$it" }, saved.map { it.id })
+        val stored = pm.query(
+            QuerySpecification.withStatement("MATCH (c:Claim) RETURN c.id + '=' + c.`__drivine.stamp`").transform(String::class.java)
+        ).associate { it.substringBefore('=') to it.substringAfter('=') }
+        assertEquals(stored, saved.associate { it.id to it.stamp })
+        gom.save(saved.first().copy(text = "saved again"))
+    }
+}
+
+
+/**
+ * Decorates a [PersistenceManager], counting [queryBatch] calls and the statements they carry, and
+ * in [statements] every statement run through it by any method.
+ */
+private class StatelessCountingPersistenceManager(
+    private val delegate: PersistenceManager,
+) : PersistenceManager by delegate {
+    var batchCalls = 0
+    var batchSpecCount = 0
+    var statements = 0
+
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
+        batchCalls++
+        batchSpecCount += specs.size
+        statements += specs.size
+        return delegate.queryBatch(specs)
+    }
+
+    override fun executeBatch(specs: List<QuerySpecification<*>>) {
+        statements += specs.size
+        delegate.executeBatch(specs)
+    }
+
+    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = delegate.query(spec).also { statements++ }
+
+    override fun execute(spec: QuerySpecification<*>) = delegate.execute(spec).also { statements++ }
+
+    override fun <T : Any> getOne(spec: QuerySpecification<T>): T = delegate.getOne(spec).also { statements++ }
+
+    override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? = delegate.maybeGetOne(spec).also { statements++ }
+
+    override fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): java.util.Optional<T> =
+        delegate.optionalGetOne(spec).also { statements++ }
+}

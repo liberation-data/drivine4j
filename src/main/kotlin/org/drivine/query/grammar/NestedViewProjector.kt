@@ -3,6 +3,9 @@ package org.drivine.query.grammar
 import org.drivine.model.FragmentField
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
+import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.dsl.CypherGenerator
+import org.drivine.query.storedReference
 
 /**
  * Context for projecting a nested GraphView relationship.
@@ -19,6 +22,8 @@ data class NestedViewContext(
     val rootFragmentFieldName: String,
     /** For each nested relationship: (fieldName, alias, directionString, labelString, fieldProjection) */
     val nestedRelationships: List<NestedRelInfo>,
+    /** The order asked of the collection, by a stored property of the nested view's root; null for none. */
+    val sort: CollectionSortSpec? = null,
 )
 
 data class NestedRelInfo(
@@ -28,6 +33,8 @@ data class NestedRelInfo(
     val labelString: String,
     val projection: String,
     val isCollection: Boolean,
+    /** The order asked of this collection, by a stored property of its target; null for none. */
+    val sort: CollectionSortSpec? = null,
 )
 
 /**
@@ -88,6 +95,23 @@ class CallSubqueryNestedViewProjector : NestedViewProjector {
             collectVars.add(nested.fieldName to collectVar)
         }
 
+        // A sorted collection inside the view is collected from rows ordered by its own target: the
+        // rows are every pairing of the targets of the view's relationships, so each collection meets
+        // its targets in the order asked of it, and DISTINCT keeps the first of each.
+        val nestedOrder = ctx.nestedRelationships.filter { it.isCollection && it.sort != null }.joinToString(", ") {
+            "${it.alias}.${CypherGenerator.quoteProperty(it.sort!!.propertyName)} ${if (it.sort.ascending) "ASC" else "DESC"}"
+        }
+        if (nestedOrder.isNotEmpty()) {
+            val carried = listOf(ctx.targetAlias) + ctx.nestedRelationships.map { it.alias }
+            sb.appendLine("    WITH ${carried.joinToString(", ")} ORDER BY $nestedOrder")
+        }
+
+        // A sorted collection is collected from rows ordered by the target node, which is the nested
+        // view's root: the same order a top-level CALL-subquery sort gives a fragment collection.
+        val order = ctx.sort?.takeIf { ctx.rel.isCollection }?.let {
+            " ORDER BY ${ctx.targetAlias}.${CypherGenerator.quoteProperty(it.propertyName)} ${if (it.ascending) "ASC" else "DESC"}"
+        } ?: ""
+
         // Collect nested relationships per target node, filtering out nulls from OPTIONAL MATCH.
         // For single nullable relationships (isCollection = false), wrap collect() in head() so
         // the field materialises as a single object or null rather than a list — matching the
@@ -99,14 +123,16 @@ class CallSubqueryNestedViewProjector : NestedViewProjector {
                 val wrapped = if (nested.isCollection) collectExpr else "head($collectExpr)"
                 "$wrapped AS $collectVar"
             }
-            sb.appendLine("    WITH ${ctx.targetAlias}, ${collectExprs.joinToString(", ")}")
+            sb.appendLine("    WITH ${ctx.targetAlias}, ${collectExprs.joinToString(", ")}$order")
+        } else if (order.isNotEmpty()) {
+            sb.appendLine("    WITH ${ctx.targetAlias}$order")
         }
 
         // Build return projection
         val rootFieldMappings = if (ctx.rootFragmentFields == null) {
             ".*"
         } else {
-            ctx.rootFragmentFields.joinToString(", ") { "${it.name}: ${ctx.targetAlias}.${it.propertyName}" }
+            ctx.rootFragmentFields.joinToString(", ") { "${it.name}: ${ctx.targetAlias}.${it.storedReference}" }
         }
 
         val returnFields = mutableListOf("${ctx.rootFragmentFieldName}: { $rootFieldMappings }")

@@ -34,8 +34,9 @@ jobs:
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties
 
+      # Compiles and assembles every module. The tests run once, in the step that follows.
       - name: Build with Gradle
-        run: ./gradlew build --no-daemon
+        run: ./gradlew build -x test --no-daemon
 
       - name: Run tests
         run: ./gradlew test --no-daemon
@@ -86,10 +87,14 @@ jobs:
           retention-days: 30
 
       # Code coverage (optional but recommended)
+      # The sort strategy is an input of the tests: without it here the report's tests are not up to
+      # date, and the whole suite runs a second time.
       - name: Generate Coverage Report
         run: ./gradlew jacocoTestReport --no-daemon
         if: success()
         continue-on-error: true
+        env:
+          DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY: ${{ matrix.collection-sort-strategy }}
 
       - name: Upload Coverage Report
         uses: actions/upload-artifact@v4
@@ -141,11 +146,30 @@ jobs:
                 database-name: testgraph
           EOF
 
+      # Compiles and assembles every module. The tests run once, in the step that follows.
       - name: Build with Gradle
-        run: ./gradlew build --no-daemon
+        run: ./gradlew build -x test --no-daemon
 
       - name: Run all tests
         run: ./gradlew test --no-daemon
+
+      # The root module's Spring tests read the datasource 'neo', which the step above leaves on
+      # Neo4j: only the sample module's file is rewritten. The environment overrides that datasource,
+      # as it does the sort strategy in the matrix job. The classes
+      # named are those that do not rely on a rolled-back transaction to clean up after themselves,
+      # which FalkorDB does not have.
+      - name: Run the root module's stateless Spring tests on FalkorDB
+        run: |
+          # This run replaces the root module's results: keep those of the run above for the report.
+          mkdir -p build/test-results-default && cp -r build/test-results/test/. build/test-results-default/
+          ./gradlew :test --no-daemon \
+            --tests 'org.drivine.manager.StatelessTransactionTests' \
+            --tests 'org.drivine.manager.UndeclaredReadOnlyFieldSaveTest' \
+            --tests 'sample.JavaStatelessSaveTests'
+        env:
+          DATABASE_DATASOURCES_NEO_TYPE: FALKORDB
+          DATABASE_DATASOURCES_NEO_PORT: 6379
+          DATABASE_DATASOURCES_NEO_DATABASE_NAME: testgraph
 
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v4
@@ -153,6 +177,7 @@ jobs:
         with:
           report_paths: |
             **/build/test-results/test/*.xml
+            build/test-results-default/*.xml
           detailed_summary: true
           include_passed: true
           check_name: Test Results (FalkorDB)
@@ -167,6 +192,7 @@ jobs:
           name: test-results-FALKORDB
           path: |
             **/build/test-results/test/
+            build/test-results-default/
             **/build/reports/tests/test/
           retention-days: 30
 
@@ -212,11 +238,45 @@ jobs:
                 password: ""
           EOF
 
+      # Compiles and assembles every module. The tests run once, in the step that follows.
       - name: Build with Gradle
-        run: ./gradlew build --no-daemon
+        run: ./gradlew build -x test --no-daemon
 
       - name: Run all tests
         run: ./gradlew test --no-daemon
+
+      # The root module's Spring tests read the datasource 'neo', which the step above leaves on
+      # Neo4j: only the sample module's file is rewritten. The environment overrides that datasource,
+      # as it does the sort strategy in the matrix job. The classes
+      # named are those Memgraph can run: the rest use DELETE_ORPHAN or sort a collection in a way it
+      # does not support.
+      - name: Run the root module's stateless Spring tests on Memgraph
+        run: |
+          # This run replaces the root module's results: keep those of the run above for the report.
+          mkdir -p build/test-results-default && cp -r build/test-results/test/. build/test-results-default/
+          ./gradlew :test --no-daemon \
+            --tests 'org.drivine.annotation.StatelessSortedByTests' \
+            --tests 'org.drivine.manager.StatelessCountTests' \
+            --tests 'org.drivine.manager.StatelessDefaultAnnotationE2ETest' \
+            --tests 'org.drivine.manager.StatelessDeleteTests' \
+            --tests 'org.drivine.manager.StatelessFragmentLoadingTests' \
+            --tests 'org.drivine.manager.StatelessFragmentSaveTests' \
+            --tests 'org.drivine.manager.StatelessGraphObjectManagerSubtypeTests' \
+            --tests 'org.drivine.manager.StatelessGraphViewSaveTests' \
+            --tests 'org.drivine.manager.StatelessTemporalE2ETest' \
+            --tests 'org.drivine.manager.StatelessTransactionTests' \
+            --tests 'org.drivine.manager.UndeclaredReadOnlyFieldSaveTest' \
+            --tests 'org.drivine.model.StatelessGraphRelationshipFragmentEndToEndTests' \
+            --tests 'org.drivine.model.StatelessInterfaceNodeFragmentTests' \
+            --tests 'org.drivine.query.StatelessGraphPathE2ETest' \
+            --tests 'org.drivine.query.StatelessRecursiveGraphViewEndToEndTests' \
+            --tests 'sample.JavaStatelessSaveTests' \
+            --tests 'sample.StatelessJavaGraphObjectManagerSubtypeTests'
+        env:
+          DATABASE_DATASOURCES_NEO_TYPE: MEMGRAPH
+          DATABASE_DATASOURCES_NEO_USER_NAME: ""
+          DATABASE_DATASOURCES_NEO_PASSWORD: ""
+          DATABASE_DATASOURCES_NEO_DATABASE_NAME: memgraph
 
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v4
@@ -224,6 +284,7 @@ jobs:
         with:
           report_paths: |
             **/build/test-results/test/*.xml
+            build/test-results-default/*.xml
           detailed_summary: true
           include_passed: true
           check_name: Test Results (Memgraph)
@@ -238,33 +299,6 @@ jobs:
           name: test-results-MEMGRAPH
           path: |
             **/build/test-results/test/
+            build/test-results-default/
             **/build/reports/tests/test/
           retention-days: 30
-
-  build-matrix:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        java: [ '21' ]
-      fail-fast: false
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up JDK ${{ matrix.java }}
-        uses: actions/setup-java@v4
-        with:
-          java-version: ${{ matrix.java }}
-          distribution: 'temurin'
-          cache: gradle
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      # Docker 29+ raised minimum API version to 1.44; Testcontainers 1.x defaults to 1.32
-      - name: Configure Testcontainers for Docker 29+
-        run: echo "api.version=1.44" > ~/.docker-java.properties
-
-      - name: Test with Gradle wrapper
-        run: ./gradlew test --no-daemon

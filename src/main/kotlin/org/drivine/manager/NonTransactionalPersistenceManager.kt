@@ -53,28 +53,49 @@ class NonTransactionalPersistenceManager(
 
     /**
      * Runs all [specs] on a single connection in one explicit transaction — atomic even though this
-     * manager is otherwise auto-commit. On any failure the whole transaction is rolled back.
+     * manager is otherwise auto-commit. On any failure the whole transaction is rolled back, where
+     * the engine has transactions to roll back (see [PersistenceManager.executeBatch]).
      */
     override fun executeBatch(specs: List<QuerySpecification<*>>) {
-        if (specs.isEmpty()) return
+        queryBatch(specs)
+    }
+
+    /**
+     * [executeBatch], returning each statement's rows. The connection is released however the batch
+     * ends, including when the transaction cannot be started. A commit that fails is reported as a
+     * failing statement is, as a [DrivineException] with the engine's error as its cause.
+     */
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
+        if (specs.isEmpty()) return emptyList()
         val connection = connectionProvider.connect()
-        connection.startTransaction()
         try {
-            specs.forEach { spec ->
+            connection.startTransaction()
+        } catch (e: Throwable) {
+            connection.release(e)
+            throw e
+        }
+        val results = try {
+            specs.map { spec ->
                 try {
                     @Suppress("UNCHECKED_CAST")
                     connection.query(spec as QuerySpecification<Any>)
                 } catch (e: Exception) {
                     throw DrivineException.withRootCause(e, spec)
                 }
+            }.also {
+                try {
+                    connection.commitTransaction()
+                } catch (e: Exception) {
+                    throw DrivineException.withRootCause(e)
+                }
             }
-            connection.commitTransaction()
         } catch (e: Throwable) {
             runCatching { connection.rollbackTransaction() }
             connection.release(e)
             throw e
         }
         connection.release()
+        return results
     }
 
     override fun <T: Any> getOne(spec: QuerySpecification<T>): T {

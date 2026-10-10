@@ -1,0 +1,288 @@
+package org.drivine.model
+
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
+import org.drivine.annotation.GraphRelationship
+import org.drivine.annotation.RelationshipFragment
+import org.drivine.annotation.GraphView
+import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.manager.PersistenceManager
+import org.drivine.query.QuerySpecification
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.springframework.beans.factory.annotation.Autowired
+import org.springframework.boot.test.context.SpringBootTest
+import org.springframework.test.annotation.Rollback
+import org.springframework.transaction.annotation.Transactional
+import sample.simple.TestAppContext
+import java.time.Instant
+import java.util.*
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+
+/**
+ * End-to-end tests for @GraphRelationshipFragment.
+ * Tests the complete flow: save with properties -> load back -> verify.
+ */
+@SpringBootTest(classes = [TestAppContext::class])
+@Transactional
+@Rollback(true)
+class StatelessGraphRelationshipFragmentEndToEndTests @Autowired constructor(
+    private val graphObjectManager: StatelessGraphObjectManager,
+    private val persistenceManager: PersistenceManager
+) {
+
+    @BeforeEach
+    fun setupTestData() {
+        // Clear existing test data
+        persistenceManager.execute(
+            QuerySpecification
+                .withStatement("MATCH (n) WHERE n.createdBy = 'rel-fragment-test' DETACH DELETE n")
+        )
+    }
+
+    @Test
+    fun `should save and load relationship fragment with properties`() {
+        // Create test data
+        val taskId = UUID.randomUUID()
+        val assigneeId = UUID.randomUUID()
+
+        val assignee = Developer(
+            uuid = assigneeId,
+            name = "Alice Smith",
+            email = "alice@example.com"
+        )
+
+        val assignment = TaskAssignment(
+            assignedAt = Instant.parse("2025-01-15T10:30:00Z"),
+            priority = "HIGH",
+            estimatedHours = 8,
+            target = assignee
+        )
+
+        val task = TaskWithAssignments(
+            task = Task(
+                uuid = taskId,
+                title = "Implement feature X",
+                description = "Add new feature"
+            ),
+            assignedTo = listOf(assignment)
+        )
+
+        // Save the view
+        graphObjectManager.save(task)
+
+        // Load it back
+        val loaded = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+
+        // Verify
+        assertNotNull(loaded)
+        assertEquals("Implement feature X", loaded.task.title)
+        assertEquals(1, loaded.assignedTo.size)
+
+        val loadedAssignment = loaded.assignedTo[0]
+        assertEquals("HIGH", loadedAssignment.priority)
+        assertEquals(8, loadedAssignment.estimatedHours)
+        assertEquals(Instant.parse("2025-01-15T10:30:00Z"), loadedAssignment.assignedAt)
+
+        val loadedAssignee = loadedAssignment.target
+        assertEquals("Alice Smith", loadedAssignee.name)
+        assertEquals("alice@example.com", loadedAssignee.email)
+        assertEquals(assigneeId, loadedAssignee.uuid)
+    }
+
+    @Test
+    fun `should handle multiple assignments to different people`() {
+        val taskId = UUID.randomUUID()
+        val assignee1Id = UUID.randomUUID()
+        val assignee2Id = UUID.randomUUID()
+
+        val assignee1 = Developer(
+            uuid = assignee1Id,
+            name = "Bob Jones",
+            email = "bob@example.com"
+        )
+
+        val assignee2 = Developer(
+            uuid = assignee2Id,
+            name = "Carol White",
+            email = "carol@example.com"
+        )
+
+        val task = TaskWithAssignments(
+            task = Task(
+                uuid = taskId,
+                title = "Code review",
+                description = "Review PR #123"
+            ),
+            assignedTo = listOf(
+                TaskAssignment(
+                    assignedAt = Instant.parse("2025-01-15T09:00:00Z"),
+                    priority = "MEDIUM",
+                    estimatedHours = 2,
+                    target = assignee1
+                ),
+                TaskAssignment(
+                    assignedAt = Instant.parse("2025-01-15T14:00:00Z"),
+                    priority = "LOW",
+                    estimatedHours = 1,
+                    target = assignee2
+                )
+            )
+        )
+
+        // Save
+        graphObjectManager.save(task)
+
+        // Load back
+        val loaded = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+
+        // Verify
+        assertNotNull(loaded)
+        assertEquals(2, loaded.assignedTo.size)
+
+        // Find assignments by priority to avoid ordering issues
+        val mediumAssignment = loaded.assignedTo.find { it.priority == "MEDIUM" }
+        val lowAssignment = loaded.assignedTo.find { it.priority == "LOW" }
+
+        assertNotNull(mediumAssignment)
+        assertEquals(2, mediumAssignment.estimatedHours)
+        assertEquals("Bob Jones", mediumAssignment.target.name)
+
+        assertNotNull(lowAssignment)
+        assertEquals(1, lowAssignment.estimatedHours)
+        assertEquals("Carol White", lowAssignment.target.name)
+    }
+
+    @Test
+    fun `should update relationship properties when saving again`() {
+        val taskId = UUID.randomUUID()
+        val assigneeId = UUID.randomUUID()
+
+        val assignee = Developer(
+            uuid = assigneeId,
+            name = "Dave Miller",
+            email = "dave@example.com"
+        )
+
+        val assignment = TaskAssignment(
+            assignedAt = Instant.parse("2025-01-15T10:00:00Z"),
+            priority = "LOW",
+            estimatedHours = 4,
+            target = assignee
+        )
+
+        val task = TaskWithAssignments(
+            task = Task(
+                uuid = taskId,
+                title = "Bug fix",
+                description = "Fix bug #456"
+            ),
+            assignedTo = listOf(assignment)
+        )
+
+        // Initial save
+        graphObjectManager.save(task)
+
+        // Load and verify initial state
+        val loaded1 = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+        assertNotNull(loaded1)
+        assertEquals("LOW", loaded1.assignedTo[0].priority)
+        assertEquals(4, loaded1.assignedTo[0].estimatedHours)
+
+        // Update the relationship properties
+        val updatedAssignment = TaskAssignment(
+            assignedAt = Instant.parse("2025-01-15T15:00:00Z"),
+            priority = "CRITICAL",
+            estimatedHours = 2,
+            target = assignee
+        )
+
+        val updatedTask = TaskWithAssignments(
+            task = Task(
+                uuid = taskId,
+                title = "Bug fix",
+                description = "Fix bug #456"
+            ),
+            assignedTo = listOf(updatedAssignment)
+        )
+
+        // Save again
+        graphObjectManager.save(updatedTask)
+
+        // Load and verify updated state
+        val loaded2 = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+        assertNotNull(loaded2)
+        assertEquals(1, loaded2.assignedTo.size)
+        assertEquals("CRITICAL", loaded2.assignedTo[0].priority)
+        assertEquals(2, loaded2.assignedTo[0].estimatedHours)
+        assertEquals(Instant.parse("2025-01-15T15:00:00Z"), loaded2.assignedTo[0].assignedAt)
+    }
+
+    @Test
+    fun `should persist target node property change when relationship properties are unchanged`() {
+        // Regression test for the relationship-fragment unchanged path: when the relationship
+        // properties (assignedAt, priority, estimatedHours) are unchanged but a property on the
+        // target node (Developer.name) changed, that change must still be persisted. Previously
+        // the assignment was neither added nor removed, so the target node update was dropped.
+        val taskId = UUID.randomUUID()
+        val assigneeId = UUID.randomUUID()
+
+        val assignee = Developer(
+            uuid = assigneeId,
+            name = "Original Name",
+            email = "dev@example.com"
+        )
+
+        val assignment = TaskAssignment(
+            assignedAt = Instant.parse("2025-01-15T10:00:00Z"),
+            priority = "HIGH",
+            estimatedHours = 5,
+            target = assignee
+        )
+
+        val task = TaskWithAssignments(
+            task = Task(
+                uuid = taskId,
+                title = "Bug fix",
+                description = "Fix bug #789"
+            ),
+            assignedTo = listOf(assignment)
+        )
+
+        // Initial save, then load so the view (and its snapshot) is tracked in the session.
+        graphObjectManager.save(task)
+        val loaded = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+        assertNotNull(loaded)
+        assertEquals("Original Name", loaded.assignedTo[0].target.name)
+
+        // Change ONLY the target node property; keep the relationship properties identical
+        // (reuse the loaded assignment so assignedAt/priority/estimatedHours are unchanged).
+        val loadedAssignment = loaded.assignedTo[0]
+        val modified = loaded.copy(
+            assignedTo = listOf(
+                loadedAssignment.copy(
+                    target = loadedAssignment.target.copy(name = "Updated Name")
+                )
+            )
+        )
+
+        graphObjectManager.save(modified)
+
+        val reloaded = graphObjectManager.load(taskId.toString(), TaskWithAssignments::class.java)
+        assertNotNull(reloaded)
+        assertEquals(1, reloaded.assignedTo.size)
+        // Target node property change persisted...
+        assertEquals("Updated Name", reloaded.assignedTo[0].target.name)
+        // ...sibling target field untouched, relationship properties intact.
+        assertEquals("dev@example.com", reloaded.assignedTo[0].target.email)
+        assertEquals("HIGH", reloaded.assignedTo[0].priority)
+        assertEquals(5, reloaded.assignedTo[0].estimatedHours)
+    }
+}
+
+// Test domain model
+
+
+
+

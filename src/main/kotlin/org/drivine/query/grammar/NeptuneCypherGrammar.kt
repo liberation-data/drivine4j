@@ -5,7 +5,7 @@ import org.drivine.query.sort.CollectionSortEmitter
 /**
  * Amazon Neptune — openCypher with:
  * - Working nested pattern comprehensions (unlike FalkorDB)
- * - Working CASCADE DELETE_ORPHAN (unlike FalkorDB)
+ * - Working CASCADE DELETE_ORPHAN (unlike Memgraph)
  * - Built-in `collSortMaps` / `collSortNodes` functions
  * - No EXISTS { } subquery (inherited from OpenCypherGrammar)
  */

@@ -12,7 +12,7 @@ plugins {
 }
 
 group = 'org.drivine'
-version = '0.0.91'
+version = '0.1.0'
 
 base {
 	archivesName = 'drivine4j'
@@ -97,11 +97,21 @@ kotlin {
 // Use JUnit 5
 tasks.named('test') {
 	useJUnitPlatform()
+	// CI runs the suite once for each collection sort strategy. Gradle does not track the
+	// environment, so without this the second run is up to date and runs nothing.
+	inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
 	// The full suite runs many Spring contexts + testcontainer integration tests in one JVM; the
 	// default heap is too small and the worker OOM-crashes mid-run (surfacing as a cascade of
 	// NoClassDefFoundError on the still-pending tests, and a missing jacoco test.exec). Give it room.
 	// A ceiling, not a reservation — overridable for constrained CI via -PtestMaxHeap=1536m.
 	maxHeapSize = (project.findProperty('testMaxHeap') ?: '2g').toString()
+	// The images the tests run are pinned in one file, and each pin is an input of the tests.
+	rootProject.file('gradle/test-images.txt').readLines()
+		.collect { it.trim() }.findAll { it && !it.startsWith('#') }
+		.each { line ->
+			def (named, pinned) = line.split(/\s+/)
+			systemProperty "drivine.test.image.${named}", pinned
+		}
 	finalizedBy jacocoTestReport // Generate coverage report after tests
 }
 

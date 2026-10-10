@@ -14,6 +14,7 @@ import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.QuerySpecification
 import org.drivine.query.ScoredSearchPlan
+import org.drivine.query.Stamping
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
@@ -45,20 +46,38 @@ private data class QueryContext(
  * Provides methods to query and retrieve graph-mapped objects from the database.
  *
  * Maintains a session to track loaded objects and enable dirty checking for optimized saves.
+ *
+ * Deprecated: a save writes what differs from the session's snapshot, which is what this manager
+ * last saw and not what the store holds. A node that anything else changed or deleted gets a partial
+ * save. [StatelessGraphObjectManager] keeps no snapshot.
  */
-class GraphObjectManager(
+@Deprecated(
+    "Use StatelessGraphObjectManager (GraphObjectManagerFactory.stateless()). A save by this manager depends on its " +
+        "session's snapshot, so a node changed elsewhere gets a partial save. See the README: Migrating from GraphObjectManager.",
+)
+class GraphObjectManager internal constructor(
     private val persistenceManager: PersistenceManager,
     internal val sessionManager: SessionManager,
     private val objectMapper: ObjectMapper,
-    private val subtypeRegistry: SubtypeRegistry
-) {
+    private val subtypeRegistry: SubtypeRegistry,
+    /** A save writes a new stamp on each node it changes. This manager does not check one. */
+    private val stamping: Stamping,
+) : GraphObjectOperations {
 
+    constructor(
+        persistenceManager: PersistenceManager,
+        sessionManager: SessionManager,
+        objectMapper: ObjectMapper,
+        subtypeRegistry: SubtypeRegistry,
+    ) : this(persistenceManager, sessionManager, objectMapper, subtypeRegistry, Stamping(checked = false))
+
+    @Suppress("DEPRECATION")
     private val logger = LoggerFactory.getLogger(GraphObjectManager::class.java)
 
     /**
      * The name of the database this manager is connected to.
      */
-    val database: String
+    override val database: String
         get() = persistenceManager.database
 
     /**
@@ -77,17 +96,17 @@ class GraphObjectManager(
      * Resolution and caching belong to the underlying manager, which assigns an identity on first
      * sight of an unstamped store and then holds it for the life of the manager.
      */
-    val storeIdentity: StoreIdentity
+    override val storeIdentity: StoreIdentity
         get() = persistenceManager.storeIdentity
 
-    private val grammar = persistenceManager.grammar
+    internal val grammar = persistenceManager.grammar
 
     /**
      * Reads a node's stored property keys, so a save of an untracked object under [NullPolicy.CLEAR]
      * can still remove the `@PropertyBag` keys it dropped, and the labels an open `@NodeLabels` field
      * recorded as its own. Only consulted on that path.
      */
-    private val storedKeys = object : StoredPropertyKeys {
+    internal val storedKeys = object : StoredPropertyKeys {
         override fun of(labels: String, idProperty: String, id: Any): Set<String> =
             persistenceManager.maybeGetOne(
                 QuerySpecification
@@ -109,9 +128,17 @@ class GraphObjectManager(
      * Relationships whose type is known only at runtime, between stored nodes — see [EdgeOperations].
      * Kept apart from the rest of this class, which is about declared shapes.
      */
-    val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
+    override val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
 
-    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys)
+    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys, stamping)
+
+    /** The statements that save [items] in batches, as [saveAll] runs them. */
+    internal fun batchSpecs(items: List<Any>, nullPolicy: NullPolicy): List<QuerySpecification<*>> =
+        if (items.isEmpty()) emptyList() else batchSave.buildBatchSpecs(items, CascadeType.NONE, nullPolicy)
+
+    /** The statements that save stamped fragments in batches, each returned row an item's `index=stamp`. */
+    internal fun stampedBatchSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
+        batchSave.buildStampedSpecs(items, nullPolicy)
 
     /**
      * Forgets every tracked object: each one's next save writes all fields, until it is loaded again.
@@ -132,16 +159,9 @@ class GraphObjectManager(
      * [IndexAdvicePolicy.OFF] to say nothing — ordering without an index is correct, just unindexed,
      * and on a small collection that is a perfectly reasonable thing to do.
      */
-    var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
+    override var indexAdvice: IndexAdvicePolicy = IndexAdvicePolicy.WARN
 
-    /**
-     * Loads all instances of a graph object (GraphView or GraphFragment) from the database.
-     * Loaded objects are automatically added to the session for dirty tracking.
-     *
-     * @param graphClass The graph object class to load
-     * @return List of graph object instances
-     */
-    fun <T : Any> loadAll(graphClass: Class<T>): List<T> {
+    override fun <T : Any> loadAll(graphClass: Class<T>): List<T> {
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -160,27 +180,7 @@ class GraphObjectManager(
         return results
     }
 
-    /**
-     * Loads instances of a graph object with a simple WHERE clause filter.
-     * This is a Java-friendly alternative to the DSL-based loadAll method.
-     *
-     * Example:
-     * ```java
-     * // Filter by root fragment property
-     * graphObjectManager.loadAll(PersonContext.class, "person.name = 'Alice'");
-     *
-     * // Filter by relationship property
-     * graphObjectManager.loadAll(PersonContext.class, "worksFor.name = 'Acme Corp'");
-     *
-     * // Multiple conditions with AND
-     * graphObjectManager.loadAll(PersonContext.class, "person.name = 'Alice' AND person.bio IS NOT NULL");
-     * ```
-     *
-     * @param graphClass The graph object class to load
-     * @param whereClause Cypher WHERE clause conditions (without the WHERE keyword)
-     * @return List of graph object instances matching the criteria
-     */
-    fun <T : Any> loadAll(graphClass: Class<T>, whereClause: String): List<T> {
+    override fun <T : Any> loadAll(graphClass: Class<T>, whereClause: String): List<T> {
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -199,17 +199,7 @@ class GraphObjectManager(
         return results
     }
 
-    /**
-     * Counts all instances of a graph object (GraphView or GraphFragment).
-     *
-     * For a `@GraphView` this counts only roots that satisfy the view's required relationships —
-     * the same roots [loadAll] would return — not a naive node count. For a plain `@NodeFragment`
-     * it is a straight node count of the fragment's labels.
-     *
-     * @param graphClass The graph object class to count
-     * @return The number of matching graph objects
-     */
-    fun <T : Any> count(graphClass: Class<T>): Long {
+    override fun <T : Any> count(graphClass: Class<T>): Long {
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         return persistenceManager.getOne(
             QuerySpecification
@@ -218,15 +208,7 @@ class GraphObjectManager(
         )
     }
 
-    /**
-     * Counts graph objects matching a simple WHERE clause filter (Java-friendly). Conditions use
-     * the same aliases as [loadAll] — `n` for fragments, the root field name for views.
-     *
-     * @param graphClass The graph object class to count
-     * @param whereClause Cypher WHERE clause conditions (without the WHERE keyword)
-     * @return The number of matching graph objects
-     */
-    fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long {
+    override fun <T : Any> count(graphClass: Class<T>, whereClause: String): Long {
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         return persistenceManager.getOne(
             QuerySpecification
@@ -235,15 +217,7 @@ class GraphObjectManager(
         )
     }
 
-    /**
-     * Counts graph objects using the type-safe query DSL (mirrors the DSL [loadAll]/[deleteAll]).
-     *
-     * @param graphClass The graph object class to count
-     * @param queryObject The query object providing property references
-     * @param spec DSL block for building the filter
-     * @return The number of matching graph objects
-     */
-    fun <T : Any, Q : Any> count(
+    override fun <T : Any, Q : Any> count(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit,
@@ -339,38 +313,7 @@ class GraphObjectManager(
         }
     }
 
-    /**
-     * Loads instances of a graph object using a type-safe query DSL.
-     * Supports filtering and ordering.
-     *
-     * Pass the query DSL object explicitly to enable type-safe property access.
-     *
-     * Example:
-     * ```kotlin
-     * graphObjectManager.loadAll(
-     *     RaisedAndAssignedIssue::class.java,
-     *     RaisedAndAssignedIssueQueryDsl.INSTANCE
-     * ) {
-     *     where {
-     *         this(query.issue.state eq "open")
-     *         this(query.issue.id gt 1000)
-     *     }
-     *     orderBy {
-     *         this(query.issue.id.descending())
-     *     }
-     * }
-     * ```
-     *
-     * **Future with Code Generation:**
-     * When code generation is implemented, query DSLs will be auto-registered via QueryDslRegistry,
-     * and you'll be able to use an even cleaner extension function syntax without passing the query object.
-     *
-     * @param graphClass The graph object class to load
-     * @param queryObject The query object providing property references
-     * @param spec DSL block for building the query
-     * @return List of graph object instances matching the criteria
-     */
-    fun <T : Any, Q : Any> loadAll(
+    override fun <T : Any, Q : Any> loadAll(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit
@@ -387,7 +330,7 @@ class GraphObjectManager(
         // Process ORDER BY clause - separate root orders from collection sorts
         val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
         val orderResult = if (querySpec.orders.isNotEmpty()) {
-            CypherGenerator.processOrders(querySpec.orders, relationshipNames)
+            CypherGenerator.processOrders(querySpec.orders, relationshipNames, ctx.viewModel)
         } else {
             OrderClauseResult(null, emptyList())
         }
@@ -441,15 +384,7 @@ class GraphObjectManager(
         return results
     }
 
-    /**
-     * Loads a single graph object instance by its ID.
-     * The loaded object is automatically added to the session for dirty tracking.
-     *
-     * @param id The ID value to search for
-     * @param graphClass The graph object class to load
-     * @return The graph object instance, or null if not found
-     */
-    fun <T : Any> load(id: String, graphClass: Class<T>): T? {
+    override fun <T : Any> load(id: String, graphClass: Class<T>): T? {
         // Auto-register subtypes if this is a sealed/abstract class
         autoRegisterSubtypesIfNeeded(graphClass)
 
@@ -472,61 +407,23 @@ class GraphObjectManager(
         return result
     }
 
-    /**
-     * Loads the [topK] graph objects whose embedding is most similar to [vector], ordered most
-     * similar first, each paired with its normalized similarity [score][Scored.score].
-     *
-     * Works on both a `@GraphView` (searches the **root fragment**'s embedding, returns the
-     * projected view) and a plain `@NodeFragment` (searches and returns the fragment itself). The
-     * vector index is inferred from the `@VectorIndex` annotation on the searched fragment; when it
-     * declares a single embedding no [property] is needed — pass [property] only to disambiguate
-     * between several embeddings on the same node.
-     *
-     * **Result count semantics:** `topK` is the index's `k` — the number of candidates the
-     * nearest-neighbour search returns. For a view, the required-relationship filters (and an
-     * optional [threshold]) are applied *afterwards*, so **fewer than [topK] results may come back**;
-     * raise [topK] if your view is selective. A fragment search has no relationship filters, so it
-     * returns the full top-K (minus any [threshold] cut).
-     *
-     * Example:
-     * ```kotlin
-     * val views = graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
-     * val nodes = graphObjectManager.loadNearest(PropositionNode::class.java, queryEmbedding, topK = 20)
-     * ```
-     *
-     * @param graphClass the `@GraphView` or `@NodeFragment` class to load
-     * @param vector the query embedding
-     * @param topK the number of nearest candidates to retrieve from the index
-     * @param threshold optional minimum similarity (higher = closer); candidates below it are dropped
-     * @return scored instances, most similar first, of length `<= topK`
-     * @throws UnsupportedOperationException if the backend has no native vector index
-     */
-    @JvmOverloads
-    fun <T : Any> loadNearest(
+    override fun <T : Any> loadNearest(
         graphClass: Class<T>,
         vector: List<Float>,
         topK: Int,
-        threshold: Double? = null,
-        searchK: Int? = null,
-        partitionLabel: String? = null,
+        threshold: Double?,
+        searchK: Int?,
+        partitionLabel: String?,
     ): List<Scored<T>> = loadNearest(graphClass, null, vector, topK, threshold, searchK, partitionLabel)
 
-    /**
-     * Vector search variant that names the embedding [property] explicitly — use when the searched
-     * fragment carries more than one `@VectorIndex` property. See the [loadNearest] overload above
-     * for the full semantics.
-     *
-     * @param property the `@VectorIndex` embedding property to search
-     */
-    @JvmOverloads
-    fun <T : Any> loadNearest(
+    override fun <T : Any> loadNearest(
         graphClass: Class<T>,
         property: String?,
         vector: List<Float>,
         topK: Int,
-        threshold: Double? = null,
-        searchK: Int? = null,
-        partitionLabel: String? = null,
+        threshold: Double?,
+        searchK: Int?,
+        partitionLabel: String?,
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
         return executeScoredSearch(
@@ -535,43 +432,14 @@ class GraphObjectManager(
         )
     }
 
-    /**
-     * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
-     * similarity plus arbitrary property predicates in one statement. Works on a `@GraphView`
-     * (predicates filter the *projected* values) and on a bare `@NodeFragment` (predicates filter the
-     * matched node directly, via the fragment's generated query DSL) — the vector mirror of the filtered
-     * [loadMatching].
-     *
-     * ```kotlin
-     * // view
-     * graphObjectManager.loadNearest(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, queryVector, topK = 20) {
-     *     where { query.proposition.contextId eq ctx; query.proposition.status eq status }
-     * }
-     * // fragment
-     * graphObjectManager.loadNearest(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
-     *     where { query.containerSectionId eq "sec-1" }
-     * }
-     * ```
-     *
-     * For a **view**, predicates filter the *projected* values: **property predicates** on the root map
-     * (`proposition.contextId eq …`) and **relationship quantifiers** over the projected relationship
-     * collection (`mentions.any { resolvedId eq … }` → `any(m IN mentions WHERE m.resolvedId = …)`,
-     * `none{}` → `NOT any(...)`). Multiple quantifiers `AND` together (e.g. "mentions all of these
-     * entities" = one `any{}` per id). Referencing a relationship the view does not project is an
-     * error. The `topK` / post-filter semantics are unchanged: the result may contain fewer than
-     * `topK` rows.
-     *
-     * @param queryObject the generated query DSL object providing property references
-     * @param spec the `where { }` block
-     */
-    fun <T : Any, Q : Any> loadNearest(
+    override fun <T : Any, Q : Any> loadNearest(
         graphClass: Class<T>,
         queryObject: Q,
         vector: List<Float>,
         topK: Int,
-        threshold: Double? = null,
-        searchK: Int? = null,
-        partitionLabel: String? = null,
+        threshold: Double?,
+        searchK: Int?,
+        partitionLabel: String?,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
         requireValidSearchK(topK, searchK)
@@ -597,81 +465,28 @@ class GraphObjectManager(
         }
     }
 
-    /**
-     * Full-text search: finds the [topK] nodes most relevant to a text [query] and returns them
-     * scored, the full-text mirror of [loadNearest]. Resolves the model's `@FullTextIndex`, runs the
-     * engine-appropriate full-text `CALL`, and returns typed, **[0, 1]-normalized** [Scored] results
-     * (polymorphic dispatch included) — no consumer Cypher, no per-engine score normalization.
-     *
-     * Works on a `@GraphView` (searches its root fragment's text index, returns the projected view)
-     * and on a bare `@NodeFragment` (searches and returns itself). As with [loadNearest], a view's
-     * required-relationship filters apply *after* the search, so **fewer than [topK] rows may return**.
-     *
-     * The [query] is passed through to the engine's full-text query language (Lucene syntax on Neo4j:
-     * `AND`/`OR`/`"phrase"`/`field:term`). Raw user input is **not** escaped here — wrap or escape it
-     * yourself if it may contain query-syntax metacharacters.
-     *
-     * @param graphClass the `@GraphView` or `@NodeFragment` class to load
-     * @param query the full-text query string
-     * @param topK the maximum number of results to return (applied as a `LIMIT`)
-     * @param threshold minimum normalized relevance in `[0, 1]`; results below it are dropped (default
-     *   `0.0` keeps everything)
-     * @return scored instances, most relevant first, of length `<= topK`
-     * @throws UnsupportedOperationException if the backend has no native full-text index
-     */
-    @JvmOverloads
-    fun <T : Any> loadMatching(
+    override fun <T : Any> loadMatching(
         graphClass: Class<T>,
         query: String,
         topK: Int,
-        threshold: Double = 0.0,
+        threshold: Double,
     ): List<Scored<T>> = loadMatching(graphClass, null, query, topK, threshold)
 
-    /**
-     * Full-text search variant that names the indexed [property] explicitly — use when the searched
-     * fragment carries more than one `@FullTextIndex`. Pass any property the target index covers. See
-     * the [loadMatching] overload above for the full semantics.
-     *
-     * @param property a property covered by the `@FullTextIndex` to search
-     */
-    @JvmOverloads
-    fun <T : Any> loadMatching(
+    override fun <T : Any> loadMatching(
         graphClass: Class<T>,
         property: String?,
         query: String,
         topK: Int,
-        threshold: Double = 0.0,
+        threshold: Double,
     ): List<Scored<T>> =
         executeScoredSearch(graphClass, FullTextSearchPlanner.plan(graphClass, property, query, topK, threshold, grammar))
 
-    /**
-     * Full-text search with an additional caller `where { }` predicate `AND`-ed into the post-search
-     * filter — full-text relevance plus arbitrary property predicates in one statement, the full-text
-     * mirror of the filtered [loadNearest]. Works on a `@GraphView` (predicates filter the *projected*
-     * values, exactly as the filtered vector search does) and on a bare `@NodeFragment` (predicates
-     * filter the matched node directly, using the fragment's generated query DSL).
-     *
-     * ```kotlin
-     * // view
-     * graphObjectManager.loadMatching(ChunkView::class.java, ChunkViewQueryDsl.INSTANCE, "graph databases", topK = 20) {
-     *     where { query.containerSectionId eq "sec-1" }
-     * }
-     * // fragment
-     * graphObjectManager.loadMatching(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, "graph databases", topK = 20) {
-     *     where { query.containerSectionId eq "sec-1" }
-     * }
-     * ```
-     *
-     * @param queryObject the generated query DSL object providing property references
-     * @param query the full-text query string
-     * @param spec the `where { }` block
-     */
-    fun <T : Any, Q : Any> loadMatching(
+    override fun <T : Any, Q : Any> loadMatching(
         graphClass: Class<T>,
         queryObject: Q,
         query: String,
         topK: Int,
-        threshold: Double = 0.0,
+        threshold: Double,
         spec: GraphQuerySpec<Q>.() -> Unit,
     ): List<Scored<T>> {
         val querySpec = GraphQuerySpec(queryObject).apply(spec)
@@ -867,76 +682,19 @@ class GraphObjectManager(
         }
     }
 
-    /**
-     * Deletes a graph object (GraphView or GraphFragment) from the database by its ID.
-     * Uses DETACH DELETE to also remove all relationships.
-     *
-     * @param id The ID value of the object to delete
-     * @param graphClass The graph object class
-     * @return The number of nodes deleted (0 or 1)
-     */
-    fun <T : Any> delete(id: String, graphClass: Class<T>): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>): Int {
         return delete(id, graphClass, null, CascadeType.NONE)
     }
 
-    /**
-     * Deletes a graph object by its ID, applying a cascade policy scoped by the view.
-     *
-     * Mirrors [save]'s cascade parameter on the delete path. The cascade boundary is the shape
-     * of the view passed in — see [delete] (the four-arg overload) for the full semantics.
-     *
-     * @param id The ID value of the object to delete
-     * @param graphClass The graph object class
-     * @param cascade The cascade policy (default NONE = root-only DETACH DELETE)
-     * @return The number of nodes deleted (root plus any cascaded fragments)
-     */
-    fun <T : Any> delete(id: String, graphClass: Class<T>, cascade: CascadeType): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>, cascade: CascadeType): Int {
         return delete(id, graphClass, null, cascade)
     }
 
-    /**
-     * Deletes a graph object (GraphView or GraphFragment) from the database by its ID,
-     * with an additional WHERE clause filter.
-     *
-     * Example:
-     * ```kotlin
-     * // Delete only if state is 'closed'
-     * graphObjectManager.delete(issueUuid, IssueCore::class.java, "issue.state = 'closed'")
-     * ```
-     *
-     * @param id The ID value of the object to delete
-     * @param graphClass The graph object class
-     * @param whereClause Additional WHERE clause conditions (without WHERE keyword)
-     * @return The number of nodes deleted (0 or 1)
-     */
-    fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?): Int {
         return delete(id, graphClass, whereClause, CascadeType.NONE)
     }
 
-    /**
-     * Deletes a graph object by its ID with both a WHERE clause filter and a cascade policy.
-     *
-     * The cascade scope is the shape of the view: traversal follows only the relationships the
-     * view declares, so callers express "what to destroy" by passing a narrow, delete-only view.
-     *
-     * - [CascadeType.NONE] (default) → root-only DETACH DELETE, identical to the legacy behavior.
-     *   Related fragments are left as orphans.
-     * - [CascadeType.DELETE_ALL] → also deletes every fragment reachable through the view's
-     *   declared relationships (honoring direction and maxDepth). Nodes the view does not include
-     *   survive; DETACH merely drops the edges to them.
-     * - [CascadeType.DELETE_ORPHAN] → also deletes each included related fragment, but only if it
-     *   has no relationships left once the root is removed. Requires a grammar that supports it
-     *   (see [validateCascadeSupport]).
-     *
-     * Ids are always bound as parameters; nothing is interpolated into the Cypher.
-     *
-     * @param id The ID value of the object to delete
-     * @param graphClass The graph object class
-     * @param whereClause Additional WHERE clause conditions (without WHERE keyword)
-     * @param cascade The cascade policy
-     * @return The number of nodes deleted (root plus any cascaded fragments)
-     */
-    fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
+    override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
         validateCascadeSupport(cascade)
 
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
@@ -963,37 +721,11 @@ class GraphObjectManager(
         )
     }
 
-    /**
-     * Deletes all graph objects (GraphViews or GraphFragments) of a given type from the database.
-     * Uses DETACH DELETE to also remove all relationships.
-     *
-     * WARNING: This will delete ALL nodes matching the labels. Use with caution.
-     *
-     * @param graphClass The graph object class
-     * @return The number of nodes deleted
-     */
-    fun <T : Any> deleteAll(graphClass: Class<T>): Int {
+    override fun <T : Any> deleteAll(graphClass: Class<T>): Int {
         return deleteAll(graphClass, null as String?)
     }
 
-    /**
-     * Deletes graph objects (GraphViews or GraphFragments) matching a WHERE clause filter.
-     * Uses DETACH DELETE to also remove all relationships.
-     *
-     * Example:
-     * ```kotlin
-     * // Delete all closed issues
-     * graphObjectManager.deleteAll(IssueCore::class.java, "n.state = 'closed'")
-     *
-     * // For GraphViews, use the root fragment field name as alias
-     * graphObjectManager.deleteAll(RaisedAndAssignedIssue::class.java, "issue.state = 'closed'")
-     * ```
-     *
-     * @param graphClass The graph object class
-     * @param whereClause WHERE clause conditions (without WHERE keyword)
-     * @return The number of nodes deleted
-     */
-    fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
+    override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int {
         val builder = GraphObjectQueryBuilder.forClass(graphClass, grammar)
         val query = builder.buildDeleteQuery(whereClause)
 
@@ -1004,29 +736,7 @@ class GraphObjectManager(
         )
     }
 
-    /**
-     * Deletes graph objects using a type-safe query DSL.
-     * Supports filtering conditions.
-     *
-     * Example:
-     * ```kotlin
-     * graphObjectManager.deleteAll(
-     *     IssueCore::class.java,
-     *     IssueCoreQueryDsl.INSTANCE
-     * ) {
-     *     where {
-     *         this(query.state eq "closed")
-     *         this(query.locked eq true)
-     *     }
-     * }
-     * ```
-     *
-     * @param graphClass The graph object class to delete
-     * @param queryObject The query object providing property references
-     * @param spec DSL block for building the query
-     * @return The number of nodes deleted
-     */
-    fun <T : Any, Q : Any> deleteAll(
+    override fun <T : Any, Q : Any> deleteAll(
         graphClass: Class<T>,
         queryObject: Q,
         spec: GraphQuerySpec<Q>.() -> Unit
@@ -1079,17 +789,12 @@ class GraphObjectManager(
             sessionManager,
             grammar,
             storedKeys,
+            stamping,
         )
         val statements = mergeBuilder.buildMergeStatements(obj, cascade, nullPolicy)
 
         // Execute all statements in order
-        statements.forEach { statement ->
-            persistenceManager.execute(
-                QuerySpecification
-                    .withStatement(statement.statement)
-                    .bind(statement.bindings)
-            )
-        }
+        SaveExecutor(persistenceManager).execute(statements)
 
         // Update snapshot after save
         snapshotResults(graphClass, listOf(obj))
@@ -1179,8 +884,7 @@ class GraphObjectManager(
         if (cascade == CascadeType.DELETE_ORPHAN && !grammar.supportsOrphanDelete) {
             throw UnsupportedOperationException(
                 "CASCADE DELETE_ORPHAN is not supported on this database. " +
-                "FalkorDB does not correctly handle DELETE followed by a pattern " +
-                "predicate in the same query (see FalkorDB/FalkorDB#1890). " +
+                grammar.orphanDeleteLimit?.let { "$it " }.orEmpty() +
                 "Use CASCADE DELETE_ALL or CASCADE NONE instead."
             )
         }

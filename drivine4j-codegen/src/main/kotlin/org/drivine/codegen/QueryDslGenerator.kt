@@ -14,12 +14,18 @@ import com.squareup.kotlinpoet.ksp.writeTo
 @OptIn(ExperimentalKotlinPoetApi::class)
 
 /**
+ * The property a `@NodeStamp` field is stored under; the query DSL quotes it. A constant of the core
+ * library, which the compiler copies in: the generator needs no core class when it runs.
+ */
+private const val STAMP_PROPERTY = org.drivine.model.Stamps.PROPERTY
+
+/**
  * Generates query DSL classes and extension functions for a @GraphView annotated class.
  *
  * For each @GraphView, generates:
  * 1. Properties classes for each fragment type
  * 2. QueryDsl class that aggregates all property references
- * 3. Extension function on GraphObjectManager for clean API
+ * 3. Extension function on GraphObjectOperations for clean API
  */
 class QueryDslGenerator(
     private val codeGenerator: CodeGenerator,
@@ -401,15 +407,17 @@ class QueryDslGenerator(
         }
 
         val stringType = String::class.asClassName()
-        val mapInit = if (fieldKeyPaths.isEmpty()) "emptyMap()" else
-            "mapOf(${fieldKeyPaths.entries.joinToString(", ") { "\"${it.key}\" to \"${it.value}\"" }})"
+        // Each name is written as a string literal, with what a literal must escape escaped: a stored
+        // name may hold a `$`, a quote or a backslash.
+        val mapInit = if (fieldKeyPaths.isEmpty()) CodeBlock.of("emptyMap()") else
+            CodeBlock.of("mapOf(%L)", fieldKeyPaths.entries.map { CodeBlock.of("%S to %S", it.key, it.value) }.joinToCode(", "))
         classBuilder.addProperty(
             PropertySpec.builder("fieldKeyPaths", Map::class.asClassName().parameterizedBy(stringType, stringType))
                 .addModifiers(KModifier.OVERRIDE)
                 .initializer(mapInit)
                 .build()
         )
-        val listInit = "listOf(${bagPrefixes.joinToString(", ") { "\"$it\"" }})"
+        val listInit = CodeBlock.of("listOf(%L)", bagPrefixes.map { CodeBlock.of("%S", it) }.joinToCode(", "))
         classBuilder.addProperty(
             PropertySpec.builder("bagPrefixes", List::class.asClassName().parameterizedBy(stringType))
                 .addModifiers(KModifier.OVERRIDE)
@@ -430,7 +438,7 @@ class QueryDslGenerator(
     }
 
     /**
-     * One `INSTANCE`-injecting reified extension on `GraphObjectManager` for a fragment, mirroring the
+     * One `INSTANCE`-injecting reified extension on `GraphObjectOperations` for a fragment, mirroring the
      * view wrappers: `inline fun <reified T : Fragment> …(spec) = …(T::class.java, DslClass.INSTANCE, spec)`.
      */
     private fun fragmentDslExtension(
@@ -440,7 +448,7 @@ class QueryDslGenerator(
         funcName: String,
         returnType: TypeName,
     ): FunSpec {
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         return FunSpec.builder(funcName)
             // A final (concrete) fragment makes `reified T : Fragment` predetermined — harmless, and the
@@ -470,7 +478,7 @@ class QueryDslGenerator(
      * plus a `where { }` predicate over the fragment's node properties, in one call:
      *
      * ```kotlin
-     * inline fun <reified T : ChunkNode> GraphObjectManager.loadMatching(
+     * inline fun <reified T : ChunkNode> GraphObjectOperations.loadMatching(
      *     query: String, topK: Int, threshold: Double = 0.0,
      *     noinline spec: GraphQuerySpec<ChunkNodeQueryDsl>.() -> Unit,
      * ): List<Scored<T>> = loadMatching(T::class.java, ChunkNodeQueryDsl.INSTANCE, query, topK, threshold, spec)
@@ -484,7 +492,7 @@ class QueryDslGenerator(
         dslClass: ClassName,
         dslClassName: String,
     ): FunSpec {
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val scoredClass = ClassName("org.drivine.manager", "Scored")
         return FunSpec.builder("loadMatching")
@@ -843,10 +851,15 @@ class QueryDslGenerator(
         val propName = prop.simpleName.asString()
         // @GraphProperty overrides the on-disk property name in the WHERE LHS; the accessor keeps the
         // Kotlin field name. The bind-param derives from this path (now the on-disk name) — internal.
-        val onDiskName = prop.annotations
-            .find { it.shortName.asString() == "GraphProperty" }
-            ?.arguments?.firstOrNull()?.value as? String
-            ?: propName
+        // A @NodeStamp field is stored under the stamp's own property, whatever the field is called.
+        val onDiskName = if (prop.annotations.any { it.shortName.asString() == "NodeStamp" }) {
+            STAMP_PROPERTY
+        } else {
+            prop.annotations
+                .find { it.shortName.asString() == "GraphProperty" }
+                ?.arguments?.firstOrNull()?.value as? String
+                ?: propName
+        }
         val propType = prop.type.resolve()
         val propertyRefType = if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
             ClassName("org.drivine.query.dsl", "StringPropertyReference")
@@ -857,7 +870,9 @@ class QueryDslGenerator(
 
         classBuilder.addProperty(
             PropertySpec.builder(propName, propertyRefType)
-                .initializer("$propertyRefType($aliasExpr, \"$onDiskName\")")
+                // The stored name as a string literal: a `@GraphProperty` may name anything, and a `$`
+                // in it is no template, nor a `%` a directive of the generator.
+                .initializer("%L(%L, %S)", propertyRefType.toString(), aliasExpr, onDiskName)
                 .build()
         )
         return EmittedRef.Field(propName, onDiskName)
@@ -878,7 +893,7 @@ class QueryDslGenerator(
         val bagRefType = ClassName("org.drivine.query.dsl", "PropertyBagReference")
         classBuilder.addProperty(
             PropertySpec.builder(propName, bagRefType)
-                .initializer("%T($aliasExpr, \"$storedPrefix\")", bagRefType)
+                .initializer("%T(%L, %S)", bagRefType, aliasExpr, storedPrefix)
                 .build()
         )
         return storedPrefix
@@ -951,7 +966,7 @@ class QueryDslGenerator(
     private fun generateLoadAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
 
@@ -981,7 +996,7 @@ class QueryDslGenerator(
      * the generated `loadAll(spec)` wrapper:
      *
      * ```kotlin
-     * inline fun <reified T : PropositionView> GraphObjectManager.loadNearest(
+     * inline fun <reified T : PropositionView> GraphObjectOperations.loadNearest(
      *     vector: List<Float>, topK: Int, threshold: Double? = null, searchK: Int? = null,
      *     partitionLabel: String? = null,
      *     noinline spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit,
@@ -996,7 +1011,7 @@ class QueryDslGenerator(
     private fun generateLoadNearestExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val scoredClass = ClassName("org.drivine.manager", "Scored")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
@@ -1045,7 +1060,7 @@ class QueryDslGenerator(
      * full-text mirror of [generateLoadNearestExtensionFunction]:
      *
      * ```kotlin
-     * inline fun <reified T : ChunkView> GraphObjectManager.loadMatching(
+     * inline fun <reified T : ChunkView> GraphObjectOperations.loadMatching(
      *     query: String, topK: Int, threshold: Double = 0.0,
      *     noinline spec: GraphQuerySpec<ChunkViewQueryDsl>.() -> Unit,
      * ): List<Scored<T>> = loadMatching(T::class.java, ChunkViewQueryDsl.INSTANCE, query, topK, threshold, spec)
@@ -1058,7 +1073,7 @@ class QueryDslGenerator(
     private fun generateLoadMatchingExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val scoredClass = ClassName("org.drivine.manager", "Scored")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
@@ -1099,7 +1114,7 @@ class QueryDslGenerator(
     private fun generateCountExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
 
@@ -1160,7 +1175,7 @@ class QueryDslGenerator(
     private fun generateDeleteAllExtensionFunction(graphViewClass: KSClassDeclaration): FunSpec {
         val graphViewClassName = graphViewClass.toClassName()
         val dslClassName = "${graphViewClass.simpleName.asString()}QueryDsl"
-        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectManager")
+        val graphObjectManagerClass = ClassName("org.drivine.manager", "GraphObjectOperations")
         val graphQuerySpecClass = ClassName("org.drivine.query.dsl", "GraphQuerySpec")
         val dslClass = ClassName(graphViewClassName.packageName, dslClassName)
 

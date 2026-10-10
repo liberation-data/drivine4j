@@ -72,7 +72,7 @@ RETURN props {
             // For concrete types, list specific fields. Key by field name (the identity the transform
             // reconstructs by constructor param), read from the on-disk property name.
             val fieldMappings = fragmentModel.fields.joinToString(",\n    ") {
-                "${it.name}: $nodeAlias.${it.propertyName}"
+                "${it.name}: $nodeAlias.${it.storedReference}"
             }
             """
 
@@ -108,7 +108,7 @@ RETURN {
         fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("GraphFragment ${fragmentModel.className} does not have a @GraphNodeId field")
         // Match on the id field's on-disk property name (differs only under a @GraphProperty id).
-        return "n.${fragmentModel.nodeIdProperty} = \$$idParamName"
+        return "n.${fragmentModel.nodeIdReference} = \$$idParamName"
     }
 
     override fun buildDeleteQuery(whereClause: String?, prologs: List<String>, bridgeVariables: List<String>): String {

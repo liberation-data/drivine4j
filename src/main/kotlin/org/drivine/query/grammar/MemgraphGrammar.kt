@@ -3,8 +3,8 @@ package org.drivine.query.grammar
 import org.drivine.query.sort.CollectionSortEmitter
 
 /**
- * Memgraph — openCypher engine with full ACID, working nested pattern comprehensions, and
- * orphan delete. Ships without APOC (uses MAGE instead).
+ * Memgraph — openCypher engine with full ACID and working nested pattern comprehensions, but no
+ * orphan delete (see [supportsOrphanDelete]). Ships without APOC (uses MAGE instead).
  *
  * Memgraph's `EXISTS { pattern }` support is more restrictive than Neo4j 5's — it rejects
  * "unbounded variables" inside EXISTS and disallows EXISTS in a WITH clause. To stay compatible
@@ -21,6 +21,8 @@ class MemgraphGrammar(
     // be used within WITH!") which is what the CASCADE DELETE_ORPHAN query emits. Opt out so
     // callers get a clean UnsupportedOperationException instead of a cryptic server error.
     override val supportsOrphanDelete: Boolean = false
+    override val orphanDeleteLimit: String =
+        "Memgraph cannot use EXISTS inside WITH, which the check for a target's remaining relationships needs."
 
     /**
      * Memgraph cannot execute the `CALL { WITH rootAlias ... RETURN count(x) AS _ec0 }` pattern

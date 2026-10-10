@@ -65,4 +65,13 @@ kotlin {
 
 test {
     useJUnitPlatform()
+    // See the root build: the collection sort strategy is an input of the tests.
+    inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
+    // The images the tests run are pinned in one file, and each pin is an input of the tests.
+    rootProject.file('gradle/test-images.txt').readLines()
+        .collect { it.trim() }.findAll { it && !it.startsWith('#') }
+        .each { line ->
+            def (named, pinned) = line.split(/\s+/)
+            systemProperty "drivine.test.image.${named}", pinned
+        }
 }

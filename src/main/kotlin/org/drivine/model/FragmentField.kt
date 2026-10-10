@@ -65,6 +65,12 @@ data class FragmentField(
      * property. The resolved model lives on [FragmentModel.nodeLabels].
      */
     val nodeLabels: NodeLabelsModel? = null,
+
+    /**
+     * Whether this field is the `@NodeStamp` field. Its [propertyName] is the stamp's own property,
+     * quoted; a save never writes the field's value, it writes a new stamp when it changes the node.
+     */
+    val stamp: Boolean = false,
 )
 
 /** The raw `@PropertyBag` / `@CompositeProperty` annotation values for a field. */

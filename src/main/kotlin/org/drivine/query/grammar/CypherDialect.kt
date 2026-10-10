@@ -39,7 +39,6 @@ enum class CypherDialect {
     /**
      * FalkorDB — openCypher with known limitations:
      * - Nested pattern comprehensions return NULL (FalkorDB/FalkorDB#1888)
-     * - No CASCADE DELETE_ORPHAN (FalkorDB/FalkorDB#1890)
      */
     FALKORDB,
 
@@ -51,9 +50,10 @@ enum class CypherDialect {
     NEPTUNE,
 
     /**
-     * Memgraph — Neo4j-compatible openCypher dialect with `EXISTS { pattern }`, working
-     * nested pattern comprehensions, and orphan delete. Ships without APOC (uses MAGE
-     * instead), so the default sort emitter is `CALL { }` subqueries.
+     * Memgraph — Neo4j-compatible openCypher dialect with `EXISTS { pattern }` and working
+     * nested pattern comprehensions. No CASCADE DELETE_ORPHAN: it cannot use `EXISTS` inside
+     * `WITH`. Ships without APOC (uses MAGE instead), so the default sort emitter is `CALL { }`
+     * subqueries.
      */
     MEMGRAPH;
 

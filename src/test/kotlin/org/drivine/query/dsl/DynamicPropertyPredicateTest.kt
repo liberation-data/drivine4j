@@ -77,8 +77,9 @@ class DynamicPropertyPredicateTest {
     @Test
     fun `a backtick in a runtime key is escaped so it cannot break out of the quotes`() {
         val (where, _) = render { where { query.property("metadata.a`b") eq "x" } }
-        // Cypher escapes a backtick inside a quoted identifier by doubling it.
-        assertEquals("n.`metadata.a``b` = \$param_n_metadata_a`b_0", where)
+        // Cypher escapes a backtick inside a quoted identifier by doubling it. A parameter name
+        // can hold none, so there it becomes an underscore.
+        assertEquals("n.`metadata.a``b` = \$param_n_metadata_a_b_0", where)
     }
 
     // ----- Phase B operators -----

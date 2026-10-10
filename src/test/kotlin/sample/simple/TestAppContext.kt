@@ -7,6 +7,7 @@ import org.drivine.manager.GraphObjectManager
 import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
+import org.drivine.manager.StatelessGraphObjectManager
 import org.springframework.context.annotation.*
 
 @Configuration
@@ -30,5 +31,13 @@ class TestAppContext {
         @Value("\${drivine.default-datasource:#{null}}") datasource: String?
     ): GraphObjectManager {
         return factory.get(datasource ?: "default")
+    }
+
+    @Bean
+    fun statelessGraphObjectManager(
+        factory: GraphObjectManagerFactory,
+        @Value("\${drivine.default-datasource:#{null}}") datasource: String?
+    ): StatelessGraphObjectManager {
+        return factory.stateless(datasource ?: "default")
     }
 }

@@ -41,13 +41,15 @@ interface GraphObjectMergeBuilder {
             sessionManager: SessionManager,
             grammar: CypherGrammar? = null,
             storedKeys: StoredPropertyKeys? = null,
+            stamping: Stamping? = null,
+            rootWriteFields: Set<String>? = null,
         ): GraphObjectMergeBuilder {
             return if (graphClass.isAnnotationPresent(GraphView::class.java)) {
                 val viewModel = GraphViewModel.from(graphClass)
-                GraphViewMergeBuilder(viewModel, objectMapper, sessionManager, grammar, storedKeys)
+                GraphViewMergeBuilder(viewModel, objectMapper, sessionManager, grammar, storedKeys, stamping, rootWriteFields)
             } else if (graphClass.isAnnotationPresent(NodeFragment::class.java)) {
                 val fragmentModel = FragmentModel.from(graphClass)
-                FragmentMergeBuilderAdapter(fragmentModel, objectMapper, sessionManager, grammar, storedKeys)
+                FragmentMergeBuilderAdapter(fragmentModel, objectMapper, sessionManager, grammar, storedKeys, stamping, rootWriteFields)
             } else {
                 throw IllegalArgumentException("Class ${graphClass.name} must be annotated with @GraphView or @GraphFragment")
             }
@@ -62,8 +64,9 @@ interface GraphObjectMergeBuilder {
             sessionManager: SessionManager,
             grammar: CypherGrammar? = null,
             storedKeys: StoredPropertyKeys? = null,
+            stamping: Stamping? = null,
         ): GraphObjectMergeBuilder {
-            return forClass(graphClass.java, objectMapper, sessionManager, grammar, storedKeys)
+            return forClass(graphClass.java, objectMapper, sessionManager, grammar, storedKeys, stamping)
         }
     }
 }
@@ -78,10 +81,12 @@ class FragmentMergeBuilderAdapter(
     private val sessionManager: SessionManager,
     private val grammar: CypherGrammar? = null,
     private val storedKeys: StoredPropertyKeys? = null,
+    private val stamping: Stamping? = null,
+    private val writeFields: Set<String>? = null,
 ) : GraphObjectMergeBuilder {
 
     override fun <T : Any> buildMergeStatements(obj: T, cascade: CascadeType, nullPolicy: NullPolicy): List<MergeStatement> {
-        val fragmentBuilder = FragmentMergeBuilder(fragmentModel, objectMapper, grammar, storedKeys)
+        val fragmentBuilder = FragmentMergeBuilder(fragmentModel, objectMapper, grammar, storedKeys, stamping)
 
         // One lookup: the previous digest gives both the dirty fields and the stale @PropertyBag keys.
         // Untracked (never loaded, or evicted) means a full save.
@@ -90,6 +95,6 @@ class FragmentMergeBuilderAdapter(
         val dirtyFields = previous?.let { sessionManager.computeDirtyFields(obj, it) }
 
         // Note: Fragments don't have relationships, so cascade is ignored
-        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields, previous, nullPolicy))
+        return listOf(fragmentBuilder.buildMergeStatement(obj, dirtyFields, previous, nullPolicy, writeFields))
     }
 }

@@ -1,6 +1,7 @@
 package org.drivine.query.dsl
 
 import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.GraphObjectOperations
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
@@ -621,7 +622,7 @@ class RaisedIssueProperties {
 // Example codegen template:
 // ```
 // @Generated
-// fun GraphObjectManager.loadAll(
+// fun GraphObjectOperations.loadAll(
 //     type: Class<{{ViewName}}>,
 //     spec: GraphQuerySpec<{{ViewName}}QueryDsl>.() -> Unit
 // ): List<{{ViewName}}> {
@@ -653,7 +654,7 @@ class RaisedIssueProperties {
  * The extension function automatically provides the query DSL instance,
  * eliminating one parameter and making the API cleaner.
  */
-fun GraphObjectManager.loadAll(
+fun GraphObjectOperations.loadAll(
     type: Class<RaisedAndAssignedIssue>,
     spec: GraphQuerySpec<RaisedAndAssignedIssueQueryDsl>.() -> Unit
 ): List<RaisedAndAssignedIssue> {

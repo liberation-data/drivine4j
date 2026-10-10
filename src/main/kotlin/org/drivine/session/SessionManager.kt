@@ -28,6 +28,9 @@ class SessionManager @JvmOverloads constructor(
 
     private val digest = SnapshotDigest(objectMapper)
 
+    /** False for a session that remembers nothing: every object is untracked, so every save is a full save. */
+    private var tracking = true
+
     /**
      * Session storage for object digests, keyed by (class name + ID value), in access order.
      * Example key: "sample.mapped.fragment.Person:550e8400-e29b-41d4-a716-446655440000"
@@ -51,6 +54,7 @@ class SessionManager @JvmOverloads constructor(
      *                              For GraphFragments, this should be null.
      */
     fun <T : Any> snapshot(obj: T, fragmentModel: FragmentModel, rootFragmentFieldName: String? = null) {
+        if (!tracking) return
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("Cannot snapshot object without @GraphNodeId field: ${obj.javaClass.name}")
 
@@ -189,6 +193,10 @@ class SessionManager @JvmOverloads constructor(
     }
 
     companion object {
+        /** A session that remembers nothing, for a manager that keeps no state between calls. */
+        internal fun untracked(objectMapper: ObjectMapper): SessionManager =
+            SessionManager(objectMapper).also { it.tracking = false }
+
         /** Generous by default: a digest is small, so 100k tracked objects is tens of megabytes. */
         const val DEFAULT_MAX_ENTRIES = 100_000
 

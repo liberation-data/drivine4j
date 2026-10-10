@@ -6,6 +6,7 @@ import org.drivine.annotation.GraphView
 import org.drivine.annotation.Hop
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.ReadOnly
 import org.drivine.annotation.Root
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Test
@@ -26,6 +27,7 @@ data class PDirector(@NodeId val id: String, val name: String)
 @GraphView
 data class ActorDirectors(
     @Root val actor: PActor,
+    @ReadOnly
     @GraphPath([
         Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie"),
         Hop("DIRECTED_BY", Direction.OUTGOING),
@@ -36,6 +38,7 @@ data class ActorDirectors(
 @GraphView
 data class ActorTopDirector(
     @Root val actor: PActor,
+    @ReadOnly
     @GraphPath([
         Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie"),
         Hop("DIRECTED_BY", Direction.OUTGOING),
@@ -46,6 +49,7 @@ data class ActorTopDirector(
 @GraphView
 data class ActorRequiredDirector(
     @Root val actor: PActor,
+    @ReadOnly
     @GraphPath([
         Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie"),
         Hop("DIRECTED_BY", Direction.OUTGOING),

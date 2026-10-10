@@ -26,7 +26,7 @@ class GeneratedLoadMatchingTest {
         val src = generatedSource("SampleFullTextViewQueryDsl")
         val flat = src.replace(Regex("\\s+"), " ") // KotlinPoet may line-wrap
         assertTrue(
-            flat.contains("fun <reified T : SampleFullTextView> GraphObjectManager.loadMatching"),
+            flat.contains("fun <reified T : SampleFullTextView> GraphObjectOperations.loadMatching"),
             "expected a generated loadMatching extension:\n$src",
         )
         assertTrue(
@@ -40,7 +40,7 @@ class GeneratedLoadMatchingTest {
         val src = generatedSource("SampleArticleNodeQueryDsl")
         val flat = src.replace(Regex("\\s+"), " ")
         assertTrue(
-            flat.contains("fun <reified T : SampleArticleNode> GraphObjectManager.loadMatching"),
+            flat.contains("fun <reified T : SampleArticleNode> GraphObjectOperations.loadMatching"),
             "expected a generated loadMatching extension on the fragment DSL:\n$src",
         )
         assertTrue(

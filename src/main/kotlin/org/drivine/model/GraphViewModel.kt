@@ -1,11 +1,13 @@
 package org.drivine.model
 
 import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.ReadOnly
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphPath
 import org.drivine.annotation.Aggregate
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Count
+import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.Root
@@ -13,6 +15,7 @@ import org.drivine.annotation.SortedBy
 import java.lang.reflect.Field
 import java.lang.reflect.ParameterizedType
 import kotlin.reflect.KClass
+import kotlin.reflect.jvm.javaField
 import kotlin.reflect.full.findAnnotation
 import kotlin.reflect.full.memberProperties
 
@@ -62,6 +65,7 @@ data class GraphViewModel(
         fun from(clazz: Class<*>): GraphViewModel {
             clazz.getAnnotation(GraphView::class.java)
                 ?: throw IllegalArgumentException("Class ${clazz.name} is not annotated with @GraphView")
+            requireNoStamp(clazz, "@GraphView", "its root fragment")
 
             // Try Kotlin reflection first, fall back to Java reflection if needed
             val kClass = clazz.kotlin
@@ -136,6 +140,7 @@ data class GraphViewModel(
                         val sortedByAnnotation = prop.findAnnotation<SortedBy>()
 
                         if (isRelationshipFragment) {
+                            requireNoStamp(elementType, "@RelationshipFragment", "the fragment it points at")
                             // Extract relationship fragment metadata
                             val fragmentKClass = elementType.kotlin
                             val fragmentProperties = fragmentKClass.memberProperties
@@ -202,19 +207,51 @@ data class GraphViewModel(
                 aggregateFieldModel(prop.name, prop.findAnnotation<Count>(), prop.findAnnotation<Aggregate>())
             }
 
+            val readOnlyFields = properties
+                .filter { it.findAnnotation<ReadOnly>() != null || it.javaField?.isAnnotationPresent(ReadOnly::class.java) == true }
+                .map { it.name }
+                .toSet()
+
             return GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = relationships,
+                relationships = markReadOnly(relationships, readOnlyFields),
                 aggregateFields = aggregateFields
             )
         }
 
         /**
+         * Marks the relationships no save writes: those declared `@ReadOnly`, every `@GraphPath`
+         * field, which names no single relationship that a save could write, and every list of
+         * fragments that reads more than one hop (`maxDepth` above 1), whose items are not all a
+         * single relationship away. A `@Count` or `@Aggregate` field is not a relationship and is
+         * never written either.
+         */
+        private fun markReadOnly(relationships: List<RelationshipModel>, readOnlyFields: Set<String>): List<RelationshipModel> =
+            relationships.map { it.copy(readOnly = it.isPath || it.readsSeveralHops || it.fieldName in readOnlyFields) }
+
+        /**
          * Creates a GraphViewModel from a Kotlin class annotated with @GraphView.
          */
         fun from(kClass: KClass<*>): GraphViewModel = from(kClass.java)
+
+        /**
+         * A stamp belongs to a node, so `@NodeStamp` is declared on a `@NodeFragment`. On a class that
+         * is [kind] it would be neither loaded nor compared, and a save would go unchecked unnoticed.
+         */
+        private fun requireNoStamp(clazz: Class<*>, kind: String, where: String) {
+            val onProperty = clazz.kotlin.memberProperties.filter { it.findAnnotation<NodeStamp>() != null }.map { it.name }
+            val onField = generateSequence<Class<*>>(clazz) { it.superclass }
+                .flatMap { it.declaredFields.asSequence() }
+                .filter { it.isAnnotationPresent(NodeStamp::class.java) }.map { it.name }.toList()
+            (onProperty + onField).firstOrNull()?.let { field ->
+                throw IllegalArgumentException(
+                    "@NodeStamp field '$field' on ${clazz.simpleName}, which is a $kind: a stamp is a node's, " +
+                        "so it is declared on a @NodeFragment. Here it would be neither loaded nor compared. Declare it on $where."
+                )
+            }
+        }
 
         /**
          * Builds a [RelationshipModel] for a @GraphPath field. Shared by the Kotlin and Java
@@ -452,6 +489,7 @@ data class GraphViewModel(
                         val sortedByAnnotation = field.getAnnotation(SortedBy::class.java)
 
                         if (isRelationshipFragment) {
+                            requireNoStamp(elementType, "@RelationshipFragment", "the fragment it points at")
                             // Extract relationship fragment metadata using Java reflection
                             val fragmentFields = elementType.declaredFields.filter { !it.isSynthetic }
 
@@ -523,7 +561,10 @@ data class GraphViewModel(
                 className = clazz.name,
                 clazz = clazz,
                 rootFragment = rootFragment,
-                relationships = relationships,
+                relationships = markReadOnly(
+                    relationships,
+                    fields.filter { it.isAnnotationPresent(ReadOnly::class.java) }.map { it.name }.toSet(),
+                ),
                 aggregateFields = aggregateFields
             )
         }

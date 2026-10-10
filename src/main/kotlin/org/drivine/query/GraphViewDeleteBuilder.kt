@@ -142,8 +142,9 @@ internal class GraphViewDeleteBuilder(
     /**
      * Recursively walks the relationships declared by [model] (starting from a node bound to
      * [parentAlias]), appending one `OPTIONAL MATCH` per declared relationship and recording the
-     * target alias for each. Only relationships the view declares are followed; edges that exist
-     * on target fragments but are absent from the view are never traversed.
+     * target alias for each. Only relationships the view declares and writes are followed: a
+     * read-only field is skipped, and edges that exist on target fragments but are absent from the
+     * view are never traversed.
      *
      * Direction and maxDepth are honored: a self-referential relationship expands as a
      * variable-length path up to its maxDepth, and chain cycles into nested views terminate once a
@@ -160,7 +161,8 @@ internal class GraphViewDeleteBuilder(
         optionalMatches: MutableList<String>,
         nodeAliases: MutableList<String>,
     ) {
-        model.relationships.forEach { rel ->
+        // A read-only field (every path is one) is not the view's to delete: other code writes what it loads.
+        model.relationships.filterNot { it.readOnly }.forEach { rel ->
             val targetType = if (rel.isRelationshipFragment) rel.targetNodeType!! else rel.elementType
             val targetLabels = GraphTypeLabels.labelsForType(targetType)
             if (targetLabels.isEmpty()) return@forEach

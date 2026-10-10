@@ -6,7 +6,12 @@ import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.query.GraphObjectMergeBuilder
+import org.drivine.query.ROW_CHANGES_NODE
+import org.drivine.query.Stamping
+import org.drivine.query.savedByUnwind
+import org.drivine.query.unwindProps
 import org.drivine.query.StoredPropertyKeys
+import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
@@ -32,6 +37,7 @@ internal class BatchSaveOperations(
     private val chunkSize: Int,
     private val grammar: CypherGrammar? = null,
     private val storedKeys: StoredPropertyKeys? = null,
+    private val stamping: Stamping? = null,
 ) {
     /**
      * Builds the statements for [items] (assumed non-empty), grouped by runtime class. Within a group
@@ -43,13 +49,8 @@ internal class BatchSaveOperations(
         items.groupBy { it.javaClass }.forEach { (clazz, group) ->
             val (rootModel, rootFieldName) = rootMetadata(clazz)
             val idField = rootModel.nodeIdField
-            // A vector-bearing root needs per-item saves on engines that wrap vector writes (FalkorDB):
-            // `SET n += row.props` can't wrap a single property in vecf32(...). Elsewhere (Neo4j /
-            // Memgraph store a plain array) the UNWIND path is fine, exactly as for a plain fragment.
-            val vectorNeedsPerItem = rootModel.vectorFieldNames.isNotEmpty() && grammar?.wrapsVectorLiteral == true
-            // A @NodeLabels root is per-item too: its labels are part of the statement text, so rows with
-            // different labels cannot share one UNWIND.
-            if (idField != null && rootModel.propertyBags.isEmpty() && rootModel.nodeLabels == null && !vectorNeedsPerItem) {
+            // A root an UNWIND cannot write is saved per item: see [savedByUnwind].
+            if (idField != null && rootModel.savedByUnwind(grammar)) {
                 appendUnwindGroup(specs, clazz, group, rootModel, rootFieldName, idField, cascade, nullPolicy)
             } else {
                 group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy).forEach { specs.add(it.toSpec()) } }
@@ -76,7 +77,7 @@ internal class BatchSaveOperations(
         rows.chunked(chunkSize).forEach { chunk ->
             specs.add(
                 QuerySpecification
-                    .withStatement("UNWIND \$rows AS row\nMERGE (n:$labels {$idProperty: row.id})\nSET n += row.props")
+                    .withStatement(if (stamping == null) "UNWIND \$rows AS row\nMERGE (n:$labels {$idProperty: row.id})\nSET n += row.props" else stampedUnwind(labels, idProperty))
                     .bind(mapOf("rows" to chunk))
             )
         }
@@ -84,6 +85,39 @@ internal class BatchSaveOperations(
         // is always the root upsert — see GraphViewMergeBuilder / FragmentMergeBuilderAdapter).
         group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy).drop(1).forEach { specs.add(it.toSpec()) } }
     }
+
+    /**
+     * The statements that save stamped fragments in batches and hand each one's stamp back: every
+     * returned row is `index/found=stamp`, the index being the item's and `found` the stamp the node
+     * had before the row wrote to it: empty for a node the row made, [Stamps.NEVER_STAMPED] for one
+     * that was there without a stamp. Each of [items] is a fragment that
+     * [savedByUnwind] allows.
+     */
+    fun buildStampedSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
+        items.groupBy { it.value.javaClass }.flatMap { (clazz, group) ->
+            val model = FragmentModel.from(clazz)
+            val idField = requireNotNull(model.nodeIdField)
+            val statement = stampedUnwind(model.labels.joinToString(":"), model.nodeIdProperty ?: idField, handsBack = true) +
+                "\nRETURN row.i + '/' + ${Stamps.FOUND} + '=' + n.${Stamps.QUOTED}"
+            group.map { (index, obj) -> unwindRootRow(obj, model, null, idField, nullPolicy) + ("i" to index.toString()) }
+                .chunked(chunkSize)
+                .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf("rows" to chunk)).transform(String::class.java) }
+        }
+
+    /**
+     * The UNWIND upsert that gives a node a new stamp only when the row changes it. It takes the
+     * node's lock before it reads the node to say so: see [Stamps.lock].
+     */
+    private fun stampedUnwind(labels: String, idProperty: String, handsBack: Boolean = false): String = listOfNotNull(
+        "UNWIND \$rows AS row",
+        "MERGE (n:$labels {$idProperty: row.id})",
+        // A node the statement makes is told from one it finds, for the stamp that is handed back.
+        Stamps.onCreate("n").takeIf { handsBack },
+        Stamps.lock("n"),
+        "WITH n, row, ${if (handsBack) Stamps.foundOf("n") else "coalesce(n.${Stamps.QUOTED}, '')"} AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed",
+        "SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}",
+        "REMOVE ${Stamps.unmark("n")}".takeIf { handsBack },
+    ).joinToString("\n")
 
     /**
      * One `{ id, props }` UNWIND row for an UNWIND-eligible root (id excluded). The `props` map is keyed
@@ -106,16 +140,13 @@ internal class BatchSaveOperations(
         }
         val id = rootProps[idField]
             ?: throw IllegalArgumentException("Cannot saveAll ${obj.javaClass.simpleName} with a null @GraphNodeId")
-        val propertyNameByField = rootModel.fields.associate { it.name to it.propertyName }
-        val props = rootProps
-            .filterKeys { it != idField }
-            .filter { (_, value) -> value != null || nullPolicy == NullPolicy.CLEAR }
-            .mapKeys { (field, _) -> propertyNameByField[field] ?: field }
-        return mapOf("id" to id, "props" to props)
+        val props = rootModel.unwindProps(rootProps, nullPolicy)
+        val stamp = if (stamping != null) mapOf("stamp" to Stamps.fresh()) else emptyMap()
+        return mapOf("id" to id, "props" to props) + stamp
     }
 
     private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType, nullPolicy: NullPolicy) =
-        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys).buildMergeStatements(obj, cascade, nullPolicy)
+        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys, stamping?.unchecked()).buildMergeStatements(obj, cascade, nullPolicy)
 
     /** Root [FragmentModel] and (for views) the root field name; mirrors the manager's snapshot metadata. */
     private fun rootMetadata(clazz: Class<*>): Pair<FragmentModel, String?> =

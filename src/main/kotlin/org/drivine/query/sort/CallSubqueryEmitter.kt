@@ -1,5 +1,7 @@
 package org.drivine.query.sort
 
+import org.drivine.query.dsl.CypherGenerator
+
 /**
  * Emits `CALL { MATCH ... ORDER BY ... collect(...) }` subqueries as prologs before
  * the RETURN. Portable across Neo4j 5+, FalkorDB, and Neptune — no server extensions.
@@ -18,7 +20,7 @@ class CallSubqueryEmitter : CollectionSortEmitter {
             |CALL {
             |    WITH ${ctx.rootAlias}
             |    MATCH (${ctx.rootAlias})${ctx.direction}(${ctx.targetAlias}:${ctx.targetLabelString})
-            |    WITH ${ctx.targetAlias} ORDER BY ${ctx.targetAlias}.${ctx.sort.propertyName} $order
+            |    WITH ${ctx.targetAlias} ORDER BY ${ctx.targetAlias}.${CypherGenerator.quoteProperty(ctx.sort.propertyName)} $order
             |    RETURN collect(${ctx.projection}) AS $sortedVar
             |}
         """.trimMargin()

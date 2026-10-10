@@ -9,6 +9,7 @@ import org.drivine.mapper.toMap
 import org.drivine.model.GraphViewModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.RelationshipModel
+import org.drivine.model.Stamps
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 
@@ -27,7 +28,13 @@ class GraphViewMergeBuilder(
     private val sessionManager: SessionManager,
     private val grammar: CypherGrammar? = null,
     private val storedKeys: StoredPropertyKeys? = null,
+    private val stamping: Stamping? = null,
+    /** The only root-fragment fields this save may touch; null means every field. */
+    private val rootWriteFields: Set<String>? = null,
 ) : GraphObjectMergeBuilder {
+
+    /** Only the root is checked: a node reached through a relationship is written, and stamped, unchecked. */
+    private val targetStamping = stamping?.unchecked()
 
     /**
      * Builds a list of Cypher statements to save a GraphView.
@@ -66,7 +73,7 @@ class GraphViewMergeBuilder(
         // 1. Save the root fragment
         val rootFragment = extractRootFragment(obj)
         val rootFragmentModel = FragmentModel.from(viewModel.rootFragment.fragmentType)
-        val rootFragmentBuilder = FragmentMergeBuilder(rootFragmentModel, objectMapper, grammar, storedKeys)
+        val rootFragmentBuilder = FragmentMergeBuilder(rootFragmentModel, objectMapper, grammar, storedKeys, stamping)
 
         // Check if root fragment is dirty.
         // Prefer the enclosing view snapshot (the only place a fragment-inside-a-view's
@@ -76,11 +83,12 @@ class GraphViewMergeBuilder(
                 ?.let { sessionManager.snapshotOf(rootFragment.javaClass, it) }
         val rootDirtyFields = previousRootFragment?.let { sessionManager.computeDirtyFields(rootFragment, it) }
 
-        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields, previousRootFragment, nullPolicy))
+        statements.add(rootFragmentBuilder.buildMergeStatement(rootFragment, rootDirtyFields, previousRootFragment, nullPolicy, rootWriteFields))
 
         // 2. Handle each relationship, diffing the current digest against the snapshot
         val current = snapshot?.let { sessionManager.digestOf(obj) }
-        viewModel.relationships.forEach { relModel ->
+        // A read-only field (every path is one) is loaded and never written.
+        viewModel.relationships.filterNot { it.readOnly }.forEach { relModel ->
             statements.addAll(buildRelationshipStatements(obj, current, snapshot, relModel, rootFragment, rootFragmentModel, cascade))
         }
 
@@ -136,8 +144,8 @@ class GraphViewMergeBuilder(
             CascadeType.PRESERVE -> Unit
             CascadeType.DELETE_ORPHAN ->
                 statements.add(buildOrphanReconcileStatement(rootFragment, rootFragmentModel, currentItems.filterNotNull(), relModel))
-            else -> removed.forEach { removedItem ->
-                statements.add(buildDeleteRelationshipStatement(rootFragment, rootFragmentModel, removedItem, relModel, cascade))
+            else -> removed.forEach { removedId ->
+                statements.add(buildDeleteRelationshipStatement(rootFragment, rootFragmentModel, removedId, relModel, cascade))
             }
         }
 
@@ -188,7 +196,7 @@ class GraphViewMergeBuilder(
         return if (isView) {
             // Recurse into the nested view, diffing against the snapshot view.
             val nestedViewModel = GraphViewModel.from(targetClass)
-            val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+            val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager, stamping = targetStamping)
             nestedViewBuilder.buildMergeStatementsInternal(currentTarget, snapshotTarget, cascade)
         } else {
             // Direct fragment target: write only the dirty fields, if any.
@@ -198,7 +206,7 @@ class GraphViewMergeBuilder(
             } else {
                 // IMPORTANT: Use runtime type, not declared type, for correct labels on polymorphic types.
                 val targetFragmentModel = FragmentModel.from(currentTarget::class.java)
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar, stamping = targetStamping)
                 listOf(fragmentBuilder.buildMergeStatement(currentTarget, dirtyFields, snapshotTarget))
             }
         }
@@ -211,7 +219,7 @@ class GraphViewMergeBuilder(
      *
      * - added:     present in current but not in snapshot (new ID), or — for relationship
      *              fragments — present in both but with changed relationship properties (re-MERGE).
-     * - removed:   the target IDs present in snapshot but not in current.
+     * - removed:   the target IDs present in snapshot but not in current, each as it is stored.
      * - unchanged: present in both with the same ID (and, for relationship fragments, unchanged
      *              relationship properties). The link is unchanged, but the target node/view may
      *              still hold dirty properties — returned as (currentItem, snapshotItem) pairs so
@@ -222,7 +230,7 @@ class GraphViewMergeBuilder(
         currentDigests: List<JsonNode?>,
         snapshot: List<JsonNode>,
         relModel: RelationshipModel
-    ): Triple<List<Any>, List<String>, List<Pair<Any, JsonNode>>> {
+    ): Triple<List<Any>, List<Any>, List<Pair<Any, JsonNode>>> {
         val target = declaredTarget(relModel)
 
         // Build ordered ID -> item maps for both sides (preserve declaration order).
@@ -259,8 +267,9 @@ class GraphViewMergeBuilder(
             }
         }
 
-        // Targets present in snapshot but not in current are removed.
-        val removed = snapshotById.keys.filter { it !in currentById.keys }
+        // Targets present in snapshot but not in current are removed. Each is bound as its id is
+        // stored, a number as a number: a string does not equal one.
+        val removed = snapshotById.filterKeys { it !in currentById.keys }.values.mapNotNull { storedDigestId(it, relModel, target) }
 
         return Triple(added, removed, unchanged)
     }
@@ -289,20 +298,38 @@ class GraphViewMergeBuilder(
         }
     }
 
-    /** The ID of a current relationship item's target fragment (for a view, its root), as stored. */
-    private fun targetId(item: Any, relModel: RelationshipModel): String? {
-        val target = declaredTarget(relModel)
+    /** The target fragment of a current relationship item: for a view, its root. */
+    private fun targetFragment(item: Any, relModel: RelationshipModel, target: DeclaredTarget): Any {
         val targetNode = extractTargetNode(item, relModel)
-        val fragment = target.viewModel?.let { extractRootFragmentFromObject(targetNode, it) } ?: targetNode
-        return sessionManager.extractIdValue(fragment, target.fragmentModel)?.toString()
+        return target.viewModel?.let { extractRootFragmentFromObject(targetNode, it) } ?: targetNode
     }
 
-    /** The ID of a snapshot item's target fragment, read from its digest (IDs are kept verbatim). */
-    private fun targetDigestId(item: JsonNode, relModel: RelationshipModel, target: DeclaredTarget): String? {
+    /** The ID of a current relationship item's target fragment (for a view, its root), as text: what items are told apart by. */
+    private fun targetId(item: Any, relModel: RelationshipModel): String? {
+        val target = declaredTarget(relModel)
+        return sessionManager.extractIdValue(targetFragment(item, relModel, target), target.fragmentModel)?.toString()
+    }
+
+    /** The ID of a current relationship item's target fragment as it is stored, which is what a statement binds. */
+    private fun storedTargetId(item: Any, relModel: RelationshipModel): Any? {
+        val target = declaredTarget(relModel)
+        return objectMapper.toMap(targetFragment(item, relModel, target))[target.idField]
+    }
+
+    /** The ID node of a snapshot item's target fragment, read from its digest (IDs are kept verbatim). */
+    private fun digestIdNode(item: JsonNode, relModel: RelationshipModel, target: DeclaredTarget): JsonNode? {
         val targetNode = targetDigest(item, relModel)
         val fragment = target.viewModel?.let { targetNode.get(it.rootFragment.fieldName) } ?: targetNode
-        return fragment?.get(target.idField)?.takeUnless { it.isNull }?.asText()
+        return fragment?.get(target.idField)?.takeUnless { it.isNull }
     }
+
+    /** The ID of a snapshot item's target fragment, as text: what items are told apart by. */
+    private fun targetDigestId(item: JsonNode, relModel: RelationshipModel, target: DeclaredTarget): String? =
+        digestIdNode(item, relModel, target)?.asText()
+
+    /** The ID of a snapshot item's target fragment as it is stored: a number as a number, anything else as text. */
+    private fun storedDigestId(item: JsonNode, relModel: RelationshipModel, target: DeclaredTarget): Any? =
+        digestIdNode(item, relModel, target)?.let { if (it.isNumber) it.numberValue() else it.asText() }
 
     /** The target's digest within a snapshot item: the item itself, or a relationship fragment's target. */
     private fun targetDigest(item: JsonNode, relModel: RelationshipModel): JsonNode =
@@ -326,9 +353,27 @@ class GraphViewMergeBuilder(
         }
     }
 
+    /** The relationship `r` of [relModel] between root and target, as its field's direction reads it. */
+    private fun matchEdge(relModel: RelationshipModel): String = when (relModel.direction) {
+        Direction.OUTGOING -> "-[r:${relModel.type}]->"
+        Direction.INCOMING -> "<-[r:${relModel.type}]-"
+        Direction.UNDIRECTED -> "-[r:${relModel.type}]-"
+    }
+
     /**
-     * Builds a DELETE statement for a relationship whose target [targetId] was in the snapshot and is
-     * no longer present. Behavior depends on cascade policy:
+     * The relationship of [relModel] to merge between root and target, in its field's direction. An
+     * undirected field is merged undirected: a relationship stored either way satisfies it, and one is
+     * made, from the root, only when there is none.
+     */
+    private fun mergeEdge(relModel: RelationshipModel, variable: String = ""): String = when (relModel.direction) {
+        Direction.INCOMING -> "<-[$variable:${relModel.type}]-"
+        Direction.OUTGOING -> "-[$variable:${relModel.type}]->"
+        Direction.UNDIRECTED -> "-[$variable:${relModel.type}]-"
+    }
+
+    /**
+     * Builds a DELETE statement for a relationship whose target [targetId], an id as it is stored, was
+     * in the snapshot and is no longer present. Behavior depends on cascade policy:
      * - NONE: Only deletes the relationship
      * - DELETE_ALL: Deletes relationship + target (DETACH DELETE; for a view, its root fragment)
      *
@@ -337,15 +382,16 @@ class GraphViewMergeBuilder(
     private fun buildDeleteRelationshipStatement(
         rootFragment: Any,
         rootFragmentModel: FragmentModel,
-        targetId: String,
+        targetId: Any,
         relModel: RelationshipModel,
         cascade: CascadeType
     ): MergeStatement {
         val target = declaredTarget(relModel)
         val rootProps = objectMapper.toMap(rootFragment)
 
-        val rootIdField = rootFragmentModel.nodeIdField!!
-        val targetIdField = target.idField
+        // Nodes are matched on the id's on-disk property name, which a @GraphProperty can make differ from the field's.
+        val rootIdField = rootFragmentModel.nodeIdProperty ?: rootFragmentModel.nodeIdField!!
+        val targetIdField = target.fragmentModel.nodeIdProperty ?: target.idField
 
         val rootLabels = rootFragmentModel.labels.joinToString(":")
         val targetLabels = target.fragmentModel.labels.joinToString(":")
@@ -356,8 +402,9 @@ class GraphViewMergeBuilder(
                 """
                     MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                     MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                    MATCH (root)-[r:${relModel.type}]->(target)
+                    MATCH (root)${matchEdge(relModel)}(target)
                     DELETE r
+                    $relinked
                 """.trimIndent()
             }
             CascadeType.DELETE_ALL -> {
@@ -378,16 +425,17 @@ class GraphViewMergeBuilder(
         return MergeStatement(
             statement = query,
             bindings = mapOf(
-                "rootId" to rootProps[rootIdField],
+                "rootId" to rootProps[rootFragmentModel.nodeIdField!!],
                 "targetId" to targetId
-            )
+            ) + mark()
         )
     }
 
     /**
      * Builds the DELETE_ORPHAN reconcile for one relationship field: deletes every edge of this type
      * from the root to a target not among [currentItems], then deletes each such target left with no
-     * relationships at all. The current items are the authority, so no snapshot is needed.
+     * relationships at all. The current items are the authority, so no snapshot is needed. The root is
+     * never deleted: a relationship from it to itself is removed, and it stays.
      */
     private fun buildOrphanReconcileStatement(
         rootFragment: Any,
@@ -403,11 +451,12 @@ class GraphViewMergeBuilder(
         val targetLabels = target.fragmentModel.labels.joinToString(":")
 
         val query = """
-            MATCH (root:$rootLabels {$rootIdProperty: ${'$'}rootId})-[r:${relModel.type}]->(target:$targetLabels)
+            MATCH (root:$rootLabels {$rootIdProperty: ${'$'}rootId})${matchEdge(relModel)}(target:$targetLabels)
             WHERE NOT target.$targetIdProperty IN ${'$'}keepIds
             DELETE r
-            WITH DISTINCT target
-            WHERE NOT (target)<-[]-() AND NOT (target)-[]-()
+            $relinked
+            WITH DISTINCT root, target
+            WHERE target <> root AND NOT (target)<-[]-() AND NOT (target)-[]-()
             DETACH DELETE target
         """.trimIndent()
 
@@ -415,8 +464,8 @@ class GraphViewMergeBuilder(
             statement = query,
             bindings = mapOf(
                 "rootId" to objectMapper.toMap(rootFragment)[rootIdField],
-                "keepIds" to currentItems.mapNotNull { targetId(it, relModel) },
-            )
+                "keepIds" to currentItems.mapNotNull { storedTargetId(it, relModel) },
+            ) + mark()
         )
     }
 
@@ -453,7 +502,7 @@ class GraphViewMergeBuilder(
             if (isView) {
                 // Handle nested GraphView - recursively build its merge statements
                 val nestedViewModel = GraphViewModel.from(targetNodeClass)
-                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager, stamping = targetStamping)
                 statements.addAll(nestedViewBuilder.buildMergeStatements(targetNode))
 
                 // Now create relationship to the nested view's root fragment with relationship properties
@@ -477,7 +526,7 @@ class GraphViewMergeBuilder(
                     sessionManager.getDirtyFields(targetNode, targetId)
                 } else null
 
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar, stamping = targetStamping)
                 statements.add(fragmentBuilder.buildMergeStatement(targetNode, targetDirtyFields))
 
                 // 2. CREATE/MERGE the relationship with properties
@@ -496,7 +545,7 @@ class GraphViewMergeBuilder(
             if (isView) {
                 // Handle nested GraphView - recursively build its merge statements
                 val nestedViewModel = GraphViewModel.from(targetClass)
-                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager)
+                val nestedViewBuilder = GraphViewMergeBuilder(nestedViewModel, objectMapper, sessionManager, stamping = targetStamping)
                 statements.addAll(nestedViewBuilder.buildMergeStatements(targetItem))
 
                 // Now create relationship to the nested view's root fragment
@@ -519,7 +568,7 @@ class GraphViewMergeBuilder(
                     sessionManager.getDirtyFields(targetItem, targetId)
                 } else null
 
-                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar)
+                val fragmentBuilder = FragmentMergeBuilder(targetFragmentModel, objectMapper, grammar, stamping = targetStamping)
                 statements.add(fragmentBuilder.buildMergeStatement(targetItem, targetDirtyFields))
 
                 // 2. CREATE/MERGE the relationship
@@ -551,11 +600,12 @@ class GraphViewMergeBuilder(
         val rootProps = objectMapper.toMap(rootFragment)
         val targetProps = objectMapper.toMap(targetFragment)
 
-        val rootIdField = rootFragmentModel.nodeIdField!!
-        val targetIdField = targetFragmentModel.nodeIdField!!
+        val rootId = rootProps[rootFragmentModel.nodeIdField!!]
+        val targetId = targetProps[targetFragmentModel.nodeIdField!!]
 
-        val rootId = rootProps[rootIdField]
-        val targetId = targetProps[targetIdField]
+        // Nodes are matched on the id's on-disk property name, which a @GraphProperty can make differ from the field's.
+        val rootIdField = rootFragmentModel.nodeIdProperty ?: rootFragmentModel.nodeIdField!!
+        val targetIdField = targetFragmentModel.nodeIdProperty ?: targetFragmentModel.nodeIdField!!
 
         val rootLabels = rootFragmentModel.labels.joinToString(":")
         val targetLabels = targetFragmentModel.labels.joinToString(":")
@@ -572,27 +622,66 @@ class GraphViewMergeBuilder(
                 bindings["rel_$propName"] = relProps[propName]
                 "$propName: \$rel_$propName"
             }
+            // A null clears the property, so a relationship is as written when it has none.
+            val asWritten = relModel.relationshipProperties.map { propName ->
+                if (relProps[propName] == null) "x.$propName IS NULL" else "coalesce(x.$propName = \$rel_$propName, false)"
+            }
 
             """
                 MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                MERGE (root)-[r:${relModel.type}]->(target)
+                ${found(relModel, asWritten)}
+                MERGE (root)${mergeEdge(relModel, "r")}(target)
                 SET r += {$relPropsString}
+                $relinkedWhenChanged
             """.trimIndent()
         } else {
             // Direct target reference: simple MERGE with no properties
             """
                 MATCH (root:$rootLabels {$rootIdField: ${'$'}rootId})
                 MATCH (target:$targetLabels {$targetIdField: ${'$'}targetId})
-                MERGE (root)-[:${relModel.type}]->(target)
+                ${found(relModel, emptyList())}
+                MERGE (root)${mergeEdge(relModel)}(target)
+                $relinkedWhenChanged
             """.trimIndent()
-        }
+        }.lines().map { it.trim() }.filter { it.isNotEmpty() }.joinToString("\n")
 
         return MergeStatement(
             statement = query,
-            bindings = bindings
+            bindings = bindings + mark()
         )
     }
+
+    /**
+     * The clause that gives `root` and `target` a new relationship token, appended to a statement that
+     * removes a relationship between them; empty when this builder does not stamp. The statement has
+     * a row only for a relationship it removes.
+     */
+    private val relinked: String = relinked(Stamps.ALWAYS)
+
+    /**
+     * As [relinked], for a statement that merges a relationship after [found]: the token is new when
+     * the relationship is made, or when one that was there did not carry the properties written.
+     */
+    private val relinkedWhenChanged: String = relinked("$ALL = 0 OR $SAME < $ALL")
+
+    private fun relinked(condition: String): String =
+        if (stamping == null) "" else "SET ${Stamps.relink("root", condition, "\$$MARK")}, ${Stamps.relink("target", condition, "\$$MARK")}"
+
+    /**
+     * The clauses that count, before a relationship of [relModel] is merged, how many are there between
+     * `root` and `target` and how many of them are [asWritten] already: a save that finds every one as
+     * it writes it has changed no relationship, and gives neither node a new token. Empty when this
+     * builder does not stamp.
+     */
+    private fun found(relModel: RelationshipModel, asWritten: List<String>): String {
+        if (stamping == null) return ""
+        val same = (listOf("x IS NOT NULL") + asWritten).joinToString(" AND ")
+        return "OPTIONAL MATCH (root)${mergeEdge(relModel, "x")}(target)\n" +
+            "WITH root, target, count(x) AS $ALL, sum(CASE WHEN $same THEN 1 ELSE 0 END) AS $SAME"
+    }
+
+    private fun mark(): Map<String, Any?> = if (stamping == null) emptyMap() else mapOf(MARK to Stamps.fresh())
 
     /**
      * Extracts the root fragment from a nested GraphView object.
@@ -614,3 +703,10 @@ class GraphViewMergeBuilder(
             ?: throw IllegalArgumentException("Root fragment ${viewModel.rootFragment.fieldName} is null")
     }
 }
+
+/** The parameter a relationship statement takes a new relationship token from. */
+private const val MARK = "_mark"
+
+/** How many relationships a merge found between the two nodes, and how many of them were as it writes them. */
+private const val ALL = "_all"
+private const val SAME = "_same"

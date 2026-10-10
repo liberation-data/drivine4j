@@ -1,6 +1,7 @@
 package org.drivine.query.grammar
 
 import org.drivine.query.sort.CollectionSortEmitter
+import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SimilarityFunction
 
 data class FilteredExistenceResult(
@@ -30,11 +31,15 @@ interface CypherGrammar {
         get() = InlineNestedViewProjector()
 
     /**
-     * Whether this engine supports CASCADE DELETE_ORPHAN — a DELETE followed by
-     * a pattern predicate check in the same query. FalkorDB does not (FalkorDB/FalkorDB#1890).
+     * Whether this engine supports CASCADE DELETE_ORPHAN — a DELETE followed by a check for
+     * remaining relationships in the same query. Memgraph does not: see [orphanDeleteLimit].
      */
     val supportsOrphanDelete: Boolean
         get() = true
+
+    /** Why this engine has no CASCADE DELETE_ORPHAN, for the message that refuses it. Null when it has. */
+    val orphanDeleteLimit: String?
+        get() = null
 
 
     /**
@@ -230,7 +235,7 @@ class Neo4j5Grammar(
             SimilarityFunction.EUCLIDEAN -> "vector.similarity.euclidean"
         }
         return "$call\nYIELD node\n" +
-            "WITH node AS $rootAlias, $similarityFunction(node.${spec.property}, \$${spec.vectorParam}) AS $scoreAlias"
+            "WITH node AS $rootAlias, $similarityFunction(node.${SchemaGrammar.identifier(spec.property)}, \$${spec.vectorParam}) AS $scoreAlias"
     }
 
     override val supportsFullTextSearch: Boolean = true

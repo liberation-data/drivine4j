@@ -6,7 +6,7 @@
 A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, and **Memgraph** with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
-2. **GraphObjectManager** - High-level API with annotated models and type-safe DSL.
+2. **Object manager** (`StatelessGraphObjectManager`) - High-level API with annotated models and type-safe DSL.
 
 Drivine4j is the graph database client library for [Embabel](https://hub.embabel.com) - Agentic AI for the JVM. 
 
@@ -51,7 +51,7 @@ Composition lets us mix and match as needed.
 - **Java 21+**
 - **Kotlin:**
   - For PersistenceManager API: Any Kotlin version
-  - For GraphObjectManager API: **Kotlin 2.2.0+** (requires context parameters feature)
+  - For the object manager API: **Kotlin 2.2.0+** (requires context parameters feature)
 
 ## Installation
 
@@ -60,14 +60,14 @@ Composition lets us mix and match as needed.
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.91")
+    implementation("org.drivine:drivine4j:0.1.0")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.0.91'
+    implementation 'org.drivine:drivine4j:0.1.0'
 }
 ```
 
@@ -76,13 +76,13 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.0.91</version>
+    <version>0.1.0</version>
 </dependency>
 ```
 
-### Code Generation (For GraphObjectManager with Type-Safe DSL)
+### Code Generation (For the Type-Safe Query DSL)
 
-If you want to use `GraphObjectManager` with the type-safe query DSL, you need to add the code generation processor.
+If you want to use the object manager with the type-safe query DSL, you need to add the code generation processor.
 
 > **Note for Java Projects:** Both Java and Kotlin are fully supported at runtime. The code generator (KSP) produces Kotlin DSL extensions, but a Java-friendly query builder API is also available. Define your `@GraphView` and `@NodeFragment` classes in either language. See the [Java Interoperability](#java-interoperability) section for details.
 
@@ -102,8 +102,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.0.91")
-    ksp("org.drivine:drivine4j-codegen:0.0.91")
+    implementation("org.drivine:drivine4j:0.1.0")
+    ksp("org.drivine:drivine4j-codegen:0.1.0")
 }
 ```
 
@@ -137,7 +137,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.0.91</version>
+                    <version>0.1.0</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -267,9 +267,22 @@ RETURN {
 
 This way `.transform(MyDto::class.java)` can map the result directly to a data class.
 
-## GraphObjectManager - Type-Safe Graph Mapping
+## Object Manager - Type-Safe Graph Mapping
 
-`GraphObjectManager` provides a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.
+`StatelessGraphObjectManager` is a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.
+
+It keeps no state between calls. What a load returns is what the store holds, and what a save writes depends only on the object and the arguments you pass.
+
+Get one from the `GraphObjectManagerFactory`, which the Spring Boot starter provides:
+
+```kotlin
+@Bean
+fun graphObjectManager(factory: GraphObjectManagerFactory): StatelessGraphObjectManager = factory.stateless()
+```
+
+> Earlier releases documented `GraphObjectManager`, which tracks what it loads in a session. It is deprecated: see [Migrating from GraphObjectManager](#migrating-from-graphobjectmanager).
+>
+> Upgrading from 0.0.x? [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) lists what changed and what to do about data saved before it.
 
 ### Key Concepts
 
@@ -445,6 +458,8 @@ data class OrgPersonView(
 )
 ```
 
+**Saving.** A view nested in itself, as above, is saved: each level is one relationship from the level above. A list of *fragments* read over several hops (`maxDepth` above 1 on a `List<Fragment>` field) is loaded and never written, like a path field: see [`@ReadOnly`](#readonly-a-field-that-is-loaded-and-never-written). A recursive collection cannot be sorted in the query; use [`@SortedBy`](#client-side-sorting-with-sortedby), which orders every level.
+
 #### 5. Path Traversal - Skipping Intermediary Nodes
 
 `@GraphRelationship` is a single hop. `@GraphPath` traverses several and maps only the **final** node, skipping the ones in between:
@@ -453,6 +468,7 @@ data class OrgPersonView(
 @GraphView
 data class ActorDirectors(
     @Root val actor: Actor,
+    @ReadOnly
     @GraphPath([
         Hop("ACTED_IN",    Direction.OUTGOING, label = "Movie"),  // through Movie — not mapped
         Hop("DIRECTED_BY", Direction.OUTGOING),                   // to Director
@@ -471,9 +487,12 @@ The far node is **de-duplicated** (an actor who made two movies by the same dire
 @GraphView
 data class ActorStats(
     @Root val actor: Actor,
-    @Count("ACTED_IN")                                              val movieCount: Long,
-    @Aggregate(AggregateFunction.AVG, type = "RATED", property = "score") val avgRating: Double,
-    @Aggregate(AggregateFunction.SUM, type = "RATED", property = "score") val totalRating: Double,
+    @ReadOnly @Count("ACTED_IN")
+    val movieCount: Long,
+    @ReadOnly @Aggregate(AggregateFunction.AVG, type = "RATED", property = "score")
+    val avgRating: Double,
+    @ReadOnly @Aggregate(AggregateFunction.SUM, type = "RATED", property = "score")
+    val totalRating: Double,
 )
 ```
 
@@ -488,7 +507,7 @@ data class ActorStats(
 ```kotlin
 @Component
 class PersonService @Autowired constructor(
-    private val graphObjectManager: GraphObjectManager
+    private val graphObjectManager: StatelessGraphObjectManager
 ) {
     fun getAllPeople(): List<PersonCareer> {
         return graphObjectManager.loadAll<PersonCareer>()
@@ -848,6 +867,14 @@ FalkorDB — with `none{}` wrapping it in `NOT (…)`. `any{}` is the explicit f
 `mentions.resolvedId eq id` shorthand; prefer it for `none`, for correlated multi-condition blocks,
 or for clarity. (Backends without subquery support throw, per the grammar default.)
 
+Inside a scored search (`loadNearest { where { } }`, `loadMatching { where { } }`) the filter is applied to
+the projected view, and `any` / `none` reach what the projection holds: a collection of fragments, a
+collection of nested views (the nested view's root, and its own relationships), and a single-valued
+relationship, which is read as a list of one or none.
+
+`not { }` around a condition on a relationship's target is one existence check for each condition, as
+`or` is: two conditions under it need not hold of the same related node.
+
 #### List-Valued Properties (`hasItem`)
 
 Filter on a caller value being contained in a **list-valued node property** — the mirror of `inList`
@@ -1032,13 +1059,15 @@ ignores `limit`/`skip`. (`loadNearest` doesn't take a limit — `topK` is alread
 
 The DSL supports sorting nested relationship collections directly in the database. The Cypher emitted depends on the engine's dialect:
 
-| Engine | Strategy | Nested Sort |
-|--------|----------|-------------|
-| Neo4j (default) | `apoc.coll.sortMaps()` | Supported |
-| Neo4j (CALL) | `CALL { ORDER BY + collect }` | Supported |
-| FalkorDB | `CALL { ORDER BY + collect }` | Supported (via CALL prolog) |
-| Neptune | `CALL { ORDER BY + collect }` | Supported (via CALL prolog) |
-| Memgraph | `CALL { ORDER BY + collect }` | Supported (no APOC, uses CALL) |
+| Engine | Strategy | A relationship of the root | A collection inside a nested view |
+|--------|----------|----------------------------|-----------------------------------|
+| Neo4j (default) | `apoc.coll.sortMaps()` | Sorted | Sorted |
+| Neo4j (CALL) | `CALL { ORDER BY + collect }` | Sorted | Refused |
+| FalkorDB | `CALL { ORDER BY + collect }` | Sorted | Sorted |
+| Neptune | `CALL { ORDER BY + collect }` | Sorted | Refused |
+| Memgraph | `CALL { ORDER BY + collect }` | Sorted | Refused |
+
+Where a nested collection's sort is refused, the query throws `UnsupportedOperationException` and names the alternatives: APOC on Neo4j, or client-side [`@SortedBy`](#client-side-sorting-with-sortedby).
 
 **Direct Relationship Sorting:**
 
@@ -1082,6 +1111,12 @@ database:
 ```
 
 The dialect controls all engine-specific Cypher generation — existence checks, collection sorting, and nested view projections. Available dialects: `NEO4J_5` (default for Neo4j), `NEO4J_4`, `FALKORDB`, `NEPTUNE`, `MEMGRAPH`.
+
+What a view load does not sort or order:
+
+- A recursive collection (a view nested in itself) cannot be sorted in the query: the load throws `UnsupportedOperationException`. Use `@SortedBy`, which orders every level.
+- A view is ordered, and paged by keyset, on what it projects. Ordering a view on a root property that is not a declared field of the root fragment, such as `query.issue.property("createdAt")` where `Issue` has no `createdAt` field, is refused with `IllegalArgumentException`: the projected root does not hold it, and the order would be by null. Declare the field. The same holds for a filter on such a property in a scored search (`loadNearest`, `loadMatching`). A `where { }` of a plain load reads the node and needs no field.
+- A load filters first: its `WHERE` stands directly after the `MATCH`, so sorted collections, paths and counts are computed only for the roots the load keeps.
 
 #### Client-Side Sorting with @SortedBy
 
@@ -1159,7 +1194,10 @@ The `@SortedBy` annotation:
 
 When the property to filter isn't known at compile time (an arbitrary `@PropertyBag` key, or a
 caller/tool-supplied filter key), reach for the untyped escape hatch instead of a generated accessor.
-Values still bind as parameters (no injection); a dotted `@PropertyBag` path is backtick-quoted for you.
+Values still bind as parameters (no injection). A key that is not a plain identifier, such as a dotted
+`@PropertyBag` path or one with a hyphen or a space, is backtick-quoted for you, and cannot end its
+quotes: a backtick in it is doubled, and so is the escape `\u0060`, which Neo4j reads as one. An empty
+key is refused. FalkorDB refuses a key that holds a backtick.
 
 ```kotlin
 import org.drivine.query.dsl.property     // stored-path form
@@ -1184,22 +1222,73 @@ where {
 
 ### Saving Data
 
-#### Simple Save (Dirty Tracking)
-
-GraphObjectManager tracks loaded objects and only saves changed fields:
+A save writes what the object holds. It does not depend on whether the object was loaded first, or on anything the manager remembers, because the manager remembers nothing.
 
 ```kotlin
-// Load an object
-val person = graphObjectManager.loadOrThrow<PersonCareer>(uuid)
+import org.drivine.manager.Replace
+import org.drivine.manager.RemovedTargets
+import org.drivine.manager.nodeRef
+import org.drivine.manager.update     // the reified update<T>(id) { }
 
-// Modify it
-val updated = person.copy(
-    person = person.person.copy(bio = "Updated bio")
-)
-
-// Save - only dirty fields are written!
-graphObjectManager.save(updated)
+graphObjectManager.save(view)                                              // every non-null field; relationships are added, never removed
+graphObjectManager.save(view, Replace(IssueView::assignedTo))              // this field's list is the whole list
+graphObjectManager.save(view, Replace.all())                               // every relationship field's list is the whole list
+graphObjectManager.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
+graphObjectManager.save(person, only = setOf(Person::name))                // write just these
+graphObjectManager.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
+graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
 ```
+
+A save is one Cypher statement: the root, the relationships it drops, each related node and the relationship to it. It is applied whole or not at all, with or without a transaction, on Neo4j, FalkorDB and Memgraph. Under `NullPolicy.CLEAR`, a root with a `@PropertyBag` or an open `@NodeLabels` field is read first, for the keys and labels it holds: one more statement, which writes nothing.
+
+`only` and `except` name fields of the object, and for a view fields of its root. A view's relationships are written whatever they name. Give one or the other: both together are refused, and so is a property of a class other than the one saved.
+
+#### What `save` returns
+
+`save` returns the saved object. On a type with a [`@NodeStamp`](#nodestamp-refusing-a-save-when-the-node-changed) field, use the returned object from then on: it carries the stamps the save left, on the root and on each related node that has one.
+
+| The class | What comes back |
+|---|---|
+| declares no stamp field, on the root or on any related node | the object you passed |
+| a Kotlin data class | a copy, as its `copy` would make |
+| has fields that can be set, such as a Java object with setters | the object you passed, given its stamps in place |
+| is immutable and not a data class, such as a Java record | a copy the object mapper rebuilds |
+
+A class of the last kind that the object mapper cannot rebuild is refused with `IllegalArgumentException` before anything is written.
+
+#### Relationships
+
+A save adds the relationships the object holds and removes none. To remove, name the field in `Replace`: the field's list is then the whole list.
+
+- A field removes only what it loads: relationships of its type and direction, to nodes with its target's labels. Two fields can share a relationship type, and a relationship that another field of the view holds, of the same type and direction, is that field's to keep.
+- `Replace(field, removedTargets = DELETE_UNREFERENCED)` also deletes a removed target that nothing else refers to the way the field did. For an outgoing field that is a target no relationship points at; for an incoming field, one that points at nothing else; for an undirected field, one with no relationship left. The target's other relationships go with it. The root is never deleted, though a relationship from it to itself is removed. A node the object still holds, in another of its fields or in a view nested in one, is never deleted: a target moved from one list to another is kept. Anything more is a custom view or Cypher.
+- `Replace.all()` covers every relationship field of the view itself. It is refused for an object that carries no stamp, because the lists of an object built from scratch are its defaults and not what the store holds. A view whose root declares no `@NodeStamp` field therefore names its fields.
+- The lists of a view nested in the one saved only add: to trim one, use `update`, or save the nested view with `Replace`.
+- A list to replace that is null is refused, whether it is named or covered by `Replace.all()`. An empty list removes every relationship of the field.
+- A single-valued relationship field that is null, and is named in `Replace` or covered by `Replace.all()`, removes the relationship: for one node, null is how "none" is said.
+- `Replace` trusts that the list came from a load. A list cut short by a custom query is taken as the whole list.
+- `Replace` is refused, on a root that carries a stamp, if any relationship of the root was added or removed, or had its properties changed, since the object was loaded. A save that only adds is not: two writers who loaded the same view can each add to it. See [when a save is refused](#when-a-save-is-refused).
+- An `UNDIRECTED` field is satisfied by a relationship stored in either direction. One is made, from the root, only when there is none.
+- A node a field holds more than once is written once, as the last of them says, and joined once.
+- `DELETE_UNREFERENCED` never deletes a node the object still holds in another of its fields: a target moved from one list to another is kept.
+- A null property of a relationship fragment is left alone on the relationship, as a null field of a related node is. `update` clears one the change set to null.
+- Where the store holds several relationships of one type between the same two nodes, a save writes its properties to each of them.
+- A read-only field is never written: see [`@ReadOnly`](#readonly-a-field-that-is-loaded-and-never-written).
+- `edges.unrelate(from, to, type)` removes the relationships of a type from one node to another, and `edges.unrelateAll(from, type, direction)` every one of a type. Neither deletes a node or touches a node's own properties.
+
+**The statement's size.** The related nodes of a field are the rows of one `UNWIND`, so the statement's text does not grow with a list and an engine plans it once. Three kinds of related node still have a part of the statement each: a related view, a fragment with a `@PropertyBag` or a `@NodeLabels` field, and on FalkorDB a fragment with a `@VectorIndex` field. A long list of those makes a long statement. Index the id of each node type you save, as for any `MERGE`.
+
+#### Load, Change and Save (`update`)
+
+`update` loads the object, applies your change, and writes only what the change altered: the fields that differ, a field set to null, and for a view the relationships it added or dropped and the related nodes it altered. Of a related node that was loaded it writes the fields that differ and clears one set to null, and leaves the rest, so another writer's change to a field you did not touch stands. A related node the change added is written whole. A relationship another writer added in the meantime is kept, and one another writer removed stays removed. Your change may return a copy, or change the object it is given and return that.
+
+- If the node changed between the load and the save, `update` loads it again and re-applies your change: three attempts in all by default, and then `StaleObjectException` is thrown.
+- That needs a `@NodeStamp` field. Without one a change by another writer is not noticed.
+- The id is a `String` or a `UUID`.
+- `update` returns null when there is no such node, and when the node is deleted between the load and the save. It writes to the node it loaded and never makes one.
+- A `StaleObjectException` that your change throws itself, from a save of its own, is thrown on and not tried again.
+- A change that gives the object another id, or returns an object of another class, is refused.
+- The load and the save are two statements. The save is one, and is refused if the node changed in between. A change to an open `@NodeLabels` field adds a read of the labels the node records as its own.
 
 #### Null-Write Policy (`NullPolicy`)
 
@@ -1217,42 +1306,226 @@ graphObjectManager.save(chunk, nullPolicy = NullPolicy.CLEAR)    // full overwri
 - **`CLEAR`** — the object is authoritative: null fields clear the corresponding property (a full
   overwrite). Reach for it only with a complete object.
 
-Null handling is independent of dirty-tracking — the policy alone decides, so the result never depends
-on whether the object is session-tracked. `saveAll(..., nullPolicy = …)` behaves identically. Under
+In a view the policy governs the root. A related node is written as under `IGNORE`: a null field of
+it is left alone, and so are its stale `@PropertyBag` keys. To clear a field of a related node, use
+`update`, or save that node itself.
+
+`saveAll(..., nullPolicy = …)` behaves identically. Under
 `CLEAR`, a `@PropertyBag` also drops keys absent from the current map; under `IGNORE` those keys are
 left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-write-policy.md).
 
-#### Save with Relationship Changes
-
-```kotlin
-val person = graphObjectManager.loadOrThrow<PersonCareer>(uuid)
-
-// Remove all employment history
-val updated = person.copy(employmentHistory = emptyList())
-
-graphObjectManager.save(updated, CascadeType.NONE)
-```
-
 #### Batch Save (`saveAll`)
 
-Persist a collection in **one atomic round-trip group**, with `save`'s per-item semantics unchanged
-(cascade, dirty tracking, MERGE identity). Within an ambient `@Transactional` the statements join it;
-otherwise they run together in a single transaction — a failure on any item rolls the whole call back.
+Persist a collection in one group of statements. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back. FalkorDB has no multi-statement transactions: there each statement is atomic and the batch is not, and with `falkorDbTransactionMode` set to `STRICT` a batch is refused, as any transaction is.
 
 ```kotlin
-val saved = graphObjectManager.saveAll(views, CascadeType.DELETE_ORPHAN)
+val saved = graphObjectManager.saveAll(views)
+val replaced = graphObjectManager.saveAll(views, Replace(PropositionView::mentions))
 ```
 
-Homogeneous root upserts collapse into chunked `UNWIND … MERGE … SET n += row.props` statements
-(sub-linear round trips); relationship/cascade statements stay per-item. Heterogeneous collections are
-grouped by runtime class; the returned list preserves input order. Roots with a `@PropertyBag` fall
-back to the per-item path. Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy)
-uniformly with `save` — `IGNORE` (default) leaves nulls, `CLEAR` clears them —
-via `saveAll(objs, nullPolicy = …)`.
+- Fragments collapse into chunked `UNWIND … MERGE` statements (sub-linear round trips), with or without a `@NodeStamp` field. A view is saved by a statement of its own, as `save` does it.
+- Heterogeneous collections are grouped by runtime class, and the returned list preserves input order.
+- A fragment with a `@PropertyBag` or a `@NodeLabels` field is saved one statement each. So, on FalkorDB, is a fragment with a `@VectorIndex` field, which that engine stores in a form a batch of rows cannot write.
+- **A batch that only adds does not check stamps.** An object that carries a stale stamp is written all the same, where `save` of it would be refused. The object handed back then keeps the stamp it had, so a later `save` of it is refused: it does not hold what the other writer left.
+- Otherwise the returned objects carry the stamps the batch left, so each can be saved again.
+- A `Replace` applies to views: a batch that holds a fragment is refused with it. Each view that carries a stamp is checked as `save` checks it, and a stale one throws `StaleObjectException`. On Neo4j and Memgraph the batch is then not applied. On FalkorDB the statements that ran before the refused one stay applied.
+- Inside a transaction of the caller's, a refusal undoes the batch only if that transaction is rolled back, as it is when the exception leaves it. Code that catches the exception and carries on commits what the batch wrote before the refusal.
+- **One object of a batch holding another's root.** A view's save changes the nodes it holds. So a view saved with `Replace`, whose root an earlier object of the batch holds, can be refused by the batch's own doing. The exception then says so: `StaleObjectException.bySameBatch` is true. Give such a view before the objects that hold its root, or save them one at a time, each from what the save before it returned.
+- A batch the engine turns away because another writer was changing the same nodes is run again, as a save is.
+- Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy), as for `save`.
+- The managers Drivine provides run the batch in one transaction. A `PersistenceManager` of your own that overrides `executeBatch` to do so must override `queryBatch` too, which `saveAll` calls and whose default runs each statement on its own.
+
+#### Saving from Java
+
+```java
+graphObjectManager.save(view);
+graphObjectManager.save(view, Replace.of(Set.of("assignedTo")));
+graphObjectManager.save(view, Replace.of(Set.of("assignedTo"), RemovedTargets.DELETE_UNREFERENCED));
+graphObjectManager.save(view, Replace.all());
+graphObjectManager.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("name"));                // only these fields
+graphObjectManager.saveFields(chunk, Add.INSTANCE, NullPolicy.IGNORE, Set.of(), Set.of("embedding"));   // every field but these
+List<IssueView> saved = graphObjectManager.saveAll(views);
+
+Person updated = graphObjectManager.update(id, Person.class, p -> { p.setName("Ada"); return p; });   // null when there is no such node
+graphObjectManager.update(id, Person.class, 5, p -> p.withName("Ada"));                                // five attempts
+
+graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), new NodeRef(Person.class, b, Set.of()), "ASSIGNED_TO");
+```
+
+- Java names fields as strings, so it calls `saveFields` where Kotlin passes property references to `save`.
+- `@NodeStamp` goes on a `String` field of a Java class or on a `String` component of a record. A Java object whose fields can be set is given its new stamp in place, and `save` returns that same object. A record comes back as a copy.
+- `update`'s function may change the object it is given and return it, or return another.
+- A refused save throws `StaleObjectException`: `getDeleted()` says whether the node is gone, `getFoundStamp()` gives the stamp it carries now, and `getBySameBatch()` says whether a `saveAll` refused itself.
+- `Stamps.setClause("p")` and `Stamps.linksClause("p")` give the `SET` items for Cypher of your own.
+
+#### Saves and transactions
+
+- A save joins the transaction it is called in, Spring's `@Transactional` or `@DrivineTransactional`. Outside one it is its own.
+- `StaleObjectException` is a `RuntimeException`, so a refusal that leaves a `@Transactional` method rolls the transaction back. It is not a `DrivineException`: a handler that catches only that does not catch it.
+- A refused save has written nothing. What the transaction wrote before it is undone only if the transaction rolls back: code that catches the exception and carries on commits it.
+- A checked save holds the node's write lock until the transaction commits, so another writer to the same node waits for it.
+- A statement the engine turns away because another writer was changing the same node is run again, six attempts in all, on Neo4j and Memgraph. Inside a transaction the engine has usually failed the transaction with the statement, so the later attempts fail too and the first failure is what the caller sees.
+- On FalkorDB each statement commits by itself. A save is still atomic, being one statement. An `update` is two, a load and a checked save, and a `saveAll` is several: what ran before a failure or a refusal stays applied.
+
+See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the release that introduced this manager and what it changed.
+
+
+### @NodeStamp: refusing a save when the node changed
+
+Strongly recommended on any type that is loaded, changed and saved. It plays the role of JPA's `@Version`: optimistic locking, with a random value in place of a counter.
+
+```kotlin
+@NodeFragment(labels = ["Person"])
+data class Person(
+    @NodeId val id: String,
+    val name: String,
+    @NodeStamp val stamp: String? = null,
+)
+```
+
+The field is a nullable `String` on a `@NodeFragment`, one to a fragment, in Kotlin or Java. It is refused on a `@GraphView` and on a `@RelationshipFragment`: a stamp is a node's.
+
+#### The stamp
+
+The stamp is two random tokens of 64 bits each, stored on the node under `__drivine.stamp` as `3fa9c1d27b40e8a6:91d0f4b2c7ee5a13`, whatever the field is called. Loading fills the field. Treat it as opaque.
+
+- The **data token**, the first, speaks for the node's own data: its properties and labels.
+- The **relationship token**, the second, speaks for the node's relationships, of every type and in both directions.
+- To **mark** a node is to replace one of its tokens with a new one. A save marks what it changes, and so must Cypher of your own.
+
+A save replaces the data token when it changes the node: a property that differs, a cleared property that held a value, a label added or dropped. A save that changes nothing leaves it as it is. The relationship token is replaced, at both ends, when a relationship is added or removed or its properties change: by a view saved from either end, by `edges`, or by the deprecated `GraphObjectManager`.
+
+Every node a save writes is given a stamp if it has none, whether or not its type declares a `@NodeStamp` field, and so is the node at each end of a relationship that is written or removed. A stored value that is not two tokens, which no save leaves, counts as none and is replaced whole.
+
+#### When a save is refused
+
+A save is refused when what it would overwrite has changed since the object was loaded. Every save of an object that carries a stamp compares the data token. A save with `Replace` overwrites a relationship list, so it compares the relationship token too. A refused save writes nothing, to that node or any other, and throws `StaleObjectException`.
+
+| Since the object was loaded, another writer… | `save` | `save` with `Replace` | `update` |
+|---|---|---|---|
+| changed a property or a label of the root | refused | refused | loads again and re-applies the change |
+| added or removed a relationship of the root, or changed one's properties, from either end | applied | refused | applied |
+| changed a related node | applied: every non-null field of the related node is written over the change | the same | applied: only the fields the change altered are written |
+| deleted the root | refused, `deleted` is true | refused, `deleted` is true | returns null |
+| changed anything with Cypher that does not mark it | not noticed | not noticed | not noticed |
+
+Two cases are decided by the object, not by another writer:
+
+| The object | `save` | `save` with `Replace` | `update` |
+|---|---|---|---|
+| carries a null stamp, or its root declares no `@NodeStamp` field | not checked: it makes the node or overwrites it | named fields are replaced unchecked; `Replace.all()` is refused with `IllegalArgumentException` | a change by another writer is not noticed |
+| was saved over a node it had not loaded, and carries the stamp that save returned | applied | refused until it is loaded | — |
+
+- So a node's own data can be saved while others attach relationships to it, two writers can each add a relationship to the same node, and a `Replace` of an object that carries a stamp never removes a relationship it did not load.
+- The relationship token covers every relationship of the node. A `Replace` of one list is refused when a relationship of another type was added to the same node; load again, or use `update`.
+- The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
+- In a view, the root is checked. A node reached through a relationship is written unchecked.
+- `update` is checked against the stamp it loaded, whatever the change does with the object's.
+
+Handling a refusal:
+
+```kotlin
+try {
+    graphObjectManager.save(edited)
+} catch (stale: StaleObjectException) {
+    if (stale.deleted) {
+        // the node is gone: decide whether to make it again
+    } else {
+        // another writer got there first: stale.foundStamp is what the node carries now.
+        // Load it again and apply the change to what is there, which update does:
+        graphObjectManager.update<Person>(edited.id) { it.copy(name = edited.name) }
+    }
+}
+```
+
+`update` is the shorter way when the change can be written as a function of the loaded object. It cannot help a type with no `@NodeStamp` field: there nothing is noticed, and nothing is retried.
+
+#### The stamp a save hands back
+
+`save` returns the object with the stamps the save left: the root's, and that of each related node that declares a stamp field. Use the returned object: if the save changed the node, the one you passed in is now stale.
+
+- A stamp handed back carries a token of the node's only if what the token speaks for was as the object's stamp says when the save began. If another writer added or removed a relationship the object does not hold, the object keeps the relationship token it had: its own data can still be saved, and a `Replace` of it is refused until it is loaded again. If another writer changed the data of a node that was written unchecked (a related node, or an object in a `saveAll`), the object keeps the data token it had, and a save of it is refused until it is loaded again.
+- An object that carried no stamp is handed the whole stamp of a node its save made. Of a node that was already there it is handed the data token alone: its lists did not come from the store. A save of the returned object that only adds is applied, and a `Replace` of it is refused until the object is loaded.
+- A node the object holds more than once, in two fields or as the root and in one of its own lists, is handed the stamp the save left each time, where each copy carried the same stamp.
+- `saveAll` hands stamps back as `save` does.
+
+#### Existing data
+
+A node written before 0.1.0 has no stamp, and a class that gains a `@NodeStamp` field loads it with the field null.
+
+- The first save of such an object is not checked, and gives the node a stamp.
+- That save returns the data token alone, the node having been there already, and `Replace.all()` is refused for an object whose stamp is null. So to replace the lists of such a node: save it, load it, then `Replace`. Or name the fields: a named `Replace` of an object with a null stamp is applied unchecked.
+- To give every node of a label its stamp at once, so that the first load already carries one:
+
+  ```kotlin
+  persistenceManager.execute(QuerySpecification.withStatement(
+      "MATCH (n:Person) WHERE n.`__drivine.stamp` IS NULL SET ${Stamps.setClause("n")}"
+  ))
+  ```
+
+#### Cypher you write yourself
+
+Cypher should mark what it changes. **A write that does not is not noticed**: a checked save of an object loaded before it is applied over it. `Stamps.setClause` marks a node whose mapped properties or labels it changes; `Stamps.linksClause` marks each end of a relationship it adds or removes, or whose properties it changes:
+
+```kotlin
+"MATCH (p:Person {id: \$id}) SET p.name = \$name, ${Stamps.setClause("p")}"
+
+"""
+MATCH (a:Person {id: \$a}), (b:Person {id: \$b})
+CREATE (a)-[:KNOWS]->(b)
+SET ${Stamps.linksClause("a")}, ${Stamps.linksClause("b")}
+"""
+```
+
+- The property's name holds a dot, so Cypher that names it quotes it: ``n.`__drivine.stamp` ``.
+- A node that is deleted and created again is noticed without a mark, because it has no stamp.
+- Cypher that replaces every property of a node (`SET n = $props`) removes its stamp, and the next checked save of an object loaded before is refused as changed.
+- **`bindObject` does not know the stamp.** An object of a stamped class bound with `bindObject("props", person)` carries its stamp under the field's own name, `stamp` here. `SET p += $props` then writes a property called `stamp` and leaves the real one as it was, so the write is not noticed; `SET p = $props` removes the real one. Save such an object with the object manager, or leave the stamp field out of what you bind and add `Stamps.setClause`.
+
+#### What a stamp does not cover
+
+- **A related node is not checked.** `save` writes every non-null field of it, so a stale copy of a related node overwrites another writer's change to it. `update` writes only the fields the change altered.
+- **An object whose stamp is null is not checked.** It makes the node or overwrites it, as an upsert does.
+- **A `saveAll` that only adds is not checked**, where a `save` of the same object is.
+- **One relationship token covers every relationship of a node.** A `Replace` of one list is refused when a relationship of another type was added.
+- **Deleting a node** removes its relationships without marking the nodes at their other ends.
+- **Cypher that does not mark** what it changes is not noticed.
+- **Saving with `CascadeType.DELETE_ALL`** has no equivalent on this manager: see [What you give up](#what-you-give-up).
+
+#### Other writers and engines
+
+- `edges.relate`, `unrelate` and `unrelateAll` mark both ends. `relate` leaves both alone when it finds the relationship there as it is; where several relationships of the type join the two nodes, it writes the properties to each and marks unless every one already carried them.
+- The deprecated `GraphObjectManager` marks the nodes and relationships it changes, and only those, so a checked save notices its writes. It neither checks a stamp nor hands one back.
+- On Neo4j and Memgraph, a statement the engine turns away because another writer was changing the same node is run again, six attempts in all, and a checked save is then refused as stale. FalkorDB runs one write at a time and turns none away. Only such a conflict is run again: a lost connection is not, since the save may have been applied.
+- `edges` runs such a statement again too. `GraphObjectManager` does not, and the engine's error reaches the caller. On Memgraph two writers that mark the same node at the same moment conflict; on Neo4j two that take the same pair of nodes in opposite order can deadlock.
+- A checked save the engine turns away on every attempt throws `StaleObjectException` with the engine's error as its cause, and no found stamp. The contended node can be one the save reaches through a relationship, so the exception says the save was turned away and that the node may have changed, not that it did. Memgraph does this inside a transaction that read the node before another writer changed it: that transaction has failed, and is to be run again from its start.
+- Indexes and constraints are not affected. A save sets and removes a property `__drivine.lock` on each node it writes, within its statement, to hold the node's write lock while it compares. An unchecked write takes the lock too, so that it says truly whether it changed a node another writer is changing at the same moment, and `edges.relate` does the same for both nodes. A save that may make a node sets and removes `__drivine.made`, to tell a node it made from one it found. Neither is left on a node. A flat `@PropertyBag` does not read a property beginning `__drivine.`.
+- A stamp field can be filtered and ordered on in the generated query DSL.
+
+### @ReadOnly: a field that is loaded and never written
+
+```kotlin
+@GraphView
+data class IssueOverview(
+    @Root val issue: Issue,
+    @GraphRelationship(type = "ASSIGNED_TO") val assignedTo: List<Person>,              // written on save
+    @ReadOnly @GraphRelationship(type = "REVIEWED_BY") val reviewers: List<Person>,     // loaded only
+)
+```
+
+Every save skips a `@ReadOnly` field: no relationship is written for it and the nodes it holds are not saved. Naming it in `Replace` is an error, and `Replace.all()` leaves it alone.
+
+Three kinds of field are read-only whether or not they are declared so, because none of them names a single relationship a save could write:
+
+- a `@GraphPath` field;
+- a `@Count` or `@Aggregate` field;
+- a list of fragments read over several hops (`maxDepth` above 1). A view nested in itself is not one: each level of it is one relationship from the level above, and it is saved.
+
+`@ReadOnly` on one of them is allowed and changes nothing. To write along a path, use `edges.relate`, Cypher, or a view rooted where the hop starts.
 
 ### Deleting Data
 
-GraphObjectManager provides type-safe methods for deleting graph objects.
+The object manager provides type-safe methods for deleting graph objects.
 
 #### Delete by ID
 
@@ -1317,9 +1590,9 @@ graphObjectManager.deleteAll<RaisedAndAssignedIssue> { }
 
 #### Delete Behavior
 
-All delete operations use `DETACH DELETE`:
+A delete with no cascade uses `DETACH DELETE`:
 - Removes the node and all its relationships
-- Related nodes are **not** deleted (only the relationships to them)
+- Related nodes are **not** deleted (only the relationships to them); a cascade, below, deletes them too
 - Returns the count of deleted nodes
 
 ```kotlin
@@ -1330,73 +1603,19 @@ graphObjectManager.delete<RaisedAndAssignedIssue>(issueUuid)
 val person = graphObjectManager.load<Person>(personUuid)  // Still there!
 ```
 
-### CASCADE Policies
+#### Delete with a Cascade
 
-When saving `@GraphView` objects with modified relationships, `CascadeType` determines what happens to target nodes:
-
-#### CascadeType.NONE (Default - Safest)
-
-Only deletes the relationship, leaves target nodes intact:
+Deleting a `@GraphView` by id can also delete the nodes the view reaches:
 
 ```kotlin
-graphObjectManager.save(updated, CascadeType.NONE)
+graphObjectManager.delete<SessionView>(sessionId)                               // NONE: the root only
+graphObjectManager.delete<SessionView>(sessionId, CascadeType.DELETE_ORPHAN)    // and each node in the view left with no relationship
+graphObjectManager.delete<SessionView>(sessionId, CascadeType.DELETE_ALL)       // and every node in the view
 ```
 
-Use when: Target nodes are shared or should persist independently.
-
-#### CascadeType.DELETE_ORPHAN (Safe Deletion)
-
-Deletes relationship and target only if no other relationships exist to the target:
-
-```kotlin
-graphObjectManager.save(updated, CascadeType.DELETE_ORPHAN)
-```
-
-The relationship list you save is authoritative: every relationship of that type to a target not in
-the list is removed, whether or not the view was loaded first, and including relationships another
-writer added after it was loaded.
-
-Use when: You want to clean up orphaned nodes but preserve shared ones.
-
-**Example:** Removing a person's employment at a solo startup deletes the startup (orphaned), but removing employment at a company with other employees keeps the company.
-
-#### CascadeType.DELETE_ALL (Destructive)
-
-Always deletes both the relationship and target nodes:
-
-```kotlin
-graphObjectManager.save(updated, CascadeType.DELETE_ALL)
-```
-
-⚠️ **Warning:** Permanently deletes data. Use with caution.
-
-Use when: Target nodes are exclusively owned and should be deleted with the relationship.
-
-### Session and Dirty Tracking
-
-`GraphObjectManager` maintains a session that tracks loaded objects:
-
-1. **On Load**: Takes a snapshot of the object's state
-2. **On Save**: Compares current state to snapshot
-3. **Optimization**: Only writes changed fields (dirty checking)
-
-This means:
-- **Loaded objects**: Optimized saves (only dirty fields)
-- **New objects**: Full saves (all fields written)
-
-The session outlives transactions, so an object loaded in one request and saved in another still
-writes only what changed. It is kept small and bounded:
-
-- **Compact snapshots**: a snapshot keeps the object's shape and ids and replaces large values (long
-  strings, embeddings) with a 64-bit hash, so a tracked object costs bytes per field, not a copy of
-  its data.
-- **Bounded**: at most `drivine.query.session-max-entries` objects (default 100,000) per
-  `GraphObjectManager`; past that the least recently used is evicted. An evicted object is untracked,
-  and its next save writes all fields. `DELETE_ORPHAN` and `NullPolicy.CLEAR` do not depend on
-  tracking, so an evicted object saves correctly under both.
-- **Thread-safe**: one manager can be shared by concurrent requests.
-- **Scoping**: call `graphObjectManager.clearSession()` to end tracking for a unit of work, such as a
-  request or a job.
+- The cascade follows the view's declared relationships, through nested views. A node outside the view is never deleted.
+- `DELETE_ALL` permanently deletes nodes that other nodes may still point at. Use it for nodes the root owns.
+- `DELETE_ORPHAN` is not available on Memgraph.
 
 ### Generated Cypher Examples
 
@@ -1769,6 +1988,8 @@ class UserService @Autowired constructor(
 }
 ```
 
+Object-manager saves join these transactions: see [Saves and transactions](#saves-and-transactions) for what a refused save does to one.
+
 ### Partial Updates
 
 ```kotlin
@@ -1842,8 +2063,12 @@ interface PersistenceManager {
     fun <T> getOne(spec: QuerySpecification<T>): T
     fun <T> maybeGetOne(spec: QuerySpecification<T>): T?
     fun <T> execute(spec: QuerySpecification<T>)
+    fun executeBatch(specs: List<QuerySpecification<*>>)                      // several statements, one transaction
+    fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>>      // the same, returning each statement's rows
 }
 ```
+
+`executeBatch` and `queryBatch` run their statements in one transaction on the managers Drivine provides, or in the transaction they are called in. FalkorDB has no transactions: there each statement commits by itself. The interface's own defaults run each statement on its own, so a `PersistenceManager` you implement must override both to make a batch atomic; `saveAll` calls `queryBatch`.
 
 ### QuerySpecification
 
@@ -1895,8 +2120,10 @@ The Neo4j ObjectMapper automatically:
 
 To exclude nulls on specific properties, use `@JsonInclude(JsonInclude.Include.NON_NULL)`.
 
+> An object of a class with a [`@NodeStamp`](#cypher-you-write-yourself) field is bound with its stamp under the field's own name, not under `__drivine.stamp`. `SET n = $props` removes the node's stamp, and `SET n += $props` writes a stray property and leaves the stamp unmarked, so a checked save does not notice the write.
+
 > This governs the low-level `PersistenceManager` binding only. Whether a null field **clears** a
-> property on a `GraphObjectManager` `save`/`saveAll` is governed by
+> property on an object-manager `save`/`saveAll` is governed by
 > [`NullPolicy`](#null-write-policy-nullpolicy) (default `IGNORE` — nulls are left untouched).
 
 ## Supported Engines
@@ -1941,7 +2168,7 @@ database:
       database-name: mygraph
 ```
 
-**Transactions:** FalkorDB does not support multi-statement transactions. `@Transactional` methods work but each query executes and commits independently. By default, `startTransaction()` logs a debug message and `rollbackTransaction()` logs a warning. To enforce strict no-transaction usage (throw on `@Transactional`), set:
+**Transactions:** FalkorDB does not support multi-statement transactions. `@Transactional` methods work but each query executes and commits independently. An object-manager `save` is one statement and so still atomic; an `update` is two and a `saveAll` several, and what ran before a failure or a refused save stays applied. By default, `startTransaction()` logs a debug message and `rollbackTransaction()` logs a warning. To enforce strict no-transaction usage (throw on `@Transactional`), set:
 
 ```yaml
       falkor-db-transaction-mode: STRICT   # default: WARN
@@ -1980,7 +2207,9 @@ CASCADE `DELETE_ORPHAN` is supported on current FalkorDB ([FalkorDB#1890](https:
 
 ### Amazon Neptune
 
-Neptune is AWS's managed graph database. Drivine connects via the Bolt protocol with two authentication modes:
+Neptune is AWS's managed graph database. Drivine connects via the Bolt protocol with two authentication modes.
+
+`StatelessGraphObjectManager`, `@NodeStamp` and the stamps `edges` writes have not been run against Neptune as of 0.1.0. Loading and querying are as before.
 
 **IAM SigV4 authentication (recommended for production):**
 
@@ -2046,6 +2275,7 @@ database:
 - Full ACID transactions (`startTransaction` / `commit` / `rollback` all work as expected)
 - `EXISTS { pattern }` and nested pattern comprehensions are supported, so `@GraphView` queries use the same inline projector as Neo4j
 - No APOC — use MAGE for procedures; collection sorting uses CALL subqueries by default
+- No `CascadeType.DELETE_ORPHAN`: Memgraph cannot use `EXISTS` inside `WITH`, so a save or delete that asks for it throws `UnsupportedOperationException`. On `StatelessGraphObjectManager`, `Replace(field, removedTargets = DELETE_UNREFERENCED)` works on Memgraph
 - For MAGE algorithms or Memgraph Lab, switch the image to `memgraph/memgraph-platform`
 
 ### @JsonPacked Annotation
@@ -2104,9 +2334,9 @@ field name and `delimiter` to change the separator; a fragment may carry several
 - **Values** must be storable Neo4j primitives or homogeneous arrays (String, Number, Boolean,
   temporal, or arrays/lists thereof) — a nested map/object throws an `IllegalArgumentException`
   naming the key.
-- **Stale keys** (removing an entry then saving) are removed only under `NullPolicy.CLEAR`, for a
-  session-tracked object (load → mutate → save). The default `IGNORE` is a merge-patch and leaves
-  orphaned keys; a detached save upserts but can't clear orphans either.
+- **Stale keys** (removing an entry then saving) are removed under `NullPolicy.CLEAR`: the keys the
+  node holds are read, and those the map no longer has are removed. The default `IGNORE` is a
+  merge-patch and leaves them.
 - **Read asymmetry**: `Map<String, Any?>` reads back driver-mapped types (an `Int` written returns as
   `Long`).
 - **Filter by key** in the type-safe DSL — composes on the load path and inside `loadNearest` /
@@ -2189,10 +2419,13 @@ relationship types are not known when the model is written — use `graphObjectM
 val lyre = nodeRef<ThingNode>("lyre")
 val ada = nodeRef<PersonNode>("ada", "Author")       // must also carry the label Author
 
-gom.edges.relate(lyre, ada, type = "OWNED_BY", properties = mapOf("since" to 1990))
-gom.edges.relate(lyre, ada, type = "PLAYED_BY", mode = RelateMode.CREATE)
+graphObjectManager.edges.relate(lyre, ada, type = "OWNED_BY", properties = mapOf("since" to 1990))
+graphObjectManager.edges.relate(lyre, ada, type = "PLAYED_BY", mode = RelateMode.CREATE)
 
-val owners: List<PersonNode> = gom.edges.loadRelated(lyre, "OWNED_BY", Direction.OUTGOING)
+val owners: List<PersonNode> = graphObjectManager.edges.loadRelated(lyre, "OWNED_BY", Direction.OUTGOING)
+
+graphObjectManager.edges.unrelate(lyre, ada, "PLAYED_BY")     // every PLAYED_BY from lyre to ada
+graphObjectManager.edges.unrelateAll(lyre, "OWNED_BY")        // every OWNED_BY that leaves lyre
 ```
 
 - A `NodeRef` names a stored node by fragment class and id. Both ends are matched, never created:
@@ -2201,6 +2434,12 @@ val owners: List<PersonNode> = gom.edges.loadRelated(lyre, "OWNED_BY", Direction
 - `RelateMode.MERGE` (the default) keeps at most one relationship of the type between the two nodes
   in that direction and sets its properties; `CREATE` makes another each time.
 - `loadRelated` returns each related node once, as the target fragment.
+- `unrelate` and `unrelateAll` remove relationships and return how many. No node is deleted.
+- `relate`, `unrelate` and `unrelateAll` give the nodes at both ends a new relationship token in
+  their stamp when they change something, so a `Replace` from an object loaded before is refused. A
+  `relate` that merges takes both nodes' write locks before it looks for the relationship, so two
+  of them on the same node run one after the other, or one is turned away by the engine and run again.
+  A `relate` that finds the relationship there as it is, and an `unrelate` that finds none, mark neither.
 
 ### Cypher Dialect
 
@@ -2399,6 +2638,13 @@ class AnalyticsRepository @Autowired constructor(
 class UserRepository @Autowired constructor(
     @Qualifier("users") val manager: PersistenceManager
 ) { /* ... */ }
+```
+
+An object manager for a named database comes from the factory:
+
+```kotlin
+@Bean
+fun analyticsObjects(factory: GraphObjectManagerFactory): StatelessGraphObjectManager = factory.stateless("analytics")
 ```
 
 ## Testing
@@ -2689,7 +2935,7 @@ from Kotlin 2.3 two members sharing a name are ambiguous there, so each language
 The code generator (KSP) only processes **Kotlin source files**. For the best experience:
 - Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
 - Your `@NodeFragment` classes can be in Java or Kotlin
-- At runtime, both Java and Kotlin classes work fully with `GraphObjectManager`
+- At runtime, both Java and Kotlin classes work fully with the object manager
 
 ### Recommended Pattern
 
@@ -2736,6 +2982,75 @@ List<PersonContext> results = JavaQueryBuilderKt
 | DSL generation | ⚠️ Kotlin only | Define `@GraphView` in Kotlin |
 | Generic collections | ✅ Full | Java reflection handles `List<T>`, `Set<T>` |
 | Polymorphic types | ✅ Full | Works with sealed classes or `@JsonSubTypes` |
+
+## Migrating from GraphObjectManager
+
+`GraphObjectManager` is deprecated in favour of `StatelessGraphObjectManager`. It still works, with the fixes and the stamping that 0.1.0 brought to both managers, and is described in [docs/legacy-graph-object-manager.md](docs/legacy-graph-object-manager.md). Everything 0.1.0 changed is listed once, in [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md#what-changed).
+
+### Why
+
+`GraphObjectManager` keeps a snapshot of every object it loads or saves, and a save writes only what differs from the snapshot. Whether a save was correct therefore depended on things you could not see from the call: whether this manager had loaded the object, whether it was still in the session, and whether anything else had written to the node since. Each of those produced a real bug:
+
+- A node deleted by plain Cypher and saved again came back with only some of its properties.
+- A relationship dropped from a list was removed or kept depending on whether the object had been evicted from the session.
+- A view the manager had not loaded wrote a path field as a direct relationship.
+
+A library should make the graph easier to work with, not require forensics to save an object safely. A `StatelessGraphObjectManager` save depends only on the object and the arguments you pass, and with a `@NodeStamp` field it is refused when another writer got there first.
+
+### Upgrade steps
+
+1. Move the core library and the code generator to 0.1.0 together, and compile again. Code compiled against 0.0.x does not link: the loading and query methods of `GraphObjectManager` are now declared on `GraphObjectOperations`.
+2. A build that treats warnings as errors now fails on `GraphObjectManager` and `GraphObjectManagerFactory.get()`, which are deprecated. Injecting a `GraphObjectManager` by type warns too. Until the code has moved, suppress it where it is used: `@Suppress("DEPRECATION")` in Kotlin, `@SuppressWarnings("deprecation")` in Java.
+3. Deploy 0.1.0 to everything that writes to the store.
+4. If any view has an `INCOMING` relationship field, a `@GraphPath` field or a list read over several hops, and was ever saved, repair what the old saves left: see [Data saved before 0.1.0](#data-saved-before-010). Do it after step 3, since a writer still on 0.0.x writes the same mistakes again.
+5. Replace `factory.get()` with `factory.stateless()`, and change the saves as the table below says.
+6. Add a `@NodeStamp` field to each type you load, change and save. See [Existing data](#existing-data) for nodes that have no stamp yet.
+
+### What you give up
+
+- **Dirty-only writes are no longer automatic.** Ask for them with `update { }`, `only` or `except`.
+- **Saving with `CascadeType.DELETE_ALL` has no equivalent.** Remove the relationships with `Replace`, then delete the nodes:
+
+  ```kotlin
+  val dropped = loaded.attachments - kept
+  graphObjectManager.save(loaded.copy(attachments = kept), Replace(MessageView::attachments))
+  dropped.forEach { graphObjectManager.delete<Attachment>(it.id) }
+  ```
+- **Saves have no interface.** `save`, `saveAll` and `update` are on `StatelessGraphObjectManager` itself. `GraphObjectOperations` covers loading, querying and deleting, so code that saves depends on the class.
+- **The session.** There is none, so nothing to clear, and nothing that remembers what was loaded.
+
+### What changes in your code
+
+Loading, querying and deleting are the same: both managers implement `GraphObjectOperations`, and the generated query DSL, whose extensions now have that receiver, works on either. Saves change as follows.
+
+| With `GraphObjectManager` | With `StatelessGraphObjectManager` |
+|---|---|
+| `factory.get()` | `factory.stateless()` |
+| `save(obj)` of a new object | `save(obj)` |
+| load, change a field, `save` | `update(id) { it.copy(...) }`, or `save` of the loaded object |
+| load, drop an item from a list, `save` | `update(id) { ... }`, or `save(obj, Replace(View::field))` |
+| `save(obj, CascadeType.DELETE_ORPHAN)` | `save(obj, Replace(View::a, View::b, removedTargets = RemovedTargets.DELETE_UNREFERENCED))`, naming each relationship field |
+| `save(obj, CascadeType.PRESERVE)` | `save(obj)` |
+| `save(obj, CascadeType.DELETE_ALL)` | no equivalent |
+| `clearSession()` | not needed |
+
+- `DELETE_UNREFERENCED` deletes a removed target that nothing else refers to the way the field did: see [Relationships](#relationships). `DELETE_ORPHAN` deletes one with no relationship in either direction. A removed target that nothing points at, and that points at something itself, is deleted by the first through an outgoing field and kept by the second.
+- A `@GraphPath`, `@Count` or `@Aggregate` field, and a list of fragments read over several hops, is read-only with either manager: see [`@ReadOnly`](#readonly-a-field-that-is-loaded-and-never-written).
+- Nodes saved by either manager, and the node at each end of a relationship either manager or `edges` writes or removes, now carry the property `__drivine.stamp`, whether or not their type declares a `@NodeStamp` field. It cannot be turned off. A test that compares a node's whole property map, Cypher that copies one node's properties to another, an export, and anything of your own that reads every property of a node, such as `properties(n)` mapped onto a class that refuses unknown properties, will see it. Drivine's own mapping ignores it. Names beginning `__drivine.` are Drivine's own, should your code need to tell them from its own.
+
+### Data saved before 0.1.0
+
+Three things a view save before 0.1.0 wrote are wrong in the store, and stay wrong until they are repaired:
+
+- A relationship of a field declared `Direction.INCOMING` was written from the view's root to the target, so it points the wrong way and the view does not load it back. `RelationshipDirectionRepair` reports these and turns them round.
+- A `@GraphPath` field of a view the manager had not loaded was written as one direct relationship, of the first hop's type, from the root to each node the field held. `PathRelationshipReport` counts these and gives the Cypher that removes them.
+- A list read over several hops (`maxDepth` above 1) was written as one direct relationship from the root to each node, however far away. `PathRelationshipReport.reportSeveralHopLists` counts what may be left of those.
+
+The tools, what each finding means, and the order to run them in are in [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md#repairing-data-saved-before-010). In short: back up, run the reports over every view of the model, read them, and only then repair. The repair changes relationships in the store, by label and type; it cannot tell a relationship a save wrote from one made some other way.
+
+### How we know nothing else changed
+
+Every test of `GraphObjectManager` in this repository has a mirror that runs on `StatelessGraphObjectManager`, but for four that save with `CascadeType.DELETE_ALL`, which has no equivalent. A comparison test runs the same scenarios through both managers on Neo4j, FalkorDB and Memgraph and compares the graphs they leave: for flat targets, relationships with properties and nested views, with and without another writer in between, they match.
 
 ## Building from Source
 

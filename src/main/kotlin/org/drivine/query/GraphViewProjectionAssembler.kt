@@ -4,12 +4,15 @@ import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
 import org.drivine.model.AggregateFieldModel
+import org.drivine.model.FragmentField
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
+import org.drivine.model.Stamps
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.grammar.*
 import org.drivine.query.sort.*
+import org.drivine.schema.SchemaGrammar
 
 /**
  * The map-projection key under which a nested polymorphic fragment carries its node labels, so
@@ -17,6 +20,55 @@ import org.drivine.query.sort.*
  * Prefixed with `__` so it never collides with a real node property surfaced by `.*`.
  */
 internal const val POLYMORPHIC_LABELS_KEY = "__labels"
+
+/**
+ * The fields a fragment is projected by, each as `fieldName: alias.storedProperty`.
+ * Returns null for polymorphic types (sealed classes or interfaces) to signal that .* should be used.
+ */
+internal fun projectedFields(fragmentType: Class<*>): List<FragmentField>? {
+    // For sealed classes, return null to signal use of .*
+    if (fragmentType.kotlin.isSealed) {
+        return null
+    }
+
+    // For interfaces with @NodeFragment, return null to signal use of .*
+    // since we don't know which concrete implementation will be returned
+    if (fragmentType.isInterface) {
+        return null
+    }
+
+    return try {
+        val fragmentModel = FragmentModel.from(fragmentType)
+        // Fragments with a @PropertyBag use .* so the open prefixed keys are projected too —
+        // the declared-field list can't name them. The transform reconstructs the bag from them.
+        if (fragmentModel.propertyBags.isNotEmpty()) return null
+        // Return null if no fields, to signal use of .*. Callers alias field name ← property name.
+        fragmentModel.fields.ifEmpty { null }
+    } catch (e: Exception) {
+        // On error, return null to signal use of .* (safe fallback)
+        null
+    }
+}
+
+/**
+ * The key a fragment's stored property has in the map the fragment is projected to. A fragment
+ * projected field by field is keyed by field name, so the key of a `@GraphProperty` or `@NodeStamp`
+ * field is not the property it is stored under; one projected with `.*` keeps the stored names.
+ * Whatever is evaluated after the projection reads the map, and so must name this key, where a
+ * predicate on the node itself names [storedProperty].
+ */
+internal fun projectedKey(fragmentType: Class<*>, storedProperty: String): String =
+    projectedKeyOrNull(fragmentType, storedProperty) ?: storedProperty
+
+/**
+ * As [projectedKey], and null when the fragment is projected field by field and none of its fields
+ * is stored as [storedProperty]: the map then has no key for the property at all.
+ */
+internal fun projectedKeyOrNull(fragmentType: Class<*>, storedProperty: String): String? {
+    if (fragmentType.isAnnotationPresent(GraphView::class.java)) return storedProperty
+    val fields = projectedFields(fragmentType) ?: return storedProperty
+    return fields.firstOrNull { (if (it.stamp) Stamps.PROPERTY else it.propertyName) == storedProperty }?.name
+}
 
 /**
  * The shared projection core of a `@GraphView` query: the WITH-clause projection of the root
@@ -151,9 +203,20 @@ internal class GraphViewProjectionAssembler(
      * Builds EXISTS checks for non-nullable, non-collection relationships, ensuring the query only
      * returns root nodes that have the required relationships.
      */
-    fun requiredRelationshipChecks(): List<String> {
+    fun requiredRelationshipChecks(): List<String> = requiredChecks { true }
+
+    /** The checks of [requiredRelationshipChecks] that are a pattern on the root: every one but a path's. */
+    fun requiredRelationshipPatternChecks(): List<String> = requiredChecks { !it.isPath }
+
+    /**
+     * The checks of [requiredRelationshipChecks] for required paths: a null check on the value the
+     * path's prolog computed, and so one that can only follow that prolog.
+     */
+    fun requiredPathChecks(): List<String> = requiredChecks { it.isPath }
+
+    private fun requiredChecks(include: (RelationshipModel) -> Boolean): List<String> {
         return viewModel.relationships
-            .filter { rel -> !rel.isNullable && !rel.isCollection }
+            .filter { rel -> !rel.isNullable && !rel.isCollection && include(rel) }
             .map { rel ->
                 if (rel.isPath) {
                     // The path's CALL prolog already computed the (single) target via head(collect(…)),
@@ -205,9 +268,33 @@ internal class GraphViewProjectionAssembler(
      * For top-level sorts with CALL_SUBQUERY strategy, use [emitTopLevelSort] instead —
      * this method is only for nested/recursive sorts.
      */
-    private fun wrapWithNestedSortIfNeeded(listComprehension: String, sort: CollectionSortSpec?): String {
+    private fun wrapWithNestedSortIfNeeded(
+        listComprehension: String,
+        sort: CollectionSortSpec?,
+        elementType: Class<*>,
+    ): String {
         if (sort == null) return listComprehension
-        return sortEmitter.emitNested(NestedSortContext(listComprehension, sort))
+        return sortEmitter.emitNested(
+            NestedSortContext(listComprehension, sort, sortedKey(elementType, sort), rootKeyOf(elementType))
+        )
+    }
+
+    /**
+     * The key under which a projected element of [elementType] holds its root: the root's field
+     * name when the element is a nested view, which projects its root as a map of its own, and null
+     * when it is a fragment, whose properties are the element's own keys.
+     */
+    private fun rootKeyOf(elementType: Class<*>): String? =
+        if (elementType.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(elementType).rootFragment.fieldName else null
+
+    /** The key the sorted property has in the projection of [elementType], or of its root if it is a view. */
+    private fun sortedKey(elementType: Class<*>, sort: CollectionSortSpec): String {
+        val fragmentType = if (elementType.isAnnotationPresent(GraphView::class.java)) {
+            GraphViewModel.from(elementType).rootFragment.fragmentType
+        } else {
+            elementType
+        }
+        return projectedKey(fragmentType, sort.propertyName)
     }
 
     /**
@@ -234,9 +321,15 @@ internal class GraphViewProjectionAssembler(
             targetLabelString = targetLabelString,
             projection = projection,
             sort = sort,
+            projectedKey = sortedKey(rel.elementType, sort),
+            rootKey = rootKeyOf(rel.elementType),
         )
         val emission = sortEmitter.emitTopLevel(ctx)
-        emission.prolog?.let { context.addProlog(it) }
+        emission.prolog?.let {
+            context.addProlog(it)
+            // Whatever WITH follows the prolog must carry the sorted collection with the root.
+            context.addBridgeVariables(listOf(emission.projectionExpression))
+        }
         return emission.projectionExpression
     }
 
@@ -274,7 +367,7 @@ internal class GraphViewProjectionAssembler(
         if (fields.isEmpty()) {
             return varName
         }
-        val fieldMappings = fields.joinToString(",\n        ") { "${it.name}: $sourceVar.${it.propertyName}" }
+        val fieldMappings = fields.joinToString(",\n        ") { "${it.name}: $sourceVar.${it.storedReference}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
         $fieldMappings,
@@ -286,30 +379,7 @@ internal class GraphViewProjectionAssembler(
      * Gets field names from a FragmentModel.
      * Returns null for polymorphic types (sealed classes or interfaces) to signal that .* should be used.
      */
-    private fun getFragmentFields(fragmentType: Class<*>): List<org.drivine.model.FragmentField>? {
-        // For sealed classes, return null to signal use of .*
-        if (fragmentType.kotlin.isSealed) {
-            return null
-        }
-
-        // For interfaces with @NodeFragment, return null to signal use of .*
-        // since we don't know which concrete implementation will be returned
-        if (fragmentType.isInterface) {
-            return null
-        }
-
-        return try {
-            val fragmentModel = FragmentModel.from(fragmentType)
-            // Fragments with a @PropertyBag use .* so the open prefixed keys are projected too —
-            // the declared-field list can't name them. The transform reconstructs the bag from them.
-            if (fragmentModel.propertyBags.isNotEmpty()) return null
-            // Return null if no fields, to signal use of .*. Callers alias field name ← property name.
-            fragmentModel.fields.ifEmpty { null }
-        } catch (e: Exception) {
-            // On error, return null to signal use of .* (safe fallback)
-            null
-        }
-    }
+    private fun getFragmentFields(fragmentType: Class<*>): List<FragmentField>? = projectedFields(fragmentType)
 
     /**
      * Builds a relationship pattern comprehension for a single relationship.
@@ -441,7 +511,7 @@ internal class GraphViewProjectionAssembler(
                 val projection = if (nestedFields == null) {
                     "$nestedAlias { .*, labels: labels($nestedAlias) }"
                 } else {
-                    val fieldMappings = nestedFields.joinToString(", ") { "${it.name}: $nestedAlias.${it.propertyName}" }
+                    val fieldMappings = nestedFields.joinToString(", ") { "${it.name}: $nestedAlias.${it.storedReference}" }
                     "$nestedAlias { $fieldMappings, labels: labels($nestedAlias) }"
                 }
                 NestedRelInfo(
@@ -451,8 +521,10 @@ internal class GraphViewProjectionAssembler(
                     labelString = nestedLabels.joinToString(":"),
                     projection = projection,
                     isCollection = nestedRel.isCollection,
+                    sort = findSortForNestedRelationship(targetAlias, nestedRel.fieldName),
                 )
-            }
+            },
+            sort = findSortForRelationship(targetAlias),
         )
 
         val result = grammar.nestedViewProjector.project(ctx)
@@ -543,7 +615,7 @@ internal class GraphViewProjectionAssembler(
                 "$rootFragmentFieldName: $depthAlias { .*, $POLYMORPHIC_LABELS_KEY: labels($depthAlias) }"
             } else {
                 val rootFieldMappings =
-                    rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.propertyName}" }
+                    rootFragmentFields.joinToString(",\n                    ") { "${it.name}: $depthAlias.${it.storedReference}" }
                 "$rootFragmentFieldName: {\n                    $rootFieldMappings\n                }"
             }
             allProjections.add(rootProjection)
@@ -556,19 +628,20 @@ internal class GraphViewProjectionAssembler(
             return "[($parentVar)${direction}($depthAlias:$targetLabelString) |\n            $projection\n        ]"
         }
 
+        // A recursive collection is one comprehension inside another, to the depth asked for. A sort
+        // of it would have to order every level, and no emitter writes that: it is refused, where
+        // sorting the outermost level alone would hand back a tree in two orders.
+        findSortForRelationship(targetAlias)?.let { sort ->
+            throw UnsupportedOperationException(
+                "A recursive relationship collection cannot be sorted in the query " +
+                "(sort target: ${sort.relationshipPath}.${sort.propertyName} of ${viewModel.className}). " +
+                "Use client-side @SortedBy on the relationship field instead: it orders every level."
+            )
+        }
+
         val pattern = buildAtDepth(1, rootFieldName)
 
-        return if (rel.isCollection) {
-            val sort = findSortForRelationship(targetAlias)
-            if (sort != null) {
-                val expr = emitTopLevelSort(rootFieldName, rel, targetAlias, pattern, sort)
-                "$expr AS $targetAlias"
-            } else {
-                "$pattern AS $targetAlias"
-            }
-        } else {
-            "$pattern[0] AS $targetAlias"
-        }
+        return if (rel.isCollection) "$pattern AS $targetAlias" else "$pattern[0] AS $targetAlias"
     }
 
     /**
@@ -731,7 +804,7 @@ internal class GraphViewProjectionAssembler(
             appendLine("CALL {")
             appendLine("    WITH $rootFieldName")
             appendLine("    OPTIONAL MATCH ($rootFieldName)$arrow($nodeVar)")
-            append("    RETURN $func($nodeVar.$property) AS ${agg.fieldName}\n}")
+            append("    RETURN $func($nodeVar.${SchemaGrammar.identifier(property)}) AS ${agg.fieldName}\n}")
         }
         context.addProlog(prolog)
         context.addBridgeVariables(listOf(agg.fieldName))
@@ -795,7 +868,7 @@ internal class GraphViewProjectionAssembler(
         }"""
         }
 
-        val fieldMappings = fields.joinToString(",\n            ") { "${it.name}: $varName.${it.propertyName}" }
+        val fieldMappings = fields.joinToString(",\n            ") { "${it.name}: $varName.${it.storedReference}" }
         // Include labels for polymorphic deserialization support
         return """$varName {
             $fieldMappings,
@@ -828,7 +901,7 @@ internal class GraphViewProjectionAssembler(
             // Polymorphic type - use .*
             ".*"
         } else {
-            rootFragmentFields.joinToString(",\n                ") { "${it.name}: $varName.${it.propertyName}" }
+            rootFragmentFields.joinToString(",\n                ") { "${it.name}: $varName.${it.storedReference}" }
         }
         fields.add("$rootFragmentFieldName: {\n                $rootFieldMappings\n            }")
 
@@ -876,7 +949,7 @@ internal class GraphViewProjectionAssembler(
             ]"""
                 // Check for nested sort (e.g., "raisedBy_worksFor" where varName is "raisedBy")
                 val sort = findSortForNestedRelationship(varName, nestedRel.fieldName)
-                val wrappedPattern = wrapWithNestedSortIfNeeded(listComprehension, sort)
+                val wrappedPattern = wrapWithNestedSortIfNeeded(listComprehension, sort, nestedRel.elementType)
                 fields.add("\n            ${nestedRel.fieldName}: $wrappedPattern")
             } else {
                 // Single: use [0] suffix

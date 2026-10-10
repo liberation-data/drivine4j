@@ -1,0 +1,334 @@
+package org.drivine.manager
+
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.FalkorDbConnectionProvider
+import org.drivine.connection.Neo4jConnectionProvider
+import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.anyOf
+import org.drivine.query.dsl.query
+import org.drivine.query.grammar.CypherDialect
+import org.drivine.session.SessionManager
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import org.testcontainers.containers.GenericContainer
+import org.testcontainers.containers.Neo4jContainer
+import org.testcontainers.containers.wait.strategy.Wait
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import org.testcontainers.utility.DockerImageName
+import sample.proposition.PropositionView
+import sample.proposition.PropositionViewQueryDsl
+import sample.proposition.count
+import sample.vectorfilter.VecDocNode
+import sample.vectorfilter.VecDocNodeQueryDsl
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * `limit` / `skip` in the query DSL, verified on Neo4j, FalkorDB, and Memgraph. Proves the
+ * **GraphView root-cardinality** decision: `limit(n)` bounds *root entities* (each with its to-many
+ * relationship fully populated), not post-expansion rows; that pagination is disjoint; the edge
+ * cases; and that `count` ignores `limit`. SKIP/LIMIT are bound as `$_skip`/`$_limit`.
+ *
+ * Also covers `seek` keyset pagination on the same data: that it reproduces the offset page,
+ * composes with an OR'd caller `where` without widening it, walks the whole relation exactly once,
+ * and is rejected where it would otherwise be silently ignored.
+ *
+ * Data: p1..p5 with level 1..5; each has one mention, p5 has two.
+ */
+private fun verify(gom: StatelessGraphObjectManager) {
+    fun load(spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit) =
+        gom.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, spec)
+    fun ids(spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit) = load(spec).map { it.proposition.id }
+
+    // top-N by level desc
+    assertEquals(listOf("p5", "p4"), ids { orderBy { query.proposition.level.desc() }; limit(2) })
+
+    // GraphView cardinality: the single limited root keeps ALL its relationships (p5 has 2 mentions).
+    val top = load { orderBy { query.proposition.level.desc() }; limit(1) }.single()
+    assertEquals("p5", top.proposition.id)
+    assertEquals(2, top.mentions.size, "limited view must keep its full collection")
+
+    // pagination: disjoint pages covering the top of the order
+    val page1 = ids { orderBy { query.proposition.level.desc() }; limit(2) }
+    val page2 = ids { orderBy { query.proposition.level.desc() }; skip(2); limit(2) }
+    assertEquals(listOf("p5", "p4"), page1)
+    assertEquals(listOf("p3", "p2"), page2)
+    assertTrue((page1.toSet() intersect page2.toSet()).isEmpty())
+
+    // Equivalent second page via a compound keyset. The id is the deterministic tie-breaker.
+    val keysetPage2 = ids {
+        orderBy {
+            query.proposition.level.desc()
+            query.proposition.id.desc()
+        }
+        seek {
+            query.proposition.level after 4
+            query.proposition.id after "p4"
+        }
+        limit(2)
+    }
+    assertEquals(listOf("p3", "p2"), keysetPage2)
+
+    // A keyset composes with a caller `where`, including one whose top level is an OR: the two must
+    // be parenthesised independently, or the seek bound would bind to only the last OR branch.
+    val filteredKeyset = ids {
+        where {
+            anyOf {
+                query.proposition.id eq "p2"
+                query.proposition.id eq "p4"
+                query.proposition.id eq "p5"
+            }
+        }
+        orderBy {
+            query.proposition.level.desc()
+            query.proposition.id.desc()
+        }
+        seek {
+            query.proposition.level after 5
+            query.proposition.id after "p5"
+        }
+        limit(10)
+    }
+    assertEquals(listOf("p4", "p2"), filteredKeyset, "seek must not widen an OR'd where clause")
+
+    // Walking the whole relation by cursor visits every root exactly once, in order.
+    val walked = mutableListOf<String>()
+    var cursor: Pair<Int, String>? = null
+    while (true) {
+        val page = load {
+            orderBy {
+                query.proposition.level.desc()
+                query.proposition.id.desc()
+            }
+            cursor?.let { (level, id) ->
+                seek {
+                    query.proposition.level after level
+                    query.proposition.id after id
+                }
+            }
+            limit(2)
+        }
+        if (page.isEmpty()) break
+        walked += page.map { it.proposition.id }
+        cursor = page.last().let { it.proposition.level to it.proposition.id }
+    }
+    assertEquals(listOf("p5", "p4", "p3", "p2", "p1"), walked)
+
+    // seek is rejected where it would be silently ignored, rather than over-returning.
+    assertThrows<IllegalArgumentException> {
+        ids {
+            orderBy { query.proposition.level.desc() }
+            seek { query.proposition.level after 4 }
+            skip(1)
+        }
+    }
+    assertThrows<IllegalArgumentException> {
+        gom.count(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+            orderBy { query.proposition.level.desc() }
+            seek { query.proposition.level after 4 }
+        }
+    }
+
+    // edge cases
+    assertTrue(load { limit(0) }.isEmpty(), "limit(0) -> empty")
+    assertTrue(load { skip(100) }.isEmpty(), "skip past the end -> empty")
+    assertEquals(3, load { limit(3) }.size, "limit without orderBy -> <= n")
+
+    // count ignores limit/skip in the same spec
+    assertEquals(5L, gom.count(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) { limit(2) })
+
+    // reified count<T>() resolves and delegates to the ::class.java form
+    assertEquals(gom.count(PropositionView::class.java), gom.count<PropositionView>())
+
+    // generated-form count<T> { } injects INSTANCE and delegates correctly
+    assertEquals(5L, gom.count<PropositionView> { })
+    assertEquals(1L, gom.count<PropositionView> { where { query.proposition.id eq "p3" } })
+
+    verifyBagFragment(gom)
+}
+
+/**
+ * A `@PropertyBag` fragment returns through `WITH properties(n) AS props`, which dropped `n`, so an
+ * `ORDER BY n.id` after the `RETURN` referred to nothing and every ordered load of one failed.
+ * Ordered, limited and keyset-paged like a view, and the bag still comes back.
+ */
+private fun verifyBagFragment(gom: StatelessGraphObjectManager) {
+    fun docs(spec: GraphQuerySpec<VecDocNodeQueryDsl>.() -> Unit) =
+        gom.loadAll(VecDocNode::class.java, VecDocNodeQueryDsl.INSTANCE, spec)
+    fun ids(spec: GraphQuerySpec<VecDocNodeQueryDsl>.() -> Unit) = docs(spec).map { it.id }
+
+    assertEquals(listOf("d5", "d4"), ids { orderBy { query.id.desc() }; limit(2) })
+    assertEquals(listOf("d1", "d2", "d3", "d4", "d5"), ids { orderBy { query.id.asc() } })
+    assertEquals(listOf("d3", "d2"), ids { orderBy { query.id.desc() }; seek { query.id after "d4" }; limit(2) })
+    assertEquals(mapOf("source" to "three"), docs { orderBy { query.id.asc() }; skip(2); limit(1) }.single().metadata)
+}
+
+/**
+ * Index advice is Neo4j-only: the other engines put a blocking sort between scan and limit whatever
+ * is indexed, so there is no index to recommend. `FAIL` must therefore stay silent on them — if this
+ * regresses, those users get told to create an index that cannot help.
+ */
+private fun verifyAdviceIsSilent(gom: StatelessGraphObjectManager) {
+    gom.indexAdvice = org.drivine.query.dsl.IndexAdvicePolicy.FAIL
+    val ids = gom.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+        orderBy {
+            query.proposition.level.desc()
+            query.proposition.id.desc()
+        }
+        limit(2)
+    }.map { it.proposition.id }
+    assertEquals(listOf("p5", "p4"), ids)
+}
+
+private const val SEED = """
+    CREATE (p1:Proposition {id: 'p1', contextId: 'c', status: 'active', level: 1})
+    CREATE (p2:Proposition {id: 'p2', contextId: 'c', status: 'active', level: 2})
+    CREATE (p3:Proposition {id: 'p3', contextId: 'c', status: 'active', level: 3})
+    CREATE (p4:Proposition {id: 'p4', contextId: 'c', status: 'active', level: 4})
+    CREATE (p5:Proposition {id: 'p5', contextId: 'c', status: 'active', level: 5})
+    CREATE (m1:Mention {id: 'm1', resolvedId: 'e1', role: 'S'})
+    CREATE (m2:Mention {id: 'm2', resolvedId: 'e2', role: 'S'})
+    CREATE (m3:Mention {id: 'm3', resolvedId: 'e3', role: 'S'})
+    CREATE (m4:Mention {id: 'm4', resolvedId: 'e4', role: 'S'})
+    CREATE (m5a:Mention {id: 'm5a', resolvedId: 'e5a', role: 'S'})
+    CREATE (m5b:Mention {id: 'm5b', resolvedId: 'e5b', role: 'O'})
+    CREATE (p1)-[:HAS_MENTION]->(m1)
+    CREATE (p2)-[:HAS_MENTION]->(m2)
+    CREATE (p3)-[:HAS_MENTION]->(m3)
+    CREATE (p4)-[:HAS_MENTION]->(m4)
+    CREATE (p5)-[:HAS_MENTION]->(m5a)
+    CREATE (p5)-[:HAS_MENTION]->(m5b)
+    CREATE (:VecDoc {id: 'd1', `metadata.source`: 'one'})
+    CREATE (:VecDoc {id: 'd2', `metadata.source`: 'two'})
+    CREATE (:VecDoc {id: 'd3', `metadata.source`: 'three'})
+    CREATE (:VecDoc {id: 'd4', `metadata.source`: 'four'})
+    CREATE (:VecDoc {id: 'd5', `metadata.source`: 'five'})
+"""
+
+private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
+    val mapper = Neo4jObjectMapper.instance
+    return StatelessGraphObjectManager(pm, mapper, registry)
+}
+
+@Testcontainers
+class StatelessLimitSkipNeo4jTest {
+    companion object {
+        private const val PASSWORD = "limitskiptest"
+
+        @Container @JvmField
+        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
+            .apply { withAdminPassword(PASSWORD) }
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var pm: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "neo-limit", type = DatabaseType.NEO4J,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "neo4j", password = PASSWORD, database = "neo4j",
+                config = emptyMap(), subtypeRegistry = registry, cypherDialect = CypherDialect.NEO4J_5,
+            )
+            pm = NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    @BeforeEach
+    fun seed() {
+        pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+    }
+
+    @Test
+    fun `limit and skip on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()))
+}
+
+@Testcontainers
+class StatelessLimitSkipFalkorDbTest {
+    companion object {
+        private const val GRAPH = "limittest"
+
+        @Container @JvmField
+        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
+            .withExposedPorts(6379)
+
+        private lateinit var provider: FalkorDbConnectionProvider
+        lateinit var pm: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = FalkorDbConnectionProvider(
+                name = "falkor-limit", host = container.host, port = container.getMappedPort(6379),
+                password = null, graphName = GRAPH, subtypeRegistry = registry,
+            )
+            pm = NonTransactionalPersistenceManager(provider, GRAPH, DatabaseType.FALKORDB, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    @BeforeEach
+    fun seed() {
+        pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+    }
+
+    @Test
+    fun `limit and skip on FalkorDB`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `index advice stays silent on FalkorDB`() = verifyAdviceIsSilent(buildGom(pm, SubtypeRegistry()))
+}
+
+@Testcontainers
+class StatelessLimitSkipMemgraphTest {
+    companion object {
+        @Container @JvmField
+        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
+            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var pm: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "memgraph-limit", type = DatabaseType.MEMGRAPH,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "", password = "", database = null, config = emptyMap(),
+                cypherDialect = CypherDialect.MEMGRAPH, subtypeRegistry = registry,
+            )
+            pm = NonTransactionalPersistenceManager(provider, "memgraph", DatabaseType.MEMGRAPH, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    @BeforeEach
+    fun seed() {
+        pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+    }
+
+    @Test
+    fun `limit and skip on Memgraph`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `index advice stays silent on Memgraph`() = verifyAdviceIsSilent(buildGom(pm, SubtypeRegistry()))
+}

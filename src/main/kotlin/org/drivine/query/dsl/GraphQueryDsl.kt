@@ -376,7 +376,8 @@ class SeekBuilder<T : Any>(
  *
  * Obtain these through the typed property references — `property after value` inside a
  * [GraphQuerySpec.seek] block, or `property.after(value)` from Java — rather than
- * constructing them directly: [propertyPath] is interpolated into Cypher verbatim.
+ * constructing them directly: [propertyPath] is interpolated into Cypher, quoted only where its
+ * property is not a plain identifier.
  */
 data class SeekValueSpec(
     val propertyPath: String,
@@ -507,6 +508,13 @@ enum class ComparisonOperator(val cypherOperator: String) {
 
 /**
  * Represents an ORDER BY specification.
+ *
+ * Obtain these through the typed property references — `property.asc()` or `property.desc()` inside
+ * a [GraphQuerySpec.orderBy] block — rather than constructing them directly. [propertyPath] is an
+ * alias and a property, `alias.property`, and is not written into the statement as it is given:
+ * whatever follows the first dot is one property name, backtick-quoted where it is not a plain
+ * identifier, and on the root of a view it is read by the key the view projects it under. An
+ * expression such as `toLower(n.name)` is therefore no path, and renders as a name no node has.
  */
 data class OrderSpec(
     val propertyPath: String,  // e.g., "issue.id"

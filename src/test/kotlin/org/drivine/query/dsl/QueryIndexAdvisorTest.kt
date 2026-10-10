@@ -12,6 +12,7 @@ package org.drivine.query.dsl
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.manager.GraphObjectManager
+import org.drivine.manager.GraphObjectOperations
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
@@ -74,7 +75,7 @@ class QueryIndexAdvisorTest {
         return GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
     }
 
-    private fun GraphObjectManager.orderedLoad() =
+    private fun GraphObjectOperations.orderedLoad() =
         loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
             orderBy {
                 query.proposition.level.desc()

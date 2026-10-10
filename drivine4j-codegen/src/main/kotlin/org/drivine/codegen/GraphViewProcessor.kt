@@ -13,7 +13,7 @@ import com.google.devtools.ksp.validate
  *
  * For each @GraphView annotated class, generates:
  * 1. Query DSL class with property references for type-safe queries
- * 2. Extension function on GraphObjectManager for clean API
+ * 2. Extension function on GraphObjectOperations for clean API
  *
  * Example generated output for RaisedAndAssignedIssue:
  * ```kotlin
@@ -29,7 +29,7 @@ import com.google.devtools.ksp.validate
  * }
  *
  * // Generated extension function
- * fun GraphObjectManager.loadAll(
+ * fun GraphObjectOperations.loadAll(
  *     type: Class<RaisedAndAssignedIssue>,
  *     spec: GraphQuerySpec<RaisedAndAssignedIssueQueryDsl>.() -> Unit
  * ): List<RaisedAndAssignedIssue> {

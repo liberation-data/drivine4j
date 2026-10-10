@@ -4,6 +4,7 @@ import org.drivine.annotation.Aggregate
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Count
 import org.drivine.annotation.GraphView
+import org.drivine.annotation.ReadOnly
 import org.drivine.annotation.Root
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Test
@@ -14,9 +15,9 @@ import kotlin.test.assertTrue
 @GraphView
 data class ActorStats(
     @Root val actor: PActor,
-    @Count("ACTED_IN") val movieCount: Long,
-    @Aggregate(AggregateFunction.AVG, type = "RATED", property = "score") val avgScore: Double,
-    @Aggregate(AggregateFunction.SUM, type = "RATED", property = "score") val totalScore: Double,
+    @ReadOnly @Count("ACTED_IN") val movieCount: Long,
+    @ReadOnly @Aggregate(AggregateFunction.AVG, type = "RATED", property = "score") val avgScore: Double,
+    @ReadOnly @Aggregate(AggregateFunction.SUM, type = "RATED", property = "score") val totalScore: Double,
 )
 
 /**
@@ -75,5 +76,5 @@ class GraphAggregateQueryBuilderTests {
 @GraphView
 data class BadAggregate(
     @Root val actor: PActor,
-    @Aggregate(AggregateFunction.AVG, type = "RATED") val avgScore: Double,  // missing property
+    @ReadOnly @Aggregate(AggregateFunction.AVG, type = "RATED") val avgScore: Double,  // missing property
 )

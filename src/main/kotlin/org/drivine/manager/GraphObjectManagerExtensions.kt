@@ -23,7 +23,7 @@ import java.util.UUID
  * @param T The graph object type to load
  * @return List of graph object instances
  */
-inline fun <reified T : Any> GraphObjectManager.loadAll(): List<T> {
+inline fun <reified T : Any> GraphObjectOperations.loadAll(): List<T> {
     return loadAll(T::class.java)
 }
 
@@ -45,7 +45,7 @@ inline fun <reified T : Any> GraphObjectManager.loadAll(): List<T> {
  * @param spec DSL block for building the query
  * @return List of graph object instances matching the criteria
  */
-inline fun <reified T : Any, Q : Any> GraphObjectManager.loadAll(
+inline fun <reified T : Any, Q : Any> GraphObjectOperations.loadAll(
     queryObject: Q,
     noinline spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
 ): List<T> {
@@ -64,7 +64,7 @@ inline fun <reified T : Any, Q : Any> GraphObjectManager.loadAll(
  * @param id The object ID
  * @return The graph object instance, or null if not found
  */
-inline fun <reified T : Any> GraphObjectManager.load(id: String): T? {
+inline fun <reified T : Any> GraphObjectOperations.load(id: String): T? {
     return load(id, T::class.java)
 }
 
@@ -81,7 +81,7 @@ inline fun <reified T : Any> GraphObjectManager.load(id: String): T? {
  * @return The graph object instance
  * @throws NoSuchElementException if not found
  */
-inline fun <reified T : Any> GraphObjectManager.loadOrThrow(id: String): T {
+inline fun <reified T : Any> GraphObjectOperations.loadOrThrow(id: String): T {
     return load(id, T::class.java)
         ?: throw NoSuchElementException("${T::class.simpleName} not found: $id")
 }
@@ -98,7 +98,7 @@ inline fun <reified T : Any> GraphObjectManager.loadOrThrow(id: String): T {
  * @param id The object ID
  * @return The number of nodes deleted (0 or 1)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: String): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: String): Int {
     return delete(id, T::class.java)
 }
 
@@ -115,7 +115,7 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: String): Int {
  * @param whereClause Additional WHERE clause conditions
  * @return The number of nodes deleted (0 or 1)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: String, whereClause: String?): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: String, whereClause: String?): Int {
     return delete(id, T::class.java, whereClause)
 }
 
@@ -134,7 +134,7 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: String, whereClause: 
  * @param cascade The cascade policy
  * @return The number of nodes deleted (root plus any cascaded fragments)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: String, cascade: CascadeType): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: String, cascade: CascadeType): Int {
     return delete(id, T::class.java, cascade)
 }
 
@@ -147,7 +147,7 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: String, cascade: Casc
  * @param cascade The cascade policy
  * @return The number of nodes deleted (root plus any cascaded fragments)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: String, whereClause: String?, cascade: CascadeType): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: String, whereClause: String?, cascade: CascadeType): Int {
     return delete(id, T::class.java, whereClause, cascade)
 }
 
@@ -162,7 +162,7 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: String, whereClause: 
  * @param T The graph object type to delete
  * @return The number of nodes deleted
  */
-inline fun <reified T : Any> GraphObjectManager.deleteAll(): Int {
+inline fun <reified T : Any> GraphObjectOperations.deleteAll(): Int {
     return deleteAll(T::class.java)
 }
 
@@ -178,7 +178,7 @@ inline fun <reified T : Any> GraphObjectManager.deleteAll(): Int {
  * @param whereClause WHERE clause conditions
  * @return The number of nodes deleted
  */
-inline fun <reified T : Any> GraphObjectManager.deleteAll(whereClause: String?): Int {
+inline fun <reified T : Any> GraphObjectOperations.deleteAll(whereClause: String?): Int {
     return deleteAll(T::class.java, whereClause)
 }
 
@@ -200,7 +200,7 @@ inline fun <reified T : Any> GraphObjectManager.deleteAll(whereClause: String?):
  * @param spec DSL block for building the query
  * @return The number of nodes deleted
  */
-inline fun <reified T : Any, Q : Any> GraphObjectManager.deleteAll(
+inline fun <reified T : Any, Q : Any> GraphObjectOperations.deleteAll(
     queryObject: Q,
     noinline spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
 ): Int {
@@ -221,7 +221,7 @@ inline fun <reified T : Any, Q : Any> GraphObjectManager.deleteAll(
  * @param id The object UUID
  * @return The graph object instance, or null if not found
  */
-inline fun <reified T : Any> GraphObjectManager.load(id: UUID): T? {
+inline fun <reified T : Any> GraphObjectOperations.load(id: UUID): T? {
     return load(id.toString(), T::class.java)
 }
 
@@ -233,7 +233,7 @@ inline fun <reified T : Any> GraphObjectManager.load(id: UUID): T? {
  * @return The graph object instance
  * @throws NoSuchElementException if not found
  */
-inline fun <reified T : Any> GraphObjectManager.loadOrThrow(id: UUID): T {
+inline fun <reified T : Any> GraphObjectOperations.loadOrThrow(id: UUID): T {
     return load(id.toString(), T::class.java)
         ?: throw NoSuchElementException("${T::class.simpleName} not found: $id")
 }
@@ -250,7 +250,7 @@ inline fun <reified T : Any> GraphObjectManager.loadOrThrow(id: UUID): T {
  * @param id The object UUID
  * @return The number of nodes deleted (0 or 1)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: UUID): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: UUID): Int {
     return delete(id.toString(), T::class.java)
 }
 
@@ -267,7 +267,7 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: UUID): Int {
  * @param whereClause Additional WHERE clause conditions
  * @return The number of nodes deleted (0 or 1)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, whereClause: String?): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: UUID, whereClause: String?): Int {
     return delete(id.toString(), T::class.java, whereClause)
 }
 
@@ -284,7 +284,7 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, whereClause: St
  * @param cascade The cascade policy
  * @return The number of nodes deleted (root plus any cascaded fragments)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, cascade: CascadeType): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: UUID, cascade: CascadeType): Int {
     return delete(id.toString(), T::class.java, cascade)
 }
 
@@ -297,7 +297,7 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, cascade: Cascad
  * @param cascade The cascade policy
  * @return The number of nodes deleted (root plus any cascaded fragments)
  */
-inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, whereClause: String?, cascade: CascadeType): Int {
+inline fun <reified T : Any> GraphObjectOperations.delete(id: UUID, whereClause: String?, cascade: CascadeType): Int {
     return delete(id.toString(), T::class.java, whereClause, cascade)
 }
 
@@ -310,12 +310,12 @@ inline fun <reified T : Any> GraphObjectManager.delete(id: UUID, whereClause: St
  *
  * `graphObjectManager.count<RaisedAndAssignedIssue>()` instead of `count(RaisedAndAssignedIssue::class.java)`.
  */
-inline fun <reified T : Any> GraphObjectManager.count(): Long {
+inline fun <reified T : Any> GraphObjectOperations.count(): Long {
     return count(T::class.java)
 }
 
 /** Counts graph objects matching a simple WHERE clause, using a reified type parameter. */
-inline fun <reified T : Any> GraphObjectManager.count(whereClause: String): Long {
+inline fun <reified T : Any> GraphObjectOperations.count(whereClause: String): Long {
     return count(T::class.java, whereClause)
 }
 
@@ -328,7 +328,7 @@ inline fun <reified T : Any> GraphObjectManager.count(whereClause: String): Long
  * }
  * ```
  */
-inline fun <reified T : Any, Q : Any> GraphObjectManager.count(
+inline fun <reified T : Any, Q : Any> GraphObjectOperations.count(
     queryObject: Q,
     noinline spec: org.drivine.query.dsl.GraphQuerySpec<Q>.() -> Unit
 ): Long {
@@ -345,7 +345,7 @@ inline fun <reified T : Any, Q : Any> GraphObjectManager.count(
  * `graphObjectManager.loadNearest<PropositionView>(queryVector, topK = 20)` instead of
  * `loadNearest(PropositionView::class.java, queryVector, topK = 20)`.
  */
-inline fun <reified T : Any> GraphObjectManager.loadNearest(
+inline fun <reified T : Any> GraphObjectOperations.loadNearest(
     vector: List<Float>,
     topK: Int,
     threshold: Double? = null,
@@ -357,7 +357,7 @@ inline fun <reified T : Any> GraphObjectManager.loadNearest(
  * Vector search naming the embedding [property] explicitly (when the fragment has several), with a
  * reified type parameter.
  */
-inline fun <reified T : Any> GraphObjectManager.loadNearest(
+inline fun <reified T : Any> GraphObjectOperations.loadNearest(
     property: String?,
     vector: List<Float>,
     topK: Int,
@@ -376,7 +376,7 @@ inline fun <reified T : Any> GraphObjectManager.loadNearest(
  * }
  * ```
  */
-inline fun <reified T : Any, Q : Any> GraphObjectManager.loadNearest(
+inline fun <reified T : Any, Q : Any> GraphObjectOperations.loadNearest(
     queryObject: Q,
     vector: List<Float>,
     topK: Int,
@@ -394,7 +394,7 @@ inline fun <reified T : Any, Q : Any> GraphObjectManager.loadNearest(
  * `graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20)` instead of
  * `loadMatching(ChunkNode::class.java, "graph databases", topK = 20)`.
  */
-inline fun <reified T : Any> GraphObjectManager.loadMatching(
+inline fun <reified T : Any> GraphObjectOperations.loadMatching(
     query: String,
     topK: Int,
     threshold: Double = 0.0,
@@ -406,7 +406,7 @@ inline fun <reified T : Any> GraphObjectManager.loadMatching(
  * Full-text search naming an indexed [property] explicitly (when the fragment has several
  * `@FullTextIndex` indexes), with a reified type parameter.
  */
-inline fun <reified T : Any> GraphObjectManager.loadMatching(
+inline fun <reified T : Any> GraphObjectOperations.loadMatching(
     property: String?,
     query: String,
     topK: Int,
@@ -425,7 +425,7 @@ inline fun <reified T : Any> GraphObjectManager.loadMatching(
  * }
  * ```
  */
-inline fun <reified T : Any, Q : Any> GraphObjectManager.loadMatching(
+inline fun <reified T : Any, Q : Any> GraphObjectOperations.loadMatching(
     queryObject: Q,
     query: String,
     topK: Int,

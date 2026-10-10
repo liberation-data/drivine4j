@@ -92,6 +92,43 @@ class PropertyBagCodegenTest {
     }
 
     @Test
+    void emitsTheStampPropertyForANodeStampField() {
+        JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.st.Note",
+            "package sample.st;",
+            "import org.drivine.annotation.NodeFragment;",
+            "import org.drivine.annotation.NodeId;",
+            "import org.drivine.annotation.NodeStamp;",
+            "@NodeFragment(labels = {\"Note\"})",
+            "public class Note {",
+            "  @NodeId public String id;",
+            "  @NodeStamp public String version;",
+            "}");
+        JavaFileObject view = JavaFileObjects.forSourceLines("sample.st.NoteView",
+            "package sample.st;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class NoteView {",
+            "  @Root public Note node;",
+            "}");
+
+        Compilation compilation = Compiler.javac()
+            .withProcessors(new GraphViewProcessor())
+            .compile(fragment, view);
+
+        assertThat(compilation).succeeded();
+        // The accessor keeps the field name; the PropertyReference carries the stamp's own property.
+        assertThat(compilation)
+            .generatedSourceFile("sample.st.NoteProperties")
+            .contentsAsUtf8String()
+            .contains("version()");
+        assertThat(compilation)
+            .generatedSourceFile("sample.st.NoteProperties")
+            .contentsAsUtf8String()
+            .contains("\"__drivine.stamp\"");
+    }
+
+    @Test
     void emitsStandaloneFragmentQueryDsl() {
         JavaFileObject fragment = JavaFileObjects.forSourceLines("sample.fd.Chunk",
             "package sample.fd;",
