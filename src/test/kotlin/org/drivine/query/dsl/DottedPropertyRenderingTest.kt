@@ -2,13 +2,20 @@ package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
+import org.drivine.query.FragmentQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
+import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.sort.ApocSortMapsEmitter
 import org.drivine.query.sort.CallSubqueryEmitter
 import org.drivine.query.sort.NestedSortContext
 import org.drivine.query.sort.TopLevelSortContext
 import org.junit.jupiter.api.Test
+import sample.projected.BinderView
+import sample.projected.Dotted
+import sample.projected.DottedView
+import sample.projected.Keyed
+import sample.projected.KeyedView
 import sample.projected.LedgerView
 import sample.projected.PassageView
 import sample.propertybag.BaggedView
@@ -257,6 +264,57 @@ class DottedPropertyRenderingTest {
             mapOf("param_n_source_id_0" to "hyphen", "param_n_source_id_1" to "space", "param_n_source_id_2" to "plain"),
             bindings,
         )
+    }
+
+    @Test
+    fun `a node is matched by the property its id is stored under, in a fragment and in the root of a view`() {
+        val grammar = Neo4j5Grammar(ApocSortMapsEmitter())
+
+        assertEquals("n.keyed_id = \$id", FragmentQueryBuilder.forFragment(Keyed::class.java).buildIdWhereClause("id"))
+        assertEquals("keyed.keyed_id = \$id", GraphViewQueryBuilder.forView(KeyedView::class.java, grammar).buildIdWhereClause("id"))
+        // An id stored under its own name is matched as it always was.
+        assertEquals("claim.id = \$id", GraphViewQueryBuilder.forView(ClaimView::class.java, grammar).buildIdWhereClause("id"))
+    }
+
+    @Test
+    fun `a projection quotes a stored name that is not a plain identifier`() {
+        val grammar = Neo4j5Grammar(ApocSortMapsEmitter())
+        val fragment = FragmentQueryBuilder.forFragment(Dotted::class.java).buildQuery()
+        val view = GraphViewQueryBuilder.forView(DottedView::class.java, grammar).buildQuery()
+
+        assertContains(fragment, "label: n.`display-name`,\n    rank: n.`meta.rank`")
+        assertContains(view, "label: dotted.`display-name`")
+        assertContains(view, "rank: dotted.`meta.rank`")
+        assertContains(view, "label: links.`display-name`")
+        assertContains(view, "rank: links.`meta.rank`")
+        // A plain name stays bare, and the stamp is quoted once.
+        assertContains(view, "id: dotted.id")
+        assertContains(
+            GraphViewQueryBuilder.forView(PassageView::class.java, grammar).buildQuery(),
+            "sequenceNumber: passage.sequence_number,\n        stamp: passage.`__drivine.stamp`,",
+        )
+    }
+
+    @Test
+    fun `a collection of nested views sorted with APOC is sorted by a key of each view's root`() {
+        val query = GraphViewQueryBuilder.forView(BinderView::class.java, Neo4j5Grammar(ApocSortMapsEmitter())).buildQuery(
+            null, null, listOf(CollectionSortSpec("entries", "entry_order", ascending = false)),
+        )
+
+        // sortMaps reads no deeper than the map it is given, so each element is paired with the value.
+        assertContains(query, "[_sorted IN apoc.coll.sortMaps([_element IN [(binder)-[:HOLDS]->(entries:Entry) |")
+        assertContains(query, "| {_key: _element.entry.order, _element: _element}], '_key') | _sorted._element] AS entries")
+    }
+
+    @Test
+    fun `a collection of nested views sorted in a subquery orders the nodes by the stored name`() {
+        val sort = listOf(CollectionSortSpec("entries", "entry_order", ascending = true))
+        val inline = GraphViewQueryBuilder.forView(BinderView::class.java, Neo4j5Grammar(CallSubqueryEmitter())).buildQuery(null, null, sort)
+        val projected = GraphViewQueryBuilder.forView(BinderView::class.java, CypherDialect.FALKORDB.grammar()).buildQuery(null, null, sort)
+
+        assertContains(inline, "WITH entries ORDER BY entries.entry_order ASC")
+        // Where the nested view is itself projected by a subquery, that subquery orders its rows.
+        assertContains(projected, " ORDER BY entries.entry_order ASC\n    RETURN collect(")
     }
 
     private fun projectedWhere(view: Class<*>, conditions: List<WhereCondition>): String? =

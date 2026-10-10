@@ -26,6 +26,17 @@ import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import sample.projected.BinderView
+import sample.projected.BinderViewQueryDsl
+import sample.projected.Dotted
+import sample.projected.DottedProperties
+import sample.projected.DottedView
+import sample.projected.DottedViewQueryDsl
+import sample.projected.EntryView
+import sample.projected.Keyed
+import sample.projected.KeyedProperties
+import sample.projected.KeyedView
+import sample.projected.KeyedViewQueryDsl
 import sample.projected.Ledger
 import sample.projected.LedgerView
 import sample.projected.LedgerViewQueryDsl
@@ -38,6 +49,8 @@ import sample.projected.PassageViewQueryDsl
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 /**
  * A view projects its root, and each relationship target, into a map keyed by field name. A
@@ -47,7 +60,7 @@ import kotlin.test.assertNotNull
  * Verified on Neo4j, FalkorDB and Memgraph.
  *
  * Five passages, `p1`..`p5`, whose `sequence_number` runs against their ids (50 down to 10), each
- * marked by three markers named out of order. Nothing here deletes a node: Memgraph does not purge a
+ * marked by three markers named out of order. No passage is deleted: Memgraph does not purge a
  * deleted node from a vector index. The same containers serve two neighbours of the load path: a key
  * known only at runtime, and a batch of statements.
  */
@@ -245,6 +258,125 @@ private fun verifyDynamicKeys(gom: StatelessGraphObjectManager, pm: PersistenceM
     )
 }
 
+/** A `@NodeId` stored under another name is matched by that name, in a fragment and in the root of a view. */
+private fun verifyRenamedId(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
+    pm.execute(
+        QuerySpecification.withStatement(
+            """
+            MERGE (a:Keyed {keyed_id: 'k1'}) SET a.name = 'one'
+            MERGE (b:Keyed {keyed_id: 'k2'}) SET b.name = 'two'
+            MERGE (c:Keyed {keyed_id: 'k3'}) SET c.name = 'three'
+            MERGE (m:Marker {id: 'km'})
+            MERGE (a)-[:MARKED]->(m)
+            """.trimIndent()
+        )
+    )
+
+    // Loaded by id.
+    assertEquals("one", gom.load("k1", Keyed::class.java)?.name)
+    val view = assertNotNull(gom.load("k1", KeyedView::class.java))
+    assertEquals("k1", view.keyed.key)
+    assertEquals(listOf("km"), view.markers.map { it.id })
+    assertNull(gom.load("no such key", KeyedView::class.java))
+    assertNull(gom.load("no such key", Keyed::class.java))
+
+    // Counted.
+    assertEquals(3L, gom.count(Keyed::class.java))
+    assertEquals(3L, gom.count(KeyedView::class.java))
+    assertEquals(1L, gom.count(KeyedView::class.java, KeyedViewQueryDsl.INSTANCE) { where { query.keyed.key eq "k2" } })
+    assertEquals(1L, gom.count(Keyed::class.java, KeyedProperties.INSTANCE) { where { query.key eq "k3" } })
+
+    // Deleted by id: the one node, and no other.
+    assertEquals(1, gom.delete("k2", KeyedView::class.java))
+    assertEquals(1, gom.delete("k3", Keyed::class.java))
+    assertEquals(0, gom.delete("no such key", KeyedView::class.java))
+    assertEquals(listOf("k1"), gom.loadAll(Keyed::class.java).map { it.key })
+    assertEquals(2, gom.delete("k1", KeyedView::class.java, CascadeType.DELETE_ALL))
+    assertEquals(0L, gom.count(Keyed::class.java))
+}
+
+/**
+ * A `@GraphProperty` may name a property that is not a plain identifier. It is one property wherever
+ * a load writes it: in the projection of a fragment, of a view's root and of a relationship target,
+ * and in a filter or an order on any of them.
+ */
+private fun verifyDottedProperty(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
+    pm.execute(
+        QuerySpecification.withStatement(
+            """
+            MERGE (a:Dotted {id: 'd1'}) SET a.`meta.rank` = 3, a.`display-name` = 'three'
+            MERGE (b:Dotted {id: 'd2'}) SET b.`meta.rank` = 1, b.`display-name` = 'one'
+            MERGE (c:Dotted {id: 'd3'}) SET c.`meta.rank` = 2, c.`display-name` = 'two'
+            MERGE (a)-[:LINKS]->(b)
+            MERGE (a)-[:LINKS]->(c)
+            """.trimIndent()
+        )
+    )
+
+    // Through a fragment.
+    assertEquals(Dotted("d1", rank = 3, label = "three"), gom.load("d1", Dotted::class.java))
+    val fragments = gom.loadAll(Dotted::class.java, DottedProperties.INSTANCE) {
+        where { query.rank gte 2L; query.label startsWith "t" }
+        orderBy { query.rank.asc() }
+    }
+    assertEquals(listOf(Dotted("d3", 2, "two"), Dotted("d1", 3, "three")), fragments)
+
+    // Through the root of a view, and a relationship target.
+    val view = assertNotNull(gom.load("d1", DottedView::class.java))
+    assertEquals(Dotted("d1", 3, "three"), view.dotted)
+    assertEquals(setOf(Dotted("d2", 1, "one"), Dotted("d3", 2, "two")), view.links.toSet())
+
+    val dsl = DottedViewQueryDsl.INSTANCE
+    val views = gom.loadAll(DottedView::class.java, dsl) {
+        where { query.dotted.label startsWith "t" }
+        orderBy { query.dotted.rank.desc() }
+    }
+    assertEquals(listOf("d1", "d3"), views.map { it.dotted.id })
+    val linked = gom.loadAll(DottedView::class.java, dsl) { where { query.links.any { label eq "one" } } }
+    assertEquals(listOf("d1"), linked.map { it.dotted.id })
+
+    // And a collection sorted by one.
+    fun links(spec: org.drivine.query.dsl.GraphQuerySpec<DottedViewQueryDsl>.() -> Unit) =
+        gom.loadAll(DottedView::class.java, dsl) { where { query.dotted.id eq "d1" }; spec() }.single().links.map { it.id }
+    assertEquals(listOf("d2", "d3"), links { orderBy { query.links.rank.asc() } })
+    assertEquals(listOf("d3", "d2"), links { orderBy { query.links.rank.desc() } })
+    assertEquals(listOf("d2", "d3"), links { orderBy { query.links.label.asc() } })
+}
+
+/** A collection of nested views is sorted by a field of each view's root, a renamed one included. */
+private fun verifyNestedViewSort(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
+    pm.execute(
+        QuerySpecification.withStatement(
+            """
+            MERGE (b:Binder {id: 'b1'})
+            MERGE (e1:Entry {id: 'e1'}) SET e1.title = 'charlie', e1.entry_order = 2
+            MERGE (e2:Entry {id: 'e2'}) SET e2.title = 'alpha', e2.entry_order = 3
+            MERGE (e3:Entry {id: 'e3'}) SET e3.title = 'bravo', e3.entry_order = 1
+            MERGE (m:Marker {id: 'em'})
+            MERGE (b)-[:HOLDS]->(e1)
+            MERGE (b)-[:HOLDS]->(e2)
+            MERGE (b)-[:HOLDS]->(e3)
+            MERGE (e1)-[:MARKED]->(m)
+            MERGE (e2)-[:MARKED]->(m)
+            MERGE (e3)-[:MARKED]->(m)
+            """.trimIndent()
+        )
+    )
+    fun entries(spec: org.drivine.query.dsl.GraphQuerySpec<BinderViewQueryDsl>.() -> Unit): List<EntryView> =
+        gom.loadAll(BinderView::class.java, BinderViewQueryDsl.INSTANCE) {
+            where { query.binder.id eq "b1" }
+            spec()
+        }.single().entries
+
+    assertEquals(listOf("alpha", "bravo", "charlie"), entries { orderBy { query.entries.title.asc() } }.map { it.entry.title })
+    assertEquals(listOf("charlie", "bravo", "alpha"), entries { orderBy { query.entries.title.desc() } }.map { it.entry.title })
+    assertEquals(listOf("e3", "e1", "e2"), entries { orderBy { query.entries.order.asc() } }.map { it.entry.id })
+    val descending = entries { orderBy { query.entries.order.desc() } }
+    assertEquals(listOf("e2", "e1", "e3"), descending.map { it.entry.id })
+    assertEquals(listOf(3L, 2L, 1L), descending.map { it.entry.order })
+    assertTrue(descending.all { entry -> entry.markers.map { it.id } == listOf("em") })
+}
+
 private fun long(statement: String) = QuerySpecification.withStatement(statement).transform(Long::class.java)
 
 private fun verifyBatchResults(pm: PersistenceManager) {
@@ -337,6 +469,16 @@ class ProjectedKeyNeo4jTest {
 
     @Test fun `a runtime key that is not a plain identifier filters on Neo4j`() = verifyDynamicKeys(gom, pm)
 
+    @Test fun `a node whose id is stored under another name is loaded, counted and deleted by it on Neo4j`() = verifyRenamedId(gom, pm)
+
+    @Test fun `a property whose stored name is not a plain identifier is loaded, filtered and ordered on Neo4j`() = verifyDottedProperty(gom, pm)
+
+    @Test fun `a collection of nested views is sorted by a field of each view's root with APOC on Neo4j`() = verifyNestedViewSort(gom, pm)
+
+    @Test
+    fun `a collection of nested views is sorted by a field of each view's root in a subquery on Neo4j`() =
+        verifyNestedViewSort(buildGom(SubquerySortingPersistenceManager(pm), registry), pm)
+
     @Test fun `a batch returns each statement's rows in order on Neo4j`() = verifyBatchResults(pm)
 
     @Test
@@ -385,6 +527,12 @@ class ProjectedKeyFalkorDbTest {
     @Test fun `a scored search over a view filters on a stamp or renamed field on FalkorDB`() = verifyScoredSearchFilter(gom)
 
     @Test fun `a runtime key that is not a plain identifier filters on FalkorDB`() = verifyDynamicKeys(gom, pm, backtick = false)
+
+    @Test fun `a node whose id is stored under another name is loaded, counted and deleted by it on FalkorDB`() = verifyRenamedId(gom, pm)
+
+    @Test fun `a property whose stored name is not a plain identifier is loaded, filtered and ordered on FalkorDB`() = verifyDottedProperty(gom, pm)
+
+    @Test fun `a collection of nested views is sorted by a field of each view's root on FalkorDB`() = verifyNestedViewSort(gom, pm)
 
     @Test fun `a batch returns each statement's rows in order on FalkorDB`() = verifyBatchResults(pm)
 
@@ -435,6 +583,12 @@ class ProjectedKeyMemgraphTest {
     @Test fun `a scored search over a view filters on a stamp or renamed field on Memgraph`() = verifyScoredSearchFilter(gom)
 
     @Test fun `a runtime key that is not a plain identifier filters on Memgraph`() = verifyDynamicKeys(gom, pm)
+
+    @Test fun `a node whose id is stored under another name is loaded, counted and deleted by it on Memgraph`() = verifyRenamedId(gom, pm)
+
+    @Test fun `a property whose stored name is not a plain identifier is loaded, filtered and ordered on Memgraph`() = verifyDottedProperty(gom, pm)
+
+    @Test fun `a collection of nested views is sorted by a field of each view's root on Memgraph`() = verifyNestedViewSort(gom, pm)
 
     @Test fun `a batch returns each statement's rows in order on Memgraph`() = verifyBatchResults(pm)
 
