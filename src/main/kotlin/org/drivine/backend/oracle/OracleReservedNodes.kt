@@ -11,6 +11,9 @@ import org.drivine.schema.VersionMarkerStatements
  */
 internal class OracleVersionMarker(private val graph: OracleGraph, label: String, scopeProperty: String) : VersionMarkerStatements {
     private val marker = "${OracleSql.hasLabel("n", label)} AND ${OracleSql.property("n", scopeProperty)} = \$scope"
+
+    /** The marker is a node of the graph, so the graph is made first where it is not yet. */
+    override val prepare: String = graph.ensuring
     private val newestFirst = "${OracleSql.property("n", "appliedAt", SqlKind.NUMBER)} DESC NULLS LAST"
 
     override fun read(property: String): String =
@@ -46,8 +49,11 @@ internal class OracleVersionMarker(private val graph: OracleGraph, label: String
 }
 
 /** The store's stamp on Oracle: a node of the graph, as on the graph engines. */
-internal class OracleStoreStamp(graph: OracleGraph, label: String, key: String) : StoreStampStatements {
+internal class OracleStoreStamp(private val graph: OracleGraph, label: String, key: String) : StoreStampStatements {
     private val stored = OracleSql.hasLabel("n", label)
+
+    /** The stamp is a node of the graph, so the graph is made first where it is not yet. */
+    override val prepare: String = graph.ensuring
 
     override val assignIfAbsent: String = """
         INSERT INTO ${graph.nodes} (labels, props)

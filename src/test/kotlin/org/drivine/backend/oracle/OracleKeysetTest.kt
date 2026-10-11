@@ -110,7 +110,7 @@ class OracleKeysetTest {
     @Test
     fun `a property no field declares is compared as the kind of its cursor value`() {
         val numeric = select()
-        assertEquals("((JSON_VALUE(n_.props, '$.score' RETURNING NUMBER) > \$_p0))", numeric.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", 42)), 0))
+        assertEquals("((JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) > \$_p0))", numeric.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", 42)), 0))
 
         val textual = select()
         assertEquals("((JSON_VALUE(n_.props, '$.score') > \$_p0))", textual.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", "b")), 0))
@@ -147,7 +147,7 @@ class OracleKeysetTest {
     fun `a property no field declares, with no cursor, is ordered as a number and then as text`() {
         // The regression: a page of numbers ordered as text is not in the order a seek with one of them compares in.
         assertEquals(
-            "JSON_VALUE(n_.props, '$.score' RETURNING NUMBER) ASC, JSON_VALUE(n_.props, '$.score') ASC",
+            "JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) ASC, JSON_VALUE(n_.props, '$.score') ASC",
             orderClause(select(), OrderSpec("n.score", ASC)),
         )
     }
@@ -158,9 +158,9 @@ class OracleKeysetTest {
         val seek = select.after(listOf(OrderSpec("n.score", DESC)), listOf(SeekValueSpec("n.score", 10)), 0)
         val statement = select.load(listOf(seek), listOf(OrderSpec("n.score", DESC))).statement
         val order = statement.substringAfter("\nORDER BY ")
-        assertEquals("JSON_VALUE(n_.props, '$.score' RETURNING NUMBER) DESC", order)
-        assertEquals(1, Regex(Regex.escape("'$.score'")).findAll(order).count(), order)
-        assertTrue(statement.contains("WHERE (((JSON_VALUE(n_.props, '$.score' RETURNING NUMBER) < \$_p0)))"), statement)
+        assertEquals("JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) DESC", order)
+        assertEquals(1, Regex(Regex.escape("$.score")).findAll(order).count(), "one term, not a number form and then a text form: $order")
+        assertTrue(statement.contains("WHERE (((JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) < \$_p0)))"), statement)
     }
 
     @Test

@@ -157,18 +157,20 @@ internal class OraclePredicates(
      *
      * Oracle keeps an empty string as null, so one bound compares with nothing: a test against `''` is
      * written as the test it means, as Cypher reads it. `CONTAINS ''`, `STARTS WITH ''` and
-     * `ENDS WITH ''` hold for any string; `= ''` for a property stored empty, which `JSON_VALUE`
-     * reads as null and a JSON path still sees.
+     * `ENDS WITH ''` hold for any string, the empty one among them; `= ''` for a property stored
+     * empty, which `JSON_VALUE` reads as null and a JSON path still sees; `<> ''` for any other.
      */
     private fun compared(row: String, key: String, operator: ComparisonOperator, value: Any?): String {
         val text = property(row, key)
         val typed = property(row, key, SqlKind.ofValue(value))
         val empty = value == ""
+        // Any string, the empty one among them: `JSON_VALUE` reads a stored `""` as null.
+        val anyText = "($text IS NOT NULL OR ${storedEmpty(row, key)})"
         return when (operator) {
             ComparisonOperator.IS_NULL -> "NOT ${OracleSql.hasProperty(row, key)}"
             ComparisonOperator.IS_NOT_NULL -> OracleSql.hasProperty(row, key)
             ComparisonOperator.EQUALS -> if (empty) storedEmpty(row, key) else "$typed = ${scope.bound(scalar(value))}"
-            ComparisonOperator.NOT_EQUALS -> if (empty) "$text IS NOT NULL" else "$typed <> ${scope.bound(scalar(value))}"
+            ComparisonOperator.NOT_EQUALS -> if (empty) "($text IS NOT NULL AND NOT ${storedEmpty(row, key)})" else "$typed <> ${scope.bound(scalar(value))}"
             ComparisonOperator.GREATER_THAN -> "$typed > ${scope.bound(scalar(value))}"
             ComparisonOperator.GREATER_THAN_OR_EQUAL -> "$typed >= ${scope.bound(scalar(value))}"
             ComparisonOperator.LESS_THAN -> "$typed < ${scope.bound(scalar(value))}"
@@ -176,10 +178,10 @@ internal class OraclePredicates(
             ComparisonOperator.IN -> "$typed IN (${OracleSql.values(scope.bound(listed(value)), SqlKind.ofValue(value))})"
             ComparisonOperator.NOT_IN -> "NOT ($typed IN (${OracleSql.values(scope.bound(listed(value)), SqlKind.ofValue(value))}))"
             ComparisonOperator.HAS_ELEMENT -> holds(row, key, value)
-            ComparisonOperator.CONTAINS -> if (empty) "$text IS NOT NULL" else "INSTR($text, ${scope.bound(value?.toString())}) > 0"
-            ComparisonOperator.STARTS_WITH -> if (empty) "$text IS NOT NULL" else scope.bound(value?.toString()).let { "SUBSTR($text, 1, LENGTH($it)) = $it" }
-            ComparisonOperator.ENDS_WITH -> if (empty) "$text IS NOT NULL" else scope.bound(value?.toString()).let { "SUBSTR($text, -LENGTH($it)) = $it" }
-            ComparisonOperator.CONTAINS_IGNORE_CASE -> if (empty) "$text IS NOT NULL" else "INSTR(LOWER($text), ${scope.bound(value?.toString()?.lowercase())}) > 0"
+            ComparisonOperator.CONTAINS -> if (empty) anyText else "INSTR($text, ${scope.bound(value?.toString())}) > 0"
+            ComparisonOperator.STARTS_WITH -> if (empty) anyText else scope.bound(value?.toString()).let { "SUBSTR($text, 1, LENGTH($it)) = $it" }
+            ComparisonOperator.ENDS_WITH -> if (empty) anyText else scope.bound(value?.toString()).let { "SUBSTR($text, -LENGTH($it)) = $it" }
+            ComparisonOperator.CONTAINS_IGNORE_CASE -> if (empty) anyText else "INSTR(LOWER($text), ${scope.bound(value?.toString()?.lowercase())}) > 0"
             ComparisonOperator.EQUALS_IGNORE_CASE -> if (empty) storedEmpty(row, key) else "LOWER($text) = ${scope.bound(value?.toString()?.lowercase())}"
             ComparisonOperator.MATCHES -> matches(text, value?.toString().orEmpty())
         }
@@ -230,8 +232,19 @@ internal class OraclePredicates(
      * A root property as it is ordered: by the type of the field that holds it; when no field does,
      * as the value a seek compares it with, and as text when there is none.
      */
-    private fun ordered(key: String): String =
-        property(root, key, declaredKind(key) ?: scope.inferredKinds[key] ?: SqlKind.TEXT)
+    private fun ordered(key: String): String {
+        val declared = declaredKind(key)
+        if (declared != null) return property(root, key, declared)
+        val inferred = scope.inferredKinds[key] ?: SqlKind.TEXT
+        return if (inferred == SqlKind.NUMBER) undeclaredNumber(key) else property(root, key, inferred)
+    }
+
+    /**
+     * A property no field declares, read as a number: a number stored as one, and null for anything
+     * else. `RETURNING NUMBER` alone would read the text `"10"` as ten, and then a page of such texts,
+     * ordered as numbers, would not be in the order a seek with one of them compares in.
+     */
+    private fun undeclaredNumber(key: String): String = SqlKind.NUMBER.read("$root.props", path(key, ".numberOnly()"))
 
     /**
      * The `ORDER BY` terms for [order]. A property no field declares, and no cursor says the kind of,
@@ -242,7 +255,7 @@ internal class OraclePredicates(
         val key = order.propertyPath.substringAfter('.')
         val direction = order.direction.name
         if (key == Stamps.PROPERTY || declaredKind(key) != null || key in scope.inferredKinds) return "${ordered(key)} $direction"
-        return "${property(root, key, SqlKind.NUMBER)} $direction, ${property(root, key)} $direction"
+        return "${undeclaredNumber(key)} $direction, ${property(root, key)} $direction"
     }
 
     /**

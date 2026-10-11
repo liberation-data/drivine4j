@@ -200,18 +200,18 @@ class OraclePredicatesTest {
     }
 
     @Test
-    fun `contains, starts with and ends with the empty string hold for any string`() {
+    fun `contains, starts with and ends with the empty string hold for any string, the empty one among them`() {
         for (operator in listOf(ComparisonOperator.CONTAINS, ComparisonOperator.STARTS_WITH, ComparisonOperator.ENDS_WITH, ComparisonOperator.CONTAINS_IGNORE_CASE)) {
             val (sql, bound) = compared("name", operator, "")
-            assertEquals("$name IS NOT NULL", sql, "$operator")
+            assertEquals("($name IS NOT NULL OR JSON_EXISTS(n_.props, '$.name?(@ == \"\")'))", sql, "$operator")
             assertTrue(bound.isEmpty(), "$operator")
         }
     }
 
     @Test
-    fun `not equals the empty string holds for any string that is there`() {
+    fun `not equals the empty string holds for any string that is there and not empty`() {
         val (sql, bound) = compared("name", ComparisonOperator.NOT_EQUALS, "")
-        assertEquals("$name IS NOT NULL", sql)
+        assertEquals("($name IS NOT NULL AND NOT JSON_EXISTS(n_.props, '$.name?(@ == \"\")'))", sql)
         assertTrue(bound.isEmpty())
     }
 

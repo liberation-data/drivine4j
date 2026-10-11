@@ -8,6 +8,14 @@ package org.drivine.schema
  */
 interface VersionMarkerStatements {
 
+    /**
+     * A schema statement that makes what the others need, run once before any of them: on Oracle, the
+     * graph's tables, which a marker read before anything else has made would not find. Null when the
+     * store needs nothing made.
+     */
+    val prepare: String?
+        get() = null
+
     /** Reads [property] of the newest marker of the scope, as text; no row when there is none. */
     fun read(property: String): String
 
@@ -50,6 +58,10 @@ class CypherVersionMarker(label: String, scopeProperty: String) : VersionMarkerS
  * engines share the Cypher of [CypherStoreStamp].
  */
 interface StoreStampStatements {
+
+    /** A schema statement that makes what the others need, run once before any of them; null when nothing is needed. See [VersionMarkerStatements.prepare]. */
+    val prepare: String?
+        get() = null
 
     /** Makes the stamp if there is none: binds `$key`, `$storeId`, `$assignedAt` and `$engine`. */
     val assignIfAbsent: String
