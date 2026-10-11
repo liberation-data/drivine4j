@@ -3,6 +3,7 @@ package org.drivine.backend.oracle
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
+import org.drivine.annotation.GraphView
 import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.LoadPlan
@@ -13,6 +14,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.manager.RelateMode
 import org.drivine.manager.RemovedTargets
 import org.drivine.model.FragmentModel
+import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.FullTextIndexResolver
 import org.drivine.query.QuerySpecification
@@ -39,7 +41,7 @@ internal class OracleBackend(
     objectMapper: ObjectMapper,
 ) : GraphBackend {
 
-    private val graph = OracleGraph(persistenceManager.graphName ?: OracleGraph.DEFAULT_NAME).also { it.ensure(persistenceManager) }
+    private val graph = OracleGraph.ensured(persistenceManager)
 
     private val saves = OracleSavePlan(graph, objectMapper)
 
@@ -74,7 +76,7 @@ internal class OracleBackend(
 
     /** An order on a relationship field sorts that field's list; any other orders the roots. */
     private fun orders(graphClass: Class<*>, query: GraphQuerySpec<*>): Pair<List<CollectionSortSpec>, List<OrderSpec>> {
-        val relationships = OracleSelect(graph, graphClass).relationshipFields
+        val relationships = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass).relationships.map { it.fieldName }.toSet() else emptySet()
         val (sorts, roots) = query.orders.partition { order ->
             val alias = order.propertyPath.substringBefore('.')
             alias in relationships || '_' in alias
@@ -152,7 +154,10 @@ internal class OracleBackend(
         return deleting(select, listOfNotNull(select.predicate(query.conditions)))
     }
 
-    /** Deletes the roots [predicates] select. A node's relationships go with it: the relationship table cascades. */
+    /**
+     * Deletes the roots [predicates] select, whether or not they have the relationships the view
+     * requires, as the Cypher delete does. A node's relationships go with it: the relationship table cascades.
+     */
     private fun deleting(select: OracleSelect, predicates: List<String>): GraphStatement =
         GraphStatement(
             OracleSql.counted("DELETE FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"),
@@ -164,40 +169,32 @@ internal class OracleBackend(
      * one, or with [orphansOnly] those left with no relationship once the roots are gone.
      */
     private fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
-        val roots = "${graph.nodes} ${select.root}\n    WHERE ${select.selecting(predicates)}"
+        val roots = "${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"
         val body = if (orphansOnly) {
             """
-    SELECT nid BULK COLLECT INTO v_ids FROM (
-    $cascaded
-    );
-    DELETE FROM $roots;
-    v_count := SQL%ROWCOUNT;
-    FOR i IN 1 .. v_ids.COUNT LOOP
-        DELETE FROM ${graph.nodes} n WHERE n.nid = v_ids(i) AND NOT EXISTS (SELECT 1 FROM ${graph.edges} e WHERE e.src = n.nid OR e.dst = n.nid);
-        v_count := v_count + SQL%ROWCOUNT;
-    END LOOP;"""
+            SELECT nid BULK COLLECT INTO v_ids FROM (
+            $cascaded
+            );
+            DELETE FROM $roots;
+            v_count := SQL%ROWCOUNT;
+            FOR i IN 1 .. v_ids.COUNT LOOP
+                DELETE FROM ${graph.nodes} n WHERE n.nid = v_ids(i) AND NOT EXISTS (SELECT 1 FROM ${graph.edges} e WHERE e.src = n.nid OR e.dst = n.nid);
+                v_count := v_count + SQL%ROWCOUNT;
+            END LOOP;
+            """
         } else {
             """
-    SELECT nid BULK COLLECT INTO v_ids FROM (
-    SELECT ${select.root}.nid FROM $roots
-    UNION
-    $cascaded
-    );
-    FORALL i IN 1 .. v_ids.COUNT
-        DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);
-    v_count := v_ids.COUNT;"""
+            SELECT nid BULK COLLECT INTO v_ids FROM (
+            SELECT ${select.root}.nid FROM $roots
+            UNION
+            $cascaded
+            );
+            FORALL i IN 1 .. v_ids.COUNT
+                DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);
+            v_count := v_ids.COUNT;
+            """
         }
-        val text = """
-DECLARE
-    TYPE t_ids IS TABLE OF NUMBER;
-    v_ids   t_ids;
-    v_count NUMBER := 0;
-    v_rows  SYS_REFCURSOR;
-BEGIN$body
-    OPEN v_rows FOR SELECT v_count FROM dual;
-    DBMS_SQL.RETURN_RESULT(v_rows);
-END;""".trim()
-        return GraphStatement(text, select.bindings())
+        return GraphStatement(OracleSql.counting(body, "TYPE t_ids IS TABLE OF NUMBER;\nv_ids t_ids;"), select.bindings())
     }
 
     /** A seek walks an order, which a count or a delete does not have: it would be ignored, and a delete would take every match. */
@@ -228,12 +225,12 @@ END;""".trim()
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
             listOfNotNull("${OracleSql.property("n", root.idProperty)} = \$id", OracleSql.hasLabels("n", root.labels.split(':'))).joinToString(" AND "),
-        mapOf("id" to root.id.toString()),
+        mapOf("id" to OracleSql.key(root.id)),
     )
 
     /**
-     * A deadlock (`ORA-00060`), a serialization failure (`ORA-08177`) or a wait that ran out
-     * (`ORA-30006`, `ORA-00054`): another writer held a row this statement wanted.
+     * A deadlock (`ORA-00060`) or a serialization failure (`ORA-08177`): another writer held a row
+     * this statement wanted. Every lock a block takes waits, so a wait that ran out is not among them.
      */
     override fun contended(failure: Throwable): Boolean = failure is SQLException && failure.errorCode in CONTENTION
 
@@ -243,7 +240,7 @@ END;""".trim()
     private fun WritePlan.found(ref: NodeRef): Int {
         val model = FragmentModel.from(ref.fragmentClass)
         val node = node()
-        add("ref", "r" to node, "s" to shape((model.labels + ref.labels).distinct(), keyOf(ref, model)), "k" to ref.id.toString())
+        add("ref", "r" to node, "s" to shape((model.labels + ref.labels).distinct(), keyOf(ref, model)), "k" to OracleSql.key(ref.id))
         return node
     }
 
@@ -274,13 +271,11 @@ END;""".trim()
         val model = FragmentModel.from(from.fragmentClass)
         val select = OracleSelect(graph, targetClass)
         val statement = select.load(listOf(select.relatedTo((model.labels + from.labels).distinct(), keyOf(from, model), FROM_PARAM, type, direction)))
-        return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to from.id.toString()))
+        return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to OracleSql.key(from.id)))
     }
 
-    private fun notYet(what: String): Nothing = throw UnsupportedOperationException("$what is not yet available on Oracle.")
-
     private companion object {
-        val CONTENTION = setOf(60, 8177, 30006, 54)
+        val CONTENTION = setOf(60, 8177)
         const val FROM_PARAM = "_fromId"
 
         /** The fragments one block saves: enough that a round trip is not what a batch costs, and a plan stays small. */

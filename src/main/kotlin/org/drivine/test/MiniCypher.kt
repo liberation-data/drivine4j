@@ -18,6 +18,20 @@ import java.util.UUID
  * MATCH (a)-[r]->(b) WHERE type(r) = $type RETURN toString(a.id) + '->' + b.id
  * ```
  *
+ * What it reads, with keywords in upper case as the fixtures write them:
+ *
+ * - the clauses `MATCH`, `CREATE`, `MERGE`, `SET`, `REMOVE`, `DETACH DELETE`, `UNWIND … AS`,
+ *   `WITH` (with a `WHERE`) and `RETURN` of one expression, with `ORDER BY`;
+ * - patterns of nodes with labels and literal or bound properties, and relationships of one type in
+ *   either direction;
+ * - in a predicate, comparisons, `IN`, `STARTS WITH`, `IS [NOT] NULL` and `AND`; `CASE … WHEN … END`;
+ * - the functions `toString`, `coalesce`, `type`, `labels`, `keys`, `size`, `substring`, `left`, `right`,
+ *   `replace`, `properties`, `randomUUID` and `count`, and the constructors that wrap one value, such as `datetime`.
+ *
+ * Anything else is refused, never guessed at: `OR`, a `NOT` other than in `IS NOT NULL`, `ON CREATE SET`,
+ * `SKIP`, `LIMIT`, a `RETURN` of several columns, a `DELETE` of a relationship, a function not listed,
+ * and a parameter with no value bound.
+ *
  * A statement is worked out over the whole graph read into memory, and what it changed is written
  * back. A test's graph is a handful of nodes.
  */
@@ -365,7 +379,12 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         val c = text.getOrNull(at) ?: fail("a value")
         return when {
             c == '\'' || c == '"' -> string(c)
-            c == '$' -> { at++; parameters[name()] }
+            c == '$' -> {
+                at++
+                val parameter = name() ?: fail("a parameter name")
+                require(parameter in parameters) { "The statement names \$$parameter, and no value is bound to it: $text" }
+                parameters[parameter]
+            }
             c == '[' -> {
                 at++
                 val items = mutableListOf<Any?>()
@@ -435,6 +454,12 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         "type" -> (arguments[0] as? Edge)?.type
         "labels" -> (arguments[0] as? Node)?.labels
         // The stamp is a property on the graph engines, and a node that has one lists it.
+        // The properties of a node, the stamp among them as the graph engines store it.
+        "properties" -> when (val element = arguments[0]) {
+            is Node -> element.properties + listOfNotNull(element.stamp?.let { Stamps.PROPERTY to it })
+            is Edge -> element.properties.toMap()
+            else -> null
+        }
         "keys" -> when (val element = arguments[0]) {
             is Node -> element.properties.keys.toList() + listOfNotNull(Stamps.PROPERTY.takeIf { element.stamp != null })
             is Edge -> element.properties.keys.toList()
@@ -455,7 +480,8 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         "replace" -> (arguments[0] as String?)?.replace(arguments[1] as String, arguments[2] as String)
         "randomUUID" -> UUID.randomUUID().toString()
         // A function that wraps one value, as an engine's vector or temporal constructor does: the value itself.
-        else -> arguments.single()
+        in WRAPPERS -> arguments.single()
+        else -> throw IllegalArgumentException("The fixture interpreter does not know the function $function: $text")
     }
 
     private fun string(quote: Char): String {
@@ -576,6 +602,9 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
     companion object {
         /** Whether [statement] is one of a test's Cypher fixtures, and not a statement in the store's own language. */
         fun reads(statement: String): Boolean = FIXTURE.containsMatchIn(statement)
+
+        /** The functions that wrap one value in an engine's own type, and here leave it as it is. */
+        private val WRAPPERS = setOf("datetime", "localdatetime", "date", "localtime", "time", "duration", "vecf32", "vector32", "toFloat", "toInteger")
 
         /** A statement that opens with a pattern: `CREATE INDEX` is the store's own. */
         private val FIXTURE = Regex("^\\s*(MATCH|CREATE|MERGE)\\s*\\(")

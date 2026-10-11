@@ -28,7 +28,9 @@ internal data class NodeShape(val labels: List<String>, val key: String)
  *
  * A node is locked before it is read, so what a step compares is what the last writer committed; a
  * relationship is written only by a step that holds the lock of the node at each end. A lock is always
- * taken by the node's key, never through an index over its properties: see `find`.
+ * taken by the node's key, never through an index over its properties: see `find`. A node that is not
+ * there is made, and nothing stops two writers each making it at the same moment unless a uniqueness
+ * constraint on its id does, as nothing stops two `MERGE`s on a graph engine without one.
  *
  * @param returns what the block gives back when its steps have run
  */
@@ -219,6 +221,7 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         v_recorded  t_set;
         v_label     VARCHAR2(4000);
         v_made      BOOLEAN;
+        v_dup       PLS_INTEGER := 0;
         v_relabel   BOOLEAN;
         v_same      NUMBER;
     BEGIN
@@ -345,7 +348,11 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
                     INSERT INTO ${graph.nodes} (labels, props, stamp) VALUES (v_labels, v_new_props, v_stamp) RETURNING nid INTO v_nid;
                     EXIT;
                 EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
-                    NULL; -- another writer made it at this moment: find theirs, lock it, and write to that
+                    -- A uniqueness constraint refused the node. Once, it may be that another writer made the
+                    -- node at this moment: find theirs, lock it, and write to that. Found again or not, the
+                    -- constraint is on something other than this node's key, and refuses this save.
+                    v_dup := v_dup + 1;
+                    IF v_dup > 1 THEN RAISE; END IF;
                 END;
             ELSE
                 -- A new first token only if the step changes the node, or the node has no stamp yet.
@@ -500,7 +507,13 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         END IF;
         v_target := v_removed.FIRST;
         WHILE v_target IS NOT NULL LOOP
-            SELECT nid INTO v_lock FROM ${graph.nodes} WHERE nid = TO_NUMBER(v_target) FOR UPDATE;
+            -- A target gone since the relationships were read has nothing left to remove or count.
+            BEGIN
+                SELECT nid INTO v_lock FROM ${graph.nodes} WHERE nid = TO_NUMBER(v_target) FOR UPDATE;
+            EXCEPTION WHEN NO_DATA_FOUND THEN
+                v_target := v_removed.NEXT(v_target);
+                CONTINUE;
+            END;
             -- What refers to a target is a relationship on the side this field reaches it from: counted before any is removed.
             v_refs := 0;
             IF v_delete THEN
@@ -553,8 +566,13 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
             RETURN;
         END IF;
         FOR i IN 1 .. v_ends.COUNT LOOP
-            SELECT nid INTO v_lock FROM ${graph.nodes} WHERE nid = v_ends(i) FOR UPDATE;
-            relink(v_lock);
+            -- An end gone since the relationships were read took them with it, and has no token to change.
+            BEGIN
+                SELECT nid INTO v_lock FROM ${graph.nodes} WHERE nid = v_ends(i) FOR UPDATE;
+                relink(v_lock);
+            EXCEPTION WHEN NO_DATA_FOUND THEN
+                NULL;
+            END;
         END LOOP;
         FORALL i IN 1 .. v_eids.COUNT
             DELETE FROM ${graph.edges} WHERE eid = v_eids(i);

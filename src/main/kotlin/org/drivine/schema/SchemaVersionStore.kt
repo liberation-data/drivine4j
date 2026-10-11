@@ -44,20 +44,20 @@ class SchemaVersionStore(
 ) {
 
     /**
-     * The version last applied under this scope, or null if none has been recorded.
-     *
-     * If duplicate markers exist (a pre-constraint race), the most recently applied wins rather
-     * than failing the read — [ensureSingleton] repairs the duplication itself.
-     */
-    /**
      * The statements in SQL, for a store that speaks it: the marker is a node of the graph there too.
      * Null for the engines that speak Cypher.
      */
     private val sql: OracleMarker? by lazy {
         if (manager.type != DatabaseType.ORACLE) return@lazy null
-        OracleMarker(OracleGraph(manager.graphName ?: OracleGraph.DEFAULT_NAME).also { it.ensure(manager) })
+        OracleMarker(OracleGraph.ensured(manager))
     }
 
+    /**
+     * The version last applied under this scope, or null if none has been recorded.
+     *
+     * If duplicate markers exist (a pre-constraint race), the most recently applied wins rather
+     * than failing the read — [ensureSingleton] repairs the duplication itself.
+     */
     fun storedVersion(): String? = manager.maybeGetOne(
         QuerySpecification
             .withStatement(
@@ -207,8 +207,9 @@ private class OracleMarker(private val graph: OracleGraph) {
     private val marker = "JSON_EXISTS(n.labels, '$[*]?(@ == \"${SchemaVersionStore.LABEL}\")') AND JSON_VALUE(n.props, '$.\"scope\"') = \$scope"
     private val newestFirst = "JSON_VALUE(n.props, '$.\"appliedAt\"' RETURNING NUMBER) DESC NULLS LAST"
 
+    /** The marker's [property]. Read as a CLOB: an inventory can run past the 4000 characters a text is read as by default. */
     fun read(property: String): String =
-        "SELECT JSON_VALUE(n.props, '$.\"$property\"') FROM ${graph.nodes} n WHERE $marker ORDER BY $newestFirst FETCH FIRST 1 ROWS ONLY"
+        "SELECT JSON_VALUE(n.props, '$.\"$property\"' RETURNING CLOB) FROM ${graph.nodes} n WHERE $marker ORDER BY $newestFirst FETCH FIRST 1 ROWS ONLY"
 
     val merge: String = """
         MERGE INTO ${graph.nodes} n USING dual ON ($marker)

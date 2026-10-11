@@ -28,7 +28,9 @@ internal class Step(val type: String, val direction: Direction, val labels: List
 
 /**
  * Writes one statement that reads a graph kept by Oracle: a load, a count, or the predicate of a
- * delete. One instance writes one statement, and holds the values its parameters take.
+ * delete. One instance writes one statement, and holds the values its parameters take, so it is
+ * stateful: [hasId], [relatedTo] and [after] say something about the statement, and are called
+ * before [load], [count] or [selecting] writes it.
  *
  * A load returns one JSON document for each root, shaped as the Cypher load's map is: a fragment is
  * its properties with its `labels`; a view is its root and each relationship field, a collection as
@@ -111,13 +113,19 @@ internal class OracleSelect(
         return GraphStatement(text, bindings)
     }
 
+    /** The count of the roots [predicates] select, and that have the relationships the view requires. */
     fun count(predicates: List<String>): GraphStatement =
         GraphStatement("SELECT COUNT(*) FROM ${nodes(rootLabels(), root)}${where(predicates + requiredRelationships())}", bindings)
 
-    /** The predicate that selects the roots of this statement from the node table, when it is aliased as [root]. */
+    /**
+     * The predicate that selects the roots of this statement from the node table, when it is aliased
+     * as [root]: those with the labels that [predicates] select. A delete selects them so, as the
+     * Cypher delete does; a load and a count also ask for the relationships the view requires.
+     */
     fun selecting(predicates: List<String>): String =
-        (listOfNotNull(hasLabels(root, rootLabels(), scanned = !narrowed)) + predicates.map { "($it)" } + requiredRelationships()).joinToString("\n  AND ")
+        (listOfNotNull(hasLabels(root, rootLabels(), scanned = !narrowed)) + predicates.map { "($it)" }).joinToString("\n  AND ")
 
+    /** The values the statement's parameters take, as written so far. */
     fun bindings(): Map<String, Any?> = bindings
 
     private fun where(predicates: List<String>): String =
@@ -163,9 +171,18 @@ internal class OracleSelect(
         return "${property(root, idProperty)} = \$$parameter"
     }
 
-    /** A root property as it is ordered: by the type of the field that holds it, and as text when no field does. */
-    private fun ordered(key: String): String =
-        property(root, key, SqlKind.ofType(rootModel.fields.firstOrNull { it.propertyName == key }?.type))
+    /** The kind a property no field declares is read as, learnt from the cursor value a seek compares it with. */
+    private val inferredKinds = mutableMapOf<String, SqlKind>()
+
+    /**
+     * A root property as it is ordered: by the type of the field that holds it; when no field does,
+     * as the value a seek compares it with, and as text when there is none.
+     */
+    private fun ordered(key: String): String {
+        val declared = rootModel.fields.firstOrNull { it.propertyName == key }?.type
+        val kind = if (declared != null) SqlKind.ofType(declared) else inferredKinds[key] ?: SqlKind.TEXT
+        return property(root, key, kind)
+    }
 
     // ----- Row sources -----
 
@@ -184,15 +201,7 @@ internal class OracleSelect(
         val pattern = buildString {
             append("(a IS node)")
             steps.forEachIndexed { i, step ->
-                val edge = "e$i"
-                val body = "[$edge IS edge WHERE $edge.type = ${literal(step.type)}]"
-                append(
-                    when (step.direction) {
-                        Direction.OUTGOING -> " -$body->"
-                        Direction.INCOMING -> " <-$body-"
-                        Direction.UNDIRECTED -> " -$body-"
-                    }
-                )
+                append(" ").append(OracleSql.arrow("e$i", step.type, step.direction))
                 if (step.maxDepth > 1) append("{1,${step.maxDepth}}")
                 val node = if (i == steps.lastIndex) "b" else "m$i"
                 append(" ($node IS node").append(hasLabels(node, step.labels)?.let { " WHERE $it" }.orEmpty()).append(")")
@@ -495,12 +504,7 @@ internal class OracleSelect(
     fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
         narrowed = true
         val row = next("t")
-        val body = "[e IS edge WHERE e.type = ${literal(type)}]"
-        val arrow = when (direction) {
-            Direction.OUTGOING -> "-$body->"
-            Direction.INCOMING -> "<-$body-"
-            Direction.UNDIRECTED -> "-$body-"
-        }
+        val arrow = OracleSql.arrow("e", type, direction)
         val from = listOfNotNull("${property("a", key)} = \$$parameter", hasLabels("a", labels)).joinToString(" AND ")
         return "$root.nid IN (SELECT $row.nid FROM GRAPH_TABLE (${graph.name} MATCH (a IS node WHERE $from) $arrow (b IS node) COLUMNS (b.nid AS nid)) $row)"
     }
@@ -653,11 +657,18 @@ internal class OracleSelect(
         return "REGEXP_LIKE($text, ${bound("^($body)$")}${if (ignoreCase) ", 'i'" else ""})"
     }
 
-    /** Whether the list property [key] of [row] holds [value]. */
+    /**
+     * Whether the list property [key] of [row] holds [value]. A boolean is written into the path: in a
+     * path a boolean is itself, which the text `JSON_VALUE` reads it as would not equal.
+     */
     private fun holds(row: String, key: String, value: Any?): String =
-        "JSON_EXISTS($row.props, ${path(key, "[*]?(@ == \$v)")} PASSING ${bound(scalar(value))} AS \"v\")"
+        if (value is Boolean) {
+            "JSON_EXISTS($row.props, ${path(key, "[*]?(@ == $value)")})"
+        } else {
+            "JSON_EXISTS($row.props, ${path(key, "[*]?(@ == \$v)")} PASSING ${bound(value)} AS \"v\")"
+        }
 
-    /** A boolean is compared with the text JSON writes it as. */
+    /** A boolean is compared with the text JSON writes it as, which is what `JSON_VALUE` reads it as. */
     private fun scalar(value: Any?): Any? = if (value is Boolean) value.toString() else value
 
     private fun listed(value: Any?): Collection<*> = when (value) {
@@ -671,7 +682,8 @@ internal class OracleSelect(
     /**
      * The predicate that selects the rows after a cursor: for orders `a, b` and the cursor `(A, B)`,
      * `a > A OR (a = A AND b > B)`, each comparison turned round for a descending order. A row whose
-     * ordered property is absent meets no comparison, and is not returned.
+     * ordered property is absent meets no comparison, and is not returned. A property no field
+     * declares is compared, and ordered, as the kind of the cursor value.
      */
     fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String {
         require(orders.isNotEmpty()) { "seek requires at least one root orderBy property" + hint(collectionSortCount) }
@@ -684,6 +696,10 @@ internal class OracleSelect(
             }
         }
         val cursor = values.map { bound(scalar(it.value)) }
+        orders.zip(values).forEach { (order, value) ->
+            val key = order.propertyPath.substringAfter('.')
+            if (rootModel.fields.none { it.propertyName == key }) inferredKinds[key] = SqlKind.ofValue(value.value)
+        }
         fun key(index: Int) = ordered(orders[index].propertyPath.substringAfter('.'))
         return orders.indices.joinToString(" OR ", "(", ")") { branch ->
             val equal = (0 until branch).map { "${key(it)} = ${cursor[it]}" }

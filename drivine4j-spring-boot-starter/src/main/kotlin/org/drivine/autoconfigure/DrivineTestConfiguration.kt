@@ -50,7 +50,7 @@ class DrivineTestConfiguration {
         @Value("\${test.neo4j.use-local:#{null}}") useLocalNeo4jFromSpring: String?,
         @Value("\${test.falkordb.use-local:#{null}}") useLocalFalkorFromSpring: String?,
         @Value("\${test.memgraph.use-local:#{null}}") useLocalMemgraphFromSpring: String?,
-        @Value("\${test.oracle.use-local:#{null}}") useLocalOracleFromSpring: String? = null,
+        @Value("\${test.oracle.use-local:#{null}}") useLocalOracleFromSpring: String?,
     ): DataSourceMap {
         val datasources = properties.datasources.toMutableMap()
 

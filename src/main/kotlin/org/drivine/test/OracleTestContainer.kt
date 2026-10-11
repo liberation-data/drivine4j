@@ -35,7 +35,8 @@ import java.time.Duration
  * export ORACLE_LOCAL_PORT=1521
  * ```
  *
- * Or `-Dtest.oracle.use-local=true`. The service, user and password are then the datasource's own.
+ * Or `-Dtest.oracle.use-local=true`. The local instance must open the service [SERVICE] and hold the
+ * user [USER] with password [PASSWORD], as the container does: only its host and port can be changed.
  */
 class OracleTestContainer private constructor(
     imageName: DockerImageName

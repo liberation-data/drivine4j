@@ -1,7 +1,9 @@
 package org.drivine.backend.oracle
 
+import org.drivine.annotation.Direction
 import org.drivine.model.Stamps
 import org.drivine.schema.SimilarityFunction
+import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -21,6 +23,7 @@ internal enum class SqlKind(private val returning: String) {
     val column: String
         get() = if (this == TEXT) "VARCHAR2(4000)" else returning.removePrefix(" RETURNING ")
 
+    /** The value at [path] in the JSON column [json], read as this kind. */
     fun read(json: String, path: String): String = "JSON_VALUE($json, $path$returning)"
 
     companion object {
@@ -49,12 +52,20 @@ internal enum class SqlKind(private val returning: String) {
 /** The pieces of SQL every statement over an [OracleGraph] is made of. */
 internal object OracleSql {
 
-    /** The columns a row of a node has, whether it comes from the node table or through the graph. */
-    const val NODE_COLUMNS = "nid, labels, props, stamp"
-
     const val EMPTY_ARRAY = "JSON('[]')"
 
+    /** [text] as a SQL string literal, its quotes doubled. */
     fun literal(text: String): String = "'${text.replace("'", "''")}'"
+
+    /**
+     * The id [id] as the text a node is found by. A property is read back as text, and Oracle keeps a
+     * JSON number as a number, so `3.0` is read as `3`: a number is written as its plain, shortest form.
+     */
+    fun key(id: Any): String = when (id) {
+        is Float, is Double -> BigDecimal(id.toString()).stripTrailingZeros().toPlainString()
+        is BigDecimal -> id.stripTrailingZeros().toPlainString()
+        else -> id.toString()
+    }
 
     /** One step of a JSON path: a key, quoted, so a key with a dot in it is one key. */
     private fun step(key: String): String = "\"${key.replace("\\", "\\\\").replace("\"", "\\\"")}\""
@@ -94,6 +105,7 @@ internal object OracleSql {
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String =
         if (key == Stamps.PROPERTY) "$alias.stamp" else kind.read("$alias.props", path(key))
 
+    /** Whether the node or relationship [alias] has the property [key] at all. */
     fun hasProperty(alias: String, key: String): String =
         if (key == Stamps.PROPERTY) "$alias.stamp IS NOT NULL" else "JSON_EXISTS($alias.props, ${path(key)})"
 
@@ -116,18 +128,34 @@ internal object OracleSql {
         SimilarityFunction.EUCLIDEAN -> "1 / (1 + $distance)"
     }
 
+    /** One relationship of [type] in a `MATCH` pattern, named [edge] and pointing in [direction]. */
+    fun arrow(edge: String, type: String, direction: Direction): String {
+        val body = "[$edge IS edge WHERE $edge.type = ${literal(type)}]"
+        return when (direction) {
+            Direction.OUTGOING -> "-$body->"
+            Direction.INCOMING -> "<-$body-"
+            Direction.UNDIRECTED -> "-$body-"
+        }
+    }
+
     /** The values of the JSON array bound as [parameter], as rows of one column `v` read as [kind]. */
     fun values(parameter: String, kind: SqlKind): String =
         "SELECT v FROM JSON_TABLE($parameter, '$[*]' COLUMNS (v ${kind.column} PATH '$'))"
 
     /** A block that runs [statement], which changes rows, and returns how many as its one row. */
-    fun counted(statement: String): String = """
+    fun counted(statement: String): String = counting("$statement;\nv_count := SQL%ROWCOUNT;")
+
+    /**
+     * A block that runs [body], which leaves in `v_count` how many rows it changed, and returns that
+     * as its one row. [declarations] are the body's own, beside `v_count`.
+     */
+    fun counting(body: String, declarations: String = ""): String = """
         DECLARE
-            v_rows SYS_REFCURSOR;
-            v_count NUMBER;
+            v_rows  SYS_REFCURSOR;
+            v_count NUMBER := 0;
+            ${declarations.trimIndent().replace("\n", "\n            ")}
         BEGIN
-            $statement;
-            v_count := SQL%ROWCOUNT;
+            ${body.trimIndent().replace("\n", "\n            ")}
             OPEN v_rows FOR SELECT v_count FROM dual;
             DBMS_SQL.RETURN_RESULT(v_rows);
         END;

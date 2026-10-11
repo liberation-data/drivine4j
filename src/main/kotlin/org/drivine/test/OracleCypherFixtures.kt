@@ -13,9 +13,10 @@ import org.drivine.query.QuerySpecification
  * statement out over the graph and writes back what it changed, and hands any other statement, an
  * object manager's among them, to the store.
  *
- * It reads the Cypher such fixtures use: `CREATE` and `MATCH` patterns with literal or bound
- * properties, `WHERE`, `SET`, `REMOVE`, `DETACH DELETE`, `UNWIND`, and a `RETURN` of an expression or a
- * `count`. It reads the whole graph into memory for each statement, and is for tests alone.
+ * It reads the Cypher such fixtures use, the subset [MiniCypher] lists: `CREATE`, `MATCH` and `MERGE`
+ * patterns with literal or bound properties, `WHERE`, `SET`, `REMOVE`, `DETACH DELETE`, `UNWIND`,
+ * `WITH`, and a `RETURN` of an expression or a `count`; anything else is refused. It reads the whole
+ * graph into memory for each statement, and is for tests alone.
  */
 object OracleCypherFixtures {
 

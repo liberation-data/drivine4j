@@ -35,7 +35,7 @@ object TestCleanup {
     }
 
     private fun oracle(persistenceManager: PersistenceManager, field: String, value: String): String {
-        val graph = OracleGraph(persistenceManager.graphName ?: OracleGraph.DEFAULT_NAME).also { it.ensure(persistenceManager) }
+        val graph = OracleGraph.ensured(persistenceManager)
         return "DELETE FROM ${graph.nodes} n WHERE ${OracleSql.property("n", field)} = ${OracleSql.literal(value)}"
     }
 }

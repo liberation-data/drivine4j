@@ -163,9 +163,10 @@ class ConnectionProviderBuilder(
 
     private fun buildOracleProvider(name: String): ConnectionProvider {
         requireNotNull(userName) { "Oracle requires a username" }
-        val resolvedPort = port ?: 1521
         // The database name is the service to connect to: the pluggable database, not the container.
-        val url = JdbcConnectionProvider.oracleUrl(host!!, resolvedPort, this.name ?: "FREEPDB1")
+        val service = requireNotNull(this.name) { "Oracle requires a databaseName: the service to connect to, such as FREEPDB1" }
+        val resolvedPort = port ?: 1521
+        val url = JdbcConnectionProvider.oracleUrl(host!!, resolvedPort, service)
         return JdbcConnectionProvider.pooled(
             name = name,
             type = type!!,

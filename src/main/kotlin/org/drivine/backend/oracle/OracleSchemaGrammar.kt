@@ -42,23 +42,21 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     /** A node is found by the range index's expression; the unique index only refuses a second one. */
     override val constraintsRequireBackingIndex = true
 
-    private fun statements(vararg text: String) = (graph.ddl + text).map { SchemaStatement.Cypher(it.trimIndent()) }
+    /** [text] as schema statements, after the one that makes the store when it is not there. */
+    private fun statements(vararg text: String) = (listOf(graph.ensuring) + text).map { SchemaStatement.Cypher(it.trimIndent()) }
 
-    /** A name for a schema object: the graph's, what it is, and its properties, cut to fit with a hash that keeps it its own. */
-    private fun objectName(what: String, vararg parts: String): String {
-        val readable = parts.joinToString("_") { it.replace(Regex("[^A-Za-z0-9]"), "") }.take(40)
-        return "${graph.name}_${what}_${readable}_${Integer.toHexString(parts.joinToString("\u0000").hashCode())}"
-    }
-
-    private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}"): String {
-        val key = "kind = ${literal(spec.kind.name)} AND label = ${literal(spec.label)} AND properties = ${literal(json(spec.properties))}"
-        return """
-            INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details)
-            SELECT ${literal(spec.kind.name)}, ${literal(spec.label)}, ${literal(json(spec.properties))}, ${literal(spec.effectiveName)},
-                   ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)}
-            FROM dual WHERE NOT EXISTS (SELECT 1 FROM ${graph.catalog} WHERE $key)
-        """
-    }
+    /**
+     * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
+     * recorded already. A `MERGE` so that two processes recording it at once do not fail one of them
+     * on the catalog's key, which would be read as the constraint itself violated.
+     */
+    private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}"): String = """
+        MERGE INTO ${graph.catalog} c
+        USING (SELECT ${literal(spec.kind.name)} AS kind, ${literal(spec.label)} AS label, ${literal(json(spec.properties))} AS properties FROM dual) k
+        ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
+        WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
+            VALUES (k.kind, k.label, k.properties, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)})
+    """
 
     /** Forgets [item], and drops the object it was made as when nothing else recorded uses it. */
     private fun forgotten(item: SchemaItemInfo): String = """
@@ -76,8 +74,6 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         END;
     """
 
-    private fun json(values: List<String>): String = Companion.json(values)
-
     companion object {
         /** The properties of an index as the record of it holds them. */
         fun json(values: List<String>): String = values.joinToString(",", "[", "]") { "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
@@ -85,7 +81,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
 
     override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
         is RangeIndexSpec -> {
-            val name = objectName("ix", *spec.properties.toTypedArray())
+            val name = graph.objectName("ix", spec.properties)
             val expressions = spec.properties.joinToString(", ") { "JSON_VALUE(props, ${path(it)})" }
             statements("CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} ($expressions)", recorded(spec, name))
         }
@@ -120,9 +116,14 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             CREATE OR REPLACE TRIGGER ${side}_t AFTER INSERT OR UPDATE OF labels, props ON ${graph.nodes} FOR EACH ROW
             BEGIN
                 IF ${indexed.replace("%s", ":NEW")} THEN
-                    MERGE INTO $side v USING (SELECT :NEW.nid AS nid, ${embedding.format(":NEW")} AS embedding FROM dual) n ON (v.nid = n.nid)
-                    WHEN MATCHED THEN UPDATE SET v.embedding = n.embedding
-                    WHEN NOT MATCHED THEN INSERT (nid, embedding) VALUES (n.nid, n.embedding);
+                    BEGIN
+                        MERGE INTO $side v USING (SELECT :NEW.nid AS nid, ${embedding.format(":NEW")} AS embedding FROM dual) n ON (v.nid = n.nid)
+                        WHEN MATCHED THEN UPDATE SET v.embedding = n.embedding
+                        WHEN NOT MATCHED THEN INSERT (nid, embedding) VALUES (n.nid, n.embedding);
+                    EXCEPTION WHEN OTHERS THEN
+                        -- Not an embedding of the index's dimensions: the node is kept, and left out of the index, as the graph engines leave it.
+                        DELETE FROM $side WHERE nid = :NEW.nid;
+                    END;
                 ELSE
                     DELETE FROM $side WHERE nid = :NEW.nid;
                 END IF;
@@ -141,7 +142,8 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             """
             INSERT INTO $side (nid, embedding)
             SELECT n.nid, ${embedding.format("n")} FROM ${graph.nodes} n
-            WHERE ${indexed.replace("%s", "n")} AND NOT EXISTS (SELECT 1 FROM $side v WHERE v.nid = n.nid)
+            WHERE ${indexed.replace("%s", "n")} AND VECTOR_DIMENSION_COUNT(${embedding.format("n")}) = ${spec.dimensions}
+              AND NOT EXISTS (SELECT 1 FROM $side v WHERE v.nid = n.nid)
             """,
             recorded(spec, side, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}"""),
         )
@@ -193,9 +195,10 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
                         ${recorded(spec, null, details).trim()};
                         RETURN;
                     END;
-                    EXECUTE IMMEDIATE ${literal(trigger)};
-                    EXECUTE IMMEDIATE ${literal("INSERT INTO $side (nid, doc) SELECT n.nid, ${doc("n")} FROM ${graph.nodes} n WHERE ${OracleSql.carriesLabel("n", spec.label)}")};
                 END IF;
+                -- Whether the table was made now or by a run that stopped short, its trigger and what it lacks are made.
+                EXECUTE IMMEDIATE ${literal(trigger)};
+                EXECUTE IMMEDIATE ${literal("INSERT INTO $side (nid, doc) SELECT n.nid, ${doc("n")} FROM ${graph.nodes} n WHERE ${OracleSql.carriesLabel("n", spec.label)} AND NOT EXISTS (SELECT 1 FROM $side t WHERE t.nid = n.nid)")};
                 ${recorded(spec, side, details).trim()};
             END;
         """
@@ -203,17 +206,29 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
 
     override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
         is UniquenessConstraintSpec -> {
-            val name = objectName("uq", spec.label, *spec.properties.toTypedArray())
-            val expressions = spec.properties.joinToString(", ") { "CASE WHEN ${hasLabel("n", spec.label)} THEN JSON_VALUE(n.props, ${path(it)}) END" }
+            val name = graph.objectName("uq", listOf(spec.label) + spec.properties)
+            // A node that lacks any of the properties is not constrained, as on the graph engines; a
+            // unique index skips a row only when every column is null, so each is null for such a node.
+            val constrained = (listOf(hasLabel("n", spec.label)) + spec.properties.map { "JSON_EXISTS(n.props, ${path(it)})" }).joinToString(" AND ")
+            val expressions = spec.properties.joinToString(", ") { "CASE WHEN $constrained THEN JSON_VALUE(n.props, ${path(it)}) END" }
             statements("CREATE UNIQUE INDEX IF NOT EXISTS $name ON ${graph.nodes} n ($expressions)", recorded(spec, name))
         }
     }
 
     override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = listOf(SchemaStatement.Cypher(forgotten(item).trimIndent()))
 
+    /**
+     * What is recorded of [kinds], and still there: an index or a table beside the nodes dropped by
+     * hand is not listed, so that it is made again when asked for.
+     */
     private fun listed(kinds: String): String = """
         SELECT JSON_OBJECT('kind' VALUE kind, 'label' VALUE label, 'properties' VALUE JSON(properties), 'name' VALUE name, 'details' VALUE details RETURNING JSON)
-        FROM ${graph.catalog} WHERE kind IN ($kinds) ORDER BY label, properties
+        FROM ${graph.catalog} c
+        WHERE kind IN ($kinds)
+          AND (object_name IS NULL
+               OR EXISTS (SELECT 1 FROM user_indexes i WHERE i.index_name = UPPER(c.object_name))
+               OR EXISTS (SELECT 1 FROM user_tables t WHERE t.table_name = UPPER(c.object_name)))
+        ORDER BY label, properties
     """.trimIndent()
 
     override fun listIndexesQuery(kind: SchemaItemKind): String = listed(literal(kind.name))

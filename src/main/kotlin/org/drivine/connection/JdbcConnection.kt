@@ -72,12 +72,14 @@ class JdbcConnection(
     private fun bind(statement: PreparedStatement, index: Int, value: Any?) = when (value) {
         // A null of no declared type: Oracle converts a character null to the type the statement wants.
         null -> statement.setNull(index, Types.VARCHAR)
-        is String -> if (value.length > MAX_STRING) statement.setClob(index, StringReader(value)) else statement.setString(index, value)
+        // Oracle measures a bound string in bytes, so a long one goes as a CLOB when its bytes, not its characters, are too many.
+        is String -> if (value.length > MAX_STRING || value.toByteArray(Charsets.UTF_8).size > MAX_STRING) statement.setClob(index, StringReader(value)) else statement.setString(index, value)
         is Char -> statement.setString(index, value.toString())
         else -> statement.setObject(index, value)
     }
 
     override fun startTransaction() {
+        if (inTransaction) throw DrivineException("A transaction is already open on this connection.")
         connection.autoCommit = false
         inTransaction = true
     }

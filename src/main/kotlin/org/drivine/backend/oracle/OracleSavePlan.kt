@@ -29,19 +29,22 @@ internal class WritePlan(private val graph: OracleGraph) {
     /** The stamp the plan's steps take the relationship token from. */
     val mark: String = Stamps.fresh()
 
+    private val stamps = mutableListOf(mark)
+
     /** The stamps the plan offers the nodes it changes: [mark], and the one each node step carries. */
-    val offered = mutableListOf(mark)
+    val offered: List<String> get() = stamps
 
     /** A stamp for a node step, which is offered to its node. */
-    fun fresh(): String = Stamps.fresh().also { offered += it }
+    fun fresh(): String = Stamps.fresh().also { stamps += it }
 
+    /** The number of the shape a node of [labels], found by the property [key], has: one number for one shape. */
     fun shape(labels: List<String>, key: String): Int = shapes.getOrPut(NodeShape(labels, key)) { shapes.size }
 
     /** A number for the node the next `node` or `ref` step gives. */
     fun node(): Int = nodes++
 
+    /** Adds a step of [kind] with [fields]. A field that is null is left out: the block reads an absent field as null. */
     fun add(kind: String, vararg fields: Pair<String, Any?>) {
-        // A field that is null is left out: the block reads an absent field as null.
         steps += (listOf("op" to kind) + fields.filter { it.second != null }).toMap()
     }
 
@@ -363,7 +366,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
 
             val node = plan.node()
             plan.add(
-                "node", "r" to node, "s" to plan.shape(model.labels, key), "k" to id.toString(),
+                "node", "r" to node, "s" to plan.shape(model.labels, key), "k" to OracleSql.key(id),
                 "key" to key, "id" to id, "labels" to model.labels.sorted(), "fresh" to plan.fresh(),
                 "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() }, "bags" to bags.takeIf { it.isNotEmpty() },
                 "add" to add.takeIf { it.isNotEmpty() }, "drop" to drop.takeIf { it.isNotEmpty() }, "owned" to owned, *more,
@@ -411,8 +414,8 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             relationship: RelationshipModel, target: Target, from: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>,
         ) = plan.add(
             "unlink", "from" to from, "type" to relationship.type, "dir" to relationship.direction.code,
-            "s" to plan.shape(target.model.labels, target.idProperty), "ids" to ids.map { it.toString() }, "keep" to keep.takeIf { it },
-            "delete" to (removedTargets == RemovedTargets.DELETE_UNREFERENCED).takeIf { it }, "held" to heldIds.map { it.toString() }.takeIf { it.isNotEmpty() },
+            "s" to plan.shape(target.model.labels, target.idProperty), "ids" to ids.map(OracleSql::key), "keep" to keep.takeIf { it },
+            "delete" to (removedTargets == RemovedTargets.DELETE_UNREFERENCED).takeIf { it }, "held" to heldIds.map(OracleSql::key).takeIf { it.isNotEmpty() },
         )
     }
 

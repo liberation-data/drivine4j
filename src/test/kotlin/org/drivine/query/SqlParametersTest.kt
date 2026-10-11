@@ -33,6 +33,18 @@ class SqlParametersTest {
     }
 
     @Test
+    fun `a national literal, with or without alternative quoting, is left as it is`() {
+        val sql = "SELECT n'it''s \$no', nq'[it's \$no]', NQ'{\$no}' FROM t WHERE a = \$a"
+        assertEquals(sql.replace("= \$a", "= ?") to listOf("a"), positional(sql))
+    }
+
+    @Test
+    fun `a conditional-compilation directive is not a parameter`() {
+        val sql = "BEGIN \$IF DBMS_DB_VERSION.VER_LE_23 \$THEN NULL; \$ELSE x := \$x; \$END END;"
+        assertEquals(sql.replace(":= \$x", ":= ?") to listOf("x"), positional(sql))
+    }
+
+    @Test
     fun `a dollar that names nothing is left alone`() {
         assertEquals("SELECT '1' || \$ FROM dual WHERE x = \$1" to emptyList(), positional("SELECT '1' || \$ FROM dual WHERE x = \$1"))
     }

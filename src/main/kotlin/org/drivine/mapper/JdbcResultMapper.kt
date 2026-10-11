@@ -69,6 +69,8 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             Types.TIMESTAMP -> results.getTimestamp(column)?.toLocalDateTime()
             Types.DATE -> results.getDate(column)?.toLocalDate()
             Types.BOOLEAN, Types.BIT -> results.getBoolean(column).takeUnless { results.wasNull() }
+            // Read whole, so a locator does not outlive the statement that owns it.
+            Types.BLOB, Types.BINARY, Types.VARBINARY, Types.LONGVARBINARY -> results.getBytes(column)
             ORACLE_VECTOR -> results.getObject(column, FloatArray::class.java)?.map { it.toDouble() }
             else -> results.getObject(column)
         }
