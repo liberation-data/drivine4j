@@ -5,6 +5,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
 import org.drivine.store.StoreIdentity
@@ -30,6 +31,9 @@ class TransactionalPersistenceManager(
 
     override val graphName: String?
         get() = schemaManagerSource?.graphName
+
+    override val schemaGrammar: SchemaGrammar?
+        get() = schemaManagerSource?.schemaGrammar
 
     /** False when no schema source was supplied: nothing here could run DDL even if the engine could. */
     override val supportsSchemaManagement: Boolean

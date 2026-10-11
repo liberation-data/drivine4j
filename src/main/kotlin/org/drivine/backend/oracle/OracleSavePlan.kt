@@ -9,6 +9,7 @@ import org.drivine.manager.RemovedTargets
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.model.PropertyBagModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
 import org.drivine.query.NodeKey
@@ -16,56 +17,6 @@ import org.drivine.query.Repeat
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 import org.drivine.query.read
-
-/**
- * The steps a write block carries out, gathered as they are decided. A node a step saves or finds is
- * known to later steps by the number it is given here.
- */
-internal class WritePlan(private val graph: OracleGraph) {
-    private val steps = mutableListOf<Map<String, Any?>>()
-    private val shapes = linkedMapOf<NodeShape, Int>()
-    private var nodes = 0
-
-    /** The stamp the plan's steps take the relationship token from. */
-    val mark: String = Stamps.fresh()
-
-    private val stamps = mutableListOf(mark)
-
-    /** The stamps the plan offers the nodes it changes: [mark], and the one each node step carries. */
-    val offered: List<String> get() = stamps
-
-    /** A stamp for a node step, which is offered to its node. */
-    fun fresh(): String = Stamps.fresh().also { stamps += it }
-
-    /** The number of the shape a node of [labels], found by the property [key], has: one number for one shape. */
-    fun shape(labels: List<String>, key: String): Int = shapes.getOrPut(NodeShape(labels, key)) { shapes.size }
-
-    /** A number for the node the next `node` or `ref` step gives. */
-    fun node(): Int = nodes++
-
-    /** Adds a step of [kind] with [fields]. A field that is null is left out: the block reads an absent field as null. */
-    fun add(kind: String, vararg fields: Pair<String, Any?>) {
-        steps += (listOf("op" to kind) + fields.filter { it.second != null }).toMap()
-    }
-
-    /** The step that joins [from] to [to]; [clear] names the properties the relationship must not have. */
-    fun link(from: Int, to: Int, type: String, direction: Direction, properties: Map<String, Any?>, clear: List<String> = emptyList(), always: Boolean = false) =
-        add(
-            "link", "from" to from, "to" to to, "type" to type, "dir" to direction.code,
-            "props" to properties.takeIf { it.isNotEmpty() }, "clear" to clear.takeIf { it.isNotEmpty() }, "always" to always.takeIf { it },
-        )
-
-    fun text(returns: OracleWriteBlock.Returns): String = OracleWriteBlock(graph, shapes.keys.toList(), returns).text()
-
-    fun bindings(): Map<String, Any?> = mapOf(OracleWriteBlock.PLAN to steps, OracleWriteBlock.MARK to mark)
-}
-
-internal val Direction.code: String
-    get() = when (this) {
-        Direction.OUTGOING -> "OUT"
-        Direction.INCOMING -> "IN"
-        Direction.UNDIRECTED -> "BOTH"
-    }
 
 /**
  * Plans a whole save for Oracle: the root, the relationships it drops, each related node and the
@@ -77,6 +28,16 @@ internal val Direction.code: String
  */
 internal class OracleSavePlan(private val graph: OracleGraph, private val objectMapper: ObjectMapper) {
 
+    /**
+     * The statement that saves [obj]. The parameters are those of `SaveStatementBuilder.build`:
+     *
+     * @param checked whether the root must carry the stamp the object does, or the save is refused as stale
+     * @param nullPolicy whether a null field is left alone or cleared
+     * @param rootWriteFields the root's fields the save may write; null for all of them
+     * @param replaced what a field whose list is replaced does with the targets it drops; null for a field that is not
+     * @param before and [after] the object's digest as loaded and now, for a save of what a change altered
+     * @param createsRoot whether the save makes the root when it is gone; an update does not
+     */
     fun build(
         obj: Any,
         checked: Boolean,
@@ -98,6 +59,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         return composition.plan.text(OracleWriteBlock.Returns.EACH_STAMP) to composition.plan.bindings()
     }
 
+    /** One save's plan as it is put together: the steps, and what the statement is handed back with them. */
     private inner class Composition(
         private val checked: Boolean,
         private val nullPolicy: NullPolicy,
@@ -129,7 +91,12 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         /** One fragment of a batch: saved as the root of a save on its own is, and returned under [index]. */
         fun fragment(fragment: Any, index: Int) {
             val model = FragmentModel.from(fragment.javaClass)
-            node(fragment, model, objectMapper.toMap(fragment), null, nullPolicy, null, readsStore = true, "i" to index.toString())
+            node(fragment, model, objectMapper.toMap(fragment), null, nullPolicy, null, readsStore = true, index = index.toString())
+        }
+
+        /** A relationship field of a view as the object holds it: the field, where its items point, and the items. */
+        private inner class Field(val relationship: RelationshipModel, val target: Target, val items: List<Any?>) {
+            val ids: List<Any?> = items.map { item -> item?.let { target.idOf(it) } }
         }
 
         /** The root of [view], then each relationship field it writes. Gives the root's number. */
@@ -145,67 +112,81 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
 
             // A read-only field (every path is one) is loaded and never written.
             val written = model.relationships.filterNot { it.readOnly }.map { relationship ->
-                val target = targetOf(relationship)
                 val value = read(view, relationship.fieldName)
-                Triple(relationship, target, if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value))
+                Field(relationship, targetOf(relationship), if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value))
             }
             // Every node the object holds, in any field and in any view nested in one: none of them is
             // deleted as unreferenced, though the field it is dropped from holds the only relationship
             // the store has to it yet.
             val held = if (depth == 0) heldBy(view, model) else emptyList()
-            // A save leaves a relationship's property alone where the object's is null, as it leaves a
-            // related node's. A save of what a change altered clears one the change set to null.
-            val clears = before != null
-            written.forEach { (relationship, target, items) ->
-                val ids = items.map { item -> item?.let { target.idOf(it) } }
-                // A node the field holds more than once is written once, as the last of them says.
-                val last = ids.withIndex().filter { it.value != null }.associate { it.value to it.index }
-                val itemsNow = after?.let { digestItems(it.get(relationship.fieldName), relationship) }
+            written.forEach { field ->
                 val itemsBefore = before?.let { digest ->
-                    digestItems(digest.get(relationship.fieldName), relationship).filterNotNull()
-                        .mapNotNull { item -> target.idOf(item)?.let { it to item } }.toMap()
+                    digestItems(digest.get(field.relationship.fieldName), field.relationship).filterNotNull()
+                        .mapNotNull { item -> field.target.idOf(item)?.let { it to item } }.toMap()
                 }
-
-                if (itemsBefore != null) {
-                    val gone = itemsBefore.keys - ids.filterNotNull().map { it.toString() }.toSet()
-                    if (gone.isNotEmpty()) removal(relationship, target, rootNode, gone.toList(), keep = false, RemovedTargets.KEEP, emptyList())
-                } else if (depth == 0) {
-                    replaced(relationship)?.let { removedTargets ->
-                        val heldIds = held.filter { target.matches(it) }.mapNotNull { idOf(it) }.distinct()
-                        // Another field that reads the same relationships holds some of them: those are its to keep.
-                        val siblingIds = written.filter { (other) -> other !== relationship && other.reads(relationship) }
-                            .flatMap { (_, sibling, others) -> others.filterNotNull().map { sibling.fragmentOf(it) } }
-                            .filter { target.matches(it) }.mapNotNull { idOf(it) }
-                        removal(relationship, target, rootNode, (ids.filterNotNull() + siblingIds).distinct(), keep = true, removedTargets, heldIds)
-                    }
-                }
-
-                items.forEachIndexed { index, item ->
-                    if (item == null) return@forEachIndexed
-                    if (last[ids[index]]?.let { it != index } == true) {
-                        repeated(target.fragmentOf(item))
-                        return@forEachIndexed
-                    }
-                    val was = ids[index]?.let { itemsBefore?.get(it.toString()) }
-                    val now = itemsNow?.getOrNull(index)
-                    // As it was when loaded: the relationship and its target are left alone.
-                    if (was != null && was == now) return@forEachIndexed
-                    // A relationship that was loaded is not made again: if another writer has removed it
-                    // since, it stays removed. Its node is written, and it too if its properties changed.
-                    val link = was == null || relationship.relationshipProperties.any { was.get(it) != now?.get(it) }
-                    val node = target.nodeOf(item)
-                    val nodeBefore = was?.let { target.nodeOf(it) }
-                    val nodeNow = now?.let { target.nodeOf(it) }
-                    val saved = if (target.view != null) {
-                        view(node, target.view, depth + 1, nodeBefore, nodeNow)
-                    } else {
-                        // The runtime type, not the declared one: a subtype has labels of its own.
-                        relatedNode(node, FragmentModel.from(node.javaClass), nodeBefore, nodeNow)
-                    }
-                    if (link) join(relationship, item, rootNode, saved, clears)
-                }
+                fieldRemovals(field, rootNode, itemsBefore, depth, held, written)
+                fieldItems(field, rootNode, depth, itemsBefore, after?.let { digestItems(it.get(field.relationship.fieldName), field.relationship) }, clears = before != null)
             }
             return rootNode
+        }
+
+        /**
+         * The relationships of [field] the save removes: to the targets the object was loaded with and
+         * no longer holds, as [itemsBefore] says; or, for a root field whose list is replaced, to every
+         * target but those the object holds, in this field or another that reads the same relationships.
+         */
+        private fun fieldRemovals(field: Field, rootNode: Int, itemsBefore: Map<String, JsonNode>?, depth: Int, held: List<Any>, written: List<Field>) {
+            val target = field.target
+            if (itemsBefore != null) {
+                val gone = itemsBefore.keys - field.ids.filterNotNull().map { it.toString() }.toSet()
+                // As stored: a number is compared with the text Oracle reads a JSON number back as.
+                val goneIds = gone.mapNotNull { target.storedIdOf(itemsBefore.getValue(it)) }
+                if (goneIds.isNotEmpty()) removal(field.relationship, target, rootNode, goneIds, keep = false, RemovedTargets.KEEP, emptyList())
+            } else if (depth == 0) {
+                replaced(field.relationship)?.let { removedTargets ->
+                    val heldIds = held.filter { target.matches(it) }.mapNotNull { idOf(it) }.distinct()
+                    // Another field that reads the same relationships holds some of them: those are its to keep.
+                    val siblingIds = written.filter { other -> other !== field && other.relationship.reads(field.relationship) }
+                        .flatMap { sibling -> sibling.items.filterNotNull().map { sibling.target.fragmentOf(it) } }
+                        .filter { target.matches(it) }.mapNotNull { idOf(it) }
+                    removal(field.relationship, target, rootNode, (field.ids.filterNotNull() + siblingIds).distinct(), keep = true, removedTargets, heldIds)
+                }
+            }
+        }
+
+        /**
+         * The nodes [field] holds, each saved and joined to the root where the relationship is new or
+         * changed. A node the field holds more than once is written once, as the last of them says.
+         *
+         * @param clears whether a relationship property set to null is cleared: a save of what a change altered does
+         */
+        private fun fieldItems(field: Field, rootNode: Int, depth: Int, itemsBefore: Map<String, JsonNode>?, itemsNow: List<JsonNode?>?, clears: Boolean) {
+            val target = field.target
+            val last = field.ids.withIndex().filter { it.value != null }.associate { it.value to it.index }
+            field.items.forEachIndexed { index, item ->
+                if (item == null) return@forEachIndexed
+                if (last[field.ids[index]]?.let { it != index } == true) {
+                    repeated(target.fragmentOf(item))
+                    return@forEachIndexed
+                }
+                val was = field.ids[index]?.let { itemsBefore?.get(it.toString()) }
+                val now = itemsNow?.getOrNull(index)
+                // As it was when loaded: the relationship and its target are left alone.
+                if (was != null && was == now) return@forEachIndexed
+                // A relationship that was loaded is not made again: if another writer has removed it
+                // since, it stays removed. Its node is written, and it too if its properties changed.
+                val link = was == null || field.relationship.relationshipProperties.any { was.get(it) != now?.get(it) }
+                val node = target.nodeOf(item)
+                val nodeBefore = was?.let { target.nodeOf(it) }
+                val nodeNow = now?.let { target.nodeOf(it) }
+                val saved = if (target.view != null) {
+                    view(node, target.view, depth + 1, nodeBefore, nodeNow)
+                } else {
+                    // The runtime type, not the declared one: a subtype has labels of its own.
+                    relatedNode(node, FragmentModel.from(node.javaClass), nodeBefore, nodeNow)
+                }
+                if (link) join(field.relationship, item, rootNode, saved, clears)
+            }
         }
 
         /** The object's own root: checked against the stamp it carries, and the node every stamp is reported from. */
@@ -213,22 +194,18 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             val values = objectMapper.toMap(fragment)
             val expected = model.stampField?.takeIf { checked }?.let { values[it] as? String }
             val carriedStamp = model.stampField?.let { values[it] as? String }
+            // The token for the node's own data is always compared; the whole stamp, and so the token
+            // for its relationships too, when the save replaces a relationship list. A stamp with no
+            // node token of its own, which no save leaves, is compared whole too.
+            val whole = expected != null && (replaces || !Stamps.hasNodeToken(expected))
             val node = node(
                 fragment, model, values, before, nullPolicy, rootWriteFields, readsStore = true,
-                "root" to true, "carried" to carriedStamp,
-                // The token for the node's own data is always compared; the whole stamp, and so the token
-                // for its relationships too, when the save replaces a relationship list. A stamp with no
-                // node token of its own, which no save leaves, is compared whole too.
-                "expect" to expected?.let { if (whole(it, replaces)) it else Stamps.nodeToken(it) },
-                "whole" to expected?.let { whole(it, replaces) }?.takeIf { it },
                 // An update makes no node: one that is gone stays gone, and the block gives no row.
-                "create" to false.takeIf { !createsRoot },
+                root = RootStep(carriedStamp, expected?.let { if (whole) it else Stamps.nodeToken(it) }, whole, createsRoot),
             )
             root = StampWrite(fragment.javaClass, idOf(model, values), model.labels.joinToString(":"), keyOf(model), expected, carriedStamp)
             return node
         }
-
-        private fun whole(expected: String, replaces: Boolean): Boolean = replaces || !Stamps.hasNodeToken(expected)
 
         /**
          * Records [fragment] as one a field holds beside a later one for the same node. It is not
@@ -274,9 +251,9 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             }
             val altered = altered(before, after)
             return if (altered == null) {
-                node(fragment, model, values, null, NullPolicy.IGNORE, null, readsStore = false, "i" to index)
+                node(fragment, model, values, null, NullPolicy.IGNORE, null, readsStore = false, index = index)
             } else {
-                node(fragment, model, values, before, NullPolicy.CLEAR, altered, readsStore = false, "i" to index)
+                node(fragment, model, values, before, NullPolicy.CLEAR, altered, readsStore = false, index = index)
             }
         }
 
@@ -308,87 +285,17 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
          */
         private fun node(
             fragment: Any, model: FragmentModel, values: Map<String, Any?>, previous: JsonNode?, nullPolicy: NullPolicy,
-            writeFields: Set<String>?, readsStore: Boolean, vararg more: Pair<String, Any?>,
+            writeFields: Set<String>?, readsStore: Boolean, index: String? = null, root: RootStep? = null,
         ): Int {
             val id = idOf(model, values)
             val key = keyOf(model)
-            val clears = nullPolicy == NullPolicy.CLEAR
-            fun writable(field: String) = writeFields == null || field in writeFields
-
-            val set = linkedMapOf<String, Any?>()
-            val unset = mutableListOf<String>()
-            model.fields.filter { !it.stamp && it.name != model.nodeIdField && writable(it.name) }.forEach { field ->
-                val value = values[field.name]
-                if (value != null) set[field.propertyName] = value else if (clears) unset += field.propertyName
-            }
-
-            val bags = mutableListOf<Map<String, Any?>>()
-            model.propertyBags.filter { writable(it.fieldName) }.forEach { bag ->
-                val current = (values[bag.fieldName] as? Map<*, *>).orEmpty().mapKeys { it.key.toString() }
-                current.forEach { (entry, value) ->
-                    requireStorable(value, bag.storedKey(entry))
-                    if (value == null && !clears) return@forEach
-                    require(!bag.flat || bag.owns(entry)) {
-                        "Flat @PropertyBag field '${bag.fieldName}' on ${model.clazz.simpleName} has an entry '$entry', which is the property " +
-                            "of a declared field or of another bag. Both would write the same node property; remove the entry or rename the field's property."
-                    }
-                    if (value != null) set[bag.storedKey(entry)] = value else unset += bag.storedKey(entry)
-                }
-                // Removal is a form of clearing, so under IGNORE the stale keys stay.
-                if (!clears) return@forEach
-                if (previous != null) {
-                    previous.get(bag.fieldName)?.fieldNames()?.asSequence().orEmpty().filter { it !in current }.forEach { unset += bag.storedKey(it) }
-                } else if (readsStore) {
-                    bags += mapOf(
-                        "prefix" to bag.storedPrefix, "flat" to bag.flat, "keep" to current.keys.map(bag::storedKey),
-                        "reservedKeys" to bag.reservedKeys.toList(), "reservedPrefixes" to bag.reservedPrefixes,
-                    )
-                }
-            }
-
-            var add = emptyList<String>()
-            var drop = emptyList<String>()
-            var owned: Map<String, Any?>? = null
-            model.nodeLabels?.takeIf { writable(it.fieldName) }?.let { labels ->
-                val current = (values[labels.fieldName] as? Collection<*>).orEmpty().map { it.toString() }
-                require(current.none { it.isBlank() }) { "@NodeLabels field '${labels.fieldName}' on ${model.clazz.simpleName} holds a blank label." }
-                add = current.distinct().filter { it !in model.labels }
-                val record = labels.ownedProperty
-                if (record == null) {
-                    if (clears) drop = labels.dropped(current)
-                } else if (clears && readsStore) {
-                    // An open set: what it may remove is what it recorded on the node.
-                    owned = mapOf("prop" to record, "clear" to true, "base" to model.labels)
-                } else if (add.isNotEmpty()) {
-                    owned = mapOf("prop" to record)
-                }
-            }
-
-            val node = plan.node()
-            plan.add(
-                "node", "r" to node, "s" to plan.shape(model.labels, key), "k" to OracleSql.key(id),
-                "key" to key, "id" to id, "labels" to model.labels.sorted(), "fresh" to plan.fresh(),
-                "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() }, "bags" to bags.takeIf { it.isNotEmpty() },
-                "add" to add.takeIf { it.isNotEmpty() }, "drop" to drop.takeIf { it.isNotEmpty() }, "owned" to owned, *more,
+            val writing = NodeWriting(model, values, clears = nullPolicy == NullPolicy.CLEAR, writeFields, previous, readsStore)
+            val labels = writing.labels()
+            val writes = NodeWrites(
+                set = writing.set, unset = writing.unset, bags = writing.bags,
+                addLabels = labels.add, dropLabels = labels.drop, owned = labels.owned,
             )
-            return node
-        }
-
-        /** A bag value is a node property: a scalar, or a list of scalars. */
-        private fun requireStorable(value: Any?, storedKey: String) {
-            fun scalar(v: Any?) = v is String || v is Number || v is Boolean || v is Char || v is java.util.Date ||
-                v?.javaClass?.`package`?.name?.startsWith("java.time") == true
-            val storable = when (value) {
-                null -> true
-                is Map<*, *> -> false
-                is Collection<*> -> value.all(::scalar)
-                is Array<*> -> value.all(::scalar)
-                else -> scalar(value)
-            }
-            require(storable) {
-                "@PropertyBag value for key '$storedKey' is not a storable node property (${value?.let { it::class.simpleName }}). A bag value must be " +
-                    "a String, Number, Boolean, temporal, or a homogeneous array/list of those — not a nested map or object."
-            }
+            return plan.node(plan.shape(model.labels, key), key, id, OracleSql.key(id), model.labels, writes, index, root)
         }
 
         /**
@@ -412,11 +319,98 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
          */
         private fun removal(
             relationship: RelationshipModel, target: Target, from: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>,
-        ) = plan.add(
-            "unlink", "from" to from, "type" to relationship.type, "dir" to relationship.direction.code,
-            "s" to plan.shape(target.model.labels, target.idProperty), "ids" to ids.map(OracleSql::key), "keep" to keep.takeIf { it },
-            "delete" to (removedTargets == RemovedTargets.DELETE_UNREFERENCED).takeIf { it }, "held" to heldIds.map(OracleSql::key).takeIf { it.isNotEmpty() },
+        ) = plan.unlink(
+            from, relationship.type, relationship.direction, plan.shape(target.model.labels, target.idProperty),
+            ids.map(OracleSql::key), keep, delete = removedTargets == RemovedTargets.DELETE_UNREFERENCED, held = heldIds.map(OracleSql::key),
         )
+    }
+
+    /**
+     * What one `node` step writes, worked out from the object's [values] field by field: the declared
+     * fields as [set] and [unset], each property bag, and the labels.
+     *
+     * @param clears whether a null is cleared rather than left alone
+     * @param writeFields the only fields the step may touch; null for all of them
+     * @param previous the node's digest as loaded, which says what a bag has dropped
+     * @param readsStore whether the block reads what the stored node has, to clear what the object does not
+     */
+    private class NodeWriting(
+        private val model: FragmentModel,
+        private val values: Map<String, Any?>,
+        private val clears: Boolean,
+        private val writeFields: Set<String>?,
+        private val previous: JsonNode?,
+        private val readsStore: Boolean,
+    ) {
+        val set = linkedMapOf<String, Any?>()
+        val unset = mutableListOf<String>()
+        val bags = mutableListOf<BagClearing>()
+
+        init {
+            model.fields.filter { !it.stamp && it.name != model.nodeIdField && writable(it.name) }.forEach { field ->
+                val value = values[field.name]
+                if (value != null) set[field.propertyName] = value else if (clears) unset += field.propertyName
+            }
+            model.propertyBags.filter { writable(it.fieldName) }.forEach(::bag)
+        }
+
+        private fun writable(field: String) = writeFields == null || field in writeFields
+
+        /** The entries of [bag] as properties, and when the save clears, the stale keys it drops. */
+        private fun bag(bag: PropertyBagModel) {
+            val current = (values[bag.fieldName] as? Map<*, *>).orEmpty().mapKeys { it.key.toString() }
+            current.forEach { (entry, value) ->
+                requireStorable(value, bag.storedKey(entry))
+                if (value == null && !clears) return@forEach
+                require(!bag.flat || bag.owns(entry)) {
+                    "Flat @PropertyBag field '${bag.fieldName}' on ${model.clazz.simpleName} has an entry '$entry', which is the property " +
+                        "of a declared field or of another bag. Both would write the same node property; remove the entry or rename the field's property."
+                }
+                if (value != null) set[bag.storedKey(entry)] = value else unset += bag.storedKey(entry)
+            }
+            // Removal is a form of clearing, so under IGNORE the stale keys stay.
+            if (!clears) return
+            if (previous != null) {
+                previous.get(bag.fieldName)?.fieldNames()?.asSequence().orEmpty().filter { it !in current }.forEach { unset += bag.storedKey(it) }
+            } else if (readsStore) {
+                bags += BagClearing(bag.storedPrefix, bag.flat, current.keys.map(bag::storedKey), bag.reservedKeys.toList(), bag.reservedPrefixes)
+            }
+        }
+
+        /** The labels a `@NodeLabels` field adds and drops, and how an open one's are recorded. */
+        class Labels(val add: List<String> = emptyList(), val drop: List<String> = emptyList(), val owned: OwnedLabels? = null)
+
+        fun labels(): Labels {
+            val labels = model.nodeLabels?.takeIf { writable(it.fieldName) } ?: return Labels()
+            val current = (values[labels.fieldName] as? Collection<*>).orEmpty().map { it.toString() }
+            require(current.none { it.isBlank() }) { "@NodeLabels field '${labels.fieldName}' on ${model.clazz.simpleName} holds a blank label." }
+            val add = current.distinct().filter { it !in model.labels }
+            val record = labels.ownedProperty
+            return when {
+                record == null -> Labels(add, if (clears) labels.dropped(current) else emptyList())
+                // An open set: what it may remove is what it recorded on the node.
+                clears && readsStore -> Labels(add, owned = OwnedLabels(record, clear = true, base = model.labels))
+                add.isNotEmpty() -> Labels(add, owned = OwnedLabels(record))
+                else -> Labels(add)
+            }
+        }
+
+        /** A bag value is a node property: a scalar, or a list of scalars. */
+        private fun requireStorable(value: Any?, storedKey: String) {
+            fun scalar(v: Any?) = v is String || v is Number || v is Boolean || v is Char || v is java.util.Date ||
+                v?.javaClass?.`package`?.name?.startsWith("java.time") == true
+            val storable = when (value) {
+                null -> true
+                is Map<*, *> -> false
+                is Collection<*> -> value.all(::scalar)
+                is Array<*> -> value.all(::scalar)
+                else -> scalar(value)
+            }
+            require(storable) {
+                "@PropertyBag value for key '$storedKey' is not a storable node property (${value?.let { it::class.simpleName }}). A bag value must be " +
+                    "a String, Number, Boolean, temporal, or a homogeneous array/list of those — not a nested map or object."
+            }
+        }
     }
 
     /** The items of a digested relationship field, index-aligned with the field's collection. */
@@ -444,6 +438,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
                 item
             }
 
+        /** The digest of the node [item] points at: itself, or a relationship fragment's target. */
         fun nodeOf(item: JsonNode): JsonNode? =
             if (relationship.isRelationshipFragment) item.get(relationship.targetFieldName!!) else item
 
@@ -453,19 +448,30 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             return view?.let { read(node, it.rootFragment.fieldName) } ?: node
         }
 
+        /** The id of the fragment [item] points at. */
         fun idOf(item: Any): Any? = idOfFragment(fragmentOf(item))
 
         /** Whether [fragment] is a node this field reads: one of its class, or one that carries its labels. */
         fun matches(fragment: Any): Boolean =
             model.clazz.isInstance(fragment) || FragmentModel.from(fragment.javaClass).labels.containsAll(model.labels)
 
+        /** The id of [fragment], as the field the model names holds it. */
         fun idOfFragment(fragment: Any): Any? = objectMapper.toMap(fragment)[idField]
 
-        fun idOf(item: JsonNode): String? {
+        /** The digest of the fragment [item] points at: of a nested view, its root's. */
+        private fun fragmentOf(item: JsonNode): JsonNode? {
             val node = nodeOf(item)
-            val fragment = view?.let { node?.get(it.rootFragment.fieldName) } ?: node
-            return fragment?.get(idField)?.takeUnless { it.isNull }?.asText()
+            return view?.let { node?.get(it.rootFragment.fieldName) } ?: node
         }
+
+        /** The id of a digested item as it is stored: a number as a number, anything else as text. */
+        fun storedIdOf(item: JsonNode): Any? {
+            val id = fragmentOf(item)?.get(idField)?.takeUnless { it.isNull } ?: return null
+            return if (id.isNumber) id.numberValue() else id.asText()
+        }
+
+        /** The id of a digested item as text, which the items of a field are told apart by. */
+        fun idOf(item: JsonNode): String? = fragmentOf(item)?.get(idField)?.takeUnless { it.isNull }?.asText()
     }
 
     private fun targetOf(relationship: RelationshipModel): Target {

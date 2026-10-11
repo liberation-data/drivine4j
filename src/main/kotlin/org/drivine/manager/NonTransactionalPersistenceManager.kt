@@ -6,6 +6,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.SchemaGrammar
 import org.drivine.store.StoreIdentity
 import org.drivine.store.StoreIdentityResolver
 import org.drivine.schema.ConstraintManager
@@ -27,6 +28,9 @@ class NonTransactionalPersistenceManager(
 
     override val graphName: String?
         get() = connectionProvider.graphName
+
+    override val schemaGrammar: SchemaGrammar
+        get() = connectionProvider.schemaGrammar
 
     /** Cached: the stamp cannot change under a live connection, and every caller wants the same answer. */
     override val storeIdentity: StoreIdentity by lazy { StoreIdentityResolver(this).resolve() }

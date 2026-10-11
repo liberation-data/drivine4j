@@ -13,8 +13,10 @@ import org.drivine.schema.SchemaItemKind
 import org.drivine.schema.SchemaItemSpec
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.SimilarityFunction
+import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
+import org.drivine.schema.VersionMarkerStatements
 import java.sql.SQLException
 
 /**
@@ -42,20 +44,30 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     /** A node is found by the range index's expression; the unique index only refuses a second one. */
     override val constraintsRequireBackingIndex = true
 
+    override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = OracleVersionMarker(graph, label, scopeProperty)
+
+    override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = OracleStoreStamp(graph, label, keyProperty)
+
     /** [text] as schema statements, after the one that makes the store when it is not there. */
     private fun statements(vararg text: String) = (listOf(graph.ensuring) + text).map { SchemaStatement.Cypher(it.trimIndent()) }
 
     /**
      * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
-     * recorded already. A `MERGE` so that two processes recording it at once do not fail one of them
-     * on the catalog's key, which would be read as the constraint itself violated.
+     * recorded already. A `MERGE` does not read again before it inserts, so of two processes
+     * recording it at once the second is refused on the catalog's key; that refusal is taken as
+     * recorded, and never read as the constraint itself violated.
      */
     private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}"): String = """
-        MERGE INTO ${graph.catalog} c
-        USING (SELECT ${literal(spec.kind.name)} AS kind, ${literal(spec.label)} AS label, ${literal(json(spec.properties))} AS properties FROM dual) k
-        ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
-        WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
-            VALUES (k.kind, k.label, k.properties, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)})
+        BEGIN
+            MERGE INTO ${graph.catalog} c
+            USING (SELECT ${literal(spec.kind.name)} AS kind, ${literal(spec.label)} AS label, ${literal(json(spec.properties))} AS properties FROM dual) k
+            ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
+            WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
+                VALUES (k.kind, k.label, k.properties, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)});
+        EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
+            -- Another process recorded it between the MERGE's read and its insert: it is recorded.
+            NULL;
+        END;
     """
 
     /** Forgets [item], and drops the object it was made as when nothing else recorded uses it. */
@@ -75,7 +87,11 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     """
 
     companion object {
-        /** The properties of an index as the record of it holds them. */
+        /**
+         * The properties of an index as the record of it holds them: part of the catalog's key, so
+         * written here, byte for byte the same each time, and not by a JSON library whose spacing
+         * or escaping might change.
+         */
         fun json(values: List<String>): String = values.joinToString(",", "[", "]") { "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
     }
 
@@ -98,61 +114,40 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         }
 
     private fun beside(table: String, item: SchemaItemInfo): List<SchemaStatement> =
-        listOf("DROP TRIGGER IF EXISTS ${table}_t", "DROP TABLE IF EXISTS $table PURGE", forgotten(item)).map { SchemaStatement.Cypher(it.trimIndent()) }
+        (OracleSideTable.dropping(table) + forgotten(item)).map { SchemaStatement.Cypher(it.trimIndent()) }
 
     /**
      * A vector index. Oracle indexes a `VECTOR` column, and an embedding is a list among a node's
      * JSON properties, so the embeddings of the label's nodes are kept beside them in a table of
-     * their own, which a trigger on the node table keeps in step: whatever writes a node, an object
-     * manager or SQL by hand, the embedding follows. The index is over that table, by neighbour
-     * partitions, which needs no memory set aside in the database as a neighbour graph does.
+     * their own (see [OracleSideTable]). The index is over that table, by neighbour partitions, which
+     * needs no memory set aside in the database as a neighbour graph does. The table is filled before
+     * the index is made, so the partitions are trained on the embeddings there are.
      */
     private fun vectorIndex(spec: VectorIndexSpec): List<SchemaStatement> {
         val property = spec.properties.single()
-        val side = graph.vectors(spec.label, property)
-        val embedding = "TO_VECTOR(JSON_QUERY(%s.props, ${path(property)} RETURNING CLOB))"
-        val indexed = "${OracleSql.carriesLabel("%s", spec.label)} AND JSON_EXISTS(%s.props, ${path(property)})"
-        val trigger = """
-            CREATE OR REPLACE TRIGGER ${side}_t AFTER INSERT OR UPDATE OF labels, props ON ${graph.nodes} FOR EACH ROW
-            BEGIN
-                IF ${indexed.replace("%s", ":NEW")} THEN
-                    BEGIN
-                        MERGE INTO $side v USING (SELECT :NEW.nid AS nid, ${embedding.format(":NEW")} AS embedding FROM dual) n ON (v.nid = n.nid)
-                        WHEN MATCHED THEN UPDATE SET v.embedding = n.embedding
-                        WHEN NOT MATCHED THEN INSERT (nid, embedding) VALUES (n.nid, n.embedding);
-                    EXCEPTION WHEN OTHERS THEN
-                        -- Not an embedding of the index's dimensions: the node is kept, and left out of the index, as the graph engines leave it.
-                        DELETE FROM $side WHERE nid = :NEW.nid;
-                    END;
-                ELSE
-                    DELETE FROM $side WHERE nid = :NEW.nid;
-                END IF;
-            END;
-        """.trimIndent()
+        val side = OracleSideTable(
+            name = graph.vectors(spec.label, property),
+            nodes = graph.nodes,
+            column = "embedding",
+            columnType = "VECTOR(${spec.dimensions}, FLOAT32)",
+            payload = { row -> "TO_VECTOR(JSON_QUERY($row.props, ${path(property)} RETURNING CLOB))" },
+            indexed = { row -> "${OracleSql.carriesLabel(row, spec.label)} AND JSON_EXISTS($row.props, ${path(property)})" },
+            backfillFilter = { row -> "VECTOR_DIMENSION_COUNT(TO_VECTOR(JSON_QUERY($row.props, ${path(property)} RETURNING CLOB))) = ${spec.dimensions}" },
+            tolerant = true,
+        )
         return statements(
-            """
-            CREATE TABLE IF NOT EXISTS $side (
-                nid       NUMBER PRIMARY KEY REFERENCES ${graph.nodes} (nid) ON DELETE CASCADE,
-                embedding VECTOR(${spec.dimensions}, FLOAT32) NOT NULL
-            )
-            """,
-            "CREATE VECTOR INDEX IF NOT EXISTS ${side}_i ON $side (embedding) ORGANIZATION NEIGHBOR PARTITIONS DISTANCE ${OracleSql.metric(spec.similarity)}",
-            // The trigger names the new row with a colon, which a driver reads as a parameter: it is made from inside a block.
-            "BEGIN EXECUTE IMMEDIATE ${literal(trigger)}; END;",
-            """
-            INSERT INTO $side (nid, embedding)
-            SELECT n.nid, ${embedding.format("n")} FROM ${graph.nodes} n
-            WHERE ${indexed.replace("%s", "n")} AND VECTOR_DIMENSION_COUNT(${embedding.format("n")}) = ${spec.dimensions}
-              AND NOT EXISTS (SELECT 1 FROM $side v WHERE v.nid = n.nid)
-            """,
-            recorded(spec, side, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}"""),
+            side.create,
+            side.triggerStatement,
+            side.backfill,
+            "CREATE VECTOR INDEX IF NOT EXISTS ${side.index} ON ${side.name} (embedding) ORGANIZATION NEIGHBOR PARTITIONS DISTANCE ${OracleSql.metric(spec.similarity)}",
+            recorded(spec, side.name, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}"""),
         )
     }
 
     /**
      * A full-text index, where the database has Oracle Text. The text of the label's nodes is kept
-     * beside them in a table of its own, as a vector index keeps embeddings, and the Oracle Text
-     * index is over that table.
+     * beside them in a table of its own (see [OracleSideTable]), as a vector index keeps embeddings,
+     * and the Oracle Text index is over that table.
      *
      * It is not over the node table, though it could be. An Oracle Text index holds what has been
      * committed, and once one is there Oracle answers ordinary tests of a JSON property from it: a save
@@ -160,46 +155,49 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
      *
      * A database without Oracle Text cannot make the index. Nothing is made there, the index is
      * recorded, and a search reads the text of every node of the label.
+     *
+     * Table, index, trigger and backfill are each made when they are not there, so a run that stopped
+     * short, or that another process ran at the same moment, is finished rather than repeated.
      */
     private fun textIndex(spec: FullTextIndexSpec): String {
-        val side = graph.texts(spec.label, spec.properties)
-        fun doc(row: String) = spec.properties.joinToString(", ", "JSON_OBJECT(", " ABSENT ON NULL RETURNING JSON)") {
-            "${literal(it)} VALUE JSON_VALUE($row.props, ${path(it)} RETURNING CLOB)"
-        }
-        val trigger = """
-            CREATE OR REPLACE TRIGGER ${side}_t AFTER INSERT OR UPDATE OF labels, props ON ${graph.nodes} FOR EACH ROW
-            BEGIN
-                IF ${OracleSql.carriesLabel(":NEW", spec.label)} THEN
-                    MERGE INTO $side t USING (SELECT :NEW.nid AS nid, ${doc(":NEW")} AS doc FROM dual) n ON (t.nid = n.nid)
-                    WHEN MATCHED THEN UPDATE SET t.doc = n.doc
-                    WHEN NOT MATCHED THEN INSERT (nid, doc) VALUES (n.nid, n.doc);
-                ELSE
-                    DELETE FROM $side WHERE nid = :NEW.nid;
-                END IF;
-            END;
-        """.trimIndent()
+        val side = OracleSideTable(
+            name = graph.texts(spec.label, spec.properties),
+            nodes = graph.nodes,
+            column = "doc",
+            columnType = "JSON",
+            payload = { row ->
+                spec.properties.joinToString(", ", "JSON_OBJECT(", " ABSENT ON NULL RETURNING JSON)") {
+                    "${literal(it)} VALUE JSON_VALUE($row.props, ${path(it)} RETURNING CLOB)"
+                }
+            },
+            indexed = { row -> OracleSql.carriesLabel(row, spec.label) },
+        )
         val details = spec.analyzer?.let { """{"analyzer": "$it"}""" } ?: "{}"
         return """
             DECLARE
-                v_there NUMBER;
+                v_indexed NUMBER;
                 e_no_text EXCEPTION;
+                e_exists EXCEPTION;
                 PRAGMA EXCEPTION_INIT(e_no_text, -29833);
+                PRAGMA EXCEPTION_INIT(e_exists, -955);
             BEGIN
-                SELECT COUNT(*) INTO v_there FROM user_tables WHERE table_name = '${side.uppercase()}';
-                IF v_there = 0 THEN
-                    EXECUTE IMMEDIATE 'CREATE TABLE $side (nid NUMBER PRIMARY KEY REFERENCES ${graph.nodes} (nid) ON DELETE CASCADE, doc JSON NOT NULL)';
+                EXECUTE IMMEDIATE ${literal(side.create)};
+                SELECT COUNT(*) INTO v_indexed FROM user_indexes WHERE index_name = '${side.index.uppercase()}';
+                IF v_indexed = 0 THEN
                     BEGIN
-                        EXECUTE IMMEDIATE 'CREATE SEARCH INDEX ${side}_i ON $side (doc) FOR JSON PARAMETERS (''SYNC (ON COMMIT)'')';
-                    EXCEPTION WHEN e_no_text THEN
-                        EXECUTE IMMEDIATE 'DROP TABLE $side PURGE';
-                        ${recorded(spec, null, details).trim()};
-                        RETURN;
+                        EXECUTE IMMEDIATE ${literal("CREATE SEARCH INDEX ${side.index} ON ${side.name} (doc) FOR JSON PARAMETERS ('SYNC (ON COMMIT)')")};
+                    EXCEPTION
+                        WHEN e_exists THEN
+                            NULL; -- made by another process at this moment
+                        WHEN e_no_text THEN
+                            EXECUTE IMMEDIATE 'DROP TABLE ${side.name} PURGE';
+                            ${recorded(spec, null, details).trimIndent().replace("\n", "\n                            ")}
+                            RETURN;
                     END;
                 END IF;
-                -- Whether the table was made now or by a run that stopped short, its trigger and what it lacks are made.
-                EXECUTE IMMEDIATE ${literal(trigger)};
-                EXECUTE IMMEDIATE ${literal("INSERT INTO $side (nid, doc) SELECT n.nid, ${doc("n")} FROM ${graph.nodes} n WHERE ${OracleSql.carriesLabel("n", spec.label)} AND NOT EXISTS (SELECT 1 FROM $side t WHERE t.nid = n.nid)")};
-                ${recorded(spec, side, details).trim()};
+                EXECUTE IMMEDIATE ${literal(side.triggerDdl)};
+                EXECUTE IMMEDIATE ${literal(side.backfill)};
+                ${recorded(spec, side.name, details).trimIndent().replace("\n", "\n                ")}
             END;
         """
     }

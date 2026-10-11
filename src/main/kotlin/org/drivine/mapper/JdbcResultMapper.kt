@@ -48,6 +48,8 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
                 when (meta.getColumnTypeName(column)?.uppercase()) {
                     "JSON" -> ORACLE_JSON
                     "VECTOR" -> ORACLE_VECTOR
+                    // The driver reports a DATE as a TIMESTAMP by default (`mapDateToTimestamp`); a date is read as a date.
+                    "DATE" -> Types.DATE
                     else -> meta.getColumnType(column)
                 }
             }

@@ -55,4 +55,48 @@ class SqlParametersTest {
         assertEquals("SELECT id FROM t ORDER BY id OFFSET 20 ROWS FETCH NEXT 10 ROWS ONLY", compiled(sqlStatement("SELECT id FROM t ORDER BY id")))
         assertEquals("MATCH (n) RETURN n SKIP 20 LIMIT 10", compiled(cypherStatement("MATCH (n) RETURN n")))
     }
+
+    @Test
+    fun `a dollar that follows a parameter's name continues it, and is not a second parameter`() {
+        // Oracle allows `$` inside an identifier, so `$a$b` is read as the parameter `a` followed by the text `$b`.
+        assertEquals("?\$b" to listOf("a"), positional("\$a\$b"))
+    }
+
+    @Test
+    fun `a name may begin with an underscore`() {
+        assertEquals("SELECT ? FROM dual" to listOf("_name"), positional("SELECT \$_name FROM dual"))
+    }
+
+    @Test
+    fun `a dollar at the very end names nothing`() {
+        assertEquals("SELECT 1 FROM dual WHERE x = \$" to emptyList(), positional("SELECT 1 FROM dual WHERE x = \$"))
+    }
+
+    @Test
+    fun `an unterminated literal runs to the end, so nothing after it is a parameter`() {
+        assertEquals("SELECT 'abc \$a FROM t WHERE b = \$b" to emptyList(), positional("SELECT 'abc \$a FROM t WHERE b = \$b"))
+        assertEquals("SELECT q'[abc \$a FROM t WHERE b = \$b" to emptyList(), positional("SELECT q'[abc \$a FROM t WHERE b = \$b"))
+    }
+
+    @Test
+    fun `a PLSQL inquiry directive passes through, its second dollar continuing the first`() {
+        assertEquals("BEGIN x := \$\$PLSQL_UNIT; y := ?; END;" to listOf("y"), positional("BEGIN x := \$\$PLSQL_UNIT; y := \$y; END;"))
+    }
+
+    @Test
+    fun `a directive inside a quoted identifier is part of the identifier`() {
+        val sql = "SELECT \"\$IF\", \"\$x\" FROM t WHERE a = \$a"
+        assertEquals(sql.replace("= \$a", "= ?") to listOf("a"), positional(sql))
+    }
+
+    @Test
+    fun `an identifier that ends in n before a quote is not the prefix of a national literal`() {
+        val sql = "SELECT CASE WHEN'x' = \$a THEN 1 END, DECODE(n'x', \$b, 1) FROM dual WHERE n = \$c"
+        assertEquals(sql.replace("= \$a", "= ?").replace(", \$b", ", ?").replace("= \$c", "= ?") to listOf("a", "b", "c"), positional(sql))
+    }
+
+    @Test
+    fun `a parameter right after a literal and an operator is a parameter`() {
+        assertEquals("SELECT 'x'||? FROM dual" to listOf("a"), positional("SELECT 'x'||\$a FROM dual"))
+    }
 }

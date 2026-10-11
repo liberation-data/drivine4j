@@ -19,7 +19,14 @@ import java.time.Instant
 /**
  * A connection to a database that speaks SQL, over JDBC.
  *
- * A statement names its parameters `$name`, as a Cypher statement does; they are bound by position.
+ * A statement names its parameters `$name`, as a Cypher statement does; they are bound by position,
+ * once for each place a name occurs. A value is bound as the driver takes it: a string (as a CLOB
+ * past what a `VARCHAR2` holds), a character as a string, a null as a character null the database
+ * converts to the type the statement wants, and anything else through `setObject`, so a number, a
+ * boolean, a `java.time` value or a byte array. A collection or a map is bound as JSON text, and a
+ * `ZonedDateTime` as its offset form, by [JdbcParameterCoercer] before it gets here. An array of
+ * objects, or an enum, is not a bound value: the driver refuses it.
+ *
  * What it returns is its result set, or for a PL/SQL block the first result set the block hands back
  * with `DBMS_SQL.RETURN_RESULT`. A block is how a statement that writes returns rows: it is one
  * statement to the database, applied whole or not at all.
@@ -73,7 +80,7 @@ class JdbcConnection(
         // A null of no declared type: Oracle converts a character null to the type the statement wants.
         null -> statement.setNull(index, Types.VARCHAR)
         // Oracle measures a bound string in bytes, so a long one goes as a CLOB when its bytes, not its characters, are too many.
-        is String -> if (value.length > MAX_STRING || value.toByteArray(Charsets.UTF_8).size > MAX_STRING) statement.setClob(index, StringReader(value)) else statement.setString(index, value)
+        is String -> if (value.length * 3 > MAX_STRING && value.toByteArray(Charsets.UTF_8).size > MAX_STRING) statement.setClob(index, StringReader(value)) else statement.setString(index, value)
         is Char -> statement.setString(index, value.toString())
         else -> statement.setObject(index, value)
     }

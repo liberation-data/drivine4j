@@ -54,4 +54,57 @@ class TextQueryTest {
         assertFailsWith<IllegalArgumentException> { TextQuery.parse("-only") }
         assertFailsWith<IllegalArgumentException> { TextQuery.parse("  ") }
     }
+
+    @Test
+    fun `the symbols for AND, OR and NOT read as the words do`() {
+        val query = TextQuery.parse("graph && store || index ! python")
+
+        assertEquals(listOf(word("graph"), word("store"), word("index")), query.scored)
+        assertEquals(listOf(word("store")), query.required)
+        assertEquals(listOf(word("python")), query.excluded)
+    }
+
+    @Test
+    fun `an operator with nothing after it is nothing`() {
+        val query = TextQuery.parse("graph AND")
+
+        assertEquals(listOf(word("graph")), query.scored)
+        assertTrue(query.required.isEmpty() && query.excluded.isEmpty())
+        assertEquals("({graph})", query.oracleText)
+    }
+
+    @Test
+    fun `an empty phrase and a star alone hold no word, and are refused`() {
+        assertFailsWith<IllegalArgumentException> { TextQuery.parse("\"\"") }
+        assertFailsWith<IllegalArgumentException> { TextQuery.parse("*") }
+        assertFailsWith<IllegalArgumentException> { TextQuery.parse("title:\"\"") }
+    }
+
+    @Test
+    fun `a field scoped to a phrase is the one phrase, and a field scoped to a word the word`() {
+        val phrase = TextQuery.parse("title:\"graph data\"")
+        assertEquals(listOf("(^|[^[:alnum:]_])graph[^[:alnum:]_]+data($|[^[:alnum:]_])"), phrase.scored)
+        assertEquals("({graph data})", phrase.oracleText)
+
+        val word = TextQuery.parse("name:Ada")
+        assertEquals(listOf(word("ada")), word.scored)
+        assertEquals("({ada})", word.oracleText)
+    }
+
+    @Test
+    fun `a star in the middle of a word is a gap between two words, not a wildcard`() {
+        val query = TextQuery.parse("foo*bar")
+
+        assertEquals(listOf("(^|[^[:alnum:]_])foo[^[:alnum:]_]+bar($|[^[:alnum:]_])"), query.scored)
+        assertEquals("({foo bar})", query.oracleText)
+    }
+
+    @Test
+    fun `for Oracle Text a required word is both accumulated and conjoined, an excluded one taken away, a prefix a percent`() {
+        assertEquals("({kotlin}) AND {kotlin}", TextQuery.parse("+kotlin").oracleText)
+        assertEquals("({kotlin}) NOT {python}", TextQuery.parse("kotlin -python").oracleText)
+        assertEquals("({kotlin}) NOT {python} NOT {rust}", TextQuery.parse("kotlin NOT python !rust".replace("!rust", "! rust")).oracleText)
+        assertEquals("(pre%)", TextQuery.parse("pre*").oracleText)
+        assertEquals("({graph} pre%)", TextQuery.parse("\"graph pre*\"").oracleText)
+    }
 }

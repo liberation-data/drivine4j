@@ -13,9 +13,11 @@ enum class DatabaseType(
      * the application registers a [ConnectionProvider] instead.
      */
     val buildableFromProperties: Boolean = true,
+    /** Whether the engine reads Cypher. A store that speaks SQL does not, and is sent none. */
+    val speaksCypher: Boolean = true,
 ) {
     NEO4J("NEO4J"),
-    POSTGRES("POSTGRES"),
+    POSTGRES("POSTGRES", speaksCypher = false),
     NEPTUNE("NEPTUNE"),
     FALKORDB("FALKORDB"),
     MEMGRAPH("MEMGRAPH"),
@@ -24,7 +26,7 @@ enum class DatabaseType(
      * Oracle Database, 23ai or later, over JDBC. It speaks SQL: a graph is a SQL property graph
      * over tables, read with `GRAPH_TABLE` and written as rows of those tables.
      */
-    ORACLE("ORACLE"),
+    ORACLE("ORACLE", speaksCypher = false),
 
     /**
      * Embabel's Cypher engine — compiler, evaluator and store living inside the

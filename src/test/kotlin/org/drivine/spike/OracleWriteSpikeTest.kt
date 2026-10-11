@@ -380,9 +380,17 @@ class OracleWriteSpikeTest {
             }
         }
 
+        /** The spike's objects are not left in the shared schema: a local instance keeps what a container forgets. */
         @JvmStatic
         @AfterAll
         fun teardown() {
+            runCatching {
+                db.createStatement().use { statement ->
+                    listOf("PROPERTY GRAPH spike", "TABLE mentions", "TABLE claim", "TABLE human", "TABLE entity").forEach {
+                        statement.execute("DROP ${it.substringBeforeLast(' ')} IF EXISTS ${it.substringAfterLast(' ')}${if (it.startsWith("TABLE")) " CASCADE CONSTRAINTS PURGE" else ""}")
+                    }
+                }
+            }
             db.close()
             other.close()
         }

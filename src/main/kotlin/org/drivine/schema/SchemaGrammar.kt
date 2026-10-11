@@ -53,6 +53,20 @@ interface SchemaGrammar {
     val indexOperationsAreAsync: Boolean
         get() = false
 
+    // ----- Drivine's own nodes -----
+
+    /**
+     * The statements that keep the schema-version marker, a node of the graph with [label] keyed by
+     * [scopeProperty]: see [VersionMarkerStatements]. Cypher unless the engine speaks otherwise.
+     */
+    fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = CypherVersionMarker(label, scopeProperty)
+
+    /**
+     * The statements that keep the store's identity, a node of the graph with [label] keyed by
+     * [keyProperty]: see [StoreStampStatements]. Cypher unless the engine speaks otherwise.
+     */
+    fun storeStamp(label: String, keyProperty: String): StoreStampStatements = CypherStoreStamp(label, keyProperty)
+
     // ----- DDL emission -----
 
     /**

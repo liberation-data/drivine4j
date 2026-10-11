@@ -74,7 +74,11 @@ internal class OracleBackend(
         return LoadPlan(statement, rootOrders, keyset = seek != null)
     }
 
-    /** An order on a relationship field sorts that field's list; any other orders the roots. */
+    /**
+     * An order on a relationship field sorts that field's list; any other orders the roots. An alias
+     * with an underscore in it names a nested collection (`field_nested`), as `CypherGenerator.processOrders`
+     * reads it, and is taken for a collection sort even on a fragment, where it then sorts nothing.
+     */
     private fun orders(graphClass: Class<*>, query: GraphQuerySpec<*>): Pair<List<CollectionSortSpec>, List<OrderSpec>> {
         val relationships = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass).relationships.map { it.fieldName }.toSet() else emptySet()
         val (sorts, roots) = query.orders.partition { order ->
@@ -239,9 +243,7 @@ internal class OracleBackend(
     /** The step that finds the node [ref] names, which must be there. Gives the number later steps know it by. */
     private fun WritePlan.found(ref: NodeRef): Int {
         val model = FragmentModel.from(ref.fragmentClass)
-        val node = node()
-        add("ref", "r" to node, "s" to shape((model.labels + ref.labels).distinct(), keyOf(ref, model)), "k" to OracleSql.key(ref.id))
-        return node
+        return ref(shape((model.labels + ref.labels).distinct(), keyOf(ref, model)), OracleSql.key(ref.id))
     }
 
     private fun keyOf(ref: NodeRef, model: FragmentModel): String = requireNotNull(model.nodeIdProperty) {
@@ -259,11 +261,11 @@ internal class OracleBackend(
     }
 
     override fun unrelate(from: NodeRef, to: NodeRef, type: String): GraphStatement = counting(type) {
-        add("cut", "from" to found(from), "to" to found(to), "type" to type, "dir" to Direction.OUTGOING.code)
+        cut(found(from), found(to), type, Direction.OUTGOING)
     }
 
     override fun unrelateAll(from: NodeRef, type: String, direction: Direction): GraphStatement = counting(type) {
-        add("cut", "from" to found(from), "type" to type, "dir" to direction.code)
+        cut(found(from), null, type, direction)
     }
 
     override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement {
