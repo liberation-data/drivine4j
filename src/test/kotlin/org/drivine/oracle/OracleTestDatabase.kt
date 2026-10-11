@@ -12,7 +12,7 @@ import org.drivine.mapper.JdbcRow
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
-import org.testcontainers.oracle.OracleContainer
+import org.drivine.test.OracleTestContainer
 
 /**
  * Marks a test class that needs an Oracle database. They run only with `ORACLE_TESTS=true`: the
@@ -23,13 +23,14 @@ import org.testcontainers.oracle.OracleContainer
 @EnabledIfEnvironmentVariable(named = "ORACLE_TESTS", matches = "true")
 annotation class OracleTests
 
-/** One Oracle Free container for the test JVM, started when a test first asks for it. */
+/** The test JVM's Oracle, from [OracleTestContainer]: a container started when a test first asks for it, or a local instance. */
 object OracleTestDatabase {
 
-    val container: OracleContainer by lazy { OracleContainer("gvenzl/oracle-free:23-slim-faststart").also { it.start() } }
-
     val provider: JdbcConnectionProvider by lazy {
-        JdbcConnectionProvider.pooled("oracle", DatabaseType.ORACLE, container.jdbcUrl, container.username, container.password)
+        JdbcConnectionProvider.pooled(
+            "oracle", DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(),
+            OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword(),
+        )
     }
 
     val pm: NonTransactionalPersistenceManager by lazy {

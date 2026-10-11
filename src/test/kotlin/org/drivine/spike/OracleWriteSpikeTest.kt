@@ -8,7 +8,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.drivine.oracle.OracleTests
-import org.testcontainers.oracle.OracleContainer
+import org.drivine.test.OracleTestContainer
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.SQLException
@@ -359,19 +359,25 @@ class OracleWriteSpikeTest {
 
     companion object {
         private val json = ObjectMapper()
-        private val container = OracleContainer("gvenzl/oracle-free:23-slim-faststart")
         private lateinit var db: Connection
         private lateinit var other: Connection
 
-        private fun connect(): Connection = DriverManager.getConnection(container.jdbcUrl, container.username, container.password)
+        private fun connect(): Connection = DriverManager.getConnection(
+            OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword(),
+        )
 
         @JvmStatic
         @BeforeAll
         fun setup() {
-            container.start()
             db = connect()
             other = connect()
-            db.createStatement().use { statement -> OracleSpikeSql.SCHEMA.forEach { statement.execute(it.trimIndent()) } }
+            db.createStatement().use { statement ->
+                // The database is the test JVM's, and may hold the spike's tables from a run before.
+                listOf("PROPERTY GRAPH spike", "TABLE mentions", "TABLE claim", "TABLE human", "TABLE entity").forEach {
+                    statement.execute("DROP ${it.substringBeforeLast(' ')} IF EXISTS ${it.substringAfterLast(' ')}${if (it.startsWith("TABLE")) " CASCADE CONSTRAINTS PURGE" else ""}")
+                }
+                OracleSpikeSql.SCHEMA.forEach { statement.execute(it.trimIndent()) }
+            }
         }
 
         @JvmStatic
@@ -379,7 +385,6 @@ class OracleWriteSpikeTest {
         fun teardown() {
             db.close()
             other.close()
-            container.stop()
         }
     }
 }

@@ -2331,7 +2331,9 @@ they do elsewhere. To SQL written by hand the graph has one vertex label, `node`
 - A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate.
 - The deprecated `GraphObjectManager.save`, the `RelationshipDirectionRepair` migration and Cypher
   statements written by hand do not run on Oracle.
-- The Oracle tests run with `ORACLE_TESTS=true`, against `gvenzl/oracle-free:23-slim-faststart`.
+- `OracleTestContainer` starts Oracle Free for tests (`gvenzl/oracle-free:23-faststart`; another with
+  `ORACLE_TEST_IMAGE`), and `@EnableDrivineTestConfig` uses it for a datasource of type `ORACLE`, or a
+  local instance with `USE_LOCAL_ORACLE=true`. Drivine's own Oracle tests run with `ORACLE_TESTS=true`.
 
 ### @JsonPacked Annotation
 

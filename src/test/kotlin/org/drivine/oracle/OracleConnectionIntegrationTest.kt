@@ -7,6 +7,7 @@ import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
 import org.drivine.query.QuerySpecification
+import org.drivine.test.OracleTestContainer
 import org.drivine.query.cypherStatement
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -132,10 +133,10 @@ class OracleConnectionIntegrationTest {
 
     @Test
     fun `connection properties build a provider for an Oracle service`() {
-        val container = OracleTestDatabase.container
         val registry = DatabaseRegistry(DataSourceMap(mapOf("ora" to ConnectionProperties(
-            type = DatabaseType.ORACLE, host = container.host, port = container.oraclePort,
-            userName = container.username, password = container.password, databaseName = container.databaseName,
+            type = DatabaseType.ORACLE, host = OracleTestContainer.getConnectionHost(), port = OracleTestContainer.getConnectionPort(),
+            userName = OracleTestContainer.getConnectionUsername(), password = OracleTestContainer.getConnectionPassword(),
+            databaseName = OracleTestContainer.SERVICE,
         ))))
         val provider = assertNotNull(registry.connectionProvider("ora"))
         try {
