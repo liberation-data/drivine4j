@@ -67,8 +67,15 @@ internal object OracleSql {
         else -> id.toString()
     }
 
-    /** One step of a JSON path: a key, quoted, so a key with a dot in it is one key. */
-    private fun step(key: String): String = "\"${key.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    /** One step of a JSON path: a key, quoted when it must be, so a key with a dot in it is one key. */
+    private fun step(key: String): String =
+        if (PLAIN_KEY.matches(key) && key !in JSON_WORDS) key else "\"${key.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+    /** A key a JSON path writes bare: what SQL would take for an identifier. */
+    private val PLAIN_KEY = Regex("[A-Za-z_][A-Za-z0-9_]*")
+
+    /** The words a JSON path reads as values, not keys. */
+    private val JSON_WORDS = setOf("true", "false", "null")
 
     /** The path of the property [key], as a SQL literal. */
     fun path(key: String, suffix: String = ""): String {
@@ -82,7 +89,7 @@ internal object OracleSql {
      * the path, quoted.
      */
     fun hasLabel(alias: String, label: String): String =
-        "JSON_EXISTS($alias.labels, ${literal("$[*]?(@ == ${step(label)})")})"
+        "JSON_EXISTS($alias.labels, ${literal("$[*]?(@ == ${quoted(label)})")})"
 
     /**
      * Whether the node [alias] carries [label], written so the index over labels cannot answer it:
@@ -92,7 +99,10 @@ internal object OracleSql {
      * among the labels as JSON writes them.
      */
     fun carriesLabel(alias: String, label: String): String =
-        "INSTR(JSON_SERIALIZE($alias.labels), ${literal(step(label))}) > 0"
+        "INSTR(JSON_SERIALIZE($alias.labels), ${literal(quoted(label))}) > 0"
+
+    /** [text] as JSON writes a string. */
+    private fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
     /**
      * Whether the node [alias] carries every one of [labels]; null when there are none to carry.
@@ -110,11 +120,26 @@ internal object OracleSql {
         if (key == Stamps.PROPERTY) "$alias.stamp IS NOT NULL" else "JSON_EXISTS($alias.props, ${path(key)})"
 
     /**
-     * The node [alias] as the map a load returns for it: its properties, with its labels under
-     * `labels` and its stamp under the property the graph engines store it as.
+     * The node [alias] as the map a load returns for it: the `doc` property the graph gives each
+     * node (see [OracleGraph]), which every row source of a node carries.
      */
-    fun document(alias: String): String =
-        "JSON_TRANSFORM($alias.props, SET '$.labels' = $alias.labels, SET ${path(Stamps.PROPERTY)} = $alias.stamp)"
+    fun document(alias: String): String = "$alias.doc"
+
+    /**
+     * The map a load returns for a node, put together from the columns of the row [alias] (`""` for
+     * the columns themselves): its properties, with its labels under `labels` and its stamp under the
+     * property the graph engines store it as. What the graph's `doc` property is.
+     */
+    fun transform(alias: String): String {
+        val of = if (alias.isEmpty()) "" else "$alias."
+        return "JSON_TRANSFORM(${of}props, SET '$.labels' = ${of}labels, SET ${path(Stamps.PROPERTY)} = ${of}stamp)"
+    }
+
+    /** The columns a row of a node carries, each as [alias]'s, `doc` among them. */
+    fun columns(alias: String): String = NODE_COLUMNS.joinToString(", ") { "$alias.$it" }
+
+    /** The columns a row of a node has: those of the table, and the map the graph makes of them. */
+    val NODE_COLUMNS = listOf("nid", "labels", "props", "stamp", "doc")
 
     /** The distance a vector index is built with for [similarity], and a search by it must name. */
     fun metric(similarity: SimilarityFunction): String = when (similarity) {
@@ -152,8 +177,7 @@ internal object OracleSql {
     fun counting(body: String, declarations: String = ""): String = """
         DECLARE
             v_rows  SYS_REFCURSOR;
-            v_count NUMBER := 0;
-            ${declarations.trimIndent().replace("\n", "\n            ")}
+            v_count NUMBER := 0;${declarations.trimIndent().lines().filter { it.isNotBlank() }.joinToString("") { "\n            $it" }}
         BEGIN
             ${body.trimIndent().replace("\n", "\n            ")}
             OPEN v_rows FOR SELECT v_count FROM dual;

@@ -204,12 +204,12 @@ class SchemaVersionStore(
 
 /** The schema marker's statements for a graph kept by Oracle: a node of the graph that carries [SchemaVersionStore.LABEL]. */
 private class OracleMarker(private val graph: OracleGraph) {
-    private val marker = "JSON_EXISTS(n.labels, '$[*]?(@ == \"${SchemaVersionStore.LABEL}\")') AND JSON_VALUE(n.props, '$.\"scope\"') = \$scope"
-    private val newestFirst = "JSON_VALUE(n.props, '$.\"appliedAt\"' RETURNING NUMBER) DESC NULLS LAST"
+    private val marker = "JSON_EXISTS(n.labels, '$[*]?(@ == \"${SchemaVersionStore.LABEL}\")') AND JSON_VALUE(n.props, '$.scope') = \$scope"
+    private val newestFirst = "JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST"
 
     /** The marker's [property]. Read as a CLOB: an inventory can run past the 4000 characters a text is read as by default. */
     fun read(property: String): String =
-        "SELECT JSON_VALUE(n.props, '$.\"$property\"' RETURNING CLOB) FROM ${graph.nodes} n WHERE $marker ORDER BY $newestFirst FETCH FIRST 1 ROWS ONLY"
+        "SELECT JSON_VALUE(n.props, '$.$property' RETURNING CLOB) FROM ${graph.nodes} n WHERE $marker ORDER BY $newestFirst FETCH FIRST 1 ROWS ONLY"
 
     val merge: String = """
         MERGE INTO ${graph.nodes} n USING dual ON ($marker)
