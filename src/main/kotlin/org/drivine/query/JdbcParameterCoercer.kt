@@ -17,8 +17,15 @@ object JdbcParameterCoercer : ParameterCoercer {
         when (value) {
             is ZonedDateTime -> value.toOffsetDateTime()
             // Temporals inside are written as ISO strings, which JSON has no type for.
-            is Collection<*>, is Map<*, *> -> Neo4jObjectMapper.instance.writeValueAsString(TemporalCoercer.coerce(mapOf("v" to value))["v"])
+            is Collection<*>, is Map<*, *> -> Neo4jObjectMapper.instance.writeValueAsString(TemporalCoercer.coerce(mapOf("v" to listed(value)))["v"])
             else -> value
         }
+    }
+
+    /** [value] with each collection in it a list, which is what the temporal coercer looks inside. */
+    private fun listed(value: Any?): Any? = when (value) {
+        is Collection<*> -> value.map(::listed)
+        is Map<*, *> -> value.mapValues { (_, v) -> listed(v) }
+        else -> value
     }
 }

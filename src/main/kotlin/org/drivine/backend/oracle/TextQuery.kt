@@ -22,10 +22,15 @@ internal class TextQuery private constructor(
 ) {
 
     companion object {
-        private val TOKEN = Regex("""([+-]?)(?:"([^"]*)"|(\S+))""")
+        /** A sign, a field the term is scoped to (which is read as the term), then a quoted phrase or a word. */
+        private val TOKEN = Regex("""([+-]?)(?:[^\s:"]+:)?(?:"([^"]*)"|(\S+))""")
         private const val BOUNDARY_BEFORE = "(^|[^[:alnum:]_])"
         private const val BOUNDARY_AFTER = "($|[^[:alnum:]_])"
 
+        /**
+         * Reads [query]. It must name at least one term that scores: a query of operators and
+         * punctuation alone is refused with an [IllegalArgumentException].
+         */
         fun parse(query: String): TextQuery {
             val scored = mutableListOf<String>()
             val required = mutableListOf<String>()

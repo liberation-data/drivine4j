@@ -1,12 +1,12 @@
 package org.drivine.store
 
-import org.drivine.backend.oracle.OracleGraph
-import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.SchemaGrammar
+import org.drivine.schema.StoreStampStatements
+import org.drivine.schema.CypherStoreStamp
 import org.drivine.schema.UniquenessConstraintSpec
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -62,28 +62,13 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         )
     }
 
-    /** The two statements in the store's language. Oracle keeps the stamp as a node of the graph, as the graph engines do. */
-    private class Statements(val assignIfAbsent: String, val readStamps: String)
-
-    private val statements: Statements by lazy {
-        if (persistenceManager.type != DatabaseType.ORACLE) return@lazy Statements(ASSIGN_IF_ABSENT, READ_STAMPS)
-        val graph = OracleGraph.ensured(persistenceManager)
-        val label = KEY_CONSTRAINT.label
-        val key = KEY_CONSTRAINT.properties.single()
-        val stored = "JSON_EXISTS(n.labels, '$[*]?(@ == \"$label\")')"
-        Statements(
-            assignIfAbsent = """
-                INSERT INTO ${graph.nodes} (labels, props)
-                SELECT '["$label"]', JSON_OBJECT('$key' VALUE ${'$'}key, 'storeId' VALUE ${'$'}storeId, 'assignedAt' VALUE ${'$'}assignedAt, 'engine' VALUE ${'$'}engine)
-                FROM dual
-                WHERE NOT EXISTS (SELECT 1 FROM ${graph.nodes} n WHERE $stored AND JSON_VALUE(n.props, '$.$key') = ${'$'}key)
-            """.trimIndent(),
-            readStamps = """
-                SELECT JSON_OBJECT('id' VALUE JSON_VALUE(n.props, '$.storeId'), 'assignedAt' VALUE JSON_VALUE(n.props, '$.assignedAt') RETURNING JSON)
-                FROM ${graph.nodes} n WHERE $stored
-                ORDER BY JSON_VALUE(n.props, '$.assignedAt'), JSON_VALUE(n.props, '$.storeId')
-            """.trimIndent(),
-        )
+    /**
+     * The stamp's statements in the store's own language: Cypher, unless the manager's grammar says
+     * otherwise, as Oracle's does. See [SchemaGrammar.storeStamp].
+     */
+    private val statements: StoreStampStatements by lazy {
+        persistenceManager.schemaGrammar?.storeStamp(KEY_CONSTRAINT.label, KEY_CONSTRAINT.properties.single())
+            ?: CypherStoreStamp(KEY_CONSTRAINT.label, KEY_CONSTRAINT.properties.single())
     }
 
     /**
@@ -205,23 +190,5 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
 
         /** Makes the MERGE key unique, so concurrent first boots cannot leave two stamps. */
         internal val KEY_CONSTRAINT = UniquenessConstraintSpec("DrivineStore", "key")
-
-        private const val ASSIGN_IF_ABSENT = """
-            MERGE (s:DrivineStore { key: ${'$'}key })
-            ON CREATE SET s.storeId = ${'$'}storeId,
-                          s.assignedAt = ${'$'}assignedAt,
-                          s.engine = ${'$'}engine
-        """
-
-        /**
-         * Projected as a map, not as two columns: a multi-column row arrives as a positional
-         * list, which cannot be bound to [Stamp] by name. Ordered so every caller that reads after
-         * the race picks the same stamp when one left more than one.
-         */
-        private const val READ_STAMPS = """
-            MATCH (s:DrivineStore)
-            RETURN { id: s.storeId, assignedAt: s.assignedAt } AS stamp
-            ORDER BY s.assignedAt, s.storeId
-        """
     }
 }

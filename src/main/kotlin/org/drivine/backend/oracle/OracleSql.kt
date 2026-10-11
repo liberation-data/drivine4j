@@ -19,7 +19,7 @@ internal enum class SqlKind(private val returning: String) {
     LOCAL_DATE_TIME(" RETURNING TIMESTAMP"),
     LOCAL_DATE(" RETURNING DATE");
 
-    /** The column type of this kind in a `JSON_TABLE`. */
+    /** The column type of this kind in a `JSON_TABLE`, which must give a width: text is `VARCHAR2(4000)`, the most a JSON value is read as by default. */
     val column: String
         get() = if (this == TEXT) "VARCHAR2(4000)" else returning.removePrefix(" RETURNING ")
 

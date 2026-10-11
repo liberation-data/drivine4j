@@ -161,10 +161,17 @@ class ConnectionProviderBuilder(
         )
     }
 
+    /**
+     * Oracle: the database name is the service to connect to, and the default graph path names the
+     * property graph and its tables (see [JdbcConnectionProvider.graphName]). A Cypher dialect or a
+     * protocol has no meaning here, and is warned about rather than silently taken.
+     */
     private fun buildOracleProvider(name: String): ConnectionProvider {
         requireNotNull(userName) { "Oracle requires a username" }
         // The database name is the service to connect to: the pluggable database, not the container.
         val service = requireNotNull(this.name) { "Oracle requires a databaseName: the service to connect to, such as FREEPDB1" }
+        cypherDialect?.let { logger.warn("Oracle does not speak Cypher; the dialect $it set for datasource '$name' is ignored") }
+        protocol?.let { logger.warn("Oracle is reached over JDBC; the protocol '$it' set for datasource '$name' is ignored") }
         val resolvedPort = port ?: 1521
         val url = JdbcConnectionProvider.oracleUrl(host!!, resolvedPort, service)
         return JdbcConnectionProvider.pooled(

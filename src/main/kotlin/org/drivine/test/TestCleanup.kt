@@ -34,8 +34,9 @@ object TestCleanup {
         persistenceManager.execute(QuerySpecification.withStatement(statement))
     }
 
+    /** The manager's graph is there by the time a test cleans up, so it is named and not made. */
     private fun oracle(persistenceManager: PersistenceManager, field: String, value: String): String {
-        val graph = OracleGraph.ensured(persistenceManager)
+        val graph = OracleGraph(persistenceManager.graphName ?: OracleGraph.DEFAULT_NAME)
         return "DELETE FROM ${graph.nodes} n WHERE ${OracleSql.property("n", field)} = ${OracleSql.literal(value)}"
     }
 }

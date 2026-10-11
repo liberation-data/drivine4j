@@ -30,7 +30,13 @@ import java.util.UUID
  *
  * Anything else is refused, never guessed at: `OR`, a `NOT` other than in `IS NOT NULL`, `ON CREATE SET`,
  * `SKIP`, `LIMIT`, a `RETURN` of several columns, a `DELETE` of a relationship, a function not listed,
- * and a parameter with no value bound.
+ * a parameter with no value bound, a simple `CASE x WHEN …`, and a variable named where none is bound,
+ * among them one in a pattern's properties, which are read once before any row is.
+ *
+ * Keywords are read in upper case. A fixture opens with a pattern or `UNWIND`; one that opens with
+ * `WITH` is taken for SQL. A temporal constructor gives its argument, so a moment is stored as its
+ * ISO text, and compares with another by `<` and `>` and in `ORDER BY`, not by `=`. The stamp is a
+ * column of the node, and `keys(n)` and `properties(n)` list it as the graph engines would.
  *
  * A statement is worked out over the whole graph read into memory, and what it changed is written
  * back. A test's graph is a handful of nodes.
@@ -93,13 +99,13 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                     rows.forEach { row -> write(row.getValue(variable), key, null) }
                 }
                 word("DETACH") -> {
-                    check(word("DELETE"))
+                    if (!word("DELETE")) fail("DELETE")
                     val variable = name()!!
                     rows.forEach { row -> delete(row.getValue(variable) as Node) }
                 }
                 word("UNWIND") -> {
                     val lists = each(rows) { row, evaluate -> expression(row, evaluate) }
-                    check(word("AS"))
+                    if (!word("AS")) fail("AS")
                     val variable = name()!!
                     rows = rows.zip(lists).flatMap { (row, list) -> (list as? Collection<*>).orEmpty().map { row + (variable to it) } }
                 }
@@ -123,10 +129,12 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                         if (word("AS")) name()
                     } else {
                         val values = each(rows) { row, evaluate -> condition(row, evaluate) }
-                        if (word("AS")) name()
+                        // The alias names the value in the ORDER BY that follows.
+                        val alias = if (word("AS")) name() ?: fail("an alias") else null
+                        val keyed = if (alias == null) rows else rows.zip(values).map { (row, value) -> row + (alias to value) }
                         returned = if (word("ORDER")) {
-                            check(word("BY"))
-                            val keys = each(rows) { row, evaluate -> expression(row, evaluate) }
+                            if (!word("BY")) fail("BY")
+                            val keys = each(keyed) { row, evaluate -> expression(row, evaluate) }
                             val descending = word("DESC")
                             word("ASC")
                             val ordered = values.zip(keys).sortedWith { a, b ->
@@ -185,21 +193,32 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
     private fun create(pattern: Pattern, row: Map<String, Any?>): Map<String, Any?> {
         var bound = row
         val made = pattern.nodes.map { wanted ->
-            (wanted.variable?.let(bound::get) as? Node) ?: made(wanted).also { node ->
-                nodes += node
-                bound = bind(bound, wanted.variable, node)
+            val already = wanted.variable?.let(bound::get) as? Node
+            if (already != null) {
+                // A node bound before is joined, and not described again, as Cypher has it.
+                require(wanted.labels.isEmpty() && wanted.properties.isEmpty()) {
+                    "The variable ${wanted.variable} is already bound, and cannot be given labels or properties again: $text"
+                }
+                already
+            } else {
+                made(wanted).also { node ->
+                    nodes += node
+                    bound = bind(bound, wanted.variable, node)
+                }
             }
         }
         pattern.edges.forEachIndexed { i, wanted ->
+            require(!(wanted.outgoing && wanted.incoming)) { "A relationship that is created needs a direction: $text" }
+            val type = requireNotNull(wanted.type) { "A relationship that is created needs a type: $text" }
             val (from, to) = if (wanted.outgoing) made[i] to made[i + 1] else made[i + 1] to made[i]
-            edges += Edge(null, from, to, requireNotNull(wanted.type), wanted.properties.toMutableMap()).also { bound = bind(bound, wanted.variable, it) }
+            edges += Edge(null, from, to, type, wanted.properties.filterValues { it != null }.toMutableMap()).also { bound = bind(bound, wanted.variable, it) }
         }
         return bound
     }
 
-    /** A node as a `CREATE` describes it. The stamp, a property to a graph engine, is the node's own here. */
+    /** A node as a `CREATE` describes it: a property set to null is no property, as on the graph engines. The stamp, a property to a graph engine, is the node's own here. */
     private fun made(wanted: NodePattern): Node {
-        val properties = wanted.properties.toMutableMap()
+        val properties = wanted.properties.filterValues { it != null }.toMutableMap()
         val stamp = properties.remove(Stamps.PROPERTY) as String?
         return Node(null, wanted.labels.toMutableList(), properties, stamp)
     }
@@ -209,10 +228,13 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         edges.removeAll { it.from === node || it.to === node }
     }
 
+    /** The property [key] of a node, a relationship or a map; null for a value that has none, as Cypher reads it. */
     private fun read(element: Any?, key: String): Any? = when (element) {
         is Node -> if (key == Stamps.PROPERTY) element.stamp else element.properties[key]
         is Edge -> element.properties[key]
-        else -> null
+        is Map<*, *> -> element[key]
+        null -> null
+        else -> fail("a node, a relationship or a map to read $key of")
     }
 
     private fun write(element: Any?, key: String, value: Any?) {
@@ -317,11 +339,11 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         val left = expression(row, evaluate)
         if (word("IS")) {
             val not = word("NOT")
-            check(word("NULL"))
+            if (!word("NULL")) fail("NULL")
             return (left == null) != not
         }
         if (word("STARTS")) {
-            check(word("WITH"))
+            if (!word("WITH")) fail("WITH")
             val prefix = expression(row, evaluate)
             return left is String && prefix is String && left.startsWith(prefix)
         }
@@ -367,12 +389,22 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
             val right = term(row, evaluate)
             value = when {
                 value == null || right == null -> null
-                value is Number && right is Number -> if (value is Long && right is Long) value + right else value.toDouble() + right.toDouble()
+                value is Number && right is Number -> if (value.isIntegral() && right.isIntegral()) value.toLong() + right.toLong() else value.toDouble() + right.toDouble()
                 else -> value.toString() + right.toString()
             }
         }
         return value
     }
+
+    /**
+     * What [variable] is bound to in [row]. A variable bound to nothing is refused: a pattern's
+     * properties are read once, before any row is bound, so a variable there cannot be given a value.
+     */
+    private fun bound(row: Map<String, Any?>, variable: String): Any? =
+        if (variable in row) row[variable] else fail("a value: the variable $variable is not bound here (a pattern's property cannot name a variable)")
+
+    /** Whether a number holds a whole number: one read back from the store's JSON is an `Integer`, not a `Long`. */
+    private fun Number.isIntegral(): Boolean = this is Long || this is Int || this is Short || this is Byte
 
     private fun term(row: Map<String, Any?>, evaluate: Boolean): Any? {
         skipSpace()
@@ -410,7 +442,7 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
             c == '-' || c.isDigit() -> {
                 val start = at++
                 while (at < text.length && (text[at].isDigit() || text[at] in ".eE")) at++
-                text.substring(start, at).let { it.toLongOrNull() ?: it.toDouble() }
+                text.substring(start, at).let { it.toLongOrNull() ?: it.toDoubleOrNull() ?: fail("a number") }
             }
             word("CASE") -> {
                 // Every branch is read, and the first whose condition holds is the value.
@@ -418,12 +450,12 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                 var decided = false
                 while (word("WHEN")) {
                     val holds = condition(row, evaluate) == true
-                    check(word("THEN"))
+                    if (!word("THEN")) fail("THEN")
                     val value = expression(row, evaluate)
                     if (holds && !decided) { chosen = value; decided = true }
                 }
                 if (word("ELSE")) expression(row, evaluate).let { if (!decided) chosen = it }
-                check(word("END"))
+                if (!word("END")) fail("END: the fixture interpreter reads the searched CASE alone, `CASE WHEN … THEN … END`")
                 chosen
             }
             else -> {
@@ -437,12 +469,13 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                         }
                         if (evaluate) call(word, arguments) else null
                     }
-                    take('.') -> name()!!.let { key -> if (evaluate) read(row[word], key) else null }
-                    take('[') -> expression(row, evaluate).also { expect(']') }.let { key -> if (evaluate) read(row[word], key.toString()) else null }
+                    take('.') -> (name() ?: fail("a property name")).let { key -> if (evaluate) read(bound(row, word), key) else null }
+                    take('[') -> expression(row, evaluate).also { expect(']') }.let { key -> if (evaluate) read(bound(row, word), key.toString()) else null }
                     word == "true" -> true
                     word == "false" -> false
                     word == "null" -> null
-                    else -> row[word]
+                    !evaluate -> null
+                    else -> bound(row, word)
                 }
             }
         }
@@ -484,15 +517,31 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         else -> throw IllegalArgumentException("The fixture interpreter does not know the function $function: $text")
     }
 
+    /** A string literal, its escapes read as Cypher reads them. */
     private fun string(quote: Char): String {
         at++
         val out = StringBuilder()
-        while (text[at] != quote) {
-            if (text[at] == '\\') at++
-            out.append(text[at++])
+        while (true) {
+            val c = text.getOrNull(at++) ?: fail("the end of a string")
+            when {
+                c == quote -> return out.toString()
+                c != '\\' -> out.append(c)
+                else -> when (val escaped = text.getOrNull(at++) ?: fail("an escape")) {
+                    'n' -> out.append('\n')
+                    't' -> out.append('\t')
+                    'r' -> out.append('\r')
+                    'b' -> out.append('\b')
+                    'f' -> out.append('\u000c')
+                    'u' -> {
+                        val code = text.substring(at, minOf(at + 4, text.length)).toIntOrNull(16) ?: fail("four hex digits")
+                        out.append(code.toChar())
+                        at += 4
+                    }
+                    '\\', '\'', '"' -> out.append(escaped)
+                    else -> fail("a string escape")
+                }
+            }
         }
-        at++
-        return out.toString()
     }
 
     /** An identifier, plain or in backticks; null when there is none here. */
@@ -606,7 +655,10 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         /** The functions that wrap one value in an engine's own type, and here leave it as it is. */
         private val WRAPPERS = setOf("datetime", "localdatetime", "date", "localtime", "time", "duration", "vecf32", "vector32", "toFloat", "toInteger")
 
-        /** A statement that opens with a pattern: `CREATE INDEX` is the store's own. */
-        private val FIXTURE = Regex("^\\s*(MATCH|CREATE|MERGE)\\s*\\(")
+        /**
+         * A statement that opens with a pattern, or with `UNWIND`: `CREATE INDEX` is the store's own,
+         * and so is one that opens with `WITH`, which SQL names a common table expression by.
+         */
+        private val FIXTURE = Regex("^\\s*(?:(?:MATCH|CREATE|MERGE)\\s*\\(|UNWIND\\s)")
     }
 }

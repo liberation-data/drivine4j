@@ -15,8 +15,10 @@ import org.drivine.query.QuerySpecification
  *
  * It reads the Cypher such fixtures use, the subset [MiniCypher] lists: `CREATE`, `MATCH` and `MERGE`
  * patterns with literal or bound properties, `WHERE`, `SET`, `REMOVE`, `DETACH DELETE`, `UNWIND`,
- * `WITH`, and a `RETURN` of an expression or a `count`; anything else is refused. It reads the whole
- * graph into memory for each statement, and is for tests alone.
+ * `WITH`, and a `RETURN` of an expression or a `count`; anything else is refused. A fixture is told
+ * from SQL by what it opens with: a pattern, or `UNWIND`; one that opens with `WITH` is taken for a
+ * common table expression and handed to the store. It reads the whole graph into memory for each
+ * statement, writes back what it changed one row at a time, and is for tests alone.
  */
 object OracleCypherFixtures {
 

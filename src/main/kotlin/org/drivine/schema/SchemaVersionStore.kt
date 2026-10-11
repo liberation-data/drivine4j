@@ -1,7 +1,5 @@
 package org.drivine.schema
 
-import org.drivine.backend.oracle.OracleGraph
-import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
@@ -44,12 +42,11 @@ class SchemaVersionStore(
 ) {
 
     /**
-     * The statements in SQL, for a store that speaks it: the marker is a node of the graph there too.
-     * Null for the engines that speak Cypher.
+     * The marker's statements in the store's own language: Cypher, unless the manager's grammar says
+     * otherwise, as Oracle's does. See [SchemaGrammar.versionMarker].
      */
-    private val sql: OracleMarker? by lazy {
-        if (manager.type != DatabaseType.ORACLE) return@lazy null
-        OracleMarker(OracleGraph.ensured(manager))
+    private val statements: VersionMarkerStatements by lazy {
+        manager.schemaGrammar?.versionMarker(LABEL, SCOPE_PROPERTY) ?: CypherVersionMarker(LABEL, SCOPE_PROPERTY)
     }
 
     /**
@@ -60,12 +57,7 @@ class SchemaVersionStore(
      */
     fun storedVersion(): String? = manager.maybeGetOne(
         QuerySpecification
-            .withStatement(
-                sql?.read("version") ?: (
-                    "MATCH (m:`$LABEL` {scope: \$scope}) " +
-                        "RETURN m.version ORDER BY m.appliedAt DESC LIMIT 1"
-                    )
-            )
+            .withStatement(statements.read("version"))
             .bind(mapOf("scope" to scope))
             .transform(String::class.java)
     )
@@ -79,17 +71,11 @@ class SchemaVersionStore(
     fun storedInventory(): List<String>? {
         val raw = manager.maybeGetOne(
             QuerySpecification
-                .withStatement(
-                    sql?.read("items") ?: (
-                        "MATCH (m:`$LABEL` {scope: \$scope}) " +
-                            "RETURN m.items ORDER BY m.appliedAt DESC LIMIT 1"
-                        )
-                )
+                .withStatement(statements.read("items"))
                 .bind(mapOf("scope" to scope))
                 .transform(String::class.java)
         ) ?: return null
-        // Oracle reads an empty string as null, so an inventory is kept there behind a mark of its own.
-        val items = if (sql != null) raw.removePrefix(OracleMarker.ITEMS_MARK) else raw
+        val items = statements.items(raw)
         return if (items.isEmpty()) emptyList() else items.split(INVENTORY_SEPARATOR)
     }
 
@@ -117,12 +103,7 @@ class SchemaVersionStore(
     fun ensureSingleton() {
         manager.execute(
             QuerySpecification
-                .withStatement(
-                    sql?.deleteAllButNewest ?: (
-                        "MATCH (m:`$LABEL` {scope: \$scope}) " +
-                            "WITH m ORDER BY m.appliedAt DESC SKIP 1 DELETE m"
-                        )
-                )
+                .withStatement(statements.deleteAllButNewest)
                 .bind(mapOf("scope" to scope))
         )
         val constraint = UniquenessConstraintSpec(LABEL, SCOPE_PROPERTY)
@@ -143,36 +124,14 @@ class SchemaVersionStore(
 
     private fun merge(version: String?, inventory: List<String>) {
         val items = inventory.joinToString(INVENTORY_SEPARATOR)
-        val oracle = sql
-        if (oracle != null) {
-            manager.execute(
-                QuerySpecification.withStatement(oracle.merge).bind(
-                    mapOf("scope" to scope, "version" to version, "items" to OracleMarker.ITEMS_MARK + items, "now" to System.currentTimeMillis())
-                )
-            )
-            return
-        }
-        manager.execute(
-            QuerySpecification
-                .withStatement(
-                    "MERGE (m:`$LABEL` {scope: \$scope}) " +
-                        "SET m.version = \$version, m.items = \$items, m.appliedAt = timestamp()"
-                )
-                .bind(
-                    mapOf(
-                        "scope" to scope,
-                        "version" to version,
-                        "items" to items,
-                    )
-                )
-        )
+        manager.execute(QuerySpecification.withStatement(statements.merge).bind(statements.mergeBindings(scope, version, items)))
     }
 
     /** Removes this scope's marker (e.g. to force the next enforce to treat the schema as un-versioned). */
     fun clear() {
         manager.execute(
             QuerySpecification
-                .withStatement(sql?.delete ?: "MATCH (m:`$LABEL` {scope: \$scope}) DELETE m")
+                .withStatement(statements.delete)
                 .bind(mapOf("scope" to scope))
         )
     }
@@ -199,34 +158,5 @@ class SchemaVersionStore(
 
         /** The marker scope for a catalog owner: its name, or [DEFAULT_SCOPE] when unnamed. */
         fun scopeFor(ownerName: String?): String = ownerName ?: DEFAULT_SCOPE
-    }
-}
-
-/** The schema marker's statements for a graph kept by Oracle: a node of the graph that carries [SchemaVersionStore.LABEL]. */
-private class OracleMarker(private val graph: OracleGraph) {
-    private val marker = "JSON_EXISTS(n.labels, '$[*]?(@ == \"${SchemaVersionStore.LABEL}\")') AND JSON_VALUE(n.props, '$.scope') = \$scope"
-    private val newestFirst = "JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST"
-
-    /** The marker's [property]. Read as a CLOB: an inventory can run past the 4000 characters a text is read as by default. */
-    fun read(property: String): String =
-        "SELECT JSON_VALUE(n.props, '$.$property' RETURNING CLOB) FROM ${graph.nodes} n WHERE $marker ORDER BY $newestFirst FETCH FIRST 1 ROWS ONLY"
-
-    val merge: String = """
-        MERGE INTO ${graph.nodes} n USING dual ON ($marker)
-        WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now))
-        WHEN NOT MATCHED THEN INSERT (labels, props)
-            VALUES ('["${SchemaVersionStore.LABEL}"]', JSON_OBJECT('scope' VALUE ${'$'}scope, 'version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now ABSENT ON NULL))
-    """.trimIndent()
-
-    val deleteAllButNewest: String = """
-        DELETE FROM ${graph.nodes} WHERE nid IN (
-            SELECT nid FROM (SELECT n.nid, ROW_NUMBER() OVER (ORDER BY $newestFirst, n.nid DESC) AS position FROM ${graph.nodes} n WHERE $marker)
-            WHERE position > 1)
-    """.trimIndent()
-
-    val delete: String = "DELETE FROM ${graph.nodes} n WHERE $marker"
-
-    companion object {
-        const val ITEMS_MARK = "items:"
     }
 }

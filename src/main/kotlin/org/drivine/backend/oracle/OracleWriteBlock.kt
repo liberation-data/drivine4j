@@ -4,9 +4,6 @@ import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.model.Stamps
 
-/** How a block finds a node: the labels it carries and the property its id is stored under. */
-internal data class NodeShape(val labels: List<String>, val key: String)
-
 /**
  * The one block that writes to a graph kept by Oracle. It is given a plan, a JSON array of steps, and
  * carries them out in turn; what a save, `relate` or `unrelate` writes is in the plan, so the block's
@@ -22,9 +19,9 @@ internal data class NodeShape(val labels: List<String>, val key: String)
  *   that stamp, or the block returns no row and writes nothing. The node gets a new first token only
  *   if the step changes it.
  * - `ref` finds a node that must be there, and locks it.
- * - `link` joins two nodes; `unlink` removes a field's relationships to some of its targets; `cut` and
- *   `cutAll` remove relationships by type. Each gives the nodes at both ends a new second token when
- *   it changes what joins them.
+ * - `link` joins two nodes; `unlink` removes a field's relationships to some of its targets; `cut`
+ *   removes the relationships of a type to one node, or with no node named, to every node in a
+ *   direction. Each gives the nodes at both ends a new second token when it changes what joins them.
  *
  * A node is locked before it is read, so what a step compares is what the last writer committed; a
  * relationship is written only by a step that holds the lock of the node at each end. A lock is always
@@ -32,23 +29,71 @@ internal data class NodeShape(val labels: List<String>, val key: String)
  * there is made, and nothing stops two writers each making it at the same moment unless a uniqueness
  * constraint on its id does, as nothing stops two `MERGE`s on a graph engine without one.
  *
+ * The text is one PL/SQL block, written here one procedure at a time, in the order they appear in it.
+ *
  * @param returns what the block gives back when its steps have run
  */
 internal class OracleWriteBlock(private val graph: OracleGraph, private val shapes: List<NodeShape>, private val returns: Returns) {
 
-    enum class Returns {
-        /** One row: the stamps a save hands back, the root's first. No row when a checked root is stale. */
-        STAMPS,
+    /**
+     * What a block gives back when its steps have run.
+     *
+     * @param gathering the statements that leave the result in `v_result`, run after every step; `#NODES#` stands for the node table
+     * @param row the query the block returns the rows of
+     */
+    enum class Returns(internal val gathering: String, internal val row: String) {
+        /**
+         * One row: the stamps a save hands back, the root's first, then `index/found=stamp` for each node
+         * whose stamp is handed back, `found` being the stamp it had before the save. The root's keeps
+         * the object's own token wherever the node had another when the save began: see
+         * `Stamps.handedBack`. A node the save made has no stamp to differ from, so an object that
+         * carried a stamp without a relationship token is handed the new one. No row when a checked root is stale.
+         */
+        STAMPS(
+            """
+        SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_root;
+        IF v_carried IS NULL THEN
+            -- An object that carried no stamp is handed the whole stamp only of a node its save made.
+            IF NOT v_root_made THEN
+                v_stamp := SUBSTR(v_stamp, 1, 17);
+            END IF;
+        ELSIF v_was = v_carried THEN
+            NULL; -- found exactly as loaded: the node's stamp is handed back whole
+        ELSE
+            v_stamp := CASE WHEN SUBSTR(v_was, 1, 16) = SUBSTR(v_carried, 1, 16) THEN SUBSTR(v_stamp, 1, 16) ELSE SUBSTR(v_carried, 1, 16) END || ':' ||
+                CASE WHEN SUBSTR(v_was, 18) = SUBSTR(v_carried, 18) OR (v_root_made AND SUBSTR(v_carried, 18) IS NULL) THEN SUBSTR(v_stamp, 18) ELSE SUBSTR(v_carried, 18) END;
+        END IF;
+        v_result := v_stamp;
+        FOR i IN 0 .. v_h_node.COUNT - 1 LOOP
+            SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_h_node(i);
+            v_result := v_result || ',' || v_h_index(i) || '/' || v_h_found(i) || '=' || v_stamp;
+        END LOOP;""",
+            "SELECT v_result FROM dual WHERE v_result IS NOT NULL",
+        ),
 
         /** A row for each node whose stamp is handed back, `index/found=stamp`: what a batch of fragments returns. */
-        EACH_STAMP,
+        EACH_STAMP(
+            """
+        v_each := JSON_ARRAY_T();
+        FOR i IN 0 .. v_h_node.COUNT - 1 LOOP
+            SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_h_node(i);
+            v_each.append(v_h_index(i) || '/' || v_h_found(i) || '=' || v_stamp);
+        END LOOP;
+        v_result := v_each.to_clob;""",
+            "SELECT v FROM JSON_TABLE(v_result, '$[*]' COLUMNS (v VARCHAR2(400) PATH '$'))",
+        ),
 
         /** One row: the number of relationships the steps counted. */
-        COUNT,
+        COUNT("", "SELECT v_count FROM dual"),
     }
 
     /** The statement. Its parameters are [PLAN] and [MARK]. */
-    fun text(): String = """
+    fun text(): String =
+        listOf(declarations(), finding(), joining(), relinking(), spanning(), members(), owning(), savingNode(), findingNode(), linking(), unlinking(), cutting())
+            .joinToString("\n\n") + "\n" + main()
+
+    /** The block's types, variables and exceptions. */
+    private fun declarations(): String = """
 DECLARE
     TYPE t_numbers IS TABLE OF NUMBER INDEX BY PLS_INTEGER;
     TYPE t_texts IS TABLE OF VARCHAR2(4000) INDEX BY PLS_INTEGER;
@@ -77,7 +122,10 @@ DECLARE
     v_rows    SYS_REFCURSOR;
     e_stale   EXCEPTION;
     e_absent  EXCEPTION;
+""".trim('\n')
 
+    /** `find`: a node of a shape by its id, locked. */
+    private fun finding(): String = """
     -- Finds the node of a shape by its id, and locks it. A null o_nid says there is none.
     --
     -- The node is found without a lock, then locked by its key and looked at again. To lock it as it
@@ -112,7 +160,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> verifier(index, shap
             END;
         END LOOP;
     END;
+""".trim('\n')
 
+    /** `joined`: the targets of a shape a node is joined to. */
+    private fun joining(): String = """
     -- The targets of a shape that a node is joined to by relationships of a type, with each relationship.
     -- Each direction is a statement of its own, so each reads the index on its end of a relationship.
     PROCEDURE joined(p_shape NUMBER, p_from NUMBER, p_type VARCHAR2, p_dir VARCHAR2, o_eids OUT t_ids, o_nids OUT t_ids, o_keys OUT t_keys) IS
@@ -136,7 +187,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
             o_eids := o_eids MULTISET UNION ALL v_eids; o_nids := o_nids MULTISET UNION ALL v_nids; o_keys := o_keys MULTISET UNION ALL v_keys;
         END IF;
     END;
+""".trim('\n')
 
+    /** `relink` and `relink_marked`: the nodes whose relationships changed get a new second token. */
+    private fun relinking(): String = """
     -- Marks a node for a new second token: a relationship of it was made, removed or changed.
     -- It is given once, when every step has run, however many of the node's relationships changed.
     PROCEDURE relink(p_nid NUMBER) IS
@@ -153,7 +207,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
             v_nid := v_relinks.NEXT(v_nid);
         END LOOP;
     END;
+""".trim('\n')
 
+    /** `spanning`: the relationships of a type between two nodes. */
+    private fun spanning(): String = """
     -- The relationships of a type from one node to another.
     PROCEDURE spanning(p_src NUMBER, p_dst NUMBER, p_type VARCHAR2, o_eids IN OUT NOCOPY t_ids, o_props IN OUT NOCOPY t_docs) IS
         v_eids  t_ids;
@@ -164,7 +221,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         o_eids := o_eids MULTISET UNION ALL v_eids;
         o_props := o_props MULTISET UNION ALL v_props;
     END;
+""".trim('\n')
 
+    /** `members`: a JSON array as a set. */
+    private fun members(): String = """
     FUNCTION members(p_array JSON_ARRAY_T) RETURN t_set IS
         v_set t_set;
     BEGIN
@@ -175,7 +235,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         END IF;
         RETURN v_set;
     END;
+""".trim('\n')
 
+    /** `owns`: whether a property bag owns a stored key. */
+    private fun owning(): String = """
     -- Whether a property bag owns a stored key: by its prefix, or for a flat bag by its being no one else's.
     FUNCTION owns(p_bag JSON_OBJECT_T, p_key VARCHAR2) RETURN BOOLEAN IS
         v_prefix   VARCHAR2(4000) := p_bag.get_string('prefix');
@@ -197,7 +260,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         END IF;
         RETURN TRUE;
     END;
+""".trim('\n')
 
+    /** `save_node`: the `node` step. */
+    private fun savingNode(): String = """
     PROCEDURE save_node(op JSON_OBJECT_T) IS
         v_nid       NUMBER;
         v_stamp     VARCHAR2(33);
@@ -389,7 +455,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
             v_carried := op.get_string('carried');
         END IF;
     END;
+""".trim('\n')
 
+    /** `find_node`: the `ref` step. */
+    private fun findingNode(): String = """
     PROCEDURE find_node(op JSON_OBJECT_T) IS
         v_nid    NUMBER;
         v_stamp  VARCHAR2(33);
@@ -402,7 +471,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         END IF;
         v_nodes(op.get_number('r')) := v_nid;
     END;
+""".trim('\n')
 
+    /** `link`: the `link` step. */
+    private fun linking(): String = """
     -- Joins two nodes. The relationship is as the step says only if every one of its type between them is.
     PROCEDURE link(op JSON_OBJECT_T) IS
         v_from   NUMBER := v_nodes(op.get_number('from'));
@@ -473,7 +545,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         END IF;
         v_count := v_count + GREATEST(v_eids.COUNT, 1);
     END;
+""".trim('\n')
 
+    /** `unlink`: the `unlink` step. */
+    private fun unlinking(): String = """
     -- Removes a field's relationships to the targets whose ids the step names, or to every target but those.
     PROCEDURE unlink(op JSON_OBJECT_T) IS
         v_from    NUMBER := v_nodes(op.get_number('from'));
@@ -539,7 +614,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         relink(v_from);
         v_count := v_count + v_gone.COUNT;
     END;
+""".trim('\n')
 
+    /** `cut`: the `cut` step. */
+    private fun cutting(): String = """
     -- Removes the relationships of a type from one node to another, or with no other node named to any in a direction.
     PROCEDURE cut(op JSON_OBJECT_T) IS
         v_from  NUMBER := v_nodes(op.get_number('from'));
@@ -579,6 +657,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         relink(v_from);
         v_count := v_count + v_eids.COUNT;
     END;
+""".trim('\n')
+
+    /** The block itself: each step in turn, then what [returns] asks for. */
+    private fun main(): String = """
 BEGIN
     BEGIN
         FOR i IN 0 .. v_plan.get_size - 1 LOOP
@@ -592,27 +674,15 @@ BEGIN
             END CASE;
         END LOOP;
         relink_marked;
-${
-        when (returns) {
-            Returns.STAMPS -> STAMPS.replace(NODES, graph.nodes)
-            Returns.EACH_STAMP -> EACH_STAMP.replace(NODES, graph.nodes)
-            Returns.COUNT -> ""
-        }
-    }
+${returns.gathering.replace(NODES, graph.nodes)}
     EXCEPTION
         WHEN e_stale THEN v_result := NULL; -- raised before anything was written
         WHEN e_absent THEN v_count := 0; -- a node the plan refers to is not there: nothing was written
     END;
-    OPEN v_rows FOR ${
-        when (returns) {
-            Returns.STAMPS -> "SELECT v_result FROM dual WHERE v_result IS NOT NULL"
-            Returns.EACH_STAMP -> "SELECT v FROM JSON_TABLE(v_result, '$[*]' COLUMNS (v VARCHAR2(400) PATH '$'))"
-            Returns.COUNT -> "SELECT v_count FROM dual"
-        }
-    };
+    OPEN v_rows FOR ${returns.row};
     DBMS_SQL.RETURN_RESULT(v_rows);
 END;
-""".trim()
+""".trim('\n')
 
     private fun identified(alias: String, shape: NodeShape): String =
         listOfNotNull("JSON_VALUE($alias.props, ${path(shape.key)}) = p_id", hasLabels(alias, shape.labels)).joinToString(" AND ")
@@ -631,7 +701,7 @@ END;
                 WHEN $index THEN
                     SELECT e.eid, t.nid, JSON_VALUE(t.props, ${path(shape.key)}) BULK COLLECT INTO v_eids, v_nids, v_keys
                     FROM ${graph.edges} e JOIN ${graph.nodes} t ON t.nid = e.${if (outgoing) "dst" else "src"}
-                    WHERE e.${if (outgoing) "src" else "dst"} = p_from AND e.type = p_type${hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()};
+                    WHERE e.${if (outgoing) "src" else "dst"} = p_from AND e.type = p_type${hasLabels("t", shape.labels)?.let { " AND $it" }.orEmpty()}${if (outgoing) "" else " AND (p_dir = 'IN' OR e.src <> p_from)"};
     """.trimEnd().trimStart('\n')
 
     companion object {
@@ -639,39 +709,7 @@ END;
         const val MARK = "_mark"
         private const val NEVER_STAMPED = Stamps.NEVER_STAMPED
 
-        /**
-         * The stamps a save hands back, read when every step has run: the root's, then `index/found=stamp`
-         * for each node whose stamp is handed back, `found` being the stamp it had before the save. The
-         * root's keeps the object's own token wherever the node had another when the save began.
-         */
-        private val STAMPS = """
-        SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_root;
-        IF v_carried IS NULL THEN
-            -- An object that carried no stamp is handed the whole stamp only of a node its save made.
-            IF NOT v_root_made THEN
-                v_stamp := SUBSTR(v_stamp, 1, 17);
-            END IF;
-        ELSIF v_was = v_carried THEN
-            NULL; -- found exactly as loaded: the node's stamp is handed back whole
-        ELSE
-            v_stamp := CASE WHEN SUBSTR(v_was, 1, 16) = SUBSTR(v_carried, 1, 16) THEN SUBSTR(v_stamp, 1, 16) ELSE SUBSTR(v_carried, 1, 16) END || ':' ||
-                CASE WHEN SUBSTR(v_was, 18) = SUBSTR(v_carried, 18) THEN SUBSTR(v_stamp, 18) ELSE SUBSTR(v_carried, 18) END;
-        END IF;
-        v_result := v_stamp;
-        FOR i IN 0 .. v_h_node.COUNT - 1 LOOP
-            SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_h_node(i);
-            v_result := v_result || ',' || v_h_index(i) || '/' || v_h_found(i) || '=' || v_stamp;
-        END LOOP;"""
-
-        /** The stamp of each node whose stamp is handed back, as a JSON array for the block to return as rows. */
-        private val EACH_STAMP = """
-        v_each := JSON_ARRAY_T();
-        FOR i IN 0 .. v_h_node.COUNT - 1 LOOP
-            SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_h_node(i);
-            v_each.append(v_h_index(i) || '/' || v_h_found(i) || '=' || v_stamp);
-        END LOOP;
-        v_result := v_each.to_clob;"""
-
+        /** What stands for the node table in a [Returns] text. */
         private const val NODES = "#NODES#"
     }
 }

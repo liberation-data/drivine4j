@@ -5,6 +5,7 @@ package org.drivine.manager
 import org.drivine.connection.DatabaseType
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
 import org.drivine.store.StoreIdentity
@@ -78,6 +79,14 @@ interface PersistenceManager {
 
     /** The graph this manager reads and writes, where the store names it. See [org.drivine.connection.ConnectionProvider.graphName]. */
     val graphName: String?
+        get() = null
+
+    /**
+     * The grammar of the store's schema statements, and of the nodes Drivine keeps for itself: see
+     * [org.drivine.schema.SchemaGrammar.versionMarker]. Null where this manager has no connection
+     * provider of its own to ask, in which case the store speaks Cypher.
+     */
+    val schemaGrammar: SchemaGrammar?
         get() = null
 
     /**

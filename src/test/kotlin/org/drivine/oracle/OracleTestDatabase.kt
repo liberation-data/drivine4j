@@ -26,11 +26,15 @@ annotation class OracleTests
 /** The test JVM's Oracle, from [OracleTestContainer]: a container started when a test first asks for it, or a local instance. */
 object OracleTestDatabase {
 
+    /**
+     * One pool for the test JVM, closed when it ends. The managers [graphManager] and [connections]
+     * give out share its data source, so none of them has a pool of its own to end.
+     */
     val provider: JdbcConnectionProvider by lazy {
         JdbcConnectionProvider.pooled(
             "oracle", DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(),
             OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword(),
-        )
+        ).also { pool -> Runtime.getRuntime().addShutdownHook(Thread { pool.end() }) }
     }
 
     val pm: NonTransactionalPersistenceManager by lazy {
@@ -59,7 +63,9 @@ object OracleTestDatabase {
 
     /**
      * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own.
-     * A Cypher read on one is a fixture's, and is answered by a read of the store on that connection.
+     * A Cypher read on one is a fixture's first read, made to open a snapshot on the connection, and is
+     * answered by a count of the graph's nodes on that connection: the rows are not what the Cypher
+     * asked for, and a test must not read them as such.
      */
     fun connections(pm: NonTransactionalPersistenceManager): ConnectionProvider {
         val provider = JdbcConnectionProvider(pm.database, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = requireNotNull(pm.graphName))
