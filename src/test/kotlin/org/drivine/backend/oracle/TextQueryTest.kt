@@ -41,6 +41,15 @@ class TextQueryTest {
     }
 
     @Test
+    fun `the same query for Oracle Text accumulates what scores, requires and takes away, each word in braces`() {
+        assertEquals("({graph} ACCUM {databases})", TextQuery.parse("Graph databases").oracleText)
+        assertEquals("({kotlin} ACCUM {graph} ACCUM {store}) AND {kotlin} AND {store} NOT {python} NOT {rust}", TextQuery.parse("+kotlin graph AND store -python NOT rust").oracleText)
+        assertEquals("({graph data} ACCUM data% ACCUM {ada})", TextQuery.parse("\"graph data\" data* name:Ada").oracleText)
+        // A word that is one of Oracle Text's own is still a word.
+        assertEquals("({near} ACCUM {about})", TextQuery.parse("near about").oracleText)
+    }
+
+    @Test
     fun `a query with no word to look for is refused`() {
         assertFailsWith<IllegalArgumentException> { TextQuery.parse("-only") }
         assertFailsWith<IllegalArgumentException> { TextQuery.parse("  ") }

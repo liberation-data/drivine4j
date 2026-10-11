@@ -3,6 +3,7 @@ package org.drivine.oracle
 import org.drivine.DrivineException
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.EnsureResult
+import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaVersionStore
 import org.drivine.schema.UniquenessConstraintSpec
@@ -120,6 +121,48 @@ class OracleSchemaManagementIntegrationTest {
 
         assertTrue(manager.indexes.ensure(VectorIndexSpec("Chunk", "embedding", 8)) is EnsureResult.Drift)
         assertEquals(8, manager.indexes.recreate(VectorIndexSpec("Chunk", "embedding", 8)).current.dimensions)
+    }
+
+    private fun count(sql: String): Long = manager.getOne(QuerySpecification.withStatement(sql).transform(Long::class.java))
+
+    @Test
+    fun `vector index - a table of embeddings is kept in step with the nodes, whatever writes them`() {
+        val spec = VectorIndexSpec("Passage", "embedding", 3)
+        // A node that is there before the index is made is taken in with it.
+        execute("CREATE (:Passage {id: 'p0', embedding: [1.0, 0.0, 0.0]})")
+        manager.indexes.ensure(spec)
+        val embeddings = "schema_v_Passageembedding_" + Integer.toHexString("Passage\u0000embedding".hashCode())
+        assertEquals(1, count("SELECT COUNT(*) FROM user_indexes WHERE table_name = '${embeddings.uppercase()}' AND index_type = 'VECTOR'"))
+
+        execute("CREATE (:Passage {id: 'p1', embedding: [0.0, 1.0, 0.0]}), (:Passage {id: 'p2'}), (:Other {id: 'o1', embedding: [0.0, 0.0, 1.0]})")
+        assertEquals(2, count("SELECT COUNT(*) FROM $embeddings"), "the passages that have an embedding, and no other node")
+        execute("MATCH (p:Passage {id: 'p2'}) SET p.embedding = [0.0, 0.0, 1.0]")
+        assertEquals(3, count("SELECT COUNT(*) FROM $embeddings"))
+        execute("MATCH (p:Passage {id: 'p0'}) DETACH DELETE p")
+        assertEquals(2, count("SELECT COUNT(*) FROM $embeddings"))
+
+        assertTrue(manager.indexes.drop(spec))
+        assertEquals(0, count("SELECT COUNT(*) FROM user_tables WHERE table_name = '${embeddings.uppercase()}'"))
+        execute("CREATE (:Passage {id: 'p3', embedding: [1.0, 1.0, 0.0]})")
+    }
+
+    @Test
+    fun `full-text index - a table of text is kept beside the nodes, and no index is put on the nodes themselves`() {
+        val spec = FullTextIndexSpec("Essay", listOf("title", "body"))
+        execute("CREATE (:Essay {id: 'e0', title: 'Graphs', body: 'stored as rows'})")
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
+        val texts = "schema_t_Essaytitlebody_" + Integer.toHexString("Essay\u0000title\u0000body".hashCode())
+
+        execute("CREATE (:Essay {id: 'e1', title: 'Soup'}), (:Other {id: 'o2', title: 'Graphs'})")
+        assertEquals(2, count("SELECT COUNT(*) FROM $texts"))
+        assertEquals(1, count("SELECT COUNT(*) FROM $texts t WHERE JSON_TEXTCONTAINS(t.doc, '$.\"title\"', '{graphs}')"))
+        // An Oracle Text index on the node table would answer a save's own lookups from what was last committed.
+        assertEquals(0, count("SELECT COUNT(*) FROM user_indexes WHERE table_name = 'SCHEMA_NODE' AND index_type = 'DOMAIN'"))
+
+        assertTrue(manager.indexes.drop(spec))
+        assertEquals(0, count("SELECT COUNT(*) FROM user_tables WHERE table_name = '${texts.uppercase()}'"))
+        execute("CREATE (:Essay {id: 'e2', title: 'After'})")
     }
 
     @Test

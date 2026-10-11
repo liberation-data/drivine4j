@@ -27,6 +27,9 @@ import java.sql.SQLException
  * - a uniqueness constraint is a unique index over the property of the nodes that carry the label,
  *   and null for every other node, which a unique index does not hold.
  *
+ * A vector index is a table of embeddings beside the nodes, and a full-text index a table of their
+ * text: see [vectorIndex] and [textIndex].
+ *
  * Oracle's dictionary holds the expressions and not what they were made for, so what Drivine made is
  * recorded in a table of the graph's own, and read back from there.
  */
@@ -73,7 +76,12 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         END;
     """
 
-    private fun json(values: List<String>): String = values.joinToString(",", "[", "]") { "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
+    private fun json(values: List<String>): String = Companion.json(values)
+
+    companion object {
+        /** The properties of an index as the record of it holds them. */
+        fun json(values: List<String>): String = values.joinToString(",", "[", "]") { "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
+    }
 
     override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
         is RangeIndexSpec -> {
@@ -81,16 +89,117 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             val expressions = spec.properties.joinToString(", ") { "JSON_VALUE(props, ${path(it)})" }
             statements("CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} ($expressions)", recorded(spec, name))
         }
-        // A search by vector reads every node of the label and orders them by distance: it is exact,
-        // and needs nothing made. The index is recorded, so it is found as one.
-        is VectorIndexSpec -> statements(
-            recorded(spec, null, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}""")
-        )
-        // A full-text search reads the text of every node of the label, and needs nothing made either.
-        is FullTextIndexSpec -> statements(recorded(spec, null, spec.analyzer?.let { """{"analyzer": "$it"}""" } ?: "{}"))
+        is VectorIndexSpec -> vectorIndex(spec)
+        is FullTextIndexSpec -> statements(textIndex(spec))
     }
 
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(SchemaStatement.Cypher(forgotten(item).trimIndent()))
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> =
+        when (item.kind) {
+            // The table beside the nodes takes its index with it.
+            SchemaItemKind.VECTOR_INDEX -> beside(graph.vectors(item.label, item.properties.single()), item)
+            SchemaItemKind.FULLTEXT_INDEX -> beside(graph.texts(item.label, item.properties), item)
+            else -> listOf(SchemaStatement.Cypher(forgotten(item).trimIndent()))
+        }
+
+    private fun beside(table: String, item: SchemaItemInfo): List<SchemaStatement> =
+        listOf("DROP TRIGGER IF EXISTS ${table}_t", "DROP TABLE IF EXISTS $table PURGE", forgotten(item)).map { SchemaStatement.Cypher(it.trimIndent()) }
+
+    /**
+     * A vector index. Oracle indexes a `VECTOR` column, and an embedding is a list among a node's
+     * JSON properties, so the embeddings of the label's nodes are kept beside them in a table of
+     * their own, which a trigger on the node table keeps in step: whatever writes a node, an object
+     * manager or SQL by hand, the embedding follows. The index is over that table, by neighbour
+     * partitions, which needs no memory set aside in the database as a neighbour graph does.
+     */
+    private fun vectorIndex(spec: VectorIndexSpec): List<SchemaStatement> {
+        val property = spec.properties.single()
+        val side = graph.vectors(spec.label, property)
+        val embedding = "TO_VECTOR(JSON_QUERY(%s.props, ${path(property)} RETURNING CLOB))"
+        val indexed = "${OracleSql.carriesLabel("%s", spec.label)} AND JSON_EXISTS(%s.props, ${path(property)})"
+        val trigger = """
+            CREATE OR REPLACE TRIGGER ${side}_t AFTER INSERT OR UPDATE OF labels, props ON ${graph.nodes} FOR EACH ROW
+            BEGIN
+                IF ${indexed.replace("%s", ":NEW")} THEN
+                    MERGE INTO $side v USING (SELECT :NEW.nid AS nid, ${embedding.format(":NEW")} AS embedding FROM dual) n ON (v.nid = n.nid)
+                    WHEN MATCHED THEN UPDATE SET v.embedding = n.embedding
+                    WHEN NOT MATCHED THEN INSERT (nid, embedding) VALUES (n.nid, n.embedding);
+                ELSE
+                    DELETE FROM $side WHERE nid = :NEW.nid;
+                END IF;
+            END;
+        """.trimIndent()
+        return statements(
+            """
+            CREATE TABLE IF NOT EXISTS $side (
+                nid       NUMBER PRIMARY KEY REFERENCES ${graph.nodes} (nid) ON DELETE CASCADE,
+                embedding VECTOR(${spec.dimensions}, FLOAT32) NOT NULL
+            )
+            """,
+            "CREATE VECTOR INDEX IF NOT EXISTS ${side}_i ON $side (embedding) ORGANIZATION NEIGHBOR PARTITIONS DISTANCE ${OracleSql.metric(spec.similarity)}",
+            // The trigger names the new row with a colon, which a driver reads as a parameter: it is made from inside a block.
+            "BEGIN EXECUTE IMMEDIATE ${literal(trigger)}; END;",
+            """
+            INSERT INTO $side (nid, embedding)
+            SELECT n.nid, ${embedding.format("n")} FROM ${graph.nodes} n
+            WHERE ${indexed.replace("%s", "n")} AND NOT EXISTS (SELECT 1 FROM $side v WHERE v.nid = n.nid)
+            """,
+            recorded(spec, side, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}"""),
+        )
+    }
+
+    /**
+     * A full-text index, where the database has Oracle Text. The text of the label's nodes is kept
+     * beside them in a table of its own, as a vector index keeps embeddings, and the Oracle Text
+     * index is over that table.
+     *
+     * It is not over the node table, though it could be. An Oracle Text index holds what has been
+     * committed, and once one is there Oracle answers ordinary tests of a JSON property from it: a save
+     * then cannot see a node it made a moment before in the same statement, and makes it again.
+     *
+     * A database without Oracle Text cannot make the index. Nothing is made there, the index is
+     * recorded, and a search reads the text of every node of the label.
+     */
+    private fun textIndex(spec: FullTextIndexSpec): String {
+        val side = graph.texts(spec.label, spec.properties)
+        fun doc(row: String) = spec.properties.joinToString(", ", "JSON_OBJECT(", " ABSENT ON NULL RETURNING JSON)") {
+            "${literal(it)} VALUE JSON_VALUE($row.props, ${path(it)} RETURNING CLOB)"
+        }
+        val trigger = """
+            CREATE OR REPLACE TRIGGER ${side}_t AFTER INSERT OR UPDATE OF labels, props ON ${graph.nodes} FOR EACH ROW
+            BEGIN
+                IF ${OracleSql.carriesLabel(":NEW", spec.label)} THEN
+                    MERGE INTO $side t USING (SELECT :NEW.nid AS nid, ${doc(":NEW")} AS doc FROM dual) n ON (t.nid = n.nid)
+                    WHEN MATCHED THEN UPDATE SET t.doc = n.doc
+                    WHEN NOT MATCHED THEN INSERT (nid, doc) VALUES (n.nid, n.doc);
+                ELSE
+                    DELETE FROM $side WHERE nid = :NEW.nid;
+                END IF;
+            END;
+        """.trimIndent()
+        val details = spec.analyzer?.let { """{"analyzer": "$it"}""" } ?: "{}"
+        return """
+            DECLARE
+                v_there NUMBER;
+                e_no_text EXCEPTION;
+                PRAGMA EXCEPTION_INIT(e_no_text, -29833);
+            BEGIN
+                SELECT COUNT(*) INTO v_there FROM user_tables WHERE table_name = '${side.uppercase()}';
+                IF v_there = 0 THEN
+                    EXECUTE IMMEDIATE 'CREATE TABLE $side (nid NUMBER PRIMARY KEY REFERENCES ${graph.nodes} (nid) ON DELETE CASCADE, doc JSON NOT NULL)';
+                    BEGIN
+                        EXECUTE IMMEDIATE 'CREATE SEARCH INDEX ${side}_i ON $side (doc) FOR JSON PARAMETERS (''SYNC (ON COMMIT)'')';
+                    EXCEPTION WHEN e_no_text THEN
+                        EXECUTE IMMEDIATE 'DROP TABLE $side PURGE';
+                        ${recorded(spec, null, details).trim()};
+                        RETURN;
+                    END;
+                    EXECUTE IMMEDIATE ${literal(trigger)};
+                    EXECUTE IMMEDIATE ${literal("INSERT INTO $side (nid, doc) SELECT n.nid, ${doc("n")} FROM ${graph.nodes} n WHERE ${OracleSql.carriesLabel("n", spec.label)}")};
+                END IF;
+                ${recorded(spec, side, details).trim()};
+            END;
+        """
+    }
 
     override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
         is UniquenessConstraintSpec -> {

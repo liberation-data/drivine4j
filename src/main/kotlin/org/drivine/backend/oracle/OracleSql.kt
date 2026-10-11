@@ -1,6 +1,7 @@
 package org.drivine.backend.oracle
 
 import org.drivine.model.Stamps
+import org.drivine.schema.SimilarityFunction
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -99,6 +100,18 @@ internal object OracleSql {
      */
     fun document(alias: String): String =
         "JSON_TRANSFORM($alias.props, SET '$.labels' = $alias.labels, SET ${path(Stamps.PROPERTY)} = $alias.stamp)"
+
+    /** The distance a vector index is built with for [similarity], and a search by it must name. */
+    fun metric(similarity: SimilarityFunction): String = when (similarity) {
+        SimilarityFunction.COSINE -> "COSINE"
+        SimilarityFunction.EUCLIDEAN -> "EUCLIDEAN_SQUARED"
+    }
+
+    /** The score the graph engines give for a [distance] by [similarity]: in `[0, 1]`, higher the nearer. */
+    fun score(similarity: SimilarityFunction, distance: String): String = when (similarity) {
+        SimilarityFunction.COSINE -> "(2 - $distance) / 2"
+        SimilarityFunction.EUCLIDEAN -> "1 / (1 + $distance)"
+    }
 
     /** The values of the JSON array bound as [parameter], as rows of one column `v` read as [kind]. */
     fun values(parameter: String, kind: SqlKind): String =

@@ -29,6 +29,18 @@ internal class OracleGraph(val name: String) {
     /** What Drivine made of indexes and constraints: see [OracleSchemaGrammar]. */
     val catalog = "${name}_schema"
 
+    /** The table that holds the text a full-text index on [label]'s [properties] is over. */
+    fun texts(label: String, properties: List<String>): String {
+        val readable = (label + properties.joinToString("")).replace(Regex("[^A-Za-z0-9]"), "").take(40)
+        return "${name}_t_${readable}_${Integer.toHexString((listOf(label) + properties).joinToString("\u0000").hashCode())}"
+    }
+
+    /** The table that holds the embeddings a vector index on [label]'s [property] is over. */
+    fun vectors(label: String, property: String): String {
+        val readable = "$label$property".replace(Regex("[^A-Za-z0-9]"), "").take(40)
+        return "${name}_v_${readable}_${Integer.toHexString("$label\u0000$property".hashCode())}"
+    }
+
     /** What makes the store, when it is not there. Each statement is safe to run again. */
     val ddl: List<String> = listOf(
         """

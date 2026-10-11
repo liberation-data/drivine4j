@@ -9,11 +9,13 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import sample.fulltext.ArticleNode
 import sample.stateless.Claim
 import sample.stateless.ClaimEmployers
 import sample.stateless.ClaimView
 import sample.stateless.Company
 import sample.stateless.Human
+import sample.vector.DocNode
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
@@ -79,6 +81,22 @@ class OracleReadSmokeTest {
         assertEquals("c1", view.order.id)
         assertEquals(listOf("ada", "bob"), view.group.map { it.id }.sorted())
         assertEquals(1, manager.delete("c1", Ordered::class.java, "order.text = 'Ada founded Acme'"))
+    }
+
+    @Test
+    fun `a search with no index made for it reads every node of the label, and its own transaction's writes`() {
+        OracleTestDatabase.seed(
+            pm,
+            """
+            CREATE (:Doc {id: 'd1', title: 'near', embedding: [1.0, 0.0, 0.0, 0.0]}), (:Doc {id: 'd2', title: 'far', embedding: [0.0, 1.0, 0.0, 0.0]})
+            CREATE (:Article {id: 'a1', title: 'Graphs', body: 'graph databases store graph data'}), (:Article {id: 'a2', title: 'Soup', body: 'a recipe'})
+            """,
+        )
+
+        val nearest = manager.loadNearest(DocNode::class.java, listOf(0.9f, 0.1f, 0.0f, 0.0f), 1)
+        assertEquals(listOf("d1"), nearest.map { it.value.id })
+        val matching = manager.loadMatching(ArticleNode::class.java, "graph -recipe", 10, 0.0)
+        assertEquals(listOf("a1" to 1.0), matching.map { it.value.id to it.score })
     }
 
     @Test

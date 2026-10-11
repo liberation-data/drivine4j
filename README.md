@@ -2324,10 +2324,15 @@ they do elsewhere. To SQL written by hand the graph has one vertex label, `node`
   makes a unique index and the index a node is found by. Without one a save reads the table.
 - A range index reads a property as text. A comparison or an order by a number or a moment is correct
   and is not served by that index.
-- `loadNearest` measures every node of the label, so it is exact and has no index beneath it yet.
-  `loadMatching` counts the query's words in the text of every node of the label; it reads words, a
-  `"phrase"`, `+must`, `-not` and a `prefix*`, and does not use Oracle Text. A vector or full-text
-  index you declare is recorded and found, and makes nothing.
+- A vector index (`indexes.ensure(VectorIndexSpec(...))`, or `@VectorIndex` through schema management)
+  is a table of embeddings beside the nodes, kept in step by a trigger, with an Oracle vector index
+  over it by neighbour partitions. `loadNearest` goes through it and is approximate, as on the graph
+  engines. With no index made, it measures every node of the label and is exact.
+- A full-text index is a table of the indexed text beside the nodes, with an Oracle Text index over
+  it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. The index holds what has
+  been committed, so a search does not see its own transaction's writes. Oracle Text is in the regular
+  Free image and not the slim one: without it, or with no index made, a search counts the words in the
+  text of every node of the label, and does see them.
 - A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate.
 - The deprecated `GraphObjectManager.save`, the `RelationshipDirectionRepair` migration and Cypher
   statements written by hand do not run on Oracle.

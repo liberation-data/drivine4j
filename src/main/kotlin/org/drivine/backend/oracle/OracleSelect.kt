@@ -388,13 +388,24 @@ internal class OracleSelect(
      * `(1 + cos) / 2`, for Euclidean `1 / (1 + d²)`, each in `[0, 1]` with higher the nearer.
      */
     fun nearestTo(key: String, similarity: SimilarityFunction, partitionLabel: String?, vector: List<Float>, nearest: Int): String {
-        val query = bound(vector)
         val stored = "TO_VECTOR(JSON_QUERY(c.props, ${path(key)} RETURNING CLOB))"
-        val score = when (similarity) {
-            SimilarityFunction.COSINE -> "(2 - VECTOR_DISTANCE($stored, TO_VECTOR($query), COSINE)) / 2"
-            SimilarityFunction.EUCLIDEAN -> "1 / (1 + VECTOR_DISTANCE($stored, TO_VECTOR($query), EUCLIDEAN_SQUARED))"
-        }
+        val score = OracleSql.score(similarity, "VECTOR_DISTANCE($stored, TO_VECTOR(${bound(vector)}), ${OracleSql.metric(similarity)})")
         return candidates(listOfNotNull(partitionLabel), key, score, "ORDER BY score DESC, c.nid\nFETCH FIRST ${bound(nearest)} ROWS ONLY")
+    }
+
+    /**
+     * The [nearest] nodes to [vector] through a vector index: [embeddings] is the table the index is
+     * over, which holds the embedding of each node of the index's label. The index gives its nearest,
+     * approximately, and they are then tested for the root's own labels.
+     */
+    fun nearestThrough(embeddings: String, similarity: SimilarityFunction, vector: List<Float>, nearest: Int): String {
+        val distance = "VECTOR_DISTANCE(s.embedding, TO_VECTOR(${bound(vector)}), ${OracleSql.metric(similarity)})"
+        return """
+            SELECT c.nid, c.labels, c.props, c.stamp, ${OracleSql.score(similarity, "k.distance")} AS score
+            FROM (SELECT s.nid, $distance AS distance FROM $embeddings s ORDER BY distance FETCH APPROX FIRST ${bound(nearest)} ROWS ONLY) k
+            JOIN ${graph.nodes} c ON c.nid = k.nid
+            WHERE ${hasLabels("c", rootLabels())}
+        """.trimIndent()
     }
 
     /**
@@ -417,6 +428,27 @@ internal class OracleSelect(
                     SELECT c.nid, c.labels, c.props, c.stamp, $text AS text
                     FROM GRAPH_TABLE (${graph.name} MATCH (v IS node WHERE $has) COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) c
                 ) s${if (conditions.isEmpty()) "" else "\n                WHERE " + conditions.joinToString(" AND ")}
+            ) h
+            WHERE h.score > 0
+        """.trimIndent()
+    }
+
+    /**
+     * The nodes whose text under [keys] meets [query], through an Oracle Text index: [texts] is the
+     * table the index is over, which holds that text for each node of the index's label. Scored by
+     * Oracle Text, each property's score added, and then against the best of them. The index holds
+     * what has been committed, so a search does not see what its own transaction has written.
+     */
+    fun matchingThrough(texts: String, keys: List<String>, query: TextQuery): String {
+        val text = bound(query.oracleText)
+        val contains = keys.mapIndexed { i, key -> "JSON_TEXTCONTAINS(s.doc, ${path(key)}, $text, ${i + 1})" }
+        return """
+            SELECT h.nid, h.labels, h.props, h.stamp, h.score / MAX(h.score) OVER () AS score
+            FROM (
+                SELECT c.nid, c.labels, c.props, c.stamp, k.score
+                FROM (SELECT s.nid, ${keys.indices.joinToString(" + ") { "SCORE(${it + 1})" }} AS score FROM $texts s WHERE ${contains.joinToString(" OR ")}) k
+                JOIN ${graph.nodes} c ON c.nid = k.nid
+                WHERE ${hasLabels("c", rootLabels())}
             ) h
             WHERE h.score > 0
         """.trimIndent()

@@ -159,7 +159,7 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
   index on (label, property), listing and drift detection from the data dictionary.
 - Generated predicates are written in the indexed form, so an index that exists is used.
 
-### Phase 7 — Vector and full-text search ✅ (exact, no index beneath)
+### Phase 7 — Vector and full-text search ✅
 
 - `loadNearest`: exact `VECTOR_DISTANCE` first, then a side table and vector index per
   `VectorIndexSpec`; `searchK`, threshold, partition label, the `{value, score}` row.
@@ -205,9 +205,10 @@ What differed from the plan:
   text depends only on the kinds of node a save names, so it is compiled once for a view class.
 - **Fixtures.** The contracts seed and read back in Cypher. A small interpreter in the tests
   (`MiniCypher`) works such a statement out over the graph, so the contracts run unchanged.
-- **Full-text search does not use Oracle Text.** The slim image the tests run on does not have it,
-  so `loadMatching` counts words in SQL. Oracle Text is the natural next step, on the full image.
-- **Vector search is exact.** An index means a side table with a `VECTOR` column; not built.
+- **An index is a table beside the nodes.** Oracle indexes a `VECTOR` column, not a list inside JSON,
+  so a vector index is a table of embeddings that a trigger keeps in step, with the index (neighbour
+  partitions) over it. A full-text index is the same with an Oracle Text index. Without an index, or
+  without Oracle Text (the slim image), a search reads every node of the label.
 
 What the work found that the plan did not foresee:
 
@@ -218,6 +219,9 @@ What the work found that the plan did not foresee:
 - **The multivalue index over labels is chosen too eagerly.** With a label and an id in one
   predicate, Oracle read every node of the label. Labels are tested in a form that index cannot
   answer wherever a node is found another way.
+- **An Oracle Text index must not be on the node table.** It holds what has been committed, and once
+  it is there Oracle answers ordinary tests of a JSON property from it. A save could not find a node it
+  had made a moment before in the same statement, and made it again.
 - **A bound JSON array named twice in one statement gave wrong counts** from `JSON_TABLE` on 23.26.
   Full-text terms are bound one by one.
 
@@ -236,5 +240,5 @@ the id of each label constrained unique (median):
 
 Not compared with Neo4j: `ManagerBenchmarkNeo4jTest` was not run alongside.
 
-Still to do: typed labels as views (phase 8), a vector index and Oracle Text, a number-typed range
-index, Spring Boot test-container support, and `embabel-agent-rag-graph` on Oracle.
+Still to do: typed labels as views (phase 8), a neighbour-graph (HNSW) vector index for a database
+with vector memory set aside, a number-typed range index, and `embabel-agent-rag-graph` on Oracle.

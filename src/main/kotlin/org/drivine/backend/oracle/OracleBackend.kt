@@ -25,6 +25,7 @@ import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.schema.SchemaItemKind
 import org.drivine.query.grammar.CypherGrammar
 import java.sql.SQLException
 
@@ -102,9 +103,15 @@ internal class OracleBackend(
         topK: Int, threshold: Double?, searchK: Int?, partitionLabel: String?,
     ): ScoredSearchPlan {
         val select = OracleSelect(graph, graphClass)
-        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
         // What the search measures is the nearest searchK, and of what is left of them topK come back.
-        val candidates = select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+        // Through the index for the label when one has been made; else by measuring every node.
+        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
+        val candidates = if (embeddings != null) {
+            select.nearestThrough(embeddings, index.similarity, vector, searchK ?: topK)
+        } else {
+            select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+        }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
@@ -112,10 +119,20 @@ internal class OracleBackend(
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = OracleSelect(graph, graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
-        val candidates = select.matching(index.properties, TextQuery.parse(text))
+        val words = TextQuery.parse(text)
+        val texts = made(SchemaItemKind.FULLTEXT_INDEX, index.label, index.properties)
+        val candidates = if (texts != null) select.matchingThrough(texts, index.properties, words) else select.matching(index.properties, words)
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
         return ScoredSearchPlan(statement.statement, statement.bindings)
     }
+
+    /** The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not been made. */
+    private fun made(kind: SchemaItemKind, label: String, properties: List<String>): String? = persistenceManager.query(
+        QuerySpecification
+            .withStatement("SELECT object_name FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL")
+            .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)))
+            .transform(String::class.java)
+    ).firstOrNull()
 
     // ----- Deleting -----
 
