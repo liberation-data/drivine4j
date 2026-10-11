@@ -181,6 +181,7 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
   `CypherFilterConverter` in `embabel-agent-rag-graph` need SQL counterparts or a move to the DSL.
 - Temporals are stored in JSON as ISO-8601 text, as on FalkorDB.
 - The deprecated manager's own `save` is not ported.
+- Oracle stores an empty string as null.
 
 ## Risks
 
@@ -196,7 +197,8 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 
 Every stateless contract that has engine subclasses has an Oracle one: the four save contracts, and
 the read, search, label, bag, null-policy, relate, temporal, property-name and store-identity suites.
-With `ORACLE_TESTS=true`: 218 tests in 31 classes, none failing. The nine skipped are the deprecated
+That includes the contract the review of the stateless manager added, and its read-path tests.
+With `ORACLE_TESTS=true`: 270 tests in 32 classes, none failing. The nine skipped are the deprecated
 manager's own save, one Memgraph-only case and the benchmark.
 
 What differed from the plan:
@@ -224,6 +226,16 @@ What the work found that the plan did not foresee:
   had made a moment before in the same statement, and made it again.
 - **A bound JSON array named twice in one statement gave wrong counts** from `JSON_TABLE` on 23.26.
   Full-text terms are bound one by one.
+- **A node reached through a relationship fragment was loaded without its stamp.** Oracle returns a
+  node as it is stored, and the stored names were mapped back to field names for every shape but that
+  one. The contracts did not assert the loaded stamp there; one does now.
+
+What holds on Oracle and not on the graph engines:
+
+- **An empty string is null.** A stamp stored as `''` is no stamp, and a property set to `''` is absent.
+- **A load reads the node as stored**, so a view can be filtered and ordered by a property no field
+  declares, where a graph engine refuses to read past its projection.
+- **A save that drops the stale keys of a property bag is one statement**, not a read and a write.
 
 Measured on 20,000 claims, 20,000 humans and 60,000 relationships, in a container on a laptop, with
 the id of each label constrained unique (median):

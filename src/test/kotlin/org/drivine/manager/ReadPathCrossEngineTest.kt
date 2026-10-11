@@ -5,6 +5,8 @@ import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
@@ -51,7 +53,8 @@ import kotlin.test.assertFailsWith
  * nested view, whose root is one map down; a relationship that holds one node and no list; and a
  * property of the root that the projection does not carry. Beside them, what stands between a
  * sorted collection and the `WHERE`, and a runtime key that tries to end its own quotes.
- * Verified on Neo4j, FalkorDB and Memgraph.
+ * Verified on Neo4j, FalkorDB and Memgraph, and on Oracle where it reads the stored node and so has
+ * no projection to read past.
  *
  * Three shelves. `s1` holds `e1` (alpha, marked amber, blue and red) and `e2` (bravo, marked blue),
  * is kept by kim and stocks three keepers named out of order. `s2` holds `e3` (charlie, marked
@@ -400,4 +403,47 @@ class ReadPathMemgraphTest {
     @Test fun `a runtime key cannot end its quotes on Memgraph`() = verifyEscapedKeys(gom)
 
     @Test fun `a not over a relationship target's property is a predicate on the relationship on Memgraph`() = verifyNotOverRelationship(gom)
+}
+
+@OracleTests
+class ReadPathOracleTest {
+    companion object {
+        private lateinit var gom: StatelessGraphObjectManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            val store = OracleTestDatabase.graphManager("readpath", registry)
+            OracleTestDatabase.clear(store)
+            val pm = OracleTestDatabase.fixtures(store)
+            gom = buildGom(pm, registry)
+            ensureIndexes(pm)
+            seed(gom, pm)
+        }
+    }
+
+    @Test fun `a scored search filters on a collection of nested views on Oracle`() = verifyNestedViewFilter(gom)
+
+    @Test fun `a scored search filters on a relationship that holds one node on Oracle`() = verifySingleRelationshipFilter(gom)
+
+    /** A load reads the node as it is stored, so a property no field declares is there to filter and to order by. */
+    @Test
+    fun `a view is filtered and ordered by a property no field declares on Oracle`() {
+        val found = gom.loadAll(ShelfView::class.java, DSL) { where { query.shelf.property("created_at") gte 2 } }
+        assertEquals(setOf("s1", "s3"), found.map { it.shelf.id }.toSet())
+
+        val ordered = gom.loadAll(ShelfView::class.java, DSL) { orderBy { query.shelf.property("created_at").asc() } }
+        assertEquals(listOf("s2", "s3", "s1"), ordered.map { it.shelf.id })
+        assertEquals(setOf("s1", "s3"), nearest(gom) { where { query.shelf.property("created_at") gte 2 } })
+    }
+
+    @Test fun `a view whose root has a property bag is ordered and paged by a key of the bag on Oracle`() = verifyBagKeyOrder(gom)
+
+    @Test fun `a collection is sorted beside a required relationship and a relationship filter on Oracle`() = verifySortBesideRelationshipChecks(gom)
+
+    @Test fun `a collection inside a nested view is sorted on Oracle`() = verifyNestedSort(gom)
+
+    @Test fun `a runtime key cannot end its quotes on Oracle`() = verifyEscapedKeys(gom)
+
+    @Test fun `a not over a relationship target's property is a predicate on the relationship on Oracle`() = verifyNotOverRelationship(gom)
 }

@@ -14,6 +14,7 @@ import java.util.UUID
  * CREATE (a:Human {id: 'ada'})-[:KNOWS {since: 2020}]->(:Human {id: 'bob'})
  * MATCH (c:Claim {id: 'c1'}), (h:Human) CREATE (c)-[:MENTIONS]->(h) SET c.text = 'x'
  * MATCH (c:Claim {id: 'c1'}) DETACH DELETE c
+ * MERGE (k:Keeper {id: 'kim'}) SET k.name = 'Kim' MERGE (s)-[:KEPT_BY]->(k)
  * MATCH (a)-[r]->(b) WHERE type(r) = $type RETURN toString(a.id) + '->' + b.id
  * ```
  *
@@ -61,6 +62,11 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                     }
                 }
                 word("CREATE") -> patterns().let { patterns -> rows = rows.map { row -> patterns.fold(row) { bound, pattern -> create(pattern, bound) } } }
+                word("MERGE") -> {
+                    // What the pattern describes is found, and made where it is not there.
+                    val pattern = pattern()
+                    rows = rows.flatMap { row -> match(pattern, row).ifEmpty { listOf(create(pattern, row)) } }
+                }
                 word("SET") -> {
                     val start = at
                     rows.forEach { row -> at = start; do assign(row) while (take(',')) }
@@ -82,6 +88,17 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                     check(word("AS"))
                     val variable = name()!!
                     rows = rows.zip(lists).flatMap { (row, list) -> (list as? Collection<*>).orEmpty().map { row + (variable to it) } }
+                }
+                word("WITH") -> {
+                    // The variables carried on, and the rows of them a `WHERE` keeps.
+                    val kept = buildList { do add(name() ?: fail("a variable")) while (take(',')) }
+                    rows = rows.map { row -> row.filterKeys { it in kept } }
+                    if (word("WHERE")) {
+                        val where = at
+                        condition(emptyMap(), evaluate = false)
+                        val end = at
+                        rows = rows.filter { row -> at = where; (condition(row) == true).also { at = end } }
+                    }
                 }
                 word("RETURN") -> {
                     skipSpace()
@@ -154,7 +171,7 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
     private fun create(pattern: Pattern, row: Map<String, Any?>): Map<String, Any?> {
         var bound = row
         val made = pattern.nodes.map { wanted ->
-            (wanted.variable?.let(bound::get) as? Node) ?: Node(null, wanted.labels.toMutableList(), wanted.properties.toMutableMap(), null).also { node ->
+            (wanted.variable?.let(bound::get) as? Node) ?: made(wanted).also { node ->
                 nodes += node
                 bound = bind(bound, wanted.variable, node)
             }
@@ -164,6 +181,13 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
             edges += Edge(null, from, to, requireNotNull(wanted.type), wanted.properties.toMutableMap()).also { bound = bind(bound, wanted.variable, it) }
         }
         return bound
+    }
+
+    /** A node as a `CREATE` describes it. The stamp, a property to a graph engine, is the node's own here. */
+    private fun made(wanted: NodePattern): Node {
+        val properties = wanted.properties.toMutableMap()
+        val stamp = properties.remove(Stamps.PROPERTY) as String?
+        return Node(null, wanted.labels.toMutableList(), properties, stamp)
     }
 
     private fun delete(node: Node) {
@@ -282,6 +306,11 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
             check(word("NULL"))
             return (left == null) != not
         }
+        if (word("STARTS")) {
+            check(word("WITH"))
+            val prefix = expression(row, evaluate)
+            return left is String && prefix is String && left.startsWith(prefix)
+        }
         if (word("IN")) {
             val list = expression(row, evaluate)
             return (list as? Collection<*>)?.any { same(left, it) } ?: false
@@ -364,6 +393,20 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
                 while (at < text.length && (text[at].isDigit() || text[at] in ".eE")) at++
                 text.substring(start, at).let { it.toLongOrNull() ?: it.toDouble() }
             }
+            word("CASE") -> {
+                // Every branch is read, and the first whose condition holds is the value.
+                var chosen: Any? = null
+                var decided = false
+                while (word("WHEN")) {
+                    val holds = condition(row, evaluate) == true
+                    check(word("THEN"))
+                    val value = expression(row, evaluate)
+                    if (holds && !decided) { chosen = value; decided = true }
+                }
+                if (word("ELSE")) expression(row, evaluate).let { if (!decided) chosen = it }
+                check(word("END"))
+                chosen
+            }
             else -> {
                 val word = name() ?: fail("a value")
                 when {
@@ -396,6 +439,16 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
             is Node -> element.properties.keys.toList() + listOfNotNull(Stamps.PROPERTY.takeIf { element.stamp != null })
             is Edge -> element.properties.keys.toList()
             else -> null
+        }
+        "size" -> when (val value = arguments[0]) {
+            is String -> value.length.toLong()
+            is Collection<*> -> value.size.toLong()
+            else -> null
+        }
+        "substring" -> (arguments[0] as String?)?.let { value ->
+            val start = (arguments[1] as Number).toInt().coerceAtMost(value.length)
+            val length = (arguments.getOrNull(2) as Number?)?.toInt() ?: (value.length - start)
+            value.substring(start, (start + length).coerceAtMost(value.length))
         }
         "left" -> (arguments[0] as String?)?.take((arguments[1] as Number).toInt())
         "right" -> (arguments[0] as String?)?.takeLast((arguments[1] as Number).toInt())
@@ -525,6 +578,6 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         fun reads(statement: String): Boolean = FIXTURE.containsMatchIn(statement)
 
         /** A statement that opens with a pattern: `CREATE INDEX` is the store's own. */
-        private val FIXTURE = Regex("^\\s*(MATCH|CREATE)\\s*\\(")
+        private val FIXTURE = Regex("^\\s*(MATCH|CREATE|MERGE)\\s*\\(")
     }
 }
