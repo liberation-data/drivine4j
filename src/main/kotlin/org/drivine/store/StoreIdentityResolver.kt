@@ -76,12 +76,12 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
                 INSERT INTO ${graph.nodes} (labels, props)
                 SELECT '["$label"]', JSON_OBJECT('$key' VALUE ${'$'}key, 'storeId' VALUE ${'$'}storeId, 'assignedAt' VALUE ${'$'}assignedAt, 'engine' VALUE ${'$'}engine)
                 FROM dual
-                WHERE NOT EXISTS (SELECT 1 FROM ${graph.nodes} n WHERE $stored AND JSON_VALUE(n.props, '$."$key"') = ${'$'}key)
+                WHERE NOT EXISTS (SELECT 1 FROM ${graph.nodes} n WHERE $stored AND JSON_VALUE(n.props, '$.$key') = ${'$'}key)
             """.trimIndent(),
             readStamps = """
-                SELECT JSON_OBJECT('id' VALUE JSON_VALUE(n.props, '$."storeId"'), 'assignedAt' VALUE JSON_VALUE(n.props, '$."assignedAt"') RETURNING JSON)
+                SELECT JSON_OBJECT('id' VALUE JSON_VALUE(n.props, '$.storeId'), 'assignedAt' VALUE JSON_VALUE(n.props, '$.assignedAt') RETURNING JSON)
                 FROM ${graph.nodes} n WHERE $stored
-                ORDER BY JSON_VALUE(n.props, '$."assignedAt"'), JSON_VALUE(n.props, '$."storeId"')
+                ORDER BY JSON_VALUE(n.props, '$.assignedAt'), JSON_VALUE(n.props, '$.storeId')
             """.trimIndent(),
         )
     }

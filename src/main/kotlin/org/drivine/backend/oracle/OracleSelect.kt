@@ -188,8 +188,11 @@ internal class OracleSelect(
 
     /** The nodes that carry [labels], as rows named [alias]. */
     private fun nodes(labels: List<String>, alias: String): String =
-        "GRAPH_TABLE (${graph.name} MATCH (v IS node${hasLabels("v", labels, scanned = !narrowed)?.let { " WHERE $it" }.orEmpty()}) " +
-            "COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) $alias"
+        graphTable("(v IS node${hasLabels("v", labels, scanned = !narrowed)?.let { " WHERE $it" }.orEmpty()})", OracleSql.columns("v"), alias)
+
+    /** A `GRAPH_TABLE` over the graph that matches [pattern] and gives [columns], as rows named [alias]. */
+    private fun graphTable(pattern: String, columns: String, alias: String): String =
+        "GRAPH_TABLE (${graph.name}\n    MATCH $pattern\n    COLUMNS ($columns)) $alias"
 
     /**
      * The nodes reached by [steps], as rows named [alias]: `src` is the node the path starts from.
@@ -208,8 +211,7 @@ internal class OracleSelect(
             }
         }
         val relationship = if (single) "e0.eid AS eid, e0.props AS eprops, " else ""
-        return "GRAPH_TABLE (${graph.name} MATCH $pattern " +
-            "COLUMNS (a.nid AS src, ${relationship}b.nid AS nid, b.labels AS labels, b.props AS props, b.stamp AS stamp)) $alias"
+        return graphTable(pattern, "a.nid AS src, $relationship${OracleSql.columns("b")}", alias)
     }
 
     private fun steps(relationship: RelationshipModel, targetLabels: List<String>, maxDepth: Int = 1): List<Step> =
@@ -283,10 +285,13 @@ internal class OracleSelect(
     /** [value] for each row of [source] that starts from [parent]: all of them as an array, or the first. */
     private fun gathered(parent: String, source: String, row: String, value: String, collection: Boolean, order: String?): String =
         if (collection) {
-            "COALESCE((SELECT JSON_ARRAYAGG($value ORDER BY ${order ?: "$row.eid"} RETURNING JSON) FROM $source WHERE $row.src = $parent.nid), $EMPTY_ARRAY)"
+            "COALESCE((\n    SELECT JSON_ARRAYAGG($value ORDER BY ${order ?: "$row.eid"} RETURNING JSON)\n    FROM ${source.indented()}\n    WHERE $row.src = $parent.nid), $EMPTY_ARRAY)"
         } else {
-            "(SELECT $value FROM $source WHERE $row.src = $parent.nid ORDER BY $row.eid FETCH FIRST 1 ROWS ONLY)"
+            "(\n    SELECT $value\n    FROM ${source.indented()}\n    WHERE $row.src = $parent.nid\n    ORDER BY $row.eid FETCH FIRST 1 ROWS ONLY)"
         }
+
+    /** [this], a row source, with its later lines moved in under the clause that names it. */
+    private fun String.indented(): String = replace("\n", "\n    ")
 
     /**
      * A field that holds each node reached once, however many ways lead to it: a path of several
@@ -297,11 +302,11 @@ internal class OracleSelect(
         val row = next("x")
         val value = element(row, targetType, visits, relationship.fieldName)
         val reachedIds = "SELECT $path.nid FROM ${reached(steps, path)} WHERE $path.src = $parent.nid"
-        val from = "${graph.nodes} $row WHERE $row.nid IN ($reachedIds)"
+        val from = "${nodes(emptyList(), row).indented()}\n    WHERE $row.nid IN (\n        $reachedIds)"
         return if (relationship.isCollection) {
-            "COALESCE((SELECT JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON) FROM $from), $EMPTY_ARRAY)"
+            "COALESCE((\n    SELECT JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)\n    FROM $from), $EMPTY_ARRAY)"
         } else {
-            "(SELECT $value FROM $from ORDER BY $row.nid FETCH FIRST 1 ROWS ONLY)"
+            "(\n    SELECT $value\n    FROM $from\n    ORDER BY $row.nid FETCH FIRST 1 ROWS ONLY)"
         }
     }
 
@@ -387,8 +392,8 @@ internal class OracleSelect(
     /** The root's nodes that also carry [also] and have [key], each with its columns and `score`, ordered and cut by [tail]. */
     private fun candidates(also: List<String>, key: String?, score: String, tail: String): String {
         val has = listOfNotNull(hasLabels("v", rootLabels() + also, scanned = true), key?.let { OracleSql.hasProperty("v", it) }).joinToString(" AND ")
-        return "SELECT c.nid, c.labels, c.props, c.stamp, $score AS score\n" +
-            "FROM GRAPH_TABLE (${graph.name} MATCH (v IS node WHERE $has) COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) c\n$tail"
+        return "SELECT ${OracleSql.columns("c")}, $score AS score\n" +
+            "FROM ${graphTable("(v IS node WHERE $has)", OracleSql.columns("v"), "c")}\n$tail"
     }
 
     /**
@@ -410,7 +415,7 @@ internal class OracleSelect(
     fun nearestThrough(embeddings: String, similarity: SimilarityFunction, vector: List<Float>, nearest: Int): String {
         val distance = "VECTOR_DISTANCE(s.embedding, TO_VECTOR(${bound(vector)}), ${OracleSql.metric(similarity)})"
         return """
-            SELECT c.nid, c.labels, c.props, c.stamp, ${OracleSql.score(similarity, "k.distance")} AS score
+            SELECT c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, ${OracleSql.score(similarity, "k.distance")} AS score
             FROM (SELECT s.nid, $distance AS distance FROM $embeddings s ORDER BY distance FETCH APPROX FIRST ${bound(nearest)} ROWS ONLY) k
             JOIN ${graph.nodes} c ON c.nid = k.nid
             WHERE ${hasLabels("c", rootLabels())}
@@ -430,12 +435,12 @@ internal class OracleSelect(
         val conditions = query.required.map { "REGEXP_COUNT(s.text, ${bound(it)}) > 0" } + query.excluded.map { "REGEXP_COUNT(s.text, ${bound(it)}) = 0" }
         val has = hasLabels("v", rootLabels(), scanned = true)
         return """
-            SELECT h.nid, h.labels, h.props, h.stamp, h.score / MAX(h.score) OVER () AS score
+            SELECT ${OracleSql.columns("h")}, h.score / MAX(h.score) OVER () AS score
             FROM (
-                SELECT s.nid, s.labels, s.props, s.stamp, $occurrences AS score
+                SELECT ${OracleSql.columns("s")}, $occurrences AS score
                 FROM (
-                    SELECT c.nid, c.labels, c.props, c.stamp, $text AS text
-                    FROM GRAPH_TABLE (${graph.name} MATCH (v IS node WHERE $has) COLUMNS (v.nid AS nid, v.labels AS labels, v.props AS props, v.stamp AS stamp)) c
+                    SELECT ${OracleSql.columns("c")}, $text AS text
+                    FROM ${graphTable("(v IS node WHERE $has)", OracleSql.columns("v"), "c")}
                 ) s${if (conditions.isEmpty()) "" else "\n                WHERE " + conditions.joinToString(" AND ")}
             ) h
             WHERE h.score > 0
@@ -452,9 +457,9 @@ internal class OracleSelect(
         val text = bound(query.oracleText)
         val contains = keys.mapIndexed { i, key -> "JSON_TEXTCONTAINS(s.doc, ${path(key)}, $text, ${i + 1})" }
         return """
-            SELECT h.nid, h.labels, h.props, h.stamp, h.score / MAX(h.score) OVER () AS score
+            SELECT ${OracleSql.columns("h")}, h.score / MAX(h.score) OVER () AS score
             FROM (
-                SELECT c.nid, c.labels, c.props, c.stamp, k.score
+                SELECT c.nid, c.labels, c.props, c.stamp, ${OracleSql.transform("c")} AS doc, k.score
                 FROM (SELECT s.nid, ${keys.indices.joinToString(" + ") { "SCORE(${it + 1})" }} AS score FROM $texts s WHERE ${contains.joinToString(" OR ")}) k
                 JOIN ${graph.nodes} c ON c.nid = k.nid
                 WHERE ${hasLabels("c", rootLabels())}
@@ -506,7 +511,7 @@ internal class OracleSelect(
         val row = next("t")
         val arrow = OracleSql.arrow("e", type, direction)
         val from = listOfNotNull("${property("a", key)} = \$$parameter", hasLabels("a", labels)).joinToString(" AND ")
-        return "$root.nid IN (SELECT $row.nid FROM GRAPH_TABLE (${graph.name} MATCH (a IS node WHERE $from) $arrow (b IS node) COLUMNS (b.nid AS nid)) $row)"
+        return "$root.nid IN (SELECT $row.nid FROM ${graphTable("(a IS node WHERE $from) $arrow (b IS node)", "b.nid", row)})"
     }
 
     // ----- Predicates from the query DSL -----

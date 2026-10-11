@@ -14,6 +14,10 @@ import org.drivine.manager.PersistenceManager
  *
  * A node's stamp is a column of its own and not a property: every save rewrites it, and it is read
  * back as the property the graph engines store it under.
+ *
+ * The graph gives each node one more property, `doc`: the node as the map a load returns for it,
+ * its properties with its labels and its stamp among them. A read projects `v.doc` and is no longer
+ * concerned with how the map is put together.
  */
 internal class OracleGraph(val name: String) {
 
@@ -82,8 +86,8 @@ internal class OracleGraph(val name: String) {
         "CREATE INDEX IF NOT EXISTS ${name}_edge_dst ON $edges (dst, type)",
         "CREATE MULTIVALUE INDEX IF NOT EXISTS ${name}_node_labels ON $nodes n (n.labels.string())",
         """
-        CREATE PROPERTY GRAPH IF NOT EXISTS $name
-            VERTEX TABLES ($nodes KEY (nid) LABEL node PROPERTIES (nid, labels, props, stamp))
+        CREATE OR REPLACE PROPERTY GRAPH $name
+            VERTEX TABLES ($nodes KEY (nid) LABEL node PROPERTIES (nid, labels, props, stamp, ${OracleSql.transform("")} AS doc))
             EDGE TABLES ($edges KEY (eid)
                 SOURCE KEY (src) REFERENCES $nodes (nid)
                 DESTINATION KEY (dst) REFERENCES $nodes (nid)
@@ -93,10 +97,11 @@ internal class OracleGraph(val name: String) {
 
     /**
      * The block that makes the store when it is not there, and does nothing when it is. The
-     * property graph is made last, so one that is there says the rest is. It is looked for before
-     * anything is run: a schema statement wants its table to itself, and would be turned away by a
-     * writer at work on a store that needs nothing made. One that another process made in the
-     * meantime (`ORA-00955`) is taken as made.
+     * property graph is made last, so one that is there, with the `doc` property this version gives
+     * it, says the rest is. It is looked for before anything is run: a schema statement wants its
+     * table to itself, and would be turned away by a writer at work on a store that needs nothing
+     * made. A graph made by an earlier version is replaced, and keeps its tables. One that another
+     * process made in the meantime (`ORA-00955`) is taken as made.
      */
     val ensuring: String = """
         DECLARE
@@ -104,7 +109,7 @@ internal class OracleGraph(val name: String) {
             e_exists EXCEPTION;
             PRAGMA EXCEPTION_INIT(e_exists, -955);
         BEGIN
-            SELECT COUNT(*) INTO v_made FROM user_property_graphs WHERE graph_name = '${name.uppercase()}';
+            SELECT COUNT(*) INTO v_made FROM user_pg_prop_definitions WHERE graph_name = '${name.uppercase()}' AND property_name = 'DOC';
             IF v_made = 0 THEN
         ${ddl.joinToString("\n") { "        BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(it)}; EXCEPTION WHEN e_exists THEN NULL; END;" }}
             END IF;
