@@ -7,11 +7,11 @@ import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
-import org.drivine.mapper.JdbcResultMapper
-import org.drivine.mapper.JdbcRow
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.drivine.test.MiniCypher
+import org.drivine.test.OracleCypherFixtures
 import org.drivine.test.OracleTestContainer
 
 /**
@@ -47,44 +47,15 @@ object OracleTestDatabase {
         ).also { OracleGraph(graph).ensure(it) }
 
     /** Removes every node and relationship of the graph [pm] speaks to. */
-    fun clear(pm: NonTransactionalPersistenceManager) {
-        val graph = requireNotNull(pm.graphName)
-        pm.execute(QuerySpecification.withStatement("DELETE FROM ${graph}_edge"))
-        pm.execute(QuerySpecification.withStatement("DELETE FROM ${graph}_node"))
-    }
+    fun clear(pm: NonTransactionalPersistenceManager) = OracleCypherFixtures.clear(pm)
 
     /** Writes the nodes and relationships a Cypher `CREATE` fixture describes to the graph [pm] speaks to. */
     fun seed(pm: PersistenceManager, cypher: String) {
-        MiniCypher(pm, cypher.trim(), emptyMap()).run()
+        OracleCypherFixtures.run(pm, cypher)
     }
 
-    /**
-     * [pm] as the cross-engine tests use a manager: a statement in Cypher is one of a test's fixtures,
-     * and is worked out by [MiniCypher]; any other is the store's own, an object manager's among them.
-     */
-    fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = object : PersistenceManager by pm {
-        override fun execute(spec: QuerySpecification<*>) {
-            val text = spec.statement!!.text.trim()
-            when {
-                text == "MATCH (n) DETACH DELETE n" -> clear(pm)
-                MiniCypher.reads(text) -> MiniCypher(pm, text, spec.parameters).run()
-                else -> pm.execute(spec)
-            }
-        }
-
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
-            val text = spec.statement!!.text.trim()
-            if (!MiniCypher.reads(text)) return pm.query(spec)
-            // Each row is one value, mapped as the row of a statement the store ran would be.
-            val rows = MiniCypher(pm, text, spec.parameters).run().map { JdbcRow(listOf("value"), listOf(it)) }
-            return JdbcResultMapper().mapQueryResults(rows, spec)
-        }
-
-        override fun <T : Any> getOne(spec: QuerySpecification<T>): T = query(spec).single()
-
-        override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? = query(spec).singleOrNull()
-    }
+    /** [pm] as the cross-engine tests use a manager: see [OracleCypherFixtures.over]. */
+    fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = OracleCypherFixtures.over(pm)
 
     /**
      * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own.

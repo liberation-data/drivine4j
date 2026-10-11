@@ -1,4 +1,4 @@
-package org.drivine.oracle
+package org.drivine.test
 
 import org.drivine.manager.PersistenceManager
 import org.drivine.model.Stamps
