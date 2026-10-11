@@ -214,7 +214,8 @@ END;""".trim()
         replaced: (RelationshipModel) -> RemovedTargets?,
         before: JsonNode?,
         after: JsonNode?,
-    ): SaveStatement = saves.build(obj, checked, nullPolicy, rootWriteFields, replaced, before, after)
+        createsRoot: Boolean,
+    ): SaveStatement = saves.build(obj, checked, nullPolicy, rootWriteFields, replaced, before, after, createsRoot)
 
     /** A batch of fragments is one block for each [BATCH] of them: a step each, and a row each. */
     override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =

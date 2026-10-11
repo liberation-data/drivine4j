@@ -11,6 +11,8 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
+import org.drivine.query.NodeKey
+import org.drivine.query.Repeat
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 import org.drivine.query.read
@@ -23,6 +25,15 @@ internal class WritePlan(private val graph: OracleGraph) {
     private val steps = mutableListOf<Map<String, Any?>>()
     private val shapes = linkedMapOf<NodeShape, Int>()
     private var nodes = 0
+
+    /** The stamp the plan's steps take the relationship token from. */
+    val mark: String = Stamps.fresh()
+
+    /** The stamps the plan offers the nodes it changes: [mark], and the one each node step carries. */
+    val offered = mutableListOf(mark)
+
+    /** A stamp for a node step, which is offered to its node. */
+    fun fresh(): String = Stamps.fresh().also { offered += it }
 
     fun shape(labels: List<String>, key: String): Int = shapes.getOrPut(NodeShape(labels, key)) { shapes.size }
 
@@ -43,7 +54,7 @@ internal class WritePlan(private val graph: OracleGraph) {
 
     fun text(returns: OracleWriteBlock.Returns): String = OracleWriteBlock(graph, shapes.keys.toList(), returns).text()
 
-    fun bindings(): Map<String, Any?> = mapOf(OracleWriteBlock.PLAN to steps, OracleWriteBlock.MARK to Stamps.fresh())
+    fun bindings(): Map<String, Any?> = mapOf(OracleWriteBlock.PLAN to steps, OracleWriteBlock.MARK to mark)
 }
 
 internal val Direction.code: String
@@ -71,14 +82,15 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         replaced: (RelationshipModel) -> RemovedTargets?,
         before: JsonNode?,
         after: JsonNode?,
-    ): SaveStatement = Composition(checked, nullPolicy, rootWriteFields, replaced).compose(obj, before, after)
+        createsRoot: Boolean,
+    ): SaveStatement = Composition(checked, nullPolicy, rootWriteFields, replaced, createsRoot).compose(obj, before, after)
 
     /**
      * The statement that saves [fragments] together, unchecked, each a step of one plan. It returns a
      * row for each, `index/found=stamp`, under the index the fragment is given here.
      */
     fun together(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): Pair<String, Map<String, Any?>> {
-        val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null })
+        val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null }, createsRoot = true)
         fragments.forEach { (index, fragment) -> composition.fragment(fragment, index) }
         return composition.plan.text(OracleWriteBlock.Returns.EACH_STAMP) to composition.plan.bindings()
     }
@@ -88,10 +100,13 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         private val nullPolicy: NullPolicy,
         private val rootWriteFields: Set<String>?,
         private val replaced: (RelationshipModel) -> RemovedTargets?,
+        private val createsRoot: Boolean,
     ) {
         val plan = WritePlan(graph)
         private val stamped = mutableListOf<Any>()
         private val carried = mutableListOf<String?>()
+        private val keys = mutableListOf<NodeKey?>()
+        private val repeats = mutableListOf<Repeat>()
         private lateinit var root: StampWrite
 
         fun compose(obj: Any, before: JsonNode?, after: JsonNode?): SaveStatement {
@@ -103,7 +118,9 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             } else {
                 rootNode(obj, FragmentModel.from(obj.javaClass), replaces = false, before)
             }
-            return SaveStatement(plan.text(OracleWriteBlock.Returns.STAMPS), plan.bindings(), root, stamped, carried)
+            return SaveStatement(
+                plan.text(OracleWriteBlock.Returns.STAMPS), plan.bindings(), root, stamped, carried, keys, repeats, plan.offered.toList(), createsRoot,
+            )
         }
 
         /** One fragment of a batch: saved as the root of a save on its own is, and returned under [index]. */
@@ -129,9 +146,10 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
                 val value = read(view, relationship.fieldName)
                 Triple(relationship, target, if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value))
             }
-            // Every node the object holds, in any field: none of them is deleted as unreferenced,
-            // though the field it is dropped from holds the only relationship the store has to it yet.
-            val held = written.flatMap { (_, target, items) -> items.filterNotNull().map { target.fragmentOf(it) } }
+            // Every node the object holds, in any field and in any view nested in one: none of them is
+            // deleted as unreferenced, though the field it is dropped from holds the only relationship
+            // the store has to it yet.
+            val held = if (depth == 0) heldBy(view, model) else emptyList()
             // A save leaves a relationship's property alone where the object's is null, as it leaves a
             // related node's. A save of what a change altered clears one the change set to null.
             val clears = before != null
@@ -150,13 +168,21 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
                     if (gone.isNotEmpty()) removal(relationship, target, rootNode, gone.toList(), keep = false, RemovedTargets.KEEP, emptyList())
                 } else if (depth == 0) {
                     replaced(relationship)?.let { removedTargets ->
-                        val heldIds = held.filter { target.model.clazz.isInstance(it) }.mapNotNull { target.idOfFragment(it) }.distinct()
-                        removal(relationship, target, rootNode, ids.filterNotNull(), keep = true, removedTargets, heldIds)
+                        val heldIds = held.filter { target.matches(it) }.mapNotNull { idOf(it) }.distinct()
+                        // Another field that reads the same relationships holds some of them: those are its to keep.
+                        val siblingIds = written.filter { (other) -> other !== relationship && other.reads(relationship) }
+                            .flatMap { (_, sibling, others) -> others.filterNotNull().map { sibling.fragmentOf(it) } }
+                            .filter { target.matches(it) }.mapNotNull { idOf(it) }
+                        removal(relationship, target, rootNode, (ids.filterNotNull() + siblingIds).distinct(), keep = true, removedTargets, heldIds)
                     }
                 }
 
                 items.forEachIndexed { index, item ->
-                    if (item == null || last[ids[index]]?.let { it != index } == true) return@forEachIndexed
+                    if (item == null) return@forEachIndexed
+                    if (last[ids[index]]?.let { it != index } == true) {
+                        repeated(target.fragmentOf(item))
+                        return@forEachIndexed
+                    }
                     val was = ids[index]?.let { itemsBefore?.get(it.toString()) }
                     val now = itemsNow?.getOrNull(index)
                     // As it was when loaded: the relationship and its target are left alone.
@@ -188,12 +214,46 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
                 fragment, model, values, before, nullPolicy, rootWriteFields, readsStore = true,
                 "root" to true, "carried" to carriedStamp,
                 // The token for the node's own data is always compared; the whole stamp, and so the token
-                // for its relationships too, when the save replaces a relationship list.
-                "expect" to expected?.let { if (replaces) it else Stamps.nodeToken(it) }, "whole" to replaces.takeIf { it },
+                // for its relationships too, when the save replaces a relationship list. A stamp with no
+                // node token of its own, which no save leaves, is compared whole too.
+                "expect" to expected?.let { if (whole(it, replaces)) it else Stamps.nodeToken(it) },
+                "whole" to expected?.let { whole(it, replaces) }?.takeIf { it },
+                // An update makes no node: one that is gone stays gone, and the block gives no row.
+                "create" to false.takeIf { !createsRoot },
             )
             root = StampWrite(fragment.javaClass, idOf(model, values), model.labels.joinToString(":"), keyOf(model), expected, carriedStamp)
             return node
         }
+
+        private fun whole(expected: String, replaces: Boolean): Boolean = replaces || !Stamps.hasNodeToken(expected)
+
+        /**
+         * Records [fragment] as one a field holds beside a later one for the same node. It is not
+         * written, and is handed the stamp the node is left with as the one that is written is.
+         */
+        private fun repeated(fragment: Any) {
+            val model = FragmentModel.from(fragment.javaClass)
+            val stampField = model.stampField ?: return
+            val values = objectMapper.toMap(fragment)
+            val id = values[model.nodeIdField] ?: return
+            repeats.add(Repeat(fragment, values[stampField] as? String, NodeKey(model.labels.toSet(), id)))
+        }
+
+        /** The fragments [view] holds through its relationship fields, and through those of each view nested in it. */
+        private fun heldBy(view: Any, model: GraphViewModel): List<Any> =
+            model.relationships.filterNot { it.readOnly }.flatMap { relationship ->
+                val target = targetOf(relationship)
+                val value = read(view, relationship.fieldName)
+                val items = if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value)
+                items.filterNotNull().flatMap { item ->
+                    val nested = target.view?.let { heldBy(target.nodeOf(item), it) }.orEmpty()
+                    listOf(target.fragmentOf(item)) + nested
+                }
+            }
+
+        /** The id of [fragment], as its own class declares it. */
+        private fun idOf(fragment: Any): Any? =
+            FragmentModel.from(fragment.javaClass).nodeIdField?.let { objectMapper.toMap(fragment)[it] }
 
         /**
          * A node reached through a relationship. One that was loaded, as [before], and is now [after]
@@ -206,6 +266,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             val index = model.stampField?.let {
                 stamped.add(fragment)
                 carried.add(values[it] as? String)
+                keys.add(values[model.nodeIdField]?.let { id -> NodeKey(model.labels.toSet(), id) })
                 (stamped.size - 1).toString()
             }
             val altered = altered(before, after)
@@ -303,7 +364,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             val node = plan.node()
             plan.add(
                 "node", "r" to node, "s" to plan.shape(model.labels, key), "k" to id.toString(),
-                "key" to key, "id" to id, "labels" to model.labels.sorted(), "fresh" to Stamps.fresh(),
+                "key" to key, "id" to id, "labels" to model.labels.sorted(), "fresh" to plan.fresh(),
                 "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() }, "bags" to bags.takeIf { it.isNotEmpty() },
                 "add" to add.takeIf { it.isNotEmpty() }, "drop" to drop.takeIf { it.isNotEmpty() }, "owned" to owned, *more,
             )
@@ -391,6 +452,10 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
 
         fun idOf(item: Any): Any? = idOfFragment(fragmentOf(item))
 
+        /** Whether [fragment] is a node this field reads: one of its class, or one that carries its labels. */
+        fun matches(fragment: Any): Boolean =
+            model.clazz.isInstance(fragment) || FragmentModel.from(fragment.javaClass).labels.containsAll(model.labels)
+
         fun idOfFragment(fragment: Any): Any? = objectMapper.toMap(fragment)[idField]
 
         fun idOf(item: JsonNode): String? {
@@ -414,3 +479,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         }
     }
 }
+
+/** Whether a field of this relationship loads relationships [other] loads too: the same type, read the same way. */
+private fun RelationshipModel.reads(other: RelationshipModel): Boolean =
+    type == other.type && (direction == other.direction || direction == Direction.UNDIRECTED || other.direction == Direction.UNDIRECTED)

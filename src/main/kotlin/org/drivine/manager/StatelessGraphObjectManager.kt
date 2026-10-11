@@ -187,6 +187,9 @@ class StatelessGraphObjectManager private constructor(
         // list, and must not remove a relationship the object never held.
         val singles = single.map { statementFor(it, relationships, nullPolicy, null, checked = relationships is Replace) }
         // That each object can be handed its stamps is known before anything is written.
+        if (together != null) {
+            fragments.filter { FragmentModel.from(it.value.javaClass).stampField != null }.forEach { stamps.requireStampable(it.value, listOf(it.value)) }
+        }
         batched.forEach { stamps.requireStampable(it.value, listOf(it.value)) }
         single.forEachIndexed { index, item -> requireStampable(item, singles[index]) }
         val plainSpecs = objects.batchSpecs(plain.map { it.value }, nullPolicy)

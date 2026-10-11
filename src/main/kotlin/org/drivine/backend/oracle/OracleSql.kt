@@ -60,7 +60,10 @@ internal object OracleSql {
     private fun step(key: String): String = "\"${key.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
     /** The path of the property [key], as a SQL literal. */
-    fun path(key: String, suffix: String = ""): String = literal("$.${step(key)}$suffix")
+    fun path(key: String, suffix: String = ""): String {
+        require(key.isNotEmpty()) { "A property name is empty: an empty name is no property a statement can read." }
+        return literal("$.${step(key)}$suffix")
+    }
 
     /**
      * Whether the node [alias] carries [label], written so the index over labels can answer it: the

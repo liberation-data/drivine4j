@@ -2,6 +2,7 @@ package org.drivine.backend.oracle
 
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
+import org.drivine.model.Stamps
 
 /** How a block finds a node: the labels it carries and the property its id is stored under. */
 internal data class NodeShape(val labels: List<String>, val key: String)
@@ -64,6 +65,7 @@ DECLARE
     v_h_node  t_numbers;
     v_relinks t_flags;
     v_root    NUMBER;
+    v_root_made BOOLEAN := FALSE;
     v_was     VARCHAR2(33);
     v_carried VARCHAR2(33);
     v_stamp   VARCHAR2(33);
@@ -144,7 +146,8 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         v_nid PLS_INTEGER := v_relinks.FIRST;
     BEGIN
         WHILE v_nid IS NOT NULL LOOP
-            UPDATE ${graph.nodes} SET stamp = NVL(SUBSTR(stamp, 1, 17), SUBSTR(v_mark, 1, 17)) || SUBSTR(v_mark, 18) WHERE nid = v_nid;
+            -- A stamp that is not two tokens, which no save leaves, is replaced whole.
+            UPDATE ${graph.nodes} SET stamp = NVL(SUBSTR(CASE WHEN LENGTH(stamp) = 33 AND SUBSTR(stamp, 17, 1) = ':' THEN stamp END, 1, 17), SUBSTR(v_mark, 1, 17)) || SUBSTR(v_mark, 18) WHERE nid = v_nid;
             v_nid := v_relinks.NEXT(v_nid);
         END LOOP;
     END;
@@ -197,6 +200,7 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         v_nid       NUMBER;
         v_stamp     VARCHAR2(33);
         v_found     VARCHAR2(33);
+        v_two       VARCHAR2(33);
         v_labels    VARCHAR2(4000);
         v_props     CLOB;
         v_new_props CLOB;
@@ -223,7 +227,8 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
             v_made := v_nid IS NULL;
             IF v_made THEN
                 -- A checked save does not make the node again: it is gone, and the object is stale.
-                IF v_expect IS NOT NULL THEN
+                -- Nor does a step that makes no node: the block gives no row, and has written nothing.
+                IF v_expect IS NOT NULL OR NOT NVL(op.get_boolean('create'), TRUE) THEN
                     RAISE e_stale;
                 END IF;
                 v_labels := op.get_array('labels').to_string;
@@ -345,8 +350,10 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
             ELSE
                 -- A new first token only if the step changes the node, or the node has no stamp yet.
                 SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
-                IF v_stamp IS NULL OR v_same = 0 OR v_relabel THEN
-                    v_stamp := SUBSTR(v_fresh, 1, 16) || NVL(SUBSTR(v_stamp, 17), SUBSTR(v_fresh, 17));
+                -- A stamp that is not two tokens, which no save leaves, counts as none.
+                v_two := CASE WHEN LENGTH(v_stamp) = 33 AND SUBSTR(v_stamp, 17, 1) = ':' THEN v_stamp END;
+                IF v_two IS NULL OR v_same = 0 OR v_relabel THEN
+                    v_stamp := SUBSTR(v_fresh, 1, 16) || NVL(SUBSTR(v_two, 17), SUBSTR(v_fresh, 17));
                     -- Each column is written only when it changes: the labels and the properties are each indexed.
                     IF v_relabel THEN
                         UPDATE ${graph.nodes} SET labels = v_labels WHERE nid = v_nid;
@@ -364,11 +371,13 @@ ${shapes.withIndex().joinToString("\n") { (index, shape) -> joiner(index, shape,
         v_nodes(op.get_number('r')) := v_nid;
         IF op.has('i') THEN
             v_h_index(v_h_index.COUNT) := op.get_string('i');
-            v_h_found(v_h_found.COUNT) := v_found;
+            -- Nothing for a node the step made, and a mark for one that was there without a stamp.
+            v_h_found(v_h_found.COUNT) := CASE WHEN v_made THEN NULL ELSE NVL(v_found, '$NEVER_STAMPED') END;
             v_h_node(v_h_node.COUNT) := v_nid;
         END IF;
         IF NVL(op.get_boolean('root'), FALSE) THEN
             v_root := v_nid;
+            v_root_made := v_made;
             v_was := v_found;
             v_carried := op.get_string('carried');
         END IF;
@@ -610,6 +619,7 @@ END;
     companion object {
         const val PLAN = "_plan"
         const val MARK = "_mark"
+        private const val NEVER_STAMPED = Stamps.NEVER_STAMPED
 
         /**
          * The stamps a save hands back, read when every step has run: the root's, then `index/found=stamp`
@@ -618,7 +628,14 @@ END;
          */
         private val STAMPS = """
         SELECT stamp INTO v_stamp FROM #NODES# WHERE nid = v_root;
-        IF v_carried IS NOT NULL THEN
+        IF v_carried IS NULL THEN
+            -- An object that carried no stamp is handed the whole stamp only of a node its save made.
+            IF NOT v_root_made THEN
+                v_stamp := SUBSTR(v_stamp, 1, 17);
+            END IF;
+        ELSIF v_was = v_carried THEN
+            NULL; -- found exactly as loaded: the node's stamp is handed back whole
+        ELSE
             v_stamp := CASE WHEN SUBSTR(v_was, 1, 16) = SUBSTR(v_carried, 1, 16) THEN SUBSTR(v_stamp, 1, 16) ELSE SUBSTR(v_carried, 1, 16) END || ':' ||
                 CASE WHEN SUBSTR(v_was, 18) = SUBSTR(v_carried, 18) THEN SUBSTR(v_stamp, 18) ELSE SUBSTR(v_carried, 18) END;
         END IF;
