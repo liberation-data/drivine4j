@@ -9,22 +9,36 @@ import org.drivine.schema.VersionMarkerStatements
  * past the 4000 characters a text is read as by default; the inventory itself is kept behind
  * [ITEMS_MARK], because Oracle keeps an empty string as null and an empty inventory is not no inventory.
  */
-internal class OracleVersionMarker(private val graph: OracleGraph, label: String, scopeProperty: String) : VersionMarkerStatements {
-    /** The predicate that finds the marker of the scope bound as `$scope`. */
-    private val marker = "${OracleSql.hasLabel("n", label)} AND ${OracleSql.property("n", scopeProperty)} = \$scope"
+internal class OracleVersionMarker(private val graph: OracleGraph, private val label: String, private val scopeProperty: String) : VersionMarkerStatements {
+    /** The predicate that finds the marker of the scope bound as `$scope`, among the nodes named [alias]. */
+    private fun marker(alias: String = "n") = "${OracleSql.hasLabel(alias, label)} AND ${OracleSql.property(alias, scopeProperty)} = \$scope"
 
     /** The marker is a node of the graph, so the graph is made first where it is not yet. */
     override val prepare: String = graph.ensuring
 
-    /** The order that puts the marker applied last first, and one never applied after every other. */
-    private val newestFirst = "${OracleSql.property("n", "appliedAt", SqlKind.NUMBER)} DESC NULLS LAST"
+    /**
+     * The order that puts the marker applied last first, and one never applied after every other. Of
+     * two applied in one moment the one made later is first, so the marker read, the one written and
+     * the one kept are the same marker.
+     */
+    private fun newestFirst(alias: String = "n") = "${OracleSql.property(alias, "appliedAt", SqlKind.NUMBER)} DESC NULLS LAST, $alias.nid DESC"
 
     override fun read(property: String): String =
-        "SELECT JSON_VALUE(n.props, ${OracleSql.path(property)} RETURNING CLOB) FROM ${graph.nodes} n WHERE $marker ORDER BY $newestFirst FETCH FIRST 1 ROWS ONLY"
+        "SELECT JSON_VALUE(n.props, ${OracleSql.path(property)} RETURNING CLOB) FROM ${graph.nodes} n WHERE ${marker()} ORDER BY ${newestFirst()} FETCH FIRST 1 ROWS ONLY"
 
-    /** The moment is bound as `$now`: Oracle has no `timestamp()` of the graph engines' shape. */
+    /**
+     * The moment is bound as `$now`: Oracle has no `timestamp()` of the graph engines' shape.
+     *
+     * The marker is found by a query and matched by its id. Matched by its scope, the statement would
+     * update the column it matches on, which Oracle refuses (`ORA-38104`) unless an index over the
+     * scope happens to stand in for the column, as the one beneath the marker's constraint does: an
+     * owner with no version has no such constraint made for it. Where a race left several markers,
+     * the newest is the one written.
+     */
     override val merge: String = """
-        MERGE INTO ${graph.nodes} n USING dual ON ($marker)
+        MERGE INTO ${graph.nodes} n
+        USING (SELECT (SELECT m.nid FROM ${graph.nodes} m WHERE ${marker("m")} ORDER BY ${newestFirst("m")} FETCH FIRST 1 ROWS ONLY) AS nid FROM dual) found
+        ON (n.nid = found.nid)
         WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now))
         WHEN NOT MATCHED THEN INSERT (labels, props)
             VALUES (${OracleSql.literal("[\"$label\"]")}, JSON_OBJECT(${OracleSql.literal(scopeProperty)} VALUE ${'$'}scope, 'version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now ABSENT ON NULL))
@@ -35,11 +49,11 @@ internal class OracleVersionMarker(private val graph: OracleGraph, label: String
 
     override val deleteAllButNewest: String = """
         DELETE FROM ${graph.nodes} WHERE nid IN (
-            SELECT nid FROM (SELECT n.nid, ROW_NUMBER() OVER (ORDER BY $newestFirst, n.nid DESC) AS position FROM ${graph.nodes} n WHERE $marker)
+            SELECT nid FROM (SELECT n.nid, ROW_NUMBER() OVER (ORDER BY ${newestFirst()}) AS position FROM ${graph.nodes} n WHERE ${marker()})
             WHERE position > 1)
     """.trimIndent()
 
-    override val delete: String = "DELETE FROM ${graph.nodes} n WHERE $marker"
+    override val delete: String = "DELETE FROM ${graph.nodes} n WHERE ${marker()}"
 
     override fun storedItems(items: String): String = ITEMS_MARK + items
 

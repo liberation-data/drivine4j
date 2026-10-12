@@ -30,7 +30,7 @@ class OracleReservedNodesTest {
     fun `a property of the marker is read as a CLOB from the newest marker of the scope, one row at most`() {
         assertEquals(
             "SELECT JSON_VALUE(n.props, '$.items' RETURNING CLOB) FROM g_node n WHERE $isMarker" +
-                " ORDER BY JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST FETCH FIRST 1 ROWS ONLY",
+                " ORDER BY JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST, n.nid DESC FETCH FIRST 1 ROWS ONLY",
             marker.read("items"),
         )
         assertEquals(setOf("scope"), parameters(marker.read("version")))
@@ -51,8 +51,11 @@ class OracleReservedNodesTest {
     @Test
     fun `the merge updates the marker of the scope, or makes one with the marker's label and the scope as its key`() {
         val merge = marker.merge
+        val newest = "SELECT m.nid FROM g_node m WHERE ${isMarker.replace("n.", "m.")}" +
+            " ORDER BY JSON_VALUE(m.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST, m.nid DESC FETCH FIRST 1 ROWS ONLY"
 
-        assertTrue(merge.startsWith("MERGE INTO g_node n USING dual ON ($isMarker)"), merge)
+        // Matched by the id of the marker found: Oracle refuses an update of a column the match reads (ORA-38104).
+        assertTrue(merge.startsWith("MERGE INTO g_node n\nUSING (SELECT ($newest) AS nid FROM dual) found\nON (n.nid = found.nid)\n"), merge)
         assertTrue("WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE \$version, 'items' VALUE \$items, 'appliedAt' VALUE \$now))" in merge, merge)
         assertTrue("VALUES ('[\"_DrivineSchema\"]', JSON_OBJECT('scope' VALUE \$scope, 'version' VALUE \$version, 'items' VALUE \$items, 'appliedAt' VALUE \$now ABSENT ON NULL))" in merge, merge)
     }

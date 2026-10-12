@@ -11,8 +11,12 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.any
+import org.drivine.query.dsl.anyOf
+import org.drivine.query.dsl.eqIgnoreCase
+import org.drivine.query.dsl.matches
 import org.drivine.query.dsl.none
 import org.drivine.query.dsl.not
+import org.drivine.query.dsl.notIn
 import org.drivine.query.dsl.predicate
 import org.drivine.query.dsl.property
 import org.drivine.query.dsl.query
@@ -20,6 +24,7 @@ import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.query.sort.CallSubqueryEmitter
 import org.drivine.schema.FullTextIndexSpec
+import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -418,8 +423,51 @@ class ReadPathOracleTest {
             val pm = OracleTestDatabase.fixtures(store)
             gom = buildGom(pm, registry)
             ensureIndexes(pm)
+            // A related node filtered by a property that has an index: tested on the rows of its pattern,
+            // and not in the pattern, such a property ends the server process of Oracle Free 23.26.
+            listOf("Keeper" to "display_name", "Keeper" to "id", "Entry" to "title", "Marker" to "display_name", "Marker" to "id")
+                .forEach { (label, property) -> pm.indexes.ensure(RangeIndexSpec(label, property)) }
             seed(gom, pm)
         }
+    }
+
+    @Test
+    fun `a view is loaded by an indexed property of a related node, and of a node that one is related to, on Oracle`() {
+        fun loaded(spec: GraphQuerySpec<ShelfViewQueryDsl>.() -> Unit) = gom.loadAll(ShelfView::class.java, DSL, spec).map { it.shelf.id }.toSet()
+
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName eq "kim" } } })
+        assertEquals(setOf("s2", "s3"), loaded { where { query.keeper.none { displayName eq "kim" } } })
+        assertEquals(setOf("s1"), loaded { where { query.entries.any { title eq "alpha"; markers.displayName eq "red" } } })
+        assertEquals(emptySet(), loaded { where { query.entries.any { markers.displayName eq "red"; markers.id eq "m-blue" } } })
+        // A test against a list is written with a subquery, which a pattern does not hold: it stays on the pattern's rows.
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { displayName inList listOf("kim", "lee", "nobody") } } })
+        assertEquals(setOf("s2"), loaded { where { query.keeper.any { id eq "k-lee"; displayName inList listOf("kim", "lee") } } })
+        assertEquals(setOf("s1"), loaded { where { query.entries.any { markers.id eq "m-red"; markers.displayName inList listOf("red", "green") } } })
+    }
+
+    @Test
+    fun `each test a pattern holds is asked of an indexed property of a related node on Oracle`() {
+        fun loaded(spec: GraphQuerySpec<ShelfViewQueryDsl>.() -> Unit) = gom.loadAll(ShelfView::class.java, DSL, spec).map { it.shelf.id }.toSet()
+
+        assertEquals(setOf("s2"), loaded { where { query.keeper.any { displayName neq "kim" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName startsWith "ki" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName contains "i" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName matches "k.*" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName eqIgnoreCase "KIM" } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { displayName.isNotNull() } } })
+        assertEquals(emptySet(), loaded { where { query.keeper.any { displayName.isNull() } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { anyOf { id eq "k-lee"; displayName eq "kim" } } } })
+    }
+
+    @Test
+    fun `an or that holds a test against a list, itself or under a not, is asked of the rows of a related node on Oracle`() {
+        fun loaded(spec: GraphQuerySpec<ShelfViewQueryDsl>.() -> Unit) = gom.loadAll(ShelfView::class.java, DSL, spec).map { it.shelf.id }.toSet()
+
+        assertEquals(setOf("s2"), loaded { where { query.keeper.any { displayName notIn listOf("kim") } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { anyOf { id eq "k-lee"; displayName inList listOf("kim") } } } })
+        // The not hides the list from an or that looks only at its own conditions: in a pattern it is ORA-40988.
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { anyOf { not { displayName inList listOf("kim") }; id eq "k-kim" } } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { anyOf { not { displayName inList listOf("kim", "lee") }; id eq "k-kim" } } } })
     }
 
     @Test fun `a scored search filters on a collection of nested views on Oracle`() = verifyNestedViewFilter(gom)

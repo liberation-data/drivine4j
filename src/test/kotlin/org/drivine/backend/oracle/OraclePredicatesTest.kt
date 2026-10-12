@@ -278,21 +278,67 @@ class OraclePredicatesTest {
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
             PropertyCondition("people.id", ComparisonOperator.EQUALS, "h1"),
         )))
-        // The related node is the field's row, and carries what the conditions read of it.
+        // The related node is the field's row, and the pattern that reaches it tests it.
         assertEquals(
             """
             EXISTS (
                 SELECT 1
                 FROM GRAPH_TABLE (g
-                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node)
-                    COLUMNS (claim_.nid AS src, people_.props)) people_
-                WHERE people_.src = claim_.nid
-                  AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0
-                  AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE JSON_VALUE(people_.props, '$.name') = ${'$'}_p0 AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
+                    COLUMNS (claim_.nid AS src)) people_
+                WHERE people_.src = claim_.nid)
             """.trimIndent(),
             sql,
         )
         assertEquals(mapOf<String, Any?>("_p0" to "ada", "_p1" to "h1"), select.bindings())
+    }
+
+    @Test
+    fun `a test of a related node against a list is asked of the pattern's rows, and the conditions beside it in the pattern`() {
+        val select = view()
+        val sql = assertNotNull(select.predicate(listOf(
+            PropertyCondition("people.id", ComparisonOperator.IN, listOf("h1", "h2")),
+            PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
+        )))
+        // The list is read as rows by a subquery, which a pattern does not hold (ORA-40988).
+        assertEquals(
+            """
+            EXISTS (
+                SELECT 1
+                FROM GRAPH_TABLE (g
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE JSON_VALUE(people_.props, '$.name') = ${'$'}_p0)
+                    COLUMNS (claim_.nid AS src, people_.props)) people_
+                WHERE people_.src = claim_.nid
+                  AND JSON_VALUE(people_.props, '$.id') IN (SELECT v FROM JSON_TABLE(${'$'}_p1, '$[*]' COLUMNS (v VARCHAR2(4000) PATH '$'))))
+            """.trimIndent(),
+            sql,
+        )
+        assertEquals(setOf("_p0", "_p1"), select.bindings().keys)
+    }
+
+    @Test
+    fun `an or or a not that holds a subquery is asked whole of the pattern's rows, and one that holds none in the pattern`() {
+        fun asked(condition: WhereCondition) = assertNotNull(view().predicate(listOf(RelationshipCondition("people", listOf(condition)))))
+        val named = PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada")
+        val listed = PropertyCondition("people.id", ComparisonOperator.IN, listOf("h1"))
+        val onRows = listOf(
+            WhereCondition.OrCondition(listOf(named, listed)),
+            WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(listed)))),
+            WhereCondition.OrCondition(listOf(named, WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(listed)))))),
+            WhereCondition.OrCondition(listOf(named, WhereCondition.AnyLabelCondition("people", listOf("Human")))),
+        )
+        for (condition in onRows) {
+            val sql = asked(condition)
+            assertTrue("(people_ IS node)" in sql, sql)
+            assertTrue("WHERE people_.src = claim_.nid\n      AND (JSON_VALUE(people_.props, '$.name') = \$_p0 OR " in sql, sql)
+        }
+
+        val inPattern = asked(WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(named)))))
+        assertTrue(
+            "(people_ IS node WHERE (JSON_VALUE(people_.props, '$.name') = \$_p0 OR NOT (JSON_VALUE(people_.props, '$.name') = \$_p1)))" in inPattern,
+            inPattern,
+        )
+        assertTrue(inPattern.endsWith("WHERE people_.src = claim_.nid)"), inPattern)
     }
 
     @Test
@@ -301,8 +347,9 @@ class OraclePredicatesTest {
         val sql = assertNotNull(select.predicate(listOf(PropertyCondition("claims_people.name", ComparisonOperator.EQUALS, "ada"))))
         assertEquals(2, Regex("EXISTS").findAll(sql).count(), sql)
         assertTrue(sql.contains("MATCH (memo_ IS node) -[e IS edge WHERE e.type = 'COVERS']-> (claims_ IS node)"), sql)
-        assertTrue(sql.contains("MATCH (claims_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node)"), sql)
-        assertTrue(sql.contains("WHERE people_.src = claims_.nid\n          AND JSON_VALUE(people_.props, '$.name') = \$_p0"), sql)
+        assertTrue(sql.contains("MATCH (claims_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE JSON_VALUE(people_.props, '$.name') = \$_p0)"), sql)
+        // The inner EXISTS names the row of the outer, so it is asked of that row and not in its pattern.
+        assertTrue(sql.contains("WHERE claims_.src = memo_.nid\n      AND EXISTS ("), sql)
     }
 
     @Test
@@ -315,7 +362,7 @@ class OraclePredicatesTest {
     fun `a label condition on a relationship alias tests the related node's row`() {
         val sql = assertNotNull(view().predicate(listOf(LabelCondition("people", listOf("Human")))))
         assertTrue(sql.startsWith("EXISTS"), sql)
-        assertTrue(sql.contains("AND INSTR(JSON_SERIALIZE(people_.labels), '\"Human\"') > 0"), sql)
+        assertTrue(sql.contains("(people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '\"Human\"') > 0)"), sql)
     }
 
     @Test

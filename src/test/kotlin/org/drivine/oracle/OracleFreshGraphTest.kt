@@ -40,6 +40,25 @@ class OracleFreshGraphTest {
         assertEquals(listOf("a", "b"), store.storedInventory())
     }
 
+    /**
+     * What a startup does for an owner whose catalog has no version: the marker's key is not
+     * constrained first, so nothing indexes the scope the marker is found by.
+     */
+    @Test
+    fun `an owner with no version records its marker, and records it again, on a graph nothing has made`() {
+        val store = SchemaVersionStore(manager, "an-owner")
+        assertNull(store.storedInventory())
+
+        store.record(null, listOf("a"))
+        assertNull(store.storedVersion())
+        assertEquals(listOf("a"), store.storedInventory())
+
+        store.record("v1", listOf("a", "b"))
+        assertEquals("v1", store.storedVersion())
+        assertEquals(listOf("a", "b"), store.storedInventory())
+        assertNull(SchemaVersionStore(manager).storedInventory(), "another owner's marker is its own")
+    }
+
     @Test
     fun `the store's identity is minted on a graph nothing has made`() {
         val identity = StoreIdentityResolver(manager).resolve()
