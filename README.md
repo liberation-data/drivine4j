@@ -3,7 +3,7 @@
 [![CI](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml/badge.svg)](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, and **Memgraph** with two approaches to graph mapping:
+A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph** and **Oracle** (SQL/PGQ) with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
 2. **Object manager** (`StatelessGraphObjectManager`) - High-level API with annotated models and type-safe DSL.
@@ -158,11 +158,12 @@ class AppConfig {
     @Bean
     fun dataSourceMap(): DataSourceMap {
         val props = ConnectionProperties(
+            type = DatabaseType.NEO4J,
             host = "localhost",
             port = 7687,
-            username = "neo4j",
+            userName = "neo4j",
             password = "password",
-            database = "neo4j"
+            databaseName = "neo4j"
         )
         return DataSourceMap(mapOf("neo" to props))
     }
@@ -2087,12 +2088,21 @@ QuerySpecification
 
 ```kotlin
 data class ConnectionProperties(
-    val host: String = "localhost",
-    val port: Int = 7687,
-    val username: String? = null,
+    val type: DatabaseType,                  // NEO4J, FALKORDB, NEPTUNE, MEMGRAPH, ORACLE
+    val host: String = "",
+    val port: Int? = null,                   // the engine's own when null: 1521 on Oracle
+    val userName: String? = null,
     val password: String? = null,
-    val database: String? = null,
-    val encrypted: Boolean = false
+    val idleTimeout: Int? = null,
+    val connectionTimeout: Int? = null,
+    val poolMax: Int? = null,
+    val databaseName: String? = null,        // on Oracle, the service to connect to
+    val defaultGraphPath: String? = null,    // on Oracle, the name of the property graph and its tables
+    val protocol: String? = null,
+    val cypherDialect: CypherDialect? = null,
+    val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
+    val region: String? = null,
+    val neptuneAuth: NeptuneAuthMode? = null,
 )
 ```
 
@@ -2137,6 +2147,7 @@ Drivine4j supports multiple graph database engines from the same codebase. Switc
 | FalkorDB | `FALKORDB` | Passthrough (no multi-statement) | CALL subquery | None |
 | Amazon Neptune | `NEPTUNE` | Full ACID | CALL subquery | IAM SigV4 or None (tunnel) |
 | Memgraph | `MEMGRAPH` | Full ACID | CALL subquery | Basic (user/pass) or None |
+| Oracle 23ai / 26ai | `ORACLE` | Full ACID | In the statement | User and password |
 
 ### Neo4j
 
@@ -2277,6 +2288,184 @@ database:
 - No APOC — use MAGE for procedures; collection sorting uses CALL subqueries by default
 - No `CascadeType.DELETE_ORPHAN`: Memgraph cannot use `EXISTS` inside `WITH`, so a save or delete that asks for it throws `UnsupportedOperationException`. On `StatelessGraphObjectManager`, `Replace(field, removedTargets = DELETE_UNREFERENCED)` works on Memgraph
 - For MAGE algorithms or Memgraph Lab, switch the image to `memgraph/memgraph-platform`
+
+### Oracle
+
+Oracle Database 23ai or later, over JDBC. Oracle does not speak Cypher: Drivine reads a graph with
+SQL/PGQ (`GRAPH_TABLE`) and writes it as rows, since Oracle refuses data manipulation through a
+property graph. Models, the query DSL and `StatelessGraphObjectManager` are the same as on the graph
+engines. Add the driver yourself: `com.oracle.database.jdbc:ojdbc11`.
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: ORACLE
+      host: localhost
+      port: 1521
+      database-name: FREEPDB1     # the service to connect to
+      user-name: app
+      password: secret
+      default-graph-path: drivine # names the property graph and its tables; this is the default
+```
+
+`user-name` and `database-name` are required, and `port` is 1521 unless given. A `cypher-dialect` or a
+`protocol` means nothing here and is ignored with a warning. The graph's name names tables, so it is
+letters, digits and underscores, begins with a letter, and is at most 114 characters.
+
+Drivine makes a connection pool (HikariCP) for the datasource: `pool-max` connections at most (40
+unless given), `connection-timeout` milliseconds to wait for one (5,000 unless given), and
+`idle-timeout` milliseconds before an idle one is closed (the pool's own default unless given). The
+pool asks the database for a connection as it is made, so a service that cannot be reached or a user
+that is turned away fails at startup. Each connection keeps 64 statements prepared
+(`oracle.jdbc.implicitStatementCacheSize`): a save is the same block each time, and is neither sent
+nor parsed again.
+
+To use a `DataSource` the application already has, register a provider in code:
+`registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
+Drivine does not close a `DataSource` it was given, and does not configure it: turn the driver's
+statement cache on there yourself. For a pool of Drivine's own (HikariCP) without the YAML:
+
+```kotlin
+val provider = JdbcConnectionProvider.pooled(
+    "graph", DatabaseType.ORACLE, JdbcConnectionProvider.oracleUrl("localhost", 1521, "FREEPDB1"), "app", "secret",
+    graphName = "drivine",
+)
+```
+
+**How a graph is stored.** Two tables and the property graph over them, made when a manager first
+speaks to the graph: `<graph>_node (nid, labels, props, stamp)` and
+`<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON. Labels, property
+names and relationship types are data, so `@NodeLabels`, `@PropertyBag` and `edges.relate` work as
+they do elsewhere. To SQL written by hand the graph has one vertex label, `node`, and one edge label,
+`edge`; a Cypher label is a test on `labels` and a relationship type a test on `type`. A node's stamp is
+the `stamp` column, and a load returns it as `__drivine.stamp`. Deleting a node's row deletes its
+relationships with it. A third table, `<graph>_schema`, records the indexes and constraints Drivine
+made: see [Schema Management](#schema-management-indexes--constraints).
+
+**Notes:**
+- A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
+  bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
+  `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.
+- A statement that writes and returns rows is a PL/SQL block that hands them back with
+  `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
+- A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
+  (`issue.state = 'open'`); anything more is SQL over `issue.props`, `issue.labels` and `issue.stamp`.
+- A save is one statement and checks the stamp, as on the graph engines. Another writer that changes a
+  node in SQL should give it a new stamp too: the first sixteen characters of `stamp` for its
+  properties or labels, the last sixteen for its relationships. `Stamps.setClause` and
+  `Stamps.linksClause` are Cypher and do not apply.
+- A save the database turns away because another writer held a row it wanted, a deadlock (`ORA-00060`)
+  or a serialization failure (`ORA-08177`), is run again, as on Neo4j and Memgraph.
+- `saveAll` saves fragments 500 to a statement, and each view by a statement of its own. The batch is
+  one transaction.
+- A delete can cascade with `DELETE_ALL` and with `DELETE_ORPHAN`.
+- Index the id of each node type you save: `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`
+  makes a unique index and the index a node is found by. Without one a save reads the table.
+- A range index reads a property as text. A comparison or an order by a number or a moment is correct
+  and is not served by that index, so an ordered or keyset-paged load is given no index advice.
+- Oracle reads an empty string as null, so a stamp of `''` is no stamp. A comparison with `""` in the
+  query DSL is written to find a property stored empty all the same; SQL of yours that compares
+  `JSON_VALUE(…)` with `''` finds nothing.
+- `matches` takes a regular expression in Oracle's POSIX dialect, matched against the whole value. A
+  leading `(?i)` ignores case; what Java adds, such as `(?:…)`, a look-around or `\b`, is not read.
+- A vector index (`indexes.ensure(VectorIndexSpec(...))`, or `@VectorIndex` through schema management)
+  is a table of embeddings beside the nodes, kept in step by a trigger, with an Oracle vector index
+  over it by neighbour partitions. `loadNearest` goes through it and is approximate, as on the graph
+  engines. With no index made, it measures every node of the label and is exact.
+- A full-text index is a table of the indexed text beside the nodes, with an Oracle Text index over
+  it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. The index holds what has
+  been committed, so a search does not see its own transaction's writes. Oracle Text is in the regular
+  Free image and not the slim one: without it, or with no index made, a search counts the words in the
+  text of every node of the label, and does see them. An `analyzer` is recorded with the index and not
+  applied.
+- A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate.
+- The deprecated `GraphObjectManager.save` and `saveAll` throw `UnsupportedOperationException` on Oracle;
+  that manager's loads, queries and deletes work. Cypher statements written by hand do not run, and
+  neither do the migration tools `RelationshipDirectionRepair` and `PathRelationshipReport`, which are
+  Cypher: they repair what saves before 0.1.0 wrote, and no graph on Oracle is that old.
+
+**What a read looks like.** A load is one SQL/PGQ statement, written to be read beside the Cypher it
+stands for. A row is called what the model calls it, with an underscore so that a field may be called
+`user` or `order`, and the node of a `MATCH` has its row's name. `IS node` and `IS edge` stand where
+Cypher has a label and a type, since both are data: a label is a test of `labels`, a type of `type`.
+`doc` is the node as the map a load returns. Where Cypher loads a view with
+
+```cypher
+MATCH (claim:Claim) WHERE claim.id = $id
+RETURN { claim: claim {.*}, people: [(claim)-[:MENTIONS]->(people:Human) | people {.*}] } AS result
+```
+
+Oracle is sent
+
+```sql
+SELECT JSON_OBJECT(
+    'claim' VALUE claim_.doc,
+    'people' VALUE COALESCE((
+        SELECT JSON_ARRAYAGG(people_.doc ORDER BY people_.eid RETURNING JSON)
+        FROM GRAPH_TABLE (drivine
+            MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0)
+            COLUMNS (claim_.nid AS src, e.eid, people_.doc)) people_
+        WHERE people_.src = claim_.nid), JSON('[]'))
+    RETURNING JSON) AS result
+FROM GRAPH_TABLE (drivine
+    MATCH (claim_ IS node WHERE INSTR(JSON_SERIALIZE(claim_.labels), '"Claim"') > 0)
+    COLUMNS (claim_.nid, claim_.props, claim_.doc)) claim_
+WHERE JSON_VALUE(claim_.props, '$.id') = $id
+```
+
+A relationship field is a query of its own, under the field it fills: Oracle does not let a
+`GRAPH_TABLE` name the row it is nested in, so each returns the node it starts from as `src` and is
+joined to that row outside. `COLUMNS` names only what the statement reads of a row, and every column
+of the root once a `whereClause` written by hand is in it. A second row for
+one field is numbered (`people2_`), as when a condition on `people` is tested beside the field itself.
+A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
+which the index over labels answers, and with `INSTR` where the node is found by its id or at the end
+of a relationship.
+
+**Testing.** `OracleTestContainer` starts Oracle Free (`gvenzl/oracle-free:23-faststart`; another with
+`ORACLE_TEST_IMAGE` or `-Dtest.oracle.image`) and gives a user, `drivine`, in the service `FREEPDB1`.
+`@EnableDrivineTestConfig` uses it for a datasource of type `ORACLE`, or a local instance with
+`USE_LOCAL_ORACLE=true` (see [TEST_CONTAINERS.md](TEST_CONTAINERS.md)). Add the JDBC driver to the test
+classpath. Without Spring:
+
+```kotlin
+val provider = JdbcConnectionProvider.pooled(
+    "graph", DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(),
+    OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword(),
+)
+```
+
+A test written for the graph engines usually seeds its graph and reads it back in Cypher, which Oracle
+does not run. `OracleCypherFixtures` works such a statement out over the graph instead, so the test's
+fixtures stay as they are:
+
+```kotlin
+val fixtures = OracleCypherFixtures.over(persistenceManager)   // Cypher fixtures here, everything else to Oracle
+fixtures.execute(QuerySpecification.withStatement("CREATE (:Person {id: 'ada'})-[:KNOWS]->(:Person {id: 'bob'})"))
+
+OracleCypherFixtures.run(persistenceManager, "MATCH (p:Person) RETURN p.id ORDER BY p.id")   // ["ada", "bob"]
+OracleCypherFixtures.clear(persistenceManager)                                               // every node and relationship
+```
+
+- It reads the Cypher fixtures use and no more: `CREATE`, `MATCH` and `MERGE` patterns with literal or
+  bound properties, `WHERE` (comparisons joined by `AND`), `SET`, `REMOVE`, `DETACH DELETE`, `UNWIND`,
+  `WITH`, and a `RETURN` of one expression or a `count`, with `ORDER BY`. Anything else is refused:
+  `OR`, `ON CREATE SET`, `SKIP`, `LIMIT`, a `RETURN` of several columns.
+- Keywords are upper case. A statement is taken for a fixture when it opens with `MATCH (`, `CREATE (`,
+  `MERGE (` or `UNWIND`; any other, one that opens with `WITH` included, goes to Oracle as SQL.
+- Each statement reads the whole graph into memory and writes back what it changed, a row at a time. It
+  is for a test's handful of nodes and nothing else.
+- The manager must name its graph (`graphName`), as one over a `JdbcConnectionProvider` does.
+- `TestCleanup.beforeEach(persistenceManager, "my-test")` deletes the nodes whose `createdBy` is the tag,
+  in SQL on Oracle, as it does in Cypher elsewhere.
+
+Drivine's own Oracle tests are left out of a plain `./gradlew test`: the image is large and the
+database wants two gigabytes. Run them with
+
+```bash
+ORACLE_TESTS=true ./gradlew :test --tests '*Oracle*'
+```
 
 ### @JsonPacked Annotation
 
@@ -2451,7 +2640,7 @@ Each engine uses a Cypher dialect that controls query generation. The dialect is
 
 ## Schema Management (Indexes & Constraints)
 
-Drivine manages vector indexes, full-text indexes, range indexes, and uniqueness constraints across Neo4j, Memgraph, and FalkorDB — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
+Drivine manages vector indexes, full-text indexes, range indexes, and uniqueness constraints across Neo4j, Memgraph, FalkorDB and Oracle — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
 
 ### Imperative API
 
@@ -2581,7 +2770,7 @@ fun chunkSchema(embeddingService: EmbeddingService) = SchemaCatalog.of(
 ).withVersion(embeddingService.modelId)   // bump this → recreate once
 ```
 
-How it works: the last-applied token is stored in a reserved `_DrivineSchema` marker node per database (portable across all three engines). On `enforce()`, a **changed** token drops and recreates that catalog's items, then records the new token; a first-ever token is *adopted* without recreating, so turning versioning on never nukes a healthy schema.
+How it works: the last-applied token is stored in a reserved `_DrivineSchema` marker node per database (portable across the engines; on Oracle it is a row of the graph's node table). On `enforce()`, a **changed** token drops and recreates that catalog's items, then records the new token; a first-ever token is *adopted* without recreating, so turning versioning on never nukes a healthy schema.
 
 > Recreating a vector index rebuilds it from the stored embedding *properties* — it does **not** re-embed. After a model swap, re-embed the nodes first (same dimensions → the index even auto-updates), then `enforce()`/`recreateAll()` for the structural half. Drivine manages schema, not your embeddings.
 
@@ -2607,6 +2796,18 @@ drivine:
 | Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build |
 | Item names | Yes | Vector only | No |
 
+**Oracle.** Every item is an index over an expression, since a property is a path into a JSON column, and what Drivine made is recorded in the table `<graph>_schema`, which `ensure` and drift detection read. An item whose index or table was dropped by hand is made again by the next `ensure`.
+
+| | Oracle |
+|---|---|
+| Vector indexes | A table of embeddings (`VECTOR(n, FLOAT32)`) beside the nodes, kept in step by a trigger and filled from the nodes there are, with `CREATE VECTOR INDEX … ORGANIZATION NEIGHBOR PARTITIONS` over it. An embedding of another dimension leaves its node out of the index |
+| Full-text indexes | A table of the indexed text beside the nodes, kept in step by a trigger, with an Oracle Text search index over it. Without Oracle Text the index is recorded and nothing is made |
+| Range indexes | `CREATE INDEX … (JSON_VALUE(props, '$.p'))`, the property read as text. Over the property whatever the label, so two labels that index a property of one name share an index. Composite supported |
+| Uniqueness | A unique index over the property for the nodes that carry the label. A node that lacks one of the properties is not constrained |
+| Item names | Recorded; the Oracle object's name is derived from the graph, label and properties, and recorded with it. A drop drops the object the record names |
+
+The store's identity (`DrivineStore`) and the schema marker are nodes of the graph on Oracle too, and the graph's tables are made for them when they are the first thing asked of a new graph.
+
 Neptune and generic openCypher have no schema management support — operations fail loudly rather than silently no-op.
 
 ## Multi-Database Support
@@ -2618,12 +2819,14 @@ class MultiDbConfig {
     fun dataSourceMap(): DataSourceMap {
         return DataSourceMap(mapOf(
             "analytics" to ConnectionProperties(
+                type = DatabaseType.NEO4J,
                 host = "analytics.neo4j.com",
-                database = "analytics"
+                databaseName = "analytics"
             ),
             "users" to ConnectionProperties(
+                type = DatabaseType.NEO4J,
                 host = "users.neo4j.com",
-                database = "users"
+                databaseName = "users"
             )
         ))
     }

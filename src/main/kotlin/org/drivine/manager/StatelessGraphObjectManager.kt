@@ -5,16 +5,18 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.StaleObjectException
 import org.drivine.annotation.GraphView
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.backend.FragmentBatch
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
+import org.drivine.query.FoundStamp
+import org.drivine.query.ReturnedStamps
+import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
-import org.drivine.query.SaveStatementBuilder
 import org.drivine.query.Stamping
 import org.drivine.query.read
-import org.drivine.query.savedByUnwind
 import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
 import java.util.IdentityHashMap
@@ -53,9 +55,9 @@ class StatelessGraphObjectManager private constructor(
 
     private val logger = LoggerFactory.getLogger(StatelessGraphObjectManager::class.java)
     private val digests = objects.sessionManager
-    private val executor = SaveExecutor(persistenceManager)
+    private val backend = objects.backend
+    private val executor = SaveExecutor(persistenceManager, backend)
     private val stamps = StampedCopy(objectMapper)
-    private val statements = SaveStatementBuilder(objectMapper, objects.grammar, objects.storedKeys)
 
     /**
      * Saves [obj] and returns it carrying the stamps the save left: on its root, and on each related
@@ -176,54 +178,74 @@ class StatelessGraphObjectManager private constructor(
             "Replace applies to the relationship fields of a @GraphView, and ${fragments.first().value.javaClass.simpleName} is not one."
         }
         // A stamp is handed back by a statement that returns it: one for a batch of fragments, and one
-        // for each view, and each fragment a batch cannot write.
-        val (stamped, plain) = fragments.partition { FragmentModel.from(it.value.javaClass).stampField != null }
-        val (batched, alone) = stamped.partition { FragmentModel.from(it.value.javaClass).savedByUnwind(objects.grammar) }
-        val single = views + alone.map { it.value }
+        // for each view, and each fragment the backend does not save with others.
+        val batch = backend.saveTogether(fragments, nullPolicy)
+        val single = views + batch.alone.map { it.value }
         // A view whose list is replaced is checked, as a save of it is: a replace overwrites the
         // list, and must not remove a relationship the object never held.
         val singles = single.map { statementFor(it, relationships, nullPolicy, null, checked = relationships is Replace) }
-        // That each object can be handed its stamps is known before anything is written.
-        batched.forEach { stamps.requireStampable(it.value, listOf(it.value)) }
-        single.forEachIndexed { index, item -> requireStampable(item, singles[index]) }
-        val plainSpecs = objects.batchSpecs(plain.map { it.value }, nullPolicy)
-        val batchedSpecs = objects.stampedBatchSpecs(batched, nullPolicy)
+        requireStampable(fragments, batch, single, singles)
+
         val rows = executor.batch(
-            plainSpecs + batchedSpecs + singles.map { executor.spec(it, inBatch = true) },
+            batch.unstamped + batch.stamped + singles.map { executor.spec(it, inBatch = true) },
             offered = singles.flatMap { it.offered },
         )
+        val togetherRows = rows.subList(batch.unstamped.size, batch.unstamped.size + batch.stamped.size).flatten()
+        val saved = IdentityHashMap<Any, Any>()
+        saved.putAll(savedTogether(items, togetherRows.map { FoundStamp.of(it as String) }))
+        saved.putAll(savedSingly(single, singles, rows.takeLast(singles.size)))
+        @Suppress("UNCHECKED_CAST")
+        return items.map { (saved[it] ?: it) as T }
+    }
 
-        // A node the batch holds more than once is written by more than one row, and a later row
-        // finds what an earlier one wrote: what the node carried before the batch is what the first
-        // found, and what it is left with is what the last wrote.
-        val batchedRows = rows.subList(plainSpecs.size, plainSpecs.size + batchedSpecs.size).flatten().map { row ->
-            val (key, stamp) = (row as String).split('=', limit = 2)
-            Triple(items[key.substringBefore('/').toInt()], key.substringAfter('/'), stamp)
-        }
+    /**
+     * Refuses a batch before anything is written when one of its objects could not be handed the
+     * stamps its save would leave: a stamped fragment saved with others, and each of [single] by the
+     * statement of [singles] that saves it.
+     */
+    private fun requireStampable(fragments: List<IndexedValue<Any>>, batch: FragmentBatch, single: List<Any>, singles: List<SaveStatement>) {
+        val alone = batch.alone.map { it.index }.toSet()
+        fragments.filter { it.index !in alone && FragmentModel.from(it.value.javaClass).stampField != null }
+            .forEach { stamps.requireStampable(it.value, listOf(it.value)) }
+        single.forEachIndexed { index, item -> requireStampable(item, singles[index]) }
+    }
+
+    /**
+     * The fragments of [items] that were saved together, each as it is handed the stamp its row in
+     * [returned] says, keyed by the fragment as it was given: one given twice is handed it once.
+     *
+     * A node the batch holds more than once is written by more than one row, and a later row finds
+     * what an earlier one wrote: what the node carried before the batch is what the first found, and
+     * what it is left with is what the last wrote.
+     */
+    private fun savedTogether(items: List<Any>, returned: List<FoundStamp>): Map<Any, Any> {
         val found = linkedMapOf<Pair<Class<*>, Any?>, String>()
         val left = linkedMapOf<Pair<Class<*>, Any?>, String>()
-        fun nodeOf(item: Any) = item.javaClass to objectMapper.toMap(item)[FragmentModel.from(item.javaClass).nodeIdField]
-        batchedRows.forEach { (item, itemFound, stamp) ->
-            found.putIfAbsent(nodeOf(item), itemFound)
-            left[nodeOf(item)] = stamp
+        val nodes = returned.map { row ->
+            val item = items[row.index]
+            val node = item.javaClass to objectMapper.toMap(item)[FragmentModel.from(item.javaClass).nodeIdField]
+            found.putIfAbsent(node, row.found)
+            left[node] = row.stamp
+            item to node
         }
-        // The stamp each object is handed, keyed by the object: one given twice is handed it once.
-        val handed = IdentityHashMap<Any, String>()
-        batchedRows.forEach { (item, _, _) ->
+        val saved = IdentityHashMap<Any, Any>()
+        nodes.forEach { (item, node) ->
             // A batch is not checked, so the node may not have been as the object's stamp says. Then
             // the object keeps its own token: the stamp handed back does not vouch for data or
             // relationships that changed after the object was loaded.
-            handed[item] = Stamps.handedBack(stamps.stampOf(item), found.getValue(nodeOf(item)), left.getValue(nodeOf(item)))
+            val stamp = Stamps.handedBack(stamps.stampOf(item), found.getValue(node), left.getValue(node))
+            saved[item] = stamps.of(item, IdentityHashMap<Any, String>().apply { put(item, stamp) })
         }
-        val saved = IdentityHashMap<Any, Any>()
-        handed.forEach { (item, stamp) -> saved[item] = stamps.of(item, IdentityHashMap<Any, String>().apply { put(item, stamp) }) }
+        return saved
+    }
 
-        val singleRows = rows.takeLast(singles.size)
-        val singleStamps = singles.indices.map { executor.stamps(singles[it], singleRows[it]).toMutableList() }
-        carryForward(singles, singleRows, singleStamps)
-        single.forEachIndexed { index, item -> saved[item] = stamped(item, singles[index], singleStamps[index]) }
-        @Suppress("UNCHECKED_CAST")
-        return items.map { (saved[it] ?: it) as T }
+    /** Each of [single] as the statement of [singles] that saved it hands its stamps back, from that statement's [rows]. */
+    private fun savedSingly(single: List<Any>, singles: List<SaveStatement>, rows: List<List<Any?>>): Map<Any, Any> {
+        val handed = singles.indices.map { executor.stamps(singles[it], rows[it]).toMutableList() }
+        carryForward(singles, rows, handed)
+        val saved = IdentityHashMap<Any, Any>()
+        single.forEachIndexed { index, item -> saved[item] = stamped(item, singles[index], handed[index]) }
+        return saved
     }
 
     /**
@@ -235,12 +257,9 @@ class StatelessGraphObjectManager private constructor(
      */
     private fun carryForward(statements: List<SaveStatement>, rows: List<List<Any?>>, handed: List<MutableList<String>>) {
         statements.forEachIndexed { later, statement ->
-            val returned = (rows[later].firstOrNull() as? String)?.split(',')?.drop(1).orEmpty().associate { entry ->
-                val (key, stamp) = entry.split('=', limit = 2)
-                key.substringBefore('/').toInt() to (key.substringAfter('/') to stamp)
-            }
+            val returned = (rows[later].firstOrNull() as? String)?.let { ReturnedStamps.of(it).related }.orEmpty()
             statement.keys.forEachIndexed { index, key ->
-                val (found, now) = returned[index] ?: return@forEachIndexed
+                val (found, now) = returned[index]?.let { it.found to it.stamp } ?: return@forEachIndexed
                 if (key == null) return@forEachIndexed
                 for (earlier in 0 until later) {
                     if (statements[earlier].root.fragmentClass.let { FragmentModel.from(it).stampField } == null) continue
@@ -343,9 +362,7 @@ class StatelessGraphObjectManager private constructor(
         val dirty = digests.computeDirtyFields(rootAfter, rootBefore)
 
         // The node was loaded, so it is written only if it is still there: an update makes no node.
-        val statement = statements.build(
-            changed, checked = true, NullPolicy.CLEAR, dirty, before = before, after = digests.digestOf(changed), createsRoot = false,
-        )
+        val statement = backend.save(SaveRequest.changed(changed, before, digests.digestOf(changed), dirty))
         requireStampable(changed, statement)
         return stamped(changed, statement, executor.save(statement))
     }
@@ -353,9 +370,8 @@ class StatelessGraphObjectManager private constructor(
     private fun statementFor(obj: Any, relationships: RelationshipWrite, nullPolicy: NullPolicy, writeFields: Set<String>?, checked: Boolean): SaveStatement {
         val replace = relationships as? Replace
         val replaced = replace?.let { replacedFields(obj, it) }.orEmpty().map { it.fieldName }.toSet()
-        return statements.build(
-            obj, checked, nullPolicy, writeFields,
-            replaced = { relationship -> replace?.removedTargets?.takeIf { relationship.fieldName in replaced } },
+        return backend.save(
+            SaveRequest(obj, checked, nullPolicy, writeFields, replaced = { relationship -> replace?.removedTargets?.takeIf { relationship.fieldName in replaced } }),
         )
     }
 

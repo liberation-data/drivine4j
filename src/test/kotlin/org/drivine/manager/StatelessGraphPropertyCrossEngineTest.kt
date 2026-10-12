@@ -29,6 +29,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * `@GraphProperty` verified on Neo4j, FalkorDB, and Memgraph: a field maps to a differently-named
@@ -36,7 +38,7 @@ import kotlin.test.assertTrue
  * the field name), an overridden `@NodeId` keys save + load, and a subtype's overridden field loads
  * correctly through the polymorphic `.*` path.
  */
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
     // ----- Concrete round-trip: on-disk name stored, field name absent -----
     gom.save(ChunkNode(id = "c1", text = "hello", containerSectionId = "sec-1", sequenceNumber = 7, rootDocumentId = "doc-1"))
 
@@ -98,7 +100,7 @@ private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersist
     assertEquals("Chapter One", view.section.displayTitle, "relationship-target override round-trips in a view")
 }
 
-private fun nodeKeys(pm: NonTransactionalPersistenceManager, cypher: String): Set<String> =
+private fun nodeKeys(pm: PersistenceManager, cypher: String): Set<String> =
     pm.query(QuerySpecification.withStatement(cypher).transform(String::class.java)).toSet()
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
@@ -208,4 +210,15 @@ class StatelessGraphPropertyMemgraphTest {
 
     @Test
     fun `graph property mapping round-trips on Memgraph`() = verify(buildGom(pm, registry), pm)
+}
+
+@OracleTests
+class StatelessGraphPropertyOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test fun `graph property name mapping on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
 }

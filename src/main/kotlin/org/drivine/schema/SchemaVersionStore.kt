@@ -42,6 +42,14 @@ class SchemaVersionStore(
 ) {
 
     /**
+     * The marker's statements in the store's own language: Cypher, unless the manager's grammar says
+     * otherwise, as Oracle's does. See [SchemaGrammar.versionMarker].
+     */
+    private val statements: VersionMarkerStatements by lazy {
+        manager.reservedNode("the schema marker", { versionMarker(LABEL, SCOPE_PROPERTY) }) { CypherVersionMarker(LABEL, SCOPE_PROPERTY) }
+    }
+
+    /**
      * The version last applied under this scope, or null if none has been recorded.
      *
      * If duplicate markers exist (a pre-constraint race), the most recently applied wins rather
@@ -49,10 +57,7 @@ class SchemaVersionStore(
      */
     fun storedVersion(): String? = manager.maybeGetOne(
         QuerySpecification
-            .withStatement(
-                "MATCH (m:`$LABEL` {scope: \$scope}) " +
-                    "RETURN m.version ORDER BY m.appliedAt DESC LIMIT 1"
-            )
+            .withStatement(statements.read("version"))
             .bind(mapOf("scope" to scope))
             .transform(String::class.java)
     )
@@ -66,14 +71,12 @@ class SchemaVersionStore(
     fun storedInventory(): List<String>? {
         val raw = manager.maybeGetOne(
             QuerySpecification
-                .withStatement(
-                    "MATCH (m:`$LABEL` {scope: \$scope}) " +
-                        "RETURN m.items ORDER BY m.appliedAt DESC LIMIT 1"
-                )
+                .withStatement(statements.read("items"))
                 .bind(mapOf("scope" to scope))
                 .transform(String::class.java)
         ) ?: return null
-        return if (raw.isEmpty()) emptyList() else raw.split(INVENTORY_SEPARATOR)
+        val items = statements.items(raw)
+        return if (items.isEmpty()) emptyList() else items.split(INVENTORY_SEPARATOR)
     }
 
     /** Records [version] with an empty inventory. Convenience for callers that only track a version. */
@@ -100,10 +103,7 @@ class SchemaVersionStore(
     fun ensureSingleton() {
         manager.execute(
             QuerySpecification
-                .withStatement(
-                    "MATCH (m:`$LABEL` {scope: \$scope}) " +
-                        "WITH m ORDER BY m.appliedAt DESC SKIP 1 DELETE m"
-                )
+                .withStatement(statements.deleteAllButNewest)
                 .bind(mapOf("scope" to scope))
         )
         val constraint = UniquenessConstraintSpec(LABEL, SCOPE_PROPERTY)
@@ -123,27 +123,15 @@ class SchemaVersionStore(
     }
 
     private fun merge(version: String?, inventory: List<String>) {
-        manager.execute(
-            QuerySpecification
-                .withStatement(
-                    "MERGE (m:`$LABEL` {scope: \$scope}) " +
-                        "SET m.version = \$version, m.items = \$items, m.appliedAt = timestamp()"
-                )
-                .bind(
-                    mapOf(
-                        "scope" to scope,
-                        "version" to version,
-                        "items" to inventory.joinToString(INVENTORY_SEPARATOR),
-                    )
-                )
-        )
+        val items = inventory.joinToString(INVENTORY_SEPARATOR)
+        manager.execute(QuerySpecification.withStatement(statements.merge).bind(statements.mergeBindings(scope, version, items)))
     }
 
     /** Removes this scope's marker (e.g. to force the next enforce to treat the schema as un-versioned). */
     fun clear() {
         manager.execute(
             QuerySpecification
-                .withStatement("MATCH (m:`$LABEL` {scope: \$scope}) DELETE m")
+                .withStatement(statements.delete)
                 .bind(mapOf("scope" to scope))
         )
     }

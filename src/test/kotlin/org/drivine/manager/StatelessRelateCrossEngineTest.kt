@@ -25,6 +25,8 @@ import org.testcontainers.utility.DockerImageName
 import sample.nodelabels.MemberNode
 import sample.nodelabels.Role
 import sample.nodelabels.ThingNode
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * [EdgeOperations.relate] and [EdgeOperations.loadRelated], verified on Neo4j, FalkorDB and
@@ -187,3 +189,13 @@ class StatelessRelateMemgraphTest {
     fun `relationships of a runtime type are written and read on Memgraph`() = verify(buildGom(pm, SubtypeRegistry()), pm)
 }
 
+@OracleTests
+class StatelessRelateOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test fun `edges on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
+}

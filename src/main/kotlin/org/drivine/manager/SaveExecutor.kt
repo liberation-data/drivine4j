@@ -2,17 +2,18 @@ package org.drivine.manager
 
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
+import org.drivine.backend.GraphBackend
 import org.drivine.mapper.ResultPostProcessor
 import org.drivine.model.Stamps
 import org.drivine.query.MergeStatement
 import org.drivine.query.NodeKey
 import org.drivine.query.QuerySpecification
+import org.drivine.query.ReturnedStamps
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
-import org.neo4j.driver.exceptions.TransientException
 
 /** Runs the statements of a save. */
-internal class SaveExecutor(private val persistenceManager: PersistenceManager) {
+internal class SaveExecutor(private val persistenceManager: PersistenceManager, private val backend: GraphBackend) {
 
     /** Runs [statements] in order, each on its own. */
     fun execute(statements: List<MergeStatement>) = statements.forEach {
@@ -92,59 +93,58 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
 
     /** The stamps in the [rows] a save statement returned: the root's, each stamped target's, each repeat's. */
     fun stamps(statement: SaveStatement, rows: List<Any?>): List<String> {
-        val row = rows.firstOrNull() as? String
-        if (row != null) {
-            val returned = row.split(',')
-            val rootStamp = returned.first()
-            // Each related node's is keyed `index/found`: found is the stamp its part found it with.
-            val byIndex = returned.drop(1).associate { entry ->
-                val (key, stamp) = entry.split('=', limit = 2)
-                key.substringBefore('/').toInt() to (key.substringAfter('/') to stamp)
+        val row = rows.firstOrNull() as? String ?: throw noRow(statement)
+        val returned = ReturnedStamps.of(row)
+        val rootStamp = returned.root
+        // A node the object holds more than once is written by more than one part, and a later
+        // part finds what an earlier one wrote. What the node carried before the statement is
+        // what the first of them found.
+        val rootKey = statement.rootKey
+        val first = mutableListOf<Triple<NodeKey, String, String>>()
+        fun handedBack(key: NodeKey?, carried: String?, found: String?, stamp: String?): String? {
+            if (key == null) return Stamps.handedBack(carried, found ?: return null, stamp ?: return null)
+            if (key.sameNodeAs(rootKey)) {
+                // The root's own part found it first, and its stamp is handed back as that part
+                // found it. A fragment that carried another stamp than the root keeps its own:
+                // nothing here says what the node carried before the statement.
+                return if (carried == statement.root.carried) rootStamp else carried ?: Stamps.withoutLinks(rootStamp)
             }
-            // A node the object holds more than once is written by more than one part, and a later
-            // part finds what an earlier one wrote. What the node carried before the statement is
-            // what the first of them found.
-            val rootKey = statement.rootKey
-            val first = mutableListOf<Triple<NodeKey, String, String>>()
-            fun handedBack(key: NodeKey?, carried: String?, found: String?, stamp: String?): String? {
-                if (key == null) return Stamps.handedBack(carried, found ?: return null, stamp ?: return null)
-                if (key.sameNodeAs(rootKey)) {
-                    // The root's own part found it first, and its stamp is handed back as that part
-                    // found it. A fragment that carried another stamp than the root keeps its own:
-                    // nothing here says what the node carried before the statement.
-                    return if (carried == statement.root.carried) rootStamp else carried ?: Stamps.withoutLinks(rootStamp)
-                }
-                val seen = first.firstOrNull { it.first.sameNodeAs(key) }
-                    ?: Triple(key, found ?: return null, stamp ?: return null).also { first.add(it) }
-                return Stamps.handedBack(carried, seen.second, stamp ?: seen.third)
-            }
-            val targets = statement.stamped.indices.map { index ->
-                val (found, stamp) = byIndex.getValue(index)
-                // A node that changed since its object was loaded keeps the object's token: the stamp
-                // handed back does not vouch for data or relationships the object never held.
-                checkNotNull(handedBack(statement.keys[index], statement.carried[index], found, stamp))
-            }
-            // A repeat was not written: it is handed what the one written for its node is, if it carried the same.
-            val repeats = statement.repeats.map { repeat ->
-                handedBack(repeat.key, repeat.carried, null, null) ?: repeat.carried ?: ""
-            }
-            return listOf(rootStamp) + targets + repeats
+            val seen = first.firstOrNull { it.first.sameNodeAs(key) }
+                ?: Triple(key, found ?: return null, stamp ?: return null).also { first.add(it) }
+            return Stamps.handedBack(carried, seen.second, stamp ?: seen.third)
         }
-        throw statement.root.expected?.let { staleObject(statement.root, it) }
+        val targets = statement.stamped.indices.map { index ->
+            val target = returned.related.getValue(index)
+            // A node that changed since its object was loaded keeps the object's token: the stamp
+            // handed back does not vouch for data or relationships the object never held.
+            checkNotNull(handedBack(statement.keys[index], statement.carried[index], target.found, target.stamp))
+        }
+        // A repeat was not written: it is handed what the one written for its node is, if it carried the same.
+        val repeats = statement.repeats.map { repeat ->
+            handedBack(repeat.key, repeat.carried, null, null) ?: repeat.carried ?: ""
+        }
+        return listOf(rootStamp) + targets + repeats
+    }
+
+    /**
+     * Why a save returned no row: a checked root is stale, or a root the statement does not make is
+     * gone. From any other save it is the store answering nothing, which no save statement does.
+     */
+    private fun noRow(statement: SaveStatement): Throwable =
+        statement.root.expected?.let { staleObject(statement.root, it) }
             ?: if (statement.createsRoot) {
                 IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
             } else {
                 RootGone(statement.root)
             }
-    }
 
     /**
      * Runs a save, or any one statement that writes, again if the engine turned it away because another writer was changing the same
-     * node at that moment (a conflict or a deadlock, which the Neo4j driver, used for Neo4j and
-     * Memgraph, reports as transient). The next attempt runs after that writer, and so sees its stamp: a
-     * checked save is then refused as stale, not failed: a later attempt of a batch that is refused
-     * so is thrown as that refusal. If the attempts run out, or a later one fails some other way, the
-     * first failure is thrown. FalkorDB runs one write at a time and never turns one away.
+     * node at that moment (a conflict or a deadlock: see [GraphBackend.contended]). The next attempt
+     * runs after that writer, and so sees its stamp: a checked save is then refused as stale, not
+     * failed: a later attempt of a batch that is refused so is thrown as that refusal. If the attempts
+     * run out, or a later one fails some other way, the first failure is thrown. FalkorDB runs one
+     * write at a time and never turns one away.
      *
      * Inside a caller's transaction the engine has usually failed the transaction with the statement,
      * so the later attempts fail too and the first failure is what the caller sees.
@@ -170,24 +170,24 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager) 
         throw checkNotNull(first)
     }
 
+    /** Whether the backend says a cause of this failure is contention: see [GraphBackend.contended]. */
     private fun DrivineException.isRetryable(): Boolean =
-        generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any { it is TransientException }
+        generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
 
     private companion object {
+        /** How many times a statement the engine turns away is run before its first failure is thrown. */
         const val CONTENDED_ATTEMPTS = 6
+
+        /** The pause after the first attempt that is turned away; each later one is as much longer. */
         const val CONTENDED_PAUSE_MILLIS = 15L
+
+        /** How far down a failure's causes the engine's own error is looked for. */
         const val MAX_CAUSE_DEPTH = 10
     }
 
     /** Says why a checked save matched nothing: the node is gone, or carries another stamp. */
     private fun staleObject(stamp: StampWrite, expected: String): StaleObjectException {
-        // An absent stamp is read as '' so a node without one still gives a row on every engine.
-        val found = persistenceManager.query(
-            QuerySpecification
-                .withStatement("MATCH (n:${stamp.labels} {${stamp.idProperty}: \$id}) RETURN coalesce(n.${Stamps.QUOTED}, '')")
-                .bind(mapOf("id" to stamp.id))
-                .transform(String::class.java)
-        )
+        val found = persistenceManager.query(backend.foundStamp(stamp).spec().transform(String::class.java))
         return StaleObjectException(
             type = stamp.fragmentClass,
             id = stamp.id,

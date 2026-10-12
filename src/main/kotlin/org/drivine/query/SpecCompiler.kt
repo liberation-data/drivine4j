@@ -4,8 +4,10 @@ package org.drivine.query
  * Compiles a [QuerySpecification] into a [CompiledQuery] — a statement string and parameter map
  * ready to be sent to a backend driver.
  *
- * Currently backend-agnostic. If a future backend needs dialect-specific compilation behavior,
- * reintroduce subclasses and keep this as the common case.
+ * Backend-agnostic but for paging: a `skip` and a `limit` are appended as the statement's language
+ * writes them, `SKIP … LIMIT …` for Cypher and `OFFSET … ROWS FETCH NEXT … ROWS ONLY` for SQL. If a
+ * future backend needs more dialect-specific compilation behavior, reintroduce subclasses and keep
+ * this as the common case.
  */
 class SpecCompiler(private val spec: QuerySpecification<*>) {
 
@@ -21,16 +23,18 @@ class SpecCompiler(private val spec: QuerySpecification<*>) {
         return "$rendered ${skipClause()} ${limitClause()}"
     }
 
+    /** SQL pages with the standard `OFFSET … ROWS FETCH NEXT … ROWS ONLY`, which Oracle and Postgres both read. */
+    private val sql: Boolean
+        get() = spec.statement!!.language == QueryLanguage.SQL
+
     private fun skipClause(): String {
-        return if (spec._skip != null) {
-            "${if (spec.statement!!.language == QueryLanguage.CYPHER) "SKIP" else "OFFSET"} ${spec._skip}"
-        } else {
-            ""
-        }
+        val skip = spec._skip ?: return ""
+        return if (sql) "OFFSET $skip ROWS" else "SKIP $skip"
     }
 
     private fun limitClause(): String {
-        return spec._limit?.let { "LIMIT $it" } ?: ""
+        val limit = spec._limit ?: return ""
+        return if (sql) "FETCH NEXT $limit ROWS ONLY" else "LIMIT $limit"
     }
 
     private fun renderTemplate(text: String, renderParams: Map<String, Any>): String {

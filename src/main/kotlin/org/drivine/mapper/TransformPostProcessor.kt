@@ -98,8 +98,8 @@ class TransformPostProcessor<S, T>(
             map[rootName] = reconstructFragmentData(map[rootName], viewModel.rootFragment.fragmentType)
             viewModel.relationships.forEach { rel ->
                 when (val value = map[rel.fieldName]) {
-                    is List<*> -> map[rel.fieldName] = value.map { reconstructFragmentData(it, rel.elementType) }
-                    else -> map[rel.fieldName] = reconstructFragmentData(value, rel.elementType)
+                    is List<*> -> map[rel.fieldName] = value.map { reconstructElement(it, rel) }
+                    else -> map[rel.fieldName] = reconstructElement(value, rel)
                 }
             }
             return map
@@ -143,6 +143,21 @@ class TransformPostProcessor<S, T>(
         }
 
         return map
+    }
+
+    /**
+     * One element of a relationship field. A relationship fragment holds the node it leads to under
+     * its target field, and that node is prepared as any other is.
+     */
+    @Suppress("UNCHECKED_CAST")
+    private fun reconstructElement(element: Any?, relationship: RelationshipModel): Any? {
+        val targetField = relationship.targetFieldName
+        val targetType = relationship.targetNodeType
+        if (!relationship.isRelationshipFragment || targetField == null || targetType == null) {
+            return reconstructFragmentData(element, relationship.elementType)
+        }
+        if (element !is Map<*, *> || !element.containsKey(targetField)) return element
+        return (element as Map<String, Any?>) + (targetField to reconstructFragmentData(element[targetField], targetType))
     }
 
     /**

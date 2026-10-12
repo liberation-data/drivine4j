@@ -24,6 +24,9 @@ import org.testcontainers.utility.DockerImageName
 import sample.proposition.PropositionView
 import sample.proposition.PropositionViewQueryDsl
 import kotlin.test.assertEquals
+import org.drivine.oracle.OracleTestDatabase
+import org.junit.jupiter.api.BeforeEach
+import org.drivine.oracle.OracleTests
 
 /**
  * Feature 1 end-to-end — `any{}` / `none{}` quantified predicates over the to-many `HAS_MENTION`
@@ -169,4 +172,19 @@ class StatelessQuantifiedRelationshipMemgraphTest {
 
     @Test
     fun `any and none over a to-many relationship on Memgraph`() = verify(gom)
+}
+
+@OracleTests
+class StatelessQuantifiedRelationshipOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun seed() {
+        OracleTestDatabase.clear(pm)
+        OracleTestDatabase.seed(pm, SEED)
+    }
+
+    @Test
+    fun `any and none over a to-many relationship on Oracle`() = verify(buildGom(pm, registry))
 }

@@ -29,6 +29,9 @@ import sample.vectorfilter.VecDocNodeQueryDsl
 import sample.vectorfilter.VecImageNode
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.BeforeEach
 
 /**
  * Filtered fragment vector search — `loadNearest(class, Q, vector, topK, threshold) { where { } }` over a
@@ -39,7 +42,7 @@ import kotlin.test.assertTrue
  */
 private val QUERY = listOf(1.0f, 0.0f, 0.0f, 0.0f)
 
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager, vec: (String) -> String) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, vec: (String) -> String) {
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -87,12 +90,12 @@ private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersist
     assertTrue(poly.any { it.value is VecChunkNode } && poly.any { it.value is VecImageNode })
 }
 
-private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
+private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
     val mapper = Neo4jObjectMapper.instance
     return StatelessGraphObjectManager(pm, mapper, registry)
 }
 
-private fun ensureIndexes(pm: NonTransactionalPersistenceManager) {
+private fun ensureIndexes(pm: PersistenceManager) {
     pm.indexes.ensure(VectorIndexSpec("VecDoc", "embedding", 4))
     pm.indexes.ensure(VectorIndexSpec("VecContent", "embedding", 4))
 }
@@ -190,4 +193,19 @@ class StatelessFilteredFragmentVectorSearchNeo4jTest {
     }
 
     @Test fun `filtered fragment vector search on Neo4j`() = verify(buildGom(pm, registry), pm) { it }
+}
+
+@OracleTests
+class StatelessFilteredFragmentVectorSearchOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+    private val fixtures = OracleTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun clean() {
+        OracleTestDatabase.clear(pm)
+        ensureIndexes(pm)
+    }
+
+    @Test fun `filtered fragment vector search on Oracle`() = verify(buildGom(pm, registry), fixtures) { it }
 }

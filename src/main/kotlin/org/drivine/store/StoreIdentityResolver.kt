@@ -5,6 +5,9 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.SchemaGrammar
+import org.drivine.schema.StoreStampStatements
+import org.drivine.schema.CypherStoreStamp
+import org.drivine.schema.reservedNode
 import org.drivine.schema.UniquenessConstraintSpec
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -61,6 +64,16 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
     }
 
     /**
+     * The stamp's statements in the store's own language: Cypher, unless the manager's grammar says
+     * otherwise, as Oracle's does. See [SchemaGrammar.storeStamp].
+     */
+    private val statements: StoreStampStatements by lazy {
+        val label = KEY_CONSTRAINT.label
+        val key = KEY_CONSTRAINT.properties.single()
+        persistenceManager.reservedNode("the store's identity", { storeStamp(label, key) }) { CypherStoreStamp(label, key) }
+    }
+
+    /**
      * Ensures the uniqueness constraint on the merge key. Returns whether it is in force; false degrades
      * [resolve] to best-effort convergence rather than failing boot over an identity that can still be read.
      */
@@ -114,7 +127,7 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         while (true) {
             try {
                 persistenceManager.execute(
-                    QuerySpecification.withStatement(ASSIGN_IF_ABSENT).bind(
+                    QuerySpecification.withStatement(statements.assignIfAbsent).bind(
                         mapOf(
                             "key" to SINGLETON_KEY,
                             "storeId" to UUID.randomUUID().toString(),
@@ -140,7 +153,7 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
             SchemaGrammar.messagesOf(e).contains("conflicting transactions", ignoreCase = true)
 
     private fun readStamps(): List<Stamp> =
-        persistenceManager.query(QuerySpecification.withStatement(READ_STAMPS).transform<Stamp>())
+        persistenceManager.query(QuerySpecification.withStatement(statements.readStamps).transform<Stamp>())
 
     private fun identityFrom(stamps: List<Stamp>): StoreIdentity {
         if (stamps.size > 1) {
@@ -179,23 +192,5 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
 
         /** Makes the MERGE key unique, so concurrent first boots cannot leave two stamps. */
         internal val KEY_CONSTRAINT = UniquenessConstraintSpec("DrivineStore", "key")
-
-        private const val ASSIGN_IF_ABSENT = """
-            MERGE (s:DrivineStore { key: ${'$'}key })
-            ON CREATE SET s.storeId = ${'$'}storeId,
-                          s.assignedAt = ${'$'}assignedAt,
-                          s.engine = ${'$'}engine
-        """
-
-        /**
-         * Projected as a map, not as two columns: a multi-column row arrives as a positional
-         * list, which cannot be bound to [Stamp] by name. Ordered so every caller that reads after
-         * the race picks the same stamp when one left more than one.
-         */
-        private const val READ_STAMPS = """
-            MATCH (s:DrivineStore)
-            RETURN { id: s.storeId, assignedAt: s.assignedAt } AS stamp
-            ORDER BY s.assignedAt, s.storeId
-        """
     }
 }

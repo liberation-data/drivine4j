@@ -4,6 +4,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
 import org.drivine.store.StoreIdentity
@@ -27,6 +28,12 @@ class DelegatingPersistenceManager(
      */
     override val supportsSchemaManagement: Boolean
         get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).supportsSchemaManagement
+
+    override val graphName: String?
+        get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).graphName
+
+    override val schemaGrammar: SchemaGrammar?
+        get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).schemaGrammar
 
     /** Routed to the non-transactional manager, which caches it and never resolves it mid-transaction. */
     override val storeIdentity: StoreIdentity

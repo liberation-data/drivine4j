@@ -57,6 +57,9 @@ import sample.stateless.Memo
 import sample.stateless.MemoView
 import sample.stateless.Pals
 import sample.stateless.Tagged
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
  * A stateless save as one statement, verified on Neo4j, FalkorDB and Memgraph: what it writes and
@@ -64,7 +67,13 @@ import sample.stateless.Tagged
  */
 abstract class StatelessSingleStatementContract {
 
-    abstract val pm: NonTransactionalPersistenceManager
+    abstract val pm: PersistenceManager
+
+    /** Whether an empty string is stored as one. Oracle stores it as null, so there an empty stamp is no stamp. */
+    open val storesEmptyText: Boolean = true
+
+    /** Whether a save that drops the stale keys of a property bag reads the stored keys in a statement of its own. Oracle's reads them in the save. */
+    open val readsBagKeysFirst: Boolean = true
 
     private val stateless: StatelessGraphObjectManager
         get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
@@ -582,6 +591,7 @@ abstract class StatelessSingleStatementContract {
 
     @Test
     fun `Replace is refused after GraphObjectManager wrote a relationship`() {
+        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
         stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
         val mine = assertNotNull(stateless.load<ClaimView>("c1"))
 
@@ -736,6 +746,7 @@ abstract class StatelessSingleStatementContract {
     @Test
     @Suppress("DEPRECATION")
     fun `GraphObjectManager does not double an undirected relationship stored towards the root`() {
+        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
         run("CREATE (:Human {id: 'bob', name: 'Bob'})-[:KNOWS]->(:Human {id: 'ada', name: 'Ada'})")
         val gom = GraphObjectManager(pm, org.drivine.session.SessionManager(Neo4jObjectMapper.instance), Neo4jObjectMapper.instance, SubtypeRegistry())
 
@@ -1014,7 +1025,7 @@ abstract class StatelessSingleStatementContract {
     fun `a save under CLEAR of a node with a property bag reads its keys first, and is two statements`() {
         stateless.save(Tagged("t1", "one", mapOf("source" to "web", "lang" to "en")))
 
-        assertEquals(2, statements { it.save(Tagged("t1", "one", mapOf("source" to "web")), nullPolicy = NullPolicy.CLEAR) })
+        assertEquals(if (readsBagKeysFirst) 2 else 1, statements { it.save(Tagged("t1", "one", mapOf("source" to "web")), nullPolicy = NullPolicy.CLEAR) })
 
         assertNull(property("t1", "meta.lang"))
         assertEquals("web", property("t1", "meta.source"))
@@ -1109,6 +1120,7 @@ abstract class StatelessSingleStatementContract {
         saved.citedBy.forEach { assertEquals(stamp(it.target.id), assertNotNull(it.target.stamp), it.target.id) }
 
         val loaded = assertNotNull(stateless.load<HumanCitations>("ada"))
+        loaded.citedBy.forEach { assertEquals(stamp(it.target.id), it.target.stamp, "as loaded: ${it.target.id}") }
         val edited = stateless.save(loaded.copy(citedBy = loaded.citedBy.map { it.copy(target = it.target.copy(text = "edited")) }))
 
         edited.citedBy.forEach { cited ->
@@ -1213,7 +1225,8 @@ abstract class StatelessSingleStatementContract {
     // ----- A stored stamp that is not two tokens -----
 
     /** Stamps no save leaves: too short, too long, without its second token, and empty. */
-    private val malformed = listOf("short", "0123456789abcdef0123456789abcdef0", "0123456789abcdef:", "")
+    private val malformed
+        get() = listOf("short", "0123456789abcdef0123456789abcdef0", "0123456789abcdef:", "").filter { it.isNotEmpty() || storesEmptyText }
 
     @Test
     fun `a change by another writer is seen though the stored stamp was not two tokens`() {
@@ -1549,4 +1562,11 @@ class StatelessSingleStatementMemgraphTest : StatelessSingleStatementContract() 
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+}
+
+@OracleTests
+class StatelessSingleStatementOracleTest : StatelessSingleStatementContract() {
+    override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+    override val storesEmptyText: Boolean = false
+    override val readsBagKeysFirst: Boolean = false
 }

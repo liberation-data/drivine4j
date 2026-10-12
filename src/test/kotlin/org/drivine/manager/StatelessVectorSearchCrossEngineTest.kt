@@ -21,6 +21,9 @@ import sample.vector.DocNode
 import sample.vector.DocView
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.BeforeEach
 
 /**
  * Vector search ([GraphObjectManager.loadNearest]) verified against FalkorDB and Memgraph — the two
@@ -59,13 +62,13 @@ private fun verify(gom: StatelessGraphObjectManager) {
     assertEquals(frags.map { it.score }, frags.map { it.score }.sortedDescending())
 }
 
-private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
+private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
     val mapper = Neo4jObjectMapper.instance
     return StatelessGraphObjectManager(pm, mapper, registry)
 }
 
 /** Seeds the four Docs + author. [vec] renders an embedding literal in the engine's vector syntax. */
-private fun seed(pm: NonTransactionalPersistenceManager, vec: (String) -> String) {
+private fun seed(pm: PersistenceManager, vec: (String) -> String) {
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -184,5 +187,35 @@ class StatelessVectorSearchMemgraphTest {
         )
 
         assertEquals(listOf("A", "B"), results.map { it.value.id }.sorted())
+    }
+}
+
+@OracleTests
+class StatelessVectorSearchOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+    private val fixtures = OracleTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun seed() {
+        pm.indexes.ensure(VectorIndexSpec("Doc", "embedding", 4))
+        // An embedding is a list of numbers among a node's properties.
+        seed(fixtures) { it }
+    }
+
+    @Test
+    fun `vector search ranks, prunes, and thresholds on Oracle`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `a partition label narrows the search to the nodes that carry it on Oracle`() {
+        fixtures.execute(QuerySpecification.withStatement("MATCH (n:Doc) WHERE n.id IN ['A','B'] SET n:Corpus_one"))
+        pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
+
+        val results = buildGom(pm, registry).loadNearest(
+            DocNode::class.java, null, QUERY, topK = 10, threshold = null,
+            searchK = null, partitionLabel = "Corpus_one",
+        )
+
+        assertEquals(setOf("A", "B"), results.map { it.value.id }.toSet())
     }
 }

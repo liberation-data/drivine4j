@@ -5,6 +5,15 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.grammar.CypherDialect
 import org.slf4j.LoggerFactory
 
+/**
+ * Builds the [ConnectionProvider] of one datasource from its connection properties and registers it:
+ * a Bolt driver for Neo4j, Neptune and Memgraph, a FalkorDB client, or for Oracle a JDBC connection
+ * pool. What a property means is the engine's: on Oracle the database name is the service to connect
+ * to and the default graph path the name of the graph.
+ *
+ * An engine with no wire to describe ([DatabaseType.buildableFromProperties] false) is not built
+ * here; the application registers a provider for it.
+ */
 class ConnectionProviderBuilder(
     private val registry: DatabaseRegistry,
     private val subtypeRegistry: SubtypeRegistry? = null
@@ -38,14 +47,19 @@ class ConnectionProviderBuilder(
     fun defaultGraphPath(path: String): ConnectionProviderBuilder = apply { this.defaultGraphPath = path }
     fun cypherDialect(dialect: CypherDialect): ConnectionProviderBuilder = apply { this.cypherDialect = dialect }
 
+    /** Takes everything [properties] sets. What it leaves null keeps this builder's own default: a pool of 40 and five seconds to connect. */
     fun withProperties(properties: ConnectionProperties): ConnectionProviderBuilder {
         properties.type.let { withType(it) }
         properties.userName?.let { userName(it) }
         properties.password?.let { password(it) }
         properties.host.let { host(it) }
         properties.port?.let { port(it) }
+        properties.poolMax?.let { poolMax = it }
+        properties.connectionTimeout?.let { connectionTimeout = it }
+        properties.idleTimeout?.let { idleTimeout(it) }
         properties.databaseName?.let { databaseName(it) }
         properties.protocol?.let { protocol(it) }
+        properties.defaultGraphPath?.let { defaultGraphPath(it) }
         properties.cypherDialect?.let { cypherDialect(it) }
         properties.falkorDbTransactionMode?.let { falkorDbTransactionMode = it }
         properties.region?.let { region = it }
@@ -53,6 +67,10 @@ class ConnectionProviderBuilder(
         return this
     }
 
+    /**
+     * The provider registered as [name]: the one that is there already, or one built from what this
+     * builder was given and registered. A host is required, and what else is depends on the engine.
+     */
     fun register(name: String = "default"): ConnectionProvider {
         registry.connectionProvider(name)?.let { return it }
 
@@ -71,6 +89,7 @@ class ConnectionProviderBuilder(
             DatabaseType.NEPTUNE -> buildNeptuneProvider(name)
             DatabaseType.FALKORDB -> buildFalkorDbProvider(name)
             DatabaseType.MEMGRAPH -> buildMemgraphProvider(name)
+            DatabaseType.ORACLE -> buildOracleProvider(name)
             else -> throw DrivineException("Type $type is not supported by ConnectionProviderBuilder")
         }
 
@@ -156,6 +175,35 @@ class ConnectionProviderBuilder(
             ).filterValues { it != null }.mapValues { it.value as Any },
             subtypeRegistry = subtypeRegistry,
             cypherDialect = cypherDialect ?: CypherDialect.MEMGRAPH,
+        )
+    }
+
+    /**
+     * Oracle: the database name is the service to connect to, and the default graph path names the
+     * property graph and its tables (see [JdbcConnectionProvider.graphName]). A Cypher dialect or a
+     * protocol has no meaning here, and is warned about rather than silently taken. The pool is made
+     * here, and asks the database for a connection as it is: a service that cannot be reached, or a
+     * user it turns away, fails the registration.
+     */
+    private fun buildOracleProvider(name: String): ConnectionProvider {
+        requireNotNull(userName) { "Oracle requires a username" }
+        // The database name is the service to connect to: the pluggable database, not the container.
+        val service = requireNotNull(this.name) { "Oracle requires a databaseName: the service to connect to, such as FREEPDB1" }
+        cypherDialect?.let { logger.warn("Oracle does not speak Cypher; the dialect $it set for datasource '$name' is ignored") }
+        protocol?.let { logger.warn("Oracle is reached over JDBC; the protocol '$it' set for datasource '$name' is ignored") }
+        val resolvedPort = port ?: 1521
+        val url = JdbcConnectionProvider.oracleUrl(host!!, resolvedPort, service)
+        return JdbcConnectionProvider.pooled(
+            name = name,
+            type = type!!,
+            jdbcUrl = url,
+            user = userName,
+            password = password,
+            poolMax = poolMax,
+            connectionTimeoutMillis = connectionTimeout,
+            idleTimeoutMillis = idleTimeout,
+            subtypeRegistry = subtypeRegistry,
+            graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
         )
     }
 

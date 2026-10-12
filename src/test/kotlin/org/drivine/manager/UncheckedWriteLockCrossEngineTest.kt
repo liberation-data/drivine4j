@@ -26,6 +26,8 @@ import org.testcontainers.utility.DockerImageName
 import sample.stateless.Claim
 import sample.stateless.Human
 import sample.stateless.HumanClaims
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * A write that is not checked still says truly whether it changed the node, when another writer
@@ -37,7 +39,7 @@ import sample.stateless.HumanClaims
  */
 abstract class UncheckedWriteLockContract {
 
-    abstract val pm: NonTransactionalPersistenceManager
+    abstract val pm: PersistenceManager
 
     private val stateless: StatelessGraphObjectManager
         get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
@@ -196,4 +198,12 @@ class UncheckedWriteLockMemgraphTest : UncheckedWriteLockContract() {
 
     override val pm: NonTransactionalPersistenceManager get() = manager
     override val index = "CREATE INDEX ON :Claim(id)"
+}
+
+@OracleTests
+class UncheckedWriteLockOracleTest : UncheckedWriteLockContract() {
+    override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+
+    // Over the expression a save finds a node by, so the index serves it.
+    override val index = "CREATE INDEX IF NOT EXISTS contracts_node_id ON contracts_node (JSON_VALUE(props, '$.\"id\"'))"
 }

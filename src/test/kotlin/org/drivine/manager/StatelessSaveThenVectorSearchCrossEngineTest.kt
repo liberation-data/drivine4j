@@ -24,6 +24,9 @@ import sample.vector.DocView
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.BeforeEach
 
 /**
  * The coverage gap the write-side `vecf32(...)` fix closes: embeddings persisted **through the object
@@ -63,7 +66,7 @@ private val DOC_VECTOR_INDEX = VectorIndexSpec("Doc", "embedding", 4)
  * scenario inherits the other's session snapshot — a stale snapshot would treat the embedding as
  * unchanged and skip re-writing it. Models a fresh process saving the same ids.
  */
-private fun verifySingleSave(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) {
+private fun verifySingleSave(pm: PersistenceManager, registry: SubtypeRegistry) {
     val gom = buildGom(pm, registry)
     val author = AuthorNode("au1", "Ada")
     // A, B, C saved through a view (root fragment + WRITTEN_BY); D saved as a bare fragment, no author.
@@ -93,7 +96,7 @@ private fun verifySingleSave(pm: NonTransactionalPersistenceManager, registry: S
 }
 
 /** Batch `saveAll()`: the UNWIND path, which must fall back to per-item for vector roots on FalkorDB. */
-private fun verifyBatchSave(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) {
+private fun verifyBatchSave(pm: PersistenceManager, registry: SubtypeRegistry) {
     val gom = buildGom(pm, registry)
     gom.saveAll(DOCS) // all four as bare fragments, in one batch call
 
@@ -106,7 +109,7 @@ private fun verifyBatchSave(pm: NonTransactionalPersistenceManager, registry: Su
     assertTrue(frags.first().value.id in setOf("A", "D"), "nearest is one of the exact matches")
 }
 
-private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
+private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
     val mapper = Neo4jObjectMapper.instance
     return StatelessGraphObjectManager(pm, mapper, registry)
 }
@@ -210,4 +213,21 @@ class StatelessSaveThenVectorSearchNeo4jTest {
     @Test fun `save then loadNearest on Neo4j`() = verifySingleSave(pm, registry)
 
     @Test fun `saveAll then loadNearest on Neo4j`() = verifyBatchSave(pm, registry)
+}
+
+@OracleTests
+class StatelessSaveThenVectorSearchOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+    private val fixtures = OracleTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun clean() {
+        OracleTestDatabase.clear(pm)
+        pm.indexes.ensure(DOC_VECTOR_INDEX)
+    }
+
+    @Test fun `save then loadNearest on Oracle`() = verifySingleSave(fixtures, registry)
+
+    @Test fun `saveAll then loadNearest on Oracle`() = verifyBatchSave(fixtures, registry)
 }

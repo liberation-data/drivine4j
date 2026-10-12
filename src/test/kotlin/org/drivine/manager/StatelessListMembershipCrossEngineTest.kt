@@ -24,6 +24,9 @@ import org.testcontainers.utility.DockerImageName
 import sample.proposition.PropositionView
 import sample.proposition.PropositionViewQueryDsl
 import kotlin.test.assertEquals
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.BeforeEach
 
 /**
  * 0.0.56 end-to-end — `hasItem` (a caller value contained in a list-valued node property,
@@ -82,12 +85,12 @@ private fun verify(gom: StatelessGraphObjectManager) {
     )
 }
 
-private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
+private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
     val mapper = Neo4jObjectMapper.instance
     return StatelessGraphObjectManager(pm, mapper, registry)
 }
 
-private fun seed(pm: NonTransactionalPersistenceManager, vec: (String) -> String) {
+private fun seed(pm: PersistenceManager, vec: (String) -> String) {
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -212,4 +215,20 @@ class StatelessListMembershipMemgraphTest {
 
     @Test
     fun `hasItem load and vector paths on Memgraph`() = verify(gom)
+}
+
+@OracleTests
+class StatelessListMembershipOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+    private val fixtures = OracleTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun seed() {
+        pm.indexes.ensure(VectorIndexSpec("Proposition", "embedding", 4))
+        seed(fixtures) { it }
+    }
+
+    @Test
+    fun `hasItem load and vector paths on Oracle`() = verify(buildGom(pm, registry))
 }

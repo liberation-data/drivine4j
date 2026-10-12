@@ -24,7 +24,7 @@ class SaveStatementBuilderTest {
     private fun people(count: Int) = (1..count).map { Human("h$it", "Human $it") }
 
     private fun statement(view: Any, replaced: RemovedTargets? = null): String =
-        builder.build(view, checked = true, NullPolicy.IGNORE, replaced = { replaced }).statement
+        builder.build(SaveRequest(view, checked = true, NullPolicy.IGNORE, replaced = { replaced })).statement
 
     @Test
     fun `the statement is the same text however long a list is`() {
@@ -81,7 +81,7 @@ class SaveStatementBuilderTest {
 
     @Test
     fun `the statement is the same text for an unchecked save`() {
-        fun unchecked(view: Any) = builder.build(view, checked = false, NullPolicy.IGNORE).statement
+        fun unchecked(view: Any) = builder.build(SaveRequest(view, checked = false, NullPolicy.IGNORE)).statement
 
         assertEquals(
             unchecked(ClaimView(Claim("c1", "one"), people = people(2))),
@@ -99,12 +99,12 @@ class SaveStatementBuilderTest {
 
     @Test
     fun `a fragment hands its stamp back from the merge's own scope, and a view with no stamped node without a reduce`() {
-        val fragment = builder.build(Claim("c1", "one"), checked = true, NullPolicy.IGNORE).statement
+        val fragment = builder.build(SaveRequest(Claim("c1", "one"), checked = true, NullPolicy.IGNORE)).statement
         assertFalse("_r0" in fragment, fragment)
         assertFalse("reduce(" in fragment, fragment)
         assertTrue(fragment.lines().last().startsWith("RETURN "), fragment)
 
-        val view = builder.build(ClaimView(Claim("c1", "one"), people = people(2)), checked = true, NullPolicy.IGNORE).statement
+        val view = builder.build(SaveRequest(ClaimView(Claim("c1", "one"), people = people(2)), checked = true, NullPolicy.IGNORE)).statement
         assertFalse("reduce(" in view, view)
     }
 

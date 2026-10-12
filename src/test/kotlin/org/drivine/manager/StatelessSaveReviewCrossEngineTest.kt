@@ -14,6 +14,8 @@ import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.AfterAll
@@ -47,11 +49,14 @@ import sample.stateless.Worker
 /**
  * What a stateless save hands back and leaves alone where an object holds a node more than once, was
  * built from scratch, or shares a batch with another that holds its root; verified on Neo4j, FalkorDB
- * and Memgraph.
+ * and Memgraph, and on Oracle.
  */
 abstract class StatelessSaveReviewContract {
 
-    abstract val pm: NonTransactionalPersistenceManager
+    abstract val pm: PersistenceManager
+
+    /** Whether an empty string is stored as one. Oracle stores it as null, so there an empty stamp is no stamp. */
+    open val storesEmptyText: Boolean = true
 
     /** Whether a batch that fails is rolled back: FalkorDB has no transactions. */
     open val atomicBatch: Boolean = true
@@ -412,7 +417,8 @@ abstract class StatelessSaveReviewContract {
     // ----- A stored stamp that is not two tokens -----
 
     /** Stamps no save leaves: too short, too long, without its second token, and empty. */
-    private val misshapen = listOf("short", "0123456789abcdef0123456789abcdef0", "0123456789abcdef:", "")
+    private val misshapen
+        get() = listOf("short", "0123456789abcdef0123456789abcdef0", "0123456789abcdef:", "").filter { it.isNotEmpty() || storesEmptyText }
 
     private val twoTokens = Regex("[0-9a-f]{16}:[0-9a-f]{16}")
 
@@ -568,4 +574,10 @@ class StatelessSaveReviewMemgraphTest : StatelessSaveReviewContract() {
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+}
+
+@OracleTests
+class StatelessSaveReviewOracleTest : StatelessSaveReviewContract() {
+    override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+    override val storesEmptyText: Boolean = false
 }

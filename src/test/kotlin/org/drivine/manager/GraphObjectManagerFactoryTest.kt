@@ -1,6 +1,7 @@
 package org.drivine.manager
 
 import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito.RETURNS_DEEP_STUBS
@@ -19,7 +20,9 @@ class GraphObjectManagerFactoryTest {
     private val persistenceManagers = mock(PersistenceManagerFactory::class.java).also { factory ->
         listOf("default", "other").forEach { database ->
             PersistenceManagerType.entries.forEach { type ->
-                `when`(factory.get(database, type)).thenReturn(mock(PersistenceManager::class.java, RETURNS_DEEP_STUBS))
+                // A store that speaks Cypher: a manager is given a backend by what its store speaks.
+                val manager = mock(PersistenceManager::class.java, RETURNS_DEEP_STUBS).also { `when`(it.type).thenReturn(DatabaseType.NEO4J) }
+                `when`(factory.get(database, type)).thenReturn(manager)
             }
         }
     }

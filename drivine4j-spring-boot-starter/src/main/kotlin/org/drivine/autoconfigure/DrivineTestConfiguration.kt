@@ -6,6 +6,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.test.DrivineTestContainer
 import org.drivine.test.FalkorDbTestContainer
 import org.drivine.test.MemgraphTestContainer
+import org.drivine.test.OracleTestContainer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
@@ -31,6 +32,10 @@ import org.springframework.context.annotation.Primary
  * ## Memgraph
  * - `test.memgraph.use-local=true` or `USE_LOCAL_MEMGRAPH=true` → uses local instance
  * - Otherwise starts a Memgraph Testcontainer
+ *
+ * ## Oracle
+ * - `test.oracle.use-local=true` or `USE_LOCAL_ORACLE=true` → uses local instance
+ * - Otherwise starts an Oracle Free Testcontainer, and connects as its own user to its own service
  */
 @Configuration
 class DrivineTestConfiguration {
@@ -44,7 +49,8 @@ class DrivineTestConfiguration {
         properties: DrivineProperties,
         @Value("\${test.neo4j.use-local:#{null}}") useLocalNeo4jFromSpring: String?,
         @Value("\${test.falkordb.use-local:#{null}}") useLocalFalkorFromSpring: String?,
-        @Value("\${test.memgraph.use-local:#{null}}") useLocalMemgraphFromSpring: String?
+        @Value("\${test.memgraph.use-local:#{null}}") useLocalMemgraphFromSpring: String?,
+        @Value("\${test.oracle.use-local:#{null}}") useLocalOracleFromSpring: String?,
     ): DataSourceMap {
         val datasources = properties.datasources.toMutableMap()
 
@@ -95,6 +101,26 @@ class DrivineTestConfiguration {
                         datasources[name] = props.copy(
                             host = MemgraphTestContainer.getConnectionHost(),
                             port = MemgraphTestContainer.getConnectionPort(),
+                        )
+                    }
+                }
+
+                DatabaseType.ORACLE -> {
+                    val useLocal = useLocalOracleFromSpring?.toBoolean()
+                        ?: System.getenv("USE_LOCAL_ORACLE")?.toBoolean()
+                        ?: false
+
+                    log.info("Drivine Test Config [$name]: Oracle use-local=$useLocal")
+
+                    if (!useLocal) {
+                        log.info("Starting Oracle Testcontainer...")
+                        // The container has a service and a user of its own; the graph's name is the datasource's.
+                        datasources[name] = props.copy(
+                            host = OracleTestContainer.getConnectionHost(),
+                            port = OracleTestContainer.getConnectionPort(),
+                            databaseName = OracleTestContainer.SERVICE,
+                            userName = OracleTestContainer.getConnectionUsername(),
+                            password = OracleTestContainer.getConnectionPassword(),
                         )
                     }
                 }

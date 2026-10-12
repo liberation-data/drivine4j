@@ -2,9 +2,11 @@ package org.drivine.manager
 
 //import drivine.cursor.Cursor
 //import drivine.cursor.CursorSpecification
+import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
 import org.drivine.store.StoreIdentity
@@ -17,7 +19,9 @@ interface PersistenceManager {
     val type: DatabaseType
 
     /**
-     * Cypher grammar for this database, controlling dialect-specific query generation.
+     * Cypher grammar for this database, controlling dialect-specific query generation. A store that
+     * does not speak Cypher ([DatabaseType.speaksCypher]) still gives one, its provider's default,
+     * and nothing reads it: the object managers ask such a store's backend for SQL.
      */
     val grammar: CypherGrammar
 
@@ -76,6 +80,18 @@ interface PersistenceManager {
     val storeIdentity: StoreIdentity
         get() = StoreIdentityResolver(this).resolve()
 
+    /** The graph this manager reads and writes, where the store names it. See [org.drivine.connection.ConnectionProvider.graphName]. */
+    val graphName: String?
+        get() = null
+
+    /**
+     * The grammar of the store's schema statements, and of the nodes Drivine keeps for itself: see
+     * [org.drivine.schema.SchemaGrammar.versionMarker]. Null where this manager has no connection
+     * provider of its own to ask, in which case the store speaks Cypher.
+     */
+    val schemaGrammar: SchemaGrammar?
+        get() = null
+
     /**
      * Queries for a set of results according to the supplied specification.
      * @param spec
@@ -96,7 +112,7 @@ interface PersistenceManager {
      * [GraphObjectManager.saveAll] and [StatelessGraphObjectManager.saveAll].
      *
      * The batch is **atomic** — all succeed or none do — on an engine with multi-statement
-     * transactions (Neo4j, Memgraph). FalkorDB has none: in
+     * transactions (Neo4j, Memgraph, Oracle). FalkorDB has none: in
      * [org.drivine.connection.FalkorDbTransactionMode.WARN] each statement is committed as it runs,
      * so a failure midway leaves the earlier statements applied, and in
      * [org.drivine.connection.FalkorDbTransactionMode.STRICT] the batch is refused before any
@@ -186,4 +202,17 @@ interface PersistenceManager {
      * @param subClass The concrete subtype class
      */
     fun registerSubtype(baseClass: Class<*>, labels: List<String>, subClass: Class<*>)
+}
+
+/**
+ * Refuses to speak Cypher for [purpose] to a store that does not: a manager with no grammar of its
+ * own, built by hand without a schema source, would otherwise send Cypher to Oracle and fail there.
+ */
+internal fun PersistenceManager.requireCypher(purpose: String) {
+    if (!type.speaksCypher) {
+        throw DrivineException(
+            "$type does not speak Cypher, and this PersistenceManager has no schema grammar to write $purpose with. " +
+                "Obtain managers through PersistenceManagerFactory, or use a non-transactional manager."
+        )
+    }
 }

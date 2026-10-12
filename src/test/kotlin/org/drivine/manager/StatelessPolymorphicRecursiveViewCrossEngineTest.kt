@@ -27,6 +27,8 @@ import sample.polytree.LeafSectionNode
 import sample.polytree.TypedContentTreeView
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * A **polymorphic root fragment inside a recursive `@GraphView`** loads a mixed-label tree with each
@@ -39,7 +41,7 @@ import kotlin.test.assertTrue
  * Tree seeded (HAS_PARENT points child → parent; the view's INCOMING edge makes them children):
  *   Document(d) ← LeafSection(s) ← Chunk(c)
  */
-private fun seed(pm: NonTransactionalPersistenceManager) {
+private fun seed(pm: PersistenceManager) {
     pm.execute(
         QuerySpecification.withStatement(
             """
@@ -56,7 +58,7 @@ private fun seed(pm: NonTransactionalPersistenceManager) {
     )
 }
 
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, registry: SubtypeRegistry) {
     seed(pm)
 
     // ----- Polymorphic recursive view: each node its concrete subtype -----
@@ -197,4 +199,14 @@ class StatelessPolymorphicRecursiveViewMemgraphTest {
     @BeforeEach fun clean() = pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 
     @Test fun `polymorphic recursive view on Memgraph`() = verify(buildGom(pm, registry), pm, registry)
+}
+
+@OracleTests
+class StatelessPolymorphicRecursiveViewOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test fun `polymorphic recursive view on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm), registry)
 }

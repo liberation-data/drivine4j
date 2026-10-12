@@ -1,0 +1,296 @@
+package org.drivine.backend.oracle
+
+import org.drivine.annotation.GraphView
+import org.drivine.backend.oracle.OracleSql.hasLabels
+import org.drivine.backend.oracle.OracleSql.path
+import org.drivine.backend.oracle.OracleSql.property
+import org.drivine.model.FragmentModel
+import org.drivine.model.GraphViewModel
+import org.drivine.model.Stamps
+import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.dsl.OrderDirection
+import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.SeekValueSpec
+import org.drivine.query.dsl.WhereCondition
+
+/**
+ * Writes the predicates of a statement over an [OracleGraph] from the query DSL: the conditions on the
+ * root and on the nodes related to it, the order of the roots, and the predicate that seeks past a
+ * keyset cursor. It writes for one statement, whose [scope] it binds values in.
+ *
+ * @param rootAlias what a condition calls the root, and [root] the root's row in the statement
+ * @param rootModel the root fragment, whose declared fields say how a property is read
+ * @param viewModel the view whose relationship fields a condition may name; null for a fragment
+ */
+internal class OraclePredicates(
+    private val scope: OracleStatementScope,
+    private val rows: OracleRowSources,
+    private val rootAlias: String,
+    private val root: String,
+    private val rootModel: FragmentModel,
+    private val viewModel: GraphViewModel?,
+) {
+
+    /** The predicate [conditions] make on the root; null when there are none. */
+    fun predicate(conditions: List<WhereCondition>): String? =
+        all(grouped(conditions), mapOf(rootAlias to root), viewModel).ifEmpty { null }
+
+    /**
+     * Conditions on a relationship's alias are gathered into one condition on that relationship: they
+     * are met together by one related node, not each by some related node.
+     */
+    private fun grouped(conditions: List<WhereCondition>): List<WhereCondition> {
+        val relationships = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: return conditions
+        val kept = mutableListOf<WhereCondition>()
+        val byRelationship = linkedMapOf<String, MutableList<WhereCondition>>()
+        conditions.forEach { condition ->
+            when (condition) {
+                is WhereCondition.PropertyCondition -> {
+                    val alias = condition.propertyPath.substringBefore('.')
+                    val relationship = if (alias in relationships) alias else alias.substringBefore('_').takeIf { '_' in alias && it in relationships }
+                    if (relationship != null) byRelationship.getOrPut(relationship) { mutableListOf() }.add(condition) else kept += condition
+                }
+                is WhereCondition.LabelCondition ->
+                    kept += if (condition.alias in relationships) WhereCondition.RelationshipCondition(condition.alias, listOf(condition)) else condition
+                else -> kept += condition
+            }
+        }
+        byRelationship.forEach { (name, conditions) -> kept += WhereCondition.RelationshipCondition(name, conditions) }
+        return kept
+    }
+
+    /**
+     * @param rows the row each alias of the query stands for
+     * @param model the view whose relationship fields [conditions] may name
+     */
+    private fun all(conditions: List<WhereCondition>, rows: Map<String, String>, model: GraphViewModel?): String =
+        conditions.joinToString(" AND ") { one(it, rows, model) }
+
+    /**
+     * One condition as a predicate. A condition whose alias is no row of [rows] is on a relationship
+     * field of that name: some node related through it meets the condition.
+     */
+    private fun one(condition: WhereCondition, rows: Map<String, String>, model: GraphViewModel?): String = when (condition) {
+        is WhereCondition.PropertyCondition -> {
+            val alias = condition.propertyPath.substringBefore('.')
+            val row = rows[alias]
+            if (row != null) {
+                compared(row, condition.propertyPath.substringAfter('.'), condition.operator, condition.value)
+            } else {
+                // A property of a related node, named outside any block: some related node has it.
+                val relationship = alias.substringBefore('_')
+                one(WhereCondition.RelationshipCondition(relationship, listOf(condition)), rows, model)
+            }
+        }
+        is WhereCondition.RelationshipCondition -> related(condition, rows, model)
+        is WhereCondition.LabelCondition -> {
+            val row = rows[condition.alias]
+            if (row != null) {
+                // On a root read by its labels, the form the index over labels answers.
+                hasLabels(row, condition.labels, scanned = row == root && !scope.narrowed) ?: "1 = 1"
+            } else {
+                one(WhereCondition.RelationshipCondition(condition.alias, listOf(condition)), rows, model)
+            }
+        }
+        is WhereCondition.AnyLabelCondition -> {
+            val row = rows.getValue(condition.alias)
+            "EXISTS (SELECT 1 FROM JSON_TABLE($row.labels, '$[*]' COLUMNS (l VARCHAR2(4000) PATH '$')) WHERE l IN (${OracleSql.values(scope.bound(condition.labels), SqlKind.TEXT)}))"
+        }
+        is WhereCondition.ListMembershipCondition -> {
+            val row = rows.getValue(condition.propertyPath.substringBefore('.'))
+            holds(row, condition.propertyPath.substringAfter('.'), condition.value)
+        }
+        is WhereCondition.OrCondition -> condition.conditions.joinToString(" OR ", "(", ")") { one(it, rows, model) }
+        is WhereCondition.NotCondition -> "NOT (${all(condition.conditions, rows, model)})"
+    }
+
+    /** Whether some node related through the field meets the conditions on it; none does, when the condition is negated. */
+    private fun related(condition: WhereCondition.RelationshipCondition, rows: Map<String, String>, model: GraphViewModel?): String {
+        requireNotNull(model) { "A condition on the relationship '${condition.relationshipName}' needs a @GraphView to find it in." }
+        val relationship = model.relationships.find { it.fieldName == condition.relationshipName }
+            ?: throw IllegalArgumentException(
+                "Relationship '${condition.relationshipName}' not found in ${model.className}. Available relationships: ${model.relationships.map { it.fieldName }}"
+            )
+        val parent = rows.getValue(rootAlias)
+        val target = relationship.fieldName
+        val row = scope.row(target)
+        // Conditions on `<target>_<nested>` are on a node the target is related to in turn.
+        val (nested, direct) = condition.targetConditions.partition {
+            it is WhereCondition.PropertyCondition && it.propertyPath.substringBefore('.').startsWith("${target}_")
+        }
+        val predicates = directPredicates(direct, target, row) + nestedPredicates(nested, relationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }, target, row)
+        val found = this.rows.exists(parent, this.rows.steps(relationship, emptyList()), row, predicates)
+        return if (condition.negate) "NOT $found" else found
+    }
+
+    /** The conditions on the related node itself, whose row is [row]. */
+    private fun directPredicates(direct: List<WhereCondition>, target: String, row: String): List<String> = direct.map { targetCondition ->
+        when (targetCondition) {
+            is WhereCondition.ListMembershipCondition, is WhereCondition.NotCondition, is WhereCondition.AnyLabelCondition, is WhereCondition.RelationshipCondition ->
+                throw UnsupportedOperationException(
+                    "${targetCondition::class.simpleName} is not supported inside a relationship any{}/none{} block; use it as a top-level root predicate."
+                )
+            else -> one(targetCondition, mapOf(target to row), null)
+        }
+    }
+
+    /** The conditions on nodes the related node, of [targetType] and row [row], is related to in turn: one `EXISTS` for each nested field. */
+    private fun nestedPredicates(nested: List<WhereCondition>, targetType: Class<*>, target: String, row: String): List<String> {
+        if (nested.isEmpty()) return emptyList()
+        require(targetType.isAnnotationPresent(GraphView::class.java)) {
+            "Cannot filter on nested relationship '${target}_*' because ${targetType.simpleName} is not a @GraphView"
+        }
+        val targetModel = GraphViewModel.from(targetType)
+        return nested.groupBy { (it as WhereCondition.PropertyCondition).propertyPath.substringBefore('.').removePrefix("${target}_") }
+            .map { (name, conditions) ->
+                val nestedRelationship = targetModel.relationships.find { it.fieldName == name }
+                    ?: throw IllegalArgumentException("Nested relationship '$name' not found in ${targetModel.className}")
+                val nestedRow = scope.row(name)
+                val nestedPredicate = all(conditions, mapOf("${target}_$name" to nestedRow), null)
+                // No labels: a condition on a relationship is met by whatever node it leads to.
+                rows.exists(row, rows.steps(nestedRelationship, emptyList()), nestedRow, listOf(nestedPredicate))
+            }
+    }
+
+    /**
+     * `property operator value`, with the property read as the type of the value it is compared with.
+     *
+     * Oracle keeps an empty string as null, so one bound compares with nothing: a test against `''` is
+     * written as the test it means, as Cypher reads it. `CONTAINS ''`, `STARTS WITH ''` and
+     * `ENDS WITH ''` hold for any string, the empty one among them; `= ''` for a property stored
+     * empty, which `JSON_VALUE` reads as null and a JSON path still sees; `<> ''` for any other.
+     */
+    private fun compared(row: String, key: String, operator: ComparisonOperator, value: Any?): String {
+        val text = property(row, key)
+        val typed = property(row, key, SqlKind.ofValue(value))
+        val empty = value == ""
+        // Any string, the empty one among them: `JSON_VALUE` reads a stored `""` as null.
+        val anyText = "($text IS NOT NULL OR ${storedEmpty(row, key)})"
+        return when (operator) {
+            ComparisonOperator.IS_NULL -> "NOT ${OracleSql.hasProperty(row, key)}"
+            ComparisonOperator.IS_NOT_NULL -> OracleSql.hasProperty(row, key)
+            ComparisonOperator.EQUALS -> if (empty) storedEmpty(row, key) else "$typed = ${scope.bound(scalar(value))}"
+            ComparisonOperator.NOT_EQUALS -> if (empty) "($text IS NOT NULL AND NOT ${storedEmpty(row, key)})" else "$typed <> ${scope.bound(scalar(value))}"
+            ComparisonOperator.GREATER_THAN -> "$typed > ${scope.bound(scalar(value))}"
+            ComparisonOperator.GREATER_THAN_OR_EQUAL -> "$typed >= ${scope.bound(scalar(value))}"
+            ComparisonOperator.LESS_THAN -> "$typed < ${scope.bound(scalar(value))}"
+            ComparisonOperator.LESS_THAN_OR_EQUAL -> "$typed <= ${scope.bound(scalar(value))}"
+            ComparisonOperator.IN -> "$typed IN (${OracleSql.values(scope.bound(listed(value)), SqlKind.ofValue(value))})"
+            ComparisonOperator.NOT_IN -> "NOT ($typed IN (${OracleSql.values(scope.bound(listed(value)), SqlKind.ofValue(value))}))"
+            ComparisonOperator.HAS_ELEMENT -> holds(row, key, value)
+            ComparisonOperator.CONTAINS -> if (empty) anyText else "INSTR($text, ${scope.bound(value?.toString())}) > 0"
+            ComparisonOperator.STARTS_WITH -> if (empty) anyText else scope.bound(value?.toString()).let { "SUBSTR($text, 1, LENGTH($it)) = $it" }
+            ComparisonOperator.ENDS_WITH -> if (empty) anyText else scope.bound(value?.toString()).let { "SUBSTR($text, -LENGTH($it)) = $it" }
+            ComparisonOperator.CONTAINS_IGNORE_CASE -> if (empty) anyText else "INSTR(LOWER($text), ${scope.bound(value?.toString()?.lowercase())}) > 0"
+            ComparisonOperator.EQUALS_IGNORE_CASE -> if (empty) storedEmpty(row, key) else "LOWER($text) = ${scope.bound(value?.toString()?.lowercase())}"
+            ComparisonOperator.MATCHES -> matches(text, value?.toString().orEmpty())
+        }
+    }
+
+    /** Whether the property [key] of [row] is stored as the empty string, which `JSON_VALUE` reads as null. */
+    private fun storedEmpty(row: String, key: String): String =
+        if (key == Stamps.PROPERTY) "1 = 0" else "JSON_EXISTS($row.props, ${path(key, "?(@ == \"\")")})"
+
+    /**
+     * A regular expression that must match the whole value, as Cypher's `=~` does. A leading `(?i)`
+     * ignores case. The expression itself is Oracle's, in the POSIX dialect: what Java adds to it,
+     * such as `(?:…)`, a look-around or `\b`, is not read, and a flag anywhere but the start is not either.
+     */
+    private fun matches(text: String, pattern: String): String {
+        val ignoreCase = pattern.startsWith("(?i)")
+        val body = pattern.removePrefix("(?i)")
+        return "REGEXP_LIKE($text, ${scope.bound("^($body)$")}${if (ignoreCase) ", 'i'" else ""})"
+    }
+
+    /**
+     * Whether the list property [key] of [row] holds [value]. A boolean is written into the path: in a
+     * path a boolean is itself, which the text `JSON_VALUE` reads it as would not equal.
+     */
+    private fun holds(row: String, key: String, value: Any?): String =
+        if (value is Boolean) {
+            "JSON_EXISTS($row.props, ${path(key, "[*]?(@ == $value)")})"
+        } else {
+            "JSON_EXISTS($row.props, ${path(key, "[*]?(@ == \$v)")} PASSING ${scope.bound(value)} AS \"v\")"
+        }
+
+    /** A boolean is compared with the text JSON writes it as, which is what `JSON_VALUE` reads it as. */
+    private fun scalar(value: Any?): Any? = if (value is Boolean) value.toString() else value
+
+    /** [value] as the values of a list: itself when it is one, else a list of it alone. */
+    private fun listed(value: Any?): Collection<*> = when (value) {
+        is Collection<*> -> value.map(::scalar)
+        is Array<*> -> value.map(::scalar)
+        else -> listOf(scalar(value))
+    }
+
+    // ----- Ordering and keyset paging -----
+
+    /** The kind the field that declares the root property [key] is ordered as; null when no field does. */
+    private fun declaredKind(key: String): SqlKind? = rootModel.fields.firstOrNull { it.propertyName == key }?.type?.let(SqlKind::ofType)
+
+    /**
+     * A root property as it is ordered: by the type of the field that holds it; when no field does,
+     * as the value a seek compares it with, and as text when there is none.
+     */
+    private fun ordered(key: String): String {
+        val declared = declaredKind(key)
+        if (declared != null) return property(root, key, declared)
+        val inferred = scope.inferredKinds[key] ?: SqlKind.TEXT
+        return if (inferred == SqlKind.NUMBER) undeclaredNumber(key) else property(root, key, inferred)
+    }
+
+    /**
+     * A property no field declares, read as a number: a number stored as one, and null for anything
+     * else. `RETURNING NUMBER` alone would read the text `"10"` as ten, and then a page of such texts,
+     * ordered as numbers, would not be in the order a seek with one of them compares in.
+     */
+    private fun undeclaredNumber(key: String): String = SqlKind.NUMBER.read("$root.props", path(key, ".numberOnly()"))
+
+    /**
+     * The `ORDER BY` terms for [order]. A property no field declares, and no cursor says the kind of,
+     * is ordered as a number first and as text after, so that a page of numbers is in the order a
+     * seek with one of them as its cursor compares in, and anything else is in the order of its text.
+     */
+    fun orderTerms(order: OrderSpec): String {
+        val key = order.propertyPath.substringAfter('.')
+        val direction = order.direction.name
+        if (key == Stamps.PROPERTY || declaredKind(key) != null || key in scope.inferredKinds) return "${ordered(key)} $direction"
+        return "${undeclaredNumber(key)} $direction, ${property(root, key)} $direction"
+    }
+
+    /**
+     * The predicate that selects the rows after a cursor: for orders `a, b` and the cursor `(A, B)`,
+     * `a > A OR (a = A AND b > B)`, each comparison turned round for a descending order. A row whose
+     * ordered property is absent meets no comparison, and is not returned. A property no field
+     * declares is compared, and ordered, as the kind of the cursor value.
+     */
+    fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String {
+        require(orders.isNotEmpty()) { "seek requires at least one root orderBy property" + hint(collectionSortCount) }
+        require(orders.size == values.size) {
+            "seek supplied ${values.size} cursor values for ${orders.size} root orderBy properties" + hint(collectionSortCount)
+        }
+        orders.zip(values).forEachIndexed { index, (order, value) ->
+            require(order.propertyPath == value.propertyPath) {
+                "seek property #${index + 1} is ${value.propertyPath}, but orderBy property #${index + 1} is ${order.propertyPath}"
+            }
+        }
+        val cursor = values.map { scope.bound(scalar(it.value)) }
+        orders.zip(values).forEach { (order, value) ->
+            val key = order.propertyPath.substringAfter('.')
+            if (declaredKind(key) == null) scope.inferredKinds[key] = SqlKind.ofValue(value.value)
+        }
+        fun key(index: Int) = ordered(orders[index].propertyPath.substringAfter('.'))
+        val branches = orders.indices.map { branch ->
+            val equal = (0 until branch).map { "${key(it)} = ${cursor[it]}" }
+            val beyond = "${key(branch)} ${if (orders[branch].direction == OrderDirection.ASC) ">" else "<"} ${cursor[branch]}"
+            // The first branch is one comparison, which needs no parentheses of its own.
+            (equal + beyond).let { if (it.size == 1) it.single() else it.joinToString(" AND ", "(", ")") }
+        }
+        // One order is one comparison, which `AND` joins to the statement's other predicates as it stands.
+        return branches.singleOrNull() ?: branches.joinToString(" OR ", "(", ")")
+    }
+
+    /** Why a seek may have fewer root orders than the query gave: some sort a relationship collection. */
+    private fun hint(collectionSortCount: Int): String =
+        if (collectionSortCount == 0) "" else " ($collectionSortCount declared orderBy properties sort a relationship collection, which cannot participate in a keyset cursor)"
+}

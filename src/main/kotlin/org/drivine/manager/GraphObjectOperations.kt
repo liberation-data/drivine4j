@@ -12,6 +12,11 @@ import org.drivine.store.StoreIdentity
  *
  * The reified Kotlin forms and the generated query DSL are extensions of this interface, so they
  * work on either manager.
+ *
+ * A `whereClause` is a predicate in the store's own language, as the caller wrote it: Cypher on the
+ * graph engines, SQL on Oracle. On Oracle a property of the root may still be written as Cypher
+ * writes it (`issue.state = 'open'`); anything more is SQL over the root's `props`, `labels` and
+ * `stamp` columns. The query DSL is the same on every store.
  */
 interface GraphObjectOperations {
 
@@ -159,6 +164,10 @@ interface GraphObjectOperations {
      * raise [topK] if your view is selective. A fragment search has no relationship filters, so it
      * returns the full top-K (minus any [threshold] cut).
      *
+     * On Oracle the search goes through the vector index when one has been made for the label and
+     * property, and is approximate as on the graph engines; with none made it measures every node of
+     * the label, which is exact and is not refused.
+     *
      * Example:
      * ```kotlin
      * val views = graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
@@ -255,6 +264,11 @@ interface GraphObjectOperations {
      * The [query] is passed through to the engine's full-text query language (Lucene syntax on Neo4j:
      * `AND`/`OR`/`"phrase"`/`field:term`). Raw user input is **not** escaped here — wrap or escape it
      * yourself if it may contain query-syntax metacharacters.
+     *
+     * Oracle has no such language to pass it to, so Drivine reads the plain core of that syntax
+     * itself: words, a `"phrase"`, `+must`, `-not` or `NOT`, `AND`, a `prefix*`, and `field:word` as
+     * the word. Anything else is read as text, and a query with no word to look for is refused with
+     * `IllegalArgumentException`. With no full-text index made, every node of the label is read.
      *
      * @param graphClass the `@GraphView` or `@NodeFragment` class to load
      * @param query the full-text query string

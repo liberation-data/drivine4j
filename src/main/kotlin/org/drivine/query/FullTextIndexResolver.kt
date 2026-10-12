@@ -76,6 +76,7 @@ internal object FullTextIndexResolver {
             indexName = indexName,
             queryParam = queryParam,
             topKParam = topKParam,
+            properties = chosen.onDiskNames,
         )
     }
 

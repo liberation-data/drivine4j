@@ -53,6 +53,20 @@ interface SchemaGrammar {
     val indexOperationsAreAsync: Boolean
         get() = false
 
+    // ----- Drivine's own nodes -----
+
+    /**
+     * The statements that keep the schema-version marker, a node of the graph with [label] keyed by
+     * [scopeProperty]: see [VersionMarkerStatements]. Cypher unless the engine speaks otherwise.
+     */
+    fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = CypherVersionMarker(label, scopeProperty)
+
+    /**
+     * The statements that keep the store's identity, a node of the graph with [label] keyed by
+     * [keyProperty]: see [StoreStampStatements]. Cypher unless the engine speaks otherwise.
+     */
+    fun storeStamp(label: String, keyProperty: String): StoreStampStatements = CypherStoreStamp(label, keyProperty)
+
     // ----- DDL emission -----
 
     /**
@@ -175,6 +189,24 @@ interface SchemaGrammar {
      * violates the constraint (as opposed to a syntax error or connectivity problem).
      */
     fun isConstraintViolation(e: Throwable): Boolean
+
+    /**
+     * The statement that samples the key values [spec] would refuse: each row a map of the
+     * `properties` that repeat and the `count` of nodes that hold them, [limit] rows at most.
+     */
+    fun sampleConflictsQuery(spec: ConstraintSpec, limit: Int): String {
+        val notNull = spec.properties.joinToString(" AND ") { "n.$it IS NOT NULL" }
+        val keyAliases = spec.properties.mapIndexed { i, p -> "n.$p AS _k$i" }.joinToString(", ")
+        val keyMap = spec.properties.mapIndexed { i, p -> "$p: _k$i" }.joinToString(", ")
+        return """
+            MATCH (n:${spec.label})
+            WHERE $notNull
+            WITH $keyAliases, count(*) AS _count
+            WHERE _count > 1
+            RETURN {properties: {$keyMap}, count: _count}
+            LIMIT $limit
+        """.trimIndent()
+    }
 
     companion object {
 

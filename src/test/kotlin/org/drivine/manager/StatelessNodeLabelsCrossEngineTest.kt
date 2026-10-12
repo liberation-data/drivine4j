@@ -30,6 +30,8 @@ import sample.nodelabels.Role
 import sample.nodelabels.ThingNode
 import sample.nodelabels.ThingView
 import sample.nodelabels.TrespassingNode
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 
 /**
  * `@NodeLabels` and the flat `@PropertyBag`, verified on Neo4j, FalkorDB and Memgraph.
@@ -291,3 +293,15 @@ class StatelessNodeLabelsMemgraphTest {
     fun `node labels and a flat bag round-trip on Memgraph`() = verify(buildGom(pm, SubtypeRegistry()), pm) { buildGom(pm, SubtypeRegistry()) }
 }
 
+@OracleTests
+class StatelessNodeLabelsOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = OracleTestDatabase.clear(pm)
+
+    @Test
+    fun `node labels and a flat bag round-trip on Oracle`() =
+        verify(buildGom(pm, SubtypeRegistry()), OracleTestDatabase.fixtures(pm)) { buildGom(pm, SubtypeRegistry()) }
+}

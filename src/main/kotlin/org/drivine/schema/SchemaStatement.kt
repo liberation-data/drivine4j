@@ -10,7 +10,11 @@ package org.drivine.schema
  */
 sealed interface SchemaStatement {
 
-    /** Cypher DDL, executed through the normal query path in auto-commit mode. */
+    /**
+     * DDL in the store's own language, executed through the normal query path in auto-commit mode:
+     * Cypher on the graph engines, and SQL or a PL/SQL block on Oracle, which keeps the name for the
+     * sake of the grammars and tests that use it.
+     */
     data class Cypher(val statement: String) : SchemaStatement
 
     /**

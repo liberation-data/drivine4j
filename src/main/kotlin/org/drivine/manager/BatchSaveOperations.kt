@@ -35,9 +35,9 @@ internal class BatchSaveOperations(
     private val objectMapper: ObjectMapper,
     private val sessionManager: SessionManager,
     private val chunkSize: Int,
-    private val grammar: CypherGrammar? = null,
-    private val storedKeys: StoredPropertyKeys? = null,
-    private val stamping: Stamping? = null,
+    private val grammar: CypherGrammar?,
+    private val storedKeys: StoredPropertyKeys,
+    private val stamping: Stamping,
 ) {
     /**
      * Builds the statements for [items] (assumed non-empty), grouped by runtime class. Within a group
@@ -77,7 +77,7 @@ internal class BatchSaveOperations(
         rows.chunked(chunkSize).forEach { chunk ->
             specs.add(
                 QuerySpecification
-                    .withStatement(if (stamping == null) "UNWIND \$rows AS row\nMERGE (n:$labels {$idProperty: row.id})\nSET n += row.props" else stampedUnwind(labels, idProperty))
+                    .withStatement(stampedUnwind(labels, idProperty))
                     .bind(mapOf("rows" to chunk))
             )
         }
@@ -141,12 +141,11 @@ internal class BatchSaveOperations(
         val id = rootProps[idField]
             ?: throw IllegalArgumentException("Cannot saveAll ${obj.javaClass.simpleName} with a null @GraphNodeId")
         val props = rootModel.unwindProps(rootProps, nullPolicy)
-        val stamp = if (stamping != null) mapOf("stamp" to Stamps.fresh()) else emptyMap()
-        return mapOf("id" to id, "props" to props) + stamp
+        return mapOf("id" to id, "props" to props, "stamp" to Stamps.fresh())
     }
 
     private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType, nullPolicy: NullPolicy) =
-        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys, stamping?.unchecked()).buildMergeStatements(obj, cascade, nullPolicy)
+        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys, stamping.unchecked()).buildMergeStatements(obj, cascade, nullPolicy)
 
     /** Root [FragmentModel] and (for views) the root field name; mirrors the manager's snapshot metadata. */
     private fun rootMetadata(clazz: Class<*>): Pair<FragmentModel, String?> =
@@ -156,6 +155,12 @@ internal class BatchSaveOperations(
         } else {
             FragmentModel.from(clazz) to null
         }
+
+    companion object {
+        // Max rows per UNWIND statement in saveAll — caps server-side batch size; each chunk is one
+        // statement (and, when not in an ambient transaction, still within the single batch transaction).
+        const val UNWIND_CHUNK_SIZE = 1000
+    }
 }
 
 private fun org.drivine.query.MergeStatement.toSpec(): QuerySpecification<*> =

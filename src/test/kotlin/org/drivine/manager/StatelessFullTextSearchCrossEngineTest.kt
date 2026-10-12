@@ -29,6 +29,9 @@ import sample.fulltext.PrivateNote
 import sample.fulltext.PublicNote
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.junit.jupiter.api.BeforeEach
 
 /**
  * Full-text search ([GraphObjectManager.loadMatching]) verified against Neo4j, FalkorDB and Memgraph
@@ -39,14 +42,14 @@ import kotlin.test.assertTrue
  * multi-property index; and polymorphic per-node dispatch on a sealed base. Because normalization
  * divides by the batch max, the top hit's score is always `1.0` — a deterministic cross-engine anchor.
  */
-private fun ensureIndexes(pm: NonTransactionalPersistenceManager) {
+private fun ensureIndexes(pm: PersistenceManager) {
     pm.indexes.ensure(FullTextIndexSpec("Article", "body"))
     pm.indexes.ensure(FullTextIndexSpec("Entity", listOf("name", "description")))
     pm.indexes.ensure(FullTextIndexSpec("Note", "text"))
     pm.indexes.ensure(FullTextIndexSpec("Memo", "body"))
 }
 
-private fun seed(pm: NonTransactionalPersistenceManager, awaitIndexes: Boolean) {
+private fun seed(pm: PersistenceManager, awaitIndexes: Boolean) {
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -68,7 +71,7 @@ private fun seed(pm: NonTransactionalPersistenceManager, awaitIndexes: Boolean) 
     if (awaitIndexes) pm.execute(QuerySpecification.withStatement("CALL db.awaitIndexes()"))
 }
 
-private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersistenceManager, awaitIndexes: Boolean) {
+private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, awaitIndexes: Boolean) {
     ensureIndexes(pm)
     seed(pm, awaitIndexes)
 
@@ -112,7 +115,7 @@ private fun verify(gom: StatelessGraphObjectManager, pm: NonTransactionalPersist
     assertEquals(mapOf("source" to "wiki"), memos.single().value.metadata)
 }
 
-private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
+private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
     val mapper = Neo4jObjectMapper.instance
     return StatelessGraphObjectManager(pm, mapper, registry)
 }
@@ -208,4 +211,13 @@ class StatelessFullTextSearchMemgraphTest {
     }
 
     @Test fun `full-text search ranks, projects, and dispatches on Memgraph`() = verify(buildGom(pm, registry), pm, awaitIndexes = false)
+}
+
+@OracleTests
+class StatelessFullTextSearchOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+    private val fixtures = OracleTestDatabase.fixtures(pm)
+
+    @Test fun `full-text search ranks, projects, and dispatches on Oracle`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
 }
