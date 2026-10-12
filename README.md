@@ -924,11 +924,15 @@ committed each read sees its own committed state, and a row that gains a value b
 in neither.
 
 On a Cypher backend the order is `ORDER BY p.x IS NULL, p.x DESC` (false sorts before true); on
-Oracle, `DESC NULLS LAST`. The extra term is one more thing to sort by, and may cost Neo4j the
-index that would otherwise supply the order, so leave the placement off a property that is never
-null. It is for the order of the roots:
-an order of a relationship collection that places its nulls is refused, and so is one under `seek`,
-whose cursor does not say which side of the nulls it is on.
+Oracle, `DESC NULLS LAST`. No index supplies that order: Neo4j sorts by the extra term whatever is
+indexed (a `Top` over the scan, where an order an index mirrors is read from the index with no
+sort), so leave the placement off a property that is never null, and expect no
+[index advice](#limit--pagination) for an order that has one.
+
+It is for the order of the roots: an order of a relationship collection that places its nulls is
+refused, and so is one under `seek`, whose cursor does not say which side of the nulls it is on.
+From inside an `orderBy` block it follows `asc()` / `desc()`; an order built apart from one, with
+`ascending()` / `descending()`, takes the same two calls.
 
 #### Limit & Pagination
 
@@ -1053,6 +1057,8 @@ manager after it has been handed out:
 ```kotlin
 graphObjectManager.indexAdvice = IndexAdvicePolicy.FAIL
 ```
+
+An order that [places its nulls](#ordering) is never advised on either: it sorts whatever is indexed.
 
 A query already pinned to a single root — a top-level `where` equality on the `@NodeId`, or on a
 property carrying a single-property uniqueness constraint — is never advised on. Its ordering is over

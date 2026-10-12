@@ -158,6 +158,22 @@ class QueryIndexAdvisorTest {
     }
 
     @Test
+    fun `an order that places its nulls is not advised on`() {
+        val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
+
+        // It sorts by the test for null before the value, which no index supplies: with the index
+        // the advice would name, the plan still sorts. Advising here would ask for an index that cannot help.
+        val results = manager.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+            orderBy {
+                query.proposition.level.desc().nullsLast()
+                query.proposition.id.desc()
+            }
+        }
+
+        assertEquals(1, results.size)
+    }
+
+    @Test
     fun `a query pinned to one root by its id is not advised on`() {
         val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
 

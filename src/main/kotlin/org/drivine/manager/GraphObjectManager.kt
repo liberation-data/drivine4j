@@ -418,7 +418,9 @@ class GraphObjectManager internal constructor(
      * exactly rather than merely overlap it.
      *
      * Only root-level orders participate — a collection sort happens inside a pattern comprehension,
-     * where no index applies.
+     * where no index applies. Nor does one to an order that places its nulls: it sorts by the test
+     * for null before the value, and an index holds no node without the property, so the query
+     * sorts whatever is indexed and there is no index to recommend.
      */
     private fun <Q : Any> adviseOnIndexes(
         graphClass: Class<*>,
@@ -428,6 +430,7 @@ class GraphObjectManager internal constructor(
     ) {
         if (indexAdvice == IndexAdvicePolicy.OFF || rootOrders.isEmpty()) return
         if (!backend.supportsIndexBackedOrdering) return
+        if (rootOrders.any { it.nulls != null }) return
 
         val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
         val fragmentType = viewModel?.rootFragment?.fragmentType ?: graphClass
