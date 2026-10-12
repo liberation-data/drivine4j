@@ -40,11 +40,11 @@ class OracleKeysetTest {
     @Test
     fun `an ascending order seeks beyond the cursor, a descending one before it`() {
         val up = select()
-        assertEquals("(($title > \$_p0))", up.after(listOf(OrderSpec("n.title", ASC)), listOf(SeekValueSpec("n.title", "m")), 0))
+        assertEquals("$title > \$_p0", up.after(listOf(OrderSpec("n.title", ASC)), listOf(SeekValueSpec("n.title", "m")), 0))
         assertEquals(mapOf<String, Any?>("_p0" to "m"), up.bindings())
 
         val down = select()
-        assertEquals("(($title < \$_p0))", down.after(listOf(OrderSpec("n.title", DESC)), listOf(SeekValueSpec("n.title", "m")), 0))
+        assertEquals("$title < \$_p0", down.after(listOf(OrderSpec("n.title", DESC)), listOf(SeekValueSpec("n.title", "m")), 0))
     }
 
     @Test
@@ -55,7 +55,7 @@ class OracleKeysetTest {
             listOf(SeekValueSpec("n.title", "m"), SeekValueSpec("n.count", 7L)),
             0,
         )
-        assertEquals("(($title > \$_p0) OR ($title = \$_p0 AND $count < \$_p1))", sql)
+        assertEquals("($title > \$_p0 OR ($title = \$_p0 AND $count < \$_p1))", sql)
         assertEquals(mapOf<String, Any?>("_p0" to "m", "_p1" to 7L), select.bindings())
     }
 
@@ -110,16 +110,16 @@ class OracleKeysetTest {
     @Test
     fun `a property no field declares is compared as the kind of its cursor value`() {
         val numeric = select()
-        assertEquals("((JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) > \$_p0))", numeric.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", 42)), 0))
+        assertEquals("JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) > \$_p0", numeric.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", 42)), 0))
 
         val textual = select()
-        assertEquals("((JSON_VALUE(n_.props, '$.score') > \$_p0))", textual.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", "b")), 0))
+        assertEquals("JSON_VALUE(n_.props, '$.score') > \$_p0", textual.after(listOf(OrderSpec("n.score", ASC)), listOf(SeekValueSpec("n.score", "b")), 0))
     }
 
     @Test
     fun `the stamp is sought by its column`() {
         val select = select()
-        assertEquals("((n_.stamp > \$_p0))", select.after(listOf(OrderSpec("n.${Stamps.PROPERTY}", ASC)), listOf(SeekValueSpec("n.${Stamps.PROPERTY}", "s")), 0))
+        assertEquals("n_.stamp > \$_p0", select.after(listOf(OrderSpec("n.${Stamps.PROPERTY}", ASC)), listOf(SeekValueSpec("n.${Stamps.PROPERTY}", "s")), 0))
     }
 
     // ----- orderTerms(), through load -----
@@ -160,7 +160,7 @@ class OracleKeysetTest {
         val order = statement.substringAfter("\nORDER BY ")
         assertEquals("JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) DESC", order)
         assertEquals(1, Regex(Regex.escape("$.score")).findAll(order).count(), "one term, not a number form and then a text form: $order")
-        assertTrue(statement.contains("WHERE (((JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) < \$_p0)))"), statement)
+        assertTrue(statement.contains("WHERE JSON_VALUE(n_.props, '$.score.numberOnly()' RETURNING NUMBER) < \$_p0\nORDER BY"), statement)
     }
 
     @Test

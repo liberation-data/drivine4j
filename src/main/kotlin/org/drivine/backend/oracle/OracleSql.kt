@@ -138,6 +138,9 @@ internal object OracleSql {
     /** The columns a row of a node carries, each as [alias]'s, `doc` among them. */
     fun columns(alias: String): String = NODE_COLUMNS.joinToString(", ") { "$alias.$it" }
 
+    /** One node in a `MATCH` pattern, named [variable], that meets [where] when there is one. */
+    fun node(variable: String, where: String? = null): String = "($variable IS node${where?.let { " WHERE $it" }.orEmpty()})"
+
     /** The columns a row of a node has: those of the table, and the map the graph makes of them. */
     val NODE_COLUMNS = listOf("nid", "labels", "props", "stamp", "doc")
 

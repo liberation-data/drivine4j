@@ -35,6 +35,12 @@ import org.drivine.schema.SimilarityFunction
  * predicates of the query DSL are written by [OraclePredicates], and a predicate written by hand is
  * read by [CypherShorthand]. What is here is the projection of a view, a scored search, and what a
  * cascading delete selects.
+ *
+ * A statement is written to be read beside the Cypher it stands for. A row is called what the model
+ * calls it, the root by its field and a related node by the field that holds it, and the node of a
+ * `MATCH` has its row's name: `(claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node …)`
+ * is Cypher's `(claim)-[:MENTIONS]->(people)`. Every query in it is a [Query], so each is laid out
+ * the same way, under the line that opens it, and names in `COLUMNS` only what it reads.
  */
 internal class OracleSelect(
     private val graph: OracleGraph,
@@ -53,16 +59,18 @@ internal class OracleSelect(
     /** What a predicate calls the root: `n` for a fragment, the root field's name for a view. */
     val rootAlias: String = viewModel?.rootFragment?.fieldName ?: FRAGMENT_ALIAS
 
+    private val scope = OracleStatementScope()
+
     /**
-     * The root's row in the statement. Not the name itself: a field may be called `user` or `order`,
-     * which SQL keeps for its own, and no name SQL keeps ends in an underscore.
+     * The root's row in the statement, and its node in the `MATCH` that finds it. Not the name itself:
+     * a field may be called `user` or `order`, which SQL keeps for its own, and no name SQL keeps ends
+     * in an underscore.
      */
-    val root: String = "${rootAlias}_"
+    val root: String = scope.row(rootAlias)
 
     /** The names of the root's relationship fields; empty for a fragment. */
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
-    private val scope = OracleStatementScope()
     private val rows = OracleRowSources(graph, scope)
     private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel)
     private val shorthand = CypherShorthand(rootAlias, root)
@@ -82,20 +90,25 @@ internal class OracleSelect(
      * @param skip and [limit] the page to return, bound as parameters so the text is the same for every page
      */
     fun load(predicates: List<String>, orders: List<OrderSpec> = emptyList(), skip: Int? = null, limit: Int? = null): GraphStatement {
-        val projection = if (viewModel != null) view(root, viewModel, mapOf(viewModel.className to 1), null) else document(root)
-        val text = buildString {
-            append("SELECT ").append(projection).append(" AS result\nFROM ").append(rows.nodes(rootLabels(), root))
-            append(where(predicates + requiredRelationships()))
-            if (orders.isNotEmpty()) append("\nORDER BY ").append(orders.joinToString(", ") { this@OracleSelect.predicates.orderTerms(it) })
-            if (skip != null) append("\nOFFSET ").append(scope.bound(skip)).append(" ROWS")
-            if (limit != null) append("\nFETCH NEXT ").append(scope.bound(limit)).append(" ROWS ONLY")
-        }
-        return GraphStatement(text, bindings())
+        val result = "${projection()} AS result"
+        val selected = predicates + requiredRelationships()
+        val page = listOfNotNull(
+            orders.takeIf { it.isNotEmpty() }?.let { "ORDER BY " + it.joinToString(", ", transform = this.predicates::orderTerms) },
+            skip?.let { "OFFSET ${scope.bound(it)} ROWS" },
+            limit?.let { "FETCH NEXT ${scope.bound(it)} ROWS ONLY" },
+        )
+        return GraphStatement(Query(result, roots(), selected, page).text(), bindings())
     }
 
     /** The count of the roots [predicates] select, and that have the relationships the view requires. */
     fun count(predicates: List<String>): GraphStatement =
-        GraphStatement("SELECT COUNT(*) FROM ${rows.nodes(rootLabels(), root)}${where(predicates + requiredRelationships())}", bindings())
+        GraphStatement(Query("COUNT(*)", roots(), predicates + requiredRelationships()).text(), bindings())
+
+    /** The nodes the statement's roots are among: those with the root's labels. */
+    private fun roots(): GraphTable = rows.nodes(rootLabels(), root)
+
+    /** What a load returns for a root: a fragment's map, or a view's object. */
+    private fun projection(): String = if (viewModel != null) view(root, viewModel, mapOf(viewModel.className to 1), null) else document(root)
 
     /**
      * The predicate that selects the roots of this statement from the node table, when it is aliased
@@ -103,16 +116,17 @@ internal class OracleSelect(
      * Cypher delete does; a load and a count also ask for the relationships the view requires.
      */
     fun selecting(predicates: List<String>): String =
-        (listOfNotNull(hasLabels(root, rootLabels(), scanned = !scope.narrowed)) + predicates.map { "($it)" }).joinToString("\n  AND ")
+        (listOfNotNull(hasLabels(root, rootLabels(), scanned = !scope.narrowed)) + predicates).joinToString("\n  AND ")
 
     /** The values the statement's parameters take, as written so far. */
     fun bindings(): Map<String, Any?> = scope.bindings()
 
-    private fun where(predicates: List<String>): String =
-        if (predicates.isEmpty()) "" else "\nWHERE " + predicates.joinToString("\n  AND ") { "($it)" }
-
-    /** A predicate the caller wrote, with each property of the root written as Cypher writes it read as that property: see [CypherShorthand]. */
-    fun written(predicate: String): String = shorthand.rewrite(predicate)
+    /**
+     * A predicate the caller wrote, with each property of the root written as Cypher writes it read as
+     * that property: see [CypherShorthand]. In parentheses, since it may hold an `OR`, and is joined to
+     * the statement's own predicates by `AND`; those are written so that they need none.
+     */
+    fun written(predicate: String): String = "(${shorthand.rewrite(predicate)})"
 
     /** The root whose id is bound as [parameter]. */
     fun hasId(parameter: String): String {
@@ -139,7 +153,7 @@ internal class OracleSelect(
 
     /** A JSON object of [entries], each a key and the expression for its value. */
     private fun jsonObject(entries: List<Pair<String, String>>): String =
-        entries.joinToString(",\n    ", "JSON_OBJECT(\n    ", "\n    RETURNING JSON)") { (key, value) -> "${literal(key)} VALUE $value" }
+        entries.joinToString(",\n    ", "JSON_OBJECT(\n    ", "\n    RETURNING JSON)") { (key, value) -> "${literal(key)} VALUE ${value.under()}" }
 
     /**
      * The value of a relationship field of the row [parent]: a subquery that gives an array, or one
@@ -168,7 +182,7 @@ internal class OracleSelect(
             return distinct(parent, relationship, rows.steps(relationship, labels, depth), targetType, visits)
         }
 
-        val row = scope.next("t")
+        val row = scope.row(relationship.fieldName)
         val target = element(row, targetType, visits, relationship.fieldName)
         val value = if (relationship.isRelationshipFragment) {
             // The relationship's own properties, with the node it leads to under the target field.
@@ -176,7 +190,7 @@ internal class OracleSelect(
         } else {
             target
         }
-        return gathered(parent, rows.reached(rows.steps(relationship, labels), row), row, value, relationship.isCollection, sort?.let { sorted(row, targetType, it) })
+        return gathered(parent, rows.steps(relationship, labels), row, value, relationship.isCollection, sort?.let { sorted(row, targetType, it) })
     }
 
     /** The node [row] as an element of a relationship field: a fragment's map, or a nested view. */
@@ -187,31 +201,32 @@ internal class OracleSelect(
             document(row)
         }
 
-    /** [value] for each row of [source] that starts from [parent]: all of them as an array, or the first. */
-    private fun gathered(parent: String, source: String, row: String, value: String, collection: Boolean, order: String?): String =
+    /** [value] for each node, a row named [row], reached from [parent] by [steps]: all of them as an array, or the first. */
+    private fun gathered(parent: String, steps: List<Step>, row: String, value: String, collection: Boolean, order: String?): String =
         if (collection) {
-            "COALESCE((\n    SELECT JSON_ARRAYAGG($value ORDER BY ${order ?: "$row.eid"} RETURNING JSON)\n    FROM ${source.indented()}\n    WHERE $row.src = $parent.nid), $EMPTY_ARRAY)"
+            val array = "JSON_ARRAYAGG($value ORDER BY ${order ?: "$row.eid"} RETURNING JSON)"
+            "COALESCE(${rows.related(array, parent, steps, row).nested()}, $EMPTY_ARRAY)"
         } else {
-            "(\n    SELECT $value\n    FROM ${source.indented()}\n    WHERE $row.src = $parent.nid\n    ORDER BY $row.eid FETCH FIRST 1 ROWS ONLY)"
+            rows.related(value, parent, steps, row, tail = listOf(first("$row.eid"))).nested()
         }
 
-    /** [this], a row source, with its later lines moved in under the clause that names it. */
-    private fun String.indented(): String = replace("\n", "\n    ")
+    /** The clause that keeps the first row by [order]. */
+    private fun first(order: String): String = "ORDER BY $order FETCH FIRST 1 ROWS ONLY"
 
     /**
      * A field that holds each node reached once, however many ways lead to it: a path of several
-     * steps, or one step taken up to a depth.
+     * steps, or one step taken up to a depth. The nodes are read on their own, those whose id the
+     * path reaches, since the path gives a node once for each way to it.
      */
     private fun distinct(parent: String, relationship: RelationshipModel, steps: List<Step>, targetType: Class<*>, visits: Map<String, Int>): String {
-        val path = scope.next("r")
-        val row = scope.next("x")
+        val row = scope.row(relationship.fieldName)
+        val path = scope.row("reached")
         val value = element(row, targetType, visits, relationship.fieldName)
-        val reachedIds = "SELECT $path.nid FROM ${rows.reached(steps, path)} WHERE $path.src = $parent.nid"
-        val from = "${rows.nodes(emptyList(), row).indented()}\n    WHERE $row.nid IN (\n        $reachedIds)"
+        val reached = listOf("$row.nid IN ${rows.related("$path.nid", parent, steps, path).nested()}")
         return if (relationship.isCollection) {
-            "COALESCE((\n    SELECT JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)\n    FROM $from), $EMPTY_ARRAY)"
+            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", rows.nodes(emptyList(), row), reached).nested()}, $EMPTY_ARRAY)"
         } else {
-            "(\n    SELECT $value\n    FROM $from\n    ORDER BY $row.nid FETCH FIRST 1 ROWS ONLY)"
+            Query(value, rows.nodes(emptyList(), row), reached, listOf(first("$row.nid"))).nested()
         }
     }
 
@@ -225,7 +240,7 @@ internal class OracleSelect(
         depth: Int, max: Int, sort: CollectionSortSpec?,
     ): String {
         val nested = GraphViewModel.from(relationship.elementType)
-        val row = scope.next("t")
+        val row = scope.row(relationship.fieldName)
         val entries = mutableListOf(nested.rootFragment.fieldName to document(row))
         nested.relationships
             .filter { !it.isRecursive && it.fieldName != relationship.fieldName }
@@ -233,7 +248,7 @@ internal class OracleSelect(
         entries += relationship.fieldName to
             if (depth >= max) (if (relationship.isCollection) EMPTY_ARRAY else "NULL") else recursive(row, relationship, labels, visits, depth + 1, max, sort)
         return gathered(
-            parent, rows.reached(rows.steps(relationship, labels), row), row, jsonObject(entries), relationship.isCollection,
+            parent, rows.steps(relationship, labels), row, jsonObject(entries), relationship.isCollection,
             sort?.let { sorted(row, relationship.elementType, it) },
         )
     }
@@ -243,11 +258,14 @@ internal class OracleSelect(
      * and any other function reads the named property of each related node as a number.
      */
     private fun aggregate(parent: String, aggregate: AggregateFieldModel): String {
-        val row = scope.next("t")
-        val source = "${rows.reached(listOf(Step(aggregate.type, aggregate.direction, emptyList())), row)} WHERE $row.src = $parent.nid"
-        if (aggregate.function == AggregateFunction.COUNT) return "(SELECT COUNT(*) FROM $source)"
-        val key = requireNotNull(aggregate.property) { "@Aggregate(${aggregate.function}) on '${aggregate.fieldName}' requires a property" }
-        return "(SELECT ${aggregate.function.name}(${property(row, key, SqlKind.NUMBER)}) FROM $source)"
+        val row = scope.row(aggregate.fieldName)
+        val value = if (aggregate.function == AggregateFunction.COUNT) {
+            "COUNT(*)"
+        } else {
+            val key = requireNotNull(aggregate.property) { "@Aggregate(${aggregate.function}) on '${aggregate.fieldName}' requires a property" }
+            "${aggregate.function.name}(${property(row, key, SqlKind.NUMBER)})"
+        }
+        return rows.related(value, parent, listOf(Step(aggregate.type, aggregate.direction, emptyList())), row).nested()
     }
 
     /** The sort the query gave for [relationship]: by its own name at the top, by its parent's and its own beneath. */
@@ -274,7 +292,7 @@ internal class OracleSelect(
     private fun requiredRelationships(): List<String> =
         viewModel?.relationships.orEmpty().filter { !it.isNullable && !it.isCollection }.map { relationship ->
             val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
-            rows.exists(root, rows.steps(relationship, GraphTypeLabels.labelsForType(targetType)), null)
+            rows.exists(root, rows.steps(relationship, GraphTypeLabels.labelsForType(targetType)), scope.row(relationship.fieldName))
         }
 
     // ----- Scored search -----
@@ -286,24 +304,20 @@ internal class OracleSelect(
      * nearest and then filters, as an index of the graph engines does.
      */
     fun scored(candidates: String, predicates: List<String>, threshold: Double?, limit: Int?): GraphStatement {
-        val projection = if (viewModel != null) view(root, viewModel, mapOf(viewModel.className to 1), null) else document(root)
+        val result = "${jsonObject(listOf("value" to projection(), "score" to "$root.score"))} AS result"
         val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$root.score >= ${scope.bound(it)}" }) + predicates
-        val text = buildString {
-            append("SELECT JSON_OBJECT('value' VALUE ").append(projection).append(", 'score' VALUE ").append(root).append(".score RETURNING JSON) AS result")
-            append("\nFROM (\n").append(candidates).append("\n) ").append(root)
-            append(where(filters))
-            append("\nORDER BY ").append(root).append(".score DESC, ").append(root).append(".nid")
-            if (limit != null) append("\nFETCH FIRST ").append(scope.bound(limit)).append(" ROWS ONLY")
-        }
-        return GraphStatement(text, bindings())
+        val best = listOfNotNull("ORDER BY $root.score DESC, $root.nid", limit?.let { "FETCH FIRST ${scope.bound(it)} ROWS ONLY" })
+        return GraphStatement(Query(result, Derived(candidates, root), filters, best).text(), bindings())
     }
 
     /** The root's nodes that also carry [also] and have [key], each with its columns and `score`, ordered and cut by [tail]. */
-    private fun candidates(also: List<String>, key: String?, score: String, tail: String): String {
-        val has = listOfNotNull(hasLabels("v", rootLabels() + also, scanned = true), key?.let { OracleSql.hasProperty("v", it) }).joinToString(" AND ")
-        return "SELECT ${OracleSql.columns("c")}, $score AS score\n" +
-            "FROM ${rows.graphTable("(v IS node WHERE $has)", OracleSql.columns("v"), "c")}\n$tail"
+    private fun candidates(also: List<String>, key: String?, score: String, tail: List<String>): String {
+        val has = listOfNotNull(hasLabels("c", rootLabels() + also, scanned = true), key?.let { OracleSql.hasProperty("c", it) }).joinToString(" AND ")
+        return Query("${OracleSql.columns("c")}, $score AS score", scanned("c", has), tail = tail).text()
     }
+
+    /** Every node that meets [has], as rows named [row] with all a node's columns: what a search without an index reads. */
+    private fun scanned(row: String, has: String): GraphTable = rows.graphTable(OracleSql.node(row, has), GraphTable.node(row), row)
 
     /**
      * The [nearest] nodes to [vector] by the embedding stored under [key]: every node of the label is
@@ -313,7 +327,7 @@ internal class OracleSelect(
     fun nearestTo(key: String, similarity: SimilarityFunction, partitionLabel: String?, vector: List<Float>, nearest: Int): String {
         val stored = "TO_VECTOR(JSON_QUERY(c.props, ${path(key)} RETURNING CLOB))"
         val score = OracleSql.score(similarity, "VECTOR_DISTANCE($stored, TO_VECTOR(${scope.bound(vector)}), ${OracleSql.metric(similarity)})")
-        return candidates(listOfNotNull(partitionLabel), key, score, "ORDER BY score DESC, c.nid\nFETCH FIRST ${scope.bound(nearest)} ROWS ONLY")
+        return candidates(listOfNotNull(partitionLabel), key, score, listOf("ORDER BY score DESC, c.nid", "FETCH FIRST ${scope.bound(nearest)} ROWS ONLY"))
     }
 
     /**
@@ -342,18 +356,9 @@ internal class OracleSelect(
         val text = keys.joinToString(" || ' ' || ") { "LOWER(JSON_VALUE(c.props, ${path(it)} RETURNING CLOB))" }
         val occurrences = query.scored.joinToString(" + ") { "REGEXP_COUNT(s.text, ${scope.bound(it)})" }
         val conditions = query.required.map { "REGEXP_COUNT(s.text, ${scope.bound(it)}) > 0" } + query.excluded.map { "REGEXP_COUNT(s.text, ${scope.bound(it)}) = 0" }
-        val has = hasLabels("v", rootLabels(), scanned = true)
-        return """
-            SELECT ${OracleSql.columns("h")}, h.score / MAX(h.score) OVER () AS score
-            FROM (
-                SELECT ${OracleSql.columns("s")}, $occurrences AS score
-                FROM (
-                    SELECT ${OracleSql.columns("c")}, $text AS text
-                    FROM ${rows.graphTable("(v IS node WHERE $has)", OracleSql.columns("v"), "c")}
-                ) s${if (conditions.isEmpty()) "" else "\n                WHERE " + conditions.joinToString(" AND ")}
-            ) h
-            WHERE h.score > 0
-        """.trimIndent()
+        val texts = Query("${OracleSql.columns("c")}, $text AS text", scanned("c", hasLabels("c", rootLabels(), scanned = true)!!))
+        val counted = Query("${OracleSql.columns("s")}, $occurrences AS score", Derived(texts.text(), "s"), conditions)
+        return Query("${OracleSql.columns("h")}, h.score / MAX(h.score) OVER () AS score", Derived(counted.text(), "h"), listOf("h.score > 0")).text()
     }
 
     /**
@@ -388,10 +393,10 @@ internal class OracleSelect(
         val model = viewModel ?: return null
         val paths = cascadePaths(model)
         if (paths.isEmpty()) return null
-        val roots = "SELECT $root.nid FROM ${graph.nodes} $root WHERE ${selecting(predicates)}"
-        return paths.joinToString("\n    UNION\n    ") { steps ->
-            val row = scope.next("c")
-            "SELECT $row.nid FROM ${rows.reached(steps, row)} WHERE $row.src IN ($roots)"
+        val roots = "SELECT $root.nid\nFROM ${graph.nodes} $root\nWHERE ${selecting(predicates)}"
+        return paths.joinToString("\nUNION\n") { steps ->
+            val row = scope.row("cascaded")
+            Query("$row.nid", rows.reached(root, steps, row), listOf("$row.src IN (\n    ${roots.under()})")).text()
         }
     }
 
@@ -426,10 +431,11 @@ internal class OracleSelect(
      */
     fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
         scope.narrowed = true
-        val row = scope.next("t")
-        val arrow = OracleSql.arrow("e", type, direction)
-        val from = listOfNotNull("${property("a", key)} = \$$parameter", hasLabels("a", labels)).joinToString(" AND ")
-        return "$root.nid IN (SELECT $row.nid FROM ${rows.graphTable("(a IS node WHERE $from) $arrow (b IS node)", "b.nid", row)})"
+        val from = scope.row("from")
+        val row = scope.row("related")
+        val found = listOfNotNull("${property(from, key)} = \$$parameter", hasLabels(from, labels)).joinToString(" AND ")
+        val pattern = "${OracleSql.node(from, found)} ${OracleSql.arrow("e", type, direction)} ${OracleSql.node(row)}"
+        return "$root.nid IN ${Query("$row.nid", rows.graphTable(pattern, GraphTable.node(row), row)).nested()}"
     }
 
     companion object {

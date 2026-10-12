@@ -43,8 +43,10 @@ internal class OracleBackend(
     objectMapper: ObjectMapper,
 ) : GraphBackend {
 
+    /** The graph the manager names, made with the backend where it is not there yet. */
     private val graph = OracleGraph.ensured(persistenceManager)
 
+    /** Plans a save, and a batch of fragments, as the steps of a write block. */
     private val saves = OracleSavePlan(graph, objectMapper)
 
     override val cypherGrammar: CypherGrammar? = null
@@ -175,31 +177,26 @@ internal class OracleBackend(
      * one, or with [orphansOnly] those left with no relationship once the roots are gone.
      */
     private fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
-        val roots = "${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"
+        val roots = "FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"
+        // Lines joined, not a template: what is put in has lines of its own, each laid out under the one that opens it.
         val body = if (orphansOnly) {
-            """
-            SELECT nid BULK COLLECT INTO v_ids FROM (
-            $cascaded
-            );
-            DELETE FROM $roots;
-            v_count := SQL%ROWCOUNT;
-            FOR i IN 1 .. v_ids.COUNT LOOP
-                DELETE FROM ${graph.nodes} n WHERE n.nid = v_ids(i) AND NOT EXISTS (SELECT 1 FROM ${graph.edges} e WHERE e.src = n.nid OR e.dst = n.nid);
-                v_count := v_count + SQL%ROWCOUNT;
-            END LOOP;
-            """
+            listOf(
+                "SELECT nid BULK COLLECT INTO v_ids FROM (\n    ${cascaded.under()});",
+                "DELETE $roots;",
+                "v_count := SQL%ROWCOUNT;",
+                "FOR i IN 1 .. v_ids.COUNT LOOP",
+                "    DELETE FROM ${graph.nodes} n WHERE n.nid = v_ids(i) AND NOT EXISTS (SELECT 1 FROM ${graph.edges} e WHERE e.src = n.nid OR e.dst = n.nid);",
+                "    v_count := v_count + SQL%ROWCOUNT;",
+                "END LOOP;",
+            )
         } else {
-            """
-            SELECT nid BULK COLLECT INTO v_ids FROM (
-            SELECT ${select.root}.nid FROM $roots
-            UNION
-            $cascaded
-            );
-            FORALL i IN 1 .. v_ids.COUNT
-                DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);
-            v_count := v_ids.COUNT;
-            """
-        }
+            listOf(
+                "SELECT nid BULK COLLECT INTO v_ids FROM (\n    ${"SELECT ${select.root}.nid\n$roots\nUNION\n$cascaded".under()});",
+                "FORALL i IN 1 .. v_ids.COUNT",
+                "    DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);",
+                "v_count := v_ids.COUNT;",
+            )
+        }.joinToString("\n")
         return GraphStatement(OracleSql.counting(body, "TYPE t_ids IS TABLE OF NUMBER;\nv_ids t_ids;"), select.bindings())
     }
 
@@ -211,8 +208,11 @@ internal class OracleBackend(
 
     override fun save(request: SaveRequest): SaveStatement = saves.build(request)
 
-    /** A batch of fragments is one block for each [BATCH] of them: a step each, and a row each. */
-    /** Every fragment is a step of a block, stamped or not, and each block hands a row back for each. */
+    /**
+     * A batch of fragments is one block for each [BATCH] of them. Every fragment is a step of its
+     * block, stamped or not, and the block hands a row back for each: so every statement is among the
+     * stamped, and no fragment is left to be saved alone.
+     */
     override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch = FragmentBatch(
         stamped = fragments.chunked(BATCH).map { chunk ->
             val (text, bindings) = saves.together(chunk, nullPolicy)
@@ -237,16 +237,28 @@ internal class OracleBackend(
 
     /** The step that finds the node [ref] names, which must be there. Gives the number later steps know it by. */
     private fun WritePlan.found(ref: NodeRef): Int {
+        val node = shapeOf(ref)
+        return ref(shape(node.labels, node.key), OracleSql.key(ref.id))
+    }
+
+    /**
+     * How the node [ref] names is found: by the labels of its class and those the ref adds, and the
+     * property its class keeps its id under. A class with no `@NodeId` field names no node.
+     */
+    private fun shapeOf(ref: NodeRef): NodeShape {
         val model = FragmentModel.from(ref.fragmentClass)
-        return ref(shape((model.labels + ref.labels).distinct(), keyOf(ref, model)), OracleSql.key(ref.id))
+        val key = requireNotNull(model.nodeIdProperty) {
+            "${ref.fragmentClass.simpleName} has no @NodeId field, so a node of it cannot be referred to by id."
+        }
+        return NodeShape((model.labels + ref.labels).distinct(), key)
     }
 
-    private fun keyOf(ref: NodeRef, model: FragmentModel): String = requireNotNull(model.nodeIdProperty) {
-        "${ref.fragmentClass.simpleName} has no @NodeId field, so a node of it cannot be referred to by id."
-    }
+    /** A relationship is found by its type, so one with none is refused before anything is written for it. */
+    private fun requireType(type: String) = require(type.isNotBlank()) { "A relationship needs a type." }
 
+    /** The write block that carries out [steps], which write relationships of [type], and returns the number they counted. */
     private fun counting(type: String, steps: WritePlan.() -> Unit): GraphStatement {
-        require(type.isNotBlank()) { "A relationship needs a type." }
+        requireType(type)
         val plan = WritePlan(graph).apply(steps)
         return GraphStatement(plan.text(OracleWriteBlock.Returns.COUNT), plan.bindings())
     }
@@ -264,15 +276,18 @@ internal class OracleBackend(
     }
 
     override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement {
-        require(type.isNotBlank()) { "A relationship needs a type." }
-        val model = FragmentModel.from(from.fragmentClass)
+        requireType(type)
+        val source = shapeOf(from)
         val select = OracleSelect(graph, targetClass)
-        val statement = select.load(listOf(select.relatedTo((model.labels + from.labels).distinct(), keyOf(from, model), FROM_PARAM, type, direction)))
+        val statement = select.load(listOf(select.relatedTo(source.labels, source.key, FROM_PARAM, type, direction)))
         return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to OracleSql.key(from.id)))
     }
 
     private companion object {
+        /** The error codes of a deadlock and of a serialization failure. */
         val CONTENTION = setOf(60, 8177)
+
+        /** The parameter [related] binds the stored id of the node it starts from as. */
         const val FROM_PARAM = "_fromId"
 
         /** The fragments one block saves: enough that a round trip is not what a batch costs, and a plan stays small. */
