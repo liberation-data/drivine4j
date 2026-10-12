@@ -34,6 +34,9 @@ Facts about Oracle that shape the design, each observed and not assumed:
 | A PL/SQL block that fails is rolled back to where it began | A save can be one statement, as it is in Cypher |
 | A block hands rows back with `DBMS_SQL.RETURN_RESULT` | A save returns its `stamps` row with no out-parameter plumbing |
 | A nested `GRAPH_TABLE` cannot name the outer row in its `MATCH … WHERE` (`ORA-40996`) | A nested collection exposes the root's key in `COLUMNS` and is joined outside |
+| A `MATCH … WHERE` holds no subquery (`ORA-40988`) | A test against a list, and a query of another pattern, are asked of the rows a pattern gives |
+| A correlated `EXISTS` over a `GRAPH_TABLE` that tests, on its rows, a property with an index ends the server process (`ORA-07445` in `kkosjt`, `ORA-03113` to the client; Free 23.26) | A condition on a related node is tested in the pattern that reaches it |
+| A `MERGE` may not update a column its `ON` reads (`ORA-38104`), unless an index over the expression stands in for the column | The schema marker is found by a query and matched by its id |
 | Labels belong to a table, not a row; `!Label` is refused as a "complex label expression" | Labels that are data cannot be SQL/PGQ labels |
 | JSON columns are graph properties, usable in `MATCH … WHERE` with `JSON_EXISTS`/`JSON_VALUE` | Labels and properties that are data can be JSON |
 | A quantified path takes a predicate on its edge: `-[e IS edge WHERE e.type = 'KNOWS']->{1,2}` | Variable-length and `@GraphPath` reads map directly |

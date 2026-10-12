@@ -20,6 +20,7 @@ import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.query.sort.CallSubqueryEmitter
 import org.drivine.schema.FullTextIndexSpec
+import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -418,8 +419,26 @@ class ReadPathOracleTest {
             val pm = OracleTestDatabase.fixtures(store)
             gom = buildGom(pm, registry)
             ensureIndexes(pm)
+            // A related node filtered by a property that has an index: tested on the rows of its pattern,
+            // and not in the pattern, such a property ends the server process of Oracle Free 23.26.
+            listOf("Keeper" to "display_name", "Keeper" to "id", "Entry" to "title", "Marker" to "display_name", "Marker" to "id")
+                .forEach { (label, property) -> pm.indexes.ensure(RangeIndexSpec(label, property)) }
             seed(gom, pm)
         }
+    }
+
+    @Test
+    fun `a view is loaded by an indexed property of a related node, and of a node that one is related to, on Oracle`() {
+        fun loaded(spec: GraphQuerySpec<ShelfViewQueryDsl>.() -> Unit) = gom.loadAll(ShelfView::class.java, DSL, spec).map { it.shelf.id }.toSet()
+
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName eq "kim" } } })
+        assertEquals(setOf("s2", "s3"), loaded { where { query.keeper.none { displayName eq "kim" } } })
+        assertEquals(setOf("s1"), loaded { where { query.entries.any { title eq "alpha"; markers.displayName eq "red" } } })
+        assertEquals(emptySet(), loaded { where { query.entries.any { markers.displayName eq "red"; markers.id eq "m-blue" } } })
+        // A test against a list is written with a subquery, which a pattern does not hold: it stays on the pattern's rows.
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { displayName inList listOf("kim", "lee", "nobody") } } })
+        assertEquals(setOf("s2"), loaded { where { query.keeper.any { id eq "k-lee"; displayName inList listOf("kim", "lee") } } })
+        assertEquals(setOf("s1"), loaded { where { query.entries.any { markers.id eq "m-red"; markers.displayName inList listOf("red", "green") } } })
     }
 
     @Test fun `a scored search filters on a collection of nested views on Oracle`() = verifyNestedViewFilter(gom)

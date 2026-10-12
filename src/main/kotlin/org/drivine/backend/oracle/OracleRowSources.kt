@@ -30,9 +30,10 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
      * The nodes reached by [steps] from the node [from], as rows named [alias]: `src` is the node the
      * path starts from, which the pattern calls what the statement calls that node's row. A single
      * step also gives the relationship, as `eid` and `eprops`. A step with a depth above one is taken
-     * from one to that many times, and a node may then be reached more than once.
+     * from one to that many times, and a node may then be reached more than once. The nodes reached
+     * are those that meet [where], which the pattern tests them for beside the last step's labels.
      */
-    fun reached(from: String, steps: List<Step>, alias: String): GraphTable {
+    fun reached(from: String, steps: List<Step>, alias: String, where: List<String> = emptyList()): GraphTable {
         val single = steps.size == 1 && steps.single().maxDepth == 1
         // A path of several steps is a line to a step, so each is read as the hop it is.
         val hop = if (steps.size == 1) " " else "\n        "
@@ -42,7 +43,8 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
                 append(hop).append(OracleSql.arrow(if (steps.size == 1) "e" else "e${i + 1}", step.type, step.direction))
                 if (step.maxDepth > 1) append("{1,${step.maxDepth}}")
                 val node = if (i == steps.lastIndex) alias else "m${i + 1}"
-                append(" ").append(OracleSql.node(node, hasLabels(node, step.labels)))
+                val met = listOfNotNull(hasLabels(node, step.labels)) + if (i == steps.lastIndex) where else emptyList()
+                append(" ").append(OracleSql.node(node, met.takeIf { it.isNotEmpty() }?.joinToString(" AND ")))
             }
         }
         val relationship = if (single) listOf(GraphTable.Column("eid", "e.eid"), GraphTable.Column("eprops", "e.props")) else emptyList()
@@ -64,14 +66,23 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
         }
 
     /**
-     * The rows named [row] reached from the row [parent] by [steps], and of those the ones that meet
-     * [predicates]: the query a relationship field, an aggregate or a test of one is, once it says
-     * what it selects of them.
+     * The rows named [row] reached from the row [parent] by [steps]: the query a relationship field or
+     * an aggregate is, once it says what it selects of them.
      */
-    fun related(select: String, parent: String, steps: List<Step>, row: String, predicates: List<String> = emptyList(), tail: List<String> = emptyList()): Query =
-        Query(select, reached(parent, steps, row), listOf("$row.src = $parent.nid") + predicates, tail)
+    fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String> = emptyList()): Query =
+        Query(select, reached(parent, steps, row), listOf("$row.src = $parent.nid"), tail)
 
-    /** Whether some node reached from the row [parent] by [steps] meets [predicates], which name the reached node's row as [row]. */
-    fun exists(parent: String, steps: List<Step>, row: String, predicates: List<String> = emptyList()): String =
-        "EXISTS ${related("1", parent, steps, row, predicates).nested()}"
+    /**
+     * Whether some node reached from the row [parent] by [steps] meets [where] and [predicates], which
+     * name the reached node's row as [row].
+     *
+     * [where] is what is asked of the reached node alone, and is tested in the pattern, not on the
+     * rows it gives: a test of a property that has an index, made on those rows, ends the server
+     * process of Oracle Free 23.26 (`ORA-07445` in `kkosjt`, which the client sees as `ORA-03113`).
+     * [predicates] are those a pattern cannot hold, which are the ones written with a subquery
+     * (`ORA-40988`): a query of another pattern, or a test against a list. Left on the rows, those
+     * were not seen to end it.
+     */
+    fun exists(parent: String, steps: List<Step>, row: String, where: List<String> = emptyList(), predicates: List<String> = emptyList()): String =
+        "EXISTS ${Query("1", reached(parent, steps, row, where), listOf("$row.src = $parent.nid") + predicates).nested()}"
 }

@@ -195,21 +195,56 @@ class OracleRowSourcesTest {
     }
 
     @Test
-    fun `whether a node is reached is asked of the related nodes that meet the predicate, and reads what the predicate does`() {
-        val sql = rows.exists("claim_", listOf(Step("MENTIONS", Direction.OUTGOING, emptyList())), "people_", listOf("JSON_VALUE(people_.props, '$.name') = \$_p0"))
+    fun `whether a node is reached is asked of the related nodes the pattern finds to meet the test, beside their labels`() {
+        // In the pattern and not on its rows: see OracleRowSources.exists for what the other does to Oracle.
+        val sql = rows.exists(
+            "claim_", listOf(Step("MENTIONS", Direction.OUTGOING, listOf("Human"))), "people_",
+            where = listOf("JSON_VALUE(people_.props, '$.name') = \$_p0", "JSON_VALUE(people_.props, '$.id') = \$_p1"),
+        )
 
         assertEquals(
             """
             EXISTS (
                 SELECT 1
                 FROM GRAPH_TABLE (g
-                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node)
-                    COLUMNS (claim_.nid AS src, people_.props)) people_
-                WHERE people_.src = claim_.nid
-                  AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0)
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0 AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0 AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
+                    COLUMNS (claim_.nid AS src)) people_
+                WHERE people_.src = claim_.nid)
             """.trimIndent(),
             sql,
         )
+    }
+
+    @Test
+    fun `a predicate the pattern cannot hold is asked of the rows it gives, and the row carries what it reads`() {
+        val sql = rows.exists(
+            "claim_", listOf(Step("MENTIONS", Direction.OUTGOING, emptyList())), "people_",
+            where = listOf("JSON_VALUE(people_.props, '$.name') = \$_p0"), predicates = listOf("EXISTS (SELECT 1 FROM other o WHERE o.id = people_.nid)"),
+        )
+
+        assertEquals(
+            """
+            EXISTS (
+                SELECT 1
+                FROM GRAPH_TABLE (g
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE JSON_VALUE(people_.props, '$.name') = ${'$'}_p0)
+                    COLUMNS (claim_.nid AS src, people_.nid)) people_
+                WHERE people_.src = claim_.nid
+                  AND EXISTS (SELECT 1 FROM other o WHERE o.id = people_.nid))
+            """.trimIndent(),
+            sql,
+        )
+    }
+
+    @Test
+    fun `a test of the node a path ends at is on that node, and on none it passes through`() {
+        val sql = rows.reached(
+            "n_", listOf(Step("WORKS_AT", Direction.OUTGOING, listOf("Company")), Step("IN", Direction.OUTGOING, emptyList())), "t_",
+            where = listOf("JSON_VALUE(t_.props, '$.name') = \$_p0"),
+        ).whole()
+
+        assertTrue("(m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '\"Company\"') > 0)" in sql, sql)
+        assertTrue("(t_ IS node WHERE JSON_VALUE(t_.props, '$.name') = \$_p0)" in sql, sql)
     }
 
     @Test

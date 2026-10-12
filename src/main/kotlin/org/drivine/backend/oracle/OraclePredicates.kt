@@ -118,9 +118,22 @@ internal class OraclePredicates(
         val (nested, direct) = condition.targetConditions.partition {
             it is WhereCondition.PropertyCondition && it.propertyPath.substringBefore('.').startsWith("${target}_")
         }
-        val predicates = directPredicates(direct, target, row) + nestedPredicates(nested, relationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }, target, row)
-        val found = this.rows.exists(parent, this.rows.steps(relationship, emptyList()), row, predicates)
+        val targetType = relationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }
+        // A pattern holds no subquery (`ORA-40988`), so a condition written with one is asked of the pattern's rows.
+        val (onRows, inPattern) = direct.partition(::holdsSubquery)
+        val found = this.rows.exists(
+            parent, this.rows.steps(relationship, emptyList()), row,
+            where = directPredicates(inPattern, target, row),
+            predicates = directPredicates(onRows, target, row) + nestedPredicates(nested, targetType, target, row),
+        )
         return if (condition.negate) "NOT $found" else found
+    }
+
+    /** Whether [condition] is written with a subquery: a test against a list is, which reads the list as rows. */
+    private fun holdsSubquery(condition: WhereCondition): Boolean = when (condition) {
+        is WhereCondition.PropertyCondition -> condition.operator == ComparisonOperator.IN || condition.operator == ComparisonOperator.NOT_IN
+        is WhereCondition.OrCondition -> condition.conditions.any(::holdsSubquery)
+        else -> false
     }
 
     /** The conditions on the related node itself, whose row is [row]. */
@@ -146,9 +159,13 @@ internal class OraclePredicates(
                 val nestedRelationship = targetModel.relationships.find { it.fieldName == name }
                     ?: throw IllegalArgumentException("Nested relationship '$name' not found in ${targetModel.className}")
                 val nestedRow = scope.row(name)
-                val nestedPredicate = all(conditions, mapOf("${target}_$name" to nestedRow), null)
+                val (onRows, inPattern) = conditions.partition(::holdsSubquery)
+                val names = mapOf("${target}_$name" to nestedRow)
                 // No labels: a condition on a relationship is met by whatever node it leads to.
-                rows.exists(row, rows.steps(nestedRelationship, emptyList()), nestedRow, listOf(nestedPredicate))
+                rows.exists(
+                    row, rows.steps(nestedRelationship, emptyList()), nestedRow,
+                    where = inPattern.map { one(it, names, null) }, predicates = onRows.map { one(it, names, null) },
+                )
             }
     }
 
