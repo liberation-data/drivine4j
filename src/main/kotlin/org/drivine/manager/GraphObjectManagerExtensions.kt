@@ -3,7 +3,8 @@ package org.drivine.manager
 import java.util.UUID
 
 /**
- * Reified type extensions for GraphObjectManager providing cleaner Kotlin syntax.
+ * Reified type extensions for [GraphObjectOperations] providing cleaner Kotlin syntax, on either
+ * manager: [GraphObjectManager] and [StatelessGraphObjectManager] both implement it.
  *
  * These extensions eliminate the need for `::class.java` by using reified type parameters.
  *

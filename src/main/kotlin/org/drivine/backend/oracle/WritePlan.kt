@@ -9,6 +9,8 @@ internal data class NodeShape(val labels: List<String>, val key: String)
 /**
  * What a `node` step writes to a node, beyond its properties: see [WritePlan.node].
  *
+ * @param set the properties to write, by the names they are stored under, and [unset] those to remove
+ * @param addLabels the labels to give the node, and [dropLabels] those to take from it
  * @param bags the property bags whose stale stored keys the block clears, for a root saved under `CLEAR` without a digest
  * @param owned how the labels an open `@NodeLabels` field holds are recorded on the node, when it has one
  */

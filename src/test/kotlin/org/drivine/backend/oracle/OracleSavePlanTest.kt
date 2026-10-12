@@ -12,6 +12,7 @@ import org.drivine.manager.RemovedTargets
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.FragmentModel
 import org.drivine.query.JdbcParameterCoercer
+import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.session.SnapshotDigest
 import org.junit.jupiter.api.Test
@@ -69,7 +70,7 @@ class OracleSavePlanTest {
         before: JsonNode? = null,
         after: JsonNode? = null,
         createsRoot: Boolean = true,
-    ): SaveStatement = planner.build(obj, checked, nullPolicy, rootWriteFields = null, replaced = { replaced }, before, after, createsRoot)
+    ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields = null, replaced = { replaced }, before, after, createsRoot))
 
     @Suppress("UNCHECKED_CAST")
     private fun steps(statement: SaveStatement): List<Map<String, Any?>> = statement.bindings[OracleWriteBlock.PLAN] as List<Map<String, Any?>>

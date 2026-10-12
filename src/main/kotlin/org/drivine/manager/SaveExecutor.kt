@@ -8,6 +8,7 @@ import org.drivine.model.Stamps
 import org.drivine.query.MergeStatement
 import org.drivine.query.NodeKey
 import org.drivine.query.QuerySpecification
+import org.drivine.query.ReturnedStamps
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 
@@ -94,13 +95,8 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
     fun stamps(statement: SaveStatement, rows: List<Any?>): List<String> {
         val row = rows.firstOrNull() as? String
         if (row != null) {
-            val returned = row.split(',')
-            val rootStamp = returned.first()
-            // Each related node's is keyed `index/found`: found is the stamp its part found it with.
-            val byIndex = returned.drop(1).associate { entry ->
-                val (key, stamp) = entry.split('=', limit = 2)
-                key.substringBefore('/').toInt() to (key.substringAfter('/') to stamp)
-            }
+            val returned = ReturnedStamps.of(row)
+            val rootStamp = returned.root
             // A node the object holds more than once is written by more than one part, and a later
             // part finds what an earlier one wrote. What the node carried before the statement is
             // what the first of them found.
@@ -119,10 +115,10 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
                 return Stamps.handedBack(carried, seen.second, stamp ?: seen.third)
             }
             val targets = statement.stamped.indices.map { index ->
-                val (found, stamp) = byIndex.getValue(index)
+                val target = returned.related.getValue(index)
                 // A node that changed since its object was loaded keeps the object's token: the stamp
                 // handed back does not vouch for data or relationships the object never held.
-                checkNotNull(handedBack(statement.keys[index], statement.carried[index], found, stamp))
+                checkNotNull(handedBack(statement.keys[index], statement.carried[index], target.found, target.stamp))
             }
             // A repeat was not written: it is handed what the one written for its node is, if it carried the same.
             val repeats = statement.repeats.map { repeat ->

@@ -35,6 +35,9 @@ import org.slf4j.LoggerFactory
  * Deprecated: a save writes what differs from the session's snapshot, which is what this manager
  * last saw and not what the store holds. A node that anything else changed or deleted gets a partial
  * save. [StatelessGraphObjectManager] keeps no snapshot.
+ *
+ * [save] and [saveAll] are written in Cypher alone. On a store that does not speak it, as Oracle does
+ * not, they throw `UnsupportedOperationException`; loading, querying, deleting and [edges] work there.
  */
 @Deprecated(
     "Use StatelessGraphObjectManager (GraphObjectManagerFactory.stateless()). A save by this manager depends on its " +
@@ -105,15 +108,7 @@ class GraphObjectManager internal constructor(
      */
     override val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
 
-    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, UNWIND_CHUNK_SIZE, grammar, storedKeys, stamping)
-
-    /** The statements that save [items] in batches, as [saveAll] runs them. */
-    internal fun batchSpecs(items: List<Any>, nullPolicy: NullPolicy): List<QuerySpecification<*>> =
-        if (items.isEmpty()) emptyList() else batchSave.buildBatchSpecs(items, CascadeType.NONE, nullPolicy)
-
-    /** The statements that save stamped fragments in batches, each returned row an item's `index=stamp`. */
-    internal fun stampedBatchSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
-        batchSave.buildStampedSpecs(items, nullPolicy)
+    private val batchSave = BatchSaveOperations(objectMapper, sessionManager, BatchSaveOperations.UNWIND_CHUNK_SIZE, grammar, storedKeys, stamping)
 
     /**
      * Forgets every tracked object: each one's next save writes all fields, until it is loaded again.
@@ -563,6 +558,8 @@ class GraphObjectManager internal constructor(
      *   destroys stored data, embeddings included). Pass [NullPolicy.CLEAR] for a full overwrite that
      *   clears null fields. Uniform for all fields — see [NullPolicy].
      * @return The saved object
+     * @throws UnsupportedOperationException on a store that does not speak Cypher (Oracle), and for
+     *   [CascadeType.DELETE_ORPHAN] on Memgraph
      */
     @JvmOverloads
     fun <T : Any> save(obj: T, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): T {
@@ -614,6 +611,8 @@ class GraphObjectManager internal constructor(
      * @param cascade the cascade policy for removed relationships, applied per item (default NONE)
      * @param nullPolicy how null field values are treated (default [NullPolicy.IGNORE]); see [NullPolicy]
      * @return the saved objects in input order; empty in → empty out
+     * @throws UnsupportedOperationException on a store that does not speak Cypher (Oracle), and for
+     *   [CascadeType.DELETE_ORPHAN] on Memgraph
      */
     @JvmOverloads
     fun <T : Any> saveAll(objs: Collection<T>, cascade: CascadeType = CascadeType.NONE, nullPolicy: NullPolicy = NullPolicy.IGNORE): List<T> {
@@ -629,15 +628,6 @@ class GraphObjectManager internal constructor(
         items.forEach { @Suppress("UNCHECKED_CAST") snapshotResults(it.javaClass as Class<Any>, listOf<Any>(it)) }
 
         return items
-    }
-
-    private companion object {
-        // Scored-search bound-parameter names now live on their planners (VectorSearchPlanner /
-        // FullTextSearchPlanner), which build those queries.
-
-        // Max rows per UNWIND statement in saveAll — caps server-side batch size; each chunk is one
-        // statement (and, when not in an ambient transaction, still within the single batch transaction).
-        const val UNWIND_CHUNK_SIZE = 1000
     }
 
     /** This manager's own save is written in Cypher alone: it is deprecated, and was not carried to other stores. */

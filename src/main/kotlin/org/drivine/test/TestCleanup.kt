@@ -16,6 +16,11 @@ import org.drivine.query.QuerySpecification
  */
 object TestCleanup {
 
+    /**
+     * Removes what an earlier run of a test left: the nodes whose `createdBy` property is [createdBy],
+     * or on FalkorDB every node. The value is written into the statement as it is, so it is a test's
+     * own constant and never input.
+     */
     fun beforeEach(persistenceManager: PersistenceManager, createdBy: String) {
         val statement = when (persistenceManager.type) {
             DatabaseType.FALKORDB -> "MATCH (n) DETACH DELETE n"
@@ -25,6 +30,7 @@ object TestCleanup {
         persistenceManager.execute(QuerySpecification.withStatement(statement))
     }
 
+    /** As the other [beforeEach], for tests that tag their nodes under [markerField] with [markerValue]. Both are written into the statement as they are. */
     fun beforeEach(persistenceManager: PersistenceManager, markerField: String, markerValue: String) {
         val statement = when (persistenceManager.type) {
             DatabaseType.FALKORDB -> "MATCH (n) DETACH DELETE n"

@@ -365,6 +365,11 @@ data class StampWrite(
     val expected: String?,
     /** The stamp the object carried, whether or not the statement requires it. */
     val carried: String? = null,
+    /**
+     * The labels one by one. [labels] joins them with a colon, as Cypher writes them; where a label is
+     * data it may hold one itself, and is told whole here.
+     */
+    val labelNames: List<String> = labels.split(':'),
 )
 
 /**

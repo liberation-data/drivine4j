@@ -11,6 +11,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.junit.jupiter.api.Test
 import sample.stateless.Claim
 import sample.stateless.ClaimDossier
+import sample.stateless.ClaimPair
 import sample.stateless.ClaimSet
 import sample.stateless.ClaimView
 import sample.stateless.CitedBy
@@ -19,7 +20,10 @@ import sample.stateless.Frozen
 import sample.stateless.FrozenBoard
 import sample.stateless.Human
 import sample.stateless.HumanCitations
+import sample.stateless.HumanClaimsLoaded
 import sample.stateless.JavaStampedRecord
+import sample.stateless.Memo
+import sample.stateless.MemoView
 import sample.stateless.Odd
 
 /** The shapes of object a save hands stamps back to, and the check that it can before it writes. */
@@ -105,6 +109,73 @@ class StampedCopyShapesTest {
         val view = ClaimView(Claim("c1", "root"), people = listOf(Human("ada", "Ada")))
 
         assertSame(view, copies.of(view, stamps()))
+    }
+
+    @Test
+    fun `a field that holds one node is handed its stamp, a field that holds none is left, and a list nothing in changed is the list it was`() {
+        val lead = Claim("l1", "lead")
+        val supports = listOf(Claim("s1", "one"))
+        val view = ClaimPair(Claim("c1", "root"), lead = lead, supports = supports)
+
+        val stamped = copies.of(view, stamps(lead to "a:b"))
+
+        assertEquals("a:b", stamped.lead?.stamp)
+        assertSame(supports, stamped.supports)
+        assertSame(view.claim, stamped.claim)
+        assertNull(lead.stamp, "the object that was saved is left as it was")
+
+        val alone = ClaimPair(Claim("c1", "root"), lead = null)
+        assertSame(alone, copies.of(alone, stamps(lead to "a:b")))
+    }
+
+    @Test
+    fun `a node only loaded through a read-only field is not handed a stamp, for the save did not write it`() {
+        val loaded = Claim("c1", "loaded")
+        val view = HumanClaimsLoaded(Human("ada", "Ada"), claims = listOf(loaded))
+
+        assertSame(view, copies.of(view, stamps(loaded to "a:b")))
+    }
+
+    @Test
+    fun `a fragment that declares no stamp field is itself, though a stamp is keyed by it`() {
+        val human = Human("ada", "Ada")
+        val view = ClaimView(Claim("c1", "root"), people = listOf(human))
+
+        assertSame(human, copies.of(human, stamps(human to "a:b")))
+        assertSame(view, copies.of(view, stamps(human to "a:b")))
+    }
+
+    @Test
+    fun `fragments are told apart by identity, so an equal one is not handed another's stamp`() {
+        val held = Claim("s1", "same")
+        val twin = Claim("s1", "same")
+        val view = ClaimPair(Claim("c1", "root"), supports = listOf(held, twin))
+
+        val stamped = copies.of(view, stamps(twin to "a:b"))
+
+        assertEquals(listOf(null, "a:b"), stamped.supports.map { it.stamp })
+        assertSame(held, stamped.supports.first())
+    }
+
+    @Test
+    fun `the stamp an object carries is its root's, and none for a root that carries or declares none`() {
+        val root = Claim("c1", "root", stamp = "a:b")
+
+        assertEquals("a:b", copies.stampOf(root))
+        assertEquals("a:b", copies.stampOf(ClaimView(root)))
+        assertNull(copies.stampOf(Claim("c2", "never saved")))
+        assertNull(copies.stampOf(Human("ada", "Ada")))
+        assertNull(copies.stampOf(MemoView(Memo("m1", "memo"))))
+        // A related node's stamp is not the object's.
+        assertNull(copies.stampOf(ClaimPair(Claim("c3", "root"), lead = root)))
+    }
+
+    @Test
+    fun `the root of a view is the fragment it holds, and of a fragment itself`() {
+        val root = Claim("c1", "root")
+
+        assertSame(root, copies.rootOf(ClaimView(root)))
+        assertSame(root, copies.rootOf(root))
     }
 
     // ----- Whether an object can be handed its stamps, asked before its save -----

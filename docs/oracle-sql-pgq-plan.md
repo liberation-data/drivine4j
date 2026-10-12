@@ -1,7 +1,11 @@
 # Plan: `StatelessGraphObjectManager` on Oracle (SQL/PGQ)
 
 Status: **phases 1 to 7 done** on `feat/oracle-sql-pgq`; 8 and part of 9 remain. Target: Oracle Database 23ai / 26ai.
-What was built, and what it showed, is under [Outcome](#outcome) at the end.
+What was built, and what it showed, is under [Outcome](#outcome) at the end. How to use it is in the
+README, under [Oracle](../README.md#oracle).
+
+The phases below are the plan as it was written. Where a class was built under another name, or a
+step turned out otherwise, the phase says so in italics.
 
 Target API: everything on `GraphObjectOperations`, plus `save`, `saveAll`, `update` and `edges` on
 `StatelessGraphObjectManager`. The deprecated `GraphObjectManager.save` (session diffing,
@@ -64,6 +68,11 @@ CREATE PROPERTY GRAPH <graph>
 
 Reads are SQL/PGQ over that graph. A Cypher label becomes a predicate on `labels`, a relationship
 type a predicate on `type`.
+
+*As built (`OracleGraph`): the edge table's `src` and `dst` cascade on delete, so a node's
+relationships go with its row, and its `props` is never null; `src` and `dst` are properties of the
+edge label too; the vertex label has one more property, `doc`, the node as the map a load returns; and
+a third table, `<graph>_schema`, records the indexes and constraints Drivine made.*
 
 Why this and not a table per fragment class:
 
@@ -131,11 +140,14 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 ### Phase 3 — Storage and reads ✅
 
 - `OracleGraphStore`: creates the two tables, their base indexes and the property graph when absent.
+  *Built as `OracleGraph`.*
 - Load of a fragment and of a view: root, to-one and to-many relationships, nested views,
   `@RelationshipFragment`, `@Count`/`@Aggregate`, `@GraphPath`, recursive and variable-length
   fields, `depth()` overrides. One JSON document per root.
 - `SqlConditionGenerator` over the condition AST: property, relationship (`any`/`none`), label,
   list membership, ignore-case, bag keys; ordering, collection sorts, keyset paging, `count`.
+  *Built as `OraclePredicates`, with the statement itself written by `OracleSelect` and a raw
+  `whereClause` read by `CypherShorthand`.*
 - Proof: the read-side cross-engine contracts, their seed data supplied per engine.
 
 ### Phase 4 — Writes ✅
@@ -152,6 +164,8 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 ### Phase 5 — Bookkeeping ✅
 
 - Store identity, schema version store, `TestCleanup`, and the migration tools that apply.
+  *None of the migration tools applies: `RelationshipDirectionRepair` and `PathRelationshipReport`
+  repair what saves before 0.1.0 wrote, which no graph on Oracle holds, and they remain Cypher.*
 
 ### Phase 6 — Indexes and constraints ✅
 
@@ -170,10 +184,14 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 - From the annotated model, generate a view per label and a second property graph over the views,
   so `MATCH (p IS Person)` works for SQL written by hand. Read-only; Drivine does not use it.
 
-### Phase 9 — Fit and finish (README and benchmark done)
+### Phase 9 — Fit and finish (all but `embabel-agent-rag-graph` done)
 
 - Spring Boot starter properties and test-container support, README, a benchmark against Neo4j on
   the existing manager benchmark, and `embabel-agent-rag-graph` on Oracle.
+  *Done: a datasource of `type: ORACLE` is built from the starter's properties, `OracleTestContainer`
+  and `@EnableDrivineTestConfig` start Oracle Free for tests, the README has an Oracle section, and
+  `OracleManagerBenchmarkTest` measures the workloads under [Outcome](#outcome), though not beside
+  Neo4j. Not done: `embabel-agent-rag-graph` on Oracle.*
 
 ## Known limits, by design
 
@@ -205,8 +223,9 @@ What differed from the plan:
 
 - **A save is a plan, not generated code.** One PL/SQL block interprets a JSON array of steps. Its
   text depends only on the kinds of node a save names, so it is compiled once for a view class.
-- **Fixtures.** The contracts seed and read back in Cypher. A small interpreter in the tests
-  (`MiniCypher`) works such a statement out over the graph, so the contracts run unchanged.
+- **Fixtures.** The contracts seed and read back in Cypher. A small interpreter (`MiniCypher`)
+  works such a statement out over the graph, so the contracts run unchanged. It ships with the test
+  support, in `org.drivine.test`, and is reached through `OracleCypherFixtures`.
 - **An index is a table beside the nodes.** Oracle indexes a `VECTOR` column, not a list inside JSON,
   so a vector index is a table of embeddings that a trigger keeps in step, with the index (neighbour
   partitions) over it. A full-text index is the same with an Oracle Text index. Without an index, or
@@ -232,7 +251,9 @@ What the work found that the plan did not foresee:
 
 What holds on Oracle and not on the graph engines:
 
-- **An empty string is null.** A stamp stored as `''` is no stamp, and a property set to `''` is absent.
+- **An empty string is null.** A stamp stored as `''` is no stamp. A property saved as `""` is kept
+  in the node's JSON, and `JSON_VALUE` reads it as null: the query DSL writes a comparison with `""`
+  as a JSON path test, so that it still finds one.
 - **A load reads the node as stored**, so a view can be filtered and ordered by a property no field
   declares, where a graph engine refuses to read past its projection.
 - **A save that drops the stale keys of a property bag is one statement**, not a read and a write.

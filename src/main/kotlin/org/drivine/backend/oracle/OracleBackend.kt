@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
+import org.drivine.backend.FragmentBatch
 import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.LoadPlan
@@ -18,6 +19,7 @@ import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.FullTextIndexResolver
 import org.drivine.query.QuerySpecification
+import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
@@ -207,28 +209,21 @@ internal class OracleBackend(
 
     // ----- Saving -----
 
-    override fun save(
-        obj: Any,
-        checked: Boolean,
-        nullPolicy: NullPolicy,
-        rootWriteFields: Set<String>?,
-        replaced: (RelationshipModel) -> RemovedTargets?,
-        before: JsonNode?,
-        after: JsonNode?,
-        createsRoot: Boolean,
-    ): SaveStatement = saves.build(obj, checked, nullPolicy, rootWriteFields, replaced, before, after, createsRoot)
+    override fun save(request: SaveRequest): SaveStatement = saves.build(request)
 
     /** A batch of fragments is one block for each [BATCH] of them: a step each, and a row each. */
-    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
-        fragments.chunked(BATCH).map { chunk ->
+    /** Every fragment is a step of a block, stamped or not, and each block hands a row back for each. */
+    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch = FragmentBatch(
+        stamped = fragments.chunked(BATCH).map { chunk ->
             val (text, bindings) = saves.together(chunk, nullPolicy)
             QuerySpecification.withStatement(text).bind(bindings).transform(String::class.java)
-        }
+        },
+    )
 
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "SELECT n.stamp FROM ${graph.nodes} n WHERE " +
-            listOfNotNull("${OracleSql.property("n", root.idProperty)} = \$id", OracleSql.hasLabels("n", root.labels.split(':'))).joinToString(" AND "),
+            listOfNotNull("${OracleSql.property("n", root.idProperty)} = \$id", OracleSql.hasLabels("n", root.labelNames)).joinToString(" AND "),
         mapOf("id" to OracleSql.key(root.id)),
     )
 
