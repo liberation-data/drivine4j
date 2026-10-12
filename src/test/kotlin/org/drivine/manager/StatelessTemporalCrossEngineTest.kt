@@ -42,6 +42,15 @@ private fun verifyTemporal(gom: StatelessGraphObjectManager, pm: PersistenceMana
     assertEquals(base.date, loaded.date)
     assertEquals(base.dateTime, loaded.dateTime)
 
+    // an instant exactly on a minute round-trips too: ISO text may drop zero seconds, and an Instant is not read without them
+    val onTheMinute = java.time.Instant.parse("2040-01-01T00:00:00Z")
+    gom.save(base.copy(id = "minute", instant = onTheMinute, zoned = onTheMinute.atZone(java.time.ZoneId.of("UTC")), optional = onTheMinute))
+    val minute = gom.load("minute", TemporalsNode::class.java)!!
+    assertEquals(onTheMinute, minute.instant)
+    assertEquals(onTheMinute, minute.optional)
+    assertTrue(minute.zoned.toInstant() == onTheMinute, "expected same instant, got ${minute.zoned}")
+    gom.delete("minute", TemporalsNode::class.java)
+
     // range query with a bound Instant matches (and a future bound excludes)
     fun range(since: java.time.Instant) = pm.query(
         QuerySpecification.withStatement("MATCH (n:TemporalsNode) WHERE n.instant >= \$s RETURN n.id")

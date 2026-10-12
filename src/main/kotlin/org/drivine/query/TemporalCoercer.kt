@@ -1,6 +1,8 @@
 package org.drivine.query
 
+import java.time.OffsetDateTime
 import java.time.ZonedDateTime
+import java.time.format.DateTimeFormatter
 import java.time.temporal.Temporal
 
 /**
@@ -15,6 +17,10 @@ import java.time.temporal.Temporal
  * dropped — Jackson's `InstantDeserializer` rejects the bracketed form, which would otherwise
  * break the read-side round-trip when mapping back into a typed `Instant` / `ZonedDateTime` field.
  *
+ * A time with an offset is written with [DateTimeFormatter.ISO_OFFSET_DATE_TIME] and not `toString()`,
+ * which drops the seconds of a time exactly on a minute (`2040-01-01T00:00Z`): the same deserializer
+ * does not read an `Instant` without them.
+ *
  * Recurses into lists and maps so nested temporals are coerced too.
  */
 object TemporalCoercer : ParameterCoercer {
@@ -25,7 +31,8 @@ object TemporalCoercer : ParameterCoercer {
 
     private fun coerceValue(value: Any?): Any? {
         return when (value) {
-            is ZonedDateTime -> value.toOffsetDateTime().toString()
+            is ZonedDateTime -> DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(value)
+            is OffsetDateTime -> DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(value)
             is Temporal -> value.toString()
             is List<*> -> value.map { coerceValue(it) }
             is Map<*, *> -> value.mapValues { (_, v) -> coerceValue(v) }
