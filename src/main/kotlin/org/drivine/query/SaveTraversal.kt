@@ -64,8 +64,10 @@ internal abstract class SaveTraversal<R>(
 
     /** Saves the items of one field: each as the walk reaches it, in the field's order, then [done]. */
     protected interface FieldSave {
+        /** Saves one item of the field: its node, and when [Related.link] the relationship to it. */
         fun item(related: Related)
 
+        /** Called when every item of the field has been given: a subclass that gathers items writes them here. */
         fun done() {}
     }
 
@@ -78,6 +80,7 @@ internal abstract class SaveTraversal<R>(
 
     /** A relationship field of a view as the object holds it: the field, where its items point, and the items. */
     protected inner class Field(val relationship: RelationshipModel, val target: Target, val items: List<Any?>) {
+        /** For each of [items], the id of the fragment it points at; null for an item that is null, or whose id is. */
         val ids: List<Any?> by lazy { items.map { item -> item?.let { target.idOf(it) } } }
     }
 
@@ -217,6 +220,10 @@ internal abstract class SaveTraversal<R>(
         else -> listOf(node)
     }
 
+    /**
+     * Where the items of [relationship]'s field point: at the element itself, or for a relationship
+     * fragment at its target node; and for either, when that is a view, at the view's root.
+     */
     private fun targetOf(relationship: RelationshipModel): Target {
         val targetClass = if (relationship.isRelationshipFragment) {
             requireNotNull(relationship.targetNodeType) { "Relationship fragment '${relationship.fieldName}' has no target" }
@@ -237,6 +244,8 @@ internal abstract class SaveTraversal<R>(
      */
     protected inner class Target(val relationship: RelationshipModel, val view: GraphViewModel?, val model: FragmentModel) {
         private val idField = requireNotNull(model.nodeIdField) { "Relationship target ${model.className} has no @NodeId" }
+
+        /** The property the target keeps its id under in the store. */
         val idProperty: String = model.nodeIdProperty ?: idField
 
         /** The fragment or view [item] points at: itself, or a relationship fragment's target. */

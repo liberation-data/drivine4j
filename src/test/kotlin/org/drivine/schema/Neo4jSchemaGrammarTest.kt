@@ -306,4 +306,23 @@ class Neo4jSchemaGrammarTest {
         )
         assertFalse(grammar.isConstraintViolation(RuntimeException("Connection refused")))
     }
+
+    // ----- Conflict sampling -----
+
+    @Test
+    fun `conflict sampling groups the labelled nodes that hold every key, and returns the keys that repeat as a map with their count`() {
+        val query = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", listOf("email", "tenant")), 5)
+
+        assertEquals(
+            """
+            MATCH (n:Person)
+            WHERE n.email IS NOT NULL AND n.tenant IS NOT NULL
+            WITH n.email AS _k0, n.tenant AS _k1, count(*) AS _count
+            WHERE _count > 1
+            RETURN {properties: {email: _k0, tenant: _k1}, count: _count}
+            LIMIT 5
+            """.trimIndent(),
+            query,
+        )
+    }
 }

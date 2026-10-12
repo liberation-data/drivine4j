@@ -278,10 +278,20 @@ class OraclePredicatesTest {
             PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"),
             PropertyCondition("people.id", ComparisonOperator.EQUALS, "h1"),
         )))
-        assertEquals(1, Regex("EXISTS").findAll(sql).count(), sql)
-        assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM GRAPH_TABLE (g"), sql)
-        assertTrue(sql.contains("-[e0 IS edge WHERE e0.type = 'MENTIONS']-> (b IS node)"), sql)
-        assertTrue(sql.contains("WHERE t0_.src = claim_.nid AND JSON_VALUE(t0_.props, '$.name') = \$_p0 AND JSON_VALUE(t0_.props, '$.id') = \$_p1)"), sql)
+        // The related node is the field's row, and carries what the conditions read of it.
+        assertEquals(
+            """
+            EXISTS (
+                SELECT 1
+                FROM GRAPH_TABLE (g
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node)
+                    COLUMNS (claim_.nid AS src, people_.props)) people_
+                WHERE people_.src = claim_.nid
+                  AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0
+                  AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
+            """.trimIndent(),
+            sql,
+        )
         assertEquals(mapOf<String, Any?>("_p0" to "ada", "_p1" to "h1"), select.bindings())
     }
 
@@ -290,22 +300,22 @@ class OraclePredicatesTest {
         val select = OracleSelect(graph, Dossier::class.java)
         val sql = assertNotNull(select.predicate(listOf(PropertyCondition("claims_people.name", ComparisonOperator.EQUALS, "ada"))))
         assertEquals(2, Regex("EXISTS").findAll(sql).count(), sql)
-        assertTrue(sql.contains("e0.type = 'COVERS'"), sql)
-        assertTrue(sql.contains("e0.type = 'MENTIONS'"), sql)
-        assertTrue(sql.contains("WHERE t1_.src = t0_.nid AND JSON_VALUE(t1_.props, '$.name') = \$_p0"), sql)
+        assertTrue(sql.contains("MATCH (memo_ IS node) -[e IS edge WHERE e.type = 'COVERS']-> (claims_ IS node)"), sql)
+        assertTrue(sql.contains("MATCH (claims_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node)"), sql)
+        assertTrue(sql.contains("WHERE people_.src = claims_.nid\n          AND JSON_VALUE(people_.props, '$.name') = \$_p0"), sql)
     }
 
     @Test
     fun `a negated relationship condition asks that no related node meets it`() {
         val sql = view().predicate(listOf(RelationshipCondition("people", listOf(PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada")), negate = true)))
-        assertTrue(assertNotNull(sql).startsWith("NOT (EXISTS"), sql)
+        assertTrue(assertNotNull(sql).startsWith("NOT EXISTS ("), sql)
     }
 
     @Test
     fun `a label condition on a relationship alias tests the related node's row`() {
         val sql = assertNotNull(view().predicate(listOf(LabelCondition("people", listOf("Human")))))
         assertTrue(sql.startsWith("EXISTS"), sql)
-        assertTrue(sql.contains("INSTR(JSON_SERIALIZE(t0_.labels), '\"Human\"') > 0"), sql)
+        assertTrue(sql.contains("AND INSTR(JSON_SERIALIZE(people_.labels), '\"Human\"') > 0"), sql)
     }
 
     @Test

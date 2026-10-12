@@ -90,6 +90,7 @@ internal class SaveStatementBuilder(
     private val storedKeys: StoredPropertyKeys?,
 ) {
 
+    /** The statement that saves what [request] asks. */
     fun build(request: SaveRequest): SaveStatement = with(request) {
         Composition(checked, nullPolicy, rootWriteFields, replaced, createsRoot).compose(obj, before, after)
     }
@@ -112,6 +113,7 @@ internal class SaveStatementBuilder(
         private var parts = 0
         private lateinit var root: StampWrite
 
+        /** The statement that saves [obj]: a view as its parts and the stamps they gathered, a fragment as its root part alone. */
         fun compose(obj: Any, before: JsonNode?, after: JsonNode?): SaveStatement {
             if (obj.javaClass.isAnnotationPresent(GraphView::class.java)) {
                 val model = GraphViewModel.from(obj.javaClass)

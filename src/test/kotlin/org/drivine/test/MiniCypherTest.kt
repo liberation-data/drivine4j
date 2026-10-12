@@ -1,6 +1,8 @@
 package org.drivine.test
 
+import org.drivine.manager.PersistenceManager
 import org.drivine.model.Stamps
+import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.Test
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -469,6 +471,179 @@ class MiniCypherTest {
     @Test
     fun `a string with no closing quote is refused`() {
         assertContains(refused("RETURN 'abc"), "Expected the end of a string")
+    }
+
+    // ----- Read whole before anything is worked out -----
+
+    @Test
+    fun `a statement that is refused for what it says never reaches the store, and one that is read loads the graph once`() {
+        var asked = 0
+        val counting = object : PersistenceManager by store {
+            override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = store.query(spec).also { asked++ }
+        }
+        assertFailsWith<IllegalArgumentException> { MiniCypher(counting, "MATCH (n:T) RETURN n.id LIMIT 1", emptyMap()).run() }
+        assertFailsWith<IllegalArgumentException> { MiniCypher(counting, "MATCH (n:T) SET n.x = \$missing", emptyMap()).run() }
+        assertEquals(0, asked, "a refused statement asks the store nothing")
+        MiniCypher(counting, "MATCH (n:T) RETURN n.id", emptyMap()).run()
+        assertEquals(2, asked, "the nodes and the relationships are each read once")
+    }
+
+    @Test
+    fun `what a row would never reach is refused all the same`() {
+        assertContains(refused("MATCH (n:Nope) SET n.x = foo(n.id)"), "foo")
+        assertContains(refused("MATCH (n:Nope) RETURN m.id"), "the variable m is not bound here")
+        assertContains(refused("MATCH (n:Nope) SET m.x = 1"), "m is not")
+        assertContains(refused("MATCH (a:Nope) CREATE (a)-[:X]-(b:T)"), "direction")
+        assertContains(refused("MATCH (n:Nope) RETURN size(n.id, 1)"), "takes 1")
+        assertTrue(store.written.isEmpty())
+    }
+
+    @Test
+    fun `a statement of no clause, or one closed by a semicolon, is read`() {
+        assertEquals(emptyList<Any?>(), run(""))
+        assertEquals(listOf(1L), run("RETURN 1;"))
+        assertEquals(listOf("x"), run("RETURN 'x' AS value"))
+        assertTrue(store.written.isEmpty())
+    }
+
+    // ----- More of the subset -----
+
+    @Test
+    fun `several patterns join every way they are found, and a longer pattern follows its relationships`() {
+        val a = store.node("T", props = mapOf("id" to "a"))
+        val b = store.node("T", props = mapOf("id" to "b"))
+        val c = store.node("T", props = mapOf("id" to "c"))
+        store.edge(a, b, "X", mapOf("w" to 1))
+        store.edge(a, c, "X", mapOf("w" to 2))
+        store.edge(b, c, "Y")
+        assertEquals(listOf(9L), run("MATCH (x:T), (y:T) RETURN count(x)"))
+        assertEquals(listOf("c"), run("MATCH (x:T {id: 'a'})-[:X]->(y)-[:Y]->(z) RETURN z.id"))
+        assertEquals(listOf("a"), run("MATCH (z:T {id: 'c'})<-[:Y]-(y)<-[:X]-(x) RETURN x.id"))
+        assertEquals(listOf("c"), run("MATCH (x)-[r:X {w: 2}]->(y) RETURN y.id"))
+        assertEquals(listOf("a->b", "a->c", "b->c"), run("MATCH (x)-[r]->(y) RETURN x.id + '->' + y.id AS pair ORDER BY pair"))
+        assertEquals(listOf("b"), run("MATCH (x:T {id: 'a'}), (y:T) WHERE y.id <> x.id AND y.id < 'c' RETURN y.id"))
+    }
+
+    @Test
+    fun `a relationship's property is set and removed, and the relationship alone is written`() {
+        val a = store.node("T", props = mapOf("id" to "a"))
+        val b = store.node("T", props = mapOf("id" to "b"))
+        store.edge(a, b, "X", mapOf("w" to 1, "old" to true))
+        assertEquals(listOf(listOf("w", "note")), run("MATCH (x)-[r:X]->(y) SET r.w = r.w + 1, r.note = 'n' REMOVE r.old RETURN keys(r)"))
+        assertEquals(mapOf<String, Any?>("w" to 2L, "note" to "n"), store.edges.values.single().props)
+        assertContains(store.written.single().statement, "UPDATE g_edge")
+    }
+
+    @Test
+    fun `a relationship is created with the properties that are not null, and bound to its variable`() {
+        assertEquals(listOf(listOf("w")), run("CREATE (a:T {id: 'a'})-[r:X {w: 1, gone: null}]->(b:T {id: 'b'}) RETURN keys(r)"))
+        assertEquals(mapOf<String, Any?>("w" to 1L), store.edges.values.single().props)
+    }
+
+    @Test
+    fun `the items of a SET are applied in order, and several labels are added at once`() {
+        store.node("T", props = mapOf("id" to "a"))
+        run("MATCH (n:T) SET n.a = 1, n.b = n.a + 1, n:B:A")
+        val row = store.nodes.values.single()
+        assertEquals(mapOf<String, Any?>("id" to "a", "a" to 1L, "b" to 2L), row.props)
+        assertEquals(listOf("A", "B", "T"), row.labels)
+        assertEquals(1, updates.size)
+    }
+
+    @Test
+    fun `a pattern's properties are read once for the clause, so a randomUUID there is one value for every row`() {
+        run("UNWIND [1, 2] AS x CREATE (n:T {id: randomUUID()})")
+        assertEquals(2, store.nodes.size)
+        assertEquals(1, store.nodes.values.map { it.props["id"] }.toSet().size)
+    }
+
+    @Test
+    fun `a node matched by several rows is deleted once`() {
+        val a = store.node("T", props = mapOf("id" to "a"))
+        val b = store.node("T", props = mapOf("id" to "b"))
+        val c = store.node("T", props = mapOf("id" to "c"))
+        store.edge(a, b, "X")
+        store.edge(a, c, "X")
+        run("MATCH (n:T {id: 'a'})-[:X]->(m) DETACH DELETE n")
+        assertEquals(1, deletes.size)
+        assertEquals(listOf(b, c), store.nodes.keys.toList())
+    }
+
+    @Test
+    fun `a DETACH DELETE of what is no node is refused, and nothing is written`() {
+        val a = store.node("T", props = mapOf("id" to "a"))
+        val b = store.node("T", props = mapOf("id" to "b"))
+        store.edge(a, b, "X")
+        assertContains(refused("MATCH (x)-[r]->(y) DETACH DELETE r"), "DETACH DELETE takes a node")
+        assertTrue(store.written.isEmpty())
+        assertEquals(1, store.edges.size)
+    }
+
+    @Test
+    fun `MERGE is held to what can be made only for a row its pattern is not found for`() {
+        val a = store.node("T", props = mapOf("id" to "a"))
+        val b = store.node("T", props = mapOf("id" to "b"))
+        store.edge(b, a, "X")
+        run("MATCH (a:T {id: 'a'}), (b:T {id: 'b'}) MERGE (a)-[:X]-(b) MERGE (a:T {id: 'a'})")
+        assertTrue(store.written.isEmpty(), "what is found is not made: ${store.written}")
+        assertContains(refused("MATCH (a:T {id: 'a'}), (b:T {id: 'b'}) MERGE (a)-[:Y]-(b)"), "direction")
+        assertContains(refused("MATCH (a:T {id: 'a'}), (b:T {id: 'b'}) MERGE (a)-[]->(b)-[]->(a)"), "type")
+        assertContains(refused("MATCH (a:T {id: 'a'}) MERGE (a:Other)"), "already bound")
+        assertTrue(store.written.isEmpty())
+    }
+
+    @Test
+    fun `a comparison with a null is false, but for an equals of two nulls`() {
+        assertEquals(
+            listOf(mapOf("a" to true, "b" to false, "c" to false, "d" to false, "e" to false, "f" to true, "g" to false, "h" to true, "i" to false)),
+            run("RETURN {a: null = null, b: 1 = null, c: 1 <> null, d: null < 1, e: null >= null, f: 1 IN [2, 1.0], g: 1 IN 'x', h: 2 >= 2.0, i: 'a' STARTS WITH null}"),
+        )
+    }
+
+    @Test
+    fun `plus with a null is null, and a CASE branch that holds gives its value though it is null`() {
+        assertEquals(listOf(listOf(null, null)), run("RETURN [1 + null, 'a' + null]"))
+        assertEquals(listOf(null), run("RETURN CASE WHEN true THEN null ELSE 'x' END"))
+        assertEquals(listOf("x"), run("RETURN CASE WHEN null THEN 1 ELSE 'x' END"))
+    }
+
+    @Test
+    fun `the functions give null for a null, and substring reads to the end without a length`() {
+        assertEquals(
+            listOf(listOf("llo", "", null, null, null, null, null, null)),
+            run("RETURN [substring('hello', 2), substring('abc', 5), substring(null, 1), coalesce(null, null), toString(null), size(null), left(null, 1), labels(null)]"),
+        )
+    }
+
+    @Test
+    fun `UNWIND multiplies the rows it is given, and gives none for what is no list`() {
+        assertEquals(listOf("1x", "1y", "2x", "2y"), run("UNWIND [1, 2] AS a UNWIND ['x', 'y'] AS b RETURN toString(a) + b"))
+        assertEquals(emptyList<Any?>(), run("UNWIND \$rows AS r RETURN r", "rows" to null))
+        assertEquals(emptyList<Any?>(), run("UNWIND \$rows AS r RETURN r", "rows" to "abc"))
+        assertEquals(listOf(0L), run("UNWIND [] AS r RETURN count(r)"))
+    }
+
+    @Test
+    fun `WITH keeps the rows its WHERE holds for, with the variables it names alone`() {
+        assertEquals(listOf(2L, 2L), run("UNWIND [1, 2] AS a UNWIND [3, 4] AS b WITH a WHERE a > 1 RETURN a"))
+        assertContains(refused("UNWIND [1, 2] AS a UNWIND [3, 4] AS b WITH a RETURN b"), "the variable b is not bound here")
+    }
+
+    @Test
+    fun `ORDER BY sorts moments by time, whatever offset their text is written with, and other text as text`() {
+        assertEquals(
+            listOf("2024-01-01T00:00:00Z", "2024-06-01T00:00:00+02:00", "2024-05-31T23:00:00Z"),
+            run("UNWIND ['2024-06-01T00:00:00+02:00', '2024-01-01T00:00:00Z', '2024-05-31T23:00:00Z'] AS t RETURN t ORDER BY t"),
+        )
+        assertEquals(listOf("10", "9", "a"), run("UNWIND ['a', '9', '10'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(9L, 10L), run("UNWIND [10, 9] AS t RETURN t ORDER BY t"))
+    }
+
+    @Test
+    fun `a property is read of a map as of a node, and of nothing else`() {
+        assertEquals(listOf("a"), run("UNWIND \$rows AS r RETURN r['id']", "rows" to listOf(mapOf("id" to "a"))))
+        assertEquals(listOf(null), run("UNWIND [null] AS r RETURN r.id"))
+        assertContains(refused("UNWIND [1] AS r RETURN r.id"), "Expected a node, a relationship or a map to read id of")
     }
 
     // ----- reads -----

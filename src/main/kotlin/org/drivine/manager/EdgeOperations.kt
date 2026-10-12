@@ -47,10 +47,7 @@ class EdgeOperations internal constructor(
         type: String,
         properties: Map<String, Any?> = emptyMap(),
         mode: RelateMode = RelateMode.MERGE,
-    ): Boolean {
-        val statement = backend.relate(from, to, type, properties, mode)
-        return executor.whenNotContended { persistenceManager.getOne(statement.spec().transform(Long::class.java)) } > 0
-    }
+    ): Boolean = count(backend.relate(from, to, type, properties, mode)) > 0
 
     /**
      * Removes every [type] relationship from [from] to [to].
@@ -74,6 +71,10 @@ class EdgeOperations internal constructor(
     fun unrelateAll(from: NodeRef, type: String, direction: Direction = Direction.OUTGOING): Int =
         count(backend.unrelateAll(from, type, direction))
 
+    /**
+     * Runs [statement], which writes relationships, and gives the number it returns: those it made
+     * or found, or those it removed. It is run again when the engine turns it away as contended.
+     */
     private fun count(statement: GraphStatement): Int =
         executor.whenNotContended { persistenceManager.getOne(statement.spec().transform(Long::class.java)) }.toInt()
 

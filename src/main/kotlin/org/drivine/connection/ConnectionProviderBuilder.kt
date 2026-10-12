@@ -5,6 +5,15 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.grammar.CypherDialect
 import org.slf4j.LoggerFactory
 
+/**
+ * Builds the [ConnectionProvider] of one datasource from its connection properties and registers it:
+ * a Bolt driver for Neo4j, Neptune and Memgraph, a FalkorDB client, or for Oracle a JDBC connection
+ * pool. What a property means is the engine's: on Oracle the database name is the service to connect
+ * to and the default graph path the name of the graph.
+ *
+ * An engine with no wire to describe ([DatabaseType.buildableFromProperties] false) is not built
+ * here; the application registers a provider for it.
+ */
 class ConnectionProviderBuilder(
     private val registry: DatabaseRegistry,
     private val subtypeRegistry: SubtypeRegistry? = null
@@ -38,12 +47,16 @@ class ConnectionProviderBuilder(
     fun defaultGraphPath(path: String): ConnectionProviderBuilder = apply { this.defaultGraphPath = path }
     fun cypherDialect(dialect: CypherDialect): ConnectionProviderBuilder = apply { this.cypherDialect = dialect }
 
+    /** Takes everything [properties] sets. What it leaves null keeps this builder's own default: a pool of 40 and five seconds to connect. */
     fun withProperties(properties: ConnectionProperties): ConnectionProviderBuilder {
         properties.type.let { withType(it) }
         properties.userName?.let { userName(it) }
         properties.password?.let { password(it) }
         properties.host.let { host(it) }
         properties.port?.let { port(it) }
+        properties.poolMax?.let { poolMax = it }
+        properties.connectionTimeout?.let { connectionTimeout = it }
+        properties.idleTimeout?.let { idleTimeout(it) }
         properties.databaseName?.let { databaseName(it) }
         properties.protocol?.let { protocol(it) }
         properties.defaultGraphPath?.let { defaultGraphPath(it) }
@@ -54,6 +67,10 @@ class ConnectionProviderBuilder(
         return this
     }
 
+    /**
+     * The provider registered as [name]: the one that is there already, or one built from what this
+     * builder was given and registered. A host is required, and what else is depends on the engine.
+     */
     fun register(name: String = "default"): ConnectionProvider {
         registry.connectionProvider(name)?.let { return it }
 
@@ -164,7 +181,9 @@ class ConnectionProviderBuilder(
     /**
      * Oracle: the database name is the service to connect to, and the default graph path names the
      * property graph and its tables (see [JdbcConnectionProvider.graphName]). A Cypher dialect or a
-     * protocol has no meaning here, and is warned about rather than silently taken.
+     * protocol has no meaning here, and is warned about rather than silently taken. The pool is made
+     * here, and asks the database for a connection as it is: a service that cannot be reached, or a
+     * user it turns away, fails the registration.
      */
     private fun buildOracleProvider(name: String): ConnectionProvider {
         requireNotNull(userName) { "Oracle requires a username" }

@@ -91,8 +91,11 @@ class OracleSideTableTest {
     }
 
     @Test
-    fun `dropping takes the trigger before the table, and neither fails when it is not there`() {
-        assertEquals(listOf("DROP TRIGGER IF EXISTS g_t_doc_t", "DROP TABLE IF EXISTS g_t_doc PURGE"), OracleSideTable.dropping("g_t_doc"))
-        assertEquals("DROP TRIGGER IF EXISTS ${side().trigger}", OracleSideTable.dropping(side().name).first())
+    fun `dropping takes the trigger before the table, each named from a variable that holds the table's name, and neither fails when it is not there`() {
+        val drops = OracleSideTable.dropping("v_object")
+
+        assertEquals(listOf("'DROP TRIGGER IF EXISTS ' || v_object || '_t'", "'DROP TABLE IF EXISTS ' || v_object || ' PURGE'"), drops)
+        // With the table's own name in the variable, the trigger dropped is the table's own.
+        assertEquals("'DROP TRIGGER IF EXISTS ${side().trigger}'", drops.first().replace("' || v_object || '", side().name))
     }
 }

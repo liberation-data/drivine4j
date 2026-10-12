@@ -7,7 +7,6 @@ import sample.stateless.ClaimEmployers
 import sample.stateless.HumanClaims
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
-import kotlin.test.assertNotEquals
 import kotlin.test.assertTrue
 
 /** The row sources of a statement, and what its parts share as it is written: its parameters and the names it gives out. */
@@ -33,17 +32,33 @@ class OracleRowSourcesTest {
     }
 
     @Test
-    fun `a name is given out once, whatever prefix it is asked under, and ends as no SQL word does`() {
-        val names = listOf(scope.next("t"), scope.next("t"), scope.next("x"), scope.next("t"))
+    fun `a row is called what it stands for, with an underscore no SQL word ends in, and the next of that name is numbered`() {
+        val names = listOf(scope.row("people"), scope.row("people"), scope.row("user"), scope.row("people"))
 
-        assertEquals(listOf("t0_", "t1_", "x2_", "t3_"), names)
-        assertEquals(names.size, names.distinct().size)
+        assertEquals(listOf("people_", "people2_", "user_", "people3_"), names)
+    }
+
+    @Test
+    fun `no two rows share a name, though a field is named as another's second row would be, or differs only in case`() {
+        val names = listOf(scope.row("a"), scope.row("a2"), scope.row("a"), scope.row("A"))
+
+        // `a2_` is taken by the field of that name, so the second `a` is the third; Oracle reads `A_` as `a_`.
+        assertEquals(listOf("a_", "a2_", "a3_", "A4_"), names)
+        assertEquals(names.size, names.map { it.lowercase() }.distinct().size)
+    }
+
+    @Test
+    fun `a name Oracle could not write bare is made one it can, and a long one is cut to fit`() {
+        assertEquals("my_field_", scope.row("my field"))
+        assertEquals("r_hidden_", scope.row("_hidden"))
+        assertEquals("r1st_", scope.row("1st"))
+        assertTrue(scope.row("x".repeat(500)).length <= 128)
     }
 
     @Test
     fun `binding a value gives out no name, and a name binds nothing`() {
         scope.bound(1)
-        assertEquals("t0_", scope.next("t"))
+        assertEquals("t_", scope.row("t"))
         assertEquals(setOf("_p0"), scope.bindings().keys)
     }
 
@@ -51,62 +66,72 @@ class OracleRowSourcesTest {
 
     @Test
     fun `the nodes of some labels are asked of the index, until the statement finds its roots some narrower way`() {
-        val scanned = rows.nodes(listOf("Claim", "Hot"), "n_").squashed()
+        val scanned = rows.nodes(listOf("Claim", "Hot"), "n_").whole().squashed()
         scope.narrowed = true
-        val narrowed = rows.nodes(listOf("Claim", "Hot"), "n_").squashed()
+        val narrowed = rows.nodes(listOf("Claim", "Hot"), "n_").whole().squashed()
 
         assertEquals(
-            "GRAPH_TABLE (g MATCH (v IS node WHERE JSON_EXISTS(v.labels, '$[*]?(@ == \"Claim\")') AND JSON_EXISTS(v.labels, '$[*]?(@ == \"Hot\")')) COLUMNS (v.nid, v.labels, v.props, v.stamp, v.doc)) n_",
+            "GRAPH_TABLE (g MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")') AND JSON_EXISTS(n_.labels, '$[*]?(@ == \"Hot\")')) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
             scanned,
         )
         assertEquals(
-            "GRAPH_TABLE (g MATCH (v IS node WHERE INSTR(JSON_SERIALIZE(v.labels), '\"Claim\"') > 0 AND INSTR(JSON_SERIALIZE(v.labels), '\"Hot\"') > 0) COLUMNS (v.nid, v.labels, v.props, v.stamp, v.doc)) n_",
+            "GRAPH_TABLE (g MATCH (n_ IS node WHERE INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0 AND INSTR(JSON_SERIALIZE(n_.labels), '\"Hot\"') > 0) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
             narrowed,
         )
     }
 
     @Test
     fun `nodes of no label are every node, with no predicate at all`() {
-        assertEquals("GRAPH_TABLE (g MATCH (v IS node) COLUMNS (v.nid, v.labels, v.props, v.stamp, v.doc)) n_", rows.nodes(emptyList(), "n_").squashed())
+        assertEquals("GRAPH_TABLE (g MATCH (n_ IS node) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_", rows.nodes(emptyList(), "n_").whole().squashed())
+    }
+
+    @Test
+    fun `a node of the pattern has the name of its row, so a statement reads of the node its MATCH names`() {
+        val sql = rows.nodes(listOf("Claim"), "claim_").reading(listOf("claim_.doc"))
+
+        assertEquals("GRAPH_TABLE (g\n    MATCH (claim_ IS node WHERE JSON_EXISTS(claim_.labels, '$[*]?(@ == \"Claim\")'))\n    COLUMNS (claim_.doc)) claim_", sql)
     }
 
     // ----- Reached -----
 
     @Test
     fun `one step taken once gives the relationship with the node, and the node it started from as src`() {
-        val sql = rows.reached(listOf(Step("MENTIONS", Direction.OUTGOING, listOf("Human"))), "t0_").squashed()
+        val sql = rows.reached("claim_", listOf(Step("MENTIONS", Direction.OUTGOING, listOf("Human"))), "people_").whole().squashed()
 
         assertEquals(
-            "GRAPH_TABLE (g MATCH (a IS node) -[e0 IS edge WHERE e0.type = 'MENTIONS']-> (b IS node WHERE INSTR(JSON_SERIALIZE(b.labels), '\"Human\"') > 0)" +
-                " COLUMNS (a.nid AS src, e0.eid AS eid, e0.props AS eprops, b.nid, b.labels, b.props, b.stamp, b.doc)) t0_",
+            "GRAPH_TABLE (g MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '\"Human\"') > 0)" +
+                " COLUMNS (claim_.nid AS src, e.eid, e.props AS eprops, people_.nid, people_.labels, people_.props, people_.stamp, people_.doc)) people_",
             sql,
         )
     }
 
     @Test
     fun `a step taken up to a depth is quantified from one, and gives no relationship, for there may be several`() {
-        val sql = rows.reached(listOf(Step("PART_OF", Direction.INCOMING, emptyList(), maxDepth = 3)), "t").squashed()
+        val sql = rows.reached("n_", listOf(Step("PART_OF", Direction.INCOMING, emptyList(), maxDepth = 3)), "t_").whole().squashed()
 
-        assertTrue("<-[e0 IS edge WHERE e0.type = 'PART_OF']-{1,3} (b IS node)" in sql, sql)
+        assertTrue("(n_ IS node) <-[e IS edge WHERE e.type = 'PART_OF']-{1,3} (t_ IS node)" in sql, sql)
         assertFalse("eid" in sql || "eprops" in sql, sql)
-        assertTrue("COLUMNS (a.nid AS src, b.nid, " in sql, sql)
+        assertTrue("COLUMNS (n_.nid AS src, t_.nid, " in sql, sql)
     }
 
     @Test
-    fun `several steps name each relationship and each node between apart, and only the last node is the one reached`() {
+    fun `several steps name each relationship and each node between apart, a line to a step, and only the last node is the one reached`() {
         val sql = rows.reached(
+            "claim_",
             listOf(
                 Step("MENTIONS", Direction.OUTGOING, listOf("Human")),
                 Step("WORKS_AT", Direction.UNDIRECTED, emptyList()),
                 Step("OWNED_BY", Direction.INCOMING, listOf("Company")),
             ),
-            "t",
-        ).squashed()
+            "t_",
+        ).whole()
 
         assertTrue(
-            ("(a IS node) -[e0 IS edge WHERE e0.type = 'MENTIONS']-> (m0 IS node WHERE INSTR(JSON_SERIALIZE(m0.labels), '\"Human\"') > 0)" +
-                " -[e1 IS edge WHERE e1.type = 'WORKS_AT']- (m1 IS node)" +
-                " <-[e2 IS edge WHERE e2.type = 'OWNED_BY']- (b IS node WHERE INSTR(JSON_SERIALIZE(b.labels), '\"Company\"') > 0)") in sql,
+            ("    MATCH (claim_ IS node)\n" +
+                "        -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '\"Human\"') > 0)\n" +
+                "        -[e2 IS edge WHERE e2.type = 'WORKS_AT']- (m2 IS node)\n" +
+                "        <-[e3 IS edge WHERE e3.type = 'OWNED_BY']- (t_ IS node WHERE INSTR(JSON_SERIALIZE(t_.labels), '\"Company\"') > 0)\n" +
+                "    COLUMNS (claim_.nid AS src, t_.nid, ") in sql,
             sql,
         )
         assertFalse("eid" in sql, sql)
@@ -114,10 +139,18 @@ class OracleRowSourcesTest {
 
     @Test
     fun `a type and a label are data, so a quote in either is escaped where it is written`() {
-        val sql = rows.reached(listOf(Step("IT'S", Direction.OUTGOING, listOf("O'Brien \"the\" label"))), "t")
+        val sql = rows.reached("n_", listOf(Step("IT'S", Direction.OUTGOING, listOf("O'Brien \"the\" label"))), "t_").whole()
 
-        assertTrue("e0.type = 'IT''S'" in sql, sql)
+        assertTrue("e.type = 'IT''S'" in sql, sql)
         assertTrue("'\"O''Brien \\\"the\\\" label\"'" in sql, sql)
+    }
+
+    @Test
+    fun `a traversal gives only the columns the query reads of it`() {
+        val reached = rows.reached("claim_", listOf(Step("MENTIONS", Direction.OUTGOING, emptyList())), "people_")
+
+        assertTrue(reached.reading(listOf("people_.doc", "people_.src = claim_.nid")).endsWith("COLUMNS (claim_.nid AS src, people_.doc)) people_"))
+        assertTrue(reached.reading(listOf("JSON_TRANSFORM(people_.eprops, SET '$.t' = people_.doc)")).endsWith("COLUMNS (e.props AS eprops, people_.doc)) people_"))
     }
 
     // ----- Steps -----
@@ -142,24 +175,47 @@ class OracleRowSourcesTest {
         assertEquals(listOf(1, 1), steps.map { it.maxDepth })
     }
 
-    // ----- Exists -----
+    // ----- Related, and whether any is -----
 
     @Test
-    fun `whether a node is reached joins the traversal to the parent row outside it, under the row the caller named`() {
-        val sql = rows.exists("claim_", listOf(Step("MENTIONS", Direction.OUTGOING, listOf("Human"))), "people_", "JSON_VALUE(people_.props, '$.name') = \$_p0")
+    fun `the nodes related to a row are those the traversal reaches from it, joined to the row outside the traversal`() {
+        val query = rows.related("people_.doc", "claim_", listOf(Step("MENTIONS", Direction.OUTGOING, listOf("Human"))), "people_", tail = listOf("ORDER BY people_.eid")).text()
 
-        assertTrue(sql.startsWith("EXISTS (SELECT 1 FROM GRAPH_TABLE (g"), sql)
-        assertTrue(sql.endsWith(") people_ WHERE people_.src = claim_.nid AND JSON_VALUE(people_.props, '$.name') = \$_p0)"), sql)
+        assertEquals(
+            """
+            SELECT people_.doc
+            FROM GRAPH_TABLE (g
+                MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0)
+                COLUMNS (claim_.nid AS src, e.eid, people_.doc)) people_
+            WHERE people_.src = claim_.nid
+            ORDER BY people_.eid
+            """.trimIndent(),
+            query,
+        )
     }
 
     @Test
-    fun `with no row named, each test of whether a node is reached names a row of its own, and with no predicate adds none`() {
-        val steps = listOf(Step("MENTIONS", Direction.OUTGOING, emptyList()))
-        val first = rows.exists("n_", steps, null)
-        val second = rows.exists("n_", steps, null)
+    fun `whether a node is reached is asked of the related nodes that meet the predicate, and reads what the predicate does`() {
+        val sql = rows.exists("claim_", listOf(Step("MENTIONS", Direction.OUTGOING, emptyList())), "people_", listOf("JSON_VALUE(people_.props, '$.name') = \$_p0"))
 
-        assertTrue(first.endsWith(") t0_ WHERE t0_.src = n_.nid)"), first)
-        assertTrue(second.endsWith(") t1_ WHERE t1_.src = n_.nid)"), second)
-        assertNotEquals(first, second)
+        assertEquals(
+            """
+            EXISTS (
+                SELECT 1
+                FROM GRAPH_TABLE (g
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node)
+                    COLUMNS (claim_.nid AS src, people_.props)) people_
+                WHERE people_.src = claim_.nid
+                  AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0)
+            """.trimIndent(),
+            sql,
+        )
+    }
+
+    @Test
+    fun `with no predicate, whether a node is reached reads nothing of it but where it was reached from`() {
+        val sql = rows.exists("n_", listOf(Step("MENTIONS", Direction.OUTGOING, emptyList())), "t_")
+
+        assertTrue(sql.endsWith("COLUMNS (n_.nid AS src)) t_\n    WHERE t_.src = n_.nid)"), sql)
     }
 }

@@ -60,6 +60,11 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             return rows
         }
 
+        /**
+         * The value of [column] in the row [results] is at, read as its [type] asks: as the graph
+         * drivers give such a value, and never as a locator or a driver's own class that would not
+         * outlive the statement.
+         */
         private fun value(results: ResultSet, column: Int, type: Int): Any? = when (type) {
             ORACLE_JSON -> results.getString(column)?.let { json.readValue(it, Any::class.java) }
             Types.CLOB, Types.NCLOB, Types.LONGVARCHAR, Types.LONGNVARCHAR -> results.getString(column)

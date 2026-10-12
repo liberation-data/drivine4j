@@ -1,7 +1,6 @@
 package org.drivine.schema
 
 import org.drivine.manager.PersistenceManager
-import org.drivine.manager.requireCypher
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
 
@@ -47,10 +46,7 @@ class SchemaVersionStore(
      * otherwise, as Oracle's does. See [SchemaGrammar.versionMarker].
      */
     private val statements: VersionMarkerStatements by lazy {
-        val own = manager.schemaGrammar?.versionMarker(LABEL, SCOPE_PROPERTY)
-            ?: CypherVersionMarker(LABEL, SCOPE_PROPERTY).also { manager.requireCypher("the schema marker") }
-        own.prepare?.let { manager.indexes.run(it) }
-        own
+        manager.reservedNode("the schema marker", { versionMarker(LABEL, SCOPE_PROPERTY) }) { CypherVersionMarker(LABEL, SCOPE_PROPERTY) }
     }
 
     /**

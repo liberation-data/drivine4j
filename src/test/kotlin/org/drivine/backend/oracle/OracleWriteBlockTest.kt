@@ -149,6 +149,65 @@ class OracleWriteBlockTest {
         assertContains(plan.text(OracleWriteBlock.Returns.STAMPS), "FROM g_node WHERE nid = v_root")
     }
 
+    @Test
+    fun `each kind of step has one arm of the block's dispatch, to a procedure the block declares`() {
+        val plan = WritePlan(graph)
+        plan.shape(listOf("Claim"), "id")
+        val text = plan.text(OracleWriteBlock.Returns.COUNT)
+
+        val dispatch = text.substringAfter("CASE v_op.get_string('op')").substringBefore("END CASE;")
+        val arms = Regex("WHEN '(\\w+)' THEN (\\w+)\\(v_op\\);").findAll(dispatch).map { it.groupValues[1] to it.groupValues[2] }.toList()
+        assertEquals(StepKind.entries.map { it.op to it.procedure }, arms)
+        assertEquals(arms.size, arms.map { it.first }.distinct().size, "no two kinds share a name")
+        StepKind.entries.forEach { assertContains(text, "    PROCEDURE ${it.procedure}(op JSON_OBJECT_T) IS\n") }
+    }
+
+    @Test
+    fun `a procedure is declared before the one that calls it, as PL-SQL asks`() {
+        val plan = WritePlan(graph)
+        plan.shape(listOf("Claim"), "id")
+        // What is said in a comment is not a call.
+        val text = plan.text(OracleWriteBlock.Returns.STAMPS).lines().joinToString("\n") { it.substringBefore("--") }
+
+        val declared = Regex("(?m)^    (?:PROCEDURE|FUNCTION) (\\w+)").findAll(text).map { it.groupValues[1] to it.groups[1]!!.range.first }.toList()
+        assertEquals(declared.size, declared.map { it.first }.distinct().size, "each is declared once: ${declared.map { it.first }}")
+        assertTrue(declared.map { it.first }.containsAll(listOf("find", "save_node", "write_props", "clear_bags", "own_labels", "relabel", "relink_marked")), declared.toString())
+        declared.forEach { (name, at) ->
+            val calls = Regex("(?<![\\w.'])$name\\s*[(;]").findAll(text).map { it.range.first }.filter { it != at }.toList()
+            assertTrue(calls.isNotEmpty(), "$name is declared and never called")
+            assertTrue(calls.all { it > at }, "$name is called before it is declared")
+        }
+    }
+
+    @Test
+    fun `the stamps are gathered once every marked node has its relationship token, and not for a save that was refused`() {
+        val plan = WritePlan(graph)
+        plan.shape(listOf("Claim"), "id")
+
+        listOf(OracleWriteBlock.Returns.STAMPS, OracleWriteBlock.Returns.EACH_STAMP).forEach { returns ->
+            val main = plan.text(returns).substringAfter("\nBEGIN\n    BEGIN\n")
+            val relinked = main.indexOf("relink_marked;")
+            val gathered = main.indexOf("SELECT stamp INTO v_stamp FROM g_node")
+            val refused = main.indexOf("EXCEPTION")
+            assertTrue(relinked in 0 until gathered && gathered < refused, "${returns.name}: $relinked, $gathered, $refused")
+        }
+        val counting = plan.text(OracleWriteBlock.Returns.COUNT).substringAfter("\nBEGIN\n    BEGIN\n")
+        assertFalse("INTO v_stamp" in counting, "a count reads no stamp")
+    }
+
+    @Test
+    fun `a stamp that is not two tokens is read as none, by the step that saves a node and by the one that marks it`() {
+        val plan = WritePlan(graph)
+        plan.shape(listOf("Claim"), "id")
+        val text = plan.text(OracleWriteBlock.Returns.STAMPS)
+
+        assertContains(text, "v_two := CASE WHEN LENGTH(v_stamp) = 33 AND SUBSTR(v_stamp, 17, 1) = ':' THEN v_stamp END;")
+        assertContains(text, "SET stamp = NVL(SUBSTR(CASE WHEN LENGTH(stamp) = 33 AND SUBSTR(stamp, 17, 1) = ':' THEN stamp END, 1, 17), SUBSTR(v_mark, 1, 17)) || SUBSTR(v_mark, 18)")
+        // The positions are those of the model's stamp: two tokens and the colon between them.
+        assertEquals(33, Stamps.fresh().length)
+        assertEquals(16, Stamps.nodeToken(Stamps.fresh()).length)
+    }
+
     // What a save hands back
 
     @Test

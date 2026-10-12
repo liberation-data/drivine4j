@@ -49,9 +49,13 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         replaced: (RelationshipModel) -> RemovedTargets?,
         private val createsRoot: Boolean,
     ) : SaveTraversal<Int>(objectMapper, replaced) {
+        /** The steps, in the order the walk decides them. */
         val plan = WritePlan(graph)
+
+        /** The object's root as the statement names it, known once its step has been planned. */
         private lateinit var root: StampWrite
 
+        /** The statement that saves [obj]: a view walked from its root, or a fragment as a root alone. */
         fun compose(obj: Any, before: JsonNode?, after: JsonNode?): SaveStatement {
             if (obj.javaClass.isAnnotationPresent(GraphView::class.java)) {
                 val model = GraphViewModel.from(obj.javaClass)
@@ -131,10 +135,12 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             }
         }
 
+        /** The property a node of [model] keeps its id under. */
         private fun keyOf(model: FragmentModel): String = model.nodeIdProperty ?: requireNotNull(model.nodeIdField) {
             "Cannot save a fragment without a @NodeId field: ${model.className}"
         }
 
+        /** The id among [values], those of a fragment of [model]. A fragment with none cannot be saved. */
         private fun idOf(model: FragmentModel, values: Map<String, Any?>): Any =
             values[requireNotNull(model.nodeIdField) { "Cannot save a fragment without a @NodeId field: ${model.className}" }]
                 ?: throw IllegalArgumentException("Cannot save a fragment with a null id: ${model.className}")
@@ -209,6 +215,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             model.propertyBags.filter { writable(it.fieldName) }.forEach(::bag)
         }
 
+        /** Whether the step may touch [field]. */
         private fun writable(field: String) = writeFields == null || field in writeFields
 
         /** The entries of [bag] as properties, and when the save clears, the stale keys it drops. */

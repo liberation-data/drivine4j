@@ -25,6 +25,7 @@ internal class NodeWrites(
 
 /** A property bag whose stored keys the block clears when the object no longer holds them: see `OracleWriteBlock`'s `owns`. */
 internal class BagClearing(val prefix: String?, val flat: Boolean, val keep: List<String>, val reservedKeys: List<String>, val reservedPrefixes: List<String>) {
+    /** The bag as a `node` step names it, under the names `owns` reads. */
     fun toMap(): Map<String, Any?> = mapOf("prefix" to prefix, "flat" to flat, "keep" to keep, "reservedKeys" to reservedKeys, "reservedPrefixes" to reservedPrefixes)
 }
 
@@ -33,6 +34,7 @@ internal class BagClearing(val prefix: String?, val flat: Boolean, val keep: Lis
  * the block drops those recorded and no longer held, keeping the [base] labels of the class.
  */
 internal class OwnedLabels(val property: String, val clear: Boolean = false, val base: List<String> = emptyList()) {
+    /** The record as a `node` step names it: the property alone, unless the step clears. */
     fun toMap(): Map<String, Any?> = if (clear) mapOf("prop" to property, "clear" to true, "base" to base) else mapOf("prop" to property)
 }
 
@@ -47,18 +49,38 @@ internal class OwnedLabels(val property: String, val clear: Boolean = false, val
 internal class RootStep(val carried: String?, val expect: String?, val whole: Boolean, val creates: Boolean)
 
 /**
+ * The kinds of step a plan holds. A step says its kind under `op`, and the block carries each kind out
+ * by a procedure of its own: the block's dispatch is written from these, so a kind the plan can add
+ * is one the block knows.
+ */
+internal enum class StepKind(val op: String, val procedure: String) {
+    NODE("node", "save_node"),
+    REF("ref", "find_node"),
+    LINK("link", "link"),
+    UNLINK("unlink", "unlink"),
+    CUT("cut", "cut"),
+}
+
+/**
  * The steps a write block carries out, gathered as they are decided. A node a step saves or finds is
  * known to later steps by the number it is given here. Each kind of step is a method, and the names
- * the block reads a step's fields by are spelt here and nowhere else.
+ * the block reads a step's fields by are spelt in this file and, where the block reads them, in
+ * `OracleWriteBlock`: nowhere else.
  */
 internal class WritePlan(private val graph: OracleGraph) {
+    /** The steps in the order they were added, which is the order the block carries them out in. */
     private val steps = mutableListOf<Map<String, Any?>>()
+
+    /** The shapes the steps name, each with its number: the block has an arm for each, and no more text than that. */
     private val shapes = linkedMapOf<NodeShape, Int>()
+
+    /** How many nodes the steps have saved or found, which is the number the next is given. */
     private var nodes = 0
 
     /** The stamp the plan's steps take the relationship token from. */
     val mark: String = Stamps.fresh()
 
+    /** [mark], then the stamp of each node step as it is added. */
     private val stamps = mutableListOf(mark)
 
     /** The stamps the plan offers the nodes it changes: [mark], and the one each node step carries. */
@@ -77,7 +99,7 @@ internal class WritePlan(private val graph: OracleGraph) {
     fun node(shape: Int, key: String, id: Any, storedId: String, labels: List<String>, writes: NodeWrites, index: String? = null, root: RootStep? = null): Int {
         val node = nodes++
         add(
-            "node", "r" to node, "s" to shape, "k" to storedId, "key" to key, "id" to id, "labels" to labels.sorted(), "fresh" to fresh(),
+            StepKind.NODE, "r" to node, "s" to shape, "k" to storedId, "key" to key, "id" to id, "labels" to labels.sorted(), "fresh" to fresh(),
             "set" to writes.set.takeIf { it.isNotEmpty() }, "unset" to writes.unset.takeIf { it.isNotEmpty() },
             "bags" to writes.bags.map { it.toMap() }.takeIf { it.isNotEmpty() },
             "add" to writes.addLabels.takeIf { it.isNotEmpty() }, "drop" to writes.dropLabels.takeIf { it.isNotEmpty() }, "owned" to writes.owned?.toMap(),
@@ -91,7 +113,7 @@ internal class WritePlan(private val graph: OracleGraph) {
     /** The step that finds the node of [shape] whose stored id is [storedId], which must be there. Gives the number later steps know it by. */
     fun ref(shape: Int, storedId: String): Int {
         val node = nodes++
-        add("ref", "r" to node, "s" to shape, "k" to storedId)
+        add(StepKind.REF, "r" to node, "s" to shape, "k" to storedId)
         return node
     }
 
@@ -101,7 +123,7 @@ internal class WritePlan(private val graph: OracleGraph) {
      */
     fun link(from: Int, to: Int, type: String, direction: Direction, properties: Map<String, Any?>, clear: List<String> = emptyList(), always: Boolean = false) =
         add(
-            "link", "from" to from, "to" to to, "type" to type, "dir" to direction.code,
+            StepKind.LINK, "from" to from, "to" to to, "type" to type, "dir" to direction.code,
             "props" to properties.takeIf { it.isNotEmpty() }, "clear" to clear.takeIf { it.isNotEmpty() }, "always" to always.takeIf { it },
         )
 
@@ -112,13 +134,13 @@ internal class WritePlan(private val graph: OracleGraph) {
      */
     fun unlink(from: Int, type: String, direction: Direction, shape: Int, ids: List<String>, keep: Boolean, delete: Boolean, held: List<String>) =
         add(
-            "unlink", "from" to from, "type" to type, "dir" to direction.code, "s" to shape, "ids" to ids,
+            StepKind.UNLINK, "from" to from, "type" to type, "dir" to direction.code, "s" to shape, "ids" to ids,
             "keep" to keep.takeIf { it }, "delete" to delete.takeIf { it }, "held" to held.takeIf { it.isNotEmpty() },
         )
 
     /** The step that removes the relationships of [type] in [direction] from [from] to [to], or with no [to] to every node. */
     fun cut(from: Int, to: Int?, type: String, direction: Direction) =
-        add("cut", "from" to from, "to" to to, "type" to type, "dir" to direction.code)
+        add(StepKind.CUT, "from" to from, "to" to to, "type" to type, "dir" to direction.code)
 
     /** The block that carries the steps out and gives back what [returns] says. */
     fun text(returns: OracleWriteBlock.Returns): String = OracleWriteBlock(graph, shapes.keys.toList(), returns).text()
@@ -129,9 +151,13 @@ internal class WritePlan(private val graph: OracleGraph) {
     /** A stamp for a node step, which is offered to its node. */
     private fun fresh(): String = Stamps.fresh().also { stamps += it }
 
-    /** Adds a step of [kind] with [fields]. A field that is null is left out: the block reads an absent field as null. */
-    private fun add(kind: String, vararg fields: Pair<String, Any?>) {
-        steps += (listOf("op" to kind) + fields.filter { it.second != null }).toMap()
+    /**
+     * Adds a step of [kind] with [fields]. A field that is null is left out: the block reads an absent
+     * field as null. One that is empty is not, unless its method leaves it out: an empty list of ids
+     * says something of an `unlink` that keeps.
+     */
+    private fun add(kind: StepKind, vararg fields: Pair<String, Any?>) {
+        steps += (listOf("op" to kind.op) + fields.filter { it.second != null }).toMap()
     }
 }
 

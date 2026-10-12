@@ -2313,10 +2313,18 @@ database:
 `protocol` means nothing here and is ignored with a warning. The graph's name names tables, so it is
 letters, digits and underscores, begins with a letter, and is at most 114 characters.
 
+Drivine makes a connection pool (HikariCP) for the datasource: `pool-max` connections at most (40
+unless given), `connection-timeout` milliseconds to wait for one (5,000 unless given), and
+`idle-timeout` milliseconds before an idle one is closed (the pool's own default unless given). The
+pool asks the database for a connection as it is made, so a service that cannot be reached or a user
+that is turned away fails at startup. Each connection keeps 64 statements prepared
+(`oracle.jdbc.implicitStatementCacheSize`): a save is the same block each time, and is neither sent
+nor parsed again.
+
 To use a `DataSource` the application already has, register a provider in code:
 `registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
-Drivine does not close a `DataSource` it was given. For a pool of Drivine's own (HikariCP) without the
-YAML:
+Drivine does not close a `DataSource` it was given, and does not configure it: turn the driver's
+statement cache on there yourself. For a pool of Drivine's own (HikariCP) without the YAML:
 
 ```kotlin
 val provider = JdbcConnectionProvider.pooled(
@@ -2376,6 +2384,44 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   that manager's loads, queries and deletes work. Cypher statements written by hand do not run, and
   neither do the migration tools `RelationshipDirectionRepair` and `PathRelationshipReport`, which are
   Cypher: they repair what saves before 0.1.0 wrote, and no graph on Oracle is that old.
+
+**What a read looks like.** A load is one SQL/PGQ statement, written to be read beside the Cypher it
+stands for. A row is called what the model calls it, with an underscore so that a field may be called
+`user` or `order`, and the node of a `MATCH` has its row's name. `IS node` and `IS edge` stand where
+Cypher has a label and a type, since both are data: a label is a test of `labels`, a type of `type`.
+`doc` is the node as the map a load returns. Where Cypher loads a view with
+
+```cypher
+MATCH (claim:Claim) WHERE claim.id = $id
+RETURN { claim: claim {.*}, people: [(claim)-[:MENTIONS]->(people:Human) | people {.*}] } AS result
+```
+
+Oracle is sent
+
+```sql
+SELECT JSON_OBJECT(
+    'claim' VALUE claim_.doc,
+    'people' VALUE COALESCE((
+        SELECT JSON_ARRAYAGG(people_.doc ORDER BY people_.eid RETURNING JSON)
+        FROM GRAPH_TABLE (drivine
+            MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0)
+            COLUMNS (claim_.nid AS src, e.eid, people_.doc)) people_
+        WHERE people_.src = claim_.nid), JSON('[]'))
+    RETURNING JSON) AS result
+FROM GRAPH_TABLE (drivine
+    MATCH (claim_ IS node WHERE INSTR(JSON_SERIALIZE(claim_.labels), '"Claim"') > 0)
+    COLUMNS (claim_.nid, claim_.props, claim_.doc)) claim_
+WHERE JSON_VALUE(claim_.props, '$.id') = $id
+```
+
+A relationship field is a query of its own, under the field it fills: Oracle does not let a
+`GRAPH_TABLE` name the row it is nested in, so each returns the node it starts from as `src` and is
+joined to that row outside. `COLUMNS` names only what the statement reads of a row, and every column
+of the root once a `whereClause` written by hand is in it. A second row for
+one field is numbered (`people2_`), as when a condition on `people` is tested beside the field itself.
+A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
+which the index over labels answers, and with `INSTR` where the node is found by its id or at the end
+of a relationship.
 
 **Testing.** `OracleTestContainer` starts Oracle Free (`gvenzl/oracle-free:23-faststart`; another with
 `ORACLE_TEST_IMAGE` or `-Dtest.oracle.image`) and gives a user, `drivine`, in the service `FREEPDB1`.
@@ -2758,7 +2804,7 @@ drivine:
 | Full-text indexes | A table of the indexed text beside the nodes, kept in step by a trigger, with an Oracle Text search index over it. Without Oracle Text the index is recorded and nothing is made |
 | Range indexes | `CREATE INDEX … (JSON_VALUE(props, '$.p'))`, the property read as text. Over the property whatever the label, so two labels that index a property of one name share an index. Composite supported |
 | Uniqueness | A unique index over the property for the nodes that carry the label. A node that lacks one of the properties is not constrained |
-| Item names | Recorded; the Oracle object's name is derived from the graph, label and properties |
+| Item names | Recorded; the Oracle object's name is derived from the graph, label and properties, and recorded with it. A drop drops the object the record names |
 
 The store's identity (`DrivineStore`) and the schema marker are nodes of the graph on Oracle too, and the graph's tables are made for them when they are the first thing asked of a new graph.
 

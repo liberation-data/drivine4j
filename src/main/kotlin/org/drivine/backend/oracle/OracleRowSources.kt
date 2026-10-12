@@ -9,38 +9,44 @@ internal class Step(val type: String, val direction: Direction, val labels: List
 
 /**
  * The row sources a statement over an [OracleGraph] reads from: the nodes of some labels, and the
- * nodes reached from any node by a path. Each is a `GRAPH_TABLE` over the graph. A nested
- * `GRAPH_TABLE` cannot name the row it is nested in, so a traversal returns the node it starts from as
- * `src`, and is joined to that row outside.
+ * nodes reached from a node by a path. Each is a `GRAPH_TABLE` over the graph, whose `MATCH` is the
+ * pattern Cypher would write, with `IS node` and `IS edge` where Cypher has a label and a type, since
+ * both are data here. A node is named in the pattern as its row is in the statement.
+ *
+ * A nested `GRAPH_TABLE` cannot name the row it is nested in, so a traversal returns the node it
+ * starts from as `src`, and is joined to that row outside.
  */
 internal class OracleRowSources(private val graph: OracleGraph, private val scope: OracleStatementScope) {
 
     /** The nodes that carry [labels], as rows named [alias]. */
-    fun nodes(labels: List<String>, alias: String): String =
-        graphTable("(v IS node${hasLabels("v", labels, scanned = !scope.narrowed)?.let { " WHERE $it" }.orEmpty()})", OracleSql.columns("v"), alias)
+    fun nodes(labels: List<String>, alias: String): GraphTable =
+        graphTable(OracleSql.node(alias, hasLabels(alias, labels, scanned = !scope.narrowed)), GraphTable.node(alias), alias)
 
-    /** A `GRAPH_TABLE` over the graph that matches [pattern] and gives [columns], as rows named [alias]. */
-    fun graphTable(pattern: String, columns: String, alias: String): String =
-        "GRAPH_TABLE (${graph.name}\n    MATCH $pattern\n    COLUMNS ($columns)) $alias"
+    /** A `GRAPH_TABLE` over the graph that matches [pattern] and can give [columns], as rows named [alias]. */
+    fun graphTable(pattern: String, columns: List<GraphTable.Column>, alias: String): GraphTable =
+        GraphTable(graph.name, pattern, columns, alias)
 
     /**
-     * The nodes reached by [steps], as rows named [alias]: `src` is the node the path starts from.
-     * A single step also gives the relationship, as `eid` and `eprops`. A step with a depth above one
-     * is taken from one to that many times, and a node may then be reached more than once.
+     * The nodes reached by [steps] from the node [from], as rows named [alias]: `src` is the node the
+     * path starts from, which the pattern calls what the statement calls that node's row. A single
+     * step also gives the relationship, as `eid` and `eprops`. A step with a depth above one is taken
+     * from one to that many times, and a node may then be reached more than once.
      */
-    fun reached(steps: List<Step>, alias: String): String {
+    fun reached(from: String, steps: List<Step>, alias: String): GraphTable {
         val single = steps.size == 1 && steps.single().maxDepth == 1
+        // A path of several steps is a line to a step, so each is read as the hop it is.
+        val hop = if (steps.size == 1) " " else "\n        "
         val pattern = buildString {
-            append("(a IS node)")
+            append(OracleSql.node(from))
             steps.forEachIndexed { i, step ->
-                append(" ").append(OracleSql.arrow("e$i", step.type, step.direction))
+                append(hop).append(OracleSql.arrow(if (steps.size == 1) "e" else "e${i + 1}", step.type, step.direction))
                 if (step.maxDepth > 1) append("{1,${step.maxDepth}}")
-                val node = if (i == steps.lastIndex) "b" else "m$i"
-                append(" ($node IS node").append(hasLabels(node, step.labels)?.let { " WHERE $it" }.orEmpty()).append(")")
+                val node = if (i == steps.lastIndex) alias else "m${i + 1}"
+                append(" ").append(OracleSql.node(node, hasLabels(node, step.labels)))
             }
         }
-        val relationship = if (single) "e0.eid AS eid, e0.props AS eprops, " else ""
-        return graphTable(pattern, "a.nid AS src, $relationship${OracleSql.columns("b")}", alias)
+        val relationship = if (single) listOf(GraphTable.Column("eid", "e.eid"), GraphTable.Column("eprops", "e.props")) else emptyList()
+        return graphTable(pattern, listOf(GraphTable.Column("src", "$from.nid")) + relationship + GraphTable.node(alias), alias)
     }
 
     /**
@@ -58,11 +64,14 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
         }
 
     /**
-     * Whether some node reached from [parent] by [steps] meets [predicate], which names the reached
-     * node's row as [row]; a row named here when the caller gave none.
+     * The rows named [row] reached from the row [parent] by [steps], and of those the ones that meet
+     * [predicates]: the query a relationship field, an aggregate or a test of one is, once it says
+     * what it selects of them.
      */
-    fun exists(parent: String, steps: List<Step>, row: String?, predicate: String? = null): String {
-        val alias = row ?: scope.next("t")
-        return "EXISTS (SELECT 1 FROM ${reached(steps, alias)} WHERE $alias.src = $parent.nid${predicate?.let { " AND $it" }.orEmpty()})"
-    }
+    fun related(select: String, parent: String, steps: List<Step>, row: String, predicates: List<String> = emptyList(), tail: List<String> = emptyList()): Query =
+        Query(select, reached(parent, steps, row), listOf("$row.src = $parent.nid") + predicates, tail)
+
+    /** Whether some node reached from the row [parent] by [steps] meets [predicates], which name the reached node's row as [row]. */
+    fun exists(parent: String, steps: List<Step>, row: String, predicates: List<String> = emptyList()): String =
+        "EXISTS ${related("1", parent, steps, row, predicates).nested()}"
 }

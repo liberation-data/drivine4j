@@ -112,15 +112,15 @@ internal class OraclePredicates(
                 "Relationship '${condition.relationshipName}' not found in ${model.className}. Available relationships: ${model.relationships.map { it.fieldName }}"
             )
         val parent = rows.getValue(rootAlias)
-        val row = scope.next("t")
         val target = relationship.fieldName
+        val row = scope.row(target)
         // Conditions on `<target>_<nested>` are on a node the target is related to in turn.
         val (nested, direct) = condition.targetConditions.partition {
             it is WhereCondition.PropertyCondition && it.propertyPath.substringBefore('.').startsWith("${target}_")
         }
         val predicates = directPredicates(direct, target, row) + nestedPredicates(nested, relationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }, target, row)
-        val found = this.rows.exists(parent, this.rows.steps(relationship, emptyList()), row, predicates.joinToString(" AND ").ifEmpty { null })
-        return if (condition.negate) "NOT ($found)" else found
+        val found = this.rows.exists(parent, this.rows.steps(relationship, emptyList()), row, predicates)
+        return if (condition.negate) "NOT $found" else found
     }
 
     /** The conditions on the related node itself, whose row is [row]. */
@@ -145,10 +145,10 @@ internal class OraclePredicates(
             .map { (name, conditions) ->
                 val nestedRelationship = targetModel.relationships.find { it.fieldName == name }
                     ?: throw IllegalArgumentException("Nested relationship '$name' not found in ${targetModel.className}")
-                val nestedRow = scope.next("t")
+                val nestedRow = scope.row(name)
                 val nestedPredicate = all(conditions, mapOf("${target}_$name" to nestedRow), null)
                 // No labels: a condition on a relationship is met by whatever node it leads to.
-                rows.exists(row, rows.steps(nestedRelationship, emptyList()), nestedRow, nestedPredicate)
+                rows.exists(row, rows.steps(nestedRelationship, emptyList()), nestedRow, listOf(nestedPredicate))
             }
     }
 
@@ -280,11 +280,14 @@ internal class OraclePredicates(
             if (declaredKind(key) == null) scope.inferredKinds[key] = SqlKind.ofValue(value.value)
         }
         fun key(index: Int) = ordered(orders[index].propertyPath.substringAfter('.'))
-        return orders.indices.joinToString(" OR ", "(", ")") { branch ->
+        val branches = orders.indices.map { branch ->
             val equal = (0 until branch).map { "${key(it)} = ${cursor[it]}" }
             val beyond = "${key(branch)} ${if (orders[branch].direction == OrderDirection.ASC) ">" else "<"} ${cursor[branch]}"
-            (equal + beyond).joinToString(" AND ", "(", ")")
+            // The first branch is one comparison, which needs no parentheses of its own.
+            (equal + beyond).let { if (it.size == 1) it.single() else it.joinToString(" AND ", "(", ")") }
         }
+        // One order is one comparison, which `AND` joins to the statement's other predicates as it stands.
+        return branches.singleOrNull() ?: branches.joinToString(" OR ", "(", ")")
     }
 
     /** Why a seek may have fewer root orders than the query gave: some sort a relationship collection. */

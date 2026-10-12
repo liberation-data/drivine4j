@@ -287,9 +287,9 @@ class OracleBackendTest {
         val plain = backend.delete(Claim::class.java, null, CascadeType.NONE).statement.squashed()
         val narrowed = backend.delete(Claim::class.java, "n.text = 'x'", CascadeType.NONE).statement.squashed()
 
-        assertContains(plain, "DELETE FROM g_node n_ WHERE INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0 AND (JSON_VALUE(n_.props, '$.id') = \$id); v_count := SQL%ROWCOUNT;")
+        assertContains(plain, "DELETE FROM g_node n_ WHERE INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0 AND JSON_VALUE(n_.props, '$.id') = \$id; v_count := SQL%ROWCOUNT;")
         assertContains(plain, "OPEN v_rows FOR SELECT v_count FROM dual;")
-        assertContains(narrowed, "AND (JSON_VALUE(n_.props, '$.id') = \$id) AND (JSON_VALUE(n_.props, '$.text') = 'x');")
+        assertContains(narrowed, "AND JSON_VALUE(n_.props, '$.id') = \$id AND (JSON_VALUE(n_.props, '$.text') = 'x');")
     }
 
     @Test
@@ -487,7 +487,7 @@ class OracleBackendTest {
         assertContains(sql, "\"Hot\"")
         assertContains(sql, "= \$_fromId")
         // The target's label is tested on the node found, not used to find it.
-        assertContains(sql, "INSTR(JSON_SERIALIZE(v.labels), '\"Human\"') > 0")
+        assertContains(sql, "INSTR(JSON_SERIALIZE(n_.labels), '\"Human\"') > 0")
     }
 
     @Test

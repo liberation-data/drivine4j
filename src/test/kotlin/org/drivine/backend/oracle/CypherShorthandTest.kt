@@ -59,7 +59,7 @@ class CypherShorthandTest {
     fun `a view's root is written by its field name`() {
         assertEquals("JSON_VALUE(claim_.props, '$.id') = 'c1'", CypherShorthand("claim", "claim_").rewrite("claim.id = 'c1'"))
         val select = OracleSelect(OracleGraph("g"), ClaimView::class.java)
-        assertEquals("JSON_VALUE(claim_.props, '$.id') = 'c1' AND people.name = 'x'", select.written("claim.id = 'c1' AND people.name = 'x'"))
+        assertEquals("(JSON_VALUE(claim_.props, '$.id') = 'c1' AND people.name = 'x')", select.written("claim.id = 'c1' AND people.name = 'x'"))
     }
 
     @Test
