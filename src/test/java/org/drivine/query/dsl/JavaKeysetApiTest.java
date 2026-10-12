@@ -9,6 +9,8 @@
  */
 package org.drivine.query.dsl;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
 
@@ -31,6 +33,19 @@ class JavaKeysetApiTest {
                 .limit(21);
 
         assertSame(builder, result);
+    }
+
+    @Test
+    void anOrderPlacesItsNullsFromJava() {
+        TestDsl dsl = new TestDsl();
+
+        OrderSpec last = dsl.activity.descending().nullsLast();
+        OrderSpec first = dsl.activity.ascending().nullsFirst();
+
+        assertEquals(new OrderSpec("session.lastActivityAt", OrderDirection.DESC, NullPlacement.LAST), last);
+        assertEquals(new OrderSpec("session.lastActivityAt", OrderDirection.ASC, NullPlacement.FIRST), first);
+        assertNull(dsl.activity.descending().getNulls());
+        assertEquals(new OrderSpec("session.lastActivityAt", OrderDirection.DESC), dsl.activity.descending());
     }
 
     private static final class TestDsl {

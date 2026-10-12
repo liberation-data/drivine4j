@@ -15,6 +15,7 @@ import org.drivine.query.SaveRequest
 import org.drivine.query.StampWrite
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderDirection.ASC
+import org.drivine.query.dsl.OrderDirection.DESC
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.SeekValueSpec
 import org.drivine.query.grammar.CypherDialect
@@ -114,6 +115,26 @@ class CypherBackendTest {
         assertTrue(whole.bindings.isEmpty())
         // The text is the same for every page.
         assertEquals(paged.statement, backend().loadAll(Claim::class.java, query { skip = 40; limit = 10 }).statement.statement)
+    }
+
+    @Test
+    fun `an order that places its nulls orders by the test for null first, and is refused under a seek`() {
+        fun ordered(order: OrderSpec) = backend().loadAll(Claim::class.java, query { orders += order }).statement.statement
+
+        assertContains(ordered(OrderSpec("n.text", DESC).nullsLast()), "ORDER BY n.text IS NULL, n.text DESC")
+        assertContains(ordered(OrderSpec("n.text", DESC).nullsFirst()), "ORDER BY n.text IS NOT NULL, n.text DESC")
+        assertContains(ordered(OrderSpec("n.text", ASC).nullsLast()), "ORDER BY n.text IS NULL, n.text ASC")
+        // Unset, the order is as it ever was.
+        assertContains(ordered(OrderSpec("n.text", DESC)), "ORDER BY n.text DESC")
+
+        val underSeek = query {
+            orders += OrderSpec("n.text", ASC).nullsLast()
+            seekValues += SeekValueSpec("n.text", "m")
+        }
+        assertEquals(
+            "nullsLast() on n.text: nulls cannot be placed under seek: a cursor does not say which side of the nulls it is on",
+            assertFailsWith<IllegalArgumentException> { backend().loadAll(Claim::class.java, underSeek) }.message,
+        )
     }
 
     @Test

@@ -90,6 +90,7 @@ internal class OracleBackend(
             alias in relationships || '_' in alias
         }
         return sorts.map {
+            it.requireNoNullPlacement("in the order of a relationship collection")
             CollectionSortSpec(it.propertyPath.substringBefore('.'), it.propertyPath.substringAfter('.'), it.direction == OrderDirection.ASC)
         } to roots
     }

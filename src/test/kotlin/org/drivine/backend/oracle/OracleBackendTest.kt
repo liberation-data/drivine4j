@@ -137,6 +137,26 @@ class OracleBackendTest {
     }
 
     @Test
+    fun `an order that places its nulls says so in SQL, and is refused under a seek`() {
+        fun ordered(order: OrderSpec) = backend().loadAll(Claim::class.java, query { orders += order }).statement.statement.substringAfterLast("ORDER BY ")
+
+        assertTrue(ordered(OrderSpec("n.text", DESC).nullsLast()).startsWith("JSON_VALUE(n_.props, '$.text') DESC NULLS LAST"))
+        assertTrue(ordered(OrderSpec("n.text", ASC).nullsFirst()).startsWith("JSON_VALUE(n_.props, '$.text') ASC NULLS FIRST"))
+        assertFalse("NULLS" in ordered(OrderSpec("n.text", DESC)))
+        // A property no field declares is two terms, as a number and as text, and each places its nulls.
+        assertEquals(2, Regex("DESC NULLS LAST").findAll(ordered(OrderSpec("n.undeclared", DESC).nullsLast())).count())
+
+        val underSeek = query {
+            orders += OrderSpec("n.text", DESC).nullsFirst()
+            seekValues += SeekValueSpec("n.text", "m")
+        }
+        assertEquals(
+            "nullsFirst() on n.text: nulls cannot be placed under seek: a cursor does not say which side of the nulls it is on",
+            assertFailsWith<IllegalArgumentException> { backend().loadAll(Claim::class.java, underSeek) }.message,
+        )
+    }
+
+    @Test
     fun `a load that seeks is a keyset load, and one that pages by skip is not`() {
         val backend = backend()
         val seeking = backend.loadAll(Claim::class.java, query {

@@ -907,6 +907,29 @@ val results = graphObjectManager.loadAll<PersonCareer> {
 }
 ```
 
+**Where the nulls go.** Left to itself the database decides where the rows with no value for the
+ordered property go, and Cypher ranks null above every value, so a descending order starts with
+them. `nullsLast()` and `nullsFirst()` say otherwise, whichever way the values run:
+
+```kotlin
+val best = graphObjectManager.loadAll<PropositionView> {
+    orderBy { proposition.effectiveConfidence.desc().nullsLast() }
+    limit(20)
+}
+```
+
+That is the 20 most confident, with the unranked rows only for what the limit leaves, in one
+statement. Reading the ranked rows and then the unranked ones is not the same thing: under read
+committed each read sees its own committed state, and a row that gains a value between the two is
+in neither.
+
+On a Cypher backend the order is `ORDER BY p.x IS NULL, p.x DESC` (false sorts before true); on
+Oracle, `DESC NULLS LAST`. The extra term is one more thing to sort by, and may cost Neo4j the
+index that would otherwise supply the order, so leave the placement off a property that is never
+null. It is for the order of the roots:
+an order of a relationship collection that places its nulls is refused, and so is one under `seek`,
+whose cursor does not say which side of the nulls it is on.
+
 #### Limit & Pagination
 
 `limit(n)` and `skip(n)` push a row bound into the generated Cypher (bound as `$_limit` / `$_skip`,
@@ -953,7 +976,7 @@ first `pageSize` results, and treat the presence of the extra row as `hasMore`.
 **The ordered properties must be non-null in the data.** A row whose sort key is null satisfies no
 comparison, so it is dropped from every page after the first — and engines disagree about where
 nulls sort, so the shape of that loss is not even portable. Use non-null properties as keys, or
-filter nulls out in `where`.
+filter nulls out in `where`. An order that places its nulls (`nullsLast()`) is refused with `seek`.
 
 **Index the cursor.** Keyset pagination is only cheap if the engine can seek into an index and stop;
 otherwise it scans the whole continuation and takes the top *n*, which is no better than `skip`. The
@@ -3057,6 +3080,9 @@ List<RaisedAndAssignedIssue> results = JavaQueryBuilderKt
     .loadAll();
 ```
 
+`.nullsLast()` or `.nullsFirst()` after `ascending()` / `descending()` says where the rows with no
+value go, as [in Kotlin](#ordering): `.orderBy(dsl -> dsl.getIssue().getClosedAt().descending().nullsLast())`.
+
 ### Load First
 
 Get only the first matching result:
@@ -3131,7 +3157,7 @@ from Kotlin 2.3 two members sharing a name are ambiguous there, so each language
 | Type filter | `.instanceOf(SubtypeClass.class)` |
 | AND | Chain multiple `.where()` |
 | OR | `.whereAny(dsl -> Arrays.asList(...))` |
-| Order | `.orderBy(dsl -> dsl.getProp().ascending())`, `.descending()` |
+| Order | `.orderBy(dsl -> dsl.getProp().ascending())`, `.descending()`; then `.nullsLast()` / `.nullsFirst()` |
 | Keyset cursor | `.seek(dsl -> List.of(dsl.getProp().cursorAfter(v)))` |
 
 ## Java Interoperability

@@ -306,6 +306,9 @@ object CypherGenerator {
      * the property (see [renderProjectedPath]). [OrderClauseResult.rootOrders] keeps the stored
      * names, which is what a keyset predicate on the node needs.
      *
+     * A root order that places its nulls is two terms: the test for null, then the value. An order
+     * of a relationship collection that places them is refused.
+     *
      * @param viewModel The view being loaded, or null when the load is of a fragment
      */
     fun processOrders(
@@ -324,6 +327,7 @@ object CypherGenerator {
             val isCollectionSort = alias in relationshipNames || alias.contains("_")
 
             if (isCollectionSort) {
+                order.requireNoNullPlacement("in the order of a relationship collection")
                 collectionSorts.add(
                     CollectionSortSpec(
                         relationshipPath = alias,
@@ -337,7 +341,17 @@ object CypherGenerator {
         }
 
         val orderByClause = if (rootOrders.isNotEmpty()) {
-            rootOrders.joinToString(", ") { "${rootPath(it.propertyPath, viewModel, projected = true)} ${it.direction.name}" }
+            rootOrders.joinToString(", ") { order ->
+                val path = rootPath(order.propertyPath, viewModel, projected = true)
+                // Cypher has no NULLS FIRST / LAST. Ordering by the test for null before the value
+                // does the same: false sorts before true, so `IS NULL` leaves the null rows last.
+                val nulls = when (order.nulls) {
+                    NullPlacement.FIRST -> "$path IS NOT NULL, "
+                    NullPlacement.LAST -> "$path IS NULL, "
+                    null -> ""
+                }
+                "$nulls$path ${order.direction.name}"
+            }
         } else {
             null
         }
