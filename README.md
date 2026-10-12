@@ -2416,7 +2416,8 @@ WHERE JSON_VALUE(claim_.props, '$.id') = $id
 
 A relationship field is a query of its own, under the field it fills: Oracle does not let a
 `GRAPH_TABLE` name the row it is nested in, so each returns the node it starts from as `src` and is
-joined to that row outside. `COLUMNS` names only what the statement reads of a row. A second row for
+joined to that row outside. `COLUMNS` names only what the statement reads of a row, and every column
+of the root once a `whereClause` written by hand is in it. A second row for
 one field is numbered (`people2_`), as when a condition on `people` is tested beside the field itself.
 A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
 which the index over labels answers, and with `INSTR` where the node is found by its id or at the end

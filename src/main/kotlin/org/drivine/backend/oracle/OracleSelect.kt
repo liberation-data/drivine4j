@@ -104,8 +104,12 @@ internal class OracleSelect(
     fun count(predicates: List<String>): GraphStatement =
         GraphStatement(Query("COUNT(*)", roots(), predicates + requiredRelationships()).text(), bindings())
 
-    /** The nodes the statement's roots are among: those with the root's labels. */
-    private fun roots(): GraphTable = rows.nodes(rootLabels(), root)
+    /**
+     * The nodes the statement's roots are among: those with the root's labels. They give the columns
+     * the statement reads, and every column once a predicate written by hand is in it: what that
+     * reads cannot be told from its text.
+     */
+    private fun roots(): RowSource = rows.nodes(rootLabels(), root).let { if (handWritten) it.entire() else it }
 
     /** What a load returns for a root: a fragment's map, or a view's object. */
     private fun projection(): String = if (viewModel != null) view(root, viewModel, mapOf(viewModel.className to 1), null) else document(root)
@@ -123,10 +127,16 @@ internal class OracleSelect(
 
     /**
      * A predicate the caller wrote, with each property of the root written as Cypher writes it read as
-     * that property: see [CypherShorthand]. In parentheses, since it may hold an `OR`, and is joined to
+     * that property: see [CypherShorthand]. From then on the root gives every column. In parentheses, since it may hold an `OR`, and is joined to
      * the statement's own predicates by `AND`; those are written so that they need none.
      */
-    fun written(predicate: String): String = "(${shorthand.rewrite(predicate)})"
+    fun written(predicate: String): String {
+        handWritten = true
+        return "(${shorthand.rewrite(predicate)})"
+    }
+
+    /** Whether the statement holds a predicate written by hand, which may read any column of the root, named any way SQL allows. */
+    private var handWritten = false
 
     /** The root whose id is bound as [parameter]. */
     fun hasId(parameter: String): String {

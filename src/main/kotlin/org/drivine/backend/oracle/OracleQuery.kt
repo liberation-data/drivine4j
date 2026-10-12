@@ -43,6 +43,16 @@ internal class GraphTable(
     /** The source with every column it can give, for a query whose reader is not known here. */
     fun whole(): String = written(columns)
 
+    /**
+     * This source as one that gives every column whatever is read of it: for a query that holds text
+     * written by hand, which may name a column in any way SQL allows, `N_.STAMP` or `n_ . stamp`, and
+     * not only as the statement's own text does.
+     */
+    fun entire(): RowSource = object : RowSource {
+        override val alias: String get() = this@GraphTable.alias
+        override fun reading(readers: List<String>): String = whole()
+    }
+
     private fun written(columns: List<Column>): String =
         "GRAPH_TABLE ($graph\n    MATCH $pattern\n    COLUMNS (${columns.joinToString(", ") { it.text }})) $alias"
 

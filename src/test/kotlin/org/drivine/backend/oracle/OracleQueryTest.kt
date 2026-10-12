@@ -60,6 +60,15 @@ class OracleQueryTest {
     }
 
     @Test
+    fun `an entire source gives every column, whatever is read of it, under the same name`() {
+        val entire = people().entire()
+
+        assertEquals("people_", entire.alias)
+        assertEquals(people().whole(), entire.reading(listOf("people_.doc")))
+        assertEquals(people().whole(), entire.reading(emptyList()))
+    }
+
+    @Test
     fun `a graph table is three lines, its pattern and its columns under the graph it reads`() {
         assertEquals(
             "GRAPH_TABLE (g\n    MATCH (claim_ IS node) -[e IS edge]-> (people_ IS node)\n    COLUMNS (people_.doc)) people_",

@@ -59,6 +59,14 @@ class OracleReadSmokeTest {
     }
 
     @Test
+    fun `a raw predicate may name a column of the root's row as SQL allows, in upper case or spaced`() {
+        assertEquals(setOf("c1", "c2"), manager.loadAll(Claim::class.java, "N_.NID IS NOT NULL AND N_.LABELS IS NOT NULL").map { it.id }.toSet())
+        assertEquals(listOf("c2"), manager.loadAll(Claim::class.java, "JSON_VALUE(n_ . props, '$.note') = 'unverified'").map { it.id })
+        assertEquals(2, manager.count(Claim::class.java, "N_.PROPS IS NOT NULL"))
+        assertEquals(1, manager.count(ClaimView::class.java, "JSON_VALUE(CLAIM_.PROPS, '$.id') = 'c1'"))
+    }
+
+    @Test
     fun `a view holds its root and each relationship field, told apart by the label of the target`() {
         val view = manager.load("c1", ClaimView::class.java)!!
 

@@ -84,9 +84,20 @@ class OracleSelectTest {
     }
 
     @Test
+    fun `a predicate written by hand may name a column any way SQL allows, so the root then gives every column`() {
+        val every = "COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_"
+        listOf("N_.STAMP IS NULL OR N_.STAMP = 'x'", "n_ . stamp IS NULL", "\"N_\".\"STAMP\" IS NULL", "n.text = 'x'").forEach { predicate ->
+            val load = select(Claim::class.java)
+            assertTrue(load.load(listOf(load.written(predicate))).statement.contains(every), predicate)
+            val count = select(Claim::class.java)
+            assertTrue(count.count(listOf(count.written(predicate))).statement.contains(every), predicate)
+        }
+    }
+
+    @Test
     fun `the root gives only the columns the statement reads of it`() {
-        val byStamp = select(Claim::class.java)
-        assertTrue(byStamp.load(listOf(byStamp.written("n.stamp IS NULL AND n.labels IS NOT NULL"))).statement.contains("COLUMNS (n_.labels, n_.stamp, n_.doc)) n_"))
+        val byId = select(Claim::class.java)
+        assertTrue(byId.load(listOf(byId.hasId("id"))).statement.contains("COLUMNS (n_.props, n_.doc)) n_"))
 
         // A view reads the root's id to find what is related to it, and a count of every root reads nothing but that there is one.
         assertTrue(select(ClaimView::class.java).load(emptyList()).statement.endsWith("COLUMNS (claim_.nid, claim_.doc)) claim_"))
