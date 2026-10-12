@@ -57,6 +57,8 @@ private fun seed(pm: PersistenceManager, awaitIndexes: Boolean) {
             CREATE (:Article {id: 'A', title: 'Graphs', body: 'graph databases store graph data'})
             CREATE (:Article {id: 'B', title: 'Cooking', body: 'recipes for soup and bread'})
             CREATE (:Article {id: 'C', title: 'Intro', body: 'a short note about a graph'})
+            CREATE (:Article {id: 'D', title: 'Joined', body: 'the token foobar'})
+            CREATE (:Article {id: 'E', title: 'Apart', body: 'the tokens foo bar'})
             CREATE (:Entity {id: 'e1', name: 'Ada Lovelace', description: 'mathematician'})
             CREATE (:Entity {id: 'e2', name: 'Charles Babbage', description: 'worked with Ada'})
             CREATE (:Entity {id: 'e3', name: 'Zed', description: 'unrelated person'})
@@ -119,8 +121,12 @@ private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, awa
  * What a backslash does in a query: it makes the character after it text. Oracle reads the query
  * itself, where Neo4j hands it to Lucene, so the two are held to the same answers here. FalkorDB and
  * Memgraph each read a query in their own way, and are not.
+ *
+ * The one answer that differs is a backslash before a letter, which is not punctuation. Lucene drops
+ * the backslash and Oracle reads it as a gap between two words, so each engine is given the article
+ * it finds, in [backslashBeforeLetter].
  */
-private fun verifyEscapes(gom: StatelessGraphObjectManager, pm: PersistenceManager, awaitIndexes: Boolean) {
+private fun verifyEscapes(gom: StatelessGraphObjectManager, pm: PersistenceManager, awaitIndexes: Boolean, backslashBeforeLetter: Set<String>) {
     ensureIndexes(pm)
     seed(pm, awaitIndexes)
     fun articles(query: String) = gom.loadMatching<ArticleNode>(query, topK = 10).map { it.value.id }.toSet()
@@ -135,6 +141,9 @@ private fun verifyEscapes(gom: StatelessGraphObjectManager, pm: PersistenceManag
 
     // An escaped colon does not make "soup" a field: both words are asked for together, and no article holds them so.
     assertEquals(emptySet(), articles("""soup\:graph"""))
+
+    // Article D holds "foobar" and article E holds "foo bar".
+    assertEquals(backslashBeforeLetter, articles("""foo\bar"""))
 }
 
 private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
@@ -173,7 +182,7 @@ class StatelessFullTextSearchNeo4jTest {
 
     @Test fun `full-text search ranks, projects, and dispatches on Neo4j`() = verify(buildGom(pm, registry), pm, awaitIndexes = true)
 
-    @Test fun `a backslash makes a star, a sign and a colon text on Neo4j`() = verifyEscapes(buildGom(pm, registry), pm, awaitIndexes = true)
+    @Test fun `a backslash makes a star, a sign and a colon text on Neo4j`() = verifyEscapes(buildGom(pm, registry), pm, awaitIndexes = true, backslashBeforeLetter = setOf("D"))
 }
 
 @Testcontainers
@@ -245,5 +254,5 @@ class StatelessFullTextSearchOracleTest {
 
     @Test fun `full-text search ranks, projects, and dispatches on Oracle`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
 
-    @Test fun `a backslash makes a star, a sign and a colon text on Oracle`() = verifyEscapes(buildGom(pm, registry), fixtures, awaitIndexes = false)
+    @Test fun `a backslash makes a star, a sign and a colon text on Oracle`() = verifyEscapes(buildGom(pm, registry), fixtures, awaitIndexes = false, backslashBeforeLetter = setOf("E"))
 }

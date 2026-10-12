@@ -184,6 +184,12 @@ class TextQueryTest {
     }
 
     @Test
+    fun `a backslashed quote does not close a phrase when a quote without a backslash stands later`() {
+        // The phrase runs to the quote before "D". What is left is a field and a quote of text, which hold no word.
+        assertEquals("({c and})", TextQuery.parse(""""C:\" and "D:\"""").oracleText)
+    }
+
+    @Test
     fun `a backslash before a line break keeps a phrase one phrase`() {
         assertEquals("({foo bar})", TextQuery.parse("\"foo\\\nbar\"").oracleText)
     }
