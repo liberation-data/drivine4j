@@ -8,6 +8,7 @@ package org.drivine.query
  */
 internal class FoundStamp(val index: Int, val found: String, val stamp: String) {
     companion object {
+        /** Reads one entry, `index/found=stamp`. */
         fun of(entry: String): FoundStamp {
             // A stamp holds neither separator, and what follows the first `=` is the stamp whole.
             val (key, stamp) = entry.split('=', limit = 2)
@@ -22,6 +23,7 @@ internal class FoundStamp(val index: Int, val found: String, val stamp: String) 
  */
 internal class ReturnedStamps(val root: String, val related: Map<Int, FoundStamp>) {
     companion object {
+        /** Reads a row: the root's stamp, then an entry for each related node, joined by commas. */
         fun of(row: String): ReturnedStamps {
             val returned = row.split(',')
             return ReturnedStamps(returned.first(), returned.drop(1).map(FoundStamp::of).associateBy { it.index })

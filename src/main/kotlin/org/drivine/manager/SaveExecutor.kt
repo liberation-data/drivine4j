@@ -93,46 +93,50 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
 
     /** The stamps in the [rows] a save statement returned: the root's, each stamped target's, each repeat's. */
     fun stamps(statement: SaveStatement, rows: List<Any?>): List<String> {
-        val row = rows.firstOrNull() as? String
-        if (row != null) {
-            val returned = ReturnedStamps.of(row)
-            val rootStamp = returned.root
-            // A node the object holds more than once is written by more than one part, and a later
-            // part finds what an earlier one wrote. What the node carried before the statement is
-            // what the first of them found.
-            val rootKey = statement.rootKey
-            val first = mutableListOf<Triple<NodeKey, String, String>>()
-            fun handedBack(key: NodeKey?, carried: String?, found: String?, stamp: String?): String? {
-                if (key == null) return Stamps.handedBack(carried, found ?: return null, stamp ?: return null)
-                if (key.sameNodeAs(rootKey)) {
-                    // The root's own part found it first, and its stamp is handed back as that part
-                    // found it. A fragment that carried another stamp than the root keeps its own:
-                    // nothing here says what the node carried before the statement.
-                    return if (carried == statement.root.carried) rootStamp else carried ?: Stamps.withoutLinks(rootStamp)
-                }
-                val seen = first.firstOrNull { it.first.sameNodeAs(key) }
-                    ?: Triple(key, found ?: return null, stamp ?: return null).also { first.add(it) }
-                return Stamps.handedBack(carried, seen.second, stamp ?: seen.third)
+        val row = rows.firstOrNull() as? String ?: throw noRow(statement)
+        val returned = ReturnedStamps.of(row)
+        val rootStamp = returned.root
+        // A node the object holds more than once is written by more than one part, and a later
+        // part finds what an earlier one wrote. What the node carried before the statement is
+        // what the first of them found.
+        val rootKey = statement.rootKey
+        val first = mutableListOf<Triple<NodeKey, String, String>>()
+        fun handedBack(key: NodeKey?, carried: String?, found: String?, stamp: String?): String? {
+            if (key == null) return Stamps.handedBack(carried, found ?: return null, stamp ?: return null)
+            if (key.sameNodeAs(rootKey)) {
+                // The root's own part found it first, and its stamp is handed back as that part
+                // found it. A fragment that carried another stamp than the root keeps its own:
+                // nothing here says what the node carried before the statement.
+                return if (carried == statement.root.carried) rootStamp else carried ?: Stamps.withoutLinks(rootStamp)
             }
-            val targets = statement.stamped.indices.map { index ->
-                val target = returned.related.getValue(index)
-                // A node that changed since its object was loaded keeps the object's token: the stamp
-                // handed back does not vouch for data or relationships the object never held.
-                checkNotNull(handedBack(statement.keys[index], statement.carried[index], target.found, target.stamp))
-            }
-            // A repeat was not written: it is handed what the one written for its node is, if it carried the same.
-            val repeats = statement.repeats.map { repeat ->
-                handedBack(repeat.key, repeat.carried, null, null) ?: repeat.carried ?: ""
-            }
-            return listOf(rootStamp) + targets + repeats
+            val seen = first.firstOrNull { it.first.sameNodeAs(key) }
+                ?: Triple(key, found ?: return null, stamp ?: return null).also { first.add(it) }
+            return Stamps.handedBack(carried, seen.second, stamp ?: seen.third)
         }
-        throw statement.root.expected?.let { staleObject(statement.root, it) }
+        val targets = statement.stamped.indices.map { index ->
+            val target = returned.related.getValue(index)
+            // A node that changed since its object was loaded keeps the object's token: the stamp
+            // handed back does not vouch for data or relationships the object never held.
+            checkNotNull(handedBack(statement.keys[index], statement.carried[index], target.found, target.stamp))
+        }
+        // A repeat was not written: it is handed what the one written for its node is, if it carried the same.
+        val repeats = statement.repeats.map { repeat ->
+            handedBack(repeat.key, repeat.carried, null, null) ?: repeat.carried ?: ""
+        }
+        return listOf(rootStamp) + targets + repeats
+    }
+
+    /**
+     * Why a save returned no row: a checked root is stale, or a root the statement does not make is
+     * gone. From any other save it is the store answering nothing, which no save statement does.
+     */
+    private fun noRow(statement: SaveStatement): Throwable =
+        statement.root.expected?.let { staleObject(statement.root, it) }
             ?: if (statement.createsRoot) {
                 IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
             } else {
                 RootGone(statement.root)
             }
-    }
 
     /**
      * Runs a save, or any one statement that writes, again if the engine turned it away because another writer was changing the same
@@ -166,12 +170,18 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
         throw checkNotNull(first)
     }
 
+    /** Whether the backend says a cause of this failure is contention: see [GraphBackend.contended]. */
     private fun DrivineException.isRetryable(): Boolean =
         generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
 
     private companion object {
+        /** How many times a statement the engine turns away is run before its first failure is thrown. */
         const val CONTENDED_ATTEMPTS = 6
+
+        /** The pause after the first attempt that is turned away; each later one is as much longer. */
         const val CONTENDED_PAUSE_MILLIS = 15L
+
+        /** How far down a failure's causes the engine's own error is looked for. */
         const val MAX_CAUSE_DEPTH = 10
     }
 

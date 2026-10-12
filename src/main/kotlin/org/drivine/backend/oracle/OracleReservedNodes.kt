@@ -10,10 +10,13 @@ import org.drivine.schema.VersionMarkerStatements
  * [ITEMS_MARK], because Oracle keeps an empty string as null and an empty inventory is not no inventory.
  */
 internal class OracleVersionMarker(private val graph: OracleGraph, label: String, scopeProperty: String) : VersionMarkerStatements {
+    /** The predicate that finds the marker of the scope bound as `$scope`. */
     private val marker = "${OracleSql.hasLabel("n", label)} AND ${OracleSql.property("n", scopeProperty)} = \$scope"
 
     /** The marker is a node of the graph, so the graph is made first where it is not yet. */
     override val prepare: String = graph.ensuring
+
+    /** The order that puts the marker applied last first, and one never applied after every other. */
     private val newestFirst = "${OracleSql.property("n", "appliedAt", SqlKind.NUMBER)} DESC NULLS LAST"
 
     override fun read(property: String): String =
@@ -50,6 +53,7 @@ internal class OracleVersionMarker(private val graph: OracleGraph, label: String
 
 /** The store's stamp on Oracle: a node of the graph, as on the graph engines. */
 internal class OracleStoreStamp(private val graph: OracleGraph, label: String, key: String) : StoreStampStatements {
+    /** The predicate that finds every stamp of the store. */
     private val stored = OracleSql.hasLabel("n", label)
 
     /** The stamp is a node of the graph, so the graph is made first where it is not yet. */

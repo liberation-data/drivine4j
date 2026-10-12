@@ -22,6 +22,7 @@ import sample.nodelabels.ThingNode
 import sample.stateless.Citation
 import sample.stateless.Claim
 import sample.stateless.ClaimCitations
+import sample.stateless.ClaimDossier
 import sample.stateless.ClaimPair
 import sample.stateless.ClaimRemarks
 import sample.stateless.ClaimSupports
@@ -34,6 +35,7 @@ import sample.stateless.Tagged
 import java.time.Instant
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -54,6 +56,24 @@ data class ClaimGauges(
 @NodeFragment(labels = ["Beacon"])
 data class Beacon(@NodeId val id: String, val seenAt: Instant, val tags: List<String>)
 
+/** A node whose id may be missing, which no save can find a node by. */
+@NodeFragment(labels = ["Loose"])
+data class Loose(@NodeId val id: String?, val name: String)
+
+/** A node of a class that another extends with a label of its own. */
+@NodeFragment(labels = ["Vessel"])
+open class Vessel(@NodeId val id: String, val name: String)
+
+@NodeFragment(labels = ["Vessel", "Tanker"])
+class Tanker(id: String, name: String, val tonnes: Int) : Vessel(id, name)
+
+@GraphView
+data class ClaimVessels(
+    @Root val claim: Claim,
+    @GraphRelationship(type = "NAMES", direction = Direction.OUTGOING)
+    val vessels: List<Vessel> = emptyList(),
+)
+
 /** The steps a save on Oracle plans: what `SaveStatementBuilder` decides for the graph engines, written for the write block. */
 class OracleSavePlanTest {
 
@@ -70,7 +90,8 @@ class OracleSavePlanTest {
         before: JsonNode? = null,
         after: JsonNode? = null,
         createsRoot: Boolean = true,
-    ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields = null, replaced = { replaced }, before, after, createsRoot))
+        rootWriteFields: Set<String>? = null,
+    ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields, replaced = { replaced }, before, after, createsRoot))
 
     @Suppress("UNCHECKED_CAST")
     private fun steps(statement: SaveStatement): List<Map<String, Any?>> = statement.bindings[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
@@ -407,6 +428,103 @@ class OracleSavePlanTest {
         val related = steps.ofKind("node").last()
         assertFalse("unset" in related, related.toString())
         assertFalse("bags" in related, related.toString())
+    }
+
+    @Test
+    fun `a save told which root fields to write touches no other, a bag and a label field among them`() {
+        val claim = steps(build(Claim("c1", "one", note = null), nullPolicy = NullPolicy.CLEAR, rootWriteFields = setOf("note"))).single()
+        assertEquals(listOf("note"), claim["unset"])
+        assertFalse("set" in claim, "the text is not among the fields to write: $claim")
+
+        val tagged = steps(build(Tagged("t1", "x", meta = mapOf("k" to "v")), checked = false, nullPolicy = NullPolicy.CLEAR, rootWriteFields = setOf("text"))).single()
+        assertEquals(mapOf("text" to "x"), tagged["set"])
+        assertFalse("bags" in tagged, "a bag that is not written is not cleared either: $tagged")
+
+        val thing = steps(build(ThingNode("t1", "thing", labels = setOf("Extra")), nullPolicy = NullPolicy.CLEAR, rootWriteFields = setOf("name"))).single()
+        assertEquals(setOf("add", "drop", "owned", "bags").intersect(thing.keys), emptySet<String>(), thing.toString())
+    }
+
+    @Test
+    fun `a null in a bag is left alone under IGNORE and unset under CLEAR, by the key it is stored under`() {
+        val ignoring = stepsOf(Tagged("t1", "x", meta = mapOf("k" to null, "j" to 1)), nullPolicy = NullPolicy.IGNORE, checked = false).single()
+        val clearing = stepsOf(Tagged("t1", "x", meta = mapOf("k" to null, "j" to 1)), nullPolicy = NullPolicy.CLEAR, checked = false).single()
+
+        assertEquals(mapOf("text" to "x", "meta.j" to 1), ignoring["set"])
+        assertFalse("unset" in ignoring, ignoring.toString())
+        assertEquals(listOf("meta.k"), clearing["unset"])
+        @Suppress("UNCHECKED_CAST")
+        val keep = (clearing["bags"] as List<Map<String, Any?>>).single()["keep"]
+        assertEquals(listOf("meta.k", "meta.j"), keep, "a key the object holds as null is the object's still, and unset by name")
+    }
+
+    @Test
+    fun `a change to a loaded root unsets the keys its bag has dropped by name, and leaves the store unread`() {
+        val loaded = Tagged("t1", "x", meta = mapOf("a" to 1, "b" to 2), stamp = stamp)
+        val changed = loaded.copy(meta = mapOf("a" to 1))
+        val root = steps(build(changed, nullPolicy = NullPolicy.CLEAR, before = digests.of(loaded), after = digests.of(changed))).single()
+
+        assertEquals(listOf("meta.b"), root["unset"])
+        assertFalse("bags" in root, "the digest says what was dropped: $root")
+    }
+
+    @Test
+    fun `a flat bag is cleared as what is no other field's, which the step names`() {
+        val root = stepsOf(ThingNode("t1", "thing", properties = mapOf("colour" to "red")), nullPolicy = NullPolicy.CLEAR).single()
+
+        @Suppress("UNCHECKED_CAST")
+        val bag = (root["bags"] as List<Map<String, Any?>>).single()
+        val model = FragmentModel.from(ThingNode::class.java).propertyBags.single()
+        assertEquals(true, bag["flat"])
+        assertEquals(listOf("colour"), bag["keep"])
+        assertEquals(model.reservedKeys.toList(), bag["reservedKeys"])
+        assertTrue((bag["reservedKeys"] as List<*>).containsAll(listOf("id", "name")), bag.toString())
+        assertEquals("red", (root["set"] as Map<*, *>)["colour"])
+    }
+
+    @Test
+    fun `what cannot be stored is refused before a step is planned for it`() {
+        fun refused(obj: Any, nullPolicy: NullPolicy = NullPolicy.IGNORE) =
+            assertFailsWith<IllegalArgumentException> { stepsOf(obj, nullPolicy = nullPolicy, checked = false) }.message!!
+
+        assertContains(refused(Tagged("t1", "x", meta = mapOf("k" to mapOf("nested" to 1)))), "'meta.k' is not a storable node property")
+        assertContains(refused(Tagged("t1", "x", meta = mapOf("k" to listOf(listOf(1))))), "'meta.k' is not a storable node property")
+        assertContains(refused(ThingNode("t1", "thing", labels = setOf("Extra", " "))), "holds a blank label")
+        assertContains(refused(ThingNode("t1", "thing", properties = mapOf("name" to "other"))), "has an entry 'name'")
+        assertContains(refused(Loose(null, "nameless")), "null id")
+        // A list of scalars and a temporal are properties as they are.
+        val stored = stepsOf(Tagged("t1", "x", meta = mapOf("tags" to listOf("a", "b"), "at" to Instant.parse("2026-10-12T09:30:00Z"))), checked = false).single()
+        assertEquals(setOf("text", "meta.tags", "meta.at"), (stored["set"] as Map<*, *>).keys)
+    }
+
+    // Views in views, and subtypes
+
+    @Test
+    fun `a view held in a field is saved root first, then its own fields, and joined to the outer root last`() {
+        val nested = ClaimView(Claim("k1", "covered", stamp = stamp), people = listOf(Human("ada", "Ada")))
+        val statement = build(ClaimDossier(Claim("c1", "one", stamp = stamp), covered = listOf(nested)))
+        val steps = steps(statement)
+
+        assertEquals(listOf("node", "node", "node", "link", "link"), steps.map { it["op"] })
+        val (root, inner, ada, mentions, covers) = steps
+        assertEquals(true, root["root"])
+        assertEquals("k1", inner["k"])
+        assertFalse("root" in inner || "expect" in inner, "the root of a nested view is saved as any related node is: $inner")
+        assertEquals("0", inner["i"], "and its stamp is handed back under its index")
+        assertEquals(listOf(stamp), statement.carried)
+        assertFalse("i" in ada, "a fragment that declares no stamp is handed none: $ada")
+        assertEquals(mapOf("op" to "link", "from" to 1, "to" to 2, "type" to "MENTIONS", "dir" to "OUT"), mentions)
+        assertEquals(mapOf("op" to "link", "from" to 0, "to" to 1, "type" to "COVERS", "dir" to "OUT"), covers)
+    }
+
+    @Test
+    fun `a related node is saved as the class it is, with the labels and the fields of a subtype, and found by a shape of its own`() {
+        val steps = stepsOf(ClaimVessels(Claim("c1", "one"), vessels = listOf(Vessel("v1", "Skiff"), Tanker("v2", "Big", tonnes = 9))))
+
+        val (skiff, tanker) = steps.ofKind("node").drop(1)
+        assertEquals(listOf("Vessel"), skiff["labels"])
+        assertEquals(listOf("Tanker", "Vessel"), tanker["labels"])
+        assertEquals(mapOf("name" to "Big", "tonnes" to 9), tanker["set"])
+        assertTrue(skiff["s"] != tanker["s"], "a tanker is looked for under both its labels")
     }
 
     // A batch of fragments

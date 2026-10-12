@@ -80,6 +80,7 @@ internal class CypherBackend(
             )?.map { it.toString() }.orEmpty()
     }
 
+    /** Builds a whole save as one statement. */
     private val saves = SaveStatementBuilder(objectMapper, grammar, storedKeys)
 
     /** The batches of a `saveAll`. Nothing is tracked: a batch writes every field of what it is given. */
@@ -87,6 +88,7 @@ internal class CypherBackend(
         objectMapper, SessionManager.untracked(objectMapper), BatchSaveOperations.UNWIND_CHUNK_SIZE, grammar, storedKeys, Stamping(checked = false),
     )
 
+    /** The builder of the statements that read and delete [graphClass]: a fragment's or a view's. */
     private fun builder(graphClass: Class<*>) = GraphObjectQueryBuilder.forClass(graphClass, grammar)
 
     // ----- Reading -----

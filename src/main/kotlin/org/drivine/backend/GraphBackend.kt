@@ -71,15 +71,22 @@ internal interface GraphBackend {
 
     // ----- Reading -----
 
+    /** The load of every [graphClass] object, or of those that meet [where]. */
     fun loadAll(graphClass: Class<*>, where: String? = null): GraphStatement
 
+    /**
+     * The load of the [graphClass] objects [query] selects, in its order and its page. A seek and a
+     * skip are refused together: a cursor says where the page begins.
+     */
     fun loadAll(graphClass: Class<*>, query: GraphQuerySpec<*>): LoadPlan
 
     /** The load of the object whose id is bound as [ID_PARAM]. */
     fun load(graphClass: Class<*>): GraphStatement
 
+    /** The count of every [graphClass] object, or of those that meet [where]. */
     fun count(graphClass: Class<*>, where: String? = null): GraphStatement
 
+    /** The count of the [graphClass] objects that meet the conditions of [query]. A seek is refused: a count walks no order. */
     fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement
 
     /**
@@ -106,8 +113,13 @@ internal interface GraphBackend {
     /** The delete of the object whose id is bound as [ID_PARAM], if it also meets [where]. */
     fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement
 
+    /** The delete of every [graphClass] root, or of those that meet [where]. Nothing a root is related to is deleted. */
     fun deleteAll(graphClass: Class<*>, where: String? = null): GraphStatement
 
+    /**
+     * The delete of the [graphClass] roots that meet the conditions of [query]. A seek is refused: it
+     * would be ignored, and the delete would take every match.
+     */
     fun deleteAll(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement
 
     // ----- Saving -----
@@ -134,10 +146,17 @@ internal interface GraphBackend {
 
     // ----- Relationships on their own -----
 
+    /**
+     * Joins [from] to [to] with a relationship of [type] that carries [properties]: once under
+     * [RelateMode.MERGE], one more each time under [RelateMode.CREATE]. Neither node is made: the
+     * statement returns 0, and has written nothing, when either is not there.
+     */
     fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement
 
+    /** Removes the relationships of [type] from [from] to [to], and returns how many there were. */
     fun unrelate(from: NodeRef, to: NodeRef, type: String): GraphStatement
 
+    /** Removes the relationships of [type] that [from] has in [direction], and returns how many there were. */
     fun unrelateAll(from: NodeRef, type: String, direction: Direction): GraphStatement
 
     /** The load of the [targetClass] fragments [from] is related to. */
