@@ -1,11 +1,13 @@
 package org.drivine.oracle
 
+import com.zaxxer.hikari.HikariDataSource
 import org.drivine.DrivineException
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.query.QuerySpecification
 import org.drivine.test.OracleTestContainer
 import org.drivine.query.cypherStatement
@@ -20,6 +22,7 @@ import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -136,10 +139,16 @@ class OracleConnectionIntegrationTest {
         val registry = DatabaseRegistry(DataSourceMap(mapOf("ora" to ConnectionProperties(
             type = DatabaseType.ORACLE, host = OracleTestContainer.getConnectionHost(), port = OracleTestContainer.getConnectionPort(),
             userName = OracleTestContainer.getConnectionUsername(), password = OracleTestContainer.getConnectionPassword(),
-            databaseName = OracleTestContainer.SERVICE,
+            databaseName = OracleTestContainer.SERVICE, defaultGraphPath = "props", poolMax = 3, connectionTimeout = 20_000,
         ))))
         val provider = assertNotNull(registry.connectionProvider("ora"))
         try {
+            // What the properties say of the graph and of the pool is what the provider has.
+            assertEquals("props", provider.graphName)
+            val pool = assertIs<HikariDataSource>((provider as JdbcConnectionProvider).nativeDriver)
+            assertEquals(3, pool.maximumPoolSize)
+            assertEquals(20_000, pool.connectionTimeout)
+            assertEquals("64", pool.dataSourceProperties.getProperty("oracle.jdbc.implicitStatementCacheSize"))
             val connection = provider.connect()
             try {
                 assertEquals(listOf<Any>("Ada"), connection.query(spec("SELECT \$name FROM dual", "name" to "Ada")))
