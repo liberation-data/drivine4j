@@ -115,6 +115,28 @@ private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, awa
     assertEquals(mapOf("source" to "wiki"), memos.single().value.metadata)
 }
 
+/**
+ * What a backslash does in a query: it makes the character after it text. Oracle reads the query
+ * itself, where Neo4j hands it to Lucene, so the two are held to the same answers here. FalkorDB and
+ * Memgraph each read a query in their own way, and are not.
+ */
+private fun verifyEscapes(gom: StatelessGraphObjectManager, pm: PersistenceManager, awaitIndexes: Boolean) {
+    ensureIndexes(pm)
+    seed(pm, awaitIndexes)
+    fun articles(query: String) = gom.loadMatching<ArticleNode>(query, topK = 10).map { it.value.id }.toSet()
+
+    // Article B holds "recipes". A star finds it as the start of a word; an escaped star asks for the word "recipe".
+    assertEquals(setOf("B"), articles("recipe*"))
+    assertEquals(emptySet(), articles("""recipe\*"""))
+
+    // A minus takes away the articles that hold "soup", which is B. An escaped minus leaves "soup" a word that scores.
+    assertEquals(setOf("A", "C"), articles("graph -soup"))
+    assertEquals(setOf("A", "B", "C"), articles("""graph \-soup"""))
+
+    // An escaped colon does not make "soup" a field: both words are asked for together, and no article holds them so.
+    assertEquals(emptySet(), articles("""soup\:graph"""))
+}
+
 private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
     val mapper = Neo4jObjectMapper.instance
     return StatelessGraphObjectManager(pm, mapper, registry)
@@ -150,6 +172,8 @@ class StatelessFullTextSearchNeo4jTest {
     }
 
     @Test fun `full-text search ranks, projects, and dispatches on Neo4j`() = verify(buildGom(pm, registry), pm, awaitIndexes = true)
+
+    @Test fun `a backslash makes a star, a sign and a colon text on Neo4j`() = verifyEscapes(buildGom(pm, registry), pm, awaitIndexes = true)
 }
 
 @Testcontainers
@@ -221,27 +245,5 @@ class StatelessFullTextSearchOracleTest {
 
     @Test fun `full-text search ranks, projects, and dispatches on Oracle`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
 
-    /**
-     * Oracle reads the query itself, where the graph engines hand it to their own parser, so what a
-     * backslash does there is checked here: it makes the character after it text.
-     */
-    @Test
-    fun `a backslash makes a star, a sign and a colon text on Oracle`() {
-        ensureIndexes(fixtures)
-        seed(fixtures, awaitIndexes = false)
-        val gom = buildGom(pm, registry)
-        fun articles(query: String) = gom.loadMatching<ArticleNode>(query, topK = 10).map { it.value.id }.toSet()
-
-        // Article B holds "recipes". A star finds it as the start of a word; an escaped star asks for the word "recipe".
-        assertEquals(setOf("B"), articles("recipe*"))
-        assertEquals(emptySet(), articles("""recipe\*"""))
-
-        // A minus takes away the articles that hold "soup", which is B. An escaped minus leaves "soup" a word that scores.
-        assertEquals(setOf("A", "C"), articles("graph -soup"))
-        assertEquals(setOf("A", "B", "C"), articles("""graph \-soup"""))
-
-        // A colon makes "soup" a field, so the word is "graph". An escaped colon keeps both: the phrase "soup graph", which no article holds.
-        assertEquals(setOf("A", "C"), articles("soup:graph"))
-        assertEquals(emptySet(), articles("""soup\:graph"""))
-    }
+    @Test fun `a backslash makes a star, a sign and a colon text on Oracle`() = verifyEscapes(buildGom(pm, registry), fixtures, awaitIndexes = false)
 }

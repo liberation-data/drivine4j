@@ -156,8 +156,16 @@ class TextQueryTest {
     }
 
     @Test
-    fun `a backslash before a letter is dropped, so the word is not split there`() {
-        assertEquals("({foobar})", TextQuery.parse("""foo\bar""").oracleText)
+    fun `a backslash before a letter is text, so it is a gap between two words as it was before`() {
+        assertEquals("({foo bar})", TextQuery.parse("""foo\bar""").oracleText)
+        assertEquals("({domain user})", TextQuery.parse("""DOMAIN\user""").oracleText)
+        // "C:" is a field, so the term is what follows it.
+        assertEquals("({users bob})", TextQuery.parse("""C:\Users\bob""").oracleText)
+    }
+
+    @Test
+    fun `a backslash that ends the query is text`() {
+        assertEquals("({graph})", TextQuery.parse("""graph\""").oracleText)
     }
 
     @Test
@@ -166,5 +174,48 @@ class TextQueryTest {
 
         assertEquals("({pn 4471 b} ACCUM {order}) AND {pn 4471 b}", query.oracleText)
         assertEquals(1, query.required.size)
+    }
+
+    @Test
+    fun `a phrase that only a backslashed quote can close is closed by it`() {
+        assertEquals("({c} ACCUM {foo})", TextQuery.parse(""""C:\" foo""").oracleText)
+        // The star is not the last character of the phrase, the backslash is.
+        assertEquals("({pre} ACCUM {foo})", TextQuery.parse(""""pre*\" foo""").oracleText)
+    }
+
+    @Test
+    fun `a backslash before a line break keeps a phrase one phrase`() {
+        assertEquals("({foo bar})", TextQuery.parse("\"foo\\\nbar\"").oracleText)
+    }
+
+    @Test
+    fun `a star before a line break that ends a phrase is not the end of the phrase`() {
+        assertEquals("({graph pre})", TextQuery.parse("\"graph pre*\n\"").oracleText)
+    }
+
+    @Test
+    fun `an operator before a token that holds no word does not reach the word after it`() {
+        val negated = TextQuery.parse("""graph NOT \! python""")
+        assertEquals(listOf(word("graph"), word("python")), negated.scored)
+        assertTrue(negated.excluded.isEmpty())
+
+        val conjoined = TextQuery.parse("""graph AND \&\& store""")
+        assertEquals(listOf(word("graph"), word("store")), conjoined.scored)
+        assertTrue(conjoined.required.isEmpty())
+    }
+
+    @Test
+    fun `a word or a phrase of any length is read`() {
+        val word = "a".repeat(200_000)
+        assertEquals("({$word})", TextQuery.parse(word).oracleText)
+        assertEquals("({$word})", TextQuery.parse("\"$word\"").oracleText)
+        assertEquals("({$word})", TextQuery.parse("title:$word").oracleText)
+    }
+
+    @Test
+    fun `a query of many phrases that never close is read in one pass`() {
+        val query = TextQuery.parse("\"graph ".repeat(50_000))
+
+        assertEquals(50_000, query.scored.size)
     }
 }
