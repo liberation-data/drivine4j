@@ -76,7 +76,6 @@ internal class TextQuery private constructor(
                 excludedText.joinToString("") { " NOT $it" }
             return TextQuery(scored, required, excluded, text)
         }
-
     }
 
     /** One character of a query, and whether a backslash before it made it text. */
@@ -146,6 +145,9 @@ internal class TextQuery private constructor(
             }
             // No quote closes the phrase while `\"` is a quote of text. The first `\"` is then read as
             // a backslash of text and the quote that closes the phrase, so `"C:\"` is the phrase `C:\`.
+            // This is read only when no quote without a backslash stands later in the query. When one
+            // does, it closes the phrase, wherever it is: in `"C:\" and "D:\"` the phrase runs to the
+            // quote before `D`.
             if (open >= lastEscapedQuote) return null
             val escaped = (open + 1..lastEscapedQuote).first { symbols[it].escaped && symbols[it].char == '"' }
             at = escaped + 1

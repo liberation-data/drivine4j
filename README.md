@@ -2376,10 +2376,12 @@ made: see [Schema Management](#schema-management-indexes--constraints).
 - A full-text index is a table of the indexed text beside the nodes, with an Oracle Text index over
   it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. A backslash before
   punctuation or a space makes that character text: `prefix\*` is the word and `\-not` is not taken
-  away. The index holds what has been committed, so a search does not see its own transaction's
-  writes. Oracle Text is in the regular Free image and not the slim one: without it, or with no
-  index made, a search counts the words in the text of every node of the label, and does see them.
-  An `analyzer` is recorded with the index and not applied.
+  away. A backslash before a letter or a digit is a gap between two words, where Lucene drops it:
+  `foo\bar` is the phrase `foo bar` here and the word `foobar` on Neo4j. The index holds what has
+  been committed, so a search does not see its own transaction's writes. Oracle Text is in the
+  regular Free image and not the slim one: without it, or with no index made, a search counts the
+  words in the text of every node of the label, and does see them. An `analyzer` is recorded with
+  the index and not applied.
 - A property over 4,000 characters is stored and loaded whole, and compares as absent in a predicate.
 - The deprecated `GraphObjectManager.save` and `saveAll` throw `UnsupportedOperationException` on Oracle;
   that manager's loads, queries and deletes work. Cypher statements written by hand do not run, and
