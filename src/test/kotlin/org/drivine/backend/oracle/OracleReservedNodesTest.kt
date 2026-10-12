@@ -30,7 +30,7 @@ class OracleReservedNodesTest {
     fun `a property of the marker is read as a CLOB from the newest marker of the scope, one row at most`() {
         assertEquals(
             "SELECT JSON_VALUE(n.props, '$.items' RETURNING CLOB) FROM g_node n WHERE $isMarker" +
-                " ORDER BY JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST FETCH FIRST 1 ROWS ONLY",
+                " ORDER BY JSON_VALUE(n.props, '$.appliedAt' RETURNING NUMBER) DESC NULLS LAST, n.nid DESC FETCH FIRST 1 ROWS ONLY",
             marker.read("items"),
         )
         assertEquals(setOf("scope"), parameters(marker.read("version")))

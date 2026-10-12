@@ -129,10 +129,16 @@ internal class OraclePredicates(
         return if (condition.negate) "NOT $found" else found
     }
 
-    /** Whether [condition] is written with a subquery: a test against a list is, which reads the list as rows. */
+    /**
+     * Whether [condition] is written with a subquery: a test against a list is, which reads the list
+     * as rows, and so is a test for any of several labels. An `or` or a `not` is, when one of the
+     * conditions it holds is: it is one predicate, and is asked whole where its conditions can be.
+     */
     private fun holdsSubquery(condition: WhereCondition): Boolean = when (condition) {
         is WhereCondition.PropertyCondition -> condition.operator == ComparisonOperator.IN || condition.operator == ComparisonOperator.NOT_IN
+        is WhereCondition.AnyLabelCondition -> true
         is WhereCondition.OrCondition -> condition.conditions.any(::holdsSubquery)
+        is WhereCondition.NotCondition -> condition.conditions.any(::holdsSubquery)
         else -> false
     }
 

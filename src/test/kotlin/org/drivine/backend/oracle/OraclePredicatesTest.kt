@@ -317,6 +317,31 @@ class OraclePredicatesTest {
     }
 
     @Test
+    fun `an or or a not that holds a subquery is asked whole of the pattern's rows, and one that holds none in the pattern`() {
+        fun asked(condition: WhereCondition) = assertNotNull(view().predicate(listOf(RelationshipCondition("people", listOf(condition)))))
+        val named = PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada")
+        val listed = PropertyCondition("people.id", ComparisonOperator.IN, listOf("h1"))
+        val onRows = listOf(
+            WhereCondition.OrCondition(listOf(named, listed)),
+            WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(listed)))),
+            WhereCondition.OrCondition(listOf(named, WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(listed)))))),
+            WhereCondition.OrCondition(listOf(named, WhereCondition.AnyLabelCondition("people", listOf("Human")))),
+        )
+        for (condition in onRows) {
+            val sql = asked(condition)
+            assertTrue("(people_ IS node)" in sql, sql)
+            assertTrue("WHERE people_.src = claim_.nid\n      AND (JSON_VALUE(people_.props, '$.name') = \$_p0 OR " in sql, sql)
+        }
+
+        val inPattern = asked(WhereCondition.OrCondition(listOf(named, WhereCondition.NotCondition(listOf(named)))))
+        assertTrue(
+            "(people_ IS node WHERE (JSON_VALUE(people_.props, '$.name') = \$_p0 OR NOT (JSON_VALUE(people_.props, '$.name') = \$_p1)))" in inPattern,
+            inPattern,
+        )
+        assertTrue(inPattern.endsWith("WHERE people_.src = claim_.nid)"), inPattern)
+    }
+
+    @Test
     fun `a condition on a relationship of a nested view is an EXISTS within the EXISTS`() {
         val select = OracleSelect(graph, Dossier::class.java)
         val sql = assertNotNull(select.predicate(listOf(PropertyCondition("claims_people.name", ComparisonOperator.EQUALS, "ada"))))

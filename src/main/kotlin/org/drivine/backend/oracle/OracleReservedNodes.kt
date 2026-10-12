@@ -16,8 +16,12 @@ internal class OracleVersionMarker(private val graph: OracleGraph, private val l
     /** The marker is a node of the graph, so the graph is made first where it is not yet. */
     override val prepare: String = graph.ensuring
 
-    /** The order that puts the marker applied last first, and one never applied after every other. */
-    private fun newestFirst(alias: String = "n") = "${OracleSql.property(alias, "appliedAt", SqlKind.NUMBER)} DESC NULLS LAST"
+    /**
+     * The order that puts the marker applied last first, and one never applied after every other. Of
+     * two applied in one moment the one made later is first, so the marker read, the one written and
+     * the one kept are the same marker.
+     */
+    private fun newestFirst(alias: String = "n") = "${OracleSql.property(alias, "appliedAt", SqlKind.NUMBER)} DESC NULLS LAST, $alias.nid DESC"
 
     override fun read(property: String): String =
         "SELECT JSON_VALUE(n.props, ${OracleSql.path(property)} RETURNING CLOB) FROM ${graph.nodes} n WHERE ${marker()} ORDER BY ${newestFirst()} FETCH FIRST 1 ROWS ONLY"
@@ -33,7 +37,7 @@ internal class OracleVersionMarker(private val graph: OracleGraph, private val l
      */
     override val merge: String = """
         MERGE INTO ${graph.nodes} n
-        USING (SELECT (SELECT m.nid FROM ${graph.nodes} m WHERE ${marker("m")} ORDER BY ${newestFirst("m")}, m.nid DESC FETCH FIRST 1 ROWS ONLY) AS nid FROM dual) found
+        USING (SELECT (SELECT m.nid FROM ${graph.nodes} m WHERE ${marker("m")} ORDER BY ${newestFirst("m")} FETCH FIRST 1 ROWS ONLY) AS nid FROM dual) found
         ON (n.nid = found.nid)
         WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now))
         WHEN NOT MATCHED THEN INSERT (labels, props)
@@ -45,7 +49,7 @@ internal class OracleVersionMarker(private val graph: OracleGraph, private val l
 
     override val deleteAllButNewest: String = """
         DELETE FROM ${graph.nodes} WHERE nid IN (
-            SELECT nid FROM (SELECT n.nid, ROW_NUMBER() OVER (ORDER BY ${newestFirst()}, n.nid DESC) AS position FROM ${graph.nodes} n WHERE ${marker()})
+            SELECT nid FROM (SELECT n.nid, ROW_NUMBER() OVER (ORDER BY ${newestFirst()}) AS position FROM ${graph.nodes} n WHERE ${marker()})
             WHERE position > 1)
     """.trimIndent()
 
