@@ -48,8 +48,11 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
 
     override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = OracleStoreStamp(graph, label, keyProperty)
 
+    /** [text] as a schema statement. */
+    private fun statement(text: String): SchemaStatement = SchemaStatement.Cypher(text.trimIndent())
+
     /** [text] as schema statements, after the one that makes the store when it is not there. */
-    private fun statements(vararg text: String) = (listOf(graph.ensuring) + text).map { SchemaStatement.Cypher(it.trimIndent()) }
+    private fun statements(vararg text: String) = (listOf(graph.ensuring) + text).map(::statement)
 
     /**
      * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
@@ -70,21 +73,36 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         END;
     """
 
-    /** Forgets [item], and drops the object it was made as when nothing else recorded uses it. */
-    private fun forgotten(item: SchemaItemInfo): String = """
-        DECLARE
-            v_object VARCHAR2(128);
-            v_others NUMBER;
-        BEGIN
-            DELETE FROM ${graph.catalog}
-            WHERE kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}
-            RETURNING MAX(object_name) INTO v_object;
-            SELECT COUNT(*) INTO v_others FROM ${graph.catalog} WHERE object_name = v_object;
-            IF v_object IS NOT NULL AND v_others = 0 THEN
-                EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;
-            END IF;
-        END;
-    """
+    /**
+     * Forgets [item], and drops what it was made as when nothing else recorded uses it: an index, or
+     * for a vector or a full-text index the table beside the nodes with its trigger, which takes the
+     * index over it along. What is dropped is the object the record names, and not one named again
+     * from the label and the properties, so an item is dropped as it was made whatever a later
+     * version would call it. An item nothing was made for, a full-text index where there is no
+     * Oracle Text, records no object and has none dropped.
+     */
+    private fun forgotten(item: SchemaItemInfo): SchemaStatement {
+        val drops = when (item.kind) {
+            SchemaItemKind.VECTOR_INDEX, SchemaItemKind.FULLTEXT_INDEX -> OracleSideTable.dropping("v_object")
+            else -> listOf("'DROP INDEX IF EXISTS ' || v_object")
+        }
+        return statement(
+            """
+            DECLARE
+                v_object VARCHAR2(128);
+                v_others NUMBER;
+            BEGIN
+                DELETE FROM ${graph.catalog}
+                WHERE kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}
+                RETURNING MAX(object_name) INTO v_object;
+                SELECT COUNT(*) INTO v_others FROM ${graph.catalog} WHERE object_name = v_object;
+                IF v_object IS NOT NULL AND v_others = 0 THEN
+                    ${drops.joinToString("\n                    ") { "EXECUTE IMMEDIATE $it;" }}
+                END IF;
+            END;
+            """
+        )
+    }
 
     companion object {
         /**
@@ -105,16 +123,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         is FullTextIndexSpec -> statements(textIndex(spec))
     }
 
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> =
-        when (item.kind) {
-            // The table beside the nodes takes its index with it.
-            SchemaItemKind.VECTOR_INDEX -> beside(graph.vectors(item.label, item.properties.single()), item)
-            SchemaItemKind.FULLTEXT_INDEX -> beside(graph.texts(item.label, item.properties), item)
-            else -> listOf(SchemaStatement.Cypher(forgotten(item).trimIndent()))
-        }
-
-    private fun beside(table: String, item: SchemaItemInfo): List<SchemaStatement> =
-        (OracleSideTable.dropping(table) + forgotten(item)).map { SchemaStatement.Cypher(it.trimIndent()) }
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))
 
     /**
      * A vector index. Oracle indexes a `VECTOR` column, and an embedding is a list among a node's
@@ -213,7 +222,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         }
     }
 
-    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = listOf(SchemaStatement.Cypher(forgotten(item).trimIndent()))
+    override fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))
 
     /**
      * What is recorded of [kinds], and still there: an index or a table beside the nodes dropped by

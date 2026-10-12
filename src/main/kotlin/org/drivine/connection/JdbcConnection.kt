@@ -76,6 +76,7 @@ class JdbcConnection(
         }
     }
 
+    /** Binds [value] to the marker at [index], counted from one. */
     private fun bind(statement: PreparedStatement, index: Int, value: Any?) = when (value) {
         // A null of no declared type: Oracle converts a character null to the type the statement wants.
         null -> statement.setNull(index, Types.VARCHAR)
@@ -103,6 +104,7 @@ class JdbcConnection(
         endTransaction()
     }
 
+    /** Leaves the connection as a pool expects it back: committing each statement as it runs. */
     private fun endTransaction() {
         inTransaction = false
         connection.autoCommit = true

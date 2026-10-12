@@ -13,7 +13,11 @@ import org.drivine.schema.UnsupportedSchemaGrammar
 interface ConnectionProvider {
     /** The name the database is registered under. */
     val name: String
+
+    /** The engine the database is. */
     val type: DatabaseType
+
+    /** The subtypes a polymorphic result is mapped to, by the labels of its node; null when none are registered. */
     val subtypeRegistry: SubtypeRegistry?
 
     /**

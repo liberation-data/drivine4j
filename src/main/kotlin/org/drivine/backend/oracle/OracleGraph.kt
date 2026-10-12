@@ -44,9 +44,15 @@ internal class OracleGraph(val name: String) {
 
     /**
      * A name for an object of [kind] made for [parts], a label and properties: the graph's name, the
-     * kind, what of the parts reads as a name, and a hash of the parts whole, so that two objects
-     * made for different parts are never one. It leaves room for the `_t` or `_i` an object made
-     * beside it adds, within the [MAX_OBJECT_NAME] Oracle allows.
+     * kind, what of the parts reads as a name, and a hash of the parts whole, which tells apart two
+     * objects whose parts read as one name: a label and a property that run together as another
+     * pair does, or names that differ only in what a name cannot hold. It is a hash of 32 bits and
+     * not a proof: two sets of parts that read alike and hash alike would share a name. It leaves
+     * room for the `_t` or `_i` an object made beside it adds, within the [MAX_OBJECT_NAME] Oracle
+     * allows.
+     *
+     * The name is written to the graph's catalog with what it was made for, and an object is dropped
+     * by the name recorded there: see [OracleSchemaGrammar].
      */
     fun objectName(kind: String, parts: List<String>): String {
         val hash = Integer.toHexString(parts.joinToString("\u0000").hashCode())

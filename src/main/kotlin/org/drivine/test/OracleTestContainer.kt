@@ -103,9 +103,11 @@ class OracleTestContainer private constructor(
             }
         }
 
+        /** The user tests connect as, [USER], in the container and in a local instance alike. */
         @JvmStatic
         fun getConnectionUsername(): String = USER
 
+        /** The password of that user, [PASSWORD], in the container and in a local instance alike. */
         @JvmStatic
         fun getConnectionPassword(): String = PASSWORD
 
@@ -113,6 +115,7 @@ class OracleTestContainer private constructor(
         @JvmStatic
         fun getJdbcUrl(): String = "jdbc:oracle:thin:@//${getConnectionHost()}:${getConnectionPort()}/$SERVICE"
 
+        /** Starts the container, and returns once the pluggable database is open and [USER] is made in it: five minutes at most. */
         private fun createTestContainer(): OracleTestContainer {
             val image = System.getProperty(IMAGE_PROPERTY) ?: System.getenv(IMAGE_ENV) ?: ORACLE_IMAGE
             val container = OracleTestContainer(DockerImageName.parse(image))

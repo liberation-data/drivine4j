@@ -19,9 +19,12 @@ import java.io.Reader
 import java.sql.PreparedStatement
 import java.sql.ResultSet
 import java.sql.ResultSetMetaData
+import java.sql.SQLException
 import java.sql.Types
+import java.time.ZonedDateTime
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 class JdbcConnectionTest {
@@ -120,6 +123,31 @@ class JdbcConnectionTest {
     }
 
     @Test
+    fun `a collection or a map is bound as JSON text, and a zoned date time as its offset form`() {
+        val moment = ZonedDateTime.parse("2026-03-01T10:15:30+01:00[Europe/Paris]")
+        query(
+            "SELECT \$ids, \$row, \$at FROM dual",
+            mapOf("ids" to listOf(1, 2), "row" to mapOf("name" to "Ada"), "at" to moment),
+        )
+
+        verify(statement).setString(1, "[1,2]")
+        verify(statement).setString(2, "{\"name\":\"Ada\"}")
+        verify(statement).setObject(3, moment.toOffsetDateTime())
+    }
+
+    @Test
+    fun `a statement the database refuses is closed, and the refusal is the caller's as the driver gave it`() {
+        val refusal = SQLException("ORA-00942: table or view does not exist", "42000", 942)
+        `when`(statement.execute()).thenThrow(refusal)
+
+        val thrown = assertFailsWith<SQLException> { query("SELECT v FROM missing", emptyMap()) }
+
+        assertSame(refusal, thrown)
+        verify(statement).close()
+        verify(jdbc, never()).close()
+    }
+
+    @Test
     fun `a query answers with its result set`() {
         answers(listOf(7, 8))
 
@@ -181,6 +209,30 @@ class JdbcConnectionTest {
         order.verify(jdbc).autoCommit = true
         order.verify(jdbc).close()
         verify(jdbc, never()).commit()
+    }
+
+    @Test
+    fun `a commit that fails leaves the transaction open, so releasing the connection rolls it back`() {
+        connection.startTransaction()
+        `when`(jdbc.commit()).thenThrow(SQLException("ORA-02091: transaction rolled back"))
+
+        assertFailsWith<SQLException> { connection.commitTransaction() }
+        connection.release(null)
+
+        val order = inOrder(jdbc)
+        order.verify(jdbc).rollback()
+        order.verify(jdbc).autoCommit = true
+        order.verify(jdbc).close()
+    }
+
+    @Test
+    fun `a connection whose rollback fails on release is closed all the same`() {
+        connection.startTransaction()
+        `when`(jdbc.rollback()).thenThrow(SQLException("ORA-03113: end-of-file on communication channel"))
+
+        connection.release(null)
+
+        verify(jdbc).close()
     }
 
     @Test

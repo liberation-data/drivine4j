@@ -27,8 +27,11 @@ internal class OracleSideTable(
     private val backfillFilter: ((String) -> String)? = null,
     private val tolerant: Boolean = false,
 ) {
-    val trigger: String = "${name}_t"
-    val index: String = "${name}_i"
+    /** The trigger on the node table that keeps this one in step. */
+    val trigger: String = name + TRIGGER
+
+    /** The index over [column], which the grammar that made the table makes: a vector index, or an Oracle Text one. */
+    val index: String = name + INDEX
 
     /** Makes the table, when it is not there. */
     val create: String = "CREATE TABLE IF NOT EXISTS $name (nid NUMBER PRIMARY KEY REFERENCES $nodes (nid) ON DELETE CASCADE, $column $columnType NOT NULL)"
@@ -76,7 +79,20 @@ internal class OracleSideTable(
     """.trimIndent()
 
     companion object {
-        /** The statements that drop the table named [name] and its trigger; the index over it goes with the table. */
-        fun dropping(name: String): List<String> = listOf("DROP TRIGGER IF EXISTS ${name}_t", "DROP TABLE IF EXISTS $name PURGE")
+        /** What a table's trigger adds to the table's name, and what the index over it adds. */
+        private const val TRIGGER = "_t"
+        private const val INDEX = "_i"
+
+        /**
+         * What drops a table beside the nodes and its trigger, each a PL/SQL expression for the text
+         * of one statement to run: the table's name is not known when this is written, and is read
+         * from the PL/SQL variable [nameVariable] when it runs. The trigger goes first, the index
+         * over the table goes with the table, and neither statement fails when what it drops is not
+         * there.
+         */
+        fun dropping(nameVariable: String): List<String> = listOf(
+            "'DROP TRIGGER IF EXISTS ' || $nameVariable || '$TRIGGER'",
+            "'DROP TABLE IF EXISTS ' || $nameVariable || ' PURGE'",
+        )
     }
 }

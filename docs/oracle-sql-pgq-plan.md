@@ -126,6 +126,10 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 - Collections bound as JSON; a JSON column read as a document; `VECTOR` read as a list.
 - Transactions, batches, and a block that returns rows.
 
+*As built: the translation is `SqlParameters`, and what is bound is reshaped by
+`JdbcParameterCoercer`. A string whose bytes run past 32,767 is bound as a `CLOB`. A pool Drivine
+makes is HikariCP, with the driver's statement cache on.*
+
 ### Phase 2 — The backend seam (no behaviour change) ✅
 
 - `GraphBackend` and `CypherBackend`; both managers, `EdgeOperations`, `BatchSaveOperations` and the
@@ -173,11 +177,24 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
   index on (label, property), listing and drift detection from the data dictionary.
 - Generated predicates are written in the indexed form, so an index that exists is used.
 
+*As built: listing and drift detection read `<graph>_schema`, a table of the graph's own that records
+each item with the name of the object made for it. The dictionary holds an index's expression and
+not what it was made for; it is asked only whether the recorded object is still there, and a drop
+drops the object the record names. A range index is over the property whatever the label, so two
+labels that index a property of one name share an index, which goes when the last of them is
+dropped. The schema marker and the store's identity are written by the grammar too
+(`SchemaGrammar.versionMarker` and `storeStamp`).*
+
 ### Phase 7 — Vector and full-text search ✅
 
 - `loadNearest`: exact `VECTOR_DISTANCE` first, then a side table and vector index per
   `VectorIndexSpec`; `searchK`, threshold, partition label, the `{value, score}` row.
 - `loadMatching`: Oracle Text, score normalised to the existing contract.
+
+*As built: the table beside the nodes, its trigger and its backfill are `OracleSideTable`, which a
+vector index and a full-text index share. A full-text query is read by `TextQuery`, into the text an
+Oracle Text index is asked and, for a search with no index, the regular expressions each node's text
+is counted against.*
 
 ### Phase 8 — Typed labels for outside readers (optional)
 
@@ -216,7 +233,7 @@ Each phase ends green on the existing suites, and on Oracle with `ORACLE_TESTS=t
 Every stateless contract that has engine subclasses has an Oracle one: the four save contracts, and
 the read, search, label, bag, null-policy, relate, temporal, property-name and store-identity suites.
 That includes the contract the review of the stateless manager added, and its read-path tests.
-With `ORACLE_TESTS=true`: 270 tests in 32 classes, none failing. The nine skipped are the deprecated
+With `ORACLE_TESTS=true`: 563 tests in 57 classes, none failing. The nine skipped are the deprecated
 manager's own save, one Memgraph-only case and the benchmark.
 
 What differed from the plan:
@@ -225,7 +242,11 @@ What differed from the plan:
   text depends only on the kinds of node a save names, so it is compiled once for a view class.
 - **Fixtures.** The contracts seed and read back in Cypher. A small interpreter (`MiniCypher`)
   works such a statement out over the graph, so the contracts run unchanged. It ships with the test
-  support, in `org.drivine.test`, and is reached through `OracleCypherFixtures`.
+  support, in `org.drivine.test`, and is reached through `OracleCypherFixtures`. It reads a statement
+  once, into a tree, and refuses what it does not know before it reads the graph.
+- **A read is written to be read beside its Cypher.** A row is called what the model calls it, the
+  node of a `MATCH` has its row's name, `COLUMNS` names only what the statement reads, and every query
+  in a statement is laid out the same way (`Query`, `GraphTable`). The README shows one.
 - **An index is a table beside the nodes.** Oracle indexes a `VECTOR` column, not a list inside JSON,
   so a vector index is a table of embeddings that a trigger keeps in step, with the index (neighbour
   partitions) over it. A full-text index is the same with an Oracle Text index. Without an index, or

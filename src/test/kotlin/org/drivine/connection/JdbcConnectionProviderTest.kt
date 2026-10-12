@@ -139,4 +139,14 @@ class JdbcConnectionProviderTest {
         assertEquals("Oracle requires a username", noUser.message)
         assertEquals("Oracle requires a databaseName: the service to connect to, such as FREEPDB1", noService.message)
     }
+
+    @Test
+    fun `a provider that is registered already is the one handed back, and nothing is built or asked for`() {
+        val registry = DatabaseRegistry(DataSourceMap())
+        val registered = JdbcConnectionProvider("ora", DatabaseType.ORACLE, dataSource)
+        registry.register(registered)
+
+        // Neither a host nor a user is given: an Oracle provider could not be built from this.
+        assertSame(registered, ConnectionProviderBuilder(registry).withType(DatabaseType.ORACLE).register("ora"))
+    }
 }

@@ -6,8 +6,8 @@ import org.drivine.query.transform
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.StoreStampStatements
-import org.drivine.manager.requireCypher
 import org.drivine.schema.CypherStoreStamp
+import org.drivine.schema.reservedNode
 import org.drivine.schema.UniquenessConstraintSpec
 import org.slf4j.LoggerFactory
 import java.time.Instant
@@ -68,10 +68,9 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
      * otherwise, as Oracle's does. See [SchemaGrammar.storeStamp].
      */
     private val statements: StoreStampStatements by lazy {
-        val own = persistenceManager.schemaGrammar?.storeStamp(KEY_CONSTRAINT.label, KEY_CONSTRAINT.properties.single())
-            ?: CypherStoreStamp(KEY_CONSTRAINT.label, KEY_CONSTRAINT.properties.single()).also { persistenceManager.requireCypher("the store's identity") }
-        own.prepare?.let { persistenceManager.indexes.run(it) }
-        own
+        val label = KEY_CONSTRAINT.label
+        val key = KEY_CONSTRAINT.properties.single()
+        persistenceManager.reservedNode("the store's identity", { storeStamp(label, key) }) { CypherStoreStamp(label, key) }
     }
 
     /**

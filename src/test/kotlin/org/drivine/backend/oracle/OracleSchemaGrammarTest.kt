@@ -160,42 +160,79 @@ class OracleSchemaGrammarTest {
     }
 
     @Test
-    fun `dropping a vector or full-text index drops the trigger and the table beside the nodes, then forgets the index`() {
-        val vector = SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))
-        val vectorTexts = grammar.dropIndex(vector).texts()
-        val vectorSide = graph.vectors("Doc", "embedding")
-        assertEquals(3, vectorTexts.size)
-        assertEquals("DROP TRIGGER IF EXISTS ${vectorSide}_t", vectorTexts[0])
-        assertEquals("DROP TABLE IF EXISTS $vectorSide PURGE", vectorTexts[1])
-        vectorTexts[2].inOrder(
+    fun `dropping a vector or full-text index forgets it, and drops the table the record names with its trigger`() {
+        val vector = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))).texts().single()
+        vector.inOrder(
             "DECLARE",
             "DELETE FROM g_schema",
             "WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]'",
             "RETURNING MAX(object_name) INTO v_object;",
             "SELECT COUNT(*) INTO v_others FROM g_schema WHERE object_name = v_object;",
             "IF v_object IS NOT NULL AND v_others = 0 THEN",
-            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;",
+            "EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';",
+            "EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_object || ' PURGE';",
+            "END IF;",
             "END;",
         )
+        assertFalse("DROP INDEX" in vector, "the index over the table goes with the table")
 
-        val text = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Doc", listOf("title", "body"))
-        val textTexts = grammar.dropIndex(text).texts()
-        val textSide = graph.texts("Doc", listOf("title", "body"))
-        assertEquals(listOf("DROP TRIGGER IF EXISTS ${textSide}_t", "DROP TABLE IF EXISTS $textSide PURGE"), textTexts.take(2))
-        assertTrue(textTexts[2].contains("WHERE kind = 'FULLTEXT_INDEX' AND label = 'Doc' AND properties = '[\"title\",\"body\"]'"))
+        val text = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Doc", listOf("title", "body"))).texts().single()
+        text.inOrder(
+            "WHERE kind = 'FULLTEXT_INDEX' AND label = 'Doc' AND properties = '[\"title\",\"body\"]'",
+            "IF v_object IS NOT NULL AND v_others = 0 THEN",
+            "EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';",
+            "EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_object || ' PURGE';",
+        )
 
-        (vectorTexts + textTexts).forEach { assertEquals(emptyList(), SqlParameters.positional(it).names) }
+        listOf(vector, text).forEach { assertEquals(emptyList(), SqlParameters.positional(it).names) }
     }
 
     @Test
-    fun `dropping a range index or a constraint only forgets it, which drops the index when nothing else uses it`() {
+    fun `what is dropped is named by the record alone, so an item is dropped as it was made and not as it would be named now`() {
+        val drops = listOf(
+            grammar.dropIndex(SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))),
+            grammar.dropIndex(SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Doc", listOf("title", "body"))),
+            grammar.dropIndex(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Person", listOf("name"))),
+            grammar.dropConstraint(SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, "Person", listOf("email"))),
+        ).map { it.texts().single() }
+        val made = listOf(
+            graph.vectors("Doc", "embedding"),
+            graph.texts("Doc", listOf("title", "body")),
+            graph.objectName("ix", listOf("name")),
+            graph.objectName("uq", listOf("Person", "email")),
+        )
+
+        drops.zip(made).forEach { (drop, name) -> assertFalse(name in drop, "'$name' is written into:\n$drop") }
+    }
+
+    @Test
+    fun `dropping a range index or a constraint forgets it, and drops the index the record names when nothing else recorded uses it`() {
         val range = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Person", listOf("name"))).texts()
         assertEquals(1, range.size)
-        range.single().inOrder("DECLARE", "DELETE FROM g_schema", "WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]'", "DROP INDEX IF EXISTS")
+        range.single().inOrder(
+            "DECLARE",
+            "DELETE FROM g_schema",
+            "WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]'",
+            "IF v_object IS NOT NULL AND v_others = 0 THEN",
+            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;",
+        )
+        assertFalse("DROP TABLE" in range.single() || "DROP TRIGGER" in range.single())
 
         val constraint = grammar.dropConstraint(SchemaItemInfo(SchemaItemKind.UNIQUENESS_CONSTRAINT, "Person", listOf("email"))).texts()
         assertEquals(1, constraint.size)
-        assertTrue(constraint.single().contains("WHERE kind = 'UNIQUENESS_CONSTRAINT' AND label = 'Person' AND properties = '[\"email\"]'"))
+        constraint.single().inOrder(
+            "WHERE kind = 'UNIQUENESS_CONSTRAINT' AND label = 'Person' AND properties = '[\"email\"]'",
+            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;",
+        )
+    }
+
+    @Test
+    fun `a drop is one statement with no indentation left over from where it was written`() {
+        val drop = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))).texts().single()
+
+        assertTrue(drop.startsWith("DECLARE\n    v_object VARCHAR2(128);"), drop)
+        assertTrue(drop.endsWith("\n    END IF;\nEND;"), drop)
+        assertTrue("\n        EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';\n        EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_object || ' PURGE';\n" in drop, drop)
     }
 
     @Test

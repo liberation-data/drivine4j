@@ -54,6 +54,7 @@ internal object SqlParameters {
     /** The directives of PL/SQL conditional compilation, which look like parameters and are not. */
     private val DIRECTIVES = setOf("IF", "THEN", "ELSE", "ELSIF", "END", "ERROR")
 
+    /** Whether [c] can begin a parameter's name: a letter or an underscore, and not a digit, so `$1` is left as it is. */
     private fun startsName(c: Char) = c.isLetter() || c == '_'
 
     /**

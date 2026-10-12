@@ -166,6 +166,39 @@ class OracleSchemaManagementIntegrationTest {
     }
 
     @Test
+    fun `an index is dropped as the object its record names, whatever it would be named now`() {
+        val spec = VectorIndexSpec("Legacy", "embedding", 3)
+        manager.indexes.ensure(spec)
+        val named = "schema_v_Legacyembedding_" + Integer.toHexString("Legacy\u0000embedding".hashCode())
+        // The table as an earlier version might have named it, with the trigger such a table has, and the record of it.
+        manager.indexes.run("ALTER TABLE $named RENAME TO schema_legacy_side")
+        manager.indexes.run("DROP TRIGGER ${named}_t")
+        manager.indexes.run("BEGIN EXECUTE IMMEDIATE 'CREATE TRIGGER schema_legacy_side_t AFTER INSERT ON schema_node FOR EACH ROW BEGIN NULL; END;'; END;")
+        manager.indexes.run("UPDATE schema_schema SET object_name = 'schema_legacy_side' WHERE kind = 'VECTOR_INDEX' AND label = 'Legacy'")
+        assertNotNull(manager.indexes.find(spec), "the index is listed, for the table its record names is there")
+
+        assertTrue(manager.indexes.drop(spec))
+
+        assertEquals(0, count("SELECT COUNT(*) FROM user_tables WHERE table_name = 'SCHEMA_LEGACY_SIDE'"))
+        assertEquals(0, count("SELECT COUNT(*) FROM user_triggers WHERE trigger_name = 'SCHEMA_LEGACY_SIDE_T'"))
+        assertNull(manager.indexes.find(spec))
+        execute("CREATE (:Legacy {id: 'l1', embedding: [1.0, 0.0, 0.0]})")
+    }
+
+    @Test
+    fun `a full-text index recorded with nothing made for it is dropped by forgetting it`() {
+        val spec = FullTextIndexSpec("Memo", listOf("subject"))
+        manager.indexes.run(
+            "INSERT INTO schema_schema (kind, label, properties, name, object_name, details) " +
+                "VALUES ('FULLTEXT_INDEX', 'Memo', '[\"subject\"]', '${spec.effectiveName}', NULL, '{}')"
+        )
+        assertNotNull(manager.indexes.find(spec), "what Oracle Text would have indexed is recorded all the same")
+
+        assertTrue(manager.indexes.drop(spec))
+        assertNull(manager.indexes.find(spec))
+    }
+
+    @Test
     fun `schema version marker round-trips, with its inventory`() {
         val store = SchemaVersionStore(manager)
         store.clear()

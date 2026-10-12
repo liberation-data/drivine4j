@@ -21,14 +21,7 @@ object TestCleanup {
      * or on FalkorDB every node. The value is written into the statement as it is, so it is a test's
      * own constant and never input.
      */
-    fun beforeEach(persistenceManager: PersistenceManager, createdBy: String) {
-        val statement = when (persistenceManager.type) {
-            DatabaseType.FALKORDB -> "MATCH (n) DETACH DELETE n"
-            DatabaseType.ORACLE -> oracle(persistenceManager, "createdBy", createdBy)
-            else -> "MATCH (n) WHERE n.createdBy = '$createdBy' DETACH DELETE n"
-        }
-        persistenceManager.execute(QuerySpecification.withStatement(statement))
-    }
+    fun beforeEach(persistenceManager: PersistenceManager, createdBy: String) = beforeEach(persistenceManager, "createdBy", createdBy)
 
     /** As the other [beforeEach], for tests that tag their nodes under [markerField] with [markerValue]. Both are written into the statement as they are. */
     fun beforeEach(persistenceManager: PersistenceManager, markerField: String, markerValue: String) {

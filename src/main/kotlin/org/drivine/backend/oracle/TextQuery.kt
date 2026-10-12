@@ -1,9 +1,9 @@
 package org.drivine.backend.oracle
 
 /**
- * A full-text query as Oracle is asked it without a text index: the terms that score a node, those
- * it must hold and those it must not, each a regular expression that matches the term as a whole
- * word in lower-cased text.
+ * A full-text query as Oracle is asked it. Without a text index it is the terms that score a node,
+ * those it must hold and those it must not, each a regular expression that matches the term as a
+ * whole word in lower-cased text. Through an Oracle Text index it is [oracleText].
  *
  * It reads the plain core of the Lucene syntax the graph engines take: words, a `"quoted phrase"`,
  * `+must`, `-not` and `NOT not`, a `prefix*`, and `field:word` as the word. `AND` makes the word
@@ -64,6 +64,7 @@ internal class TextQuery private constructor(
             return TextQuery(scored, required, excluded, text)
         }
 
+        /** The words of [text], in lower case: its runs of letters, digits and underscores. */
         private fun words(text: String): List<String> = text.lowercase().split(Regex("[^\\p{L}\\p{N}_]+")).filter { it.isNotEmpty() }
 
         /** [text] for Oracle Text: its words as a phrase, or with a trailing `*` the last as the start of a word. */
