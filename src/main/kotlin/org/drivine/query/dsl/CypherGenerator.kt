@@ -57,10 +57,11 @@ object CypherGenerator {
     }
 
     /**
-     * Renders a list of (already-grouped) conditions as ` AND `-joined Cypher, threading a running
+     * Renders a list of (already-grouped) conditions as Cypher joined by [separator], threading a running
      * parameter index from [startIndex]. This is the shared dispatch loop used by [buildWhereClause] at
-     * the top level and by [buildNotCondition] for a negated sub-expression — so parameter numbering
-     * stays aligned with [extractBindings] whether or not the conditions are nested under a `NOT`.
+     * the top level, by [buildNotCondition] for a negated sub-expression and by [buildOrCondition] for
+     * the branches of an `OR` — so parameter numbering stays aligned with [extractBindings] however the
+     * conditions are nested, and a path is read as a relationship's by one rule in all three.
      */
     private fun renderConditionList(
         conditions: List<WhereCondition>,
@@ -71,15 +72,17 @@ object CypherGenerator {
         prologs: MutableList<String>,
         bridgeVars: MutableList<String>,
         projectedCollectionMode: Boolean,
+        separator: String = " AND ",
     ): String {
         val relationshipNames = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
         var paramIndex = startIndex
-        return conditions.joinToString(" AND ") { condition ->
+        return conditions.joinToString(separator) { condition ->
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
                     // At the top level a property of a relationship's target has been grouped into a
-                    // relationship condition already. Inside a `not { }` it has not, and it is one
-                    // there as well: the target is no variable of the statement.
+                    // relationship condition already. Inside a `not { }` or an `or` it has not, and it
+                    // is one there as well: the target is no variable of the statement. In an `or`
+                    // each branch is a predicate on the relationship by itself.
                     val relationship = relationshipOf(condition.propertyPath, relationshipNames)
                     val result = if (relationship != null) {
                         val relCondition = WhereCondition.RelationshipCondition(relationship, listOf(condition))
@@ -984,86 +987,16 @@ object CypherGenerator {
         condition: WhereCondition.OrCondition,
         viewModel: GraphViewModel?,
         startIndex: Int,
-        grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter()),
-        ecCounter: AtomicInteger = AtomicInteger(0),
-        prologs: MutableList<String> = mutableListOf(),
-        bridgeVars: MutableList<String> = mutableListOf(),
+        grammar: CypherGrammar,
+        ecCounter: AtomicInteger,
+        prologs: MutableList<String>,
+        bridgeVars: MutableList<String>,
         projectedCollectionMode: Boolean = false,
     ): String {
-        // First, group PropertyConditions that refer to relationships
-        // But keep them separate - each OR branch gets its own EXISTS
-        val relationshipNames = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
-
-        var paramIndex = startIndex
-        val orClauses = condition.conditions.joinToString(" OR ") { subCondition ->
-            when (subCondition) {
-                is WhereCondition.PropertyCondition -> {
-                    // Check if this is a relationship property
-                    val alias = subCondition.propertyPath.substringBefore(".")
-                    val baseAlias = if (alias.contains("_")) alias.substringBefore("_") else alias
-
-                    // IS NULL / IS NOT NULL render no $param, so they must not consume a parameter
-                    // index here — the same rule buildWhereClause and extractBindings already apply.
-                    // Incrementing for them desyncs the rendered Cypher from the extracted bindings.
-                    val consumesParam = subCondition.operator != ComparisonOperator.IS_NULL &&
-                        subCondition.operator != ComparisonOperator.IS_NOT_NULL
-
-                    if (baseAlias in relationshipNames) {
-                        // Convert to RelationshipCondition on the fly
-                        val relCondition = WhereCondition.RelationshipCondition(
-                            relationshipName = baseAlias,
-                            targetConditions = listOf(subCondition)
-                        )
-                        val result = buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                        if (consumesParam) paramIndex++
-                        result
-                    } else {
-                        val lhs = rootPath(subCondition.propertyPath, viewModel, projectedCollectionMode)
-                        val result = buildPropertyConditionWithLhs(subCondition, paramIndex, lhs)
-                        if (consumesParam) paramIndex++
-                        result
-                    }
-                }
-                is WhereCondition.RelationshipCondition -> {
-                    val result = buildRelationshipCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                    paramIndex += countParameters(subCondition.targetConditions)
-                    result
-                }
-                is WhereCondition.LabelCondition -> {
-                    if (subCondition.alias in relationshipNames) {
-                        val relCondition = WhereCondition.RelationshipCondition(
-                            relationshipName = subCondition.alias,
-                            targetConditions = listOf(subCondition)
-                        )
-                        buildRelationshipCondition(relCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                    } else {
-                        buildLabelCondition(subCondition)
-                    }
-                }
-                is WhereCondition.OrCondition -> {
-                    val result = buildOrCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                    paramIndex += countParameters(subCondition.conditions)
-                    result
-                }
-                is WhereCondition.ListMembershipCondition -> {
-                    val rhs = rootPath(subCondition.propertyPath, viewModel, projectedCollectionMode)
-                    val result = buildListMembershipCondition(subCondition, paramIndex, rhs)
-                    paramIndex++
-                    result
-                }
-                is WhereCondition.NotCondition -> {
-                    val result = buildNotCondition(subCondition, viewModel, paramIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode)
-                    paramIndex += countParameters(subCondition.conditions)
-                    result
-                }
-                is WhereCondition.AnyLabelCondition -> {
-                    val result = buildAnyLabelCondition(subCondition, paramIndex)
-                    paramIndex++
-                    result
-                }
-            }
-        }
-        return "($orClauses)"
+        val clauses = renderConditionList(
+            condition.conditions, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode, separator = " OR ",
+        )
+        return "($clauses)"
     }
 
     /**

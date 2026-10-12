@@ -58,20 +58,27 @@ class OracleTestContainer private constructor(
 
         /** The pluggable database every Oracle Free image opens. */
         const val SERVICE = "FREEPDB1"
+
+        /** The user the container makes in [SERVICE], and tests connect as. */
         const val USER = "drivine"
+
+        /** The password of [USER], and of the container's administrators. */
         const val PASSWORD = "drivine"
 
+        /** The container, started when it is first asked for; null when a local instance is used in its place. */
         @JvmStatic
         val instance: OracleTestContainer? by lazy {
             if (useLocal()) null else createTestContainer()
         }
 
+        /** Whether tests speak to a local instance and start no container: `-Dtest.oracle.use-local=true` or `USE_LOCAL_ORACLE=true`. */
         @JvmStatic
         fun useLocal(): Boolean {
             return System.getProperty(USE_LOCAL_PROPERTY, "false").toBoolean() ||
                    System.getenv(USE_LOCAL_ENV)?.toBoolean() ?: false
         }
 
+        /** The container's host, or the local instance's: `-Dtest.oracle.local.host`, else `ORACLE_LOCAL_HOST`, else `localhost`. */
         @JvmStatic
         fun getConnectionHost(): String {
             return if (useLocal()) {
@@ -83,6 +90,7 @@ class OracleTestContainer private constructor(
             }
         }
 
+        /** The port the container's listener is mapped to, or the local instance's: `-Dtest.oracle.local.port`, else `ORACLE_LOCAL_PORT`, else 1521. */
         @JvmStatic
         fun getConnectionPort(): Int {
             return if (useLocal()) {

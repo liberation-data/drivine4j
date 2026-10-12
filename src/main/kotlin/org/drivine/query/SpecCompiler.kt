@@ -4,8 +4,10 @@ package org.drivine.query
  * Compiles a [QuerySpecification] into a [CompiledQuery] — a statement string and parameter map
  * ready to be sent to a backend driver.
  *
- * Currently backend-agnostic. If a future backend needs dialect-specific compilation behavior,
- * reintroduce subclasses and keep this as the common case.
+ * Backend-agnostic but for paging: a `skip` and a `limit` are appended as the statement's language
+ * writes them, `SKIP … LIMIT …` for Cypher and `OFFSET … ROWS FETCH NEXT … ROWS ONLY` for SQL. If a
+ * future backend needs more dialect-specific compilation behavior, reintroduce subclasses and keep
+ * this as the common case.
  */
 class SpecCompiler(private val spec: QuerySpecification<*>) {
 

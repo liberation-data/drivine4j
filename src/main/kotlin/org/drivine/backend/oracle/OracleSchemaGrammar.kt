@@ -172,7 +172,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             },
             indexed = { row -> OracleSql.carriesLabel(row, spec.label) },
         )
-        val details = spec.analyzer?.let { """{"analyzer": "$it"}""" } ?: "{}"
+        val details = spec.analyzer?.let { "{\"analyzer\": ${json(listOf(it)).removeSurrounding("[", "]")}}" } ?: "{}"
         return """
             DECLARE
                 v_indexed NUMBER;

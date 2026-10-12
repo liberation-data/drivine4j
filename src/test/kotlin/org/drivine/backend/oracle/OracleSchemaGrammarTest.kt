@@ -138,6 +138,13 @@ class OracleSchemaGrammarTest {
     }
 
     @Test
+    fun `an analyzer is recorded as a JSON string, whatever it holds`() {
+        val block = checked(grammar.createIndex(FullTextIndexSpec("Doc", listOf("title"), analyzer = "my \"own\" \\ one"), null)).single()
+
+        assertTrue(block.contains("""'{"analyzer": "my \"own\" \\ one"}'"""), block)
+    }
+
+    @Test
     fun `a uniqueness constraint is a unique index with one expression per property, null for a node that is not constrained`() {
         val spec = UniquenessConstraintSpec("Person", listOf("email", "tenant"))
         val (index, record) = checked(grammar.createConstraint(spec))

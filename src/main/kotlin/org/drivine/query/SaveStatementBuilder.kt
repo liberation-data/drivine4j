@@ -41,7 +41,7 @@ internal class SaveStatement(
     val createsRoot: Boolean = true,
 ) {
     /** The node the root is saved to. */
-    val rootKey: NodeKey get() = NodeKey(root.labels.split(':').toSet(), root.id)
+    val rootKey: NodeKey get() = NodeKey(root.labelNames.toSet(), root.id)
 }
 
 /** A node as a save finds it: by its id, under labels. A subtype is saved under more labels than its base, and is the same node. */
@@ -49,6 +49,7 @@ internal class NodeKey(val labels: Set<String>, id: Any) {
     /** A number is one id whatever its width. */
     val id: String = if (id is Number) "n:$id" else "s:$id"
 
+    /** Whether both name one node: the same id, under labels of which one's are all among the other's. */
     fun sameNodeAs(other: NodeKey): Boolean = id == other.id && (labels.containsAll(other.labels) || other.labels.containsAll(labels))
 }
 
@@ -89,46 +90,24 @@ internal class SaveStatementBuilder(
     private val storedKeys: StoredPropertyKeys?,
 ) {
 
-    /**
-     * @param checked whether the root is saved only if it still carries the stamp [obj] holds
-     * @param rootWriteFields the only root fields to write; null for all of them
-     * @param replaced what becomes of the targets a relationship field of the root no longer holds,
-     *   for a field whose list is the whole list; null for a field that only adds
-     * @param before the digest of [obj] as it was loaded, with [after] its digest now. When given, the
-     *   statement writes what differs: it drops the relationships that are gone, leaves alone the
-     *   related nodes that are as they were, and of one that was altered writes the fields that differ,
-     *   clearing one set to null
-     * @param createsRoot whether a root that is not there is made. When false, the statement gives no
-     *   row for a root that is gone, and writes nothing
-     */
-    fun build(
-        obj: Any,
-        checked: Boolean,
-        nullPolicy: NullPolicy,
-        rootWriteFields: Set<String>? = null,
-        replaced: (RelationshipModel) -> RemovedTargets? = { null },
-        before: JsonNode? = null,
-        after: JsonNode? = null,
-        createsRoot: Boolean = true,
-    ): SaveStatement = Composition(checked, nullPolicy, rootWriteFields, replaced, createsRoot).compose(obj, before, after)
+    fun build(request: SaveRequest): SaveStatement = with(request) {
+        Composition(checked, nullPolicy, rootWriteFields, replaced, createsRoot).compose(obj, before, after)
+    }
 
     /** The related fragments of one field that one `UNWIND` part saves: one class, joined or not. */
     private data class Group(val model: FragmentModel, val link: Boolean)
 
+    /** One statement as it is put together: its text part by part, and what it binds and hands back. */
     private inner class Composition(
         private val checked: Boolean,
         private val nullPolicy: NullPolicy,
         private val rootWriteFields: Set<String>?,
-        private val replaced: (RelationshipModel) -> RemovedTargets?,
+        replaced: (RelationshipModel) -> RemovedTargets?,
         private val createsRoot: Boolean,
-    ) {
+    ) : SaveTraversal<Unit>(objectMapper, replaced) {
         private val text = StringBuilder()
         private val mark = Stamps.fresh()
         private val bindings = mutableMapOf<String, Any?>(MARK_PARAM to mark)
-        private val stamped = mutableListOf<Any>()
-        private val carried = mutableListOf<String?>()
-        private val keys = mutableListOf<NodeKey?>()
-        private val repeats = mutableListOf<Repeat>()
         private var rootOffered: String? = null
         private var parts = 0
         private lateinit var root: StampWrite
@@ -136,9 +115,7 @@ internal class SaveStatementBuilder(
         fun compose(obj: Any, before: JsonNode?, after: JsonNode?): SaveStatement {
             if (obj.javaClass.isAnnotationPresent(GraphView::class.java)) {
                 val model = GraphViewModel.from(obj.javaClass)
-                // A save that replaces a list overwrites the root's relationships, so they are checked too.
-                val replaces = before == null && model.relationships.any { !it.readOnly && replaced(it) != null }
-                view(obj, model, 0, before, after, replaces)
+                view(obj, model, 0, before, after, replacesLists(model, before))
                 line(returned(rootStamp("_r0", "_was")))
             } else {
                 // A fragment is its root part alone: the stamp is handed back from the merge's own scope.
@@ -179,81 +156,33 @@ internal class SaveStatementBuilder(
                 "CASE WHEN right($was, ${Stamps.TOKEN}) = \$$CARRIED_LINKS_PARAM THEN ${Stamps.linksTokenOf(node)} ELSE \$$CARRIED_LINKS_PARAM END END"
         }
 
-        /** The root of the view at [depth], then each relationship field it writes. Leaves `_r<depth>` carried. */
-        private fun view(view: Any, model: GraphViewModel, depth: Int, before: JsonNode?, after: JsonNode?, replaces: Boolean = false) {
-            val rootFragment = requireNotNull(read(view, model.rootFragment.fieldName)) {
-                "Root fragment ${model.rootFragment.fieldName} is null"
-            }
-            rootPart(
-                rootFragment, FragmentModel.from(model.rootFragment.fragmentType), depth, replaces,
-                before?.get(model.rootFragment.fieldName), after?.get(model.rootFragment.fieldName),
-            )
+        /** Leaves `_r<depth>` carried, which the parts of the view's fields join to: the root needs no other name. */
+        override fun viewRoot(fragment: Any, model: FragmentModel, depth: Int, replaces: Boolean, before: JsonNode?, after: JsonNode?) =
+            rootPart(fragment, model, depth, replaces, before, after)
 
-            // A read-only field (every path is one) is loaded and never written.
-            val written = model.relationships.filterNot { it.readOnly }.map { relationship ->
-                val target = targetOf(relationship)
-                val value = read(view, relationship.fieldName)
-                Triple(relationship, target, if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value))
-            }
-            // Every node the object holds, in any field and in any view nested in one: none of them is
-            // deleted as unreferenced, though the field it is dropped from holds the only relationship
-            // the store has to it yet.
-            val held = if (depth == 0) heldBy(view, model) else emptyList()
-            // A save leaves a relationship's property alone where the object's is null, as it leaves a
-            // related node's. A save of what a change altered clears one the change set to null.
-            val clears = before != null
-            written.forEach { (relationship, target, items) ->
-                val ids = items.map { item -> item?.let { target.idOf(it) } }
-                // A node the field holds more than once is written once, as the last of them says.
-                val last = ids.withIndex().filter { it.value != null }.associate { it.value to it.index }
-                val itemsNow = after?.let { digestItems(it.get(relationship.fieldName), relationship) }
-                val itemsBefore = before?.let { digest ->
-                    digestItems(digest.get(relationship.fieldName), relationship).filterNotNull()
-                        .mapNotNull { item -> target.idOf(item)?.let { it to item } }.toMap()
-                }
+        override fun removal(field: Field, root: Unit, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>) =
+            removalPart(field.relationship, field.target, depth, ids, keep, removedTargets, heldIds)
 
-                if (itemsBefore != null) {
-                    val gone = itemsBefore.keys - ids.filterNotNull().map { it.toString() }.toSet()
-                    // Bound as the id is stored, a number as a number: a string does not equal one.
-                    val goneIds = gone.mapNotNull { id -> target.storedIdOf(itemsBefore.getValue(id)) }
-                    if (goneIds.isNotEmpty()) removalPart(relationship, target, depth, goneIds, keep = false, RemovedTargets.KEEP, emptyList())
-                } else if (depth == 0) {
-                    replaced(relationship)?.let { removedTargets ->
-                        val heldIds = held.filter { target.matches(it) }.mapNotNull { idOf(it) }.distinct()
-                        // Another field that reads the same relationships holds some of them: those are its to keep.
-                        val siblingIds = written.filter { (other) -> other !== relationship && other.reads(relationship) }
-                            .flatMap { (_, sibling, others) -> others.filterNotNull().map { sibling.fragmentOf(it) } }
-                            .filter { target.matches(it) }.mapNotNull { idOf(it) }
-                        removalPart(relationship, target, depth, (ids.filterNotNull() + siblingIds).distinct(), keep = true, removedTargets, heldIds)
-                    }
-                }
+        /**
+         * The fragments of the field an `UNWIND` can write are gathered as its rows, one part for each
+         * class and for whether they are joined, and written when the field's items have all been
+         * seen. Any other item has a part of its own, written where it stands.
+         */
+        override fun fieldSave(field: Field, root: Unit, depth: Int, clears: Boolean) = object : FieldSave {
+            private val groups = linkedMapOf<Group, MutableList<Map<String, Any?>>>()
 
-                val groups = linkedMapOf<Group, MutableList<Map<String, Any?>>>()
-                items.forEachIndexed { index, item ->
-                    if (item == null) return@forEachIndexed
-                    if (last[ids[index]]?.let { it != index } == true) {
-                        repeated(target.fragmentOf(item))
-                        return@forEachIndexed
-                    }
-                    val was = ids[index]?.let { itemsBefore?.get(it.toString()) }
-                    val now = itemsNow?.getOrNull(index)
-                    // As it was when loaded: the relationship and its target are left alone.
-                    if (was != null && was == now) return@forEachIndexed
-                    // A relationship that was loaded is not made again: if another writer has removed it
-                    // since, it stays removed. Its node is written, and it too if its properties changed.
-                    val link = was == null || relationship.relationshipProperties.any { was.get(it) != now?.get(it) }
-                    val node = target.nodeOf(item)
-                    // The runtime type, not the declared one: a subtype has labels of its own.
-                    val nodeModel = if (target.view == null) FragmentModel.from(node.javaClass) else null
-                    if (nodeModel != null && nodeModel.savedByUnwind(grammar)) {
-                        val altered = altered(was?.let { target.nodeOf(it) }, now?.let { target.nodeOf(it) })
-                        groups.getOrPut(Group(nodeModel, link)) { mutableListOf() }.add(row(relationship, item, node, nodeModel, altered))
-                    } else {
-                        relatedPart(relationship, target, item, depth, link, clears, was?.let { target.nodeOf(it) }, now?.let { target.nodeOf(it) })
-                    }
+            override fun item(related: Related) {
+                // The runtime type, not the declared one: a subtype has labels of its own.
+                val model = if (field.target.view == null) FragmentModel.from(related.node.javaClass) else null
+                if (model != null && model.savedByUnwind(grammar)) {
+                    val row = row(field.relationship, related.item, related.node, model, altered(related.before, related.after))
+                    groups.getOrPut(Group(model, related.link)) { mutableListOf() }.add(row)
+                } else {
+                    relatedPart(field.relationship, field.target, related, depth, clears)
                 }
-                groups.forEach { (group, rows) -> groupPart(relationship, group, rows, depth, clears) }
             }
+
+            override fun done() = groups.forEach { (group, rows) -> groupPart(field.relationship, group, rows, depth, clears) }
         }
 
         /**
@@ -294,13 +223,6 @@ internal class SaveStatementBuilder(
             )
             val altered = altered(before, after) ?: return builder.buildMergeStatement(fragment, null)
             return builder.buildMergeStatement(fragment, null, before, NullPolicy.CLEAR, altered)
-        }
-
-        /** The fields that differ between a fragment's digest as loaded and now; null when it was not loaded. */
-        private fun altered(before: JsonNode?, after: JsonNode?): Set<String>? {
-            if (before == null || after == null) return null
-            val names = (before.fieldNames().asSequence() + after.fieldNames().asSequence()).toSet()
-            return names.filter { before.get(it) != after.get(it) }.toSet()
         }
 
         /**
@@ -402,21 +324,19 @@ internal class SaveStatementBuilder(
             }
         }
 
-        /** Saves the node [item] points at, then when [link] the relationship to it from the root at [depth]. */
-        private fun relatedPart(
-            relationship: RelationshipModel, target: Target, item: Any, depth: Int, link: Boolean, clears: Boolean, before: JsonNode?, after: JsonNode?,
-        ) {
-            val node = target.nodeOf(item)
+        /** Saves the node [related] points at, then when it is joined the relationship to it from the root at [depth]. */
+        private fun relatedPart(relationship: RelationshipModel, target: Target, related: Related, depth: Int, clears: Boolean) {
+            val node = related.node
             val nested = target.view
             if (nested != null) {
-                view(node, nested, depth + 1, before, after)
-                if (link) relationshipPart(relationship, item, depth, "_r${depth + 1}", clears) else line("WITH ${carry(depth)}")
+                view(node, nested, depth + 1, related.before, related.after)
+                if (related.link) relationshipPart(relationship, related.item, depth, "_r${depth + 1}", clears) else line("WITH ${carry(depth)}")
             } else {
                 val model = FragmentModel.from(node.javaClass)
-                add(fragmentPart(node, model, carry(depth), before, after))
-                if (link) {
+                add(fragmentPart(node, model, carry(depth), related.before, related.after))
+                if (related.link) {
                     line("WITH ${roots(depth)}, n, ${collected(node, model)}")
-                    relationshipPart(relationship, item, depth, "n", clears)
+                    relationshipPart(relationship, related.item, depth, "n", clears)
                 } else {
                     line("WITH ${roots(depth)}, ${collected(node, model)}")
                 }
@@ -526,42 +446,6 @@ internal class SaveStatementBuilder(
                 "_ns + [n] AS _ns, _is + ['$index/' + ${Stamps.FOUND}] AS _is"
             }
 
-        /** Records [fragment], whose fields are [values], as a node whose stamp is handed back; gives its index. */
-        private fun handedBack(fragment: Any, model: FragmentModel, values: Map<String, Any?>): Int {
-            stamped.add(fragment)
-            carried.add(values[model.stampField] as? String)
-            keys.add(values[model.nodeIdField]?.let { NodeKey(model.labels.toSet(), it) })
-            return stamped.size - 1
-        }
-
-        /**
-         * Records [fragment] as one a field holds beside a later one for the same node. It is not
-         * written, and is handed the stamp the node is left with as the one that is written is.
-         */
-        private fun repeated(fragment: Any) {
-            val model = FragmentModel.from(fragment.javaClass)
-            val stampField = model.stampField ?: return
-            val values = objectMapper.toMap(fragment)
-            val id = values[model.nodeIdField] ?: return
-            repeats.add(Repeat(fragment, values[stampField] as? String, NodeKey(model.labels.toSet(), id)))
-        }
-
-        /** The fragments [view] holds through its relationship fields, and through those of each view nested in it. */
-        private fun heldBy(view: Any, model: GraphViewModel): List<Any> =
-            model.relationships.filterNot { it.readOnly }.flatMap { relationship ->
-                val target = targetOf(relationship)
-                val value = read(view, relationship.fieldName)
-                val items = if (relationship.isCollection) (value as? Collection<*>)?.toList().orEmpty() else listOf(value)
-                items.filterNotNull().flatMap { item ->
-                    val nested = target.view?.let { heldBy(target.nodeOf(item), it) }.orEmpty()
-                    listOf(target.fragmentOf(item)) + nested
-                }
-            }
-
-        /** The id of [fragment], as its own class declares it. */
-        private fun idOf(fragment: Any): Any? =
-            FragmentModel.from(fragment.javaClass).nodeIdField?.let { objectMapper.toMap(fragment)[it] }
-
         /** The prefix of the next part's parameters, so no two parts share one. */
         private fun prefix(): String = "p${parts++}_"
 
@@ -590,76 +474,6 @@ internal class SaveStatementBuilder(
         Direction.UNDIRECTED -> "-[$variable:${relationship.type}]-"
     }
 
-    /** The items of a digested relationship field, index-aligned with the field's collection. */
-    private fun digestItems(node: JsonNode?, relationship: RelationshipModel): List<JsonNode?> = when {
-        node == null || node.isNull -> emptyList()
-        relationship.isCollection -> node.map { item -> item.takeUnless { it.isNull } }
-        else -> listOf(node)
-    }
-
-    /**
-     * The node a relationship field's items point at: the model its id and labels come from (for a
-     * nested view, its root's), and how to reach it from an item or from an item's digest.
-     */
-    private inner class Target(val relationship: RelationshipModel, val view: GraphViewModel?, val model: FragmentModel) {
-        private val idField = requireNotNull(model.nodeIdField) { "Relationship target ${model.className} has no @NodeId" }
-        val idProperty: String = model.nodeIdProperty ?: idField
-
-        /** The fragment or view [item] points at: itself, or a relationship fragment's target. */
-        fun nodeOf(item: Any): Any =
-            if (relationship.isRelationshipFragment) {
-                requireNotNull(read(item, relationship.targetFieldName!!)) {
-                    "Target node field '${relationship.targetFieldName}' is null in relationship fragment"
-                }
-            } else {
-                item
-            }
-
-        fun nodeOf(item: JsonNode): JsonNode? =
-            if (relationship.isRelationshipFragment) item.get(relationship.targetFieldName!!) else item
-
-        /** The fragment [item] points at: of a nested view, its root. */
-        fun fragmentOf(item: Any): Any {
-            val node = nodeOf(item)
-            return view?.let { read(node, it.rootFragment.fieldName) } ?: node
-        }
-
-        fun idOf(item: Any): Any? = idOfFragment(fragmentOf(item))
-
-        /** Whether [fragment] is a node this field reads: one of its class, or one that carries its labels. */
-        fun matches(fragment: Any): Boolean =
-            model.clazz.isInstance(fragment) || FragmentModel.from(fragment.javaClass).labels.containsAll(model.labels)
-
-        fun idOfFragment(fragment: Any): Any? = objectMapper.toMap(fragment)[idField]
-
-        /** The id of a digested item as it is stored: a number as a number, anything else as text. */
-        fun storedIdOf(item: JsonNode): Any? {
-            val node = nodeOf(item)
-            val id = (view?.let { node?.get(it.rootFragment.fieldName) } ?: node)?.get(idField)?.takeUnless { it.isNull } ?: return null
-            return if (id.isNumber) id.numberValue() else id.asText()
-        }
-
-        fun idOf(item: JsonNode): String? {
-            val node = nodeOf(item)
-            val fragment = view?.let { node?.get(it.rootFragment.fieldName) } ?: node
-            return fragment?.get(idField)?.takeUnless { it.isNull }?.asText()
-        }
-    }
-
-    private fun targetOf(relationship: RelationshipModel): Target {
-        val targetClass = if (relationship.isRelationshipFragment) {
-            requireNotNull(relationship.targetNodeType) { "Relationship fragment '${relationship.fieldName}' has no target" }
-        } else {
-            relationship.elementType
-        }
-        return if (targetClass.isAnnotationPresent(GraphView::class.java)) {
-            val nested = GraphViewModel.from(targetClass)
-            Target(relationship, nested, FragmentModel.from(nested.rootFragment.fragmentType))
-        } else {
-            Target(relationship, null, FragmentModel.from(targetClass))
-        }
-    }
-
     private companion object {
         const val STAMP = Stamps.QUOTED
 
@@ -683,18 +497,4 @@ internal class SaveStatementBuilder(
          */
         const val WRITES_RELATIONSHIP = "(_had = 0 OR _same < _had)"
     }
-}
-
-/** Whether a field of this relationship loads relationships [other] loads too: the same type, read the same way. */
-private fun RelationshipModel.reads(other: RelationshipModel): Boolean =
-    type == other.type && (direction == other.direction || direction == Direction.UNDIRECTED || other.direction == Direction.UNDIRECTED)
-
-/** Reads the field [name] of [obj], wherever in its class hierarchy it is declared. */
-internal fun read(obj: Any, name: String): Any? {
-    var type: Class<*>? = obj.javaClass
-    while (type != null) {
-        type.declaredFields.firstOrNull { it.name == name }?.let { return it.apply { isAccessible = true }.get(obj) }
-        type = type.superclass
-    }
-    throw NoSuchFieldException("${obj.javaClass.name} has no field '$name'")
 }

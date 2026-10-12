@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
+import org.drivine.manager.BatchSaveOperations
 import org.drivine.manager.CascadeType
 import org.drivine.manager.NodeRef
 import org.drivine.manager.NullPolicy
@@ -21,10 +22,12 @@ import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.MergeStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.SaveStatementBuilder
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
+import org.drivine.query.Stamping
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
@@ -32,6 +35,8 @@ import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.OrderClauseResult
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.query.savedByUnwind
+import org.drivine.session.SessionManager
 import org.neo4j.driver.exceptions.TransientException
 
 /** The backend of the engines that speak Cypher: Neo4j, FalkorDB, Memgraph and Neptune, told apart by [grammar]. */
@@ -76,6 +81,11 @@ internal class CypherBackend(
     }
 
     private val saves = SaveStatementBuilder(objectMapper, grammar, storedKeys)
+
+    /** The batches of a `saveAll`. Nothing is tracked: a batch writes every field of what it is given. */
+    private val batches = BatchSaveOperations(
+        objectMapper, SessionManager.untracked(objectMapper), BatchSaveOperations.UNWIND_CHUNK_SIZE, grammar, storedKeys, Stamping(checked = false),
+    )
 
     private fun builder(graphClass: Class<*>) = GraphObjectQueryBuilder.forClass(graphClass, grammar)
 
@@ -178,16 +188,22 @@ internal class CypherBackend(
 
     // ----- Saving -----
 
-    override fun save(
-        obj: Any,
-        checked: Boolean,
-        nullPolicy: NullPolicy,
-        rootWriteFields: Set<String>?,
-        replaced: (RelationshipModel) -> RemovedTargets?,
-        before: JsonNode?,
-        after: JsonNode?,
-        createsRoot: Boolean,
-    ): SaveStatement = saves.build(obj, checked, nullPolicy, rootWriteFields, replaced, before, after, createsRoot)
+    override fun save(request: SaveRequest): SaveStatement = saves.build(request)
+
+    /**
+     * A fragment with no stamp to hand back goes as a row of an `UNWIND` where one can write it, and
+     * so does a stamped one, by a statement that returns its stamp. A stamped fragment an `UNWIND`
+     * cannot write (see [savedByUnwind]) is saved alone, by the statement that hands its stamp back.
+     */
+    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch {
+        val (stamped, plain) = fragments.partition { FragmentModel.from(it.value.javaClass).stampField != null }
+        val (batched, alone) = stamped.partition { FragmentModel.from(it.value.javaClass).savedByUnwind(grammar) }
+        return FragmentBatch(
+            unstamped = batches.buildBatchSpecs(plain.map { it.value }, CascadeType.NONE, nullPolicy),
+            stamped = batches.buildStampedSpecs(batched, nullPolicy),
+            alone = alone,
+        )
+    }
 
     // An absent stamp is read as '' so a node without one still gives a row on every engine.
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(

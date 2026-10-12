@@ -27,7 +27,10 @@ internal class OracleGraph(val name: String) {
         }
     }
 
+    /** The table of nodes: a row each, with its labels, its properties and its stamp. */
     val nodes = "${name}_node"
+
+    /** The table of relationships: a row each, from the node `src` to the node `dst`, with its type and its properties. */
     val edges = "${name}_edge"
 
     /** What Drivine made of indexes and constraints: see [OracleSchemaGrammar]. */
@@ -125,6 +128,7 @@ internal class OracleGraph(val name: String) {
     }
 
     companion object {
+        /** The graph of a manager that names none. */
         const val DEFAULT_NAME = JdbcConnectionProvider.DEFAULT_GRAPH
 
         /** Oracle names are at most 128 characters. */

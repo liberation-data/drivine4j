@@ -19,7 +19,9 @@ interface PersistenceManager {
     val type: DatabaseType
 
     /**
-     * Cypher grammar for this database, controlling dialect-specific query generation.
+     * Cypher grammar for this database, controlling dialect-specific query generation. A store that
+     * does not speak Cypher ([DatabaseType.speaksCypher]) still gives one, its provider's default,
+     * and nothing reads it: the object managers ask such a store's backend for SQL.
      */
     val grammar: CypherGrammar
 
@@ -110,7 +112,7 @@ interface PersistenceManager {
      * [GraphObjectManager.saveAll] and [StatelessGraphObjectManager.saveAll].
      *
      * The batch is **atomic** — all succeed or none do — on an engine with multi-statement
-     * transactions (Neo4j, Memgraph). FalkorDB has none: in
+     * transactions (Neo4j, Memgraph, Oracle). FalkorDB has none: in
      * [org.drivine.connection.FalkorDbTransactionMode.WARN] each statement is committed as it runs,
      * so a failure midway leaves the earlier statements applied, and in
      * [org.drivine.connection.FalkorDbTransactionMode.STRICT] the batch is refused before any

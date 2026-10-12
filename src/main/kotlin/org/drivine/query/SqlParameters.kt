@@ -15,6 +15,7 @@ internal object SqlParameters {
     /** [statement] with a `?` for each parameter, and the name of each in the order they occur. */
     class Positional(val statement: String, val names: List<String>)
 
+    /** Reads [sql] once, left to right. A name that occurs twice is listed twice, so it is bound twice. */
     fun positional(sql: String): Positional {
         val out = StringBuilder(sql.length)
         val names = mutableListOf<String>()

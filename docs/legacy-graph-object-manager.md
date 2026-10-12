@@ -15,6 +15,10 @@ an `UNDIRECTED` field does not add a relationship beside one stored towards the 
 
 It also stamps what it changes, without checking a stamp: see [Stamps](#stamps) below.
 
+Its `save` and `saveAll` are written in Cypher alone. On Oracle they throw
+`UnsupportedOperationException`; this manager's loads, queries and deletes work there, and saving is
+`StatelessGraphObjectManager`'s.
+
 ```kotlin
 @Suppress("DEPRECATION")
 @Bean

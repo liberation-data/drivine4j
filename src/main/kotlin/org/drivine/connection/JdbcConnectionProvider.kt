@@ -43,6 +43,7 @@ class JdbcConnectionProvider(
     }
 
     companion object {
+        /** The graph of a provider that is given no name for one. */
         const val DEFAULT_GRAPH = "drivine"
 
         /** The statements the Oracle driver keeps prepared on each connection. */

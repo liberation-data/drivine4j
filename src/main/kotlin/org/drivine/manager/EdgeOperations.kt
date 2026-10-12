@@ -18,8 +18,9 @@ class EdgeOperations internal constructor(
     private val persistenceManager: PersistenceManager,
 ) {
 
-    /** Runs a statement again when the engine turns it away because another writer was changing the same node. */
     private val backend = manager.backend
+
+    /** Runs a statement again when the engine turns it away because another writer was changing the same node. */
     private val executor = SaveExecutor(persistenceManager, backend)
 
     /**

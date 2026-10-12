@@ -6,7 +6,12 @@ import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.UnsupportedSchemaGrammar
 
+/**
+ * Hands out the connections of one registered database, and says what the database is: the engine
+ * it speaks to, the grammars its statements and its schema are written in, and the graph it keeps.
+ */
 interface ConnectionProvider {
+    /** The name the database is registered under. */
     val name: String
     val type: DatabaseType
     val subtypeRegistry: SubtypeRegistry?
@@ -47,6 +52,9 @@ interface ConnectionProvider {
     val graphName: String?
         get() = null
 
+    /** A connection for the caller to use, and to release when it is done. */
     fun connect(): Connection
+
+    /** Closes what the provider holds open. A provider over a `DataSource` the application made leaves it open. */
     fun end()
 }

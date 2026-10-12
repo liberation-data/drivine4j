@@ -21,6 +21,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
+import org.drivine.query.SaveRequest
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -498,7 +499,7 @@ abstract class StatelessSaveSoundnessContract {
                     throw DrivineException.withRootCause(failure, spec)
                 }
             }
-            val statement = GraphBackends.of(pm, Neo4jObjectMapper.instance).save(loaded.copy(text = "late"), checked = true, NullPolicy.IGNORE)
+            val statement = GraphBackends.of(pm, Neo4jObjectMapper.instance).save(SaveRequest(loaded.copy(text = "late"), checked = true, NullPolicy.IGNORE))
 
             assertFailsWith<StaleObjectException> { SaveExecutor(inTransaction, GraphBackends.of(inTransaction, Neo4jObjectMapper.instance)).save(statement) }
         } finally {

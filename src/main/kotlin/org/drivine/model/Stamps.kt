@@ -12,6 +12,10 @@ import java.util.concurrent.ThreadLocalRandom
  *
  * A save compares the part it would overwrite: the first always, the second too when it replaces a
  * relationship list.
+ *
+ * The clauses here are Cypher, for the graph engines. Oracle keeps the stamp in a column of the
+ * node's row, `stamp`, and not as a property; its statements are written by the Oracle backend, and
+ * SQL of yours that changes a node gives that column new tokens itself.
  */
 object Stamps {
     /** The node property the stamp is stored under. */
@@ -39,7 +43,10 @@ object Stamps {
     internal fun lock(vararg aliases: String): String =
         "SET ${aliases.joinToString(", ") { "$it.$LOCK = true" }} REMOVE ${aliases.joinToString(", ") { "$it.$LOCK" }}"
 
+    /** The parameter a statement binds the stamp it offers the node under, before the builder's own prefix. */
     internal const val NEW_PARAM = "_stamp"
+
+    /** The parameter a checked statement binds what the node must still carry under: the object's stamp, or its node token. */
     internal const val EXPECTED_PARAM = "_expectedStamp"
 
     /** The length of one token; a stamp is two, and the colon between them. */

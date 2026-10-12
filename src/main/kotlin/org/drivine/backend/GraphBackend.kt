@@ -9,6 +9,7 @@ import org.drivine.manager.RelateMode
 import org.drivine.manager.RemovedTargets
 import org.drivine.model.RelationshipModel
 import org.drivine.query.QuerySpecification
+import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
@@ -19,6 +20,7 @@ import org.drivine.query.grammar.CypherGrammar
 
 /** A statement in the store's own language, and the values its parameters take. */
 internal class GraphStatement(val statement: String, val bindings: Map<String, Any?> = emptyMap()) {
+    /** The specification that runs the statement, with [more] bound beside its own values: an id, where the statement names one. */
     fun spec(more: Map<String, Any?> = emptyMap()): QuerySpecification<Any> =
         QuerySpecification.withStatement(statement).bind(bindings + more)
 }
@@ -48,13 +50,23 @@ internal interface GraphBackend {
     /** The grammar of a backend that speaks Cypher; null for one that does not. What only Cypher does asks for it. */
     val cypherGrammar: CypherGrammar?
 
+    /** Whether a delete can cascade to the nodes it leaves with no relationship (`DELETE_ORPHAN`). */
     val supportsOrphanDelete: Boolean
 
     /** What to tell a caller refused `DELETE_ORPHAN`: which engine cannot, and why. */
     val orphanDeleteLimit: String?
 
+    /**
+     * Whether an index can serve an order, so that a load ordered without one is worth a word of
+     * advice. Where it is false the object manager advises nothing.
+     */
     val supportsIndexBackedOrdering: Boolean
 
+    /**
+     * Reads the property keys, and the labels recorded as an open `@NodeLabels` field's own, that a
+     * stored node has, for a save that clears the stale ones. A backend whose save clears them where
+     * it writes the node reads nothing here.
+     */
     val storedKeys: StoredPropertyKeys
 
     // ----- Reading -----
@@ -70,11 +82,23 @@ internal interface GraphBackend {
 
     fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement
 
+    /**
+     * The search for the roots nearest [vector] by the embedding [property] names; null for the only
+     * one the fragment declares. The index is asked for [searchK] candidates, or for [topK] when
+     * that is null; [query], [threshold] and a view's required relationships then filter them, and
+     * at most [topK] come back. [partitionLabel] names the label whose index is searched, in place
+     * of the fragment's own.
+     */
     fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,
         topK: Int, threshold: Double?, searchK: Int?, partitionLabel: String?,
     ): ScoredSearchPlan
 
+    /**
+     * The search for the roots whose indexed text meets [text], by the full-text index that covers
+     * [property]; null for the only one the fragment declares. [query] filters what the search finds,
+     * and the [topK] best that score [threshold] or more come back.
+     */
     fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan
 
     // ----- Deleting -----
@@ -88,25 +112,15 @@ internal interface GraphBackend {
 
     // ----- Saving -----
 
-    /** A whole save as one statement. The parameters are those of `SaveStatementBuilder.build`. */
-    fun save(
-        obj: Any,
-        checked: Boolean,
-        nullPolicy: NullPolicy,
-        rootWriteFields: Set<String>? = null,
-        replaced: (RelationshipModel) -> RemovedTargets? = { null },
-        before: JsonNode? = null,
-        after: JsonNode? = null,
-        createsRoot: Boolean = true,
-    ): SaveStatement
+    /** A whole save as one statement. */
+    fun save(request: SaveRequest): SaveStatement
 
     /**
-     * The statements that save [fragments] several at a time, unchecked, each fragment under its
-     * index. Each returns a row for every fragment it saves, `index/found=stamp`: `found` the stamp the
-     * node carried before, empty when it had none. Null when the backend saves each fragment as a
-     * statement of its own.
+     * How [fragments] are saved several at a time, unchecked, each under its index: which go together
+     * and by what statements is the backend's to say, as it is what its store can write so. See
+     * [FragmentBatch].
      */
-    fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>>? = null
+    fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch
 
     /** Reads the stamp the node of [root] carries, as `''` when it has none; no row when the node is gone. */
     fun foundStamp(root: StampWrite): GraphStatement
@@ -130,6 +144,23 @@ internal interface GraphBackend {
     fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement
 
     companion object {
+        /** The parameter [load] and [delete] name the object's id by. */
         const val ID_PARAM = "id"
     }
 }
+
+/**
+ * The fragments of a batch as a backend saves them.
+ *
+ * @param unstamped the statements that save fragments no stamp is handed back for. Their rows say nothing
+ * @param stamped the statements that save fragments whose stamp is handed back. Each returns a row
+ *   for every fragment it saves, `index/found=stamp`: `found` the stamp the node carried before,
+ *   empty when it had none
+ * @param alone the fragments no statement here saves: each is saved by a statement of its own, as
+ *   an object saved by itself is
+ */
+internal class FragmentBatch(
+    val unstamped: List<QuerySpecification<*>> = emptyList(),
+    val stamped: List<QuerySpecification<String>> = emptyList(),
+    val alone: List<IndexedValue<Any>> = emptyList(),
+)

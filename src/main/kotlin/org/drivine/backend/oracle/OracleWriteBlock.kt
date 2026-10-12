@@ -705,7 +705,10 @@ END;
     """.trimEnd().trimStart('\n')
 
     companion object {
+        /** The parameter the plan is bound as: the steps, a JSON array. */
         const val PLAN = "_plan"
+
+        /** The parameter that carries the stamp the steps take a new relationship token from: see [WritePlan.mark]. */
         const val MARK = "_mark"
         private const val NEVER_STAMPED = Stamps.NEVER_STAMPED
 
