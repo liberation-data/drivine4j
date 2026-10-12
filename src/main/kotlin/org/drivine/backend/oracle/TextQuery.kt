@@ -8,6 +8,10 @@ package org.drivine.backend.oracle
  * It reads the plain core of the Lucene syntax the graph engines take: words, a `"quoted phrase"`,
  * `+must`, `-not` and `NOT not`, a `prefix*`, and `field:word` as the word. `AND` makes the word
  * after it one a node must hold; `OR` is the default between words. Anything else is read as text.
+ *
+ * A backslash makes the character after it text, as it does in Lucene: `\+must` is not required,
+ * `prefix\*` is not the start of a word, `\"` does not open or close a phrase, and the colon of
+ * `field\:word` does not end a field.
  */
 internal class TextQuery private constructor(
     val scored: List<String>,
@@ -22,8 +26,21 @@ internal class TextQuery private constructor(
 ) {
 
     companion object {
-        /** A sign, a field the term is scoped to (which is read as the term), then a quoted phrase or a word. */
-        private val TOKEN = Regex("""([+-]?)(?:[^\s:"]+:)?(?:"([^"]*)"|(\S+))""")
+        /**
+         * A sign, a field the term is scoped to (which is read as the term), then a quoted phrase or a
+         * word. A backslash and the character after it are one character of text wherever they stand.
+         */
+        private val TOKEN = Regex("""([+-]?)(?:(?:\\.|[^\s:"\\])+:)?(?:"((?:\\.|[^"\\])*)"|((?:\\.|\S)+))""")
+
+        /** What a word still holds up to its first colon that no backslash precedes: a second field. */
+        private val FIELD = Regex("""^(?:\\.|[^:\\])*:""")
+
+        /** A `*` that ends the text and that no backslash makes text. An even run of backslashes before it is backslashes. */
+        private val STAR_AT_END = Regex("""(?<!\\)(?:\\\\)*\*$""")
+
+        /** A backslash and the character it makes text. */
+        private val ESCAPED = Regex("""\\(.)""", RegexOption.DOT_MATCHES_ALL)
+
         private const val BOUNDARY_BEFORE = "(^|[^[:alnum:]_])"
         private const val BOUNDARY_AFTER = "($|[^[:alnum:]_])"
 
@@ -47,13 +64,12 @@ internal class TextQuery private constructor(
                     "OR", "||" -> return@forEach
                     "NOT", "!" -> { not = true; return@forEach }
                 }
-                val text = if (token.groups[2] != null) phrase else word.substringAfter(':')
-                val pattern = pattern(text) ?: return@forEach
-                val term = term(text)
+                val term = Term.of(if (token.groups[2] != null) phrase else word.replaceFirst(FIELD, "")) ?: return@forEach
+                val pattern = term.pattern
                 when {
-                    sign == "-" || not -> { excluded += pattern; excludedText += term }
-                    sign == "+" || must -> { required += pattern; scored += pattern; requiredText += term; scoredText += term }
-                    else -> { scored += pattern; scoredText += term }
+                    sign == "-" || not -> { excluded += pattern; excludedText += term.oracleText }
+                    sign == "+" || must -> { required += pattern; scored += pattern; requiredText += term.oracleText; scoredText += term.oracleText }
+                    else -> { scored += pattern; scoredText += term.oracleText }
                 }
                 must = false
                 not = false
@@ -64,25 +80,38 @@ internal class TextQuery private constructor(
             return TextQuery(scored, required, excluded, text)
         }
 
-        /** The words of [text], in lower case: its runs of letters, digits and underscores. */
-        private fun words(text: String): List<String> = text.lowercase().split(Regex("[^\\p{L}\\p{N}_]+")).filter { it.isNotEmpty() }
+    }
 
-        /** [text] for Oracle Text: its words as a phrase, or with a trailing `*` the last as the start of a word. */
-        private fun term(text: String): String {
-            val words = words(text)
-            return if (text.endsWith("*")) {
+    /** One term of a query: its [words] in turn, the last of them the start of a word when [prefix]. */
+    private class Term(private val words: List<String>, private val prefix: Boolean) {
+
+        /** The term for Oracle Text: its words as a phrase, or when [prefix] the last as the start of a word. */
+        val oracleText: String
+            get() = if (prefix) {
                 (words.dropLast(1).map { "{$it}" } + "${words.last()}%").joinToString(" ")
             } else {
                 "{${words.joinToString(" ")}}"
             }
-        }
 
-        /** The expression for [text] as whole words; with a trailing `*`, as the start of one. Null when it holds no word. */
-        private fun pattern(text: String): String? {
-            val prefix = text.endsWith("*")
-            val words = words(text)
-            if (words.isEmpty()) return null
-            return BOUNDARY_BEFORE + words.joinToString("[^[:alnum:]_]+") + (if (prefix) "" else BOUNDARY_AFTER)
+        /** The expression for the term as whole words; when [prefix], the last as the start of one. */
+        val pattern: String
+            get() = BOUNDARY_BEFORE + words.joinToString("[^[:alnum:]_]+") + (if (prefix) "" else BOUNDARY_AFTER)
+
+        companion object {
+            /**
+             * Reads [text], a phrase's content or a word. Null when it holds no word.
+             *
+             * Whether the term is a prefix is decided before the backslashes are taken out, because
+             * afterwards `prefix\*` and `prefix*` are the same text.
+             */
+            fun of(text: String): Term? {
+                val prefix = STAR_AT_END.containsMatchIn(text)
+                val words = words(text.replace(ESCAPED) { it.groupValues[1] })
+                return if (words.isEmpty()) null else Term(words, prefix)
+            }
+
+            /** The words of [text], in lower case: its runs of letters, digits and underscores. */
+            private fun words(text: String): List<String> = text.lowercase().split(Regex("[^\\p{L}\\p{N}_]+")).filter { it.isNotEmpty() }
         }
     }
 }

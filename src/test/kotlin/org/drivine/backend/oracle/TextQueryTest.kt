@@ -107,4 +107,64 @@ class TextQueryTest {
         assertEquals("(pre%)", TextQuery.parse("pre*").oracleText)
         assertEquals("({graph} pre%)", TextQuery.parse("\"graph pre*\"").oracleText)
     }
+
+    @Test
+    fun `a backslash before a sign makes the sign text, so the word is neither required nor excluded`() {
+        val query = TextQuery.parse("""graph \+kotlin \-python""")
+
+        assertEquals(listOf(word("graph"), word("kotlin"), word("python")), query.scored)
+        assertTrue(query.required.isEmpty() && query.excluded.isEmpty())
+    }
+
+    @Test
+    fun `a backslash before a closing star makes the star text, so the word is matched whole`() {
+        val query = TextQuery.parse("""pre\*""")
+
+        assertEquals(listOf(word("pre")), query.scored)
+        assertEquals("({pre})", query.oracleText)
+    }
+
+    @Test
+    fun `a star after a backslash that is itself text is still the start of a word`() {
+        // Two backslashes are one backslash of text, so the star after them is not escaped.
+        assertEquals("(pre%)", TextQuery.parse("""pre\\*""").oracleText)
+    }
+
+    @Test
+    fun `a backslash before a colon keeps what stands before the colon, where a bare colon makes it a field`() {
+        assertEquals("({https example com docs})", TextQuery.parse("""https\:\/\/example.com\/docs""").oracleText)
+        assertEquals("({example com docs})", TextQuery.parse("https://example.com/docs").oracleText)
+    }
+
+    @Test
+    fun `a backslash before a quote keeps the quote from opening or closing a phrase`() {
+        assertEquals("({say} ACCUM {hello} ACCUM {world})", TextQuery.parse("""say \"hello world\"""").oracleText)
+        assertEquals("({say hello now})", TextQuery.parse(""""say \"hello\" now"""").oracleText)
+    }
+
+    @Test
+    fun `a backslash before a space joins the two words into one term`() {
+        assertEquals("({graph data})", TextQuery.parse("""graph\ data""").oracleText)
+    }
+
+    @Test
+    fun `an operator written with backslashes is text, and holds no word`() {
+        val query = TextQuery.parse("""graph \&\& store \! python""")
+
+        assertEquals(listOf(word("graph"), word("store"), word("python")), query.scored)
+        assertTrue(query.required.isEmpty() && query.excluded.isEmpty())
+    }
+
+    @Test
+    fun `a backslash before a letter is dropped, so the word is not split there`() {
+        assertEquals("({foobar})", TextQuery.parse("""foo\bar""").oracleText)
+    }
+
+    @Test
+    fun `a required word whose punctuation is escaped is required as the phrase of its parts`() {
+        val query = TextQuery.parse("""+PN\-4471\-B order""")
+
+        assertEquals("({pn 4471 b} ACCUM {order}) AND {pn 4471 b}", query.oracleText)
+        assertEquals(1, query.required.size)
+    }
 }

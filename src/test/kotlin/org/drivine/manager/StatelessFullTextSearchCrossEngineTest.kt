@@ -220,4 +220,28 @@ class StatelessFullTextSearchOracleTest {
     private val fixtures = OracleTestDatabase.fixtures(pm)
 
     @Test fun `full-text search ranks, projects, and dispatches on Oracle`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
+
+    /**
+     * Oracle reads the query itself, where the graph engines hand it to their own parser, so what a
+     * backslash does there is checked here: it makes the character after it text.
+     */
+    @Test
+    fun `a backslash makes a star, a sign and a colon text on Oracle`() {
+        ensureIndexes(fixtures)
+        seed(fixtures, awaitIndexes = false)
+        val gom = buildGom(pm, registry)
+        fun articles(query: String) = gom.loadMatching<ArticleNode>(query, topK = 10).map { it.value.id }.toSet()
+
+        // Article B holds "recipes". A star finds it as the start of a word; an escaped star asks for the word "recipe".
+        assertEquals(setOf("B"), articles("recipe*"))
+        assertEquals(emptySet(), articles("""recipe\*"""))
+
+        // A minus takes away the articles that hold "soup", which is B. An escaped minus leaves "soup" a word that scores.
+        assertEquals(setOf("A", "C"), articles("graph -soup"))
+        assertEquals(setOf("A", "B", "C"), articles("""graph \-soup"""))
+
+        // A colon makes "soup" a field, so the word is "graph". An escaped colon keeps both: the phrase "soup graph", which no article holds.
+        assertEquals(setOf("A", "C"), articles("soup:graph"))
+        assertEquals(emptySet(), articles("""soup\:graph"""))
+    }
 }
