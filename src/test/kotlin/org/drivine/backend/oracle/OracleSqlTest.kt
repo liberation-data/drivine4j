@@ -125,7 +125,17 @@ class OracleSqlTest {
             "EXECUTE IMMEDIATE 'DELETE FROM t WHERE a = :b0 AND JSON_VALUE(p, ''\$.b'') = :b1 OR a = :b2'\nUSING \$a, \$_p0, \$a",
             OracleSql.immediate("DELETE FROM t WHERE a = \$a AND JSON_VALUE(p, '\$.b') = \$_p0 OR a = \$a"),
         )
-        assertEquals("EXECUTE IMMEDIATE 'SELECT nid FROM t'\nBULK COLLECT INTO v_ids", OracleSql.immediate("SELECT nid FROM t", into = "BULK COLLECT INTO v_ids"))
+        assertEquals("EXECUTE IMMEDIATE 'DELETE FROM t'", OracleSql.immediate("DELETE FROM t"))
+    }
+
+    @Test
+    fun `text longer than a literal may be is several joined as a CLOB, no character parted`() {
+        assertEquals("'it''s'", OracleSql.text("it's"))
+        assertEquals("'${"a".repeat(8000)}'", OracleSql.text("a".repeat(8000)))
+        assertEquals("TO_CLOB('${"a".repeat(8000)}')\n|| TO_CLOB('''b')", OracleSql.text("a".repeat(8000) + "'b"))
+        // A character of two halves that would straddle the end of a literal starts the next one.
+        val astral = "😀"
+        assertEquals("TO_CLOB('${"a".repeat(7999)}')\n|| TO_CLOB('$astral')", OracleSql.text("a".repeat(7999) + astral))
     }
 
     @Test

@@ -21,6 +21,7 @@ import org.testcontainers.containers.wait.strategy.Wait
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import sample.proposition.Mention
 import sample.proposition.PropositionView
 import sample.proposition.PropositionViewQueryDsl
 import kotlin.test.assertEquals
@@ -70,6 +71,7 @@ private fun verifyDelete(gom: StatelessGraphObjectManager) {
     assertEquals(0, delete { where { query.proposition.id eq "p3"; query.mentions.any { resolvedId eq "ent-3" } } })
     assertEquals(1, delete { where { query.proposition.id eq "p2"; query.mentions.none { resolvedId eq "ent-1" } } })
     assertEquals(setOf("p3"), left())
+    assertEquals(setOf("m1", "m2", "m3"), gom.loadAll(Mention::class.java).map { it.id }.toSet())
 }
 
 private const val SEED = """

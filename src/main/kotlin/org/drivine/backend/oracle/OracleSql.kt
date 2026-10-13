@@ -176,15 +176,35 @@ internal object OracleSql {
 
     /**
      * [statement] run from a block as a statement of its own, its parameters handed to it in the order
-     * it names them, and what it selects put [into] the block's variables. Oracle Free 23.26 takes
-     * neither a parameter nor a variable of the block inside a `GRAPH_TABLE` of the block's own SQL
-     * (`ORA-00600`, `ORA-49028`), which is how a predicate on a relationship is written.
+     * it names them. Oracle Free 23.26 takes neither a parameter nor a variable of the block inside a
+     * `GRAPH_TABLE` of the block's own SQL (`ORA-00600`, `ORA-49028`), which is how a predicate on a
+     * relationship is written.
      */
-    fun immediate(statement: String, into: String? = null): String {
+    fun immediate(statement: String): String {
         val asked = SqlParameters.positional(statement) { ":b$it" }
         val using = asked.names.takeIf { it.isNotEmpty() }?.joinToString(", ", "\nUSING ") { "\$$it" }.orEmpty()
-        return "EXECUTE IMMEDIATE ${literal(asked.statement)}${into?.let { "\n$it" }.orEmpty()}$using"
+        return "EXECUTE IMMEDIATE ${text(asked.statement)}$using"
     }
+
+    /**
+     * [text] as a string of any length: one literal, or past [MAX_LITERAL] several joined as a `CLOB`.
+     * PL/SQL takes a literal of 32,767 bytes at most, and a statement with a long predicate is longer.
+     */
+    fun text(text: String): String {
+        if (text.length <= MAX_LITERAL) return literal(text)
+        val parts = mutableListOf<String>()
+        var start = 0
+        while (start < text.length) {
+            // A character written as two is not parted: each half alone is no character.
+            val end = (start + MAX_LITERAL).coerceAtMost(text.length).let { if (it < text.length && text[it - 1].isHighSurrogate()) it - 1 else it }
+            parts += text.substring(start, end)
+            start = end
+        }
+        return parts.joinToString("\n|| ") { "TO_CLOB(${literal(it)})" }
+    }
+
+    /** The characters one literal of [text] holds: each is three bytes at most, or a quote written twice. */
+    private const val MAX_LITERAL = 8000
 
     /**
      * A block that runs [body], which leaves in `v_count` how many rows it changed, and returns that

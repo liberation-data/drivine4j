@@ -1,7 +1,8 @@
 package org.drivine.query
 
 /**
- * Turns the `$name` parameters of a SQL statement into the positional `?` markers JDBC binds.
+ * Turns the `$name` parameters of a SQL statement into positional markers: the `?` JDBC binds, unless
+ * told another.
  *
  * A parameter is a `$` that does not continue an identifier, followed by a name: Oracle allows `$`
  * inside an identifier (`v$session`), never at its start. Text inside a string literal (`'…'`,
@@ -12,7 +13,7 @@ package org.drivine.query
  */
 internal object SqlParameters {
 
-    /** [statement] with a `?` for each parameter, and the name of each in the order they occur. */
+    /** [statement] with a marker for each parameter, and the name of each in the order they occur. */
     class Positional(val statement: String, val names: List<String>)
 
     /**
