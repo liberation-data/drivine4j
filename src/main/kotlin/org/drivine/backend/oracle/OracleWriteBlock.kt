@@ -4,7 +4,6 @@ import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.model.Stamps
 import org.drivine.query.PatchOutcomes
-import org.drivine.query.SqlParameters
 
 /**
  * The one block that writes to a graph kept by Oracle. It is given a plan, a JSON array of steps, and
@@ -782,21 +781,12 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
 
     /**
      * The statement of `patch_node` that leaves in `v_met` whether the node it found meets the
-     * predicate of [query]. The query is run as a statement of its own, its parameters handed to it
-     * in the order it names them: Oracle Free 23.26 takes neither a parameter nor a variable of the
-     * block inside a `GRAPH_TABLE` of the block's own SQL (`ORA-00600`, `ORA-49028`), which is how
-     * a predicate on a relationship is written.
+     * predicate of [query]. The query is run as a statement of its own, since a predicate on a
+     * relationship cannot be in the block's own SQL: see [OracleSql.immediate].
      */
-    private fun meeting(query: String): String {
-        val given = mutableListOf<String>()
-        // A `$` in a literal of the query, as in a JSON path, is no parameter and is left as it is.
-        val asked = SqlParameters.replaced(query) { name -> ":b${given.size}".also { given += if (name == OracleSelect.NID) "v_nid" else "\$$name" } }
-        return """
-        -- The node is locked: what the predicate reads of it is what the last writer committed.
-        EXECUTE IMMEDIATE ${OracleSql.literal(asked)}
-        INTO v_met USING ${given.joinToString(", ")};
-""".trim('\n')
-    }
+    private fun meeting(query: String): String =
+        "        -- The node is locked: what the predicate reads of it is what the last writer committed.\n" +
+            OracleSql.immediate(query, into = "v_met", given = mapOf(OracleSelect.NID to "v_nid")).prependIndent("        ") + ";"
 
     /** The block itself: each step in turn, then what [returns] asks for. */
     private fun main(): String = """

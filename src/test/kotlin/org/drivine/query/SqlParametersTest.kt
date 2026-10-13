@@ -16,6 +16,12 @@ class SqlParametersTest {
     }
 
     @Test
+    fun `a marker may be told its place among the parameters, for a statement JDBC does not bind`() {
+        val named = SqlParameters.positional("SELECT * FROM t WHERE a = \$a AND b = '\$b' OR a = \$a") { ":b$it" }
+        assertEquals("SELECT * FROM t WHERE a = :b0 AND b = '\$b' OR a = :b1" to listOf("a", "a"), named.statement to named.names)
+    }
+
+    @Test
     fun `a dollar inside an identifier is not a parameter`() {
         assertEquals("SELECT banner FROM v\$version WHERE x = ?" to listOf("x"), positional("SELECT banner FROM v\$version WHERE x = \$x"))
     }

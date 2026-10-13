@@ -1,7 +1,8 @@
 package org.drivine.query
 
 /**
- * Turns the `$name` parameters of a SQL statement into the positional `?` markers JDBC binds.
+ * Turns the `$name` parameters of a SQL statement into positional markers: the `?` JDBC binds, unless
+ * told another.
  *
  * A parameter is a `$` that does not continue an identifier, followed by a name: Oracle allows `$`
  * inside an identifier (`v$session`), never at its start. Text inside a string literal (`'…'`,
@@ -12,21 +13,17 @@ package org.drivine.query
  */
 internal object SqlParameters {
 
-    /** [statement] with a `?` for each parameter, and the name of each in the order they occur. */
+    /** [statement] with a marker for each parameter, and the name of each in the order they occur. */
     class Positional(val statement: String, val names: List<String>)
 
-    /** Reads [sql] once, left to right. A name that occurs twice is listed twice, so it is bound twice. */
-    fun positional(sql: String): Positional {
-        val names = mutableListOf<String>()
-        return Positional(replaced(sql) { name -> "?".also { names += name } }, names)
-    }
-
     /**
-     * [sql] with each parameter replaced by what [replacement] gives for its name, in the order they
-     * occur. What is no parameter is left as it is: see [SqlParameters].
+     * Reads [sql] once, left to right. A name that occurs twice is listed twice, so it is bound twice.
+     * [marker] gives what stands for the parameter at an index of the names: `?`, unless the statement
+     * is not JDBC's to bind.
      */
-    fun replaced(sql: String, replacement: (String) -> String): String {
+    fun positional(sql: String, marker: (Int) -> String = { "?" }): Positional {
         val out = StringBuilder(sql.length)
+        val names = mutableListOf<String>()
         var i = 0
         while (i < sql.length) {
             val c = sql[i]
@@ -47,7 +44,8 @@ internal object SqlParameters {
                 if (name.uppercase() in DIRECTIVES) {
                     out.append(sql, i, j)
                 } else {
-                    out.append(replacement(name))
+                    out.append(marker(names.size))
+                    names += name
                 }
                 i = j
             } else {
@@ -55,7 +53,7 @@ internal object SqlParameters {
                 i++
             }
         }
-        return out.toString()
+        return Positional(out.toString(), names)
     }
 
     /** The directives of PL/SQL conditional compilation, which look like parameters and are not. */

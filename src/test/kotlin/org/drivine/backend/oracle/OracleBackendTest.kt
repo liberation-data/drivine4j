@@ -20,6 +20,7 @@ import org.drivine.query.dsl.OrderDirection.ASC
 import org.drivine.query.dsl.OrderDirection.DESC
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.SeekValueSpec
+import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
 import sample.fulltext.ArticleNode
@@ -319,14 +320,14 @@ class OracleBackendTest {
     // ----- Deleting -----
 
     @Test
-    fun `a delete by id is one counted DELETE of the node found by its id, which a where narrows further`() {
+    fun `a delete by id is one counted DELETE of the node found by its id, run on its own and given the id, which a where narrows further`() {
         val backend = backend()
         val plain = backend.delete(Claim::class.java, null, CascadeType.NONE).statement.squashed()
         val narrowed = backend.delete(Claim::class.java, "n.text = 'x'", CascadeType.NONE).statement.squashed()
 
-        assertContains(plain, "DELETE FROM g_node n_ WHERE INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0 AND JSON_VALUE(n_.props, '$.id') = \$id; v_count := SQL%ROWCOUNT;")
+        assertContains(plain, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE INSTR(JSON_SERIALIZE(n_.labels), ''\"Claim\"'') > 0 AND JSON_VALUE(n_.props, ''$.id'') = :b0' USING \$id; v_count := SQL%ROWCOUNT;")
         assertContains(plain, "OPEN v_rows FOR SELECT v_count FROM dual;")
-        assertContains(narrowed, "AND JSON_VALUE(n_.props, '$.id') = \$id AND (JSON_VALUE(n_.props, '$.text') = 'x');")
+        assertContains(narrowed, "AND JSON_VALUE(n_.props, ''$.id'') = :b0 AND (JSON_VALUE(n_.props, ''$.text'') = ''x'')' USING \$id;")
     }
 
     @Test
@@ -335,8 +336,20 @@ class OracleBackendTest {
         val all = backend.deleteAll(Claim::class.java, null as String?).statement.squashed()
         val some = backend.deleteAll(Claim::class.java, "n.text = 'x'").statement.squashed()
 
-        assertContains(all, "DELETE FROM g_node n_ WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")'); v_count := SQL%ROWCOUNT;")
-        assertContains(some, "DELETE FROM g_node n_ WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")') AND (JSON_VALUE(n_.props, '$.text') = 'x');")
+        assertContains(all, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE JSON_EXISTS(n_.labels, ''$[*]?(@ == \"Claim\")'')'; v_count := SQL%ROWCOUNT;")
+        assertContains(some, "DELETE FROM g_node n_ WHERE JSON_EXISTS(n_.labels, ''$[*]?(@ == \"Claim\")'') AND (JSON_VALUE(n_.props, ''$.text'') = ''x'')';")
+    }
+
+    @Test
+    fun `a delete of all by a predicate on a relationship hands the block's statement its value, which a GRAPH_TABLE of the block's own would refuse`() {
+        val statement = backend().deleteAll(ClaimView::class.java, query { conditions += PropertyCondition("people.name", ComparisonOperator.EQUALS, "Ada") })
+        val sql = statement.statement.squashed()
+
+        assertContains(sql, "EXECUTE IMMEDIATE 'DELETE FROM g_node claim_ WHERE")
+        assertContains(sql, "FROM GRAPH_TABLE (g MATCH")
+        assertContains(sql, "JSON_VALUE(people_.props, ''$.name'') = :b0)")
+        assertContains(sql, "' USING \$_p0; v_count := SQL%ROWCOUNT;")
+        assertEquals(mapOf("_p0" to "Ada"), statement.bindings)
     }
 
     @Test
@@ -437,14 +450,14 @@ class OracleBackendTest {
         // The predicate's values are the block's own parameters, handed to the query in the order it names them.
         assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK, "_p0", "_p1"), patch.bindings.keys)
         assertEquals(setOf("one", "Ada"), setOf(patch.bindings["_p0"], patch.bindings["_p1"]))
-        val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met USING ")
+        val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met\n        USING ")
         assertContains(asked.squashed(), "SELECT COUNT(*) FROM g_node claim_ WHERE claim_.nid = :b0 AND ")
         assertContains(asked, "GRAPH_TABLE (g")
         // Inside the text a quote is doubled, and no parameter of the block is named.
         assertContains(asked, "e.type = ''MENTIONS''")
         assertFalse("\$_p" in asked)
         assertEquals(listOf(":b0", ":b1", ":b2"), Regex(":b\\d+").findAll(asked).map { it.value }.toList())
-        assertEquals(listOf("v_nid", "\$_p0", "\$_p1"), patch.statement.substringAfter("INTO v_met USING ").substringBefore(";").split(", ").let { used -> listOf(used[0]) + used.drop(1).sorted() })
+        assertEquals(listOf("v_nid", "\$_p0", "\$_p1"), patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";").split(", ").let { used -> listOf(used[0]) + used.drop(1).sorted() })
         assertContains(patch.statement, "IF v_met > 0 THEN\n            write_props(op, v_o);")
         assertContains(patch.statement, "CASE WHEN v_met = 0 THEN '-' WHEN v_same = 0 THEN '1' ELSE '0' END")
     }
@@ -457,9 +470,9 @@ class OracleBackendTest {
         )
         val patch = backend().patch(Human::class.java, "h1", mapOf("name" to "Eve"), conditions)
 
-        val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met USING ")
+        val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met\n        USING ")
         assertContains(asked, "cost\$_p0")
-        assertEquals("v_nid, \$_p0", patch.statement.substringAfter("INTO v_met USING ").substringBefore(";"))
+        assertEquals("v_nid, \$_p0", patch.statement.substringAfter("INTO v_met\n        USING ").substringBefore(";"))
         assertEquals(listOf(":b0", ":b1"), Regex(":b\\d+").findAll(asked).map { it.value }.toList())
     }
 
