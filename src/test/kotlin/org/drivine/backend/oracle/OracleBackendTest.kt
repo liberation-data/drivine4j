@@ -395,15 +395,15 @@ class OracleBackendTest {
     }
 
     @Test
-    fun `a patch is a step for each row, in the order of their ids, five hundred to a block of one text`() {
+    fun `a patch is a step for each row, in the order given, five hundred to a block of one text`() {
         val rows = (0 until 501).map { PatchRow(it, "h${500 - it}", mapOf("name" to "Human $it", "note" to null)) }
         val specs = backend().patchAll(Human::class.java, listOf("name", "note"), rows, clears = false)
 
         val (first, second) = specs.map { steps(it.parameters) }
         assertEquals(500, first.size)
-        assertEquals((0..500).map { "h$it" }.sorted(), (first + second).map { it["k"] })
+        assertEquals((0..500).map { "h${500 - it}" }, (first + second).map { it["k"] })
         // The node `h0` was given last, and is returned under the index it was given at.
-        assertEquals(mapOf("op" to "patch", "s" to 0, "k" to "h0", "i" to "500", "fresh" to first.first()["fresh"], "set" to mapOf("name" to "Human 500")), first.first())
+        assertEquals(mapOf("op" to "patch", "s" to 0, "k" to "h0", "i" to "500", "fresh" to second.single()["fresh"], "set" to mapOf("name" to "Human 500")), second.single())
         assertEquals(specs[0].statement!!.text, specs[1].statement!!.text)
         assertContains(specs[0].statement!!.text, "JSON_TABLE(v_result")
     }

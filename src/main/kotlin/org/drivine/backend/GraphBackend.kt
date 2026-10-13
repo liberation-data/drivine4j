@@ -137,10 +137,9 @@ internal interface GraphBackend {
 
     /**
      * The statements that write named properties of many [graphClass] nodes, and make none. Each
-     * returns a row for every node it found, `index/changed=stamp`: `changed` is `1` when a value
-     * written differed from the node's and `0` when none did. A row whose node is not there gives
-     * nothing back. The rows are sent in the order of their ids, so two calls over the same nodes
-     * take their locks in the same order.
+     * returns a row for every node it found, `index/changed=stamp`, which [org.drivine.query.PatchOutcomes]
+     * reads. A row whose node is not there gives nothing back. The nodes are written in the order of
+     * [rows], which the caller gives in the order to take their locks in: see [PatchRow.inLockOrder].
      *
      * @param graphClass the fragment the nodes are of
      * @param properties the stored names of the properties written, which every row holds

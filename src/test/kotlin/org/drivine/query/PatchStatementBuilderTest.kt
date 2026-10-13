@@ -35,7 +35,12 @@ class PatchStatementBuilderTest {
     fun `where a null is left alone, it keeps the stored value and is no change`() {
         val statement = neo4j.unwind(FragmentModel.from(ChunkNode::class.java), listOf("text", "sequence_number"), clears = false)
 
-        assertContains(statement, "SET n.text = coalesce(row.v.text, n.text), n.sequence_number = coalesce(row.v.sequence_number, n.sequence_number), n.`__drivine.stamp` = ")
+        // The values are written only to a node they change; the stamp is seen to for every node found.
+        assertContains(
+            statement,
+            "FOREACH (_ IN CASE WHEN _changed THEN [1] ELSE [] END | " +
+                "SET n.text = coalesce(row.v.text, n.text), n.sequence_number = coalesce(row.v.sequence_number, n.sequence_number))\nSET n.`__drivine.stamp` = ",
+        )
         assertContains(
             statement,
             "((row.v.text IS NOT NULL AND NOT coalesce(n.text = row.v.text, false)) OR " +
@@ -47,7 +52,7 @@ class PatchStatementBuilderTest {
     fun `where a null clears, it is a change only for a property that held a value`() {
         val statement = neo4j.unwind(FragmentModel.from(ChunkNode::class.java), listOf("text"), clears = true)
 
-        assertContains(statement, "SET n.text = row.v.text, ")
+        assertContains(statement, "| SET n.text = row.v.text)")
         assertContains(statement, "(CASE WHEN row.v.text IS NULL THEN n.text IS NOT NULL ELSE NOT coalesce(n.text = row.v.text, false) END)")
     }
 

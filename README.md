@@ -1382,14 +1382,14 @@ val rewritten = results.count { it.found }
 
 - There is one `PatchResult` for each object, in the order given. `found` says whether the node was there, and `changed` whether a value written differed from what the node held. `applied` equals `found`: it is for a patch with a condition, which is to come.
 - `only` or `except` is required. `except` means every field that can be named, but those given. To write every field of an object, save it.
-- The id, the `@NodeStamp` field, a `@PropertyBag` and a `@NodeLabels` field cannot be named.
+- The id, the `@NodeStamp` field, a `@PropertyBag` and a `@NodeLabels` field cannot be named. The names are checked against the class of the objects: with no objects, property references are checked where they are all of one fragment, and names given as strings are not.
 - The objects are where an id and values are read from, and no more. For a view the fields are its root's, and its relationships are not written.
 - **A patch does not check stamps, and hands none back.** Only the named fields are written, so there is nothing else of the node to overwrite. A node a patch changed has a new stamp, so an object loaded before the patch is then stale: load it again to go on working with it.
-- A node whose values were already as set keeps its stamp. A node that never carried a stamp is given one.
+- A node whose values were already as set keeps its stamp, and on the graph engines none of the values is written to it, so a vector index is not fed a vector it holds. A node that never carried a stamp is given one.
 - Under `NullPolicy.IGNORE`, the default, a named field that is null on an object is left as the store has it. Under `CLEAR` it is cleared.
 - The objects are of one class, and each id is given once and is not null. A call that breaks one of these is refused before anything is written.
 - The id is taken to be unique. Where two nodes of the class share one, the graph engines write both, and Oracle the one it finds first.
-- The rows go 1,000 to a statement, as one batch: atomic as `saveAll` is, run again when the engine turns it away for contention, and refused on FalkorDB in `STRICT` mode. The rows are sent in the order of their ids, so two calls over the same nodes take their locks in the same order.
+- The rows go 1,000 to a statement, and 100 where a `@VectorIndex` field is written, as one batch: atomic as `saveAll` is, run again when the engine turns it away for contention, and refused on FalkorDB in `STRICT` mode. The rows are sent in the order of their ids, so two calls over the same nodes take their locks in the same order.
 - A `@VectorIndex` field is written in the engine's own vector type, on FalkorDB too: a patch sets each field by name, where a batch save of such a fragment there is a statement for each.
 
 #### Saving from Java
@@ -2416,7 +2416,7 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   or a serialization failure (`ORA-08177`), is run again, as on Neo4j and Memgraph.
 - `saveAll` saves fragments 500 to a statement, and each view by a statement of its own. The batch is
   one transaction.
-- `patchAll` writes 500 nodes to a statement, in one transaction.
+- `patchAll` writes 500 nodes to a statement, and 100 where a `@VectorIndex` field is written, in one transaction.
 - A delete can cascade with `DELETE_ALL` and with `DELETE_ORPHAN`.
 - Index the id of each node type you save: `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`
   makes a unique index and the index a node is found by. Without one a save reads the table.

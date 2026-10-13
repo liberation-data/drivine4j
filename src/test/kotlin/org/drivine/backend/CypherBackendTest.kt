@@ -26,6 +26,7 @@ import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.driver.exceptions.ServiceUnavailableException
 import org.neo4j.driver.exceptions.TransientException
 import sample.stateless.Claim
+import sample.vector.DocNode
 import sample.stateless.Human
 import sample.stateless.Tagged
 import kotlin.test.assertContains
@@ -228,15 +229,15 @@ class CypherBackendTest {
     }
 
     @Test
-    fun `the rows of a patch are sent in the order of their ids, each under its own index and offered a stamp of its own`() {
+    fun `the rows of a patch are sent in the order given, each under its own index and offered a stamp of its own`() {
         val rows = listOf("c", "a", "b").mapIndexed { index, id -> PatchRow(index, id, mapOf("note" to "n$index")) }
         val spec = backend().patchAll(Claim::class.java, listOf("note"), rows, clears = false).single()
 
         @Suppress("UNCHECKED_CAST")
         val sent = spec.parameters["rows"] as List<Map<String, Any?>>
-        assertEquals(listOf("a", "b", "c"), sent.map { it["id"] })
-        assertEquals(listOf("1", "2", "0"), sent.map { it["i"] })
-        assertEquals(listOf("n1", "n2", "n0"), sent.map { (it["v"] as Map<*, *>)["note"] })
+        assertEquals(listOf("c", "a", "b"), sent.map { it["id"] })
+        assertEquals(listOf("0", "1", "2"), sent.map { it["i"] })
+        assertEquals(listOf("n0", "n1", "n2"), sent.map { (it["v"] as Map<*, *>)["note"] })
         assertEquals(3, sent.map { it["stamp"] as String }.onEach { assertTrue(Stamps.isTwoTokens(it), it) }.distinct().size)
         assertContains(spec.statement!!.text, "MATCH (n:Claim {id: row.id})")
     }
@@ -248,6 +249,16 @@ class CypherBackendTest {
 
         assertEquals(listOf(1000, 1000, 1), specs.map { (it.parameters["rows"] as List<*>).size })
         assertEquals(1, specs.map { it.statement!!.text }.distinct().size)
+    }
+
+    @Test
+    fun `rows that hold a vector go fewer to a statement`() {
+        val rows = (1..201).map { PatchRow(it, "d$it", mapOf("title" to "t", "embedding" to listOf(1.0f))) }
+
+        fun sizes(properties: List<String>) = backend().patchAll(DocNode::class.java, properties, rows, clears = false).map { (it.parameters["rows"] as List<*>).size }
+
+        assertEquals(listOf(100, 100, 1), sizes(listOf("title", "embedding")))
+        assertEquals(listOf(201), sizes(listOf("title")))
     }
 
     @Test

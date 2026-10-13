@@ -214,10 +214,10 @@ internal class CypherBackend(
 
     /** One statement for each [BatchSaveOperations.UNWIND_CHUNK_SIZE] rows, each row offered a stamp of its own. */
     override fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>> {
-        val statement = patches.unwind(FragmentModel.from(graphClass), properties, clears)
-        return rows.sortedBy { it.id.toString() }
-            .map { mapOf("i" to it.index.toString(), "id" to it.id, "stamp" to Stamps.fresh(), "v" to it.values) }
-            .chunked(BatchSaveOperations.UNWIND_CHUNK_SIZE)
+        val model = FragmentModel.from(graphClass)
+        val statement = patches.unwind(model, properties, clears)
+        return rows.map { mapOf("i" to it.index.toString(), "id" to it.id, "stamp" to Stamps.fresh(), "v" to it.values) }
+            .chunked(PatchRow.toAStatement(model, properties, BatchSaveOperations.UNWIND_CHUNK_SIZE))
             .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf(PatchStatementBuilder.ROWS to chunk)).transform(String::class.java) }
     }
 

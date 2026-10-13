@@ -3,6 +3,7 @@ package org.drivine.backend.oracle
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.model.Stamps
+import org.drivine.query.PatchOutcomes
 
 /**
  * The one block that writes to a graph kept by Oracle. It is given a plan, a JSON array of steps, and
@@ -757,7 +758,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             END IF;
         END IF;
         v_h_index(v_h_index.COUNT) := op.get_string('i');
-        v_h_found(v_h_found.COUNT) := CASE WHEN v_same = 0 THEN '1' ELSE '0' END;
+        v_h_found(v_h_found.COUNT) := CASE WHEN v_same = 0 THEN '${PatchOutcomes.CHANGED}' ELSE '${PatchOutcomes.UNCHANGED}' END;
         v_h_node(v_h_node.COUNT) := v_nid;
     END;
 """.trim('\n')

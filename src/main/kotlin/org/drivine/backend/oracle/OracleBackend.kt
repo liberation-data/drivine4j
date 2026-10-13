@@ -223,13 +223,13 @@ internal class OracleBackend(
     )
 
     /**
-     * A `patch` step for each row, [BATCH] to a block. What a null does is in the step: the property
+     * A `patch` step for each row, [BATCH] to a block, and fewer where a vector is written: see [PatchRow.toAStatement]. What a null does is in the step: the property
      * is left out of what the step sets, and when the call clears, named among what it removes.
      */
     override fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>> {
         val model = FragmentModel.from(graphClass)
         val key = requireNotNull(model.nodeIdProperty) { "${graphClass.simpleName} has no @NodeId field to find a node by." }
-        return rows.sortedBy { it.id.toString() }.chunked(BATCH).map { chunk ->
+        return rows.chunked(PatchRow.toAStatement(model, properties, BATCH)).map { chunk ->
             val plan = WritePlan(graph)
             val shape = plan.shape(model.labels, key)
             chunk.forEach { row ->

@@ -7,18 +7,20 @@ import org.drivine.annotation.GraphView
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.backend.FragmentBatch
 import org.drivine.mapper.toMap
+import org.drivine.annotation.NodeFragment
+import org.drivine.mapper.ResultPostProcessor
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
 import org.drivine.query.FoundStamp
+import org.drivine.query.PatchOutcomes
 import org.drivine.query.PatchRow
 import org.drivine.query.ReturnedStamps
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.Stamping
 import org.drivine.query.read
-import org.drivine.query.unwindProps
 import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
 import java.util.IdentityHashMap
@@ -316,6 +318,12 @@ class StatelessGraphObjectManager private constructor(
         except: Set<KProperty1<*, *>> = emptySet(),
     ): List<PatchResult> {
         objs.firstOrNull()?.let { first -> (only + except).forEach { requireFieldOf(first, it) } }
+        // With no object to say the class, the properties do, where they are all of one fragment.
+        if (objs.isEmpty()) {
+            (only + except).map { it.javaField?.declaringClass ?: it.javaGetter?.declaringClass }.distinct().singleOrNull()
+                ?.takeIf { it.isAnnotationPresent(NodeFragment::class.java) }
+                ?.let { patchedFields(FragmentModel.from(it), only.map { it.name }.toSet(), except.map { it.name }.toSet()) }
+        }
         return patchAllFields(objs, nullPolicy, only.map { it.name }.toSet(), except.map { it.name }.toSet())
     }
 
@@ -339,15 +347,16 @@ class StatelessGraphObjectManager private constructor(
         }
         val model = rootModel(classes.single())
         val idField = requireNotNull(model.nodeIdField) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
-        val properties = patchedFields(model, only, except).map { field -> model.fields.first { it.name == field }.propertyName }
+        // In the order the class declares them, so one patch is one text however its fields were named.
+        val patched = patchedFields(model, only, except)
+        val written = model.fields.filter { it.name in patched }
 
         val rows = items.mapIndexed { index, item ->
             val root = requireNotNull(stamps.rootOf(item)) { "The root of the ${item.javaClass.simpleName} at $index is null." }
             val values = objectMapper.toMap(root)
             val id = requireNotNull(values[idField]) { "The ${model.clazz.simpleName} at $index has a null id, so there is no node to patch." }
             // Every row holds every named property, a null one too: what a null does is the statement's to say.
-            val stored = model.unwindProps(values, NullPolicy.CLEAR)
-            PatchRow(index, id, properties.associateWith { stored[it] })
+            PatchRow(index, id, written.associate { it.propertyName to values[it.name] })
         }
         rows.groupBy { it.id }.values.firstOrNull { it.size > 1 }?.let { same ->
             throw IllegalArgumentException(
@@ -355,10 +364,11 @@ class StatelessGraphObjectManager private constructor(
             )
         }
 
-        val returned = executor.batch(backend.patchAll(model.clazz, properties, rows, clears = nullPolicy == NullPolicy.CLEAR))
-            .flatten().map { FoundStamp.of(it as String) }
-        // A node found says whether it changed. Where two nodes share an id, one that changed says so for both.
-        val changed = returned.groupBy({ it.index }, { it.found == CHANGED }).mapValues { (_, each) -> each.any { it } }
+        // Every attempt's rows are kept: a batch run again may find its own earlier writes. See [PatchOutcomes].
+        val outcomes = PatchOutcomes()
+        val specs = backend.patchAll(model.clazz, written.map { it.propertyName }, PatchRow.inLockOrder(rows), clears = nullPolicy == NullPolicy.CLEAR)
+            .map { spec -> spec.addPostProcessors(object : ResultPostProcessor<Any, Any> { override fun apply(results: List<Any>): List<Any> = outcomes.returned(results) }) }
+        val changed = outcomes.changed(executor.batch(specs).flatten())
         return items.indices.map { index -> changed[index]?.let { PatchResult(found = true, applied = true, changed = it) } ?: PatchResult.ABSENT }
     }
 
@@ -576,8 +586,6 @@ class StatelessGraphObjectManager private constructor(
 }
 
 /** What a patch's statement returns where `found` goes, for a node a value differed on. */
-private const val CHANGED = "1"
-
 /** Loads, changes and saves a graph object, with a reified type. See [StatelessGraphObjectManager.update]. */
 inline fun <reified T : Any> StatelessGraphObjectManager.update(id: String, attempts: Int = 3, noinline change: (T) -> T): T? =
     update(id, T::class.java, attempts, change)

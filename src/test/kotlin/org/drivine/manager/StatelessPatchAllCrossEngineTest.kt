@@ -286,6 +286,21 @@ abstract class StatelessPatchAllContract {
     }
 
     @Test
+    fun `the nodes are written in the order of their ids, and by one text however the fields were named`() {
+        val recording = RecordingBatches(pm)
+        val patches = manager(recording)
+        stateless.saveAll(listOf("a", "b", "c", "d").map { Claim(it, "text") })
+        val given = listOf("c", "a", "d", "b")
+
+        patches.patchAll(given.map { Claim(it, "one", "first") }, only = linkedSetOf(Claim::text, Claim::note))
+        patches.patchAll(given.map { Claim(it, "two", "second") }, only = linkedSetOf(Claim::note, Claim::text))
+
+        // A statement returns its rows in the order it wrote them, each under the index its item was given at.
+        assertEquals(List(2) { listOf("a", "b", "c", "d") }, recording.returned.map { rows -> rows.map { given[it.substringBefore('/').toInt()] } })
+        assertEquals(1, recording.texts.distinct().size)
+    }
+
+    @Test
     fun `nothing in sends no statement`() {
         val counting = CountingBatches(pm)
 
@@ -313,6 +328,8 @@ abstract class StatelessPatchAllContract {
             assertFailsWith<IllegalArgumentException> { stateless.patchAllFields(claims, only = setOf("nothing")) }.message.orEmpty(),
             "no field 'nothing'",
         )
+        // With no object, the properties say the class.
+        assertContains(assertFailsWith<IllegalArgumentException> { stateless.patchAll(emptyList<Claim>(), only = setOf(Claim::id)) }.message.orEmpty(), "the id")
         assertFailsWith<IllegalArgumentException> { stateless.patchAll(claims, only = setOf(Memo::text)) }
     }
 
@@ -399,6 +416,17 @@ private class CountingBatches(private val delegate: PersistenceManager) : Persis
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         batches += specs.size
         return delegate.queryBatch(specs)
+    }
+}
+
+/** Decorates a [PersistenceManager], keeping the text of each statement of a batch and the rows it returned. */
+private class RecordingBatches(private val delegate: PersistenceManager) : PersistenceManager by delegate {
+    val texts = mutableListOf<String>()
+    val returned = mutableListOf<List<String>>()
+
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
+        texts += specs.map { it.statement!!.text }
+        return delegate.queryBatch(specs).onEach { rows -> returned += rows.map { it as String } }
     }
 }
 

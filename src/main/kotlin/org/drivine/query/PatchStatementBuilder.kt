@@ -10,7 +10,25 @@ import org.drivine.schema.SchemaGrammar
  * and the [values] to write, by stored property name. Every row of a call holds the same names; a
  * value that is null is left alone or cleared, as the call says.
  */
-internal class PatchRow(val index: Int, val id: Any, val values: Map<String, Any?>)
+internal class PatchRow(val index: Int, val id: Any, val values: Map<String, Any?>) {
+    companion object {
+        /**
+         * [rows] in the order of their ids, which is the order they are written in: two calls over the
+         * same nodes then take their locks in one order, and neither waits on the other for ever.
+         */
+        fun inLockOrder(rows: List<PatchRow>): List<PatchRow> = rows.sortedBy { it.id.toString() }
+
+        /**
+         * How many rows go to a statement, of [most] where none of [properties] is a vector. A vector
+         * is a thousand numbers and more, so rows that hold one go [VECTOR_ROWS] to a statement: a
+         * statement is then megabytes, and not tens of them.
+         */
+        fun toAStatement(model: FragmentModel, properties: List<String>, most: Int): Int =
+            if (model.fields.any { it.vectorIndexed && it.propertyName in properties }) minOf(most, VECTOR_ROWS) else most
+
+        const val VECTOR_ROWS = 100
+    }
+}
 
 /**
  * Builds the statement that writes named properties of many nodes of one fragment, and makes none:
@@ -25,7 +43,7 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
     /**
      * The statement for nodes of [model], over the parameter [ROWS]: each row `{i, id, stamp, v}`, the
      * index as a string, the id, a stamp to offer and the values of [properties] by name. It returns
-     * `index/changed=stamp` for each node found, `changed` being `1` or `0`.
+     * `index/changed=stamp` for each node found: see [PatchOutcomes].
      *
      * The text depends on [properties] and on [clears], and on nothing a row holds.
      *
@@ -47,8 +65,10 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
             Stamps.lock("n"),
             // A node with no stamp is given one whatever this says, so it says only whether a value differed.
             "WITH n, row, (${written.joinToString(" OR ") { "(${it.differs})" }}) AS $CHANGED",
-            "SET ${(written.map { it.set } + Stamps.restamp("n", CHANGED, "row.stamp")).joinToString(", ")}",
-            "RETURN row.i + '/' + CASE WHEN $CHANGED THEN '1' ELSE '0' END + '=' + n.${Stamps.QUOTED}",
+            // A node whose values are already as given is not written to, so no index is fed what it holds.
+            "FOREACH (_ IN CASE WHEN $CHANGED THEN [1] ELSE [] END | SET ${written.joinToString(", ") { it.set }})",
+            "SET ${Stamps.restamp("n", CHANGED, "row.stamp")}",
+            "RETURN row.i + '/' + CASE WHEN $CHANGED THEN '${PatchOutcomes.CHANGED}' ELSE '${PatchOutcomes.UNCHANGED}' END + '=' + n.${Stamps.QUOTED}",
         ).joinToString("\n")
     }
 
