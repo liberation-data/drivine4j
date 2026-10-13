@@ -380,7 +380,8 @@ class StatelessGraphObjectManager private constructor(
      * Writes named fields of the one [graphClass] node whose id is [id], if the node meets the
      * predicate of [spec], in one statement, and makes no node. The node is not loaded: the store
      * evaluates the predicate, under the node's lock, so there is no loaded state to go stale and no
-     * stamp is compared.
+     * stamp is compared. The lock is the node's own: what a predicate reads of a related node is
+     * not locked.
      *
      * ```kotlin
      * val result = graphObjectManager.patch<SessionData>(sessionId) {
@@ -398,10 +399,11 @@ class StatelessGraphObjectManager private constructor(
      * loaded before the patch is then refused when it is saved. A node that never carried a stamp is
      * given one, whatever the patch did to it.
      *
-     * The id, the stamp, a `@PropertyBag` and a `@NodeLabels` field cannot be written, nor a field
-     * with a serializer of its own, which a save would store in a form a lone value cannot be given.
-     * A value is stored as a save stores the field. The id is taken to be unique: where two nodes of
-     * the class share one, the graph engines write both and Oracle the one it finds first.
+     * The id, the stamp, a `@PropertyBag` and a `@NodeLabels` field cannot be written. A value is
+     * stored as the object mapper stores one of its type, and a `@JsonPacked` field packed, which is
+     * how a save stores the field unless the field says otherwise: one that carries `@JsonSerialize`
+     * or `@JsonFormat` is refused. The id is taken to be unique: where two nodes of the class share
+     * one, the graph engines write each that meets the predicate, and Oracle the one it finds first.
      *
      * The statement is applied whole or not at all, with or without a transaction, and is run again
      * when the engine turns it away because another writer was changing the node.
@@ -422,7 +424,7 @@ class StatelessGraphObjectManager private constructor(
         return PatchResult(found = true, applied = flags.any { it != PatchOutcomes.UNMET }, changed = flags.any { it == PatchOutcomes.CHANGED })
     }
 
-    /** [patch] for Java, whose lambda need return nothing: `manager.patch(id, Claim.class, dsl, spec -> spec.set(dsl.getNote().assign("patched")))`. */
+    /** [patch] for Java, whose lambda need return nothing: `manager.patch(id, Claim.class, dsl, spec -> spec.set(dsl.getNote().assign("patched")))`. See [PatchSpec.set], [PatchSpec.onlyIf] and [PatchSpec.onlyIfAny]. */
     fun <T : Any, Q : Any> patch(id: Any, graphClass: Class<T>, queryObject: Q, spec: Consumer<PatchSpec<Q>>): PatchResult =
         patch(id, graphClass, queryObject) { spec.accept(this) }
 

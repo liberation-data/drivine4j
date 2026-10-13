@@ -1,6 +1,6 @@
 package org.drivine.manager
 
-import com.fasterxml.jackson.databind.JsonSerializer
+import com.fasterxml.jackson.annotation.JsonFormat
 import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.annotation.JsonSerialize
 import com.fasterxml.jackson.databind.introspect.AnnotatedMember
@@ -20,8 +20,8 @@ import org.drivine.query.dsl.FieldWrite
  *
  * A save reads a value off an object, through the object mapper. A patch has the value and no
  * object, so it gives the mapper the value alone, and does itself what the mapper does for the
- * field and not for the type: a `@JsonPacked` field is packed. A field with a serializer of its own
- * is refused, since what that serializer writes cannot be told from here.
+ * field and not for the type: a `@JsonPacked` field is packed. A field that carries `@JsonSerialize`
+ * or `@JsonFormat` is refused, since what it is written as cannot be told from here.
  */
 internal class PatchedValues(private val graphClass: Class<*>, private val objectMapper: ObjectMapper) {
     private val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
@@ -38,7 +38,7 @@ internal class PatchedValues(private val graphClass: Class<*>, private val objec
     private val patchable = model.fields.filter { it.name !in unpatchable && !it.stamp }
 
     /**
-     * What to write, by stored property name, in the order the class declares the fields: so one
+     * What to write, by stored property name, in the order the model holds the fields: so one
      * patch is one statement text however its fields were named. A null removes the property.
      *
      * @throws IllegalArgumentException when no field is named, one is named twice, or one is not a
@@ -75,21 +75,28 @@ internal class PatchedValues(private val graphClass: Class<*>, private val objec
     private fun canWrite(): String = "The fields it can write are: ${patchable.map { it.name }.sorted().joinToString()}."
 
     /** [value] as a save stores it in [field]. */
-    private fun stored(field: FragmentField, value: Any): Any? {
+    private fun stored(field: FragmentField, value: Any): Any {
         val members = membersOf(field)
-        require(members.none { it.getAnnotation(JsonSerialize::class.java)?.using?.let { using -> using != JsonSerializer.None::class } == true }) {
-            "Field '${field.name}' of ${model.clazz.simpleName} has a serializer of its own, and a patch cannot tell what that stores. Load the object and save it."
+        // What the mapper does for the field, and not for the type of its value, cannot be told from the value alone.
+        val shaped = listOf(JsonSerialize::class.java, JsonFormat::class.java).firstOrNull { annotation -> members.any { it.hasAnnotation(annotation) } }
+        require(shaped == null) {
+            "Field '${field.name}' of ${model.clazz.simpleName} is written as its @${shaped?.simpleName} says, and a patch cannot tell what that stores. Load the object and save it."
         }
         if (members.any { it.hasAnnotation(JsonPacked::class.java) }) return packedJson(value)
-        return objectMapper.toMap(mapOf(VALUE to value))[VALUE]
+        return requireNotNull(objectMapper.toMap(mapOf(VALUE to value))[VALUE]) {
+            "The object mapper writes nothing for the value given for field '${field.name}' of ${model.clazz.simpleName}. To remove the property, clear it."
+        }
     }
 
     /** The members the object mapper reads [field] and its annotations from. */
-    private fun membersOf(field: FragmentField): List<AnnotatedMember> =
-        objectMapper.serializationConfig.introspect(objectMapper.constructType(model.clazz)).findProperties()
-            .firstOrNull { it.name == field.name }
-            ?.let { listOfNotNull(it.field, it.getter, it.constructorParameter) }
-            .orEmpty()
+    private fun membersOf(field: FragmentField): List<AnnotatedMember> {
+        val property = objectMapper.serializationConfig.introspect(objectMapper.constructType(model.clazz)).findProperties().firstOrNull { it.name == field.name }
+        return listOfNotNull(property?.field, property?.getter, property?.constructorParameter).also {
+            require(it.isNotEmpty()) {
+                "The object mapper writes no property '${field.name}' of ${model.clazz.simpleName}, so a patch cannot tell how the field is stored. Load the object and save it."
+            }
+        }
+    }
 
     private companion object {
         /** What a predicate calls the node of a fragment: `FragmentQueryBuilder.nodeAlias`. */

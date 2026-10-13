@@ -450,6 +450,20 @@ class OracleBackendTest {
     }
 
     @Test
+    fun `a property of a patch's predicate whose name looks like a parameter is left as the name it is`() {
+        val conditions = listOf(
+            WhereCondition.PropertyCondition("n.cost\$_p0", ComparisonOperator.IS_NULL, null),
+            WhereCondition.PropertyCondition("n.name", ComparisonOperator.EQUALS, "Ada"),
+        )
+        val patch = backend().patch(Human::class.java, "h1", mapOf("name" to "Eve"), conditions)
+
+        val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met USING ")
+        assertContains(asked, "cost\$_p0")
+        assertEquals("v_nid, \$_p0", patch.statement.substringAfter("INTO v_met USING ").substringBefore(";"))
+        assertEquals(listOf(":b0", ":b1"), Regex(":b\\d+").findAll(asked).map { it.value }.toList())
+    }
+
+    @Test
     fun `a patch of one with no predicate asks nothing before it writes, and its block is a patch of many's`() {
         val one = backend().patch(Human::class.java, "h1", mapOf("name" to "Ada"), emptyList())
         val many = backend().patchAll(Human::class.java, listOf("name"), listOf(PatchRow(0, "h1", mapOf("name" to "Ada"))), clears = false).single()

@@ -82,6 +82,11 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
      * committed. It is read as a value of a `WITH`, and not in a `WHERE`, which would drop the row
      * of a node that does not meet it: that node is there, and the statement says so.
      *
+     * Where the engine takes a predicate only in a `WHERE` ([CypherGrammar.predicatesOnlyInWhere]),
+     * the node is locked under a name of the statement's own, [LOCKED], and found again as [alias] by
+     * an `OPTIONAL MATCH` whose `WHERE` holds the predicate: no row of it says the predicate is not
+     * met, and the locked node still gives its row.
+     *
      * The text depends on the names in [values] and on which of them are null, and on no value.
      *
      * @param alias what [where] calls the node: `n` for a fragment, the root field's name for a view
@@ -99,19 +104,34 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
             val given = if (property in wrapped) grammar.vectorPropertyLiteral("$VALUE$index") else "\$$VALUE$index"
             if (value == null) Assigned("$stored = null", "$stored IS NOT NULL") else Assigned("$stored = $given", "NOT coalesce($stored = $given, false)")
         }
-        return listOfNotNull(
-            "MATCH ($alias:${model.labels.joinToString(":")} {$idProperty: \$$ID})",
-            // The lock is taken before the predicate is read: see [Stamps.lock].
-            Stamps.lock(alias),
-            prologs.takeIf { it.isNotEmpty() }?.let { "WITH $alias\n${it.joinToString("\n")}" },
-            "WITH $alias, ${where?.let { "coalesce(($it), false)" } ?: "true"} AS $MET",
+        fun node(name: String) = "($name:${model.labels.joinToString(":")} {$idProperty: \$$ID})"
+        val met = if (where != null && grammar.predicatesOnlyInWhere) {
+            require(prologs.isEmpty()) { "${grammar::class.simpleName} takes a predicate only in a WHERE, and gives one that needs a clause before it." }
+            listOf(
+                "MATCH ${node(LOCKED)}",
+                Stamps.lock(LOCKED),
+                "WITH $LOCKED",
+                "OPTIONAL MATCH ${node(alias)} WHERE $alias = $LOCKED AND ($where)",
+                // Two nodes may share the id: each is its own row, met or not.
+                "WITH $LOCKED AS $alias, $alias IS NOT NULL AS $MET",
+            )
+        } else {
+            listOfNotNull(
+                "MATCH ${node(alias)}",
+                // The lock is taken before the predicate is read: see [Stamps.lock].
+                Stamps.lock(alias),
+                prologs.takeIf { it.isNotEmpty() }?.let { "WITH $alias\n${it.joinToString("\n")}" },
+                "WITH $alias, ${where?.let { "coalesce(($it), false)" } ?: "true"} AS $MET",
+            )
+        }
+        return (met + listOf(
             // A comparison that cannot tell counts as a change, as it does for a save.
             "WITH $alias, $MET, $MET AND (${assigned.joinToString(" OR ") { "(${it.differs})" }}) AS $CHANGED",
             // A node that is not changed is not written to, beyond the lock and a stamp if it had none.
             "FOREACH (_ IN CASE WHEN $CHANGED THEN [1] ELSE [] END | SET ${assigned.joinToString(", ") { it.set }})",
             "SET ${Stamps.restamp(alias, CHANGED, "\$${Stamps.NEW_PARAM}")}",
             "RETURN '0/' + CASE WHEN $CHANGED THEN '${PatchOutcomes.CHANGED}' WHEN $MET THEN '${PatchOutcomes.UNCHANGED}' ELSE '${PatchOutcomes.UNMET}' END + '=' + $alias.${Stamps.QUOTED}",
-        ).joinToString("\n")
+        )).joinToString("\n")
     }
 
     /** One property as a patch of one node writes it: the item that sets or removes it, and the test of whether that changes the node. */
@@ -155,6 +175,9 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
 
         /** The variable that holds whether a row changes its node. */
         private const val CHANGED = "_changed"
+
+        /** What a patch of one node calls the node it locked, where it finds it again under the predicate's name. */
+        private const val LOCKED = "_locked"
 
         /** The variable that holds whether the node meets the predicate of its patch. */
         private const val MET = "_met"

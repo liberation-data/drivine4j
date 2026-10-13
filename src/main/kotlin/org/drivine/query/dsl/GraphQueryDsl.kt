@@ -462,6 +462,16 @@ class PatchSpec<T : Any>(private val queryObject: T) {
     /** [fields] for Java: `spec.set(dsl.getNote().assign("patched"), dsl.getText().cleared())`. */
     fun set(vararg writes: FieldWrite): PatchSpec<T> = apply { this.writes.addAll(writes) }
 
+    /**
+     * [where] with `anyOf`, for Java: at least one of [conditions] must hold.
+     * `spec.onlyIfAny(dsl.getSeenAt().isAbsent(), dsl.getSeenAt().isLessThan(now))`. Joined to
+     * whatever else the patch asks by `AND`.
+     */
+    fun onlyIfAny(vararg conditions: PropertyConditionBuilder): PatchSpec<T> = apply {
+        require(conditions.isNotEmpty()) { "onlyIfAny needs a condition: with none, nothing could hold." }
+        this.conditions.add(WhereCondition.OrCondition(conditions.map { it.condition }))
+    }
+
     /** [where] for Java: `spec.onlyIf(dsl.getText().isEqualTo("one"))`. The conditions are joined by `AND`. */
     fun onlyIf(vararg conditions: PropertyConditionBuilder): PatchSpec<T> = apply { this.conditions.addAll(conditions.map { it.condition }) }
 }

@@ -20,6 +20,8 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.PatchSpec
+import org.drivine.query.dsl.PropertyReference
+import org.drivine.query.dsl.StringPropertyReference
 import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
@@ -41,6 +43,7 @@ import sample.patch.DocNodeQueryDsl
 import sample.patch.Pace
 import sample.patch.PatchSession
 import sample.patch.PatchSessionQueryDsl
+import sample.graphproperty.ChunkNode
 import sample.propertybag.BaggedNode
 import sample.stateless.Claim
 import sample.stateless.ClaimView
@@ -55,6 +58,9 @@ import sample.vector.DocNode
 abstract class StatelessPatchContract {
 
     abstract val pm: PersistenceManager
+
+    /** Whether the engine searches vectors: Neo4j 4 has no vector index. */
+    open val searchesVectors: Boolean = true
 
     /** Makes the index a vector search of [DocNode] reads, where the engine needs one to search. */
     open fun ensureVectorIndex() {
@@ -226,14 +232,15 @@ abstract class StatelessPatchContract {
 
     @Test
     fun `a vector is written so that a search finds it, and written again is no change`() {
-        ensureVectorIndex()
+        if (searchesVectors) ensureVectorIndex()
         stateless.save(DocNode("d1", "Alpha"))
         val vector = listOf(1.0f, 0.0f, 0.0f, 0.0f)
         fun embed() = stateless.patch("d1", DocNode::class.java, DocNodeQueryDsl.INSTANCE) { fields { query.embedding setTo vector } }
 
         assertEquals(changed, embed())
 
-        assertEquals(listOf("d1"), stateless.loadNearest(DocNode::class.java, vector, 5).map { it.value.id })
+        if (searchesVectors) assertEquals(listOf("d1"), stateless.loadNearest(DocNode::class.java, vector, 5).map { it.value.id })
+        assertEquals(vector, assertNotNull(stateless.load("d1", DocNode::class.java)).embedding)
         assertEquals("Alpha", assertNotNull(stateless.load("d1", DocNode::class.java)).title)
         assertEquals(unchanged, embed())
         assertEquals(changed, stateless.patch("d1", DocNode::class.java, DocNodeQueryDsl.INSTANCE) { fields { query.embedding.clear() } })
@@ -364,6 +371,33 @@ abstract class StatelessPatchContract {
     }
 
     @Test
+    fun `a field is written and tested under the property it is stored as`() {
+        stateless.save(ChunkNode("k1", "text", containerSectionId = "s1", sequenceNumber = 1))
+        val sequence = PropertyReference<Long>("n", "sequence_number")
+        val section = StringPropertyReference("n", "container_section_id")
+        fun renumber(inSection: String) = stateless.patch("k1", ChunkNode::class.java, Any()) { set(sequence.assign(2L)).onlyIf(section.isEqualTo(inSection)) }
+
+        assertEquals(unmet, renumber("s2"))
+        assertEquals(changed, renumber("s1"))
+
+        val stored = assertNotNull(stateless.load("k1", ChunkNode::class.java))
+        assertEquals(Triple("text", "s1", 2L), Triple(stored.text, stored.containerSectionId, stored.sequenceNumber))
+    }
+
+    @Test
+    fun `from Java's methods a predicate holds when any of its conditions does`() {
+        stateless.save(PatchSession("s1"))
+        val dsl = PatchSessionQueryDsl.INSTANCE
+        fun touch(at: Instant) = stateless.patch(
+            "s1", PatchSession::class.java, dsl,
+            java.util.function.Consumer { it.set(dsl.lastActivityAt.assign(at)).onlyIfAny(dsl.lastActivityAt.isAbsent(), dsl.lastActivityAt.isLessThan(at)) },
+        )
+
+        assertEquals(listOf(changed, unmet, changed), listOf(touch(noon), touch(noon.minusSeconds(5)), touch(noon.plusSeconds(5))))
+        assertEquals(noon.plusSeconds(5), session("s1").lastActivityAt)
+    }
+
+    @Test
     fun `from Java's methods a patch is written without a context`() {
         stateless.save(Claim("c1", "one", "first"))
         val dsl = ClaimQueryDsl.INSTANCE
@@ -420,6 +454,39 @@ class StatelessPatchNeo4jTest : StatelessPatchContract() {
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+}
+
+/** Neo4j 4 takes `EXISTS { }` only in a `WHERE`, so a predicate on a relationship is read another way there. */
+@Testcontainers
+class StatelessPatchNeo4j4Test : StatelessPatchContract() {
+    companion object {
+        private const val PASSWORD = "patchfour1"
+
+        @Container @JvmField
+        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:4.4"))
+            .apply { withAdminPassword(PASSWORD) }
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var manager: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "neo4-patch", type = DatabaseType.NEO4J,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "neo4j", password = PASSWORD, database = "neo4j",
+                config = emptyMap(), subtypeRegistry = registry, cypherDialect = CypherDialect.NEO4J_4,
+            )
+            manager = NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    override val pm: NonTransactionalPersistenceManager get() = manager
+    override val searchesVectors: Boolean = false
 }
 
 @Testcontainers

@@ -17,8 +17,16 @@ internal object SqlParameters {
 
     /** Reads [sql] once, left to right. A name that occurs twice is listed twice, so it is bound twice. */
     fun positional(sql: String): Positional {
-        val out = StringBuilder(sql.length)
         val names = mutableListOf<String>()
+        return Positional(replaced(sql) { name -> "?".also { names += name } }, names)
+    }
+
+    /**
+     * [sql] with each parameter replaced by what [replacement] gives for its name, in the order they
+     * occur. What is no parameter is left as it is: see [SqlParameters].
+     */
+    fun replaced(sql: String, replacement: (String) -> String): String {
+        val out = StringBuilder(sql.length)
         var i = 0
         while (i < sql.length) {
             val c = sql[i]
@@ -39,8 +47,7 @@ internal object SqlParameters {
                 if (name.uppercase() in DIRECTIVES) {
                     out.append(sql, i, j)
                 } else {
-                    names += name
-                    out.append('?')
+                    out.append(replacement(name))
                 }
                 i = j
             } else {
@@ -48,7 +55,7 @@ internal object SqlParameters {
                 i++
             }
         }
-        return Positional(out.toString(), names)
+        return out.toString()
     }
 
     /** The directives of PL/SQL conditional compilation, which look like parameters and are not. */

@@ -1402,13 +1402,14 @@ val narrated = graphObjectManager.patch<MessageInSession>(messageId) {
 - **`fields`** names what to write: `property setTo value`, and `property.clear()` to remove a property. A value is typed by its property, so a null or a value of another type does not compile. A fragment's fields are reached as `query.x`, a view's by the name of its root (`message.narration`).
 - **`where`** is the `where` of a load, and optional: without one the fields are written wherever the node is.
 - **It never makes a node.** A patch of an id no node has writes nothing and returns `found = false`.
-- **It is not checked against a stamp, and hands none back.** The predicate is read under the node's lock, so what it compares is what the last writer committed. A node a patch changed has a new first token in its stamp, so an object loaded before the patch is refused when it is saved: load it again to go on working with it. The relationship token is left alone.
-- A node whose values were already as set keeps its stamp, and is not written to. A node that never carried a stamp is given one, whatever the patch did to it.
-- A value is stored as a save stores the field: an `Instant`, an enum, a `@JsonPacked` list and a `@VectorIndex` vector, which FalkorDB keeps in its own vector type.
-- The id, the `@NodeStamp` field, a key of a `@PropertyBag`, a `@NodeLabels` field and a field of a related node cannot be written, nor a field with a `@JsonSerialize(using = …)` serializer of its own. Each is refused before anything is sent, and so is a field named twice.
+- **It is not checked against a stamp, and hands none back.** The predicate is read under the node's lock, so what it compares of the node is what the last writer committed. A related node the predicate names is not locked. A node a patch changed has a new first token in its stamp, so an object loaded before the patch is refused when it is saved: load it again to go on working with it. The relationship token is left alone.
+- A node whose values were already as set keeps its stamp, and none of the values is written to it. A node that never carried a stamp is given one, whatever the patch did to it. On the graph engines the lock is itself a property set and removed again, on every node the patch finds.
+- A value is stored as the object mapper stores one of its type, which is how a save stores the field: an `Instant`, an enum and a `@VectorIndex` vector, which FalkorDB keeps in its own vector type. A `@JsonPacked` field is packed.
+- The id, the `@NodeStamp` field, a key of a `@PropertyBag`, a `@NodeLabels` field and a field of a related node cannot be written, nor a field that carries `@JsonSerialize` or `@JsonFormat`, which a save stores as the annotation says and a lone value cannot be. Each is refused before anything is sent, and so is a field named twice.
 - On a view, `found` says the root node is there, and not that the view would load: a message with no session is `found`, and not `applied` when the predicate names the session.
 - The statement is applied whole or not at all, with or without a transaction, and is run again when the engine turns it away because another writer was changing the node. Inside a transaction it joins it.
-- The id is taken to be unique. Where two nodes of the class share one, the graph engines write both, and Oracle the one it finds first.
+- On Neo4j 4, which takes `EXISTS { }` only in a `WHERE`, the node is locked and then found again by an `OPTIONAL MATCH` that holds the predicate. The answers are the same.
+- The id is taken to be unique. Where two nodes of the class share one, the graph engines write each that meets the predicate, and Oracle the one it finds first.
 - `patch` is on `StatelessGraphObjectManager` alone. The generated `patch<T>(id) { }` passes the class's query DSL object; without the code generator, call `patch(id, T::class.java, queryObject) { }`.
 
 #### Batch Patch (`patchAll`)
@@ -1449,8 +1450,9 @@ graphObjectManager.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("n
 graphObjectManager.saveFields(chunk, Add.INSTANCE, NullPolicy.IGNORE, Set.of(), Set.of("embedding"));   // every field but these
 List<IssueView> saved = graphObjectManager.saveAll(views);
 List<PatchResult> patched = graphObjectManager.patchAllFields(chunks, NullPolicy.IGNORE, Set.of("embedding"));  // nodes that are there
-PatchResult touched = graphObjectManager.patch(id, Person.class, PersonQueryDsl.INSTANCE,
-    spec -> spec.set(PersonQueryDsl.INSTANCE.name().assign("Ada")).onlyIf(PersonQueryDsl.INSTANCE.bio().isAbsent()));  // one node, if it meets the predicate
+PersonQueryDsl dsl = PersonQueryDsl.Companion.getINSTANCE();
+PatchResult touched = graphObjectManager.patch(id, Person.class, dsl,
+    spec -> spec.set(dsl.getName().assign("Ada")).onlyIf(dsl.getBio().isAbsent()));                   // one node, if it meets the predicate
 
 Person updated = graphObjectManager.update(id, Person.class, p -> { p.setName("Ada"); return p; });   // null when there is no such node
 graphObjectManager.update(id, Person.class, 5, p -> p.withName("Ada"));                                // five attempts
@@ -1459,7 +1461,7 @@ graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), ne
 ```
 
 - Java names fields as strings, so it calls `saveFields` where Kotlin passes property references to `save`, and `patchAllFields` for `patchAll`.
-- A `patch` from Java names its fields with `property.assign(value)` and `property.cleared()` in `spec.set(…)`, and its predicate with the conditions of the Java query builder in `spec.onlyIf(…)`, which are joined by `AND`.
+- A `patch` from Java names its fields with `property.assign(value)` and `property.cleared()` in `spec.set(…)`, and its predicate with the conditions of the Java query builder: `spec.onlyIf(…)` joins them by `AND`, and `spec.onlyIfAny(…)` by `OR`. The DSL object above is the one the Kotlin code generator makes; one the Java generator makes is `PersonQueryDsl.INSTANCE`, with `name()` for `getName()`.
 - `@NodeStamp` goes on a `String` field of a Java class or on a `String` component of a record. A Java object whose fields can be set is given its new stamp in place, and `save` returns that same object. A record comes back as a copy.
 - `update`'s function may change the object it is given and return it, or return another.
 - A refused save throws `StaleObjectException`: `getDeleted()` says whether the node is gone, `getFoundStamp()` gives the stamp it carries now, and `getBySameBatch()` says whether a `saveAll` refused itself.

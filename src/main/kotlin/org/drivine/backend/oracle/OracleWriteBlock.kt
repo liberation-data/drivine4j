@@ -4,6 +4,7 @@ import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.model.Stamps
 import org.drivine.query.PatchOutcomes
+import org.drivine.query.SqlParameters
 
 /**
  * The one block that writes to a graph kept by Oracle. It is given a plan, a JSON array of steps, and
@@ -43,8 +44,8 @@ import org.drivine.query.PatchOutcomes
  *
  * @param returns what the block gives back when its steps have run
  * @param patchedIf the query a `patch` step asks whether to write to the node it found, when it
- *   writes only to one that meets a predicate: it counts the node whose `nid` is its first
- *   placeholder, [OracleSelect.NID], if the node meets the predicate. A predicate is SQL, and cannot
+ *   writes only to one that meets a predicate: it counts the node whose `nid` is its parameter
+ *   [OracleSelect.NID], if the node meets the predicate. A predicate is SQL, and cannot
  *   be data in a plan, so it is in the text; null for a block whose `patch` steps write wherever
  *   the node is. See [OracleSelect.meeting]
  */
@@ -786,10 +787,11 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
      * a predicate on a relationship is written.
      */
     private fun meeting(query: String): String {
-        val given = mutableListOf("v_nid")
-        val asked = PARAMETER.replace(query.replace(OracleSelect.NID, ":b0")) { parameter -> ":b${given.size}".also { given += parameter.value } }
+        val given = mutableListOf<String>()
+        // A `$` in a literal of the query, as in a JSON path, is no parameter and is left as it is.
+        val asked = SqlParameters.replaced(query) { name -> ":b${given.size}".also { given += if (name == OracleSelect.NID) "v_nid" else "\$$name" } }
         return """
-        -- The node is locked: what the predicate reads is what the last writer committed.
+        -- The node is locked: what the predicate reads of it is what the last writer committed.
         EXECUTE IMMEDIATE ${OracleSql.literal(asked)}
         INTO v_met USING ${given.joinToString(", ")};
 """.trim('\n')
@@ -857,9 +859,6 @@ END;
 
         /** The parameter that carries the stamp the steps take a new relationship token from: see [WritePlan.mark]. */
         const val MARK = "_mark"
-
-        /** A parameter of a predicate, as `OracleStatementScope.bound` names one. */
-        private val PARAMETER = Regex("\\\$_p\\d+")
 
         /** What `save_node` records as the stamp it found on a node that was there without one. */
         private const val NEVER_STAMPED = Stamps.NEVER_STAMPED

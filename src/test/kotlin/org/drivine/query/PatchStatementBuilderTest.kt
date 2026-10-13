@@ -2,6 +2,7 @@ package org.drivine.query
 
 import org.drivine.model.FragmentModel
 import org.drivine.query.grammar.FalkorDbCypherGrammar
+import org.drivine.query.grammar.Neo4j4Grammar
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.grammar.OpenCypherGrammar
 import org.drivine.query.sort.ApocSortMapsEmitter
@@ -137,5 +138,25 @@ class PatchStatementBuilderTest {
         // A cleared vector is never wrapped.
         assertContains(falkorDb.one(model, "n", mapOf("embedding" to null), where = null), "SET n.embedding = null)")
         assertContains(neo4j.one(model, "n", mapOf("embedding" to listOf(1.0f)), where = null), "SET n.embedding = \$_v0)")
+    }
+
+    @Test
+    fun `where a predicate may stand only in a WHERE, the node is locked and found again under the predicate`() {
+        val neo4j4 = PatchStatementBuilder(Neo4j4Grammar(ApocSortMapsEmitter()))
+        val where = "EXISTS { (claim)-[:MENTIONS]->(people) WHERE people.name = \$p }"
+
+        val lines = neo4j4.one(FragmentModel.from(ChunkNode::class.java), "claim", mapOf("text" to "new"), where).lines()
+
+        assertEquals("MATCH (_locked:ContentElement:Chunk {id: \$id})", lines[0])
+        assertEquals("SET _locked.`__drivine.lock` = true REMOVE _locked.`__drivine.lock`", lines[1])
+        assertEquals("WITH _locked", lines[2])
+        assertEquals("OPTIONAL MATCH (claim:ContentElement:Chunk {id: \$id}) WHERE claim = _locked AND ($where)", lines[3])
+        assertEquals("WITH _locked AS claim, claim IS NOT NULL AS _met", lines[4])
+        assertEquals("WITH claim, _met, _met AND ((NOT coalesce(claim.text = \$_v0, false))) AS _changed", lines[5])
+        // With no predicate there is nothing to put in a WHERE, and the statement is every engine's.
+        assertEquals(
+            neo4j.one(FragmentModel.from(ChunkNode::class.java), "n", mapOf("text" to "new"), where = null),
+            neo4j4.one(FragmentModel.from(ChunkNode::class.java), "n", mapOf("text" to "new"), where = null),
+        )
     }
 }

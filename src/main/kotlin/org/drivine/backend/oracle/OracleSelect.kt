@@ -146,7 +146,7 @@ internal class OracleSelect(
     }
 
     /**
-     * The query that counts the node whose `nid` is its first placeholder, [NID], if it is a root
+     * The query that counts the node whose `nid` is its parameter [NID], if it is a root
      * that meets [conditions]: 1, or 0. Null when there are no conditions to meet. The node is read
      * from the node table, as a delete reads the roots it selects. For a block that has found the
      * node and locked it: see [OracleWriteBlock].
@@ -154,7 +154,7 @@ internal class OracleSelect(
     fun meeting(conditions: List<WhereCondition>): String? {
         scope.narrowed = true
         val predicate = predicate(conditions) ?: return null
-        return "SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = $NID\n  AND ${selecting(listOf(predicate))}"
+        return "SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = \$$NID\n  AND ${selecting(listOf(predicate))}"
     }
 
     /** The predicate [conditions] of the query DSL make on the root; null when there are none. See [OraclePredicates.predicate]. */
@@ -464,7 +464,7 @@ internal class OracleSelect(
         /** What a predicate calls a fragment loaded on its own, as the Cypher statements do. */
         const val FRAGMENT_ALIAS = "n"
 
-        /** The placeholder of [meeting] for the `nid` of the node it counts. */
-        const val NID = ":nid"
+        /** The parameter of [meeting] for the `nid` of the node it counts: no value is bound to it, the block gives its own. */
+        const val NID = "_nid"
     }
 }

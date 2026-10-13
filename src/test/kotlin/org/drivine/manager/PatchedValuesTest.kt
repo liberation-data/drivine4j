@@ -1,5 +1,6 @@
 package org.drivine.manager
 
+import com.fasterxml.jackson.annotation.JsonFormat
 import com.fasterxml.jackson.core.JsonGenerator
 import com.fasterxml.jackson.databind.JsonSerializer
 import com.fasterxml.jackson.databind.SerializerProvider
@@ -22,9 +23,14 @@ import sample.stateless.ClaimView
 import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.StringPropertyReference
 
-/** A field stored by a serializer of its own: what it stores cannot be told from the value alone. */
+/** Fields stored as an annotation says: what each stores cannot be told from the value alone. */
 @NodeFragment(labels = ["Shouted"])
-data class Shouted(@NodeId val id: String, @get:JsonSerialize(using = Shout::class) val text: String? = null, val plain: String? = null)
+data class Shouted(
+    @NodeId val id: String,
+    @get:JsonSerialize(using = Shout::class) val text: String? = null,
+    val plain: String? = null,
+    @get:JsonFormat(shape = JsonFormat.Shape.STRING) val at: Instant? = null,
+)
 
 class Shout : JsonSerializer<String>() {
     override fun serialize(value: String, gen: JsonGenerator, serializers: SerializerProvider) = gen.writeString(value.uppercase())
@@ -38,7 +44,7 @@ class PatchedValuesTest {
     private val session = PatchSessionQueryDsl.INSTANCE
 
     @Test
-    fun `the properties are in the order the class declares the fields, however they were named`() {
+    fun `the properties are in one order, however they were named`() {
         val written = values(PatchSession::class.java).of(listOf(session.turns.assign(3L), session.pace.cleared(), session.lastActivityAt.assign(Instant.EPOCH)))
 
         assertEquals(listOf("lastActivityAt", "pace", "turns"), written.keys.toList())
@@ -69,10 +75,14 @@ class PatchedValuesTest {
     }
 
     @Test
-    fun `a field with a serializer of its own is refused, and its plain neighbour is written`() {
+    fun `a field the mapper writes as an annotation says is refused, and its plain neighbour is written`() {
         val failure = assertFailsWith<IllegalArgumentException> { values(Shouted::class.java).of(listOf(StringPropertyReference("n", "text").assign("quiet"))) }
 
-        assertContains(failure.message!!, "has a serializer of its own")
+        assertContains(failure.message!!, "is written as its @JsonSerialize says")
+        assertContains(
+            assertFailsWith<IllegalArgumentException> { values(Shouted::class.java).of(listOf(PropertyReference<Instant>("n", "at").assign(Instant.EPOCH))) }.message!!,
+            "is written as its @JsonFormat says",
+        )
         assertEquals(mapOf<String, Any?>("plain" to "quiet"), values(Shouted::class.java).of(listOf(StringPropertyReference("n", "plain").assign("quiet"))))
         // Clearing it stores nothing, so there is nothing a serializer would have changed.
         assertEquals(mapOf<String, Any?>("text" to null), values(Shouted::class.java).of(listOf(StringPropertyReference("n", "text").cleared())))
