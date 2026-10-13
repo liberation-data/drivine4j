@@ -111,12 +111,31 @@ class OracleSqlTest {
         assertEquals("    v_rows  SYS_REFCURSOR;", lines[1])
         assertEquals("    v_count NUMBER := 0;", lines[2])
         assertEquals("BEGIN", lines[3])
-        assertEquals("    DELETE FROM t WHERE a = 1;", lines[4])
+        assertEquals("    EXECUTE IMMEDIATE 'DELETE FROM t WHERE a = 1';", lines[4])
         assertEquals("    v_count := SQL%ROWCOUNT;", lines[5])
         assertEquals("    OPEN v_rows FOR SELECT v_count FROM dual;", lines[6])
         assertEquals("    DBMS_SQL.RETURN_RESULT(v_rows);", lines[7])
         assertEquals("END;", lines[8])
         assertEquals(9, lines.size)
+    }
+
+    @Test
+    fun `a statement run on its own is a literal, given each parameter in the order it names them`() {
+        assertEquals(
+            "EXECUTE IMMEDIATE 'DELETE FROM t WHERE a = :b0 AND JSON_VALUE(p, ''\$.b'') = :b1 OR a = :b2'\nUSING \$a, \$_p0, \$a",
+            OracleSql.immediate("DELETE FROM t WHERE a = \$a AND JSON_VALUE(p, '\$.b') = \$_p0 OR a = \$a"),
+        )
+        assertEquals("EXECUTE IMMEDIATE 'DELETE FROM t'", OracleSql.immediate("DELETE FROM t"))
+    }
+
+    @Test
+    fun `text longer than a literal may be is several joined as a CLOB, no character parted`() {
+        assertEquals("'it''s'", OracleSql.text("it's"))
+        assertEquals("'${"a".repeat(8000)}'", OracleSql.text("a".repeat(8000)))
+        assertEquals("TO_CLOB('${"a".repeat(8000)}')\n|| TO_CLOB('''b')", OracleSql.text("a".repeat(8000) + "'b"))
+        // A character of two halves that would straddle the end of a literal starts the next one.
+        val astral = "😀"
+        assertEquals("TO_CLOB('${"a".repeat(7999)}')\n|| TO_CLOB('$astral')", OracleSql.text("a".repeat(7999) + astral))
     }
 
     @Test
