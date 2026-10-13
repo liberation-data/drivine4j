@@ -85,7 +85,7 @@ abstract class StatelessPatchContract {
 
     private fun session(id: String): PatchSession = assertNotNull(stateless.load(id, PatchSession::class.java))
 
-    private fun patchClaim(id: String, spec: PatchSpec<ClaimQueryDsl>.() -> Unit): PatchResult =
+    private fun patchClaim(id: Any, spec: PatchSpec<ClaimQueryDsl>.() -> Unit): PatchResult =
         stateless.patch(id, Claim::class.java, ClaimQueryDsl.INSTANCE, spec)
 
     private fun patchView(id: String, spec: PatchSpec<ClaimViewQueryDsl>.() -> Unit): PatchResult =
@@ -347,6 +347,19 @@ abstract class StatelessPatchContract {
         assertEquals(listOf(true, false), listOf(note("c1") { query.people.any { name eq "Ada"; id eq "h1" } }, note("c1") { query.people.any { name eq "Ada"; id eq "h2" } }))
     }
 
+    @Test
+    fun `an id is found as a save stores it, whatever type the caller holds it as`() {
+        val uuid = java.util.UUID.randomUUID()
+        stateless.save(Claim(uuid.toString(), "one"))
+        stateless.save(Claim("k1", "one"))
+
+        assertEquals(changed, patchClaim(uuid) { fields { query.note setTo "by uuid" } })
+        // A value class is stored as its value.
+        assertEquals(changed, patchClaim(ClaimKey("k1")) { fields { query.note setTo "by key" } })
+
+        assertEquals(listOf("by uuid", "by key"), listOf(uuid.toString(), "k1").map { claim(it).note })
+    }
+
     // ----- Refusals -----
 
     @Test
@@ -434,6 +447,10 @@ abstract class StatelessPatchContract {
         assertEquals("patched", claim("c1").note)
     }
 }
+
+/** An id held as a type of the caller's own. */
+@JvmInline
+value class ClaimKey(val value: String)
 
 /** Decorates a [PersistenceManager], counting the statements run through it, whichever way they are sent. */
 private class CountingPatchStatements(private val delegate: PersistenceManager) : PersistenceManager by delegate {

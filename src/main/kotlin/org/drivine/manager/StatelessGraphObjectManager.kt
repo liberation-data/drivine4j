@@ -408,7 +408,8 @@ class StatelessGraphObjectManager private constructor(
      * The statement is applied whole or not at all, with or without a transaction, and is run again
      * when the engine turns it away because another writer was changing the node.
      *
-     * @param id the node's id, as its `@NodeId` field holds it
+     * @param id the node's id, as its `@NodeId` field holds it: a value of the field's own type, which
+     *   is found as a save stores it
      * @param queryObject the generated query DSL object of [graphClass], which [spec] reads property
      *   references from
      * @throws IllegalArgumentException before anything is sent, when no field is named, one is named
@@ -418,7 +419,9 @@ class StatelessGraphObjectManager private constructor(
     fun <T : Any, Q : Any> patch(id: Any, graphClass: Class<T>, queryObject: Q, spec: PatchSpec<Q>.() -> Unit): PatchResult {
         val patch = PatchSpec(queryObject).apply(spec)
         val values = PatchedValues(graphClass, objectMapper).of(patch.writes)
-        val statement = backend.patch(graphClass, id, values, patch.conditions)
+        // The id as a save stores it: a value class is its value, and a UUID its text.
+        val storedId = requireNotNull(objectMapper.toMap(mapOf("id" to id))["id"]) { "The object mapper writes nothing for the id '$id'." }
+        val statement = backend.patch(graphClass, storedId, values, patch.conditions)
         val flags = executor.whenNotContended { persistenceManager.query(statement.spec().transform(String::class.java)) }
             .map { FoundStamp.of(it).found }
         if (flags.isEmpty()) return PatchResult.ABSENT
