@@ -2,6 +2,7 @@ package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
 import org.drivine.model.Stamps
+import org.drivine.query.SqlParameters
 import org.drivine.schema.SimilarityFunction
 import java.math.BigDecimal
 import java.time.Instant
@@ -171,7 +172,19 @@ internal object OracleSql {
         "SELECT v FROM JSON_TABLE($parameter, '$[*]' COLUMNS (v ${kind.column} PATH '$'))"
 
     /** A block that runs [statement], which changes rows, and returns how many as its one row. */
-    fun counted(statement: String): String = counting("$statement;\nv_count := SQL%ROWCOUNT;")
+    fun counted(statement: String): String = counting("${immediate(statement)};\nv_count := SQL%ROWCOUNT;")
+
+    /**
+     * [statement] run from a block as a statement of its own, its parameters handed to it in the order
+     * it names them, and what it selects put [into] the block's variables. Oracle Free 23.26 takes
+     * neither a parameter nor a variable of the block inside a `GRAPH_TABLE` of the block's own SQL
+     * (`ORA-00600`, `ORA-49028`), which is how a predicate on a relationship is written.
+     */
+    fun immediate(statement: String, into: String? = null): String {
+        val asked = SqlParameters.positional(statement) { ":b$it" }
+        val using = asked.names.takeIf { it.isNotEmpty() }?.joinToString(", ", "\nUSING ") { "\$$it" }.orEmpty()
+        return "EXECUTE IMMEDIATE ${literal(asked.statement)}${into?.let { "\n$it" }.orEmpty()}$using"
+    }
 
     /**
      * A block that runs [body], which leaves in `v_count` how many rows it changed, and returns that

@@ -15,8 +15,12 @@ internal object SqlParameters {
     /** [statement] with a `?` for each parameter, and the name of each in the order they occur. */
     class Positional(val statement: String, val names: List<String>)
 
-    /** Reads [sql] once, left to right. A name that occurs twice is listed twice, so it is bound twice. */
-    fun positional(sql: String): Positional {
+    /**
+     * Reads [sql] once, left to right. A name that occurs twice is listed twice, so it is bound twice.
+     * [marker] gives what stands for the parameter at an index of the names: `?`, unless the statement
+     * is not JDBC's to bind.
+     */
+    fun positional(sql: String, marker: (Int) -> String = { "?" }): Positional {
         val out = StringBuilder(sql.length)
         val names = mutableListOf<String>()
         var i = 0
@@ -39,8 +43,8 @@ internal object SqlParameters {
                 if (name.uppercase() in DIRECTIVES) {
                     out.append(sql, i, j)
                 } else {
+                    out.append(marker(names.size))
                     names += name
-                    out.append('?')
                 }
                 i = j
             } else {

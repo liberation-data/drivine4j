@@ -53,6 +53,25 @@ private fun verify(gom: StatelessGraphObjectManager) {
     assertEquals(setOf("p1", "p2", "p3"), ids { where { query.mentions.none { resolvedId eq "absent" } } })
 }
 
+/**
+ * `deleteAll` by a predicate on the relationship takes the propositions the same predicate loads, and
+ * leaves what they mention. On Oracle such a predicate is a `GRAPH_TABLE`, which a block takes a
+ * parameter in only as a statement of its own.
+ */
+private fun verifyDelete(gom: StatelessGraphObjectManager) {
+    fun delete(spec: GraphQuerySpec<PropositionViewQueryDsl>.() -> Unit): Int = gom.deleteAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE, spec)
+    fun left(): Set<String> = gom.loadAll(PropositionView::class.java).map { it.proposition.id }.toSet()
+
+    assertEquals(0, delete { where { query.mentions.any { resolvedId eq "absent" } } })
+    assertEquals(1, delete { where { query.mentions.any { resolvedId eq "ent-1"; role eq "SUBJECT" } } })
+    assertEquals(setOf("p2", "p3"), left())
+
+    // A predicate on the root beside one on the relationship: each value is bound where the statement names it.
+    assertEquals(0, delete { where { query.proposition.id eq "p3"; query.mentions.any { resolvedId eq "ent-3" } } })
+    assertEquals(1, delete { where { query.proposition.id eq "p2"; query.mentions.none { resolvedId eq "ent-1" } } })
+    assertEquals(setOf("p3"), left())
+}
+
 private const val SEED = """
     CREATE (p1:Proposition {id: 'p1', contextId: 'c', status: 'active', level: 0})
     CREATE (p2:Proposition {id: 'p2', contextId: 'c', status: 'active', level: 0})
@@ -94,16 +113,23 @@ class StatelessQuantifiedRelationshipNeo4jTest {
             )
             pm = NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, registry)
             gom = buildGom(pm, registry)
-            pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
-            pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
         }
 
         @JvmStatic @AfterAll
         fun teardown() = provider.end()
     }
 
+    @BeforeEach
+    fun seed() {
+        pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+    }
+
     @Test
     fun `any and none over a to-many relationship on Neo4j`() = verify(gom)
+
+    @Test
+    fun `a delete of all by a predicate on a to-many relationship on Neo4j`() = verifyDelete(gom)
 }
 
 @Testcontainers
@@ -128,16 +154,23 @@ class StatelessQuantifiedRelationshipFalkorDbTest {
             )
             pm = NonTransactionalPersistenceManager(provider, GRAPH, DatabaseType.FALKORDB, registry)
             gom = buildGom(pm, registry)
-            pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
-            pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
         }
 
         @JvmStatic @AfterAll
         fun teardown() = provider.end()
     }
 
+    @BeforeEach
+    fun seed() {
+        pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+    }
+
     @Test
     fun `any and none over a to-many relationship on FalkorDB`() = verify(gom)
+
+    @Test
+    fun `a delete of all by a predicate on a to-many relationship on FalkorDB`() = verifyDelete(gom)
 }
 
 @Testcontainers
@@ -162,16 +195,23 @@ class StatelessQuantifiedRelationshipMemgraphTest {
             )
             pm = NonTransactionalPersistenceManager(provider, "memgraph", DatabaseType.MEMGRAPH, registry)
             gom = buildGom(pm, registry)
-            pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
-            pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
         }
 
         @JvmStatic @AfterAll
         fun teardown() = provider.end()
     }
 
+    @BeforeEach
+    fun seed() {
+        pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+    }
+
     @Test
     fun `any and none over a to-many relationship on Memgraph`() = verify(gom)
+
+    @Test
+    fun `a delete of all by a predicate on a to-many relationship on Memgraph`() = verifyDelete(gom)
 }
 
 @OracleTests
@@ -187,4 +227,7 @@ class StatelessQuantifiedRelationshipOracleTest {
 
     @Test
     fun `any and none over a to-many relationship on Oracle`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `a delete of all by a predicate on a to-many relationship on Oracle`() = verifyDelete(buildGom(pm, registry))
 }
