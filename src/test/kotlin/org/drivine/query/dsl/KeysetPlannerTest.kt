@@ -196,4 +196,35 @@ class KeysetPlannerTest {
 
         assertEquals(id.toString(), plan.bindings["_seek_0"])
     }
+
+    @Test
+    fun `an order of a relationship collection that places its nulls is refused`() {
+        val refused = assertThrows<IllegalArgumentException> {
+            CypherGenerator.processOrders(listOf(OrderSpec("assignedTo.name", OrderDirection.ASC).nullsFirst()), setOf("assignedTo"))
+        }
+
+        assertEquals("nullsFirst() on assignedTo.name: nulls cannot be placed in the order of a relationship collection", refused.message)
+    }
+
+    @Test
+    fun `the context form places the nulls of the order it has just registered`() {
+        val builder = OrderBuilder(Any())
+        val score = PropertyReference<Double>("p", "score")
+        val id = PropertyReference<String>("p", "id")
+
+        with(builder) {
+            score.desc().nullsLast()
+            id.asc()
+            score.asc().nullsFirst()
+        }
+
+        assertEquals(
+            listOf(
+                OrderSpec("p.score", OrderDirection.DESC, NullPlacement.LAST),
+                OrderSpec("p.id", OrderDirection.ASC),
+                OrderSpec("p.score", OrderDirection.ASC, NullPlacement.FIRST),
+            ),
+            builder.orders,
+        )
+    }
 }

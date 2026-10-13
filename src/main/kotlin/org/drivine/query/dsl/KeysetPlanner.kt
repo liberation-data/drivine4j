@@ -38,7 +38,8 @@ internal data class KeysetPlan(
  * **Nulls.** A row whose ordered property is null never satisfies a comparison, so it is dropped by
  * every page after the first. Engines also disagree on where nulls sort, so the explicit
  * `IS NOT NULL` is what makes that exclusion identical everywhere rather than a per-engine accident.
- * Keyset properties should be non-null in the data; see the README's pagination section.
+ * Keyset properties should be non-null in the data; see the README's pagination section. An order
+ * that places its nulls ([NullPlacement]) asks for those rows, which no cursor here reaches, so it is refused.
  */
 internal object KeysetPlanner {
 
@@ -67,6 +68,7 @@ internal object KeysetPlanner {
                 "properties" + collectionSortHint(collectionSortCount)
         }
 
+        orders.forEach { it.requireNoNullPlacement(NULLS_UNDER_SEEK) }
         orders.zip(values).forEachIndexed { index, (order, value) ->
             require(order.propertyPath == value.propertyPath) {
                 "seek property #${index + 1} is ${value.propertyPath}, but orderBy property " +
@@ -131,4 +133,7 @@ internal object KeysetPlanner {
     }
 
     private fun paramName(index: Int): String = "_seek_$index"
+
+    /** Why a keyset refuses an order that places its nulls; shared with the Oracle backend's seek. */
+    const val NULLS_UNDER_SEEK = "under seek: a cursor does not say which side of the nulls it is on"
 }

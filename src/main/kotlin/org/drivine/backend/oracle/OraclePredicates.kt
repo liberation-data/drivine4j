@@ -8,6 +8,8 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
 import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.dsl.KeysetPlanner
+import org.drivine.query.dsl.NullPlacement
 import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.SeekValueSpec
@@ -273,12 +275,30 @@ internal class OraclePredicates(
      * The `ORDER BY` terms for [order]. A property no field declares, and no cursor says the kind of,
      * is ordered as a number first and as text after, so that a page of numbers is in the order a
      * seek with one of them as its cursor compares in, and anything else is in the order of its text.
+     *
+     * Where the order places its nulls, an order of one term says so on the term. An order of two
+     * cannot: a row with a text is null as a number, so `NULLS LAST` on the number would move the
+     * texts with the rows that have no value, and the texts and the numbers would change places. It
+     * is ordered by whether the property has a value first, and then as it is without a placement.
      */
     fun orderTerms(order: OrderSpec): String {
         val key = order.propertyPath.substringAfter('.')
         val direction = order.direction.name
-        if (key == Stamps.PROPERTY || declaredKind(key) != null || key in scope.inferredKinds) return "${ordered(key)} $direction"
-        return "${undeclaredNumber(key)} $direction, ${property(root, key)} $direction"
+        if (key == Stamps.PROPERTY || declaredKind(key) != null || key in scope.inferredKinds) {
+            val nulls = when (order.nulls) {
+                NullPlacement.FIRST -> " NULLS FIRST"
+                NullPlacement.LAST -> " NULLS LAST"
+                null -> ""
+            }
+            return "${ordered(key)} $direction$nulls"
+        }
+        val text = property(root, key)
+        val nulls = when (order.nulls) {
+            NullPlacement.FIRST -> "CASE WHEN $text IS NULL THEN 0 ELSE 1 END, "
+            NullPlacement.LAST -> "CASE WHEN $text IS NULL THEN 1 ELSE 0 END, "
+            null -> ""
+        }
+        return "$nulls${undeclaredNumber(key)} $direction, $text $direction"
     }
 
     /**
@@ -292,6 +312,7 @@ internal class OraclePredicates(
         require(orders.size == values.size) {
             "seek supplied ${values.size} cursor values for ${orders.size} root orderBy properties" + hint(collectionSortCount)
         }
+        orders.forEach { it.requireNoNullPlacement(KeysetPlanner.NULLS_UNDER_SEEK) }
         orders.zip(values).forEachIndexed { index, (order, value) ->
             require(order.propertyPath == value.propertyPath) {
                 "seek property #${index + 1} is ${value.propertyPath}, but orderBy property #${index + 1} is ${order.propertyPath}"

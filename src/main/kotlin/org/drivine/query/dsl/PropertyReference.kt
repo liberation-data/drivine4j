@@ -270,7 +270,8 @@ open class PropertyReference<T>(
     }
 
     /**
-     * Ascending order specification.
+     * Ascending order specification. Follow with [OrderSpec.nullsFirst] or [OrderSpec.nullsLast]
+     * to say where the rows without a value go.
      */
     fun ascending(): OrderSpec {
         return OrderSpec(
@@ -280,7 +281,8 @@ open class PropertyReference<T>(
     }
 
     /**
-     * Descending order specification.
+     * Descending order specification. Follow with [OrderSpec.nullsFirst] or [OrderSpec.nullsLast]
+     * to say where the rows without a value go.
      */
     fun descending(): OrderSpec {
         return OrderSpec(
@@ -405,24 +407,22 @@ open class PropertyReference<T>(
     }
 
     /**
-     * Ascending order with context parameter (Kotlin DSL).
+     * Ascending order with context parameter (Kotlin DSL). The order is registered as it stands;
+     * `asc().nullsFirst()` or `asc().nullsLast()` then places its nulls.
      */
     context(builder: OrderBuilder<*>)
     @Suppress("INAPPLICABLE_JVM_NAME")
     @JvmName("ascContext")
-    fun asc() {
-        builder.orders.add(OrderSpec("$alias.$propertyName", OrderDirection.ASC))
-    }
+    fun asc(): RegisteredOrder = builder.register(OrderSpec("$alias.$propertyName", OrderDirection.ASC))
 
     /**
-     * Descending order with context parameter (Kotlin DSL).
+     * Descending order with context parameter (Kotlin DSL). The order is registered as it stands;
+     * `desc().nullsFirst()` or `desc().nullsLast()` then places its nulls.
      */
     context(builder: OrderBuilder<*>)
     @Suppress("INAPPLICABLE_JVM_NAME")
     @JvmName("descContext")
-    fun desc() {
-        builder.orders.add(OrderSpec("$alias.$propertyName", OrderDirection.DESC))
-    }
+    fun desc(): RegisteredOrder = builder.register(OrderSpec("$alias.$propertyName", OrderDirection.DESC))
 
     /**
      * Registers this property's non-null value as one component of a keyset cursor: reads as

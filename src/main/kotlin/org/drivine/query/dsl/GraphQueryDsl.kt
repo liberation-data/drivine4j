@@ -340,6 +340,7 @@ private fun <P : NodeReference> collectRelationshipCondition(
  * orderBy {
  *     query.issue.id.asc()       // Automatically registered!
  *     query.issue.state.desc()
+ *     query.issue.closedAt.desc().nullsLast()
  * }
  * ```
  *
@@ -360,6 +361,31 @@ class OrderBuilder<T : Any>(
      */
     operator fun invoke(order: OrderSpec) {
         orders.add(order)
+    }
+
+    /** Registers [order], and gives the handle through which its nulls may then be placed. */
+    internal fun register(order: OrderSpec): RegisteredOrder {
+        orders.add(order)
+        return RegisteredOrder(orders, orders.lastIndex)
+    }
+}
+
+/**
+ * An order an [OrderBuilder] already holds: what `asc()` and `desc()` give inside an `orderBy` block,
+ * so that `desc().nullsLast()` places the nulls of the order just registered.
+ */
+class RegisteredOrder internal constructor(
+    private val orders: MutableList<OrderSpec>,
+    private val index: Int,
+) {
+    /** Rows with no value for the property come before every row that has one. See [NullPlacement]. */
+    fun nullsFirst() {
+        orders[index] = orders[index].nullsFirst()
+    }
+
+    /** Rows with no value for the property come after every row that has one. See [NullPlacement]. */
+    fun nullsLast() {
+        orders[index] = orders[index].nullsLast()
     }
 }
 
@@ -515,15 +541,50 @@ enum class ComparisonOperator(val cypherOperator: String) {
  * whatever follows the first dot is one property name, backtick-quoted where it is not a plain
  * identifier, and on the root of a view it is read by the key the view projects it under. An
  * expression such as `toLower(n.name)` is therefore no path, and renders as a name no node has.
+ *
+ * [nulls] says where the rows with no value for the property go; unset, they go where the database
+ * puts them, which is not the same place on each. See [NullPlacement].
  */
-data class OrderSpec(
+data class OrderSpec @JvmOverloads constructor(
     val propertyPath: String,  // e.g., "issue.id"
-    val direction: OrderDirection
-)
+    val direction: OrderDirection,
+    val nulls: NullPlacement? = null,
+) {
+    /** This order, with the rows that have no value for the property before every row that has one. */
+    fun nullsFirst(): OrderSpec = copy(nulls = NullPlacement.FIRST)
+
+    /** This order, with the rows that have no value for the property after every row that has one. */
+    fun nullsLast(): OrderSpec = copy(nulls = NullPlacement.LAST)
+
+    /**
+     * Refuses a null placement where one cannot be kept: [where] completes "nulls cannot be placed …".
+     */
+    internal fun requireNoNullPlacement(where: String) {
+        require(nulls == null) {
+            "nulls${if (nulls == NullPlacement.FIRST) "First" else "Last"}() on $propertyPath: nulls cannot be placed $where"
+        }
+    }
+}
 
 enum class OrderDirection {
     ASC,
     DESC
+}
+
+/**
+ * Where an order puts the rows that have no value for its property, whatever its direction.
+ *
+ * Without one the database decides: Cypher ranks null above every value, so a descending order
+ * starts with the null rows, and Oracle does the same. A placement is part of the one statement,
+ * which reading the valued rows and the null rows apart is not: under read committed, a row that
+ * gains a value between two reads is in neither.
+ *
+ * It is for the order of the roots. An order of a relationship collection refuses one, and so does
+ * a keyset `seek`, whose cursor does not say which side of the nulls it is on.
+ */
+enum class NullPlacement {
+    FIRST,
+    LAST
 }
 
 /**
