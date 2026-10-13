@@ -1,6 +1,7 @@
 package org.drivine.manager
 
 import java.time.Instant
+import java.util.concurrent.CountDownLatch
 import kotlin.concurrent.thread
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -266,28 +267,36 @@ abstract class StatelessPatchContract {
 
     @Test
     fun `many writers move one moment forward in any order, and it ends at the latest`() {
-        stateless.save(PatchSession("s1"))
-        val times = (1..40).map { noon.plusSeconds(it.toLong()) }.shuffled()
-        val failures = mutableListOf<Throwable>()
-        val results = mutableListOf<PatchResult>()
+        // Several rounds, the writers of each let go together: without the lock, a writer reads the
+        // moment another is about to move, and the node ends at an earlier one in most rounds.
+        repeat(8) { round ->
+            val id = "s$round"
+            stateless.save(PatchSession(id))
+            val times = (1..40).map { noon.plusSeconds(it.toLong()) }.shuffled()
+            val failures = mutableListOf<Throwable>()
+            val results = mutableListOf<PatchResult>()
+            val go = CountDownLatch(1)
 
-        val writers = times.chunked(10).map { mine ->
-            thread {
-                try {
-                    val own = manager()
-                    mine.forEach { at -> touch("s1", at, own).let { synchronized(results) { results += it } } }
-                } catch (failure: Throwable) {
-                    synchronized(failures) { failures += failure }
+            val writers = times.chunked(5).map { mine ->
+                thread {
+                    try {
+                        val own = manager()
+                        go.await()
+                        mine.forEach { at -> touch(id, at, own).let { synchronized(results) { results += it } } }
+                    } catch (failure: Throwable) {
+                        synchronized(failures) { failures += failure }
+                    }
                 }
             }
-        }
-        writers.forEach { it.join(120_000) }
+            go.countDown()
+            writers.forEach { it.join(120_000) }
 
-        assertEquals(emptyList(), failures)
-        assertEquals(noon.plusSeconds(40), session("s1").lastActivityAt)
-        assertTrue(results.all { it.found } && results.size == times.size)
-        // A patch was applied exactly when it changed the node: no two wrote the same moment.
-        assertTrue(results.all { it.applied == it.changed })
+            assertEquals(emptyList(), failures, "round $round")
+            assertEquals(noon.plusSeconds(40), session(id).lastActivityAt, "round $round")
+            assertTrue(results.all { it.found } && results.size == times.size)
+            // A patch was applied exactly when it changed the node: no two wrote the same moment.
+            assertTrue(results.all { it.applied == it.changed })
+        }
     }
 
     @Test
