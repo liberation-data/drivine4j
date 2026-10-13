@@ -13,6 +13,8 @@ import org.drivine.query.PatchRow
 import org.drivine.query.SqlParameters
 import org.drivine.query.SaveRequest
 import org.drivine.query.StampWrite
+import org.drivine.query.dsl.WhereCondition
+import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderDirection.ASC
 import org.drivine.query.dsl.OrderDirection.DESC
@@ -417,6 +419,44 @@ class OracleBackendTest {
 
         assertEquals(mapOf("name" to "Ada") to null, kept["set"] to kept["unset"])
         assertEquals(mapOf("name" to "Ada") to listOf("note"), cleared["set"] to cleared["unset"])
+    }
+
+    @Test
+    fun `a patch of one is one step, and its predicate is in the block's text, run as a statement of its own`() {
+        val conditions = listOf(
+            WhereCondition.PropertyCondition("claim.text", ComparisonOperator.EQUALS, "one"),
+            WhereCondition.PropertyCondition("people.name", ComparisonOperator.EQUALS, "Ada"),
+        )
+        val patch = backend().patch(ClaimView::class.java, 7.0, linkedMapOf("text" to "two", "note" to null), conditions)
+
+        val step = steps(patch.bindings).single()
+        assertEquals(
+            mapOf("op" to "patch", "s" to 0, "k" to "7", "i" to "0", "fresh" to step["fresh"], "set" to mapOf("text" to "two"), "unset" to listOf("note")),
+            step,
+        )
+        // The predicate's values are the block's own parameters, handed to the query in the order it names them.
+        assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK, "_p0", "_p1"), patch.bindings.keys)
+        assertEquals(setOf("one", "Ada"), setOf(patch.bindings["_p0"], patch.bindings["_p1"]))
+        val asked = patch.statement.substringAfter("EXECUTE IMMEDIATE '").substringBefore("'\n        INTO v_met USING ")
+        assertContains(asked.squashed(), "SELECT COUNT(*) FROM g_node claim_ WHERE claim_.nid = :b0 AND ")
+        assertContains(asked, "GRAPH_TABLE (g")
+        // Inside the text a quote is doubled, and no parameter of the block is named.
+        assertContains(asked, "e.type = ''MENTIONS''")
+        assertFalse("\$_p" in asked)
+        assertEquals(listOf(":b0", ":b1", ":b2"), Regex(":b\\d+").findAll(asked).map { it.value }.toList())
+        assertEquals(listOf("v_nid", "\$_p0", "\$_p1"), patch.statement.substringAfter("INTO v_met USING ").substringBefore(";").split(", ").let { used -> listOf(used[0]) + used.drop(1).sorted() })
+        assertContains(patch.statement, "IF v_met > 0 THEN\n            write_props(op, v_o);")
+        assertContains(patch.statement, "CASE WHEN v_met = 0 THEN '-' WHEN v_same = 0 THEN '1' ELSE '0' END")
+    }
+
+    @Test
+    fun `a patch of one with no predicate asks nothing before it writes, and its block is a patch of many's`() {
+        val one = backend().patch(Human::class.java, "h1", mapOf("name" to "Ada"), emptyList())
+        val many = backend().patchAll(Human::class.java, listOf("name"), listOf(PatchRow(0, "h1", mapOf("name" to "Ada"))), clears = false).single()
+
+        assertFalse("EXECUTE IMMEDIATE" in one.statement)
+        assertEquals(many.statement!!.text, one.statement)
+        assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK), one.bindings.keys)
     }
 
     @Test

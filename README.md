@@ -1365,6 +1365,52 @@ val replaced = graphObjectManager.saveAll(views, Replace(PropositionView::mentio
 - Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy), as for `save`.
 - The managers Drivine provides run the batch in one transaction. A `PersistenceManager` of your own that overrides `executeBatch` to do so must override `queryBatch` too, which `saveAll` calls and whose default runs each statement on its own.
 
+#### Conditional Write by Id (`patch`)
+
+Write named fields of one node by its id, if the node meets a predicate, in one statement. The node is not loaded: the store evaluates the predicate, so there is no second round trip and no loaded state to go stale. `update` is a load and then a checked save; `save(only = …)` needs the whole object, and cannot say "only if the stored value is older".
+
+Advancing a session's activity, which must only move forward:
+
+```kotlin
+val result: PatchResult = graphObjectManager.patch<SessionData>(sessionId) {
+    fields { query.lastActivityAt setTo activityAt }
+    where { anyOf { query.lastActivityAt.isNull(); query.lastActivityAt lt activityAt } }
+}
+result.found    // a node has the id
+result.applied  // the predicate held, so the fields were written
+result.changed  // a value differed, and the node's stamp was renewed
+```
+
+The three are nested, so there are four outcomes:
+
+| Outcome | `found` | `applied` | `changed` | The node's stamp |
+| --- | --- | --- | --- | --- |
+| No node has that id | false | false | false | there is no node |
+| The node is there, and the predicate did not hold | true | false | false | as it was |
+| The predicate held, and every value was already as set | true | true | false | as it was |
+| The predicate held, and a value differed | true | true | true | new |
+
+On a view the fields are the root's, and the predicate may name a relationship, as a load's does:
+
+```kotlin
+val narrated = graphObjectManager.patch<MessageInSession>(messageId) {
+    fields { message.narration setTo narration }
+    where { session.sessionId eq sessionId }
+}.applied   // false for a message that is there, in another session
+```
+
+- **`fields`** names what to write: `property setTo value`, and `property.clear()` to remove a property. A value is typed by its property, so a null or a value of another type does not compile. A fragment's fields are reached as `query.x`, a view's by the name of its root (`message.narration`).
+- **`where`** is the `where` of a load, and optional: without one the fields are written wherever the node is.
+- **It never makes a node.** A patch of an id no node has writes nothing and returns `found = false`.
+- **It is not checked against a stamp, and hands none back.** The predicate is read under the node's lock, so what it compares is what the last writer committed. A node a patch changed has a new first token in its stamp, so an object loaded before the patch is refused when it is saved: load it again to go on working with it. The relationship token is left alone.
+- A node whose values were already as set keeps its stamp, and is not written to. A node that never carried a stamp is given one, whatever the patch did to it.
+- A value is stored as a save stores the field: an `Instant`, an enum, a `@JsonPacked` list and a `@VectorIndex` vector, which FalkorDB keeps in its own vector type.
+- The id, the `@NodeStamp` field, a key of a `@PropertyBag`, a `@NodeLabels` field and a field of a related node cannot be written, nor a field with a `@JsonSerialize(using = …)` serializer of its own. Each is refused before anything is sent, and so is a field named twice.
+- On a view, `found` says the root node is there, and not that the view would load: a message with no session is `found`, and not `applied` when the predicate names the session.
+- The statement is applied whole or not at all, with or without a transaction, and is run again when the engine turns it away because another writer was changing the node. Inside a transaction it joins it.
+- The id is taken to be unique. Where two nodes of the class share one, the graph engines write both, and Oracle the one it finds first.
+- `patch` is on `StatelessGraphObjectManager` alone. The generated `patch<T>(id) { }` passes the class's query DSL object; without the code generator, call `patch(id, T::class.java, queryObject) { }`.
+
 #### Batch Patch (`patchAll`)
 
 Write named fields of many nodes, where each node is there, and make no node. `saveAll` is an upsert, so a node deleted since its object was loaded comes back; `patchAll` leaves it gone and says so.
@@ -1380,7 +1426,7 @@ val results: List<PatchResult> = graphObjectManager.patchAll(
 val rewritten = results.count { it.found }
 ```
 
-- There is one `PatchResult` for each object, in the order given. `found` says whether the node was there, and `changed` whether a value written differed from what the node held. `applied` equals `found`: it is for a patch with a condition, which is to come.
+- There is one `PatchResult` for each object, in the order given. `found` says whether the node was there, and `changed` whether a value written differed from what the node held. `applied` equals `found`: it differs only for a patch with a predicate, which [`patch`](#conditional-write-by-id-patch) of one node has.
 - `only` or `except` is required. `except` means every field that can be named, but those given. To write every field of an object, save it.
 - The id, the `@NodeStamp` field, a `@PropertyBag` and a `@NodeLabels` field cannot be named. The names are checked against the class of the objects: with no objects, property references are checked where they are all of one fragment, and names given as strings are not.
 - The objects are where an id and values are read from, and no more. For a view the fields are its root's, and its relationships are not written.
@@ -1403,6 +1449,8 @@ graphObjectManager.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("n
 graphObjectManager.saveFields(chunk, Add.INSTANCE, NullPolicy.IGNORE, Set.of(), Set.of("embedding"));   // every field but these
 List<IssueView> saved = graphObjectManager.saveAll(views);
 List<PatchResult> patched = graphObjectManager.patchAllFields(chunks, NullPolicy.IGNORE, Set.of("embedding"));  // nodes that are there
+PatchResult touched = graphObjectManager.patch(id, Person.class, PersonQueryDsl.INSTANCE,
+    spec -> spec.set(PersonQueryDsl.INSTANCE.name().assign("Ada")).onlyIf(PersonQueryDsl.INSTANCE.bio().isAbsent()));  // one node, if it meets the predicate
 
 Person updated = graphObjectManager.update(id, Person.class, p -> { p.setName("Ada"); return p; });   // null when there is no such node
 graphObjectManager.update(id, Person.class, 5, p -> p.withName("Ada"));                                // five attempts
@@ -1411,6 +1459,7 @@ graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), ne
 ```
 
 - Java names fields as strings, so it calls `saveFields` where Kotlin passes property references to `save`, and `patchAllFields` for `patchAll`.
+- A `patch` from Java names its fields with `property.assign(value)` and `property.cleared()` in `spec.set(…)`, and its predicate with the conditions of the Java query builder in `spec.onlyIf(…)`, which are joined by `AND`.
 - `@NodeStamp` goes on a `String` field of a Java class or on a `String` component of a record. A Java object whose fields can be set is given its new stamp in place, and `save` returns that same object. A record comes back as a copy.
 - `update`'s function may change the object it is given and return it, or return another.
 - A refused save throws `StaleObjectException`: `getDeleted()` says whether the node is gone, `getFoundStamp()` gives the stamp it carries now, and `getBySameBatch()` says whether a `saveAll` refused itself.
@@ -2417,6 +2466,8 @@ made: see [Schema Management](#schema-management-indexes--constraints).
 - `saveAll` saves fragments 500 to a statement, and each view by a statement of its own. The batch is
   one transaction.
 - `patchAll` writes 500 nodes to a statement, and 100 where a `@VectorIndex` field is written, in one transaction.
+- `patch` is one block. Its predicate is run inside the block as a statement of its own, since Oracle Free 23.26
+  takes no parameter inside a `GRAPH_TABLE` of a block's own SQL, which is how a predicate on a relationship is written.
 - A delete can cascade with `DELETE_ALL` and with `DELETE_ORPHAN`.
 - Index the id of each node type you save: `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`
   makes a unique index and the index a node is found by. Without one a save reads the table.
@@ -3283,7 +3334,7 @@ A library should make the graph easier to work with, not require forensics to sa
   graphObjectManager.save(loaded.copy(attachments = kept), Replace(MessageView::attachments))
   dropped.forEach { graphObjectManager.delete<Attachment>(it.id) }
   ```
-- **Saves have no interface.** `save`, `saveAll`, `patchAll` and `update` are on `StatelessGraphObjectManager` itself. `GraphObjectOperations` covers loading, querying and deleting, so code that saves depends on the class.
+- **Saves have no interface.** `save`, `saveAll`, `patch`, `patchAll` and `update` are on `StatelessGraphObjectManager` itself. `GraphObjectOperations` covers loading, querying and deleting, so code that saves depends on the class.
 - **The session.** There is none, so nothing to clear, and nothing that remembers what was loaded.
 
 ### What changes in your code

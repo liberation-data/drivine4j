@@ -359,6 +359,7 @@ class QueryDslGenerator(
                 .addFunction(
                     fragmentDslExtension(fragmentClassName, dslClass, dslClassName, "deleteAll", Int::class.asClassName())
                 )
+                .addFunction(patchExtension(fragmentClassName, dslClass, dslClassName, finalBound = true))
 
             // Filtered full-text-search wrapper — only for fragments carrying a @FullTextIndex.
             if (fragmentHasFullTextIndex(fragmentClass)) {
@@ -523,6 +524,41 @@ class QueryDslGenerator(
             .build()
     }
 
+    /**
+     * The `patch` wrapper that injects the class's `…QueryDsl.INSTANCE`, for a fragment or a view:
+     *
+     * ```kotlin
+     * inline fun <reified T : SessionData> StatelessGraphObjectManager.patch(
+     *     id: Any,
+     *     noinline spec: PatchSpec<SessionDataQueryDsl>.() -> Unit,
+     * ): PatchResult = patch(id, T::class.java, SessionDataQueryDsl.INSTANCE, spec)
+     * ```
+     *
+     * It is on `StatelessGraphObjectManager`, which alone patches: `GraphObjectOperations` does not save.
+     */
+    private fun patchExtension(graphClassName: ClassName, dslClass: ClassName, dslClassName: String, finalBound: Boolean): FunSpec {
+        val builder = FunSpec.builder("patch")
+        // A final (concrete) fragment makes `reified T : Fragment` predetermined, as for `loadAll`.
+        if (finalBound) builder.addAnnotation(AnnotationSpec.builder(Suppress::class).addMember("%S", "FINAL_UPPER_BOUND").build())
+        return builder
+            .addModifiers(KModifier.INLINE)
+            .receiver(ClassName("org.drivine.manager", "StatelessGraphObjectManager"))
+            .addTypeVariable(TypeVariableName("T", graphClassName).copy(reified = true))
+            .addParameter("id", Any::class)
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = ClassName("org.drivine.query.dsl", "PatchSpec").parameterizedBy(dslClass),
+                        returnType = Unit::class.asClassName()
+                    )
+                ).addModifiers(KModifier.NOINLINE).build()
+            )
+            .returns(ClassName("org.drivine.manager", "PatchResult"))
+            .addStatement("return patch(id, T::class.java, $dslClassName.INSTANCE, spec)")
+            .build()
+    }
+
     private fun generateViewDslFile(graphViewClass: KSClassDeclaration, viewStructure: List<ViewProperty>) {
         val graphViewClassName = graphViewClass.toClassName()
         val graphViewSimpleName = graphViewClass.simpleName.asString()
@@ -546,6 +582,7 @@ class QueryDslGenerator(
             .addFunction(loadAllExtension)
             .addFunction(deleteAllExtension)
             .addFunction(countExtension)
+            .addFunction(patchExtension(graphViewClassName, ClassName(graphViewClassName.packageName, dslClassName), dslClassName, finalBound = false))
 
         // Filtered vector-search wrapper — only for views whose root fragment is vector-indexed.
         if (rootFragmentHasVectorIndex(graphViewClass)) {
@@ -1214,7 +1251,7 @@ class QueryDslGenerator(
      * where { core.guideProgress gte 0 }
      * ```
      *
-     * Generates extensions for WhereBuilder, OrderBuilder, and SeekBuilder contexts.
+     * Generates extensions for WhereBuilder, OrderBuilder, SeekBuilder and FieldsBuilder contexts.
      */
     private fun generateContextPropertyExtensionsCode(
         graphViewClass: KSClassDeclaration,
@@ -1258,6 +1295,15 @@ public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
             // Generate context property for SeekBuilder
             code.appendLine("""
 context(builder: org.drivine.query.dsl.SeekBuilder<$dslClassName>)
+@Suppress("CONTEXT_RECEIVERS_DEPRECATED")
+public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
+    get() = builder.queryObject.${viewProp.name}
+""".trimIndent())
+            code.appendLine()
+
+            // Generate context property for FieldsBuilder: the fields a patch writes
+            code.appendLine("""
+context(builder: org.drivine.query.dsl.FieldsBuilder<$dslClassName>)
 @Suppress("CONTEXT_RECEIVERS_DEPRECATED")
 public val ${viewProp.name}: $fullyQualifiedPropertiesClassName
     get() = builder.queryObject.${viewProp.name}

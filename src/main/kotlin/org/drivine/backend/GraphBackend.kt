@@ -17,6 +17,7 @@ import org.drivine.query.StampWrite
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.grammar.CypherGrammar
 
 /** A statement in the store's own language, and the values its parameters take. */
@@ -146,6 +147,24 @@ internal interface GraphBackend {
      * @param clears whether a null in a row clears the property; when false, it leaves it as it is
      */
     fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>>
+
+    /**
+     * The statement that writes properties of the one [graphClass] node whose id is [id], if the node
+     * meets [conditions], and makes no node. It returns a row for the node, `0/flag=stamp`, the flag
+     * being [org.drivine.query.PatchOutcomes.CHANGED], [org.drivine.query.PatchOutcomes.UNCHANGED] or,
+     * where the node does not meet the conditions, [org.drivine.query.PatchOutcomes.UNMET]. No row
+     * says no node has the id.
+     *
+     * The conditions are read under the node's lock, so what they compare is what the last writer
+     * committed. A node that changes gets a new first token in its stamp, and one that never had a
+     * stamp is given one whatever the patch did to it.
+     *
+     * @param graphClass the fragment the node is of, or a view whose root it is
+     * @param values what to write, by stored property name, in the order to write it: a null removes
+     *   the property
+     * @param conditions the predicate of the query DSL, which for a view may name a relationship
+     */
+    fun patch(graphClass: Class<*>, id: Any, values: Map<String, Any?>, conditions: List<WhereCondition>): GraphStatement
 
     /** Reads the stamp the node of [root] carries, as `''` when it has none; no row when the node is gone. */
     fun foundStamp(root: StampWrite): GraphStatement

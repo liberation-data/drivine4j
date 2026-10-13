@@ -36,6 +36,7 @@ import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.OrderClauseResult
+import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.query.savedByUnwind
 import org.drivine.session.SessionManager
@@ -221,6 +222,20 @@ internal class CypherBackend(
             .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf(PatchStatementBuilder.ROWS to chunk)).transform(String::class.java) }
     }
 
+    /** One statement: the predicate is what a load of [graphClass] would write, read once the node is locked. */
+    override fun patch(graphClass: Class<*>, id: Any, values: Map<String, Any?>, conditions: List<WhereCondition>): GraphStatement {
+        val ctx = queryContext(graphClass, conditions)
+        val root = ctx.viewModel?.rootFragment
+        val statement = patches.one(
+            FragmentModel.from(root?.fragmentType ?: graphClass), root?.fieldName ?: FRAGMENT_ALIAS, values, ctx.whereClause, ctx.prologs,
+        )
+        val given = values.values.withIndex().filter { it.value != null }.associate { "${PatchStatementBuilder.VALUE}${it.index}" to it.value }
+        return GraphStatement(
+            statement,
+            ctx.bindings + given + mapOf(PatchStatementBuilder.ID to CypherGenerator.convertToNeo4jValue(id), Stamps.NEW_PARAM to Stamps.fresh()),
+        )
+    }
+
     // An absent stamp is read as '' so a node without one still gives a row on every engine.
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
         "MATCH (n:${root.labels} {${root.idProperty}: \$id}) RETURN coalesce(n.${Stamps.QUOTED}, '')",
@@ -272,9 +287,14 @@ internal class CypherBackend(
         require(supportsSeek || query.seekValues.isEmpty()) {
             "seek is only supported by loadAll; this operation would ignore the cursor"
         }
+        return queryContext(graphClass, query.conditions)
+    }
+
+    /** [conditions] as a where clause of a statement over [graphClass]. */
+    private fun queryContext(graphClass: Class<*>, conditions: List<WhereCondition>): QueryContext {
         val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
-        val whereResult = if (query.conditions.isNotEmpty()) CypherGenerator.buildWhereClause(query.conditions, viewModel, grammar) else null
-        val bindings = CypherGenerator.extractBindings(query.conditions, viewModel)
+        val whereResult = if (conditions.isNotEmpty()) CypherGenerator.buildWhereClause(conditions, viewModel, grammar) else null
+        val bindings = CypherGenerator.extractBindings(conditions, viewModel)
         return QueryContext(
             viewModel, whereResult?.whereClause, bindings,
             whereResult?.prologs ?: emptyList(),
@@ -304,5 +324,8 @@ internal class CypherBackend(
     private companion object {
         const val SKIP_PARAM = "_skip"
         const val LIMIT_PARAM = "_limit"
+
+        /** What a predicate calls the node of a fragment: `FragmentQueryBuilder.nodeAlias`. */
+        const val FRAGMENT_ALIAS = "n"
     }
 }

@@ -30,6 +30,7 @@ import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.WhereCondition
 import org.drivine.schema.SchemaItemKind
 import org.drivine.query.grammar.CypherGrammar
 import java.sql.SQLException
@@ -241,6 +242,22 @@ internal class OracleBackend(
             }
             QuerySpecification.withStatement(plan.text(OracleWriteBlock.Returns.EACH_STAMP)).bind(plan.bindings()).transform(String::class.java)
         }
+    }
+
+    /**
+     * One block with one `patch` step. The values are in the plan, and the predicate in the block's
+     * text: so the text is the node's shape and the predicate, and the same for every id and value.
+     */
+    override fun patch(graphClass: Class<*>, id: Any, values: Map<String, Any?>, conditions: List<WhereCondition>): GraphStatement {
+        val select = OracleSelect(graph, graphClass)
+        val model = FragmentModel.from(select.rootFragment)
+        val key = requireNotNull(model.nodeIdProperty) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
+        val plan = WritePlan(graph)
+        plan.patch(
+            plan.shape(model.labels, key), OracleSql.key(id), "0",
+            set = values.filterValues { it != null }, unset = values.filterValues { it == null }.keys.toList(),
+        )
+        return GraphStatement(plan.text(OracleWriteBlock.Returns.EACH_STAMP, select.meeting(conditions)), plan.bindings() + select.bindings())
     }
 
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */

@@ -423,6 +423,87 @@ val <T : Any> query: T
     get() = builder.queryObject
 
 /**
+ * What a patch writes, and when: the fields of one node to set or clear, and a predicate the store
+ * evaluates before it writes them. See `StatelessGraphObjectManager.patch`.
+ *
+ * ```kotlin
+ * graphObjectManager.patch<SessionData>(sessionId) {
+ *     fields { query.lastActivityAt setTo activityAt }
+ *     where { anyOf { query.lastActivityAt.isNull(); query.lastActivityAt lt activityAt } }
+ * }
+ * ```
+ *
+ * @param T The query object type that provides property references
+ */
+class PatchSpec<T : Any>(private val queryObject: T) {
+    internal val writes = mutableListOf<FieldWrite>()
+    internal val conditions = mutableListOf<WhereCondition>()
+
+    /**
+     * Names the fields to write: `property setTo value`, or `property.clear()` to remove one. They
+     * are fields of the node itself, which for a view is its root.
+     */
+    fun fields(block: context(FieldsBuilder<T>) () -> Unit) {
+        val builder = FieldsBuilder(queryObject)
+        block(builder)
+        writes.addAll(builder.writes)
+    }
+
+    /**
+     * The predicate the node must meet for the fields to be written, as a load's `where` is written.
+     * On a view it may name a relationship. Without one, the fields are written wherever the node is.
+     */
+    fun where(block: context(WhereBuilder<T>) () -> Unit) {
+        val builder = WhereBuilder(queryObject)
+        block(builder)
+        conditions.addAll(builder.conditions)
+    }
+
+    /** [fields] for Java: `spec.set(dsl.getNote().assign("patched"), dsl.getText().cleared())`. */
+    fun set(vararg writes: FieldWrite): PatchSpec<T> = apply { this.writes.addAll(writes) }
+
+    /** [where] for Java: `spec.onlyIf(dsl.getText().isEqualTo("one"))`. The conditions are joined by `AND`. */
+    fun onlyIf(vararg conditions: PropertyConditionBuilder): PatchSpec<T> = apply { this.conditions.addAll(conditions.map { it.condition }) }
+}
+
+/**
+ * Collects the fields a patch writes.
+ *
+ * @param T The query object type that provides property references
+ */
+class FieldsBuilder<T : Any>(
+    /** The query object providing property references. */
+    val queryObject: T,
+) {
+    internal val writes = mutableListOf<FieldWrite>()
+
+    /** Adds a write built with the Java methods: `this(query.note.assign("patched"))`. */
+    operator fun invoke(write: FieldWrite) {
+        writes.add(write)
+    }
+}
+
+/**
+ * One field a patch writes. Obtain these through the typed property references: `property setTo
+ * value` and `property.clear()` inside a [PatchSpec.fields] block, or `property.assign(value)` and
+ * `property.cleared()` from Java.
+ *
+ * @param alias the alias of the node the property is of, as a `where` names it
+ * @param propertyName the stored name of the property
+ * @param value the value to set; null to remove the property
+ */
+class FieldWrite internal constructor(
+    internal val alias: String,
+    internal val propertyName: String,
+    internal val value: Any?,
+)
+
+/** Context-aware access to the generated query object within a [PatchSpec.fields] block. */
+context(builder: FieldsBuilder<T>)
+val <T : Any> query: T
+    get() = builder.queryObject
+
+/**
  * Represents a WHERE condition in the query.
  * Can be a simple property condition, a relationship filter, a label check, or an OR condition.
  */

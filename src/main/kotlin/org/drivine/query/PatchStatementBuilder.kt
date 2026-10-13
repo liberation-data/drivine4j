@@ -72,6 +72,51 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
         ).joinToString("\n")
     }
 
+    /**
+     * The statement that writes properties of the one node of [model] whose id is bound as [ID], if
+     * it meets [where], and makes no node. It returns `0/flag=stamp` for the node, the flag being
+     * [PatchOutcomes.CHANGED], [PatchOutcomes.UNCHANGED] or [PatchOutcomes.UNMET], and no row when
+     * the node is not there.
+     *
+     * The predicate is read after the lock is taken, so what it compares is what the last writer
+     * committed. It is read as a value of a `WITH`, and not in a `WHERE`, which would drop the row
+     * of a node that does not meet it: that node is there, and the statement says so.
+     *
+     * The text depends on the names in [values] and on which of them are null, and on no value.
+     *
+     * @param alias what [where] calls the node: `n` for a fragment, the root field's name for a view
+     * @param values what to write, by stored property name: a null removes the property. The value
+     *   of the property at index `i` is bound as [VALUE] and `i`
+     * @param where the predicate, as a load writes it; null for a patch with none
+     * @param prologs the `CALL { }` clauses [where] reads its relationship counts from, on an engine
+     *   that has no `EXISTS { }`
+     */
+    fun one(model: FragmentModel, alias: String, values: Map<String, Any?>, where: String?, prologs: List<String> = emptyList()): String {
+        val idProperty = requireNotNull(model.nodeIdReference) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
+        val wrapped = if (grammar.wrapsVectorLiteral) model.fields.filter { it.vectorIndexed }.map { it.propertyName }.toSet() else emptySet()
+        val assigned = values.entries.mapIndexed { index, (property, value) ->
+            val stored = "$alias.${SchemaGrammar.identifier(property)}"
+            val given = if (property in wrapped) grammar.vectorPropertyLiteral("$VALUE$index") else "\$$VALUE$index"
+            if (value == null) Assigned("$stored = null", "$stored IS NOT NULL") else Assigned("$stored = $given", "NOT coalesce($stored = $given, false)")
+        }
+        return listOfNotNull(
+            "MATCH ($alias:${model.labels.joinToString(":")} {$idProperty: \$$ID})",
+            // The lock is taken before the predicate is read: see [Stamps.lock].
+            Stamps.lock(alias),
+            prologs.takeIf { it.isNotEmpty() }?.let { "WITH $alias\n${it.joinToString("\n")}" },
+            "WITH $alias, ${where?.let { "coalesce(($it), false)" } ?: "true"} AS $MET",
+            // A comparison that cannot tell counts as a change, as it does for a save.
+            "WITH $alias, $MET, $MET AND (${assigned.joinToString(" OR ") { "(${it.differs})" }}) AS $CHANGED",
+            // A node that is not changed is not written to, beyond the lock and a stamp if it had none.
+            "FOREACH (_ IN CASE WHEN $CHANGED THEN [1] ELSE [] END | SET ${assigned.joinToString(", ") { it.set }})",
+            "SET ${Stamps.restamp(alias, CHANGED, "\$${Stamps.NEW_PARAM}")}",
+            "RETURN '0/' + CASE WHEN $CHANGED THEN '${PatchOutcomes.CHANGED}' WHEN $MET THEN '${PatchOutcomes.UNCHANGED}' ELSE '${PatchOutcomes.UNMET}' END + '=' + $alias.${Stamps.QUOTED}",
+        ).joinToString("\n")
+    }
+
+    /** One property as a patch of one node writes it: the item that sets or removes it, and the test of whether that changes the node. */
+    private class Assigned(val set: String, val differs: String)
+
     /** One property as the statement writes it: the item that sets it, and the test of whether that changes the node. */
     private inner class Written(property: String, wrapped: Boolean, clears: Boolean) {
         private val stored = "n.${SchemaGrammar.identifier(property)}"
@@ -102,7 +147,16 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
         /** The parameter the rows are bound as. */
         const val ROWS = "rows"
 
+        /** The parameter a patch of one node binds the node's id as. */
+        const val ID = "id"
+
+        /** What a patch of one node binds a value as, before the value's index. */
+        const val VALUE = "_v"
+
         /** The variable that holds whether a row changes its node. */
         private const val CHANGED = "_changed"
+
+        /** The variable that holds whether the node meets the predicate of its patch. */
+        private const val MET = "_met"
     }
 }

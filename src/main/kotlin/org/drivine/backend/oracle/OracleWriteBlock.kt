@@ -21,7 +21,8 @@ import org.drivine.query.PatchOutcomes
  *   if the step changes it.
  * - `ref` finds a node that must be there, and locks it.
  * - `patch` writes `set` and removes `unset` on a node that is there, and does nothing for one that is
- *   not. The node gets a new first token only if the step changes it.
+ *   not, nor for one that does not meet the block's predicate when it has one. The node gets a new
+ *   first token only if the step changes it.
  * - `link` joins two nodes; `unlink` removes a field's relationships to some of its targets; `cut`
  *   removes the relationships of a type to one node, or with no node named, to every node in a
  *   direction. Each gives the nodes at both ends a new second token when it changes what joins them.
@@ -41,8 +42,18 @@ import org.drivine.query.PatchOutcomes
  * by its [StepKind].
  *
  * @param returns what the block gives back when its steps have run
+ * @param patchedIf the query a `patch` step asks whether to write to the node it found, when it
+ *   writes only to one that meets a predicate: it counts the node whose `nid` is its first
+ *   placeholder, [OracleSelect.NID], if the node meets the predicate. A predicate is SQL, and cannot
+ *   be data in a plan, so it is in the text; null for a block whose `patch` steps write wherever
+ *   the node is. See [OracleSelect.meeting]
  */
-internal class OracleWriteBlock(private val graph: OracleGraph, private val shapes: List<NodeShape>, private val returns: Returns) {
+internal class OracleWriteBlock(
+    private val graph: OracleGraph,
+    private val shapes: List<NodeShape>,
+    private val returns: Returns,
+    private val patchedIf: String? = null,
+) {
 
     /**
      * What a block gives back when its steps have run: each way of returning gathers its own result,
@@ -727,7 +738,8 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
     private fun patchingNode(): String = """
     -- Writes properties to a node that is there, and makes none: `save_node` without the making of a
     -- node. One that is not there is left out of what the block hands back. Where `save_node` hands
-    -- back the stamp a node was found with, this hands back whether the step changed the node.
+    -- back the stamp a node was found with, this hands back whether the step changed the node, or that
+    -- the node does not meet the block's predicate, which is then left as it is.
     PROCEDURE patch_node(op JSON_OBJECT_T) IS
         v_nid       NUMBER;
         v_stamp     VARCHAR2(33);
@@ -738,13 +750,16 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_fresh     VARCHAR2(33) := op.get_string('fresh');
         v_o         JSON_OBJECT_T;
         v_same      NUMBER;
+        v_met       NUMBER := 1;
     BEGIN
         find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);
         IF v_nid IS NULL THEN
             RETURN;
-        END IF;
+        END IF;${patchedIf?.let { "\n${meeting(it)}" }.orEmpty()}
         v_o := JSON_OBJECT_T.parse(v_props);
-        write_props(op, v_o);
+        IF v_met > 0 THEN
+            write_props(op, v_o);
+        END IF;
         v_new_props := v_o.to_clob;
         SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
         -- A new first token only if the step changes the node, or the node has no stamp of two tokens yet.
@@ -758,10 +773,27 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             END IF;
         END IF;
         v_h_index(v_h_index.COUNT) := op.get_string('i');
-        v_h_found(v_h_found.COUNT) := CASE WHEN v_same = 0 THEN '${PatchOutcomes.CHANGED}' ELSE '${PatchOutcomes.UNCHANGED}' END;
+        v_h_found(v_h_found.COUNT) := CASE WHEN v_met = 0 THEN '${PatchOutcomes.UNMET}' WHEN v_same = 0 THEN '${PatchOutcomes.CHANGED}' ELSE '${PatchOutcomes.UNCHANGED}' END;
         v_h_node(v_h_node.COUNT) := v_nid;
     END;
 """.trim('\n')
+
+    /**
+     * The statement of `patch_node` that leaves in `v_met` whether the node it found meets the
+     * predicate of [query]. The query is run as a statement of its own, its parameters handed to it
+     * in the order it names them: Oracle Free 23.26 takes neither a parameter nor a variable of the
+     * block inside a `GRAPH_TABLE` of the block's own SQL (`ORA-00600`, `ORA-49028`), which is how
+     * a predicate on a relationship is written.
+     */
+    private fun meeting(query: String): String {
+        val given = mutableListOf("v_nid")
+        val asked = PARAMETER.replace(query.replace(OracleSelect.NID, ":b0")) { parameter -> ":b${given.size}".also { given += parameter.value } }
+        return """
+        -- The node is locked: what the predicate reads is what the last writer committed.
+        EXECUTE IMMEDIATE ${OracleSql.literal(asked)}
+        INTO v_met USING ${given.joinToString(", ")};
+""".trim('\n')
+    }
 
     /** The block itself: each step in turn, then what [returns] asks for. */
     private fun main(): String = """
@@ -825,6 +857,9 @@ END;
 
         /** The parameter that carries the stamp the steps take a new relationship token from: see [WritePlan.mark]. */
         const val MARK = "_mark"
+
+        /** A parameter of a predicate, as `OracleStatementScope.bound` names one. */
+        private val PARAMETER = Regex("\\\$_p\\d+")
 
         /** What `save_node` records as the stamp it found on a node that was there without one. */
         private const val NEVER_STAMPED = Stamps.NEVER_STAMPED

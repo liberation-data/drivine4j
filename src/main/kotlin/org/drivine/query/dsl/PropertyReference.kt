@@ -436,6 +436,31 @@ open class PropertyReference<T>(
         builder.values.add(SeekValueSpec("$alias.$propertyName", value))
     }
 
+    /**
+     * Sets this property to [value] in a patch (Kotlin DSL): `fields { query.note setTo "patched" }`.
+     * A null does not compile: [clear] removes a property.
+     */
+    context(builder: FieldsBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("setToContext")
+    infix fun setTo(value: T & Any) {
+        builder.writes.add(FieldWrite(alias, propertyName, value))
+    }
+
+    /** Removes this property in a patch (Kotlin DSL): `fields { query.note.clear() }`. */
+    context(builder: FieldsBuilder<*>)
+    @Suppress("INAPPLICABLE_JVM_NAME")
+    @JvmName("clearContext")
+    fun clear() {
+        builder.writes.add(FieldWrite(alias, propertyName, null))
+    }
+
+    /** A patch's write of [value] to this property, for Java: see [PatchSpec.set]. Kotlin writes `property setTo value`. */
+    fun assign(value: T & Any): FieldWrite = FieldWrite(alias, propertyName, value)
+
+    /** A patch's removal of this property, for Java: see [PatchSpec.set]. Kotlin writes `property.clear()`. */
+    fun cleared(): FieldWrite = FieldWrite(alias, propertyName, null)
+
     // Helper to create PropertyCondition
     private fun makePropertyCondition(operator: ComparisonOperator, value: Any?): WhereCondition.PropertyCondition {
         return WhereCondition.PropertyCondition(
