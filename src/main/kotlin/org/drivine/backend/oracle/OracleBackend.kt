@@ -48,6 +48,9 @@ internal class OracleBackend(
     /** The graph the manager names, made with the backend where it is not there yet. */
     private val graph = OracleGraph.ensured(persistenceManager)
 
+    /** The properties a node is found by, which decide how a statement tests its roots' labels. */
+    private val found = OracleIndexedProperties(persistenceManager)
+
     /** Plans a save, and a batch of fragments, as the steps of a write block. */
     private val saves = OracleSavePlan(graph, objectMapper)
 
@@ -69,12 +72,12 @@ internal class OracleBackend(
     // ----- Reading -----
 
     override fun loadAll(graphClass: Class<*>, where: String?): GraphStatement =
-        OracleSelect(graph, graphClass).let { select -> select.load(listOfNotNull(where?.let(select::written))) }
+        OracleSelect(graph, graphClass, indexed = found::leads).let { select -> select.load(listOfNotNull(where?.let(select::written))) }
 
     override fun loadAll(graphClass: Class<*>, query: GraphQuerySpec<*>): LoadPlan {
         require(query.seekValues.isEmpty() || query.skip == null) { "seek and skip cannot be used together" }
         val (collectionSorts, rootOrders) = orders(graphClass, query)
-        val select = OracleSelect(graph, graphClass, collectionSorts, query.depthOverrides)
+        val select = OracleSelect(graph, graphClass, collectionSorts, query.depthOverrides, found::leads)
         val seek = query.seekValues.takeIf { it.isNotEmpty() }?.let { select.after(rootOrders, it, collectionSorts.size) }
         val statement = select.load(listOfNotNull(select.predicate(query.conditions), seek), rootOrders, query.skip, query.limit)
         return LoadPlan(statement, rootOrders, keyset = seek != null)
@@ -98,16 +101,16 @@ internal class OracleBackend(
     }
 
     override fun load(graphClass: Class<*>): GraphStatement {
-        val select = OracleSelect(graph, graphClass)
+        val select = OracleSelect(graph, graphClass, indexed = found::leads)
         return select.load(listOf(select.hasId(GraphBackend.ID_PARAM)))
     }
 
     override fun count(graphClass: Class<*>, where: String?): GraphStatement =
-        OracleSelect(graph, graphClass).let { select -> select.count(listOfNotNull(where?.let(select::written))) }
+        OracleSelect(graph, graphClass, indexed = found::leads).let { select -> select.count(listOfNotNull(where?.let(select::written))) }
 
     override fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
         requireNoSeek(query)
-        val select = OracleSelect(graph, graphClass)
+        val select = OracleSelect(graph, graphClass, indexed = found::leads)
         return select.count(listOfNotNull(select.predicate(query.conditions)))
     }
 
@@ -115,7 +118,7 @@ internal class OracleBackend(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,
         topK: Int, threshold: Double?, searchK: Int?, partitionLabel: String?,
     ): ScoredSearchPlan {
-        val select = OracleSelect(graph, graphClass)
+        val select = OracleSelect(graph, graphClass, indexed = found::leads)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
         // What the search measures is the nearest searchK, and of what is left of them topK come back.
         // Through the index for the label when one has been made; else by measuring every node.
@@ -130,7 +133,7 @@ internal class OracleBackend(
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
-        val select = OracleSelect(graph, graphClass)
+        val select = OracleSelect(graph, graphClass, indexed = found::leads)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val words = TextQuery.parse(text)
         val texts = made(SchemaItemKind.FULLTEXT_INDEX, index.label, index.properties)
@@ -150,18 +153,18 @@ internal class OracleBackend(
     // ----- Deleting -----
 
     override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement {
-        val select = OracleSelect(graph, graphClass)
+        val select = OracleSelect(graph, graphClass, indexed = found::leads)
         val predicates = listOfNotNull(select.hasId(GraphBackend.ID_PARAM), where?.let(select::written))
         val cascaded = if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) select.cascaded(predicates) else null
         return if (cascaded == null) deleting(select, predicates) else cascading(select, predicates, cascaded, orphansOnly = cascade == CascadeType.DELETE_ORPHAN)
     }
 
     override fun deleteAll(graphClass: Class<*>, where: String?): GraphStatement =
-        OracleSelect(graph, graphClass).let { select -> deleting(select, listOfNotNull(where?.let(select::written))) }
+        OracleSelect(graph, graphClass, indexed = found::leads).let { select -> deleting(select, listOfNotNull(where?.let(select::written))) }
 
     override fun deleteAll(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
         requireNoSeek(query)
-        val select = OracleSelect(graph, graphClass)
+        val select = OracleSelect(graph, graphClass, indexed = found::leads)
         return deleting(select, listOfNotNull(select.predicate(query.conditions)))
     }
 
@@ -249,7 +252,7 @@ internal class OracleBackend(
      * text: so the text is the node's shape and the predicate, and the same for every id and value.
      */
     override fun patch(graphClass: Class<*>, id: Any, values: Map<String, Any?>, conditions: List<WhereCondition>): GraphStatement {
-        val select = OracleSelect(graph, graphClass)
+        val select = OracleSelect(graph, graphClass, indexed = found::leads)
         val model = FragmentModel.from(select.rootFragment)
         val key = requireNotNull(model.nodeIdProperty) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
         val plan = WritePlan(graph)
@@ -318,7 +321,7 @@ internal class OracleBackend(
     override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement {
         requireType(type)
         val source = shapeOf(from)
-        val select = OracleSelect(graph, targetClass)
+        val select = OracleSelect(graph, targetClass, indexed = found::leads)
         val statement = select.load(listOf(select.relatedTo(source.labels, source.key, FROM_PARAM, type, direction)))
         return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to OracleSql.key(from.id)))
     }

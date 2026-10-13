@@ -2,6 +2,8 @@ package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.drivine.schema.SimilarityFunction
 import org.junit.jupiter.api.Test
 import sample.flatexpand.SeqWindow2View
@@ -74,6 +76,42 @@ class OracleSelectTest {
         val all = select(Claim::class.java).load(emptyList()).statement
         assertTrue(all.contains(scansClaim), all)
         assertFalse(all.contains(carriesClaim), all)
+    }
+
+    @Test
+    fun `roots found by a property with an index have their label tested on what is found`() {
+        fun load(indexed: (String) -> Boolean, vararg conditions: PropertyCondition) =
+            OracleSelect(graph, Claim::class.java, indexed = indexed).let { it.load(listOfNotNull(it.predicate(conditions.toList()))).statement }
+        val note = PropertyCondition("n.note", ComparisonOperator.EQUALS, "seed")
+
+        // Asked for its label the way the index over labels answers, Oracle takes that index and reads
+        // every node of the label: it estimates the test gives one row.
+        val found = load({ it == "note" }, note, PropertyCondition("n.text", ComparisonOperator.EQUALS, "t"))
+        assertTrue(found.contains(carriesClaim), found)
+        assertFalse(found.contains(scansClaim), found)
+
+        // With no index over the property the label is what finds the roots, as before.
+        val scanned = load({ false }, note)
+        assertTrue(scanned.contains(scansClaim), scanned)
+        assertFalse(scanned.contains(carriesClaim), scanned)
+
+        // An index reads a property as text: it answers neither a number nor a range, and holds no empty string.
+        listOf(
+            PropertyCondition("n.note", ComparisonOperator.EQUALS, 3),
+            PropertyCondition("n.note", ComparisonOperator.GREATER_THAN, "seed"),
+            PropertyCondition("n.note", ComparisonOperator.EQUALS, ""),
+            PropertyCondition("n.note", ComparisonOperator.EQUALS, null),
+        ).forEach { condition ->
+            val statement = load({ true }, condition)
+            assertTrue(statement.contains(scansClaim), "$condition: $statement")
+        }
+    }
+
+    @Test
+    fun `a property of a related node finds no root, whatever is indexed`() {
+        val view = OracleSelect(graph, ClaimView::class.java, indexed = { true })
+        val statement = view.load(listOfNotNull(view.predicate(listOf(PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"))))).statement
+        assertTrue(statement.contains("JSON_EXISTS(claim_.labels, '$[*]?(@ == \"Claim\")')"), statement)
     }
 
     @Test
@@ -204,23 +242,31 @@ class OracleSelectTest {
                 """
                 |    'employers' VALUE COALESCE((
                 |        SELECT JSON_ARRAYAGG(employers_.doc ORDER BY employers_.nid RETURNING JSON)
-                |        FROM GRAPH_TABLE (g
-                |            MATCH (employers_ IS node)
-                |            COLUMNS (employers_.nid, employers_.doc)) employers_
-                |        WHERE employers_.nid IN (
-                |            SELECT reached_.nid
+                |        FROM (
+                |            SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc
                 |            FROM GRAPH_TABLE (g
                 |                MATCH (claim_ IS node)
                 |                    -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '"Human"') > 0)
                 |                    -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(JSON_SERIALIZE(reached_.labels), '"Company"') > 0)
-                |                COLUMNS (claim_.nid AS src, reached_.nid)) reached_
-                |            WHERE reached_.src = claim_.nid)), JSON('[]')),
+                |                COLUMNS (claim_.nid AS src, reached_.nid, reached_.doc)) reached_
+                |            GROUP BY reached_.src, reached_.nid
+                |        ) employers_
+                |        WHERE employers_.src = claim_.nid), JSON('[]')),
                 """.trimMargin(),
             ),
             statement,
         )
         // Two hops give no single relationship to carry.
         assertFalse(statement.substringBefore("'people'").contains(".eid"), statement)
+    }
+
+    @Test
+    fun `a path is read from the root outward, and never as a test of every node of the graph`() {
+        val statement = select(ClaimEmployers::class.java).load(emptyList()).statement.squashed()
+        // The nodes a path reaches come from the path's own rows. Read on their own, as those whose id
+        // the path reaches, Oracle reads every node of the graph and asks the path of each.
+        assertFalse(statement.contains("MATCH (employers_ IS node)"), statement)
+        assertFalse(statement.contains(".nid IN ("), statement)
     }
 
     @Test

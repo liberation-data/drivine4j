@@ -15,6 +15,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphTypeLabels
+import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.SeekValueSpec
@@ -47,6 +48,8 @@ internal class OracleSelect(
     private val graphClass: Class<*>,
     private val collectionSorts: List<CollectionSortSpec> = emptyList(),
     private val depthOverrides: Map<String, Int> = emptyMap(),
+    /** Whether an index begins with a property, so that its nodes are found by it: see [OracleIndexedProperties]. */
+    private val indexed: (String) -> Boolean = { false },
 ) {
     private val viewModel: GraphViewModel? =
         if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
@@ -157,8 +160,30 @@ internal class OracleSelect(
         return "SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = \$$NID\n  AND ${selecting(listOf(predicate))}"
     }
 
-    /** The predicate [conditions] of the query DSL make on the root; null when there are none. See [OraclePredicates.predicate]. */
-    fun predicate(conditions: List<WhereCondition>): String? = predicates.predicate(conditions)
+    /**
+     * The predicate [conditions] of the query DSL make on the root; null when there are none. See [OraclePredicates.predicate].
+     *
+     * Where one of them finds the roots by a property with an index, the roots are no longer read by
+     * their labels, and the labels are tested on what is found. Left to choose between the two
+     * indexes, Oracle takes the one over labels: it estimates that a test of a label gives one row.
+     */
+    fun predicate(conditions: List<WhereCondition>): String? {
+        if (conditions.any(::findsByIndex)) scope.narrowed = true
+        return predicates.predicate(conditions)
+    }
+
+    /**
+     * Whether [condition] is one every root meets, of a property of the root that an index begins
+     * with, for equality with a text. An index reads a property as text, so it does not answer a
+     * comparison with a number or a moment; and a stored empty string is read as null, which no
+     * index holds.
+     */
+    private fun findsByIndex(condition: WhereCondition): Boolean =
+        condition is WhereCondition.PropertyCondition &&
+            condition.operator == ComparisonOperator.EQUALS &&
+            condition.propertyPath.substringBefore('.') == rootAlias &&
+            condition.value != null && condition.value != "" && SqlKind.ofValue(condition.value) == SqlKind.TEXT &&
+            indexed(condition.propertyPath.substringAfter('.'))
 
     /** The predicate that selects the rows after a keyset cursor. See [OraclePredicates.after]. */
     fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String = predicates.after(orders, values, collectionSortCount)
@@ -237,18 +262,25 @@ internal class OracleSelect(
 
     /**
      * A field that holds each node reached once, however many ways lead to it: a path of several
-     * steps, or one step taken up to a depth. The nodes are read on their own, those whose id the
-     * path reaches, since the path gives a node once for each way to it.
+     * steps, or one step taken up to a depth. The path gives a node once for each way to it, so its
+     * rows are grouped by the node reached, beside the root they were reached from.
+     *
+     * The nodes are read where the path ends and not on their own, as those whose id the path
+     * reaches: Oracle answers that by reading every node of the graph and asking the path of each.
      */
     private fun distinct(parent: String, relationship: RelationshipModel, steps: List<Step>, targetType: Class<*>, visits: Map<String, Int>): String {
         val row = scope.row(relationship.fieldName)
         val path = scope.row("reached")
         val value = element(row, targetType, visits, relationship.fieldName)
-        val reached = listOf("$row.nid IN ${rows.related("$path.nid", parent, steps, path).nested()}")
+        val once = Derived(
+            Query("$path.src, $path.nid, ANY_VALUE($path.doc) AS doc", rows.reached(parent, steps, path), tail = listOf("GROUP BY $path.src, $path.nid")).text(),
+            row,
+        )
+        val reached = listOf("$row.src = $parent.nid")
         return if (relationship.isCollection) {
-            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", rows.nodes(emptyList(), row), reached).nested()}, $EMPTY_ARRAY)"
+            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", once, reached).nested()}, $EMPTY_ARRAY)"
         } else {
-            Query(value, rows.nodes(emptyList(), row), reached, listOf(first("$row.nid"))).nested()
+            Query(value, once, reached, listOf(first("$row.nid"))).nested()
         }
     }
 

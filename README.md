@@ -2534,8 +2534,29 @@ joined to that row outside. `COLUMNS` names only what the statement reads of a r
 of the root once a `whereClause` written by hand is in it. A second row for
 one field is numbered (`people2_`), as when a condition on `people` is tested beside the field itself.
 A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
-which the index over labels answers, and with `INSTR` where the node is found by its id or at the end
-of a relationship.
+which the index over labels answers, and with `INSTR` where the node is found by its id, by a property
+that a range index or a uniqueness constraint begins with, or at the end of a relationship. Oracle
+estimates that a test of a label gives one row, and given the choice reads every node of the label
+and not the few the property's index would give. Drivine reads which properties have an index from
+the graph's catalog, once a minute: an index it did not make is not known to it.
+
+A `@GraphPath` field, and a list read to a depth, is the path's own rows grouped by the node reached,
+so each node is there once however many ways lead to it:
+
+```sql
+'employers' VALUE COALESCE((
+    SELECT JSON_ARRAYAGG(employers_.doc ORDER BY employers_.nid RETURNING JSON)
+    FROM (
+        SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc
+        FROM GRAPH_TABLE (drivine
+            MATCH (claim_ IS node)
+                -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '"Human"') > 0)
+                -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(JSON_SERIALIZE(reached_.labels), '"Company"') > 0)
+            COLUMNS (claim_.nid AS src, reached_.nid, reached_.doc)) reached_
+        GROUP BY reached_.src, reached_.nid
+    ) employers_
+    WHERE employers_.src = claim_.nid), JSON('[]'))
+```
 
 **Testing.** `OracleTestContainer` starts Oracle Free (`gvenzl/oracle-free:23-faststart`; another with
 `ORACLE_TEST_IMAGE` or `-Dtest.oracle.image`) and gives a user, `drivine`, in the service `FREEPDB1`.
