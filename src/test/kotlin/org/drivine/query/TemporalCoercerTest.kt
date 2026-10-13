@@ -30,6 +30,15 @@ class TemporalCoercerTest {
     }
 
     @Test
+    fun `a time exactly on a minute keeps its seconds, which an Instant is not read without`() {
+        val zdt = ZonedDateTime.of(2040, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+        val out = TemporalCoercer.coerce(mapOf("zoned" to zdt, "offset" to zdt.toOffsetDateTime()))
+
+        assertEquals("2040-01-01T00:00:00Z", out["zoned"])
+        assertEquals("2040-01-01T00:00:00Z", out["offset"])
+    }
+
+    @Test
     fun `non-UTC ZonedDateTime keeps its offset but drops the zone name suffix`() {
         val zdt = ZonedDateTime.of(2026, 4, 23, 1, 7, 53, 0, ZoneId.of("America/New_York"))
         val out = TemporalCoercer.coerce(mapOf("ts" to zdt))
