@@ -12,11 +12,13 @@ import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
 import org.drivine.query.FoundStamp
+import org.drivine.query.PatchRow
 import org.drivine.query.ReturnedStamps
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.Stamping
 import org.drivine.query.read
+import org.drivine.query.unwindProps
 import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
 import java.util.IdentityHashMap
@@ -38,6 +40,7 @@ import kotlin.reflect.jvm.javaGetter
  *   relationships too, and otherwise throws [StaleObjectException]. In a view, the root is checked.
  *   A node reached through a relationship is written unchecked.
  * - [update] loads an object, applies a change, and writes only what the change altered.
+ * - [patchAll] writes named fields of many nodes that are there, and makes no node.
  */
 @Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
 class StatelessGraphObjectManager private constructor(
@@ -274,6 +277,117 @@ class StatelessGraphObjectManager private constructor(
     }
 
     /**
+     * Writes the named fields of each object to its node, where the node is there, and makes no node:
+     * the write of many nodes that must not bring back one deleted meanwhile. Returns a [PatchResult]
+     * for each object, in the order given.
+     *
+     * The objects are where an id and values are read from, and no more. The id is each object's
+     * `@NodeId` field, and for a view the fields are its root's; relationships are not written. A
+     * stamp the objects carry is not compared: only the named fields are written, so there is
+     * nothing else of the node to overwrite. The objects are not handed back, and the stamp of one
+     * whose node changed is then behind the store's: to go on working with an object, load it.
+     *
+     * A node gets a new stamp only if a value written differed from what it held, and a node that
+     * never carried a stamp is given one.
+     *
+     * The id, the stamp, a `@PropertyBag` and a `@NodeLabels` field cannot be named. The id is taken
+     * to be unique: where two nodes of the class share one, the graph engines write both and Oracle
+     * the one it finds first.
+     *
+     * The whole call is atomic, as [saveAll] is: inside a transaction it joins it, and otherwise it
+     * runs in one of its own, on an engine that has transactions. FalkorDB has none: there each
+     * statement is atomic, and what earlier statements wrote stays written. A call the engine turns
+     * away because another writer was changing the same nodes is run again.
+     *
+     * @param nullPolicy under [NullPolicy.IGNORE], a named field that is null on an object is left as
+     *   the store has it; under [NullPolicy.CLEAR] it is cleared
+     * @param only the only fields to write
+     * @param except fields to leave unwritten: every other field that can be named is written. Give
+     *   [only] or [except], and not both: a patch of every field is not what this is for
+     * @throws IllegalArgumentException before anything is written, when neither [only] nor [except]
+     *   is given, a name is no field that can be patched, the objects are not all of one class, or
+     *   an id is null or given twice
+     */
+    @JvmOverloads
+    fun <T : Any> patchAll(
+        objs: Collection<T>,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+        only: Set<KProperty1<*, *>> = emptySet(),
+        except: Set<KProperty1<*, *>> = emptySet(),
+    ): List<PatchResult> {
+        objs.firstOrNull()?.let { first -> (only + except).forEach { requireFieldOf(first, it) } }
+        return patchAllFields(objs, nullPolicy, only.map { it.name }.toSet(), except.map { it.name }.toSet())
+    }
+
+    /** [patchAll] with the fields named as strings, for Java. */
+    @JvmOverloads
+    fun <T : Any> patchAllFields(
+        objs: Collection<T>,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+        only: Set<String> = emptySet(),
+        except: Set<String> = emptySet(),
+    ): List<PatchResult> {
+        require(only.isNotEmpty() || except.isNotEmpty()) {
+            "A patch names the fields it writes: give only or except. To write every field of an object, save it."
+        }
+        require(only.isEmpty() || except.isEmpty()) { "Give only or except, not both." }
+        val items = objs.toList()
+        if (items.isEmpty()) return emptyList()
+        val classes = items.map { it.javaClass }.distinct()
+        require(classes.size == 1) {
+            "A patch writes nodes of one class, and these are of ${classes.joinToString { it.simpleName }}. Patch each class by a call of its own."
+        }
+        val model = rootModel(classes.single())
+        val idField = requireNotNull(model.nodeIdField) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
+        val properties = patchedFields(model, only, except).map { field -> model.fields.first { it.name == field }.propertyName }
+
+        val rows = items.mapIndexed { index, item ->
+            val root = requireNotNull(stamps.rootOf(item)) { "The root of the ${item.javaClass.simpleName} at $index is null." }
+            val values = objectMapper.toMap(root)
+            val id = requireNotNull(values[idField]) { "The ${model.clazz.simpleName} at $index has a null id, so there is no node to patch." }
+            // Every row holds every named property, a null one too: what a null does is the statement's to say.
+            val stored = model.unwindProps(values, NullPolicy.CLEAR)
+            PatchRow(index, id, properties.associateWith { stored[it] })
+        }
+        rows.groupBy { it.id }.values.firstOrNull { it.size > 1 }?.let { same ->
+            throw IllegalArgumentException(
+                "The ${model.clazz.simpleName} '${same.first().id}' is given ${same.size} times, at ${same.joinToString { it.index.toString() }}. A patch writes each node once."
+            )
+        }
+
+        val returned = executor.batch(backend.patchAll(model.clazz, properties, rows, clears = nullPolicy == NullPolicy.CLEAR))
+            .flatten().map { FoundStamp.of(it as String) }
+        // A node found says whether it changed. Where two nodes share an id, one that changed says so for both.
+        val changed = returned.groupBy({ it.index }, { it.found == CHANGED }).mapValues { (_, each) -> each.any { it } }
+        return items.indices.map { index -> changed[index]?.let { PatchResult(found = true, applied = true, changed = it) } ?: PatchResult.ABSENT }
+    }
+
+    /**
+     * The fields of [model] a patch writes. This is a rule of its own: a save counts a bag and the
+     * labels field among a class's fields, and a patch writes neither, nor the id or the stamp.
+     */
+    private fun patchedFields(model: FragmentModel, only: Set<String>, except: Set<String>): Set<String> {
+        val unpatchable = buildMap {
+            model.nodeIdField?.let { put(it, "the id, which a node is found by") }
+            model.stampField?.let { put(it, "the stamp, which only a write gives a node") }
+            model.propertyBags.forEach { put(it.fieldName, "a @PropertyBag") }
+            model.nodeLabels?.let { put(it.fieldName, "the @NodeLabels field") }
+        }
+        val patchable = model.fields.map { it.name }.toSet() - unpatchable.keys
+        (only + except).firstOrNull { it !in patchable && it !in unpatchable }?.let {
+            throw IllegalArgumentException("${model.clazz.simpleName} has no field '$it' to patch. Its fields are: ${patchable.sorted().joinToString()}.")
+        }
+        only.firstOrNull { it in unpatchable }?.let {
+            throw IllegalArgumentException(
+                "Field '$it' of ${model.clazz.simpleName} is ${unpatchable.getValue(it)}, and a patch does not write it. The fields it can write are: ${patchable.sorted().joinToString()}."
+            )
+        }
+        return only.ifEmpty { patchable - except }.also {
+            require(it.isNotEmpty()) { "The fields left out are every field of ${model.clazz.simpleName} a patch can write, so there is nothing to patch." }
+        }
+    }
+
+    /**
      * Loads the [graphClass] object with [id], applies [change] to it, and writes what the change
      * altered: the fields that differ, a field the change set to null, and for a view the
      * relationships it added or dropped and the related nodes it altered. Of a related node that was
@@ -460,6 +574,9 @@ class StatelessGraphObjectManager private constructor(
             "Field '${relationship.fieldName}' of this ${obj.javaClass.simpleName} is null. To remove every relationship of the field, give it an empty list."
         }
 }
+
+/** What a patch's statement returns where `found` goes, for a node a value differed on. */
+private const val CHANGED = "1"
 
 /** Loads, changes and saves a graph object, with a reified type. See [StatelessGraphObjectManager.update]. */
 inline fun <reified T : Any> StatelessGraphObjectManager.update(id: String, attempts: Int = 3, noinline change: (T) -> T): T? =

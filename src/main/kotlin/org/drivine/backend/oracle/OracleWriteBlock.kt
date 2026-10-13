@@ -19,6 +19,8 @@ import org.drivine.model.Stamps
  *   that stamp, or the block returns no row and writes nothing. The node gets a new first token only
  *   if the step changes it.
  * - `ref` finds a node that must be there, and locks it.
+ * - `patch` writes `set` and removes `unset` on a node that is there, and does nothing for one that is
+ *   not. The node gets a new first token only if the step changes it.
  * - `link` joins two nodes; `unlink` removes a field's relationships to some of its targets; `cut`
  *   removes the relationships of a type to one node, or with no node named, to every node in a
  *   direction. Each gives the nodes at both ends a new second token when it changes what joins them.
@@ -76,7 +78,10 @@ internal class OracleWriteBlock(private val graph: OracleGraph, private val shap
         END LOOP;"""
         },
 
-        /** A row for each node whose stamp is handed back, `index/found=stamp`: what a batch of fragments returns. */
+        /**
+         * A row for each node whose stamp is handed back, `index/found=stamp`: what a batch of fragments
+         * returns. A `patch` step puts `1` or `0` where `found` goes, for whether it changed the node.
+         */
         EACH_STAMP("SELECT v FROM JSON_TABLE(v_result, '\$[*]' COLUMNS (v VARCHAR2(400) PATH '\$'))") {
             override fun gathering(nodes: String): String = """
         v_each := JSON_ARRAY_T();
@@ -101,7 +106,7 @@ internal class OracleWriteBlock(private val graph: OracleGraph, private val shap
      * shapes and what it returns are in the text.
      */
     fun text(): String =
-        listOf(declarations(), finding(), joining(), relinking(), spanning(), members(), owning(), writingProperties(), clearingBags(), owningLabels(), relabelling(), savingNode(), findingNode(), linking(), unlinking(), cutting())
+        listOf(declarations(), finding(), joining(), relinking(), spanning(), members(), owning(), writingProperties(), clearingBags(), owningLabels(), relabelling(), savingNode(), findingNode(), linking(), unlinking(), cutting(), patchingNode())
             .joinToString("\n\n") + "\n" + main()
 
     /** The block's types, variables and exceptions. */
@@ -714,6 +719,46 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             DELETE FROM ${graph.edges} WHERE eid = v_eids(i);
         relink(v_from);
         v_count := v_count + v_eids.COUNT;
+    END;
+""".trim('\n')
+
+    /** `patch_node`: the `patch` step. */
+    private fun patchingNode(): String = """
+    -- Writes properties to a node that is there, and makes none: `save_node` without the making of a
+    -- node. One that is not there is left out of what the block hands back. Where `save_node` hands
+    -- back the stamp a node was found with, this hands back whether the step changed the node.
+    PROCEDURE patch_node(op JSON_OBJECT_T) IS
+        v_nid       NUMBER;
+        v_stamp     VARCHAR2(33);
+        v_two       VARCHAR2(33);
+        v_labels    VARCHAR2(4000);
+        v_props     CLOB;
+        v_new_props CLOB;
+        v_fresh     VARCHAR2(33) := op.get_string('fresh');
+        v_o         JSON_OBJECT_T;
+        v_same      NUMBER;
+    BEGIN
+        find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);
+        IF v_nid IS NULL THEN
+            RETURN;
+        END IF;
+        v_o := JSON_OBJECT_T.parse(v_props);
+        write_props(op, v_o);
+        v_new_props := v_o.to_clob;
+        SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
+        -- A new first token only if the step changes the node, or the node has no stamp of two tokens yet.
+        v_two := ${twoTokens("v_stamp")};
+        IF v_two IS NULL OR v_same = 0 THEN
+            v_stamp := SUBSTR(v_fresh, 1, 16) || NVL(SUBSTR(v_two, 17), SUBSTR(v_fresh, 17));
+            IF v_same = 0 THEN
+                UPDATE ${graph.nodes} SET props = v_new_props, stamp = v_stamp WHERE nid = v_nid;
+            ELSE
+                UPDATE ${graph.nodes} SET stamp = v_stamp WHERE nid = v_nid;
+            END IF;
+        END IF;
+        v_h_index(v_h_index.COUNT) := op.get_string('i');
+        v_h_found(v_h_found.COUNT) := CASE WHEN v_same = 0 THEN '1' ELSE '0' END;
+        v_h_node(v_h_node.COUNT) := v_nid;
     END;
 """.trim('\n')
 

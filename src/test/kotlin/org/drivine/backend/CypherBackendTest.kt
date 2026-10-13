@@ -10,6 +10,7 @@ import org.drivine.manager.NodeRef
 import org.drivine.manager.NullPolicy
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
+import org.drivine.query.PatchRow
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
 import org.drivine.query.StampWrite
@@ -224,6 +225,29 @@ class CypherBackendTest {
         assertEquals(listOf("1", "3"), (batch.stamped.single().parameters["rows"] as List<*>).map { (it as Map<*, *>)["i"] })
         assertContains(batch.stamped.single().statement!!.text, "RETURN row.i + '/' + ")
         assertEquals(listOf(IndexedValue(2, fragments[2])), batch.alone)
+    }
+
+    @Test
+    fun `the rows of a patch are sent in the order of their ids, each under its own index and offered a stamp of its own`() {
+        val rows = listOf("c", "a", "b").mapIndexed { index, id -> PatchRow(index, id, mapOf("note" to "n$index")) }
+        val spec = backend().patchAll(Claim::class.java, listOf("note"), rows, clears = false).single()
+
+        @Suppress("UNCHECKED_CAST")
+        val sent = spec.parameters["rows"] as List<Map<String, Any?>>
+        assertEquals(listOf("a", "b", "c"), sent.map { it["id"] })
+        assertEquals(listOf("1", "2", "0"), sent.map { it["i"] })
+        assertEquals(listOf("n1", "n2", "n0"), sent.map { (it["v"] as Map<*, *>)["note"] })
+        assertEquals(3, sent.map { it["stamp"] as String }.onEach { assertTrue(Stamps.isTwoTokens(it), it) }.distinct().size)
+        assertContains(spec.statement!!.text, "MATCH (n:Claim {id: row.id})")
+    }
+
+    @Test
+    fun `a patch of more rows than a statement takes is a statement for each chunk, of one text`() {
+        val rows = (1..2001).map { PatchRow(it, "c$it", mapOf("note" to "n")) }
+        val specs = backend().patchAll(Claim::class.java, listOf("note"), rows, clears = false)
+
+        assertEquals(listOf(1000, 1000, 1), specs.map { (it.parameters["rows"] as List<*>).size })
+        assertEquals(1, specs.map { it.statement!!.text }.distinct().size)
     }
 
     @Test

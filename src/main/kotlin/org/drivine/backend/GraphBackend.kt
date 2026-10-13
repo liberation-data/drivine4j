@@ -8,6 +8,7 @@ import org.drivine.manager.NullPolicy
 import org.drivine.manager.RelateMode
 import org.drivine.manager.RemovedTargets
 import org.drivine.model.RelationshipModel
+import org.drivine.query.PatchRow
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
@@ -133,6 +134,19 @@ internal interface GraphBackend {
      * [FragmentBatch].
      */
     fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch
+
+    /**
+     * The statements that write named properties of many [graphClass] nodes, and make none. Each
+     * returns a row for every node it found, `index/changed=stamp`: `changed` is `1` when a value
+     * written differed from the node's and `0` when none did. A row whose node is not there gives
+     * nothing back. The rows are sent in the order of their ids, so two calls over the same nodes
+     * take their locks in the same order.
+     *
+     * @param graphClass the fragment the nodes are of
+     * @param properties the stored names of the properties written, which every row holds
+     * @param clears whether a null in a row clears the property; when false, it leaves it as it is
+     */
+    fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>>
 
     /** Reads the stamp the node of [root] carries, as `''` when it has none; no row when the node is gone. */
     fun foundStamp(root: StampWrite): GraphStatement

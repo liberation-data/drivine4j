@@ -59,6 +59,7 @@ internal enum class StepKind(val op: String, val procedure: String) {
     LINK("link", "link"),
     UNLINK("unlink", "unlink"),
     CUT("cut", "cut"),
+    PATCH("patch", "patch_node"),
 }
 
 /**
@@ -141,6 +142,17 @@ internal class WritePlan(private val graph: OracleGraph) {
     /** The step that removes the relationships of [type] in [direction] from [from] to [to], or with no [to] to every node. */
     fun cut(from: Int, to: Int?, type: String, direction: Direction) =
         add(StepKind.CUT, "from" to from, "to" to to, "type" to type, "dir" to direction.code)
+
+    /**
+     * The step that writes [set] to the node of [shape] whose stored id is [storedId], and removes
+     * [unset] from it, if the node is there. It makes no node: one that is not there is left out of
+     * what the block hands back. The node is returned under [index], with whether the step changed it.
+     */
+    fun patch(shape: Int, storedId: String, index: String, set: Map<String, Any?>, unset: List<String>) =
+        add(
+            StepKind.PATCH, "s" to shape, "k" to storedId, "i" to index, "fresh" to fresh(),
+            "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() },
+        )
 
     /** The block that carries the steps out and gives back what [returns] says. */
     fun text(returns: OracleWriteBlock.Returns): String = OracleWriteBlock(graph, shapes.keys.toList(), returns).text()

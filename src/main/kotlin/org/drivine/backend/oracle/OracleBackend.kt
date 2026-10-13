@@ -18,6 +18,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.FullTextIndexResolver
+import org.drivine.query.PatchRow
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
@@ -220,6 +221,27 @@ internal class OracleBackend(
             QuerySpecification.withStatement(text).bind(bindings).transform(String::class.java)
         },
     )
+
+    /**
+     * A `patch` step for each row, [BATCH] to a block. What a null does is in the step: the property
+     * is left out of what the step sets, and when the call clears, named among what it removes.
+     */
+    override fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>> {
+        val model = FragmentModel.from(graphClass)
+        val key = requireNotNull(model.nodeIdProperty) { "${graphClass.simpleName} has no @NodeId field to find a node by." }
+        return rows.sortedBy { it.id.toString() }.chunked(BATCH).map { chunk ->
+            val plan = WritePlan(graph)
+            val shape = plan.shape(model.labels, key)
+            chunk.forEach { row ->
+                plan.patch(
+                    shape, OracleSql.key(row.id), row.index.toString(),
+                    set = row.values.filterValues { it != null },
+                    unset = if (clears) row.values.filterValues { it == null }.keys.toList() else emptyList(),
+                )
+            }
+            QuerySpecification.withStatement(plan.text(OracleWriteBlock.Returns.EACH_STAMP)).bind(plan.bindings()).transform(String::class.java)
+        }
+    }
 
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
