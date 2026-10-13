@@ -9,6 +9,7 @@ import org.drivine.manager.NodeRef
 import org.drivine.manager.NullPolicy
 import org.drivine.manager.RelateMode
 import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.query.PatchRow
 import org.drivine.query.SqlParameters
 import org.drivine.query.SaveRequest
 import org.drivine.query.StampWrite
@@ -391,6 +392,31 @@ class OracleBackendTest {
         assertEquals("h500", second.single()["k"])
         // One text for every block: the plan is data, so the driver keeps one statement prepared.
         assertEquals(specs[0].statement!!.text, specs[1].statement!!.text)
+    }
+
+    @Test
+    fun `a patch is a step for each row, in the order given, five hundred to a block of one text`() {
+        val rows = (0 until 501).map { PatchRow(it, "h${500 - it}", mapOf("name" to "Human $it", "note" to null)) }
+        val specs = backend().patchAll(Human::class.java, listOf("name", "note"), rows, clears = false)
+
+        val (first, second) = specs.map { steps(it.parameters) }
+        assertEquals(500, first.size)
+        assertEquals((0..500).map { "h${500 - it}" }, (first + second).map { it["k"] })
+        // The node `h0` was given last, and is returned under the index it was given at.
+        assertEquals(mapOf("op" to "patch", "s" to 0, "k" to "h0", "i" to "500", "fresh" to second.single()["fresh"], "set" to mapOf("name" to "Human 500")), second.single())
+        assertEquals(specs[0].statement!!.text, specs[1].statement!!.text)
+        assertContains(specs[0].statement!!.text, "JSON_TABLE(v_result")
+    }
+
+    @Test
+    fun `a null in a row of a patch is left out of what its step sets, and removed only when the patch clears`() {
+        val rows = listOf(PatchRow(0, "h1", mapOf("name" to "Ada", "note" to null)))
+
+        val kept = steps(backend().patchAll(Human::class.java, listOf("name", "note"), rows, clears = false).single().parameters).single()
+        val cleared = steps(backend().patchAll(Human::class.java, listOf("name", "note"), rows, clears = true).single().parameters).single()
+
+        assertEquals(mapOf("name" to "Ada") to null, kept["set"] to kept["unset"])
+        assertEquals(mapOf("name" to "Ada") to listOf("note"), cleared["set"] to cleared["unset"])
     }
 
     @Test

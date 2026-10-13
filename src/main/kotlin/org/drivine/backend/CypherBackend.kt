@@ -21,6 +21,8 @@ import org.drivine.query.FullTextSearchPlanner
 import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
 import org.drivine.query.MergeStatement
+import org.drivine.query.PatchRow
+import org.drivine.query.PatchStatementBuilder
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
@@ -87,6 +89,9 @@ internal class CypherBackend(
     private val batches = BatchSaveOperations(
         objectMapper, SessionManager.untracked(objectMapper), BatchSaveOperations.UNWIND_CHUNK_SIZE, grammar, storedKeys, Stamping(checked = false),
     )
+
+    /** Builds the statement of a patch of many. */
+    private val patches = PatchStatementBuilder(grammar)
 
     /** The builder of the statements that read and delete [graphClass]: a fragment's or a view's. */
     private fun builder(graphClass: Class<*>) = GraphObjectQueryBuilder.forClass(graphClass, grammar)
@@ -205,6 +210,15 @@ internal class CypherBackend(
             stamped = batches.buildStampedSpecs(batched, nullPolicy),
             alone = alone,
         )
+    }
+
+    /** One statement for each [BatchSaveOperations.UNWIND_CHUNK_SIZE] rows, each row offered a stamp of its own. */
+    override fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>> {
+        val model = FragmentModel.from(graphClass)
+        val statement = patches.unwind(model, properties, clears)
+        return rows.map { mapOf("i" to it.index.toString(), "id" to it.id, "stamp" to Stamps.fresh(), "v" to it.values) }
+            .chunked(PatchRow.toAStatement(model, properties, BatchSaveOperations.UNWIND_CHUNK_SIZE))
+            .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf(PatchStatementBuilder.ROWS to chunk)).transform(String::class.java) }
     }
 
     // An absent stamp is read as '' so a node without one still gives a row on every engine.

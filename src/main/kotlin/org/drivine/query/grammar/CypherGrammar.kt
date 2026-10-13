@@ -124,9 +124,20 @@ interface CypherGrammar {
      * saved through the object manager writes a plain array, the vector index stays empty, and
      * `loadNearest` finds nothing.
      *
+     * A grammar that wraps overrides [vectorExpression], which this calls, and not this: a patch of
+     * many writes a vector from a row, through [vectorExpression] alone.
+     *
      * @param param the bind-parameter name (without the leading `$`); the binding value is unchanged.
      */
-    fun vectorPropertyLiteral(param: String): String = "\$$param"
+    fun vectorPropertyLiteral(param: String): String = vectorExpression("\$$param")
+
+    /**
+     * [expression], which gives a `@VectorIndex` property's value, as it is written to the property:
+     * a parameter, as [vectorPropertyLiteral] gives it, or the field of a row of an `UNWIND`. An engine
+     * that stores a vector as a type of its own wraps it here, and nowhere else. The expression must
+     * not be null where the engine wraps: `vecf32(null)` is an error.
+     */
+    fun vectorExpression(expression: String): String = expression
 
     /**
      * Whether [vectorPropertyLiteral] wraps the value rather than binding it plainly. When true, a
@@ -336,7 +347,7 @@ class FalkorDbCypherGrammar(
      * it up — the write-side mirror of the `vecf32(...)` wrapping [vectorSearchHead] applies to the
      * query vector.
      */
-    override fun vectorPropertyLiteral(param: String): String = "vecf32(\$$param)"
+    override fun vectorExpression(expression: String): String = "vecf32($expression)"
 
     override val supportsFullTextSearch: Boolean = true
 

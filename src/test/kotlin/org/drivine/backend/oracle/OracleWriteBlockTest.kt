@@ -107,6 +107,24 @@ class OracleWriteBlockTest {
         assertEquals(setOf("op", "r", "s", "k", "key", "id", "labels", "fresh"), bare.keys)
     }
 
+    @Test
+    fun `a patch step names a node by its shape and stored id, with the index it is returned under, and takes no number`() {
+        val plan = WritePlan(graph)
+        val shape = plan.shape(listOf("Human"), "id")
+        plan.patch(shape, "7", "3", set = mapOf("name" to "Ada"), unset = listOf("note"))
+        plan.patch(shape, "8", "4", set = emptyMap(), unset = emptyList())
+        val ref = plan.ref(shape, "b")
+
+        val (full, bare) = steps(plan)
+        assertEquals(
+            mapOf("op" to "patch", "s" to shape, "k" to "7", "i" to "3", "fresh" to full["fresh"], "set" to mapOf("name" to "Ada"), "unset" to listOf("note")),
+            full,
+        )
+        assertEquals(setOf("op", "s", "k", "i", "fresh"), bare.keys)
+        assertEquals(0, ref)
+        assertEquals(listOf(plan.mark, full["fresh"], bare["fresh"]), plan.offered)
+    }
+
     // The block's text
 
     @Test
