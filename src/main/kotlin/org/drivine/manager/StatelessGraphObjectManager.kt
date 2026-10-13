@@ -414,6 +414,7 @@ class StatelessGraphObjectManager private constructor(
      * @throws IllegalArgumentException before anything is sent, when no field is named, one is named
      *   twice, or one is not a field of the node that a patch can write
      */
+    @JvmSynthetic // Java has the overload below: with both in its sight, a lambda with no type given fits either.
     fun <T : Any, Q : Any> patch(id: Any, graphClass: Class<T>, queryObject: Q, spec: PatchSpec<Q>.() -> Unit): PatchResult {
         val patch = PatchSpec(queryObject).apply(spec)
         val values = PatchedValues(graphClass, objectMapper).of(patch.writes)

@@ -487,7 +487,7 @@ class FieldsBuilder<T : Any>(
 ) {
     internal val writes = mutableListOf<FieldWrite>()
 
-    /** Adds a write built with the Java methods: `this(query.note.assign("patched"))`. */
+    /** Adds a write built with the methods that need no context: `builder(property.assign("patched"))`. */
     operator fun invoke(write: FieldWrite) {
         writes.add(write)
     }

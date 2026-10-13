@@ -22,6 +22,9 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.PatchSpec
 import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.StringPropertyReference
+import org.drivine.query.dsl.any
+import org.drivine.query.dsl.none
+import org.drivine.query.dsl.not
 import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
@@ -322,6 +325,28 @@ abstract class StatelessPatchContract {
         assertEquals("one by Bob", claim("c1").note)
     }
 
+    @Test
+    fun `a predicate may negate, quantify and choose, over the root and its relationships`() {
+        stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("h1", "Ada"), Human("h2", "Bob"))))
+        stateless.save(Claim("alone", "one"))
+        var round = 0
+        fun note(id: String, where: context(org.drivine.query.dsl.WhereBuilder<ClaimViewQueryDsl>) () -> Unit) =
+            patchView(id) { fields { query.claim.note setTo "round ${round++}" }; where(where) }.applied
+
+        // No related node of the name: so for a root with other people, and for one with none.
+        assertEquals(listOf(false, true, true), listOf(note("c1") { query.people.none { name eq "Ada" } }, note("c1") { query.people.none { name eq "Cy" } }, note("alone") { query.people.none { name eq "Ada" } }))
+        // A negation of the root's own, and of a relationship: a comparison with no value is not met.
+        assertEquals(listOf(true, false, false), listOf(note("c1") { not { query.claim.text eq "two" } }, note("c1") { not { query.claim.text eq "one" } }, note("c1") { not { query.people.name eq "Ada" } }))
+        // Either the root's or a relationship's.
+        assertEquals(listOf(true, true, false), listOf(
+            note("c1") { anyOf { query.claim.text eq "two"; query.people.name eq "Bob" } },
+            note("alone") { anyOf { query.claim.text eq "one"; query.people.name eq "Bob" } },
+            note("alone") { anyOf { query.claim.text eq "two"; query.people.name eq "Bob" } },
+        ))
+        // One related node that meets two conditions together.
+        assertEquals(listOf(true, false), listOf(note("c1") { query.people.any { name eq "Ada"; id eq "h1" } }, note("c1") { query.people.any { name eq "Ada"; id eq "h2" } }))
+    }
+
     // ----- Refusals -----
 
     @Test
@@ -385,7 +410,7 @@ abstract class StatelessPatchContract {
     }
 
     @Test
-    fun `from Java's methods a predicate holds when any of its conditions does`() {
+    fun `a predicate written without a context holds when any of its conditions does`() {
         stateless.save(PatchSession("s1"))
         val dsl = PatchSessionQueryDsl.INSTANCE
         fun touch(at: Instant) = stateless.patch(
@@ -398,7 +423,7 @@ abstract class StatelessPatchContract {
     }
 
     @Test
-    fun `from Java's methods a patch is written without a context`() {
+    fun `a patch is written without a context, by the methods Java uses`() {
         stateless.save(Claim("c1", "one", "first"))
         val dsl = ClaimQueryDsl.INSTANCE
 
@@ -410,19 +435,23 @@ abstract class StatelessPatchContract {
     }
 }
 
-/** Decorates a [PersistenceManager], counting the statements run through it. */
+/** Decorates a [PersistenceManager], counting the statements run through it, whichever way they are sent. */
 private class CountingPatchStatements(private val delegate: PersistenceManager) : PersistenceManager by delegate {
     var statements = 0
 
-    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
-        statements++
-        return delegate.query(spec)
-    }
+    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = delegate.query(spec).also { statements++ }
 
-    override fun execute(spec: QuerySpecification<*>) {
-        statements++
-        delegate.execute(spec)
-    }
+    override fun execute(spec: QuerySpecification<*>) = delegate.execute(spec).also { statements++ }
+
+    override fun <T : Any> getOne(spec: QuerySpecification<T>): T = delegate.getOne(spec).also { statements++ }
+
+    override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? = delegate.maybeGetOne(spec).also { statements++ }
+
+    override fun <T : Any> optionalGetOne(spec: QuerySpecification<T>): java.util.Optional<T> = delegate.optionalGetOne(spec).also { statements++ }
+
+    override fun executeBatch(specs: List<QuerySpecification<*>>) = delegate.executeBatch(specs).also { statements += specs.size }
+
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> = delegate.queryBatch(specs).also { statements += specs.size }
 }
 
 @Testcontainers
