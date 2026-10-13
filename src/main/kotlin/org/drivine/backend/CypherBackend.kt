@@ -227,7 +227,7 @@ internal class CypherBackend(
         val ctx = queryContext(graphClass, conditions)
         val root = ctx.viewModel?.rootFragment
         val statement = patches.one(
-            FragmentModel.from(root?.fragmentType ?: graphClass), root?.fieldName ?: FRAGMENT_ALIAS, values, ctx.whereClause, ctx.prologs,
+            FragmentModel.from(root?.fragmentType ?: graphClass), root?.fieldName ?: FragmentQueryBuilder.NODE_ALIAS, values, ctx.whereClause, ctx.prologs,
         )
         val given = values.values.withIndex().filter { it.value != null }.associate { "${PatchStatementBuilder.VALUE}${it.index}" to it.value }
         return GraphStatement(
@@ -324,8 +324,5 @@ internal class CypherBackend(
     private companion object {
         const val SKIP_PARAM = "_skip"
         const val LIMIT_PARAM = "_limit"
-
-        /** What a predicate calls the node of a fragment: `FragmentQueryBuilder.nodeAlias`. */
-        const val FRAGMENT_ALIAS = "n"
     }
 }

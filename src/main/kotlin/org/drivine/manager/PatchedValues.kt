@@ -12,6 +12,7 @@ import org.drivine.model.FragmentField
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
+import org.drivine.query.FragmentQueryBuilder
 import org.drivine.query.dsl.FieldWrite
 
 /**
@@ -28,7 +29,7 @@ internal class PatchedValues(private val graphClass: Class<*>, private val objec
     private val model = FragmentModel.from(viewModel?.rootFragment?.fragmentType ?: graphClass)
 
     /** What a property reference calls the node: `n` for a fragment, the root field's name for a view. */
-    private val alias = viewModel?.rootFragment?.fieldName ?: FRAGMENT_ALIAS
+    private val alias = viewModel?.rootFragment?.fieldName ?: FragmentQueryBuilder.NODE_ALIAS
 
     private val unpatchable: Map<String, String> = buildMap {
         model.nodeIdField?.let { put(it, "the id, which a node is found by") }
@@ -88,9 +89,14 @@ internal class PatchedValues(private val graphClass: Class<*>, private val objec
         }
     }
 
+    /** The properties the object mapper writes of the node's class, by name: read once, however many fields are written. */
+    private val written by lazy {
+        objectMapper.serializationConfig.introspect(objectMapper.constructType(model.clazz)).findProperties().associateBy { it.name }
+    }
+
     /** The members the object mapper reads [field] and its annotations from. */
     private fun membersOf(field: FragmentField): List<AnnotatedMember> {
-        val property = objectMapper.serializationConfig.introspect(objectMapper.constructType(model.clazz)).findProperties().firstOrNull { it.name == field.name }
+        val property = written[field.name]
         return listOfNotNull(property?.field, property?.getter, property?.constructorParameter).also {
             require(it.isNotEmpty()) {
                 "The object mapper writes no property '${field.name}' of ${model.clazz.simpleName}, so a patch cannot tell how the field is stored. Load the object and save it."
@@ -99,9 +105,6 @@ internal class PatchedValues(private val graphClass: Class<*>, private val objec
     }
 
     private companion object {
-        /** What a predicate calls the node of a fragment: `FragmentQueryBuilder.nodeAlias`. */
-        const val FRAGMENT_ALIAS = "n"
-
         const val VALUE = "v"
     }
 }

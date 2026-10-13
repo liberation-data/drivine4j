@@ -93,7 +93,8 @@ internal class OracleWriteBlock(
 
         /**
          * A row for each node whose stamp is handed back, `index/found=stamp`: what a batch of fragments
-         * returns. A `patch` step puts `1` or `0` where `found` goes, for whether it changed the node.
+         * returns. A `patch` step puts where `found` goes whether it changed the node, or that the node
+         * did not meet the block's predicate: see [PatchOutcomes].
          */
         EACH_STAMP("SELECT v FROM JSON_TABLE(v_result, '\$[*]' COLUMNS (v VARCHAR2(400) PATH '\$'))") {
             override fun gathering(nodes: String): String = """

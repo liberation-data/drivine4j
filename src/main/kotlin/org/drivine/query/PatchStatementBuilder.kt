@@ -31,9 +31,11 @@ internal class PatchRow(val index: Int, val id: Any, val values: Map<String, Any
 }
 
 /**
- * Builds the statement that writes named properties of many nodes of one fragment, and makes none:
- * `BatchSaveOperations.stampedUnwind` with `MATCH` for `MERGE` and the properties set by name. A row
- * whose node is not there gives no row back.
+ * Builds the statements of a patch, which write named properties of nodes that are there and make
+ * none: [unwind] for many nodes of one fragment, and [one] for one node that must meet a predicate.
+ *
+ * That of many is `BatchSaveOperations.stampedUnwind` with `MATCH` for `MERGE` and the properties
+ * set by name. A row whose node is not there gives no row back.
  *
  * The properties are set by name, and not with `SET n += row.v`, so that a vector can be wrapped on
  * an engine that wraps one: see [CypherGrammar.vectorExpression].

@@ -21,8 +21,6 @@ import org.drivine.annotation.JsonPacked
  */
 class JsonPackedModule : SimpleModule("JsonPacked") {
 
-    private val json = PACKER
-
     override fun setupModule(context: SetupContext) {
         super.setupModule(context)
 
@@ -35,7 +33,7 @@ class JsonPackedModule : SimpleModule("JsonPacked") {
             ): MutableList<BeanPropertyWriter> {
                 return beanProperties.map { writer ->
                     if (hasJsonPacked(writer)) {
-                        JsonPackedPropertyWriter(writer, json)
+                        JsonPackedPropertyWriter(writer, PACKER)
                     } else {
                         writer
                     }

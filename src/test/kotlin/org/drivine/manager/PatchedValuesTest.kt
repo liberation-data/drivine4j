@@ -12,6 +12,7 @@ import kotlin.test.assertFailsWith
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.mapper.toMap
 import org.junit.jupiter.api.Test
 import sample.graphproperty.ChunkNode
 import sample.nodelabels.ThingNode
@@ -53,18 +54,15 @@ class PatchedValuesTest {
 
     @Test
     fun `a value is what the object mapper makes of the field in a save`() {
-        val saved = Neo4jObjectMapper.instance.convertValue(
-            PatchSession("s1", lastActivityAt = Instant.EPOCH, pace = Pace.BRISK, tags = listOf("a", "b")), Map::class.java,
+        val saved = Neo4jObjectMapper.instance.toMap(PatchSession("s1", lastActivityAt = Instant.EPOCH, pace = Pace.BRISK, tags = listOf("a", "b"), turns = 3))
+
+        val written = values(PatchSession::class.java).of(
+            listOf(session.pace.assign(Pace.BRISK), session.tags.assign(listOf("a", "b")), session.lastActivityAt.assign(Instant.EPOCH), session.turns.assign(3L)),
         )
 
-        val written = values(PatchSession::class.java).of(listOf(session.pace.assign(Pace.BRISK), session.tags.assign(listOf("a", "b")), session.lastActivityAt.assign(Instant.EPOCH)))
-
-        assertEquals("BRISK", written["pace"])
-        // A `@JsonPacked` field is packed, as the mapper packs it on the object.
-        assertEquals(saved["tags"], written["tags"])
-        assertEquals("[\"a\",\"b\"]", written["tags"])
-        // A moment is kept a moment: the connection stores it as it stores a save's.
-        assertEquals(Instant.EPOCH, written["lastActivityAt"])
+        assertEquals(saved.filterKeys { it in written.keys }, written)
+        // A `@JsonPacked` field is packed, and a moment is kept a moment: the connection stores it as it stores a save's.
+        assertEquals(listOf("BRISK", "[\"a\",\"b\"]", Instant.EPOCH), listOf(written["pace"], written["tags"], written["lastActivityAt"]))
     }
 
     @Test
