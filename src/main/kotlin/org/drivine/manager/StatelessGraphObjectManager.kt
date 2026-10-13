@@ -20,11 +20,13 @@ import org.drivine.query.ReturnedStamps
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.Stamping
+import org.drivine.query.dsl.PatchSpec
 import org.drivine.query.read
 import org.drivine.session.SessionManager
 import org.slf4j.LoggerFactory
 import java.util.IdentityHashMap
 import java.util.UUID
+import java.util.function.Consumer
 import kotlin.reflect.KProperty1
 import kotlin.reflect.jvm.javaField
 import kotlin.reflect.jvm.javaGetter
@@ -42,6 +44,8 @@ import kotlin.reflect.jvm.javaGetter
  *   relationships too, and otherwise throws [StaleObjectException]. In a view, the root is checked.
  *   A node reached through a relationship is written unchecked.
  * - [update] loads an object, applies a change, and writes only what the change altered.
+ * - [patch] writes named fields of one node by its id, if it meets a predicate, in one statement,
+ *   and makes no node.
  * - [patchAll] writes named fields of many nodes that are there, and makes no node.
  */
 @Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
@@ -373,6 +377,62 @@ class StatelessGraphObjectManager private constructor(
     }
 
     /**
+     * Writes named fields of the one [graphClass] node whose id is [id], if the node meets the
+     * predicate of [spec], in one statement, and makes no node. The node is not loaded: the store
+     * evaluates the predicate, under the node's lock, so there is no loaded state to go stale and no
+     * stamp is compared. The lock is the node's own: what a predicate reads of a related node is
+     * not locked.
+     *
+     * ```kotlin
+     * val result = graphObjectManager.patch<SessionData>(sessionId) {
+     *     fields { query.lastActivityAt setTo activityAt }
+     *     where { anyOf { query.lastActivityAt.isNull(); query.lastActivityAt lt activityAt } }
+     * }
+     * ```
+     *
+     * The generated `patch<T>(id) { }` passes [queryObject] for you. For a view the fields are its
+     * root's: a field of a related node is refused, though the predicate may name a relationship, as
+     * a load's does. On a view, [PatchResult.found] says the root node is there, and not that the
+     * view would load.
+     *
+     * A node gets a new stamp only if a value written differed from what it held, so an object
+     * loaded before the patch is then refused when it is saved. A node that never carried a stamp is
+     * given one, whatever the patch did to it.
+     *
+     * The id, the stamp, a `@PropertyBag` and a `@NodeLabels` field cannot be written. A value is
+     * stored as the object mapper stores one of its type, and a `@JsonPacked` field packed, which is
+     * how a save stores the field unless the field says otherwise: one that carries `@JsonSerialize`
+     * or `@JsonFormat` is refused. The id is taken to be unique: where two nodes of the class share
+     * one, the graph engines write each that meets the predicate, and Oracle the one it finds first.
+     *
+     * The statement is applied whole or not at all, with or without a transaction, and is run again
+     * when the engine turns it away because another writer was changing the node.
+     *
+     * @param id the node's id, as its `@NodeId` field holds it: a value of the field's own type, which
+     *   is found as a save stores it
+     * @param queryObject the generated query DSL object of [graphClass], which [spec] reads property
+     *   references from
+     * @throws IllegalArgumentException before anything is sent, when no field is named, one is named
+     *   twice, or one is not a field of the node that a patch can write
+     */
+    @JvmSynthetic // Java has the overload below: with both in its sight, a lambda with no type given fits either.
+    fun <T : Any, Q : Any> patch(id: Any, graphClass: Class<T>, queryObject: Q, spec: PatchSpec<Q>.() -> Unit): PatchResult {
+        val patch = PatchSpec(queryObject).apply(spec)
+        val values = PatchedValues(graphClass, objectMapper).of(patch.writes)
+        // The id as a save stores it: a value class is its value, and a UUID its text.
+        val storedId = requireNotNull(objectMapper.toMap(mapOf("id" to id))["id"]) { "The object mapper writes nothing for the id '$id'." }
+        val statement = backend.patch(graphClass, storedId, values, patch.conditions)
+        val flags = executor.whenNotContended { persistenceManager.query(statement.spec().transform(String::class.java)) }
+            .map { FoundStamp.of(it).found }
+        if (flags.isEmpty()) return PatchResult.ABSENT
+        return PatchResult(found = true, applied = flags.any { it != PatchOutcomes.UNMET }, changed = flags.any { it == PatchOutcomes.CHANGED })
+    }
+
+    /** [patch] for Java, whose lambda need return nothing: `manager.patch(id, Claim.class, dsl, spec -> spec.set(dsl.getNote().assign("patched")))`. See [PatchSpec.set], [PatchSpec.onlyIf] and [PatchSpec.onlyIfAny]. */
+    fun <T : Any, Q : Any> patch(id: Any, graphClass: Class<T>, queryObject: Q, spec: Consumer<PatchSpec<Q>>): PatchResult =
+        patch(id, graphClass, queryObject) { spec.accept(this) }
+
+    /**
      * The fields of [model] a patch writes. This is a rule of its own: a save counts a bag and the
      * labels field among a class's fields, and a patch writes neither, nor the id or the stamp.
      */
@@ -585,7 +645,6 @@ class StatelessGraphObjectManager private constructor(
         }
 }
 
-/** What a patch's statement returns where `found` goes, for a node a value differed on. */
 /** Loads, changes and saves a graph object, with a reified type. See [StatelessGraphObjectManager.update]. */
 inline fun <reified T : Any> StatelessGraphObjectManager.update(id: String, attempts: Int = 3, noinline change: (T) -> T): T? =
     update(id, T::class.java, attempts, change)

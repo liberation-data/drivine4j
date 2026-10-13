@@ -34,5 +34,8 @@ internal class PatchOutcomes {
 
         /** In a returned row: every value written was the node's already. */
         const val UNCHANGED = "0"
+
+        /** In a returned row: the node is there and does not meet the predicate of its patch, so nothing was written. */
+        const val UNMET = "-"
     }
 }

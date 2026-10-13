@@ -179,11 +179,15 @@ internal object OracleSql {
      * it names them. Oracle Free 23.26 takes neither a parameter nor a variable of the block inside a
      * `GRAPH_TABLE` of the block's own SQL (`ORA-00600`, `ORA-49028`), which is how a predicate on a
      * relationship is written.
+     *
+     * @param into the variables of the block that take what the statement selects, when it selects
+     * @param given parameters of the statement that are no parameters of the block: each is handed
+     *   the variable of the block it is mapped to
      */
-    fun immediate(statement: String): String {
+    fun immediate(statement: String, into: String? = null, given: Map<String, String> = emptyMap()): String {
         val asked = SqlParameters.positional(statement) { ":b$it" }
-        val using = asked.names.takeIf { it.isNotEmpty() }?.joinToString(", ", "\nUSING ") { "\$$it" }.orEmpty()
-        return "EXECUTE IMMEDIATE ${text(asked.statement)}$using"
+        val using = asked.names.takeIf { it.isNotEmpty() }?.joinToString(", ", "\nUSING ") { given[it] ?: "\$$it" }.orEmpty()
+        return "EXECUTE IMMEDIATE ${text(asked.statement)}${into?.let { "\nINTO $it" }.orEmpty()}$using"
     }
 
     /**

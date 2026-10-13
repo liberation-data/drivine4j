@@ -68,6 +68,15 @@ interface CypherGrammar {
         get() = false
 
     /**
+     * Whether what [existenceCheck] and [filteredExistenceCheck] give may stand only in a `WHERE`,
+     * and not as a value of a `WITH`. Neo4j 4 takes `EXISTS { }` nowhere else. A statement that
+     * must know whether a node met a predicate, and not only find the nodes that do, then reads the
+     * predicate in the `WHERE` of an `OPTIONAL MATCH`.
+     */
+    val predicatesOnlyInWhere: Boolean
+        get() = false
+
+    /**
      * Generates a WHERE-clause condition asserting that a relationship exists.
      * Used for non-nullable single relationships in GraphView queries.
      */
@@ -279,6 +288,8 @@ class Neo4j4Grammar(
     override val supportsIndexBackedOrdering: Boolean = true
 
     override val indexesExcludeNulls: Boolean = true
+
+    override val predicatesOnlyInWhere: Boolean = true
 }
 
 /**

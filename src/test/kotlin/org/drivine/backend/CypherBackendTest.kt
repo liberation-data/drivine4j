@@ -25,6 +25,9 @@ import org.junit.jupiter.api.Test
 import org.neo4j.driver.exceptions.ClientException
 import org.neo4j.driver.exceptions.ServiceUnavailableException
 import org.neo4j.driver.exceptions.TransientException
+import org.drivine.query.dsl.WhereCondition
+import org.drivine.query.dsl.ComparisonOperator
+import sample.stateless.ClaimView
 import sample.stateless.Claim
 import sample.vector.DocNode
 import sample.stateless.Human
@@ -226,6 +229,28 @@ class CypherBackendTest {
         assertEquals(listOf("1", "3"), (batch.stamped.single().parameters["rows"] as List<*>).map { (it as Map<*, *>)["i"] })
         assertContains(batch.stamped.single().statement!!.text, "RETURN row.i + '/' + ")
         assertEquals(listOf(IndexedValue(2, fragments[2])), batch.alone)
+    }
+
+    @Test
+    fun `a patch of one binds the id, each value by its index, the predicate's values and a stamp to offer`() {
+        val conditions = listOf(WhereCondition.PropertyCondition("n.text", ComparisonOperator.EQUALS, "one"))
+        val patch = backend().patch(Claim::class.java, java.util.UUID.fromString("00000000-0000-0000-0000-000000000001"), linkedMapOf("text" to "two", "note" to null), conditions)
+
+        assertContains(patch.statement, "MATCH (n:Claim {id: \$id})")
+        assertContains(patch.statement, "WITH n, coalesce((n.text = \$param_n_text_0), false) AS _met")
+        assertEquals(setOf("id", "_v0", "param_n_text_0", "_stamp"), patch.bindings.keys)
+        assertEquals(listOf("00000000-0000-0000-0000-000000000001", "two", "one"), listOf("id", "_v0", "param_n_text_0").map { patch.bindings[it] })
+        assertTrue(Stamps.isTwoTokens(patch.bindings["_stamp"] as String))
+    }
+
+    @Test
+    fun `a patch of a view names its root as the view does, and tests a relationship as a load does`() {
+        val conditions = listOf(WhereCondition.PropertyCondition("people.name", ComparisonOperator.EQUALS, "Ada"))
+        val patch = backend().patch(ClaimView::class.java, "c1", mapOf("note" to "narrated"), conditions)
+
+        assertContains(patch.statement, "MATCH (claim:Claim {id: \$id})")
+        assertContains(patch.statement, "WITH claim, coalesce((EXISTS { (claim)-[:MENTIONS]->(people) WHERE people.name = \$param_people_name_0 }), false) AS _met")
+        assertContains(patch.statement, "SET claim.note = \$_v0)")
     }
 
     @Test

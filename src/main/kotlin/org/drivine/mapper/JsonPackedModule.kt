@@ -21,8 +21,6 @@ import org.drivine.annotation.JsonPacked
  */
 class JsonPackedModule : SimpleModule("JsonPacked") {
 
-    private val json = jacksonObjectMapper()
-
     override fun setupModule(context: SetupContext) {
         super.setupModule(context)
 
@@ -35,7 +33,7 @@ class JsonPackedModule : SimpleModule("JsonPacked") {
             ): MutableList<BeanPropertyWriter> {
                 return beanProperties.map { writer ->
                     if (hasJsonPacked(writer)) {
-                        JsonPackedPropertyWriter(writer, json)
+                        JsonPackedPropertyWriter(writer, PACKER)
                     } else {
                         writer
                     }
@@ -49,6 +47,15 @@ class JsonPackedModule : SimpleModule("JsonPacked") {
             writer.member?.getAnnotation(JsonPacked::class.java) != null
     }
 }
+
+/** The mapper every `@JsonPacked` value is written with. */
+private val PACKER = jacksonObjectMapper()
+
+/**
+ * [value] as a `@JsonPacked` field stores it: a JSON string. For a write that has the field's value
+ * and no object to read it from.
+ */
+internal fun packedJson(value: Any): String = PACKER.writeValueAsString(value)
 
 /**
  * Property writer that serializes @JsonPacked collections as JSON strings.

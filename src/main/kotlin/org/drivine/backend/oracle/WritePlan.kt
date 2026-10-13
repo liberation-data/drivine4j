@@ -154,8 +154,12 @@ internal class WritePlan(private val graph: OracleGraph) {
             "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() },
         )
 
-    /** The block that carries the steps out and gives back what [returns] says. */
-    fun text(returns: OracleWriteBlock.Returns): String = OracleWriteBlock(graph, shapes.keys.toList(), returns).text()
+    /**
+     * The block that carries the steps out and gives back what [returns] says. With [patchedIf], its
+     * `patch` steps write only to a node that meets a predicate: see [OracleWriteBlock].
+     */
+    fun text(returns: OracleWriteBlock.Returns, patchedIf: String? = null): String =
+        OracleWriteBlock(graph, shapes.keys.toList(), returns, patchedIf).text()
 
     /** The values of the block's parameters: the steps as JSON, and the mark. */
     fun bindings(): Map<String, Any?> = mapOf(OracleWriteBlock.PLAN to steps, OracleWriteBlock.MARK to mark)

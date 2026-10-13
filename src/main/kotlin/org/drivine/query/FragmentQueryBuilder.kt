@@ -7,7 +7,7 @@ import org.drivine.model.FragmentModel
  */
 class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObjectQueryBuilder {
 
-    override val nodeAlias: String = "n"
+    override val nodeAlias: String = NODE_ALIAS
 
     /**
      * Builds a Cypher query to load a GraphFragment.
@@ -133,6 +133,9 @@ RETURN {
     }
 
     companion object {
+        /** What a statement over a fragment, and a predicate of the query DSL on one, calls its node. */
+        const val NODE_ALIAS = "n"
+
         /**
          * Creates a query builder for a GraphFragment class.
          */
