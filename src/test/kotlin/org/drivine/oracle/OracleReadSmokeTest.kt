@@ -118,7 +118,8 @@ class OracleReadSmokeTest {
 
     @Test
     fun `a delete takes a predicate as it is written, a quote in it or longer than a literal may be`() {
-        assertEquals(0, manager.deleteAll(Claim::class.java, "n.text = 'Ada''s' OR n.note = q'[it's \$id]' /* isn't \$one */"))
+        manager.save(Claim("c3", "Ada's"))
+        assertEquals(1, manager.deleteAll(Claim::class.java, "n.text = 'Ada''s' OR n.note = q'[it's \$id]' /* isn't \$one */"))
         val ids = (1..4000).joinToString(", ") { "'é$it'" }
         assertEquals(1, manager.deleteAll(Claim::class.java, "n.id IN ($ids, 'c1')"))
         assertEquals(listOf("c2"), manager.loadAll(Claim::class.java).map { it.id })
