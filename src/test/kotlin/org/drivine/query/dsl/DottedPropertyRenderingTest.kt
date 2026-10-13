@@ -60,7 +60,7 @@ class DottedPropertyRenderingTest {
             values = listOf(SeekValueSpec(stamp, "s-1")),
         )
 
-        assertEquals("(n.`__drivine.stamp` IS NOT NULL AND n.`__drivine.stamp` > \$_seek_0)", plan.predicate)
+        assertEquals("n.`__drivine.stamp` IS NOT NULL AND n.`__drivine.stamp` > \$_seek_0", plan.predicate)
         assertEquals(mapOf("_seek_0" to "s-1"), plan.bindings)
     }
 
@@ -72,10 +72,10 @@ class DottedPropertyRenderingTest {
         )
 
         assertEquals(
-            "(n.`__drivine.stamp` IS NOT NULL AND n.`metadata.rank` IS NOT NULL AND " +
+            "n.`__drivine.stamp` IS NOT NULL AND n.`metadata.rank` IS NOT NULL AND " +
                 "n.`__drivine.stamp` <= \$_seek_0 AND " +
                 "(n.`__drivine.stamp` < \$_seek_0 OR " +
-                "(n.`__drivine.stamp` = \$_seek_0 AND n.`metadata.rank` < \$_seek_1)))",
+                "(n.`__drivine.stamp` = \$_seek_0 AND n.`metadata.rank` < \$_seek_1))",
             plan.predicate,
         )
     }

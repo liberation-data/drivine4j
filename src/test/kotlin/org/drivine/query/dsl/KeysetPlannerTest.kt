@@ -33,10 +33,10 @@ class KeysetPlannerTest {
         )
 
         assertEquals(
-            "(session.lastActivityAt IS NOT NULL AND session.sessionId IS NOT NULL AND " +
+            "session.lastActivityAt IS NOT NULL AND session.sessionId IS NOT NULL AND " +
                 "session.lastActivityAt <= \$_seek_0 AND " +
                 "(session.lastActivityAt < \$_seek_0 OR " +
-                "(session.lastActivityAt = \$_seek_0 AND session.sessionId < \$_seek_1)))",
+                "(session.lastActivityAt = \$_seek_0 AND session.sessionId < \$_seek_1))",
             plan.predicate,
         )
         assertEquals(mapOf("_seek_0" to instant, "_seek_1" to "s-20"), plan.bindings)
@@ -49,7 +49,7 @@ class KeysetPlannerTest {
             values = listOf(SeekValueSpec("n.id", "id-7")),
         )
 
-        assertEquals("(n.id IS NOT NULL AND n.id > \$_seek_0)", plan.predicate)
+        assertEquals("n.id IS NOT NULL AND n.id > \$_seek_0", plan.predicate)
     }
 
     @Test
@@ -68,11 +68,11 @@ class KeysetPlannerTest {
         )
 
         assertEquals(
-            "(n.priority IS NOT NULL AND n.name IS NOT NULL AND n.id IS NOT NULL AND " +
+            "n.priority IS NOT NULL AND n.name IS NOT NULL AND n.id IS NOT NULL AND " +
                 "n.priority <= \$_seek_0 AND " +
                 "(n.priority < \$_seek_0 OR " +
                 "(n.priority = \$_seek_0 AND n.name > \$_seek_1) OR " +
-                "(n.priority = \$_seek_0 AND n.name = \$_seek_1 AND n.id < \$_seek_2)))",
+                "(n.priority = \$_seek_0 AND n.name = \$_seek_1 AND n.id < \$_seek_2))",
             plan.predicate,
         )
     }
@@ -115,9 +115,9 @@ class KeysetPlannerTest {
         )
 
         assertEquals(
-            "(s.lastActivityAt <= \$_seek_0 AND " +
+            "s.lastActivityAt <= \$_seek_0 AND " +
                 "(s.lastActivityAt < \$_seek_0 OR " +
-                "(s.lastActivityAt = \$_seek_0 AND s.sessionId < \$_seek_1)))",
+                "(s.lastActivityAt = \$_seek_0 AND s.sessionId < \$_seek_1))",
             plan.predicate,
         )
     }

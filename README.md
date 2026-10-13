@@ -2321,6 +2321,8 @@ ext['jedis.version'] = '8.0.1'
 **Known limitations:**
 - Nested pattern comprehensions return NULL ([FalkorDB#1888](https://github.com/FalkorDB/FalkorDB/issues/1888)) — Drivine works around this with CALL subquery prologs
 - `collect()` on null includes null maps ([FalkorDB#1889](https://github.com/FalkorDB/FalkorDB/issues/1889)) — Drivine filters with `CASE WHEN IS NOT NULL`
+- FalkorDB 6 plans an `OPTIONAL MATCH` of several hops from the labelled node it ends at, and reads every relationship into that label ([FalkorDB#3332](https://github.com/FalkorDB/FalkorDB/issues/3332)) — a `@GraphPath` field leaves the label out of its pattern there and tests it on the node reached
+- FalkorDB 6 scans a label for a `WHERE` in parentheses, where it would have used an index ([FalkorDB#3331](https://github.com/FalkorDB/FalkorDB/issues/3331)) — the conditions of the query DSL are written without them. A keyset cursor (`seek`) over several properties holds an `OR`, whose parentheses it needs, and is still read so
 
 CASCADE `DELETE_ORPHAN` is supported on current FalkorDB ([FalkorDB#1890](https://github.com/FalkorDB/FalkorDB/issues/1890) is fixed in the graph module Drivine tracks); older builds lacking that fix are not supported for orphan delete.
 

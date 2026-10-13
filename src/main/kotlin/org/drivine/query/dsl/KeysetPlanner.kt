@@ -100,7 +100,10 @@ internal object KeysetPlanner {
         } else {
             listOf(comparison(orders[0], strict = false, index = 0))
         }
-        val predicate = (notNulls + rangeBound + disjunction).joinToString(" AND ", "(", ")")
+        // Joined by AND, with the branches in parentheses of their own where there are several, so the
+        // whole needs none: and FalkorDB 6 scans a label for a condition in parentheses it does not need
+        // (FalkorDB/FalkorDB#3331).
+        val predicate = (notNulls + rangeBound + disjunction).joinToString(" AND ")
 
         return KeysetPlan(
             predicate = predicate,

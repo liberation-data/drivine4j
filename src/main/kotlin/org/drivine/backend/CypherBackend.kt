@@ -127,8 +127,11 @@ internal class CypherBackend(
         } else {
             null
         }
+        // Joined as they stand. Each is a list of conditions joined by AND, with any OR in parentheses
+        // of its own, so neither needs more around it: and FalkorDB 6 reads a condition in parentheses
+        // it does not need by scanning the label, where it would have used an index (FalkorDB/FalkorDB#3331).
         val effectiveWhereClause = listOfNotNull(ctx.whereClause, keysetPlan?.predicate)
-            .joinToString(" AND ") { "($it)" }
+            .joinToString(" AND ")
             .takeIf { it.isNotEmpty() }
         keysetPlan?.bindings?.keys?.forEach { reserved ->
             require(reserved !in ctx.bindings) {

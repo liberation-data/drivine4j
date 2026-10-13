@@ -143,6 +143,28 @@ class CypherBackendTest {
     }
 
     @Test
+    fun `the conditions of a load stand in its WHERE with no parentheses around them`() {
+        // FalkorDB 6 reads a condition in parentheses it does not need by scanning the label, where
+        // it would have used an index (FalkorDB/FalkorDB#3331).
+        val filtered = query {
+            conditions += WhereCondition.PropertyCondition("n.text", ComparisonOperator.EQUALS, "a")
+            conditions += WhereCondition.PropertyCondition("n.note", ComparisonOperator.EQUALS, "b")
+        }
+        val statement = backend().loadAll(Claim::class.java, filtered).statement.statement
+        val where = statement.lineSequence().first { it.startsWith("WHERE") }
+        assertEquals("WHERE n.text = \$param_n_text_0 AND n.note = \$param_n_note_1", where)
+
+        // A cursor is joined to them as it stands, and over one property has no parentheses either.
+        val sought = query {
+            conditions += WhereCondition.PropertyCondition("n.note", ComparisonOperator.EQUALS, "b")
+            orders += OrderSpec("n.text", ASC)
+            seekValues += SeekValueSpec("n.text", "m")
+        }
+        val paged = backend().loadAll(Claim::class.java, sought).statement.statement.lineSequence().first { it.startsWith("WHERE") }
+        assertEquals("WHERE n.note = \$param_n_note_0 AND n.text IS NOT NULL AND n.text > \$_seek_0", paged)
+    }
+
+    @Test
     fun `a seek and a skip are refused together, and a seek alone makes a keyset load`() {
         val both = query {
             orders += OrderSpec("n.text", ASC)

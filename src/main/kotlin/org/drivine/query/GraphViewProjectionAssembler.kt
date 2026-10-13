@@ -763,12 +763,17 @@ internal class GraphViewProjectionAssembler(
             throw IllegalArgumentException("No labels defined for @GraphPath target ${rel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
         }
         val targetLabelString = targetLabels.joinToString(":")
-        val matchPattern = buildPathMatchPattern(rootFieldName, rel, "($targetAlias:$targetLabelString)")
+        // Where the grammar asks, the far node's labels are tested on what the path reached, and the
+        // pattern names none: see CypherGrammar.testsPathEndAfterMatch.
+        val afterMatch = grammar.testsPathEndAfterMatch
+        val matchPattern = buildPathMatchPattern(rootFieldName, rel, if (afterMatch) "($targetAlias)" else "($targetAlias:$targetLabelString)")
         val projection = buildRelationshipProjection(targetAlias, rel.elementType, visitCounts)
 
         // Guard against OPTIONAL MATCH null rows (mandatory for FalkorDB #1889); DISTINCT dedups
-        // the far node reached via multiple intermediate paths.
-        val collectExpr = "collect(DISTINCT CASE WHEN $targetAlias IS NOT NULL THEN $projection END)"
+        // the far node reached via multiple intermediate paths. A node that is not there carries no
+        // label, so the test of its labels is the guard too.
+        val reached = if (afterMatch) "$targetAlias:$targetLabelString" else "$targetAlias IS NOT NULL"
+        val collectExpr = "collect(DISTINCT CASE WHEN $reached THEN $projection END)"
         val returnExpr = if (rel.isCollection) collectExpr else "head($collectExpr)"
 
         val prolog = buildString {
