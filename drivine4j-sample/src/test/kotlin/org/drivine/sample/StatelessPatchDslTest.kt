@@ -1,5 +1,6 @@
 package org.drivine.sample
 
+import org.drivine.connection.DatabaseType
 import org.drivine.manager.PatchResult
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
@@ -12,6 +13,7 @@ import org.drivine.sample.view.RaisedAndAssignedIssue
 import org.drivine.sample.view.assignedTo
 import org.drivine.sample.view.issue
 import org.drivine.sample.view.patch
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -83,12 +85,14 @@ class StatelessPatchDslTest @Autowired constructor(
 @SpringBootTest(classes = [SampleAppContext::class])
 class StatelessPatchTransactionTest @Autowired constructor(
     private val stateless: StatelessGraphObjectManager,
+    private val persistenceManager: PersistenceManager,
     transactionManager: PlatformTransactionManager,
 ) {
     private val transaction = TransactionTemplate(transactionManager)
 
     @Test
     fun `a patch in a transaction that is rolled back leaves the node as it was`() {
+        Assumptions.assumeTrue(persistenceManager.type != DatabaseType.FALKORDB, "FalkorDB has no transactions: nothing there is rolled back")
         val id = UUID.randomUUID().toString()
         val saved = assertNotNull(transaction.execute { stateless.save(StampedNote(id, "Call Ada")) })
         try {
