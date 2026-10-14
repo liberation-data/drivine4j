@@ -23,6 +23,8 @@ import org.drivine.query.dsl.WhereCondition
  * @param rootAlias what a condition calls the root, and [root] the root's row in the statement
  * @param rootModel the root fragment, whose declared fields say how a property is read
  * @param viewModel the view whose relationship fields a condition may name; null for a fragment
+ * @param rootLabels the labels of the root
+ * @param labelled the labelled indexes there are, which a condition on the root may be read through
  */
 internal class OraclePredicates(
     private val scope: OracleStatementScope,
@@ -31,11 +33,52 @@ internal class OraclePredicates(
     private val root: String,
     private val rootModel: FragmentModel,
     private val viewModel: GraphViewModel?,
+    private val rootLabels: () -> List<String> = { emptyList() },
+    private val labelled: LabelledIndexes = LabelledIndexes.NONE,
 ) {
 
-    /** The predicate [conditions] make on the root; null when there are none. */
-    fun predicate(conditions: List<WhereCondition>): String? =
-        all(grouped(conditions), mapOf(rootAlias to root), viewModel).ifEmpty { null }
+    /**
+     * The predicate [conditions] make on the root; null when there are none.
+     *
+     * With [indexed], a condition every root meets that a labelled index can answer, a comparison of
+     * a property with a text, is read through that index: the property is read as its expression,
+     * null where the node does not carry the label, and the label is then not tested on its own (see
+     * [OracleStatementScope.implied]). The index gives the nodes of the label that meet the
+     * condition and nothing else, whether the value is rare or held by most of them. Tested on its
+     * own in the form the index over labels answers, the label would be read through that index
+     * instead: Oracle estimates it gives one row, and it gives every node of the label.
+     */
+    fun predicate(conditions: List<WhereCondition>, indexed: Boolean = false): String? {
+        val grouped = grouped(conditions)
+        if (indexed && !scope.narrowed) scope.implied += grouped.mapNotNull(::answeredBy)
+        return all(grouped, mapOf(rootAlias to root), viewModel).ifEmpty { null }
+    }
+
+    /**
+     * The label of the root whose labelled index answers [condition], one every root meets; null when
+     * none does. An index answers a comparison with a text of the property it begins with: `=`, `<`,
+     * `<=`, `>`, `>=`. Not `IN`, which Oracle answers by reading every node, and not a negation, a
+     * test for no value or a test of part of the text, which no index answers.
+     */
+    private fun answeredBy(condition: WhereCondition): String? {
+        if (condition !is WhereCondition.PropertyCondition || condition.propertyPath.substringBefore('.') != rootAlias) return null
+        val key = condition.propertyPath.substringAfter('.')
+        val value = condition.value
+        val answerable = condition.operator in RANGE && key != Stamps.PROPERTY &&
+            value != null && value != "" && SqlKind.ofValue(value) == SqlKind.TEXT && value !is Collection<*>
+        return if (answerable) rootLabels().firstOrNull { labelled.leads(it, key) } else null
+    }
+
+    /**
+     * The property [key] of the row [row], read as text: through the expression of a labelled index on
+     * [key] when the row is the root and a label of that index needs no test of its own, which is then
+     * the same value. A comparison read through the expression of an index may be answered by it.
+     */
+    private fun text(row: String, key: String): String {
+        if (row != root || key == Stamps.PROPERTY) return property(row, key)
+        val label = scope.implied.firstOrNull { labelled.covers(it, key) } ?: return property(row, key)
+        return OracleSql.labelled(row, label, key)
+    }
 
     /**
      * Conditions on a relationship's alias are gathered into one condition on that relationship: they
@@ -89,7 +132,7 @@ internal class OraclePredicates(
             val row = rows[condition.alias]
             if (row != null) {
                 // On a root read by its labels, the form the index over labels answers.
-                hasLabels(row, condition.labels, scanned = row == root && !scope.narrowed) ?: "1 = 1"
+                (if (row == root) scope.rootHasLabels(row, condition.labels) else hasLabels(row, condition.labels)) ?: "1 = 1"
             } else {
                 one(WhereCondition.RelationshipCondition(condition.alias, listOf(condition)), rows, model)
             }
@@ -186,8 +229,9 @@ internal class OraclePredicates(
      * empty, which `JSON_VALUE` reads as null and a JSON path still sees; `<> ''` for any other.
      */
     private fun compared(row: String, key: String, operator: ComparisonOperator, value: Any?): String {
-        val text = property(row, key)
-        val typed = property(row, key, SqlKind.ofValue(value))
+        val text = text(row, key)
+        val kind = SqlKind.ofValue(value)
+        val typed = if (kind == SqlKind.TEXT) text else property(row, key, kind)
         val empty = value == ""
         // Any string, the empty one among them: `JSON_VALUE` reads a stored `""` as null.
         val anyText = "($text IS NOT NULL OR ${storedEmpty(row, key)})"
@@ -337,4 +381,12 @@ internal class OraclePredicates(
     /** Why a seek may have fewer root orders than the query gave: some sort a relationship collection. */
     private fun hint(collectionSortCount: Int): String =
         if (collectionSortCount == 0) "" else " ($collectionSortCount declared orderBy properties sort a relationship collection, which cannot participate in a keyset cursor)"
+
+    private companion object {
+        /** The comparisons an index answers. */
+        val RANGE = setOf(
+            ComparisonOperator.EQUALS, ComparisonOperator.GREATER_THAN, ComparisonOperator.GREATER_THAN_OR_EQUAL,
+            ComparisonOperator.LESS_THAN, ComparisonOperator.LESS_THAN_OR_EQUAL,
+        )
+    }
 }

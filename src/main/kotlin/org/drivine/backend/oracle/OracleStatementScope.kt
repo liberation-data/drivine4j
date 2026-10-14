@@ -15,6 +15,22 @@ internal class OracleStatementScope {
      */
     var narrowed = false
 
+    /**
+     * The labels of the roots that a condition every root meets is answered for by a labelled index:
+     * the condition reads the property through the index's expression, which is null for a node
+     * without the label, so the label needs no test of its own. See [OraclePredicates.predicate].
+     */
+    val implied = mutableSetOf<String>()
+
+    /**
+     * Whether the root [alias] carries [labels]; null when nothing is left to test. A label a labelled
+     * index answers is not tested again, and once one is, no other is tested in the form the index over
+     * labels answers either: Oracle would be given that index to choose, and takes it, believing it
+     * gives one row where it gives every node of the label.
+     */
+    fun rootHasLabels(alias: String, labels: Collection<String>): String? =
+        OracleSql.hasLabels(alias, labels - implied, scanned = !narrowed && implied.isEmpty())
+
     /** The kind a property no field declares is read as, learnt from the cursor value a seek compares it with. */
     val inferredKinds = mutableMapOf<String, SqlKind>()
 

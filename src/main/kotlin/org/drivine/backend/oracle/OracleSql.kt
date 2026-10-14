@@ -102,6 +102,15 @@ internal object OracleSql {
     fun carriesLabel(alias: String, label: String): String =
         "INSTR(JSON_SERIALIZE($alias.labels), ${literal(quoted(label))}) > 0"
 
+    /**
+     * The property [key] of the node [alias], read as text, where the node carries [label], and null
+     * where it does not: the expression of the index a range index makes over the nodes of its label
+     * (see [OracleSchemaGrammar]). A comparison with it is met only by a node of the label, so the one
+     * index answers both the label and the property.
+     */
+    fun labelled(alias: String, label: String, key: String): String =
+        "CASE WHEN ${hasLabel(alias, label)} THEN JSON_VALUE($alias.props, ${path(key)}) END"
+
     /** [text] as JSON writes a string. */
     private fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 

@@ -23,9 +23,13 @@ import java.sql.SQLException
  * Indexes and constraints over a graph kept by Oracle. A property is a path into a JSON column, so
  * each is an index over an expression:
  *
- * - a range index reads the property as text, the expression a save finds a node by and a
- *   comparison with a string uses. It is over the property whatever the label, so two labels that
- *   index a property of one name share an index;
+ * - a range index is two indexes. One reads the property as text, the expression a save and a load
+ *   by id find a node by, testing the label on what they find. It is over the property whatever the
+ *   label, so two labels that index a property of one name share it. The other, the labelled index,
+ *   reads the property of the nodes that carry the label and is null for every other node (see
+ *   [OracleSql.labelled]): a filter on the nodes of the label is read through it, so that one index
+ *   answers both the label and the property, and Oracle is not left to choose between the index over
+ *   labels and the one over the property, which it does badly;
  * - a uniqueness constraint is a unique index over the property of the nodes that carry the label,
  *   and null for every other node, which a unique index does not hold.
  *
@@ -56,15 +60,16 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
 
     /**
      * Records [spec] as made, as [objectName] (null for one nothing was made for), unless it is
-     * recorded already. A `MERGE` does not read again before it inserts, so of two processes
-     * recording it at once the second is refused on the catalog's key; that refusal is taken as
-     * recorded, and never read as the constraint itself violated.
+     * recorded already; with [updated], a record already there takes [details]. A `MERGE` does not
+     * read again before it inserts, so of two processes recording it at once the second is refused on
+     * the catalog's key; that refusal is taken as recorded, and never read as the constraint itself
+     * violated.
      */
-    private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}"): String = """
+    private fun recorded(spec: SchemaItemSpec, objectName: String?, details: String = "{}", updated: Boolean = false): String = """
         BEGIN
             MERGE INTO ${graph.catalog} c
             USING (SELECT ${literal(spec.kind.name)} AS kind, ${literal(spec.label)} AS label, ${literal(json(spec.properties))} AS properties FROM dual) k
-            ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)
+            ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)${if (updated) "\n            WHEN MATCHED THEN UPDATE SET c.details = ${literal(details)}" else ""}
             WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)
                 VALUES (k.kind, k.label, k.properties, ${literal(spec.effectiveName)}, ${objectName?.let(::literal) ?: "NULL"}, ${literal(details)});
         EXCEPTION WHEN DUP_VAL_ON_INDEX THEN
@@ -79,26 +84,32 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
      * index over it along. What is dropped is the object the record names, and not one named again
      * from the label and the properties, so an item is dropped as it was made whatever a later
      * version would call it. An item nothing was made for, a full-text index where there is no
-     * Oracle Text, records no object and has none dropped.
+     * Oracle Text, records no object and has none dropped. A range index's labelled index is its
+     * own, and is dropped with the record.
      */
     private fun forgotten(item: SchemaItemInfo): SchemaStatement {
         val drops = when (item.kind) {
             SchemaItemKind.VECTOR_INDEX, SchemaItemKind.FULLTEXT_INDEX -> OracleSideTable.dropping("v_object")
             else -> listOf("'DROP INDEX IF EXISTS ' || v_object")
         }
+        val labelled = if (item.kind != SchemaItemKind.RANGE_INDEX) "" else """
+                IF v_labelled IS NOT NULL THEN
+                    EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;
+                END IF;"""
         return statement(
             """
             DECLARE
                 v_object VARCHAR2(128);
+                v_labelled VARCHAR2(128);
                 v_others NUMBER;
             BEGIN
                 DELETE FROM ${graph.catalog}
                 WHERE kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}
-                RETURNING MAX(object_name) INTO v_object;
+                RETURNING MAX(object_name), MAX(JSON_VALUE(details, '$.labelled')) INTO v_object, v_labelled;
                 SELECT COUNT(*) INTO v_others FROM ${graph.catalog} WHERE object_name = v_object;
                 IF v_object IS NOT NULL AND v_others = 0 THEN
                     ${drops.joinToString("\n                    ") { "EXECUTE IMMEDIATE $it;" }}
-                END IF;
+                END IF;$labelled
             END;
             """
         )
@@ -113,17 +124,32 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         fun json(values: List<String>): String = values.joinToString(",", "[", "]") { "\"${it.replace("\\", "\\\\").replace("\"", "\\\"")}\"" }
     }
 
+    /**
+     * A range index is recorded with the name of its labelled index among its details, and a record
+     * already there takes them: one made before there were labelled indexes is listed as not there
+     * (see [listed]), so it is made again, and its labelled index with it.
+     */
     override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = when (spec) {
         is RangeIndexSpec -> {
             val name = graph.objectName("ix", spec.properties)
+            val labelled = graph.objectName("lx", listOf(spec.label) + spec.properties)
             val expressions = spec.properties.joinToString(", ") { "JSON_VALUE(props, ${path(it)})" }
-            statements("CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} ($expressions)", recorded(spec, name))
+            val scoped = spec.properties.joinToString(", ") { OracleSql.labelled("n", spec.label, it) }
+            LabelledIndexCatalog.changed(graph.name)
+            statements(
+                "CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} ($expressions)",
+                "CREATE INDEX IF NOT EXISTS $labelled ON ${graph.nodes} n ($scoped)",
+                recorded(spec, name, "{\"labelled\": \"$labelled\"}", updated = true),
+            )
         }
         is VectorIndexSpec -> vectorIndex(spec)
         is FullTextIndexSpec -> statements(textIndex(spec))
     }
 
-    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))
+    override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> {
+        if (item.kind == SchemaItemKind.RANGE_INDEX) LabelledIndexCatalog.changed(graph.name)
+        return listOf(forgotten(item))
+    }
 
     /**
      * A vector index. Oracle indexes a `VECTOR` column, and an embedding is a list among a node's
@@ -226,7 +252,8 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
 
     /**
      * What is recorded of [kinds], and still there: an index or a table beside the nodes dropped by
-     * hand is not listed, so that it is made again when asked for.
+     * hand is not listed, so that it is made again when asked for. So is a range index without its
+     * labelled index, dropped by hand or made before there were any.
      */
     private fun listed(kinds: String): String = """
         SELECT JSON_OBJECT('kind' VALUE kind, 'label' VALUE label, 'properties' VALUE JSON(properties), 'name' VALUE name, 'details' VALUE details RETURNING JSON)
@@ -235,6 +262,8 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
           AND (object_name IS NULL
                OR EXISTS (SELECT 1 FROM user_indexes i WHERE i.index_name = UPPER(c.object_name))
                OR EXISTS (SELECT 1 FROM user_tables t WHERE t.table_name = UPPER(c.object_name)))
+          AND (kind <> ${literal(SchemaItemKind.RANGE_INDEX.name)}
+               OR EXISTS (SELECT 1 FROM user_indexes l WHERE l.index_name = UPPER(JSON_VALUE(c.details, '$.labelled'))))
         ORDER BY label, properties
     """.trimIndent()
 

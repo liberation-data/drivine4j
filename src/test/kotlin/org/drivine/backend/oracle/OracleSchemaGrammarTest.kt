@@ -43,13 +43,22 @@ class OracleSchemaGrammarTest {
     }
 
     @Test
-    fun `a range index is over the properties read as text, whatever the label, and is recorded`() {
+    fun `a range index is over the properties read as text, whatever the label, and beside it over those of the label's nodes, and is recorded`() {
         val spec = RangeIndexSpec("Person", listOf("name", "metadata.source"))
-        val (index, record) = checked(grammar.createIndex(spec, null))
+        val (index, labelledIndex, record) = checked(grammar.createIndex(spec, null))
 
         val name = graph.objectName("ix", spec.properties)
         assertEquals("CREATE INDEX IF NOT EXISTS $name ON g_node (JSON_VALUE(props, '$.name'), JSON_VALUE(props, '$.\"metadata.source\"'))", index)
         assertFalse(index.contains("Person"), "a range index does not depend on the label")
+
+        val labelled = graph.objectName("lx", listOf("Person") + spec.properties)
+        val person = "JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")')"
+        assertEquals(
+            "CREATE INDEX IF NOT EXISTS $labelled ON g_node n (CASE WHEN $person THEN JSON_VALUE(n.props, '$.name') END, " +
+                "CASE WHEN $person THEN JSON_VALUE(n.props, '$.\"metadata.source\"') END)",
+            labelledIndex,
+        )
+        assertEquals("${OracleSql.labelled("n", "Person", "name")}", labelledIndex.substringAfter("n (").substringBefore(", CASE"), "a filter reads the property as the index does")
 
         assertTrue(record.startsWith("BEGIN\n"))
         assertTrue(record.endsWith("\nEND;"))
@@ -57,8 +66,10 @@ class OracleSchemaGrammarTest {
             "MERGE INTO g_schema c",
             "USING (SELECT 'RANGE_INDEX' AS kind, 'Person' AS label, '[\"name\",\"metadata.source\"]' AS properties FROM dual) k",
             "ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)",
+            // A record made before there were labelled indexes takes the name of the one now made.
+            "WHEN MATCHED THEN UPDATE SET c.details = '{\"labelled\": \"$labelled\"}'",
             "WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)",
-            "VALUES (k.kind, k.label, k.properties, 'Person_name_metadata.source_range', '$name', '{}');",
+            "VALUES (k.kind, k.label, k.properties, 'Person_name_metadata.source_range', '$name', '{\"labelled\": \"$labelled\"}');",
             "EXCEPTION WHEN DUP_VAL_ON_INDEX THEN",
             "NULL;",
             "END;",
@@ -166,7 +177,7 @@ class OracleSchemaGrammarTest {
             "DECLARE",
             "DELETE FROM g_schema",
             "WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]'",
-            "RETURNING MAX(object_name) INTO v_object;",
+            "RETURNING MAX(object_name), MAX(JSON_VALUE(details, '$.labelled')) INTO v_object, v_labelled;",
             "SELECT COUNT(*) INTO v_others FROM g_schema WHERE object_name = v_object;",
             "IF v_object IS NOT NULL AND v_others = 0 THEN",
             "EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';",
@@ -203,6 +214,7 @@ class OracleSchemaGrammarTest {
         )
 
         drops.zip(made).forEach { (drop, name) -> assertFalse(name in drop, "'$name' is written into:\n$drop") }
+        assertFalse(graph.objectName("lx", listOf("Person", "name")) in drops[2], "a labelled index is dropped by the name its record holds")
     }
 
     @Test
@@ -215,6 +227,10 @@ class OracleSchemaGrammarTest {
             "WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]'",
             "IF v_object IS NOT NULL AND v_others = 0 THEN",
             "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;",
+            "END IF;",
+            // The labelled index is the record's own, and goes with it whatever else is recorded.
+            "IF v_labelled IS NOT NULL THEN",
+            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;",
         )
         assertFalse("DROP TABLE" in range.single() || "DROP TRIGGER" in range.single())
 
@@ -245,6 +261,9 @@ class OracleSchemaGrammarTest {
             "object_name IS NULL",
             "EXISTS (SELECT 1 FROM user_indexes i WHERE i.index_name = UPPER(c.object_name))",
             "EXISTS (SELECT 1 FROM user_tables t WHERE t.table_name = UPPER(c.object_name))",
+            // A range index without its labelled index is listed as not there, so it is made again.
+            "AND (kind <> 'RANGE_INDEX'",
+            "OR EXISTS (SELECT 1 FROM user_indexes l WHERE l.index_name = UPPER(JSON_VALUE(c.details, '$.labelled'))))",
             "ORDER BY label, properties",
         )
         assertTrue(grammar.listIndexesQuery(SchemaItemKind.VECTOR_INDEX).contains("WHERE kind IN ('VECTOR_INDEX')"))
