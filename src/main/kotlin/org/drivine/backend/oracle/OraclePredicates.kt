@@ -50,32 +50,39 @@ internal class OraclePredicates(
      */
     fun predicate(conditions: List<WhereCondition>, indexed: Boolean = false): String? {
         val grouped = grouped(conditions)
-        if (indexed && !scope.narrowed) scope.implied += grouped.mapNotNull(::answeredBy)
+        if (indexed && !scope.narrowed) {
+            grouped.forEach { condition -> answeredBy(condition)?.let { (key, label) -> scope.answered.putIfAbsent(key, label) } }
+        }
         return all(grouped, mapOf(rootAlias to root), viewModel).ifEmpty { null }
     }
 
     /**
-     * The label of the root whose labelled index answers [condition], one every root meets; null when
-     * none does. An index answers a comparison with a text of the property it begins with: `=`, `<`,
+     * The property [condition] compares and the label of the root whose labelled index answers it,
+     * for a condition every root meets; null when none does. An index answers a comparison with a text of the property it begins with: `=`, `<`,
      * `<=`, `>`, `>=`. Not `IN`, which Oracle answers by reading every node, and not a negation, a
      * test for no value or a test of part of the text, which no index answers.
      */
-    private fun answeredBy(condition: WhereCondition): String? {
+    private fun answeredBy(condition: WhereCondition): Pair<String, String>? {
         if (condition !is WhereCondition.PropertyCondition || condition.propertyPath.substringBefore('.') != rootAlias) return null
         val key = condition.propertyPath.substringAfter('.')
         val value = condition.value
         val answerable = condition.operator in RANGE && key != Stamps.PROPERTY &&
             value != null && value != "" && SqlKind.ofValue(value) == SqlKind.TEXT && value !is Collection<*>
-        return if (answerable) rootLabels().firstOrNull { labelled.leads(it, key) } else null
+        if (!answerable) return null
+        return rootLabels().firstOrNull { labelled.leads(it, key) }?.let { key to it }
     }
 
     /**
-     * The property [key] of the row [row], read as text: through the expression of a labelled index on
-     * [key] when the row is the root and a label of that index needs no test of its own, which is then
-     * the same value. A comparison read through the expression of an index may be answered by it.
+     * The property [key] of the row [row], read as text. On the root, a property a label's index
+     * answers for ([OracleStatementScope.answered]) is read through that label's index, and no
+     * other's: that comparison is what tests the label. Another property is read through the index
+     * of a label that needs no test of its own, where one holds it; it is then the same value, for
+     * that label is tested by a comparison of its own. A comparison read through the expression of
+     * an index may be answered by it.
      */
     private fun text(row: String, key: String): String {
         if (row != root || key == Stamps.PROPERTY) return property(row, key)
+        scope.answered[key]?.let { label -> return labelled.expression(row, label, key) ?: property(row, key) }
         return scope.implied.firstNotNullOfOrNull { labelled.expression(row, it, key) } ?: property(row, key)
     }
 

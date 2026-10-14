@@ -2999,7 +2999,7 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 
 | Result | Meaning |
 |---|---|
-| `Created` | Nothing existed; the item was created |
+| `Created` | Nothing existed and the item was created, or it existed without part of what the engine makes for it (on Oracle, a range index without its index over the label's nodes) and that part was made |
 | `AlreadyMatching` | A matching item exists; nothing changed |
 | `Drift` | An item exists with a **different shape** (e.g. vector dimensions changed). Nothing changed — call `recreate(spec)` to replace it (destructive) |
 | `Violation` | Constraint only: existing data violates it. Includes a bounded sample of the conflicting values |

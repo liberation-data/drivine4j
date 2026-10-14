@@ -91,9 +91,11 @@ interface SchemaGrammar {
 
     /**
      * Whether [existing], an index introspection found, lacks part of what [createIndex] makes for it:
-     * one made by an earlier version of Drivine. `ensure` then runs [createIndex] again, which makes
-     * what is missing; [find][IndexManager.find], `list` and `drop` see the index as it is. Never, on
-     * an engine whose indexes are made whole.
+     * because an earlier version of Drivine made it, because part of it was dropped by hand, or
+     * because what stood in for that part has gone (on Oracle, a uniqueness constraint's index
+     * dropped, or never made for data that violates it). `ensure` then runs [createIndex] again,
+     * which makes what is missing; [find][IndexManager.find], `list` and `drop` see the index as it
+     * is. Never, on an engine whose indexes are made whole.
      */
     fun isIncomplete(existing: SchemaItemInfo): Boolean = false
 

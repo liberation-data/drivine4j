@@ -74,7 +74,7 @@ class IndexManager internal constructor(
         if (grammar.isIncomplete(existing)) {
             run(grammar.createIndex(spec, existing))
             val completed = find(spec) ?: SchemaItemInfo.fromSpec(spec)
-            logger.info("Completed {} {} on {}{}, made by an earlier version", grammar.engine, spec.kind, spec.label, spec.properties)
+            logger.info("Completed {} {} on {}{}: it lacked part of what is made for it", grammar.engine, spec.kind, spec.label, spec.properties)
             return EnsureResult.Created(completed)
         }
         return if (grammar.matchesShape(existing, spec)) {

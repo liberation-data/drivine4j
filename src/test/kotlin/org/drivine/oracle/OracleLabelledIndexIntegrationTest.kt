@@ -30,6 +30,10 @@ import kotlin.test.assertTrue
 @NodeFragment(labels = ["Issue"])
 data class LabelledIssue(@NodeId val id: String, val repoKey: String, val state: String)
 
+/** A node of two labels, each with an index of its own. */
+@NodeFragment(labels = ["VecContent", "VecChunk"])
+data class LabelledChunk(@NodeId val id: String, val chunkText: String)
+
 /**
  * A filter on an indexed property of the nodes of a label, on a graph where the label is a third of
  * the nodes and other labels hold the same properties: Oracle reads it through the property's
@@ -49,6 +53,8 @@ class OracleLabelledIndexIntegrationTest {
         // What an earlier run left.
         listOf("id", "key").forEach { pm.constraints.drop(UniquenessConstraintSpec("Issue", it)) }
         listOf("repoKey", "state", "number", "id", "key").forEach { pm.indexes.drop(RangeIndexSpec("Issue", it)) }
+        pm.indexes.drop(RangeIndexSpec("VecContent", "id"))
+        pm.indexes.drop(RangeIndexSpec("VecChunk", listOf("chunkText", "id")))
         listOf(graph.objectName("ix", listOf("number")), graph.objectName("ix", listOf("key")), graph.objectName("uq", listOf("Issue", "key")))
             .forEach { OracleTestDatabase.run("DROP INDEX IF EXISTS $it") }
         // 6,000 issues over 60 repos, 95 in 100 of them open; one in ten carries a second label.
@@ -243,6 +249,31 @@ class OracleLabelledIndexIntegrationTest {
         val statement = OracleBackend(pm, Neo4jObjectMapper.instance, catalogReads = Runnable::run).count(LabelledIssue::class.java, query(eq("key", "k1"))).statement
         assertTrue("MATCH (n_ IS node)\n" in statement && "AND JSON_EXISTS(n_.props, '$.key') THEN" in statement, statement)
         assertEquals(0, counted(GraphStatement(statement, mapOf("_p0" to "k1"))))
+    }
+
+    @Test
+    fun `a node that carries one of a root's two labels is not loaded, counted or deleted, however the conditions are ordered`() {
+        assertTrue(pm.indexes.ensure(RangeIndexSpec("VecContent", "id")) is EnsureResult.Created)
+        assertTrue(pm.indexes.ensure(RangeIndexSpec("VecChunk", listOf("chunkText", "id"))) is EnsureResult.Created)
+        val chunk = PropertyCondition("n.chunkText", ComparisonOperator.EQUALS, "t")
+        val id = PropertyCondition("n.id", ComparisonOperator.EQUALS, "x")
+        val orders = listOf(listOf(chunk, id), listOf(id, chunk))
+        orders.forEach { conditions ->
+            OracleTestDatabase.run(
+                "DELETE FROM ${graph.nodes} WHERE JSON_EXISTS(labels, '$[*]?(@ == \"VecContent\" || @ == \"VecChunk\")')",
+                "INSERT INTO ${graph.nodes} (labels, props) VALUES (JSON('[\"VecContent\",\"VecChunk\"]'), JSON('{\"id\": \"x\", \"chunkText\": \"t\"}'))",
+                "INSERT INTO ${graph.nodes} (labels, props) VALUES (JSON('[\"VecChunk\"]'), JSON('{\"id\": \"x\", \"chunkText\": \"t\"}'))",
+                "INSERT INTO ${graph.nodes} (labels, props) VALUES (JSON('[\"VecContent\"]'), JSON('{\"id\": \"x\", \"chunkText\": \"t\"}'))",
+            )
+            val spec = query(*conditions.toTypedArray())
+            val load = backend.loadAll(LabelledChunk::class.java, spec).statement
+            assertFalse(overLabels in plan(load), plan(load))
+            assertEquals(1, pm.query(QuerySpecification.withStatement(load.statement).bind(load.bindings).transform(Map::class.java)).size, load.statement)
+            assertEquals(1, counted(backend.count(LabelledChunk::class.java, spec)))
+            assertEquals(1, counted(backend.deleteAll(LabelledChunk::class.java, spec)))
+            val left = pm.query(QuerySpecification.withStatement("SELECT JSON_SERIALIZE(labels) FROM ${graph.nodes} WHERE JSON_EXISTS(labels, '$[*]?(@ == \"VecContent\" || @ == \"VecChunk\")')").transform(String::class.java))
+            assertEquals(setOf("[\"VecChunk\"]", "[\"VecContent\"]"), left.toSet(), "the node of both labels alone is deleted")
+        }
     }
 
     private fun indexed(name: String): Boolean =

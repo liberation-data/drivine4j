@@ -11,6 +11,8 @@ import org.drivine.query.dsl.WhereCondition.OrCondition
 import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.test.RecordingStore
+import org.drivine.annotation.NodeFragment
+import org.drivine.annotation.NodeId
 import org.junit.jupiter.api.Test
 import sample.groups.Feedback
 import sample.groups.FeedbackQueryDsl
@@ -20,6 +22,10 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+
+/** A node of two labels, each of which may have indexes of its own. */
+@NodeFragment(labels = ["VecContent", "VecChunk"])
+data class TwoLabelled(@NodeId val id: String, val chunkText: String, val x: String)
 
 /**
  * A filter on the nodes of a label, read through a labelled index where one answers it: the
@@ -160,6 +166,68 @@ class OracleLabelledIndexTest {
         val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)
         assertEquals("CASE WHEN $scansClaim AND JSON_EXISTS(n_.props, '$.text') THEN JSON_VALUE(n_.props, '$.text') END = \$_p0", sql)
         assertEquals("", select.selecting(emptyList()))
+    }
+
+    // ----- A root of two labels -----
+
+    private fun has(label: String) = "JSON_EXISTS(n_.labels, '$[*]?(@ == \"$label\")')"
+    private fun carries(label: String) = "INSTR(JSON_SERIALIZE(n_.labels), '\"$label\"') > 0"
+
+    /**
+     * The statement [conditions] make on a root of two labels, with what is asserted of every such
+     * statement: each label is tested, by a test of its own or by a comparison through its own index.
+     */
+    private fun twoLabelled(indexes: LabelledIndexes, vararg conditions: WhereCondition): String {
+        val select = select(TwoLabelled::class.java, indexes)
+        val predicate = select.predicate(conditions.toList(), indexed = true)
+        val statement = select.load(listOfNotNull(predicate)).statement
+        listOf("VecContent", "VecChunk").forEach { label ->
+            assertTrue(carries(label) in statement || "CASE WHEN ${has(label)}" in statement || "MATCH (n_ IS node WHERE ${has(label)}" in statement, "$label is not tested in:\n$statement")
+        }
+        return statement
+    }
+
+    @Test
+    fun `each label of a root that needs no test of its own is tested by a comparison through its own index, whatever the order`() {
+        val indexes = LabelledIndexes(listOf(LabelledIndex("VecContent", listOf("id")), LabelledIndex("VecChunk", listOf("chunkText", "id"))))
+        val chunk = condition("chunkText", ComparisonOperator.EQUALS, "t")
+        val id = condition("id", ComparisonOperator.EQUALS, "x")
+        listOf(listOf(chunk, id), listOf(id, chunk)).forEach { conditions ->
+            val statement = twoLabelled(indexes, *conditions.toTypedArray())
+            assertTrue("CASE WHEN ${has("VecContent")} THEN JSON_VALUE(n_.props, '$.id') END = " in statement, statement)
+            assertTrue("CASE WHEN ${has("VecChunk")} THEN JSON_VALUE(n_.props, '$.chunkText') END = " in statement, statement)
+            assertTrue("MATCH (n_ IS node)\n" in statement, statement)
+        }
+    }
+
+    @Test
+    fun `two labels with unique indexes on one property, and another index on one label, are each tested`() {
+        val indexes = LabelledIndexes(listOf(
+            LabelledIndex("VecContent", listOf("id"), unique = true),
+            LabelledIndex("VecChunk", listOf("id"), unique = true),
+            LabelledIndex("VecChunk", listOf("x")),
+        ))
+        val x = condition("x", ComparisonOperator.EQUALS, "a")
+        val id = condition("id", ComparisonOperator.EQUALS, "b")
+        listOf(listOf(x, id), listOf(id, x)).forEach { conditions ->
+            val statement = twoLabelled(indexes, *conditions.toTypedArray())
+            // The id is answered for the first label whose index leads with it, and read through that label's index alone.
+            assertTrue("CASE WHEN ${has("VecContent")} AND JSON_EXISTS(n_.props, '$.id') THEN JSON_VALUE(n_.props, '$.id') END = " in statement, statement)
+            assertFalse("CASE WHEN ${has("VecChunk")} AND JSON_EXISTS(n_.props, '$.id')" in statement, statement)
+            assertTrue("CASE WHEN ${has("VecChunk")} THEN JSON_VALUE(n_.props, '$.x') END = " in statement, statement)
+        }
+        // With the id alone, the other label is tested on its own, in the form no index answers.
+        val alone = twoLabelled(indexes, id)
+        assertTrue("MATCH (n_ IS node WHERE ${carries("VecChunk")})" in alone, alone)
+    }
+
+    @Test
+    fun `a property one label holds a unique index on and the other a labelled index on is read through the label that answers it`() {
+        val indexes = LabelledIndexes(listOf(LabelledIndex("VecContent", listOf("id"), unique = true), LabelledIndex("VecChunk", listOf("id"))))
+        val statement = twoLabelled(indexes, condition("id", ComparisonOperator.EQUALS, "b"), condition("id", ComparisonOperator.LESS_THAN, "z"))
+        assertEquals(2, Regex(Regex.escape("CASE WHEN ${has("VecContent")} AND JSON_EXISTS(n_.props, '$.id')")).findAll(statement).count(), statement)
+        assertFalse("CASE WHEN ${has("VecChunk")}" in statement, statement)
+        assertTrue("MATCH (n_ IS node WHERE ${carries("VecChunk")})" in statement, statement)
     }
 
     @Test

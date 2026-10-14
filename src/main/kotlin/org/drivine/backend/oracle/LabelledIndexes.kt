@@ -34,9 +34,15 @@ internal class LabelledIndexes(indexes: List<LabelledIndex>) {
     /** Whether an index on [label] begins with [key], so that a comparison with [key] alone can be answered by it. */
     fun leads(label: String, key: String): Boolean = indexes.any { it.label == label && it.properties.first() == key }
 
-    /** The property [key] of the node [alias] as an index on [label] that holds it reads it; null when none does. */
+    /**
+     * The property [key] of the node [alias] as an index on [label] that holds it reads it, one that
+     * begins with [key] before one that holds it further in; null when none does. Whichever it is,
+     * it is null on a node without [label].
+     */
     fun expression(alias: String, label: String, key: String): String? =
-        indexes.firstOrNull { it.label == label && key in it.properties }?.expression(alias, key)
+        indexes.filter { it.label == label && key in it.properties }
+            .minByOrNull { if (it.properties.first() == key) 0 else 1 }
+            ?.expression(alias, key)
 
     companion object {
         val NONE = LabelledIndexes(emptyList())
@@ -68,6 +74,10 @@ internal class LabelledIndexCatalog(
 
     @Volatile
     private var read: Read? = null
+
+    /** Whether a read of the catalog has ever succeeded. */
+    @Volatile
+    private var succeeded = false
 
     private val reading = AtomicBoolean(false)
 
@@ -102,10 +112,10 @@ internal class LabelledIndexCatalog(
         LabelledIndexes(persistenceManager.indexes.run(query(graph)).mapNotNull { row ->
             val map = row as? Map<*, *> ?: return@mapNotNull null
             LabelledIndex(map["label"] as String, (map["properties"] as List<*>).map { it.toString() }, unique = map["kind"] == SchemaItemKind.UNIQUENESS_CONSTRAINT.name)
-        })
+        }).also { succeeded = true }
     } catch (e: Exception) {
-        // Loud while it costs something: with nothing read yet, no filter is read through an index.
-        if (read == null) {
+        // Loud until a read has succeeded: until then no filter is read through an index.
+        if (!succeeded) {
             logger.warn("The labelled indexes of {} could not be read, so filters are written without them until they can be: {}", graph.name, e.message)
         } else {
             logger.debug("The labelled indexes of {} could not be read again, so what was read before is kept: {}", graph.name, e.message)

@@ -16,11 +16,17 @@ internal class OracleStatementScope {
     var narrowed = false
 
     /**
-     * The labels of the roots that a condition every root meets is answered for by a labelled index:
-     * the condition reads the property through the index's expression, which is null for a node
-     * without the label, so the label needs no test of its own. See [OraclePredicates.predicate].
+     * For each property of the root that a condition every root meets compares, the label whose
+     * labelled index answers it. Every comparison with the property is read through that label's
+     * index, whose expression is null for a node without the label: so the label needs no test of its
+     * own. Each label here is tested so by a comparison through its own index, and never through
+     * another label's, which would say nothing of it. See [OraclePredicates.predicate].
      */
-    val implied = mutableSetOf<String>()
+    val answered = linkedMapOf<String, String>()
+
+    /** The labels of the roots that need no test of their own: see [answered]. */
+    val implied: Set<String>
+        get() = answered.values.toSet()
 
     /**
      * Whether the root [alias] carries [labels]; null when nothing is left to test. A label a labelled

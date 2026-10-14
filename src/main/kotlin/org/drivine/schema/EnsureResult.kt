@@ -4,7 +4,8 @@ package org.drivine.schema
  * Outcome of an idempotent `ensure` operation on an index or constraint.
  *
  * `ensure` is safe to call on every startup:
- * - if the item doesn't exist it is created → [Created]
+ * - if the item doesn't exist it is created → [Created]; so it is when it exists but lacks part of
+ *   what the engine makes for it, and that part is made (see [SchemaGrammar.isIncomplete])
  * - if a matching item exists nothing changes → [AlreadyMatching]
  * - if an item exists with a different shape nothing changes → [Drift]; the caller decides
  *   whether to call `recreate`
@@ -12,7 +13,10 @@ package org.drivine.schema
  */
 sealed interface EnsureResult {
 
-    /** No prior item existed; one was created matching the spec. */
+    /**
+     * No prior item existed and one was created matching the spec, or one existed incomplete and
+     * what it lacked was made (see [SchemaGrammar.isIncomplete]).
+     */
     data class Created(val info: SchemaItemInfo) : EnsureResult
 
     /** A matching item already existed; nothing was changed. */

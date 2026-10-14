@@ -183,9 +183,11 @@ makes is HikariCP, with the driver's statement cache on.*
 *As built: listing and drift detection read `<graph>_schema`, a table of the graph's own that records
 each item with the name of the object made for it. The dictionary holds an index's expression and
 not what it was made for; it is asked only whether the recorded object is still there, and a drop
-drops the object the record names. A range index is over the property whatever the label, so two
-labels that index a property of one name share an index, which goes when the last of them is
-dropped. The schema marker and the store's identity are written by the grammar too
+drops the object the record names. A range index is two indexes: one over the property whatever
+the label, which two labels that index a property of one name share and which goes when the last
+of them is dropped, and one over the property of the label's nodes alone, which a filter on the
+label's nodes is read through (#65). A uniqueness constraint over one property stands for the
+second, and none is made beside it. The schema marker and the store's identity are written by the grammar too
 (`SchemaGrammar.versionMarker` and `storeStamp`).*
 
 ### Phase 7 — Vector and full-text search ✅
