@@ -204,17 +204,16 @@ class OracleSelectTest {
                 """
                 |    'employers' VALUE COALESCE((
                 |        SELECT JSON_ARRAYAGG(employers_.doc ORDER BY employers_.nid RETURNING JSON)
-                |        FROM GRAPH_TABLE (g
-                |            MATCH (employers_ IS node)
-                |            COLUMNS (employers_.nid, employers_.doc)) employers_
-                |        WHERE employers_.nid IN (
-                |            SELECT reached_.nid
+                |        FROM (
+                |            SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc
                 |            FROM GRAPH_TABLE (g
                 |                MATCH (claim_ IS node)
                 |                    -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '"Human"') > 0)
                 |                    -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(JSON_SERIALIZE(reached_.labels), '"Company"') > 0)
-                |                COLUMNS (claim_.nid AS src, reached_.nid)) reached_
-                |            WHERE reached_.src = claim_.nid)), JSON('[]')),
+                |                COLUMNS (claim_.nid AS src, reached_.nid, reached_.doc)) reached_
+                |            GROUP BY reached_.src, reached_.nid
+                |        ) employers_
+                |        WHERE employers_.src = claim_.nid), JSON('[]')),
                 """.trimMargin(),
             ),
             statement,
@@ -224,10 +223,23 @@ class OracleSelectTest {
     }
 
     @Test
+    fun `a path is read from the root outward, and never as a test of every node of the graph`() {
+        val statement = select(ClaimEmployers::class.java).load(emptyList()).statement.squashed()
+        // The nodes a path reaches come from the path's own rows. Read on their own, as those whose id
+        // the path reaches, Oracle reads every node of the graph and asks the path of each.
+        assertFalse(statement.contains("MATCH (employers_ IS node)"), statement)
+        assertFalse(statement.contains(".nid IN ("), statement)
+    }
+
+    @Test
     fun `a flat list read to a depth is one step taken up to that many times`() {
         val statement = select(SeqWindow2View::class.java).load(emptyList()).statement.squashed()
         assertTrue(statement.contains("(node_ IS node) -[e IS edge WHERE e.type = 'NEXT']->{1,2} (reached_ IS node"), statement)
         assertTrue(statement.contains("'following' VALUE COALESCE(( SELECT JSON_ARRAYAGG(following_.doc ORDER BY following_.nid RETURNING JSON)"), statement)
+        // Read from the root outward as a path is, each node once: never as a test of every node of the graph.
+        assertTrue(statement.contains("SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc"), statement)
+        assertTrue(statement.contains("GROUP BY reached_.src, reached_.nid ) following_ WHERE following_.src = node_.nid"), statement)
+        assertFalse(statement.contains(".nid IN ("), statement)
     }
 
     @Test

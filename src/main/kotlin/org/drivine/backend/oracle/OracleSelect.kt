@@ -237,18 +237,25 @@ internal class OracleSelect(
 
     /**
      * A field that holds each node reached once, however many ways lead to it: a path of several
-     * steps, or one step taken up to a depth. The nodes are read on their own, those whose id the
-     * path reaches, since the path gives a node once for each way to it.
+     * steps, or one step taken up to a depth. The path gives a node once for each way to it, so its
+     * rows are grouped by the node reached, beside the root they were reached from.
+     *
+     * The nodes are read where the path ends and not on their own, as those whose id the path
+     * reaches: Oracle answers that by reading every node of the graph and asking the path of each.
      */
     private fun distinct(parent: String, relationship: RelationshipModel, steps: List<Step>, targetType: Class<*>, visits: Map<String, Int>): String {
         val row = scope.row(relationship.fieldName)
         val path = scope.row("reached")
         val value = element(row, targetType, visits, relationship.fieldName)
-        val reached = listOf("$row.nid IN ${rows.related("$path.nid", parent, steps, path).nested()}")
+        val once = Derived(
+            Query("$path.src, $path.nid, ANY_VALUE($path.doc) AS doc", rows.reached(parent, steps, path), tail = listOf("GROUP BY $path.src, $path.nid")).text(),
+            row,
+        )
+        val reached = listOf("$row.src = $parent.nid")
         return if (relationship.isCollection) {
-            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", rows.nodes(emptyList(), row), reached).nested()}, $EMPTY_ARRAY)"
+            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", once, reached).nested()}, $EMPTY_ARRAY)"
         } else {
-            Query(value, rows.nodes(emptyList(), row), reached, listOf(first("$row.nid"))).nested()
+            Query(value, once, reached, listOf(first("$row.nid"))).nested()
         }
     }
 
