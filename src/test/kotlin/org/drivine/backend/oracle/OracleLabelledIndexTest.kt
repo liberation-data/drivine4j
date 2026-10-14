@@ -17,6 +17,7 @@ import sample.groups.FeedbackQueryDsl
 import sample.stateless.Claim
 import sample.stateless.ClaimView
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -249,6 +250,18 @@ class OracleLabelledIndexTest {
         now = 1000
         assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
         assertEquals(1, pending.size)
+    }
+
+    @Test
+    fun `a read that could not be begun is begun by the next caller`() {
+        var failing = true
+        val pending = ArrayDeque<Runnable>()
+        val catalog = LabelledIndexCatalog(store(listed("Claim", "text")), graph, refresh = { if (failing) throw OutOfMemoryError("unable to create native thread") else pending.add(it) })
+
+        assertFailsWith<OutOfMemoryError> { catalog.current() }
+        failing = false
+        catalog.current()
+        assertEquals(1, pending.size, "the failed start left no read marked as under way")
     }
 
     @Test

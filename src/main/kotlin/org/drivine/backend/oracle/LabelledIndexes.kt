@@ -91,8 +91,10 @@ internal class LabelledIndexCatalog(
                     reading.set(false)
                 }
             }
-        } catch (e: RejectedExecutionException) {
+        } catch (e: Throwable) {
+            // Not begun, whatever stopped it: a thread that could not be made is an Error, not a rejection.
             reading.set(false)
+            if (e !is RejectedExecutionException) throw e
         }
     }
 
@@ -102,16 +104,30 @@ internal class LabelledIndexCatalog(
             LabelledIndex(map["label"] as String, (map["properties"] as List<*>).map { it.toString() }, unique = map["kind"] == SchemaItemKind.UNIQUENESS_CONSTRAINT.name)
         })
     } catch (e: Exception) {
-        logger.debug("The labelled indexes of {} could not be read, so what was read before is kept: {}", graph.name, e.message)
+        // Loud while it costs something: with nothing read yet, no filter is read through an index.
+        if (read == null) {
+            logger.warn("The labelled indexes of {} could not be read, so filters are written without them until they can be: {}", graph.name, e.message)
+        } else {
+            logger.debug("The labelled indexes of {} could not be read again, so what was read before is kept: {}", graph.name, e.message)
+        }
         null
     }
 
     companion object {
         private val logger = LoggerFactory.getLogger(LabelledIndexCatalog::class.java)
 
-        /** Threads that read catalogs, made as needed and ended when idle; none keeps the process alive. */
+        private val threads = AtomicLong()
+
+        /**
+         * Threads that read catalogs, made as needed and ended when idle; none keeps the process alive,
+         * and none holds the class loader of the code that happened to start it, which a redeployed
+         * application would otherwise keep until the thread ends.
+         */
         private val BACKGROUND: Executor = Executors.newCachedThreadPool { runnable ->
-            Thread(runnable, "drivine-oracle-catalog").apply { isDaemon = true }
+            Thread(runnable, "drivine-oracle-catalog-${threads.incrementAndGet()}").apply {
+                isDaemon = true
+                contextClassLoader = null
+            }
         }
 
         /** The labelled indexes recorded for [graph] that are there: see [OracleSchemaGrammar.labelledIndexesQuery]. */
