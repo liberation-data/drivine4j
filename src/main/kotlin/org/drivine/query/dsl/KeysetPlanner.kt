@@ -19,8 +19,8 @@ internal data class KeysetPlan(
  * Compiles root ordering plus cursor values into a lexicographic seek predicate.
  *
  * For `a DESC, b DESC` after `(A, B)` this emits:
- * `(a IS NOT NULL AND b IS NOT NULL AND a <= $_seek_0 AND
- * (a < $_seek_0 OR (a = $_seek_0 AND b < $_seek_1)))`.
+ * `a IS NOT NULL AND b IS NOT NULL AND a <= $_seek_0 AND
+ * (a < $_seek_0 OR (a = $_seek_0 AND b < $_seek_1))`.
  *
  * Two conjuncts are logically redundant — the disjunction implies both — and both exist to give the
  * planner something to seek on, because a top-level `OR` otherwise forces a scan:
@@ -101,7 +101,7 @@ internal object KeysetPlanner {
             listOf(comparison(orders[0], strict = false, index = 0))
         }
         // Joined by AND, with the branches in parentheses of their own where there are several, so the
-        // whole needs none: and FalkorDB 6 scans a label for a condition in parentheses it does not need
+        // whole needs none. In them, FalkorDB 6 scans the label and does not seek on the range bound
         // (FalkorDB/FalkorDB#3331).
         val predicate = (notNulls + rangeBound + disjunction).joinToString(" AND ")
 

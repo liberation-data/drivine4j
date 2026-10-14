@@ -133,6 +133,7 @@ internal class CypherBackend(
         val effectiveWhereClause = listOfNotNull(ctx.whereClause, keysetPlan?.predicate)
             .joinToString(" AND ")
             .takeIf { it.isNotEmpty() }
+            ?.let { if (keysetPlan == null) alone(it, graphClass, query.conditions) else it }
         keysetPlan?.bindings?.keys?.forEach { reserved ->
             require(reserved !in ctx.bindings) {
                 "Keyset cursor parameter \$$reserved collides with a where-clause binding"
@@ -158,7 +159,8 @@ internal class CypherBackend(
 
     override fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
         val ctx = queryContext(graphClass, query)
-        return GraphStatement(builder(graphClass).buildCountQuery(ctx.whereClause, ctx.prologs, ctx.bridgeVariables), ctx.bindings)
+        val where = ctx.whereClause?.let { alone(it, graphClass, query.conditions) }
+        return GraphStatement(builder(graphClass).buildCountQuery(where, ctx.prologs, ctx.bridgeVariables), ctx.bindings)
     }
 
     override fun nearest(
@@ -303,6 +305,37 @@ internal class CypherBackend(
             whereResult?.prologs ?: emptyList(),
             whereResult?.bridgeVariables ?: emptyList(),
         )
+    }
+
+    /**
+     * [clause], the conditions of [conditions], as the whole `WHERE` of a load or a count of
+     * [graphClass]: an `anyOf` that is all there is stands without the parentheses it is written in.
+     * Nothing is joined to it there, so they change nothing, and FalkorDB 6 scans the label for them
+     * (FalkorDB/FalkorDB#3331).
+     *
+     * Only for a fragment. A view may add the relationships it requires to the clause, by `AND`,
+     * and an `OR` beside them needs its parentheses.
+     */
+    private fun alone(clause: String, graphClass: Class<*>, conditions: List<WhereCondition>): String {
+        if (graphClass.isAnnotationPresent(GraphView::class.java)) return clause
+        if (conditions.singleOrNull() !is WhereCondition.OrCondition) return clause
+        return if (isOneGroup(clause)) clause.substring(1, clause.length - 1) else clause
+    }
+
+    /** Whether [clause] is one pair of parentheses and what they hold: its first opens what its last closes. A name in backticks may hold either. */
+    private fun isOneGroup(clause: String): Boolean {
+        if (!clause.startsWith("(") || !clause.endsWith(")")) return false
+        var depth = 0
+        var quoted = false
+        clause.forEachIndexed { i, c ->
+            when {
+                c == '`' -> quoted = !quoted
+                quoted -> Unit
+                c == '(' -> depth++
+                c == ')' -> if (--depth == 0 && i < clause.lastIndex) return false
+            }
+        }
+        return depth == 0
     }
 
     /**
