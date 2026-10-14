@@ -53,12 +53,16 @@ class OracleSchemaGrammarTest {
 
         val labelled = graph.objectName("lx", listOf("Person") + spec.properties)
         val person = "JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")')"
-        assertEquals(
-            "CREATE INDEX IF NOT EXISTS $labelled ON g_node n (CASE WHEN $person THEN JSON_VALUE(n.props, '$.name') END, " +
-                "CASE WHEN $person THEN JSON_VALUE(n.props, '$.\"metadata.source\"') END)",
-            labelledIndex,
+        val ddl = "CREATE INDEX IF NOT EXISTS $labelled ON g_node n (CASE WHEN $person THEN JSON_VALUE(n.props, '$.name') END, " +
+            "CASE WHEN $person THEN JSON_VALUE(n.props, '$.\"metadata.source\"') END)"
+        // Made unless a uniqueness constraint's index over the one property stands for it.
+        labelledIndex.inOrder(
+            "SELECT COUNT(*) INTO v_unique FROM g_schema u WHERE u.label = 'Person' AND u.properties = '[\"name\",\"metadata.source\"]' AND u.kind = 'UNIQUENESS_CONSTRAINT'",
+            "IF v_unique = 0 THEN",
+            "EXECUTE IMMEDIATE ${OracleSql.literal(ddl)};",
+            "END IF;",
         )
-        assertEquals("${OracleSql.labelled("n", "Person", "name")}", labelledIndex.substringAfter("n (").substringBefore(", CASE"), "a filter reads the property as the index does")
+        assertTrue(ddl.contains(OracleSql.labelled("n", "Person", "name")), "a filter reads the property as the index does")
 
         assertTrue(record.startsWith("BEGIN\n"))
         assertTrue(record.endsWith("\nEND;"))
@@ -178,14 +182,16 @@ class OracleSchemaGrammarTest {
         val vector = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))).texts().single()
         vector.inOrder(
             "DECLARE",
-            "DELETE FROM g_schema",
-            "WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]'",
-            "RETURNING MAX(object_name), MAX(JSON_VALUE(details, '$.labelled')) INTO v_object, v_labelled;",
-            "SELECT COUNT(*) INTO v_others FROM g_schema WHERE object_name = v_object;",
+            "SELECT MAX(object_name), MAX(JSON_VALUE(details, '$.labelled')) INTO v_object, v_labelled",
+            "FROM g_schema WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]';",
+            "SELECT COUNT(*) INTO v_others FROM g_schema WHERE object_name = v_object AND NOT (kind = 'VECTOR_INDEX'",
             "IF v_object IS NOT NULL AND v_others = 0 THEN",
             "EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';",
             "EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_object || ' PURGE';",
             "END IF;",
+            // Forgotten once dropped: a drop that fails leaves the record naming what is still there.
+            "DELETE FROM g_schema WHERE kind = 'VECTOR_INDEX'",
+            "COMMIT;",
             "END;",
         )
         assertFalse("DROP INDEX" in vector, "the index over the table goes with the table")
@@ -226,14 +232,17 @@ class OracleSchemaGrammarTest {
         assertEquals(1, range.size)
         range.single().inOrder(
             "DECLARE",
-            "DELETE FROM g_schema",
-            "WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]'",
-            "IF v_object IS NOT NULL AND v_others = 0 THEN",
-            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;",
-            "END IF;",
+            "FROM g_schema WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]';",
             // The labelled index is the record's own, and goes with it whatever else is recorded.
             "IF v_labelled IS NOT NULL THEN",
             "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;",
+            "END IF;",
+            "IF v_object IS NOT NULL AND v_others = 0 THEN",
+            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;",
+            "END IF;",
+            // Each drop commits what came before it: the record is forgotten last, so one that fails leaves it to be dropped again.
+            "DELETE FROM g_schema WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]';",
+            "COMMIT;",
         )
         assertFalse("DROP TABLE" in range.single() || "DROP TRIGGER" in range.single())
 
@@ -250,7 +259,7 @@ class OracleSchemaGrammarTest {
         val drop = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))).texts().single()
 
         assertTrue(drop.startsWith("DECLARE\n    v_object VARCHAR2(128);"), drop)
-        assertTrue(drop.endsWith("\n    END IF;\nEND;"), drop)
+        assertTrue(drop.endsWith("\n    END IF;\n    DELETE FROM g_schema WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]';\n    COMMIT;\nEND;"), drop)
         assertTrue("\n        EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';\n        EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_object || ' PURGE';\n" in drop, drop)
     }
 
@@ -341,9 +350,12 @@ class OracleSchemaGrammarTest {
         assertEquals("CREATE UNIQUE INDEX IF NOT EXISTS $uq ON g_node n (${OracleSql.unique("n", "Person", listOf("email"), "email")})", unique)
         served.inOrder(
             "SELECT MAX(JSON_VALUE(details, '$.labelled')) INTO v_labelled FROM g_schema WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"email\"]';",
-            "UPDATE g_schema SET details = '{\"unique\": \"$uq\"}' WHERE kind = 'RANGE_INDEX'",
+            // Dropped before the record stops naming it: a drop that fails leaves it named, to be dropped next time.
             "IF v_labelled IS NOT NULL THEN",
             "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;",
+            "END IF;",
+            "UPDATE g_schema SET details = '{\"unique\": \"$uq\"}' WHERE kind = 'RANGE_INDEX'",
+            "COMMIT;",
         )
         record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label", "'$uq', '{}'")
     }

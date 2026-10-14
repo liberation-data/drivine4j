@@ -36,6 +36,7 @@ import org.drivine.query.dsl.WhereCondition
 import org.drivine.schema.SchemaItemKind
 import org.drivine.query.grammar.CypherGrammar
 import java.sql.SQLException
+import java.util.concurrent.Executor
 
 /**
  * The backend of Oracle Database. A graph is two tables and the SQL property graph over them (see
@@ -45,13 +46,15 @@ import java.sql.SQLException
 internal class OracleBackend(
     private val persistenceManager: PersistenceManager,
     objectMapper: ObjectMapper,
+    /** Where the labelled indexes of the graph are read: see [LabelledIndexCatalog]. */
+    catalogReads: Executor? = null,
 ) : GraphBackend {
 
     /** The graph the manager names, made with the backend where it is not there yet. */
     private val graph = OracleGraph.ensured(persistenceManager)
 
     /** The labelled indexes of the graph, which a filter on the nodes of a label is read through. */
-    private val labelled = LabelledIndexCatalog(persistenceManager, graph)
+    private val labelled = catalogReads?.let { LabelledIndexCatalog(persistenceManager, graph, refresh = it) } ?: LabelledIndexCatalog(persistenceManager, graph)
 
     /** Plans a save, and a batch of fragments, as the steps of a write block. */
     private val saves = OracleSavePlan(graph, objectMapper)

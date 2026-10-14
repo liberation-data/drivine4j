@@ -4,6 +4,10 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.schema.SchemaItemKind
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -40,48 +44,75 @@ internal class LabelledIndexes(indexes: List<LabelledIndex>) {
 }
 
 /**
- * The labelled indexes the catalog of [graph] records, and that are there, read once and kept. They
- * are read again when this process has made or dropped an index or a constraint of the graph since,
- * and at least every [maxAge] milliseconds, for one another process made. They are read on a
- * connection of their own, as the store is made: not in the caller's transaction, and not among the
- * statements of the read.
+ * The labelled indexes the catalog of [graph] records, and that are there, as last read. They are
+ * read again once this process has made or dropped an index or a constraint of the graph since, and
+ * at least every [maxAge] milliseconds, for one another process made.
+ *
+ * A read never waits for them. They are read on [refresh], by default a thread of its own, on a
+ * schema connection of their own: not in the caller's transaction, not among the statements of the
+ * read, and not by a reader that may hold the pool's last connection. One read at a time: meanwhile,
+ * and until the first is done, statements are written with what was read last, or with none.
  *
  * What is kept only decides how a statement is written, never what it means: a statement written for
  * an index that has since gone is read without it, and one written before an index came does not use
- * it. So a catalog that cannot be read is taken to record none.
+ * it. So a catalog that cannot be read leaves what was read before.
  */
 internal class LabelledIndexCatalog(
     private val persistenceManager: PersistenceManager,
     private val graph: OracleGraph,
     private val maxAge: Long = 60_000,
     private val clock: () -> Long = System::currentTimeMillis,
+    private val refresh: Executor = BACKGROUND,
 ) {
     private class Read(val indexes: LabelledIndexes, val at: Long, val changes: Long)
 
     @Volatile
     private var read: Read? = null
 
-    /** The labelled indexes there are, as last read. */
+    private val reading = AtomicBoolean(false)
+
+    /** The labelled indexes there are, as last read; a read again is begun when that is old. */
     fun current(): LabelledIndexes {
-        // Taken before the read: a change made while it runs is read again next time.
-        val changes = changes(graph.name)
-        val now = clock()
-        read?.takeIf { it.changes == changes && now - it.at < maxAge }?.let { return it.indexes }
-        return Read(fetch(), now, changes).also { read = it }.indexes
+        val last = read
+        if (last == null || last.changes != changes(graph.name) || clock() - last.at >= maxAge) readAgain()
+        return read?.indexes ?: LabelledIndexes.NONE
     }
 
-    private fun fetch(): LabelledIndexes = try {
+    private fun readAgain() {
+        if (!reading.compareAndSet(false, true)) return
+        try {
+            refresh.execute {
+                try {
+                    // Taken before the read: a change made while it runs is read again next time.
+                    val changes = changes(graph.name)
+                    val at = clock()
+                    read = Read(fetch() ?: read?.indexes ?: LabelledIndexes.NONE, at, changes)
+                } finally {
+                    reading.set(false)
+                }
+            }
+        } catch (e: RejectedExecutionException) {
+            reading.set(false)
+        }
+    }
+
+    private fun fetch(): LabelledIndexes? = try {
         LabelledIndexes(persistenceManager.indexes.run(query(graph)).mapNotNull { row ->
             val map = row as? Map<*, *> ?: return@mapNotNull null
             LabelledIndex(map["label"] as String, (map["properties"] as List<*>).map { it.toString() }, unique = map["kind"] == SchemaItemKind.UNIQUENESS_CONSTRAINT.name)
         })
     } catch (e: Exception) {
-        logger.debug("The labelled indexes of {} could not be read, so none is used: {}", graph.name, e.message)
-        LabelledIndexes.NONE
+        logger.debug("The labelled indexes of {} could not be read, so what was read before is kept: {}", graph.name, e.message)
+        null
     }
 
     companion object {
         private val logger = LoggerFactory.getLogger(LabelledIndexCatalog::class.java)
+
+        /** Threads that read catalogs, made as needed and ended when idle; none keeps the process alive. */
+        private val BACKGROUND: Executor = Executors.newCachedThreadPool { runnable ->
+            Thread(runnable, "drivine-oracle-catalog").apply { isDaemon = true }
+        }
 
         /** The labelled indexes recorded for [graph] that are there: see [OracleSchemaGrammar.labelledIndexesQuery]. */
         fun query(graph: OracleGraph): String = OracleSchemaGrammar(graph).labelledIndexesQuery()

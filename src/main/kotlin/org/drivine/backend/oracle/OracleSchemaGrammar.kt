@@ -109,6 +109,10 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
                 IF v_labelled IS NOT NULL THEN
                     EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;
                 END IF;"""
+        val record = "kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}"
+        // Dropped first and forgotten last: a drop commits what came before it, and one that fails
+        // (another session writing the table) then leaves the record naming what is still there,
+        // for the next drop to find. A record naming what is gone is listed as not there.
         return statement(
             """
             DECLARE
@@ -116,13 +120,14 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
                 v_labelled VARCHAR2(128);
                 v_others NUMBER;
             BEGIN
-                DELETE FROM ${graph.catalog}
-                WHERE kind = ${literal(item.kind.name)} AND label = ${literal(item.label)} AND properties = ${literal(json(item.properties))}
-                RETURNING MAX(object_name), MAX(JSON_VALUE(details, '$.labelled')) INTO v_object, v_labelled;
-                SELECT COUNT(*) INTO v_others FROM ${graph.catalog} WHERE object_name = v_object;
+                SELECT MAX(object_name), MAX(JSON_VALUE(details, '$.labelled')) INTO v_object, v_labelled
+                FROM ${graph.catalog} WHERE $record;
+                SELECT COUNT(*) INTO v_others FROM ${graph.catalog} WHERE object_name = v_object AND NOT ($record);$labelled
                 IF v_object IS NOT NULL AND v_others = 0 THEN
                     ${drops.joinToString("\n                    ") { "EXECUTE IMMEDIATE $it;" }}
-                END IF;$labelled
+                END IF;
+                DELETE FROM ${graph.catalog} WHERE $record;
+                COMMIT;
             END;
             """
         )
@@ -163,9 +168,22 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         val (name, shared) = sharedIndex(spec)
         val labelled = graph.objectName("lx", listOf(spec.label) + spec.properties)
         val scoped = spec.properties.joinToString(", ") { OracleSql.labelled("n", spec.label, it) }
+        // Not where a uniqueness constraint's index over the one property stands for it, as when the
+        // range index is made again under a constraint: the record then names an index that is not
+        // there, and the unique index is read through.
+        val standing = "SELECT COUNT(*) INTO v_unique FROM ${graph.catalog} u WHERE u.label = ${literal(spec.label)} AND u.properties = ${literal(json(spec.properties))} AND $uniqueThere"
         return listOf(
             shared,
-            "CREATE INDEX IF NOT EXISTS $labelled ON ${graph.nodes} n ($scoped)",
+            """
+            DECLARE
+                v_unique NUMBER;
+            BEGIN
+                $standing;
+                IF v_unique = 0 THEN
+                    EXECUTE IMMEDIATE ${literal("CREATE INDEX IF NOT EXISTS $labelled ON ${graph.nodes} n ($scoped)")};
+                END IF;
+            END;
+            """,
             recorded(spec, name, "{\"labelled\": \"$labelled\"}", updated = true),
         )
     }
@@ -284,8 +302,9 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
 
     /**
      * Records the range index [spec] as served by a uniqueness constraint's index, [details], and
-     * drops the labelled index it was made with, when it was. The record is changed first: a drop
-     * commits, and the record then names no index that is gone.
+     * drops the labelled index it was made with, when it was. The index is dropped first: a drop that
+     * fails (another session writing the table) leaves the record naming it, for the next
+     * constraint made to find and drop.
      */
     private fun servedBy(spec: RangeIndexSpec, details: String): String {
         val record = "kind = ${literal(spec.kind.name)} AND label = ${literal(spec.label)} AND properties = ${literal(json(spec.properties))}"
@@ -294,10 +313,11 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
                 v_labelled VARCHAR2(128);
             BEGIN
                 SELECT MAX(JSON_VALUE(details, '$.labelled')) INTO v_labelled FROM ${graph.catalog} WHERE $record;
-                UPDATE ${graph.catalog} SET details = ${literal(details)} WHERE $record;
                 IF v_labelled IS NOT NULL THEN
                     EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;
                 END IF;
+                UPDATE ${graph.catalog} SET details = ${literal(details)} WHERE $record;
+                COMMIT;
             END;
         """
     }

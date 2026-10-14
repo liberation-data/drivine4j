@@ -171,7 +171,8 @@ class OracleLabelledIndexTest {
 
     // ----- Through the backend -----
 
-    private fun backend(store: RecordingStore) = OracleBackend(store, Neo4jObjectMapper.instance)
+    /** The catalog read on the caller's thread, so what a test sees of it is settled when a call returns. */
+    private fun backend(store: RecordingStore) = OracleBackend(store, Neo4jObjectMapper.instance, catalogReads = Runnable::run)
 
     private fun query(vararg conditions: WhereCondition) = GraphQuerySpec(Any()).apply { this.conditions += conditions }
 
@@ -226,6 +227,49 @@ class OracleLabelledIndexTest {
     }
 
     @Test
+    fun `a read never waits for the catalog, which is read elsewhere, once at a time, and meanwhile what was read last is used`() {
+        val pending = ArrayDeque<Runnable>()
+        val store = store(listed("Claim", "text"))
+        var now = 0L
+        val catalog = LabelledIndexCatalog(store, graph, maxAge = 1000, clock = { now }, refresh = { pending.add(it) })
+        fun reads() = store.schema.count { it == LabelledIndexCatalog.query(graph) }
+
+        // Before the first read is done, none is known; and asking again begins no second read.
+        assertEquals(null, catalog.current().expression("n", "Claim", "text"))
+        assertEquals(null, catalog.current().expression("n", "Claim", "text"))
+        assertEquals(1, pending.size)
+        assertEquals(0, reads())
+
+        pending.removeFirst().run()
+        assertEquals(1, reads())
+        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+        assertTrue(pending.isEmpty())
+
+        // Once old, what was read is still used while it is read again.
+        now = 1000
+        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+        assertEquals(1, pending.size)
+    }
+
+    @Test
+    fun `a catalog that cannot be read again leaves what was read before`() {
+        var failing = false
+        val store = RecordingStore(DatabaseType.ORACLE, ddl = OracleSchemaGrammar(graph), graphName = "g") { ran ->
+            when {
+                ran.statement != LabelledIndexCatalog.query(graph) -> emptyList<Any?>()
+                failing -> IllegalStateException("pool exhausted")
+                else -> listOf(listed("Claim", "text"))
+            }
+        }
+        var now = 0L
+        val catalog = LabelledIndexCatalog(store, graph, maxAge = 1000, clock = { now }, refresh = Runnable::run)
+        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+        failing = true
+        now = 1000
+        assertEquals(OracleSql.labelled("n", "Claim", "text"), catalog.current().expression("n", "Claim", "text"))
+    }
+
+    @Test
     fun `a catalog with no labelled index, or one that cannot be read, leaves the statements as they were`() {
         val none = backend(store()).loadAll(Claim::class.java, query(condition("text", ComparisonOperator.EQUALS, "x"))).statement.statement
         assertTrue("MATCH (n_ IS node WHERE $scansClaim)" in none, none)
@@ -243,7 +287,7 @@ class OracleLabelledIndexTest {
         // A graph of its own: what is counted is what this process did to the graph.
         val own = OracleGraph("labelled_catalog")
         val store = RecordingStore(DatabaseType.ORACLE, ddl = OracleSchemaGrammar(own), graphName = own.name)
-        val catalog = LabelledIndexCatalog(store, own, maxAge = 1000, clock = { now })
+        val catalog = LabelledIndexCatalog(store, own, maxAge = 1000, clock = { now }, refresh = Runnable::run)
         fun reads() = store.schema.count { it == LabelledIndexCatalog.query(own) }
 
         catalog.current()

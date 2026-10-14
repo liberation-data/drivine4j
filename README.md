@@ -2663,8 +2663,9 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   index, which reads the same value: a filter on that property is read through it, and no second
   one is made. A range index made by an earlier version is found, listed and dropped as it is, and
   the next `ensure` of it adds the index over the label's nodes. The backend reads which there are
-  from `<graph>_schema` at most once a minute, and again when this process makes or drops an index
-  or a constraint.
+  from `<graph>_schema` on a thread of its own, at most once a minute and again once this process
+  has made or dropped an index or a constraint. A read never waits for it: until the first is done,
+  and while another is under way, statements are written with what was read last.
 - Oracle reads an empty string as null, so a stamp of `''` is no stamp. A comparison with `""` in the
   query DSL is written to find a property stored empty all the same; SQL of yours that compares
   `JSON_VALUE(…)` with `''` finds nothing.

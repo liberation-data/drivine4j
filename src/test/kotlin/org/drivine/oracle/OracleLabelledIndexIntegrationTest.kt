@@ -77,7 +77,8 @@ class OracleLabelledIndexIntegrationTest {
         OracleTestDatabase.run("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, '${graph.nodes.uppercase()}'); END;")
     }
 
-    private val backend by lazy { OracleBackend(pm, Neo4jObjectMapper.instance) }
+    /** The catalog read on the caller's thread, so a statement is written with what the test has just made. */
+    private val backend by lazy { OracleBackend(pm, Neo4jObjectMapper.instance, catalogReads = Runnable::run) }
 
     private fun query(vararg conditions: WhereCondition) = GraphQuerySpec(Any()).apply { this.conditions += conditions }
 
@@ -209,6 +210,10 @@ class OracleLabelledIndexIntegrationTest {
         assertTrue(pm.constraints.ensure(UniquenessConstraintSpec("Issue", "id")) is EnsureResult.Created)
         assertFalse(indexed(graph.objectName("lx", listOf("Issue", "id"))), "the unique index stands for the labelled index")
         assertNull(assertNotNull(pm.indexes.find(RangeIndexSpec("Issue", "id"))).status, "the range index is whole")
+        // Made again under the constraint, the range index still makes no labelled index beside the unique one.
+        pm.indexes.recreate(RangeIndexSpec("Issue", "id"))
+        assertFalse(indexed(graph.objectName("lx", listOf("Issue", "id"))))
+        assertNull(assertNotNull(pm.indexes.find(RangeIndexSpec("Issue", "id"))).status)
 
         val load = backend.loadAll(LabelledIssue::class.java, query(eq("id", "i7"))).statement
         val plan = plan(load)
@@ -235,7 +240,7 @@ class OracleLabelledIndexIntegrationTest {
             "INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details) VALUES ('UNIQUENESS_CONSTRAINT', 'Issue', '[\"key\"]', 'Issue_key_unique', '$uq', '{}')",
         )
         assertNull(assertNotNull(pm.indexes.find(RangeIndexSpec("Issue", "key"))).status, "a unique index stands for its labelled index")
-        val statement = OracleBackend(pm, Neo4jObjectMapper.instance).count(LabelledIssue::class.java, query(eq("key", "k1"))).statement
+        val statement = OracleBackend(pm, Neo4jObjectMapper.instance, catalogReads = Runnable::run).count(LabelledIssue::class.java, query(eq("key", "k1"))).statement
         assertTrue("MATCH (n_ IS node)\n" in statement && "AND JSON_EXISTS(n_.props, '$.key') THEN" in statement, statement)
         assertEquals(0, counted(GraphStatement(statement, mapOf("_p0" to "k1"))))
     }
