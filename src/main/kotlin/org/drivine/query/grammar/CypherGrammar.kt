@@ -77,6 +77,18 @@ interface CypherGrammar {
         get() = false
 
     /**
+     * Whether the node a `@GraphPath` field ends at is tested for its labels once the path is matched,
+     * and not in the pattern that matches it.
+     *
+     * The path is an `OPTIONAL MATCH` from a root already found. FalkorDB 6 plans one whose far node
+     * has a label from that end: it reads every relationship into the label and then joins back to
+     * the root (FalkorDB/FalkorDB#3332). With the label left out of the pattern it walks out from the
+     * root, and a label asked for in a `WHERE` on the match is planned as one in the pattern is.
+     */
+    val testsPathEndAfterMatch: Boolean
+        get() = false
+
+    /**
      * Generates a WHERE-clause condition asserting that a relationship exists.
      * Used for non-nullable single relationships in GraphView queries.
      */
@@ -332,6 +344,8 @@ class FalkorDbCypherGrammar(
 ) : OpenCypherGrammar(collectionSortEmitter) {
     override val nestedViewProjector: NestedViewProjector = CallSubqueryNestedViewProjector()
     // Inherits supportsOrphanDelete = true from the interface default (FalkorDB#1890 fixed).
+
+    override val testsPathEndAfterMatch: Boolean = true
 
     override val supportsVectorSearch: Boolean = true
 

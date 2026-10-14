@@ -85,6 +85,26 @@ class GraphPathQueryBuilderTests {
     }
 
     @Test
+    fun `on FalkorDB the node a path ends at is tested for its labels once the path is matched`() {
+        // FalkorDB 6 plans an OPTIONAL MATCH whose far node has a label from that end: it reads every
+        // relationship into the label and then joins back to the root (FalkorDB/FalkorDB#3332). A
+        // label asked for in a WHERE on the match is planned the same way, so it is tested in the CASE.
+        val q = query(ActorDirectors::class, CypherDialect.FALKORDB)
+
+        assertTrue(q.contains("OPTIONAL MATCH (actor)-[:ACTED_IN]->(:PMovie)-[:DIRECTED_BY]->(directors)\n"), q)
+        assertTrue(q.contains("collect(DISTINCT CASE WHEN directors:PDirector THEN"), q)
+        assertFalse(q.contains("(directors:PDirector)"), q)
+
+        val single = query(ActorTopDirector::class, CypherDialect.FALKORDB)
+        assertTrue(single.contains("head(collect(DISTINCT CASE WHEN director:PDirector THEN"), single)
+
+        // The engines that plan the pattern from the root keep the label in it.
+        listOf(CypherDialect.NEO4J_5, CypherDialect.NEO4J_4, CypherDialect.MEMGRAPH, CypherDialect.NEPTUNE).forEach { d ->
+            assertTrue(query(ActorDirectors::class, d).contains("-[:DIRECTED_BY]->(directors:PDirector)"), "$d")
+        }
+    }
+
+    @Test
     fun `single path unwraps with head, not index-zero`() {
         val q = query(ActorTopDirector::class, CypherDialect.NEO4J_5)
 

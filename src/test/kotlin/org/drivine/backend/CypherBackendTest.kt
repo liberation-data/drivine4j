@@ -143,6 +143,69 @@ class CypherBackendTest {
     }
 
     @Test
+    fun `the conditions of a load stand in its WHERE with no parentheses around them`() {
+        // FalkorDB 6 reads a condition in parentheses it does not need by scanning the label, where
+        // it would have used an index (FalkorDB/FalkorDB#3331).
+        val filtered = query {
+            conditions += WhereCondition.PropertyCondition("n.text", ComparisonOperator.EQUALS, "a")
+            conditions += WhereCondition.PropertyCondition("n.note", ComparisonOperator.EQUALS, "b")
+        }
+        val statement = backend().loadAll(Claim::class.java, filtered).statement.statement
+        val where = statement.lineSequence().first { it.startsWith("WHERE") }
+        assertEquals("WHERE n.text = \$param_n_text_0 AND n.note = \$param_n_note_1", where)
+
+        // A cursor is joined to them as it stands, and over one property has no parentheses either.
+        val sought = query {
+            conditions += WhereCondition.PropertyCondition("n.note", ComparisonOperator.EQUALS, "b")
+            orders += OrderSpec("n.text", ASC)
+            seekValues += SeekValueSpec("n.text", "m")
+        }
+        val paged = backend().loadAll(Claim::class.java, sought).statement.statement.lineSequence().first { it.startsWith("WHERE") }
+        assertEquals("WHERE n.note = \$param_n_note_0 AND n.text IS NOT NULL AND n.text > \$_seek_0", paged)
+    }
+
+    @Test
+    fun `an anyOf that is the whole filter of a fragment stands without its parentheses, and with them beside anything else`() {
+        fun where(statement: String) = statement.lineSequence().first { it.startsWith("WHERE") }
+        val either = WhereCondition.OrCondition(
+            listOf(
+                WhereCondition.PropertyCondition("n.text", ComparisonOperator.EQUALS, "a"),
+                WhereCondition.PropertyCondition("n.text", ComparisonOperator.EQUALS, "b"),
+            ),
+        )
+        val note = WhereCondition.PropertyCondition("n.note", ComparisonOperator.EQUALS, "c")
+
+        // Alone, nothing is joined to it: FalkorDB 6 would scan the label for the parentheses.
+        val alone = Regex("WHERE n\\.text = \\$\\w+ OR n\\.text = \\$\\w+")
+        assertTrue(alone.matches(where(backend().loadAll(Claim::class.java, query { conditions += either }).statement.statement)))
+        assertTrue(alone.matches(where(backend().count(Claim::class.java, query { conditions += either }).statement)))
+
+        // Beside another condition, or a cursor, the OR keeps them: AND binds tighter.
+        val beside = where(backend().loadAll(Claim::class.java, query { conditions += either; conditions += note }).statement.statement)
+        assertTrue(Regex("WHERE \\(n\\.text = \\$\\w+ OR n\\.text = \\$\\w+\\) AND n\\.note = \\$\\w+").matches(beside), beside)
+        val sought = query {
+            conditions += either
+            orders += OrderSpec("n.text", ASC)
+            orders += OrderSpec("n.id", ASC)
+            seekValues += SeekValueSpec("n.text", "m")
+            seekValues += SeekValueSpec("n.id", "c1")
+        }
+        val paged = where(backend().loadAll(Claim::class.java, sought).statement.statement)
+        assertTrue(paged.startsWith("WHERE (n.text = "), paged)
+        assertTrue(paged.endsWith("AND (n.text > \$_seek_0 OR (n.text = \$_seek_0 AND n.id > \$_seek_1))"), paged)
+
+        // A view may add the relationships it requires by AND, so its OR keeps them too.
+        val view = WhereCondition.OrCondition(
+            listOf(
+                WhereCondition.PropertyCondition("claim.text", ComparisonOperator.EQUALS, "a"),
+                WhereCondition.PropertyCondition("claim.text", ComparisonOperator.EQUALS, "b"),
+            ),
+        )
+        val viewed = backend().loadAll(ClaimView::class.java, query { conditions += view }).statement.statement
+        assertTrue(Regex("\\(claim\\.text = \\$\\w+ OR claim\\.text = \\$\\w+\\)").containsMatchIn(viewed), viewed)
+    }
+
+    @Test
     fun `a seek and a skip are refused together, and a seek alone makes a keyset load`() {
         val both = query {
             orders += OrderSpec("n.text", ASC)

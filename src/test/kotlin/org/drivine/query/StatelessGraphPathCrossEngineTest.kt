@@ -30,9 +30,10 @@ private fun verifyPaths(gom: StatelessGraphObjectManager) {
     // a1: two movies, one director → dedup to [Wachowski]
     val a1 = gom.load("a1", ActorDirectors::class.java)!!
     assertEquals(listOf("Wachowski"), a1.directors.map { it.name })
-    // a2: movie with no director → empty
+    // a2: a movie directed by a studio and no director → empty. The path ends at a PDirector, and a
+    // node without that label is no end of it, on a1's path either.
     assertTrue(gom.load("a2", ActorDirectors::class.java)!!.directors.isEmpty())
-    // required path filters a2 out
+    // required path filters a2 out: the studio is no director
     val ids = gom.loadAll(ActorRequiredDirector::class.java).map { it.actor.id }.toSet()
     assertEquals(setOf("a1"), ids)
 }
@@ -56,6 +57,8 @@ private const val SEED = """
     CREATE (a2:PActor {id: 'a2', name: 'Nobody'})
     CREATE (m3:PMovie {id: 'm3', title: 'Indie'})
     CREATE (a2)-[:ACTED_IN]->(m3)
+    CREATE (s1:PStudio {id: 's1', name: 'Studio'})
+    CREATE (m1)-[:DIRECTED_BY]->(s1) CREATE (m3)-[:DIRECTED_BY]->(s1)
 """
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
