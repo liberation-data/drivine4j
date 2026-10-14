@@ -66,7 +66,18 @@ class OracleIndexedFilterTest {
 
     @BeforeAll
     fun index() {
-        listOf("Claim" to "id", "Human" to "id", "Human" to "name", "Tag" to "id").forEach { (label, property) -> pm.indexes.ensure(RangeIndexSpec(label, property)) }
+        // Today a range index is over the property of every node, whatever its label: one index over `id`, one over `name`.
+        listOf("Claim" to "id", "Human" to "name").forEach { (label, property) -> pm.indexes.ensure(RangeIndexSpec(label, property)) }
+        // A tag has no label for a range index to name, so the index the bug needs, over the `id` of every
+        // node, is made here as well, in case a range index comes to cover only the nodes of its label.
+        // While Claim's is that index, Oracle refuses a second over the same expression (ORA-01408).
+        OracleTestDatabase.run(
+            """
+            DECLARE e_indexed EXCEPTION; PRAGMA EXCEPTION_INIT(e_indexed, -1408);
+            BEGIN EXECUTE IMMEDIATE 'CREATE INDEX IF NOT EXISTS indexed_any_id ON indexed_node (JSON_VALUE(props, ''$.id''))';
+            EXCEPTION WHEN e_indexed THEN NULL; END;
+            """
+        )
     }
 
     /** Claim `ci` mentions `hi` and the person after; tag `t1` tags `c1` and `c6`, `t2` tags `c2` and `c7`, and so on; each claim is filed under its tags. */
