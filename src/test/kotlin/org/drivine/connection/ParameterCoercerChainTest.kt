@@ -40,7 +40,7 @@ class ParameterCoercerChainTest {
 
         val out = conn.applyParameterCoercers(spec, mapOf("ts" to now))
 
-        assertEquals("2026-04-23T05:07:53Z", out["ts"])
+        assertEquals("2026-04-23T05:07:53.000000000Z", out["ts"])
     }
 
     @Test
@@ -58,7 +58,7 @@ class ParameterCoercerChainTest {
 
         val out = conn.applyParameterCoercers(spec, mapOf("ts" to now))
 
-        assertEquals("2026-04-23T05:07:53Z", out["ts"])
+        assertEquals("2026-04-23T05:07:53.000000000Z", out["ts"])
     }
 
     @Test

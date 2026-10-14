@@ -266,6 +266,25 @@ abstract class StatelessPatchContract {
     }
 
     @Test
+    fun `a moment moves forward and never back, within one second`() {
+        // Stored as text, a moment sorts as time only when every one is of the same width.
+        stateless.save(PatchSession("s1"))
+
+        assertEquals(changed, touch("s1", noon))
+        assertEquals(changed, touch("s1", noon.plusMillis(120)))
+        assertEquals(changed, touch("s1", noon.plusMillis(123)))
+        assertEquals(unmet, touch("s1", noon.plusMillis(120)))
+        assertEquals(unmet, touch("s1", noon))
+        assertEquals(changed, touch("s1", noon.plusMillis(500)))
+        assertEquals(changed, touch("s1", noon.plusNanos(500_001_000)))
+        assertEquals(unmet, touch("s1", noon.plusMillis(500)))
+
+        assertEquals(noon.plusNanos(500_001_000), session("s1").lastActivityAt)
+        assertEquals(1, stateless.count(PatchSession::class.java, PatchSessionQueryDsl.INSTANCE) { where { query.lastActivityAt lt noon.plusMillis(501) } })
+        assertEquals(0, stateless.count(PatchSession::class.java, PatchSessionQueryDsl.INSTANCE) { where { query.lastActivityAt lt noon.plusMillis(500) } })
+    }
+
+    @Test
     fun `many writers move one moment forward in any order, and it ends at the latest`() {
         // Several rounds, the writers of each let go together: without the lock, a writer reads the
         // moment another is about to move, and the node ends at an earlier one in most rounds.
