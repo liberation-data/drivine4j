@@ -47,6 +47,10 @@ class GroupQuerySpec<Q : Any>(
         return column
     }
 
+    /** Refuses [clause] once the block has returned: it would change nothing, and say nothing of it. */
+    private fun beforeRows(clause: String) =
+        check(!closed) { "$clause is given before rows { }: the statement is already written when a row is read, and would not have it." }
+
     // ----- Which nodes are read -----
 
     /**
@@ -54,11 +58,12 @@ class GroupQuerySpec<Q : Any>(
      * source's own properties.
      */
     fun where(block: context(WhereBuilder<Q>) () -> Unit) {
+        beforeRows("A where")
         conditions.addAll(collected(block))
     }
 
     /** [where] for Java: `spec.onlyIf(dsl.getRole().isEqualTo("USER"))`. The conditions are joined by `AND`. */
-    fun onlyIf(vararg conditions: PropertyConditionBuilder): GroupQuerySpec<Q> = apply { this.conditions.addAll(conditions.map { it.condition }) }
+    fun onlyIf(vararg conditions: PropertyConditionBuilder): GroupQuerySpec<Q> = apply { beforeRows("A where"); this.conditions.addAll(conditions.map { it.condition }) }
 
     private fun collected(block: context(WhereBuilder<Q>) () -> Unit): List<WhereCondition> {
         val builder = WhereBuilder(query)
@@ -167,6 +172,7 @@ class GroupQuerySpec<Q : Any>(
      * The aggregate then takes only the group's nodes that meet every one of [conditions], and is returned.
      */
     fun <A : Aggregate<*>> filtered(aggregate: A, vararg conditions: PropertyConditionBuilder): A {
+        beforeRows("An aggregate's filter")
         require(conditions.isNotEmpty()) { "filtered needs a condition: with none the aggregate takes every node of the group, as it does unfiltered." }
         require(aggregates.any { it === aggregate }) { "The aggregate was declared in another grouped read." }
         aggregate.filter = aggregate.filter + conditions.map { it.condition }
@@ -186,11 +192,13 @@ class GroupQuerySpec<Q : Any>(
      * one aggregate with a value, and the lines are joined by `AND`.
      */
     fun having(block: HavingBuilder.() -> Unit) {
+        beforeRows("A having")
         havings.addAll(HavingBuilder().apply(block).conditions)
     }
 
     /** [having] for Java: `spec.having(votes, ComparisonOperator.GREATER_THAN_OR_EQUAL, 3)`. */
     fun having(aggregate: Aggregate<*>, operator: ComparisonOperator, value: Any): GroupQuerySpec<Q> = apply {
+        beforeRows("A having")
         havings += HavingCondition(aggregate, operator, value)
     }
 
@@ -200,20 +208,23 @@ class GroupQuerySpec<Q : Any>(
      * same order on every engine.
      */
     fun orderBy(block: GroupOrderBuilder.() -> Unit) {
+        beforeRows("An order")
         orders.addAll(GroupOrderBuilder().apply(block).orders)
     }
 
     /** [orderBy] for Java: `spec.orderBy(votes.descending(), page.ascending())`. */
-    fun orderBy(vararg orders: GroupOrder): GroupQuerySpec<Q> = apply { this.orders.addAll(orders) }
+    fun orderBy(vararg orders: GroupOrder): GroupQuerySpec<Q> = apply { beforeRows("An order"); this.orders.addAll(orders) }
 
     /** Returns at most [n] groups, bound as a parameter and applied after the order. */
     fun limit(n: Int) {
+        beforeRows("A limit")
         require(n >= 0) { "limit must be >= 0, was $n" }
         limit = n
     }
 
     /** Skips the first [n] groups, bound as a parameter and applied before [limit]. */
     fun skip(n: Int) {
+        beforeRows("A skip")
         require(n >= 0) { "skip must be >= 0, was $n" }
         skip = n
     }

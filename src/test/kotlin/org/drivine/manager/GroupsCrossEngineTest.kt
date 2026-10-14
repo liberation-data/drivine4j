@@ -932,6 +932,24 @@ abstract class GroupsContract {
     }
 
     @Test
+    fun `every clause is given before rows, and not as a row is read`() {
+        votes()
+
+        fun late(clause: GroupQuerySpec<FeedbackQueryDsl>.(Aggregate<Long>) -> Unit): String = assertFailsWith<IllegalStateException> {
+            feedback { val page = key(query.page); val votes = count(); rows { clause(votes); it[page] } }
+        }.message!!
+
+        assertContains(late { where { query.helpful eq true } }, "A where is given before rows { }")
+        assertContains(late { votes -> having { votes gte 3 } }, "A having is given before rows { }")
+        assertContains(late { votes -> orderBy { votes.desc() } }, "An order is given before rows { }")
+        assertContains(late { limit(1) }, "A limit is given before rows { }")
+        assertContains(late { skip(1) }, "A skip is given before rows { }")
+        assertContains(late { onlyIf(query.helpful.isEqualTo(true)) }, "A where is given before rows { }")
+        assertContains(late { votes -> having(votes, ComparisonOperator.EQUALS, 3) }, "A having is given before rows { }")
+        assertContains(late { votes -> filtered(votes, query.helpful.isEqualTo(true)) }, "An aggregate's filter is given before rows { }")
+    }
+
+    @Test
     fun `a handle of another read is not a column of this one`() {
         votes()
         lateinit var other: Key<String>
