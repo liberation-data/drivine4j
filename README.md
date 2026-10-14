@@ -2777,6 +2777,8 @@ database wants two gigabytes. Run them with
 ORACLE_TESTS=true ./gradlew :test --tests '*Oracle*'
 ```
 
+CI runs the same command, in a job of its own (`test (Oracle)`).
+
 ### @JsonPacked Annotation
 
 For engines that don't support list property values (Neptune), annotate collection fields to transparently serialize as JSON strings:
