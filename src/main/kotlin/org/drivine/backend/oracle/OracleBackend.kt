@@ -216,9 +216,9 @@ internal class OracleBackend(
      * block, stamped or not, and the block hands a row back for each: so every statement is among the
      * stamped, and no fragment is left to be saved alone.
      */
-    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch = FragmentBatch(
+    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>?): FragmentBatch = FragmentBatch(
         stamped = fragments.chunked(BATCH).map { chunk ->
-            val (text, bindings) = saves.together(chunk, nullPolicy)
+            val (text, bindings) = saves.together(chunk, nullPolicy, writeFields)
             QuerySpecification.withStatement(text).bind(bindings).transform(String::class.java)
         },
     )

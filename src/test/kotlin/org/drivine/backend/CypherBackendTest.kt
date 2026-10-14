@@ -217,6 +217,18 @@ class CypherBackendTest {
     }
 
     @Test
+    fun `of a batch with fields named each row holds those of its own class, stamped or not`() {
+        val fragments = listOf(Human("h1", "Ada"), Claim("c1", "one", "first"))
+        val fields = mapOf<Class<*>, Set<String>?>(Human::class.java to emptySet(), Claim::class.java to setOf("note"))
+
+        val batch = backend().saveTogether(fragments.withIndex().toList(), NullPolicy.IGNORE) { fields[it] }
+
+        fun props(spec: QuerySpecification<*>) = (spec.parameters["rows"] as List<*>).map { (it as Map<*, *>)["props"] }
+        assertEquals(listOf<Any?>(emptyMap<String, Any?>()), props(batch.unstamped.single()))
+        assertEquals(listOf<Any?>(mapOf("note" to "first")), props(batch.stamped.single()))
+    }
+
+    @Test
     fun `of a batch the fragments an UNWIND can write go as rows, stamped apart from unstamped, and a stamped one it cannot is left to be saved alone`() {
         val fragments = listOf(Human("h1", "Ada"), Claim("c1", "one"), Tagged("t1", "kept", mapOf("k" to "v")), Claim("c2", "two"), Human("h2", "Grace"))
         val batch = backend().saveTogether(fragments.withIndex().toList(), NullPolicy.IGNORE)

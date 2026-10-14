@@ -17,6 +17,7 @@ import sample.stateless.ClaimView;
 import sample.stateless.Human;
 import sample.stateless.JavaNote;
 import sample.stateless.JavaRecordNote;
+import sample.stateless.Memo;
 
 import java.util.List;
 import java.util.Set;
@@ -66,6 +67,40 @@ public class JavaStatelessSaveTests {
         stateless.save(new ClaimView(view.getClaim(), List.of(ada), List.of()), Replace.of(Set.of("people")));
 
         assertEquals(List.of("Ada"), stateless.load(id, ClaimView.class).getPeople().stream().map(Human::getName).toList());
+    }
+
+    @Test
+    public void savesManyWritingOnlyTheNamedFields() {
+        stateless.saveAll(List.of(new Claim(id, "Ada founded Acme", "checked", null), new Claim(id + "-2", "Bob joined", "checked", null)));
+
+        List<Claim> saved = stateless.saveAllFields(
+            List.of(new Claim(id, "ignored", "revised", null), new Claim(id + "-2", "ignored", "revised too", null)),
+            Add.INSTANCE, NullPolicy.IGNORE, Set.of("note"));
+        stateless.saveAllFields(saved, Add.INSTANCE, NullPolicy.IGNORE, Set.of(), Set.of("text", "note"));
+
+        Claim first = stateless.load(id, Claim.class);
+        Claim second = stateless.load(id + "-2", Claim.class);
+        assertEquals(List.of("Ada founded Acme", "revised"), List.of(first.getText(), first.getNote()));
+        assertEquals(List.of("Bob joined", "revised too"), List.of(second.getText(), second.getNote()));
+        assertNotNull(saved.get(0).getStamp());
+        assertThrows(IllegalArgumentException.class, () -> stateless.saveAllFields(saved, Add.INSTANCE, NullPolicy.IGNORE, Set.of("id")));
+    }
+
+    @Test
+    public void aNameIsWrittenOfEachClassThatHasIt() {
+        stateless.saveAll(List.of(new Claim(id, "Ada founded Acme", "checked", null), new Memo(id + "-memo", "a memo")));
+
+        stateless.saveAllFields(
+            List.<Object>of(new Claim(id, "Ada founded Acme in 1999", "ignored", null), new Memo(id + "-memo", "a longer memo")),
+            Add.INSTANCE, NullPolicy.IGNORE, Set.of("text"));
+
+        Claim claim = stateless.load(id, Claim.class);
+        assertEquals(List.of("Ada founded Acme in 1999", "checked"), List.of(claim.getText(), claim.getNote()));
+        assertEquals("a longer memo", stateless.load(id + "-memo", Memo.class).getText());
+        // A name one of the classes lacks is refused, and nothing is written.
+        assertThrows(IllegalArgumentException.class, () -> stateless.saveAllFields(
+            List.<Object>of(new Claim(id, "late", "late", null), new Memo(id + "-memo", "late")), Add.INSTANCE, NullPolicy.IGNORE, Set.of("note")));
+        assertEquals("checked", stateless.load(id, Claim.class).getNote());
     }
 
     @Test

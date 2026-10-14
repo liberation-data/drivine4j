@@ -390,6 +390,16 @@ class OracleBackendTest {
     // ----- Saving -----
 
     @Test
+    fun `of a batch with fields named each step sets those of its own class`() {
+        val fragments = listOf(Human("h1", "Ada"), Claim("c1", "one", "first")).withIndex().toList()
+        val fields = mapOf<Class<*>, Set<String>?>(Human::class.java to emptySet(), Claim::class.java to setOf("note"))
+
+        val steps = steps(backend().saveTogether(fragments, NullPolicy.IGNORE) { fields[it] }.stamped.single().parameters)
+
+        assertEquals(listOf<Any?>(emptyMap<String, Any?>(), mapOf("note" to "first")), steps.map { it["set"] ?: emptyMap<String, Any?>() })
+    }
+
+    @Test
     fun `a batch of fragments is one block for each five hundred, each fragment a step under its own index`() {
         val fragments = (0 until 501).map { IndexedValue(it, Human("h$it", "Human $it")) }
         val batch = backend().saveTogether(fragments, NullPolicy.IGNORE)

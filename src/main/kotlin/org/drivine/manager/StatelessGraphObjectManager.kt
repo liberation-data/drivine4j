@@ -172,14 +172,61 @@ class StatelessGraphObjectManager private constructor(
      *
      * Fragments are saved in batches. A view is saved by a statement of its own. An object the batch
      * holds more than once is handed the stamp its node is left with each time.
+     *
+     * A batch that only adds is not checked, and it makes any node it does not find. With [only] or
+     * [except], a node that was deleted since the object was loaded comes back holding its id and the
+     * written fields alone, and for a view its relationships. It has its labels and a stamp, as any
+     * node a save makes. To write fields only where the node still exists, use [patchAll].
+     *
+     * A field is named by its name, and a property is a way to spell one: `Person::name` names the
+     * field `name` of every class in the batch, whichever class declares the property.
+     *
+     * @param only the only fields of each object (for a view, of its root) to write. Every other field
+     *   of the node is left as the store has it: neither written nor, under [NullPolicy.CLEAR], cleared.
+     *   The relationships of a view are written whatever this names. Each name must be a field of every
+     *   class in the batch, and not its id or its stamp, or the batch is refused before anything is
+     *   written. Empty, the default, means every field
+     * @param except fields of each object (for a view, of its root) to leave unwritten: the node keeps
+     *   what the store has for them. Every other field is written. Each name must be a field of every
+     *   class in the batch, as for [only]; the id and the stamp may be named, and mean nothing, since
+     *   neither is written from the object. Give [only] or [except], not both
      */
     @JvmOverloads
     fun <T : Any> saveAll(
         objs: Collection<T>,
         relationships: RelationshipWrite = Add,
         nullPolicy: NullPolicy = NullPolicy.IGNORE,
+        only: Set<KProperty1<*, *>> = emptySet(),
+        except: Set<KProperty1<*, *>> = emptySet(),
+    ): List<T> = saveAllFields(objs, relationships, nullPolicy, only.map { it.name }.toSet(), except.map { it.name }.toSet())
+
+    /**
+     * [saveAll] with the fields named as strings, for Java. A Java caller that names no field calls [saveAll].
+     *
+     * @param relationships [Add] adds the relationships each object holds and removes none; [Replace]
+     *   names the relationship fields whose list is the whole list
+     * @param nullPolicy how a null field is treated; see [NullPolicy]
+     * @param only the names of the only fields of each object (for a view, of its root) to write
+     * @param except the names of fields of each object (for a view, of its root) to leave unwritten.
+     *   Give [only] or [except], not both
+     * @throws IllegalArgumentException when both [only] and [except] are given, a name is no field of
+     *   a class in the batch, or [only] names an id or a stamp, and for whatever [saveAll] refuses with
+     *   no field named, among them a [Replace] that cannot be applied, an object with a null id, and
+     *   one that could not be handed the stamps its save would leave. Nothing is written then
+     * @throws StaleObjectException with [Replace], when a view that carries a stamp changed after it was loaded
+     */
+    @JvmOverloads
+    fun <T : Any> saveAllFields(
+        objs: Collection<T>,
+        relationships: RelationshipWrite = Add,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+        only: Set<String> = emptySet(),
+        except: Set<String> = emptySet(),
     ): List<T> {
+        require(only.isEmpty() || except.isEmpty()) { "Give only or except, not both." }
         val items = objs.toList()
+        // The names are checked against each class of the batch once, before anything is written.
+        val fields: Map<Class<*>, Set<String>?> = items.map { it.javaClass }.distinct().associateWith { batchWriteFields(it, only, except) }
         if (items.isEmpty()) return emptyList()
         val views = items.filter { it.javaClass.isAnnotationPresent(GraphView::class.java) }
         val fragments = items.withIndex().filterNot { it.value.javaClass.isAnnotationPresent(GraphView::class.java) }
@@ -188,11 +235,11 @@ class StatelessGraphObjectManager private constructor(
         }
         // A stamp is handed back by a statement that returns it: one for a batch of fragments, and one
         // for each view, and each fragment the backend does not save with others.
-        val batch = backend.saveTogether(fragments, nullPolicy)
+        val batch = backend.saveTogether(fragments, nullPolicy, fields::getValue)
         val single = views + batch.alone.map { it.value }
         // A view whose list is replaced is checked, as a save of it is: a replace overwrites the
         // list, and must not remove a relationship the object never held.
-        val singles = single.map { statementFor(it, relationships, nullPolicy, null, checked = relationships is Replace) }
+        val singles = single.map { statementFor(it, relationships, nullPolicy, fields.getValue(it.javaClass), checked = relationships is Replace) }
         requireStampable(fragments, batch, single, singles)
 
         val rows = executor.batch(
@@ -592,10 +639,27 @@ class StatelessGraphObjectManager private constructor(
         }
 
     /** The root fields a save may touch, or null for all of them. */
-    private fun writeFields(obj: Any, only: Set<String>, except: Set<String>): Set<String>? {
+    private fun writeFields(obj: Any, only: Set<String>, except: Set<String>): Set<String>? = writeFields(obj.javaClass, only, except)
+
+    /**
+     * The root fields a batch may touch of an object of [clazz], or null for all of them. The id and
+     * the stamp are refused in [only]: neither is written from the object, so a batch that named them
+     * alone would make a node of each object and write none of its fields.
+     */
+    private fun batchWriteFields(clazz: Class<*>, only: Set<String>, except: Set<String>): Set<String>? {
+        val fields = writeFields(clazz, only, except)
+        val model = rootModel(clazz)
+        only.firstOrNull { it == model.nodeIdField || it == model.stampField }?.let {
+            val what = if (it == model.nodeIdField) "the id, which a node is found by" else "the stamp, which only a write gives a node"
+            throw IllegalArgumentException("'$it' of ${model.clazz.simpleName} is $what, and cannot be named in only. Name the fields to write.")
+        }
+        return fields
+    }
+
+    private fun writeFields(clazz: Class<*>, only: Set<String>, except: Set<String>): Set<String>? {
         if (only.isEmpty() && except.isEmpty()) return null
         require(only.isEmpty() || except.isEmpty()) { "Give only or except, not both." }
-        val model = rootModel(obj.javaClass)
+        val model = rootModel(clazz)
         val all = (model.fields.map { it.name } + model.propertyBags.map { it.fieldName } + listOfNotNull(model.nodeLabels?.fieldName)).toSet()
         (only + except).firstOrNull { it !in all }?.let {
             throw IllegalArgumentException("${model.clazz.simpleName} has no field '$it' to save. Its fields are: ${all.sorted().joinToString()}.")
