@@ -47,7 +47,7 @@ class GraphObjectManager internal constructor(
     private val persistenceManager: PersistenceManager,
     internal val sessionManager: SessionManager,
     private val objectMapper: ObjectMapper,
-    private val subtypeRegistry: SubtypeRegistry,
+    internal val subtypeRegistry: SubtypeRegistry,
     /** A save writes a new stamp on each node it changes. This manager does not check one. */
     private val stamping: Stamping,
 ) : GraphObjectOperations {
@@ -107,6 +107,9 @@ class GraphObjectManager internal constructor(
      * Kept apart from the rest of this class, which is about declared shapes.
      */
     override val edges: EdgeOperations = EdgeOperations(this, persistenceManager)
+
+    /** Grouped reads: the nodes of a fragment by a key, with numbers about each group. See [GroupOperations]. */
+    override val groups: GroupOperations = GroupOperations(this, persistenceManager)
 
     private val batchSave = BatchSaveOperations(objectMapper, sessionManager, BatchSaveOperations.UNWIND_CHUNK_SIZE, grammar, storedKeys, stamping)
 

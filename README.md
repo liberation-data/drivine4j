@@ -497,7 +497,7 @@ data class ActorStats(
 )
 ```
 
-`@Count` needs no property; `SUM`/`AVG`/`MIN`/`MAX` aggregate a numeric property of the related nodes. Aggregates are single-hop. For group-by *ranking* (top-N), use `PersistenceManager` + `.transform<T>()` with Cypher — that's not a node-rooted view.
+`@Count` needs no property; `SUM`/`AVG`/`MIN`/`MAX` aggregate a numeric property of the related nodes. Aggregates are single-hop, and belong to one root. To group nodes by a key and count or rank the groups (a top-N), use a [grouped read](#grouped-reads-groups).
 
 > All three — path traversal and aggregates — work identically across Neo4j, Memgraph, and FalkorDB.
 
@@ -1249,6 +1249,175 @@ where {
   consumer needn't know the on-disk name or bag prefix). Throws if the key is unresolvable.
 - `predicate` / `predicateOn` accept any `ComparisonOperator` (including `HAS_ELEMENT`, the dynamic twin
   of `hasItem`), so a runtime filter tree maps one leaf → one call.
+
+#### Grouped Reads (`groups`)
+
+`graphObjectManager.groups` groups the nodes of a fragment by a key and gives numbers about each group: a count, a sum, a ranking. It is one statement on every engine, Oracle among them, and the groups, their numbers and their order are held to one contract on each. Everything else on the manager returns the objects it maps; this returns summaries of them, so nothing is loaded to be tallied in the application.
+
+Both managers have it. On the deprecated `GraphObjectManager` a node key is an object it loaded, and is tracked as one.
+
+Each line of a grouped read is a clause of the query you would have written by hand, and a `val` is its `AS`:
+
+| Here | Cypher | SQL |
+| --- | --- | --- |
+| `groups.load<T, _>` | `MATCH (n:T)` | `FROM t` |
+| `where { … }` | `WHERE …` before the `WITH` | `WHERE …` |
+| `val page = key(query.page)` | `WITH n.page AS page, …` | `GROUP BY page` |
+| `val user = key(path<U>(…))` | `MATCH (n)-[…]->(user:U)`, then `WITH user, …` | a join, then `GROUP BY` its id |
+| `val votes = count()` | `count(n) AS votes` | `COUNT(*) AS votes` |
+| `val likes = count { … }` | `sum(CASE WHEN … THEN 1 ELSE 0 END) AS likes` | the same |
+| `having { … }` | `WHERE …` after the `WITH` | `HAVING …` |
+| `orderBy`, `limit` | `ORDER BY`, `LIMIT` | `ORDER BY`, `FETCH FIRST` |
+| `rows { … }` | `RETURN { … }` | the select list |
+
+The steps below use one fragment, a piece of feedback on a docs page, and five nodes of it:
+
+```kotlin
+@NodeFragment(labels = ["Feedback"])
+data class FeedbackData(@NodeId val id: String, val page: String, val helpful: Boolean, val createdAt: Instant)
+```
+
+```
+(f1:Feedback {page: "/install", helpful: true,  createdAt: January})
+(f2:Feedback {page: "/install", helpful: true,  createdAt: March})
+(f3:Feedback {page: "/install", helpful: false, createdAt: March})
+(f4:Feedback {page: "/agents",  helpful: true,  createdAt: March})
+(f5:Feedback {page: "/agents",  helpful: false, createdAt: March})
+```
+
+**1. Group and count.** "For each page, how many?"
+
+```kotlin
+val votes: Map<String, Long> = graphObjectManager.groups.countBy(FeedbackData::page)
+// {"/agents" = 2, "/install" = 3}
+```
+
+The property says what is counted (`FeedbackData`) and what puts two of them in one group (`page`). This needs no block and no code generator. Where the field may be null, the nodes with no value are counted under `null`.
+
+**2. More than one number.** "For each page, how many, and how many of those were helpful?" Two numbers do not fit a map, so the read is spelled out. Each line makes one column and gives a handle to it, and `rows` builds one result from the handles:
+
+```kotlin
+val ratings: List<PageVotes> = graphObjectManager.groups.load<FeedbackData, _> {
+    val page  = key(query.page)                     // n.page AS page
+    val votes = count()                             // count(n) AS votes
+    val likes = count { query.helpful eq true }     // counts a node only when this holds
+    rows { PageVotes(it[page], it[votes], it[likes]) }
+}
+// PageVotes("/agents", 2, 1), PageVotes("/install", 3, 2)
+```
+
+- The first type argument is **the source**: the fragment whose nodes are grouped. The second is what `rows` returns, and `_` leaves it to the compiler.
+- **`key` says what puts two nodes in the same group. Every other line is a number about the group.**
+- **A handle is typed.** `it[page]` is a `String` and `it[votes]` a `Long`. A number that was never declared has no handle, so ordering by it or reading it does not compile.
+- `PageVotes` is any class of your own; Drivine knows nothing of it. `rows { it[page] to it[votes] }` gives a `List<Pair<String, Long>>`.
+
+**3. The three filters.** A grouped read has three places a condition can go, and each answers a different question. A condition in the wrong place gives a wrong number and no error.
+
+```kotlin
+graphObjectManager.groups.load<FeedbackData, _> {
+    where { query.createdAt gte march }             // 1. which nodes are read at all
+    val page  = key(query.page)
+    val votes = count()
+    val likes = count { query.helpful eq true }     // 2. which nodes count toward this one number
+    having { votes gte 3 }                          // 3. which groups are returned
+    orderBy { votes.desc() }
+    limit(10)
+    rows { PageVotes(it[page], it[votes], it[likes]) }
+}
+```
+
+| Filter | Removes | In the graph above |
+| --- | --- | --- |
+| `where { … }` | nodes, before anything is grouped | `f1` is gone, so `/install` has 2 votes |
+| `count { … }` | nothing. It decides which nodes that one number counts | `likes` of `/install` is 1, and `votes` is still 2 |
+| `having { … }` | whole groups, after they are counted | no page has 3 votes, so the answer is empty |
+
+The mistake to look for is `helpful eq true` moved up into `where`. It compiles, and then `votes` counts only the helpful ones, so `likes` equals `votes` on every row.
+
+**4. Group by a node, not a value.** "For each user, how many messages did they write?" What is counted is messages. What puts two messages in one group is having the same owner, and a path says how a message reaches its owner:
+
+```kotlin
+val top: List<Pair<String, Long>> = graphObjectManager.groups.load<MessageData, _> {
+    where { query.role eq MessageRole.USER }
+    val user = key(path<GuideUserData>(
+        Hop("HAS_MESSAGE", Direction.INCOMING, label = "ChatSession"),
+        Hop("OWNED_BY"),
+    ))
+    val messages = count()
+    orderBy { messages.desc() }
+    limit(5)
+    rows { (it[user].username ?: it[user].id) to it[messages] }
+}
+```
+
+```cypher
+MATCH (n:StoredMessage)<-[:HAS_MESSAGE]-(:ChatSession)-[:OWNED_BY]->(k0:GuideUser:User)
+WHERE n.role = $param_n_role_0
+WITH DISTINCT n, k0
+WITH k0, count(n) AS a0
+RETURN { k0: { … }, a0: a0 } AS row
+ORDER BY a0 DESC, k0.id ASC
+LIMIT $_limit
+```
+
+The key comes back as the node itself, hydrated as a load of its fragment hydrates it: its subtype where the class is sealed, its `@GraphProperty` names, its `@PropertyBag` and its labels. `Hop` is the annotation a `@GraphPath` is made of, written here as a value, so no view is declared for the path. The read touches `role` of a message and nothing else of it.
+
+**The parts**
+
+| | |
+| --- | --- |
+| `where { … }` | The `where` of a load, over the source's own properties. |
+| `key(query.x)` | Groups by a property. A property the fragment declares nullable is refused: it is `keyOrNull(query.x)`'s, whose nodes with no value are a group of their own. Two `key` lines are a compound key. |
+| `key(path<N>(hops…))` | Groups by a `@NodeFragment` the source reaches, found by `N`'s labels at the end of the hops. |
+| `count()` | `Long`. `count { … }` counts the nodes that meet the block. |
+| `sum(query.x)` | `Long` for an `Int` or a `Long` property, `Double` for a `Float` or a `Double`. 0 over no values. |
+| `avg(query.x)` | `Double?`. |
+| `min(query.x)`, `max(query.x)` | The property's type, nullable. |
+| `having { votes gte 3 }` | Compares one aggregate with a value: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`. Lines are joined by `AND`. A count is compared with any number. |
+| `orderBy { votes.desc(); page.asc() }` | Orders by handles, with `nullsFirst()` and `nullsLast()`. A node key orders by its node's id. |
+| `limit(n)`, `skip(n)` | Page the groups. |
+| `rows { … }` | The last line, and required: its value is what the block returns. Every key and aggregate is declared before it: one declared as a row is read is refused. |
+
+`sum`, `avg`, `min` and `max` take a filter block too: `sum(query.tokens) { query.role eq MessageRole.USER }`.
+
+**What every engine agrees on**
+
+- A group exists because a node is in it: no group has no members. A user with no message is not in the ranking.
+- A node that reaches no key node is in no group. One that reaches several is in each, and once in each: however many ways lead from a node to a key node, it is one member of that group, in a count and in a sum alike.
+- A path walks a relationship once: two hops of one type are two relationships, so a path there and back does not lead a node to itself. Two path keys may be reached over the same relationship.
+- A read of keys alone gives each key once.
+- An aggregate's filter never takes a node out of its group. A group none of whose nodes meet it is still returned, with 0.
+- `sum`, `avg`, `min` and `max` skip a node with no value. Over no values `sum` is 0 and the others are null.
+- Ties are broken by the key. Every order ends with the keys it left out, ascending, so a top 5 is the same five on every engine.
+- Every value is bound as a parameter, and each condition has its own.
+
+Where Oracle differs, and stays different:
+
+- `min` and `max` of a text skip a value stored as `""`, which Oracle reads as no value. A key does not: `""` is a key of its own everywhere.
+- `min` and `max` of a property no field declares compare it as text, so `"10"` is less than `"9"`. A key no field declares reads as a number where a number is stored.
+- A key no field declares is text or a number there: a boolean reads as `"true"`, a whole `10.0` as `10`, and a list, a map or a text past 4000 bytes as no value.
+- A `sum` or an `avg` of a `Double` is decimal arithmetic, so 0.1 + 0.2 is 0.3 there and 0.30000000000000004 on the graph engines.
+- A text key is ordered by the session's `NLS_SORT`, which is binary unless it has been set otherwise.
+
+**What is refused**, before anything is sent, where the compiler does not refuse it first: a read with no `key` (a count of everything is `count`); a `@GraphView` as the source; a `where` or a filter that names anything but the source's own properties; `key` on a property declared nullable, and `key` or an aggregate on one that holds a list; a `path` with no hops, to a class that is no `@NodeFragment`, or whose last hop asks for a label the class does not carry.
+
+Not in this version: a view as the source, arithmetic inside `having` or `orderBy` (compute it in `rows`, as `it[votes] - it[likes]`), an aggregate over a related node's property (`@Aggregate` does that for one root), and a keyset `seek` over groups.
+
+Without the code generator, pass the query object: `groups.load(FeedbackData::class.java, queryObject) { … }`. A subtype of a sealed fragment is read that way too, with its own query object: `load<Subtype, _> { }` is ambiguous with the base's, as `loadAll<Subtype> { }` is. **From Java** the handles come from the spec, and the block returns `rowsOf`:
+
+```java
+List<PageVotes> ratings = manager.getGroups().load(FeedbackData.class, dsl, spec -> {
+    spec.onlyIf(dsl.getCreatedAt().isAtLeast(march));
+    Key<String> page = spec.key(dsl.getPage());
+    Aggregate<Long> votes = spec.count();
+    Aggregate<Long> likes = spec.countWhere(dsl.getHelpful().isEqualTo(true));
+    spec.having(votes, ComparisonOperator.GREATER_THAN_OR_EQUAL, 3);
+    spec.orderBy(votes.descending());
+    return spec.rowsOf(row -> new PageVotes(row.get(page), row.get(votes), row.get(likes)));
+});
+```
+
+A path is `spec.key(spec.path(User.class, spec.hop("HAS_MESSAGE", Direction.INCOMING, "ChatSession"), spec.hop("OWNED_BY")))`, a sum `spec.sumOfLongs(dsl.getTokens())`, a filtered one `spec.filtered(spec.sumOfLongs(dsl.getTokens()), dsl.getRole().isEqualTo(Role.USER))`, and `manager.getGroups().countBy(FeedbackData.class, "page")` counts by a field.
 
 ### Saving Data
 
@@ -2330,7 +2499,7 @@ CASCADE `DELETE_ORPHAN` is supported on current FalkorDB ([FalkorDB#1890](https:
 
 Neptune is AWS's managed graph database. Drivine connects via the Bolt protocol with two authentication modes.
 
-`StatelessGraphObjectManager`, `@NodeStamp` and the stamps `edges` writes have not been run against Neptune as of 0.1.0. Loading and querying are as before.
+`StatelessGraphObjectManager`, `@NodeStamp` and the stamps `edges` writes have not been run against Neptune as of 0.1.0, and neither have [grouped reads](#grouped-reads-groups). Loading and querying are as before.
 
 **IAM SigV4 authentication (recommended for production):**
 
@@ -3248,6 +3417,26 @@ int deleted = JavaQueryBuilderKt
     .deleteAll();
 ```
 
+### Grouped Reads
+
+A [grouped read](#grouped-reads-groups) is not on the query builder: it is `getGroups()` on either manager, and its handles come from the spec. That section has an example; this is what each Kotlin line is in Java.
+
+| Kotlin | Java |
+|--------|------|
+| `where { … }` | `spec.onlyIf(condition, …)` |
+| `key(query.x)`, `keyOrNull(query.x)` | `spec.key(dsl.getX())`, `spec.keyOrNull(dsl.getX())` |
+| `key(path<N>(Hop(…), …))` | `spec.key(spec.path(N.class, spec.hop("TYPE", Direction.INCOMING, "Label"), …))` |
+| `count()`, `count { … }` | `spec.count()`, `spec.countWhere(condition, …)` |
+| `sum(query.x)` | `spec.sumOfInts`, `sumOfLongs`, `sumOfFloats`, `sumOfDoubles` |
+| `avg`, `min`, `max` | `spec.avg(dsl.getX())`, `spec.min(…)`, `spec.max(…)` |
+| `sum(query.x) { … }` | `spec.filtered(spec.sumOfLongs(dsl.getX()), condition, …)` |
+| `having { votes gte 3 }` | `spec.having(votes, ComparisonOperator.GREATER_THAN_OR_EQUAL, 3)` |
+| `orderBy { votes.desc() }` | `spec.orderBy(votes.descending())`, then `.nullsFirst()` / `.nullsLast()` |
+| `rows { … }` | `return spec.rowsOf(row -> …)` |
+| `groups.countBy(T::x)` | `manager.getGroups().countBy(T.class, "x")` |
+
+A Java field does not say whether it may be null, so `key` of one is not refused: a node with no value is reported when its row is read, and `keyOrNull` reads it as null.
+
 ### Java DSL Summary
 
 The Java methods are named differently from their Kotlin counterparts (`isEqualTo` for `eq`, `ascending` for
@@ -3267,6 +3456,7 @@ from Kotlin 2.3 two members sharing a name are ambiguous there, so each language
 | OR | `.whereAny(dsl -> Arrays.asList(...))` |
 | Order | `.orderBy(dsl -> dsl.getProp().ascending())`, `.descending()`; then `.nullsLast()` / `.nullsFirst()` |
 | Keyset cursor | `.seek(dsl -> List.of(dsl.getProp().cursorAfter(v)))` |
+| Grouped read | `manager.getGroups().load(T.class, dsl, spec -> …)`: see [Grouped Reads](#grouped-reads) |
 
 ## Java Interoperability
 

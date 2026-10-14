@@ -136,7 +136,7 @@ internal class OraclePredicates(
      * as rows, and so is a test for any of several labels. An `or` or a `not` is, when one of the
      * conditions it holds is: it is one predicate, and is asked whole where its conditions can be.
      */
-    private fun holdsSubquery(condition: WhereCondition): Boolean = when (condition) {
+    fun holdsSubquery(condition: WhereCondition): Boolean = when (condition) {
         is WhereCondition.PropertyCondition -> condition.operator == ComparisonOperator.IN || condition.operator == ComparisonOperator.NOT_IN
         is WhereCondition.AnyLabelCondition -> true
         is WhereCondition.OrCondition -> condition.conditions.any(::holdsSubquery)
@@ -251,7 +251,7 @@ internal class OraclePredicates(
     // ----- Ordering and keyset paging -----
 
     /** The kind the field that declares the root property [key] is ordered as; null when no field does. */
-    private fun declaredKind(key: String): SqlKind? = rootModel.fields.firstOrNull { it.propertyName == key }?.type?.let(SqlKind::ofType)
+    fun declaredKind(key: String): SqlKind? = rootModel.fields.firstOrNull { it.propertyName == key }?.type?.let(SqlKind::ofType)
 
     /**
      * A root property as it is ordered: by the type of the field that holds it; when no field does,

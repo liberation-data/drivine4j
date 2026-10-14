@@ -39,6 +39,19 @@ object CypherGenerator {
         viewModel: GraphViewModel? = null,
         grammar: CypherGrammar = Neo4j5Grammar(ApocSortMapsEmitter()),
         projectedCollectionMode: Boolean = false,
+    ): WhereClauseResult = buildWhereClause(conditions, viewModel, grammar, projectedCollectionMode, startIndex = 0)
+
+    /**
+     * [buildWhereClause] for a statement that holds several predicates, each written by a call of its
+     * own: the parameters are numbered from [startIndex], and [parameterCount] says how far the next
+     * predicate's are numbered on. Numbered apart, two predicates on one property bind two parameters.
+     */
+    internal fun buildWhereClause(
+        conditions: List<WhereCondition>,
+        viewModel: GraphViewModel?,
+        grammar: CypherGrammar,
+        projectedCollectionMode: Boolean,
+        startIndex: Int,
     ): WhereClauseResult {
         val grouped = groupConditionsByAlias(conditions, viewModel)
         val prologs = mutableListOf<String>()
@@ -46,7 +59,7 @@ object CypherGenerator {
         val ecCounter = AtomicInteger(0)
 
         val whereClause = renderConditionList(
-            grouped, viewModel, startIndex = 0, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode,
+            grouped, viewModel, startIndex, grammar, ecCounter, prologs, bridgeVars, projectedCollectionMode,
         )
 
         return WhereClauseResult(
@@ -367,12 +380,20 @@ object CypherGenerator {
      * @param viewModel Optional GraphViewModel for relationship metadata (needed to match buildWhereClause ordering)
      * @return Map of parameter names to values
      */
-    fun extractBindings(conditions: List<WhereCondition>, viewModel: GraphViewModel? = null): Map<String, Any?> {
+    fun extractBindings(conditions: List<WhereCondition>, viewModel: GraphViewModel? = null): Map<String, Any?> =
+        extractBindings(conditions, viewModel, startIndex = 0)
+
+    /** The number of parameters [conditions] bind: how far the predicate after them is numbered on. */
+    internal fun parameterCount(conditions: List<WhereCondition>, viewModel: GraphViewModel? = null): Int =
+        countParameters(groupConditionsByAlias(conditions, viewModel))
+
+    /** [extractBindings] for a predicate whose parameters are numbered from [startIndex], as [buildWhereClause] numbers them. */
+    internal fun extractBindings(conditions: List<WhereCondition>, viewModel: GraphViewModel?, startIndex: Int): Map<String, Any?> {
         // IMPORTANT: Must group conditions the same way as buildWhereClause to maintain parameter ordering
         val grouped = groupConditionsByAlias(conditions, viewModel)
 
         val bindings = mutableMapOf<String, Any?>()
-        var paramIndex = 0
+        var paramIndex = startIndex
 
         fun extractRecursive(conds: List<WhereCondition>) {
             conds.forEach { condition ->
