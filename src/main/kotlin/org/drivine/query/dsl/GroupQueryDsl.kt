@@ -39,6 +39,14 @@ class GroupQuerySpec<Q : Any>(
     internal var limit: Int? = null
     internal var skip: Int? = null
 
+    /** Whether the block has returned. The statement is written from what it declared, so nothing is declared after. */
+    internal var closed = false
+
+    private fun <C : GroupColumn<*>> declared(column: C): C {
+        check(!closed) { "A key or an aggregate is declared before rows { }: the statement is already written when a row is read." }
+        return column
+    }
+
     // ----- Which nodes are read -----
 
     /**
@@ -66,11 +74,11 @@ class GroupQuerySpec<Q : Any>(
      * the key compound.
      */
     fun <V> key(property: PropertyReference<V>): Key<V & Any> =
-        Key<V & Any>("k${keys.size}", KeySource.Property(property.alias, property.propertyName), nullable = false).also { keys += it }
+        declared(Key<V & Any>("k${keys.size}", KeySource.Property(property.alias, property.propertyName), nullable = false)).also { keys += it }
 
     /** Groups by a property that may have no value: the nodes without one are a group of their own, whose key is null. */
     fun <V> keyOrNull(property: PropertyReference<V>): Key<V?> =
-        Key<V?>("k${keys.size}", KeySource.Property(property.alias, property.propertyName), nullable = true).also { keys += it }
+        declared(Key<V?>("k${keys.size}", KeySource.Property(property.alias, property.propertyName), nullable = true)).also { keys += it }
 
     /**
      * Groups by a node the source reaches: two nodes that reach the same one are in the same group,
@@ -78,7 +86,7 @@ class GroupQuerySpec<Q : Any>(
      * several is in each, once.
      */
     fun <N : Any> key(path: NodePath<N>): Key<N> =
-        Key<N>("k${keys.size}", KeySource.Path(path.target, path.hops), nullable = false).also { keys += it }
+        declared(Key<N>("k${keys.size}", KeySource.Path(path.target, path.hops), nullable = false)).also { keys += it }
 
     /**
      * The way from a node of the source to a [N]: the hops a `@GraphPath` is made of, written as
@@ -169,7 +177,7 @@ class GroupQuerySpec<Q : Any>(
         collected(block).also { require(it.isNotEmpty()) { "An aggregate's filter holds no condition. Leave the block out to take every node of the group." } }
 
     private fun <V> aggregate(function: GroupFunction, property: PropertyReference<*>?, filter: List<WhereCondition>?, number: NumberKind?): Aggregate<V> =
-        Aggregate<V>("a${aggregates.size}", function, property?.alias, property?.propertyName, filter.orEmpty(), number).also { aggregates += it }
+        declared(Aggregate<V>("a${aggregates.size}", function, property?.alias, property?.propertyName, filter.orEmpty(), number)).also { aggregates += it }
 
     // ----- Which groups are returned, and in what order -----
 

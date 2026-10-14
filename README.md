@@ -1254,6 +1254,8 @@ where {
 
 `graphObjectManager.groups` groups the nodes of a fragment by a key and gives numbers about each group: a count, a sum, a ranking. It is one statement on every engine, Oracle among them, and the groups, their numbers and their order are held to one contract on each. Everything else on the manager returns the objects it maps; this returns summaries of them, so nothing is loaded to be tallied in the application.
 
+Both managers have it. On the deprecated `GraphObjectManager` a node key is an object it loaded, and is tracked as one.
+
 Each line of a grouped read is a clause of the query you would have written by hand, and a `val` is its `AS`:
 
 | Here | Cypher | SQL |
@@ -1374,7 +1376,7 @@ The key comes back as the node itself, hydrated as a load of its fragment hydrat
 | `having { votes gte 3 }` | Compares one aggregate with a value: `eq`, `neq`, `gt`, `gte`, `lt`, `lte`. Lines are joined by `AND`. A count is compared with any number. |
 | `orderBy { votes.desc(); page.asc() }` | Orders by handles, with `nullsFirst()` and `nullsLast()`. A node key orders by its node's id. |
 | `limit(n)`, `skip(n)` | Page the groups. |
-| `rows { … }` | The last line, and required: its value is what the block returns. |
+| `rows { … }` | The last line, and required: its value is what the block returns. Every key and aggregate is declared before it: one declared as a row is read is refused. |
 
 `sum`, `avg`, `min` and `max` take a filter block too: `sum(query.tokens) { query.role eq MessageRole.USER }`.
 
@@ -1401,7 +1403,7 @@ Where Oracle differs, and stays different:
 
 Not in this version: a view as the source, arithmetic inside `having` or `orderBy` (compute it in `rows`, as `it[votes] - it[likes]`), an aggregate over a related node's property (`@Aggregate` does that for one root), and a keyset `seek` over groups.
 
-Without the code generator, pass the query object: `groups.load(FeedbackData::class.java, queryObject) { … }`. **From Java** the handles come from the spec, and the block returns `rowsOf`:
+Without the code generator, pass the query object: `groups.load(FeedbackData::class.java, queryObject) { … }`. A subtype of a sealed fragment is read that way too, with its own query object: `load<Subtype, _> { }` is ambiguous with the base's, as `loadAll<Subtype> { }` is. **From Java** the handles come from the spec, and the block returns `rowsOf`:
 
 ```java
 List<PageVotes> ratings = manager.getGroups().load(FeedbackData.class, dsl, spec -> {
@@ -2495,7 +2497,7 @@ CASCADE `DELETE_ORPHAN` is supported on current FalkorDB ([FalkorDB#1890](https:
 
 Neptune is AWS's managed graph database. Drivine connects via the Bolt protocol with two authentication modes.
 
-`StatelessGraphObjectManager`, `@NodeStamp` and the stamps `edges` writes have not been run against Neptune as of 0.1.0. Loading and querying are as before.
+`StatelessGraphObjectManager`, `@NodeStamp` and the stamps `edges` writes have not been run against Neptune as of 0.1.0, and neither have [grouped reads](#grouped-reads-groups). Loading and querying are as before.
 
 **IAM SigV4 authentication (recommended for production):**
 
@@ -3395,6 +3397,26 @@ int deleted = JavaQueryBuilderKt
     .deleteAll();
 ```
 
+### Grouped Reads
+
+A [grouped read](#grouped-reads-groups) is not on the query builder: it is `getGroups()` on either manager, and its handles come from the spec. That section has an example; this is what each Kotlin line is in Java.
+
+| Kotlin | Java |
+|--------|------|
+| `where { … }` | `spec.onlyIf(condition, …)` |
+| `key(query.x)`, `keyOrNull(query.x)` | `spec.key(dsl.getX())`, `spec.keyOrNull(dsl.getX())` |
+| `key(path<N>(Hop(…), …))` | `spec.key(spec.path(N.class, spec.hop("TYPE", Direction.INCOMING, "Label"), …))` |
+| `count()`, `count { … }` | `spec.count()`, `spec.countWhere(condition, …)` |
+| `sum(query.x)` | `spec.sumOfInts`, `sumOfLongs`, `sumOfFloats`, `sumOfDoubles` |
+| `avg`, `min`, `max` | `spec.avg(dsl.getX())`, `spec.min(…)`, `spec.max(…)` |
+| `sum(query.x) { … }` | `spec.filtered(spec.sumOfLongs(dsl.getX()), condition, …)` |
+| `having { votes gte 3 }` | `spec.having(votes, ComparisonOperator.GREATER_THAN_OR_EQUAL, 3)` |
+| `orderBy { votes.desc() }` | `spec.orderBy(votes.descending())`, then `.nullsFirst()` / `.nullsLast()` |
+| `rows { … }` | `return spec.rowsOf(row -> …)` |
+| `groups.countBy(T::x)` | `manager.getGroups().countBy(T.class, "x")` |
+
+A Java field does not say whether it may be null, so `key` of one is not refused: a node with no value is reported when its row is read, and `keyOrNull` reads it as null.
+
 ### Java DSL Summary
 
 The Java methods are named differently from their Kotlin counterparts (`isEqualTo` for `eq`, `ascending` for
@@ -3414,6 +3436,7 @@ from Kotlin 2.3 two members sharing a name are ambiguous there, so each language
 | OR | `.whereAny(dsl -> Arrays.asList(...))` |
 | Order | `.orderBy(dsl -> dsl.getProp().ascending())`, `.descending()`; then `.nullsLast()` / `.nullsFirst()` |
 | Keyset cursor | `.seek(dsl -> List.of(dsl.getProp().cursorAfter(v)))` |
+| Grouped read | `manager.getGroups().load(T.class, dsl, spec -> …)`: see [Grouped Reads](#grouped-reads) |
 
 ## Java Interoperability
 

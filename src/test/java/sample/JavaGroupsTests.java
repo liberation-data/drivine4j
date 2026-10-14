@@ -22,12 +22,15 @@ import sample.groups.User;
 import sample.simple.TestAppContext;
 
 import java.time.Instant;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /** A grouped read as a Java caller writes it: handles from the spec, and a function for the rows. */
 @SpringBootTest(classes = TestAppContext.class)
@@ -100,5 +103,57 @@ public class JavaGroupsTests {
         Map<Object, Long> counted = stateless.getGroups().countBy(Feedback.class, "page");
 
         assertEquals(2L, counted.get(batch + "/install"));
+    }
+
+    @Test
+    public void readsAKeyThatMayHaveNoValueWithAMeanALeastAndAGreatestValue() {
+        Instant march = Instant.parse("2026-03-01T00:00:00Z");
+        stateless.save(new Feedback(batch + "1", batch, true, march, 5L, null, "intro", null));
+        stateless.save(new Feedback(batch + "2", batch, true, march, 2L, null, "intro", null));
+        stateless.save(new Feedback(batch + "3", batch, false, march, 4L, null, "usage", null));
+        stateless.save(new Feedback(batch + "4", batch, false, march, null, null, null, null));
+
+        List<List<Object>> rows = stateless.getGroups().load(Feedback.class, dsl, spec -> {
+            spec.onlyIf(dsl.getPage().isEqualTo(batch));
+            Key<String> section = spec.keyOrNull(dsl.getSection());
+            Aggregate<Double> mean = spec.avg(dsl.getStars());
+            Aggregate<Long> least = spec.min(dsl.getStars());
+            Aggregate<Long> most = spec.max(dsl.getStars());
+            spec.orderBy(section.ascending().nullsFirst());
+            return spec.rowsOf(row -> Arrays.<Object>asList(row.get(section), row.get(mean), row.get(least), row.get(most)));
+        });
+
+        assertEquals(List.of(Arrays.asList(null, null, null, null), List.of("intro", 3.5, 2L, 5L), List.of("usage", 4.0, 4L, 4L)), rows);
+    }
+
+    @Test
+    public void pagesTheGroupsWithASkipAndPlacesTheNullsOfADescendingOrderLast() {
+        Instant march = Instant.parse("2026-03-01T00:00:00Z");
+        stateless.save(new Feedback(batch + "1", batch, true, march, null, null, "a", null));
+        stateless.save(new Feedback(batch + "2", batch, true, march, null, null, "b", null));
+        stateless.save(new Feedback(batch + "3", batch, true, march, null, null, null, null));
+
+        List<String> rows = stateless.getGroups().load(Feedback.class, dsl, spec -> {
+            spec.onlyIf(dsl.getPage().isEqualTo(batch));
+            Key<String> section = spec.keyOrNull(dsl.getSection());
+            spec.orderBy(section.descending().nullsLast());
+            spec.skip(1);
+            spec.limit(5);
+            return spec.rowsOf(row -> String.valueOf(row.get(section)));
+        });
+
+        assertEquals(List.of("a", "null"), rows);
+    }
+
+    @Test
+    public void refusesAHavingThatIsNoComparison() {
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () ->
+            stateless.getGroups().load(Feedback.class, dsl, spec -> {
+                Key<String> page = spec.key(dsl.getPage());
+                spec.having(spec.count(), ComparisonOperator.CONTAINS, "3");
+                return spec.rowsOf(row -> row.get(page));
+            }));
+
+        assertTrue(refused.getMessage().contains("CONTAINS is none of them"), refused.getMessage());
     }
 }

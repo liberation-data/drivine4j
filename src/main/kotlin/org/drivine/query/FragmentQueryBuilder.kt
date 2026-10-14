@@ -54,8 +54,7 @@ class FragmentQueryBuilder(private val fragmentModel: FragmentModel) : GraphObje
 
         // Check if this is a polymorphic query (abstract/sealed class). Bag fragments also use the
         // .* path so the open prefixed properties are returned for the transform to reconstruct.
-        val isPolymorphic = fragmentModel.clazz.kotlin.isAbstract || fragmentModel.clazz.kotlin.isSealed ||
-            fragmentModel.propertyBags.isNotEmpty()
+        val isPolymorphic = readWhole(fragmentModel)
 
         // Include labels for polymorphic deserialization support
         val returnClause = if (isPolymorphic) {
@@ -71,9 +70,7 @@ RETURN props {
         } else {
             // For concrete types, list specific fields. Key by field name (the identity the transform
             // reconstructs by constructor param), read from the on-disk property name.
-            val fieldMappings = fragmentModel.fields.joinToString(",\n    ") {
-                "${it.name}: $nodeAlias.${it.storedReference}"
-            }
+            val fieldMappings = fieldMappings(fragmentModel, nodeAlias).joinToString(",\n    ")
             """
 
 RETURN {
@@ -135,6 +132,17 @@ RETURN {
     companion object {
         /** What a statement over a fragment, and a predicate of the query DSL on one, calls its node. */
         const val NODE_ALIAS = "n"
+
+        /**
+         * Whether a node of [model] is returned with every property it holds: a sealed or abstract
+         * fragment, whose subtype's fields are not known here, and one with a bag, whose keys are not.
+         */
+        internal fun readWhole(model: FragmentModel): Boolean =
+            model.clazz.kotlin.isAbstract || model.clazz.kotlin.isSealed || model.propertyBags.isNotEmpty()
+
+        /** The fields of [model] as entries of the map a read returns: each by its name, read from the property that stores it on [alias]. */
+        internal fun fieldMappings(model: FragmentModel, alias: String): List<String> =
+            model.fields.map { "${it.name}: $alias.${it.storedReference}" }
 
         /**
          * Creates a query builder for a GraphFragment class.

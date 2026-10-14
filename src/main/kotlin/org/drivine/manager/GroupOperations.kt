@@ -69,6 +69,7 @@ class GroupOperations internal constructor(
     fun <T : Any, Q : Any, R> load(graphClass: Class<T>, queryObject: Q, spec: GroupQuerySpec<Q>.() -> GroupRows<R>): List<R> {
         val query = GroupQuerySpec(queryObject)
         val rows = query.spec()
+        query.closed = true
         val statement = backend.groups(graphClass, query)
         val columns: List<GroupColumn<*>> = query.keys + query.aggregates
         val reader = Reader(FragmentModel.from(graphClass))

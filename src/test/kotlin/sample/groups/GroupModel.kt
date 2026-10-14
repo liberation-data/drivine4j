@@ -66,6 +66,19 @@ data class Team(
 @NodeFragment(labels = ["GroupOwner", "GroupBot"])
 data class Bot(override val id: String, val model: String = "") : Owner
 
+/** What a sensor read: an `Int` and a `Float`, the two kinds of number a `sum` takes beside `Long` and `Double`. */
+@NodeFragment(labels = ["GroupReading"])
+data class Reading(
+    @NodeId val id: String,
+    val sensor: String,
+    val ticks: Int? = null,
+    val level: Float? = null,
+)
+
+/** A fragment with no `@NodeId`, which a path key cannot end at: it has no id to be ordered by. */
+@NodeFragment(labels = ["GroupTag"])
+data class Tag(val name: String)
+
 /** A view, which a grouped read refuses as its source. */
 @GraphView
 data class SessionView(
@@ -108,5 +121,23 @@ class SessionViewQueryDsl {
 
     companion object {
         val INSTANCE = SessionViewQueryDsl()
+    }
+}
+
+class ReadingQueryDsl(override val nodeAlias: String = "n") : NodeReference {
+    val sensor = StringPropertyReference(nodeAlias, "sensor")
+    val ticks = PropertyReference<Int>(nodeAlias, "ticks")
+    val level = PropertyReference<Float>(nodeAlias, "level")
+
+    companion object {
+        val INSTANCE = ReadingQueryDsl()
+    }
+}
+
+class OwnerQueryDsl(override val nodeAlias: String = "n") : NodeReference {
+    val id = StringPropertyReference(nodeAlias, "id")
+
+    companion object {
+        val INSTANCE = OwnerQueryDsl()
     }
 }

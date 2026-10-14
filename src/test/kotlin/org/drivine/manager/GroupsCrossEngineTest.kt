@@ -22,9 +22,12 @@ import org.drivine.query.dsl.GroupRows
 import org.drivine.query.dsl.Key
 import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.any
+import org.drivine.query.dsl.hasAnyLabel
 import org.drivine.query.dsl.hasItem
+import org.drivine.query.dsl.instanceOf
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.session.SessionManager
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -44,10 +47,14 @@ import sample.groups.FeedbackQueryDsl
 import sample.groups.Message
 import sample.groups.MessageQueryDsl
 import sample.groups.Owner
+import sample.groups.OwnerQueryDsl
+import sample.groups.Reading
+import sample.groups.ReadingQueryDsl
 import sample.groups.Role
 import sample.groups.Session
 import sample.groups.SessionView
 import sample.groups.SessionViewQueryDsl
+import sample.groups.Tag
 import sample.groups.Team
 import sample.groups.User
 
@@ -367,6 +374,47 @@ abstract class GroupsContract {
     }
 
     @Test
+    fun `a sum of an Int is a Long and of a Float a Double, and 0 over no values`() {
+        stateless.saveAll(
+            listOf(
+                Reading("r1", "north", ticks = 2, level = 0.5f),
+                Reading("r2", "north", ticks = 3, level = 1.5f),
+                Reading("r3", "south"),
+            )
+        )
+
+        val rows = groups.load(Reading::class.java, ReadingQueryDsl.INSTANCE) {
+            val sensor = key(query.sensor)
+            val ticks = sum(query.ticks)
+            val level = sum(query.level)
+            val least = min(query.ticks)
+            rows { listOf(it[sensor], it[ticks], it[level], it[least]) }
+        }
+
+        assertEquals(listOf(listOf("north", 5L, 2.0, 2), listOf("south", 0L, 0.0, null)), rows)
+    }
+
+    @Test
+    fun `having leaves out the groups a number equals, and a limit of none gives none`() {
+        votes()
+
+        val notThree = feedback {
+            val page = key(query.page)
+            val votes = count()
+            having { votes neq 3 }
+            rows { it[page] to it[votes] }
+        }
+        assertEquals(listOf("/agents" to 2L), notThree)
+
+        val none = feedback {
+            val page = key(query.page)
+            limit(0)
+            rows { it[page] }
+        }
+        assertEquals(emptyList(), none)
+    }
+
+    @Test
     fun `a read of keys alone gives each key once`() {
         votes()
         chat()
@@ -663,6 +711,128 @@ abstract class GroupsContract {
         assertEquals(listOf<Pair<Owner, Long>>(Bot("b1", "small") to 1L, Team("t1", "Docs", mapOf("region" to "emea")) to 2L), rows)
     }
 
+    @Test
+    fun `a hop of either direction is walked both ways`() {
+        chat()
+
+        val rows = messages {
+            val session = key(path<Session>(Hop("HAS_MESSAGE", Direction.UNDIRECTED)))
+            val all = count()
+            rows { it[session].id to it[all] }
+        }
+
+        assertEquals(listOf("s1" to 3L, "s2" to 1L), rows)
+    }
+
+    @Test
+    fun `three path keys are a compound key of nodes`() {
+        chat()
+        stateless.save(Team("t1", "Docs"))
+        stateless.save(Bot("b1", "small"))
+        relate(nodeRef<Message>("m1"), "AUTHORED_BY", nodeRef<Owner>("t1"))
+        relate(nodeRef<Message>("m2"), "AUTHORED_BY", nodeRef<Owner>("t1"))
+        relate(nodeRef<Message>("m4"), "AUTHORED_BY", nodeRef<Owner>("b1"))
+
+        val rows = messages {
+            val user = key(path<User>(*owner))
+            val session = key(path<Session>(Hop("HAS_MESSAGE", Direction.INCOMING)))
+            val author = key(path<Owner>(Hop("AUTHORED_BY")))
+            val all = count()
+            val tokens = sum(query.tokens)
+            rows { listOf(it[user].id, it[session].id, it[author].id, it[all], it[tokens]) }
+        }
+
+        // m3 has no author, so it reaches two of the three and is in no group.
+        assertEquals(listOf(listOf("alice", "s1", "t1", 2L, 30L), listOf("bob", "s2", "b1", 1L, 7L)), rows)
+    }
+
+    @Test
+    fun `a test of the labels goes in the where and in a filter, with a path key and without`() {
+        stateless.save(Team("t1", "Docs"))
+        stateless.save(Bot("b1", "small"))
+        stateless.saveAll(listOf(Message("m1", Role.USER), Message("m2", Role.USER), Message("m3", Role.ASSISTANT)))
+        relate(nodeRef<Message>("m1"), "AUTHORED_BY", nodeRef<Owner>("t1"))
+        relate(nodeRef<Message>("m2"), "AUTHORED_BY", nodeRef<Owner>("t1"))
+        relate(nodeRef<Message>("m3"), "AUTHORED_BY", nodeRef<Owner>("b1"))
+
+        fun <R> owners(spec: GroupQuerySpec<OwnerQueryDsl>.() -> GroupRows<R>): List<R> = groups.load(Owner::class.java, OwnerQueryDsl.INSTANCE, spec)
+
+        val byMessage = owners {
+            where { query.hasAnyLabel("GroupTeam", "GroupBot") }
+            val message = key(path<Message>(Hop("AUTHORED_BY", Direction.INCOMING)))
+            val teams = count { query.instanceOf<Team>() }
+            val bots = count { query.hasAnyLabel("GroupBot") }
+            rows { Triple(it[message].id, it[teams], it[bots]) }
+        }
+        assertEquals(listOf(Triple("m1", 1L, 0L), Triple("m2", 1L, 0L), Triple("m3", 0L, 1L)), byMessage)
+
+        val teamsOnly = owners {
+            where { query.instanceOf<Team>() }
+            val message = key(path<Message>(Hop("AUTHORED_BY", Direction.INCOMING)))
+            rows { it[message].id }
+        }
+        assertEquals(listOf("m1", "m2"), teamsOnly)
+
+        val byId = owners {
+            where { query.hasAnyLabel("GroupTeam", "GroupBot") }
+            val id = key(query.id)
+            val teams = count { query.instanceOf<Team>() }
+            val bots = count { query.hasAnyLabel("GroupBot") }
+            rows { Triple(it[id], it[teams], it[bots]) }
+        }
+        assertEquals(listOf(Triple("b1", 0L, 1L), Triple("t1", 1L, 0L)), byId)
+    }
+
+    // ----- Either manager, and one statement -----
+
+    @Test
+    fun `the manager that tracks what it loads groups as the stateless one does, and tracks a node key`() {
+        chat()
+        val mapper = Neo4jObjectMapper.instance
+        val sessions = SessionManager(mapper)
+        @Suppress("DEPRECATION")
+        val stateful = GraphObjectManager(pm, sessions, mapper, SubtypeRegistry())
+
+        val rows = stateful.groups.load(Message::class.java, MessageQueryDsl.INSTANCE) {
+            where { query.role eq Role.USER }
+            val user = key(path<User>(*owner))
+            val written = count()
+            val tokens = sum(query.tokens)
+            orderBy { written.desc() }
+            rows { Triple(it[user], it[written], it[tokens]) }
+        }
+
+        assertEquals(listOf(Triple(User("alice", "al"), 2L, 30L), Triple(User("bob"), 1L, 7L)), rows)
+        // A node key is an object the manager loaded, so a save of it writes what has changed since.
+        assertEquals(listOf(true, true), listOf("alice", "bob").map { sessions.isTracked(User::class.java, it) })
+        assertEquals(mapOf(Role.ASSISTANT to 1L, Role.USER to 4L), stateful.groups.countBy(Message::role))
+    }
+
+    @Test
+    fun `a grouped read is one statement, whatever it groups by`() {
+        chat()
+        stateless.save(Team("t1", "Docs", mapOf("region" to "emea")))
+        relate(nodeRef<Message>("m1"), "AUTHORED_BY", nodeRef<Owner>("t1"))
+        val counting = StatementCounter(pm)
+        val counted = StatelessGraphObjectManager(counting, Neo4jObjectMapper.instance, SubtypeRegistry()).groups
+
+        counted.load(Message::class.java, MessageQueryDsl.INSTANCE) {
+            where { query.role eq Role.USER }
+            val user = key(path<User>(*owner))
+            val author = key(path<Owner>(Hop("AUTHORED_BY")))
+            val role = key(query.role)
+            val written = count { query.tokens gte 10L }
+            having { written gte 1 }
+            orderBy { written.desc() }
+            limit(5)
+            rows { listOf(it[user], it[author], it[role], it[written]) }
+        }
+        assertEquals(1, counting.statements)
+
+        counted.countBy(Message::role)
+        assertEquals(2, counting.statements)
+    }
+
     // ----- What is refused -----
 
     @Test
@@ -728,6 +898,37 @@ abstract class GroupsContract {
         assertContains(refused { messages { val to = key(path<User>(Hop("OWNED_BY", label = "Admin"))); rows { it[to] } } }, "asks for the label 'Admin'")
         assertContains(refused { messages { val to = key(path<SessionView>(Hop("X"))); rows { it[to] } } }, "ends at a @NodeFragment")
         assertContains(refused { groups.countBy(Feedback::class.java, "nothing") }, "no field 'nothing'")
+        assertContains(refused { messages { val to = key(path<Tag>(Hop("TAGGED"))); rows { it[to] } } }, "Tag has no @NodeId field")
+        assertContains(refused { feedback { val page = key(query.page); count { }; rows { it[page] } } }, "An aggregate's filter holds no condition")
+        assertContains(refused { feedback { val page = key(query.page); countWhere(); rows { it[page] } } }, "countWhere needs a condition")
+        assertContains(refused { feedback { val page = key(query.page); filtered(count()); rows { it[page] } } }, "filtered needs a condition")
+        assertContains(refused { feedback { val page = key(query.page); limit(-1); rows { it[page] } } }, "limit must be >= 0")
+        assertContains(refused { feedback { val page = key(query.page); skip(-1); rows { it[page] } } }, "skip must be >= 0")
+    }
+
+    @Test
+    fun `key reports a node with no value when its row is read, and points to keyOrNull`() {
+        votes()
+        // No field declares it, so nothing says it may be null until a node without it is read.
+        val undeclared = PropertyReference<String>("n", "nothing")
+
+        val refused = assertFailsWith<IllegalStateException> {
+            feedback { val nothing = key(undeclared); rows { it[nothing] } }
+        }
+        assertContains(refused.message!!, "A Feedback has no value for 'nothing', which key(…) reads as never null. Use keyOrNull(…).")
+
+        assertEquals(listOf<String?>(null), feedback { val nothing = keyOrNull(undeclared); rows { it[nothing] } })
+    }
+
+    @Test
+    fun `a column is declared before rows, and not as a row is read`() {
+        votes()
+
+        val refused = assertFailsWith<IllegalStateException> {
+            feedback { val page = key(query.page); rows { it[page] to it[count()] } }
+        }
+
+        assertContains(refused.message!!, "A key or an aggregate is declared before rows { }")
     }
 
     @Test
@@ -853,4 +1054,17 @@ class GroupsMemgraphTest : GroupsContract() {
 @OracleTests
 class GroupsOracleTest : GroupsContract() {
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+}
+
+/** Counts the statements a manager sends. */
+private class StatementCounter(private val delegate: PersistenceManager) : PersistenceManager by delegate {
+    var statements = 0
+
+    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = delegate.query(spec).also { statements++ }
+
+    override fun execute(spec: QuerySpecification<*>) = delegate.execute(spec).also { statements++ }
+
+    override fun <T : Any> getOne(spec: QuerySpecification<T>): T = delegate.getOne(spec).also { statements++ }
+
+    override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? = delegate.maybeGetOne(spec).also { statements++ }
 }

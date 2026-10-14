@@ -5,8 +5,12 @@ import org.drivine.manager.RelateMode
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.manager.nodeRef
 import org.drivine.query.dsl.query
+import org.drivine.sample.fragment.AnonymousWebUser
+import org.drivine.sample.fragment.AnonymousWebUserQueryDsl
 import org.drivine.sample.fragment.IssueCore
 import org.drivine.sample.fragment.Person
+import org.drivine.sample.fragment.RegisteredWebUser
+import org.drivine.sample.fragment.WebUser
 import org.drivine.sample.fragment.load
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -72,5 +76,30 @@ class StatelessGroupsDslTest @Autowired constructor(
         }
 
         assertEquals(listOf(Triple(ada, 3L, 6L), Triple(bob, 1L, 3L)), assigned)
+    }
+
+    @Test
+    fun `a sealed fragment has a load of its own, and a subtype of it is read by its query object`() {
+        stateless.save(AnonymousWebUser(UUID.randomUUID(), batch, "t1"))
+        stateless.save(AnonymousWebUser(UUID.randomUUID(), batch, "t2"))
+        stateless.save(RegisteredWebUser(UUID.randomUUID(), batch, "ada@example.com"))
+
+        val all = stateless.groups.load<WebUser, _> {
+            where { query.displayName eq batch }
+            val name = key(query.displayName)
+            val users = count()
+            rows { it[name] to it[users] }
+        }
+        assertEquals(listOf(batch to 3L), all)
+
+        // `load<AnonymousWebUser, _> { }` is ambiguous with the base's, as `loadAll` is: the subtype's
+        // own properties are reached by passing its query object, and its labels say which nodes are counted.
+        val anonymous = stateless.groups.load(AnonymousWebUser::class.java, AnonymousWebUserQueryDsl.INSTANCE) {
+            where { query.displayName eq batch }
+            val token = key(query.anonymousToken)
+            val users = count()
+            rows { it[token] to it[users] }
+        }
+        assertEquals(listOf("t1" to 1L, "t2" to 1L), anonymous)
     }
 }

@@ -292,12 +292,10 @@ internal class GroupQueryBuilder(private val grammar: CypherGrammar) {
         val path = key.source as? KeySource.Path ?: return key.column
         val target = query.target(path)
         val node = key.column
-        // A sealed or abstract fragment, and one with a bag, is read whole: its subtype's fields and the bag's keys are not known here.
-        val whole = target.clazz.kotlin.isAbstract || target.clazz.kotlin.isSealed || target.propertyBags.isNotEmpty()
-        return if (whole) {
+        return if (FragmentQueryBuilder.readWhole(target)) {
             "$node { .*, labels: labels($node) }"
         } else {
-            "{ ${target.fields.joinToString(", ") { "${it.name}: $node.${it.storedReference}" }}, labels: labels($node) }"
+            "{ ${FragmentQueryBuilder.fieldMappings(target, node).joinToString(", ")}, labels: labels($node) }"
         }
     }
 
