@@ -28,8 +28,8 @@ class OracleLabelledIndexTest {
 
     private val graph = OracleGraph("g")
 
-    private val claimText = LabelledIndexes(listOf("Claim" to listOf("text")))
-    private val claimTextNote = LabelledIndexes(listOf("Claim" to listOf("text", "note")))
+    private val claimText = LabelledIndexes(listOf(LabelledIndex("Claim", listOf("text"))))
+    private val claimTextNote = LabelledIndexes(listOf(LabelledIndex("Claim", listOf("text", "note"))))
 
     private fun select(type: Class<*> = Claim::class.java, labelled: LabelledIndexes = claimText) = OracleSelect(graph, type, labelled = labelled)
 
@@ -153,6 +153,15 @@ class OracleLabelledIndexTest {
     }
 
     @Test
+    fun `a uniqueness constraint's index over one property is read through as it reads the property, before a labelled index`() {
+        val unique = LabelledIndexes(listOf(LabelledIndex("Claim", listOf("text")), LabelledIndex("Claim", listOf("text"), unique = true)))
+        val select = select(labelled = unique)
+        val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)
+        assertEquals("CASE WHEN $scansClaim AND JSON_EXISTS(n_.props, '$.text') THEN JSON_VALUE(n_.props, '$.text') END = \$_p0", sql)
+        assertEquals("", select.selecting(emptyList()))
+    }
+
+    @Test
     fun `a view's root is read through the index under the root's own name`() {
         val select = select(ClaimView::class.java)
         val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x", alias = "claim")), indexed = true)
@@ -171,8 +180,8 @@ class OracleLabelledIndexTest {
         if (ran.statement == LabelledIndexCatalog.query(graph)) rows.toList() else emptyList<Any?>()
     }
 
-    private fun listed(label: String, vararg properties: String) =
-        mapOf("kind" to "RANGE_INDEX", "label" to label, "properties" to properties.toList(), "name" to null, "details" to emptyMap<String, Any?>())
+    private fun listed(label: String, vararg properties: String, kind: String = "RANGE_INDEX") =
+        mapOf("kind" to kind, "label" to label, "properties" to properties.toList())
 
     @Test
     fun `the backend reads the labelled indexes from the catalog once, on a connection of its own, and a load, a count and a delete use them`() {
@@ -229,7 +238,7 @@ class OracleLabelledIndexTest {
     }
 
     @Test
-    fun `the catalog is read again when this process has made a range index since, or when what was read is old`() {
+    fun `the catalog is read again once this process has made or dropped an index since, or when what was read is old`() {
         var now = 0L
         // A graph of its own: what is counted is what this process did to the graph.
         val own = OracleGraph("labelled_catalog")
@@ -241,7 +250,13 @@ class OracleLabelledIndexTest {
         catalog.current()
         assertEquals(1, reads())
 
+        // Writing the statements is not running them: what is read before they have run would be kept.
         OracleSchemaGrammar(own).createIndex(RangeIndexSpec("Claim", "text"), null)
+        catalog.current()
+        assertEquals(1, reads())
+
+        // The index manager says they have run.
+        OracleSchemaGrammar(own).changed()
         catalog.current()
         assertEquals(2, reads())
 

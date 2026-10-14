@@ -89,6 +89,17 @@ interface SchemaGrammar {
 
     fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement>
 
+    /**
+     * Whether [existing], an index introspection found, lacks part of what [createIndex] makes for it:
+     * one made by an earlier version of Drivine. `ensure` then runs [createIndex] again, which makes
+     * what is missing; [find][IndexManager.find], `list` and `drop` see the index as it is. Never, on
+     * an engine whose indexes are made whole.
+     */
+    fun isIncomplete(existing: SchemaItemInfo): Boolean = false
+
+    /** Told once the statements this grammar wrote to make or drop an index or a constraint have run, whether or not they all succeeded. */
+    fun changed() {}
+
     // ----- Introspection -----
 
     /**

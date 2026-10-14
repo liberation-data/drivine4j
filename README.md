@@ -2658,10 +2658,13 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   `count`, a `deleteAll` or a `groups` whose `where` compares an indexed property with a text (`eq`,
   `gt`, `gte`, `lt`, `lte`) reads the second, and does not test the label on its own: the one index
   answers both. What else the `where` holds is tested on the nodes it gives. `IN`, `neq`, a test of
-  part of a text, a comparison inside an `or`, and one with a number are read as before. A range
-  index made by an earlier version is made again by the next `ensure`, with the index over the
-  label's nodes beside it. The backend reads which there are from `<graph>_schema` at most once a
-  minute, and again when this process makes or drops a range index.
+  part of a text, a comparison inside an `or`, and one with a number are read as before. A
+  uniqueness constraint over one property already has an index over the label's nodes, its unique
+  index, which reads the same value: a filter on that property is read through it, and no second
+  one is made. A range index made by an earlier version is found, listed and dropped as it is, and
+  the next `ensure` of it adds the index over the label's nodes. The backend reads which there are
+  from `<graph>_schema` at most once a minute, and again when this process makes or drops an index
+  or a constraint.
 - Oracle reads an empty string as null, so a stamp of `''` is no stamp. A comparison with `""` in the
   query DSL is written to find a property stored empty all the same; SQL of yours that compares
   `JSON_VALUE(…)` with `''` finds nothing.
@@ -3134,7 +3137,7 @@ drivine:
 | Vector indexes | A table of embeddings (`VECTOR(n, FLOAT32)`) beside the nodes, kept in step by a trigger and filled from the nodes there are, with `CREATE VECTOR INDEX … ORGANIZATION NEIGHBOR PARTITIONS` over it. An embedding of another dimension leaves its node out of the index |
 | Full-text indexes | A table of the indexed text beside the nodes, kept in step by a trigger, with an Oracle Text search index over it. Without Oracle Text the index is recorded and nothing is made |
 | Range indexes | Two indexes. `CREATE INDEX … (JSON_VALUE(props, '$.p'))`, the property read as text, over the property whatever the label, so two labels that index a property of one name share it: a save and a load by id find a node by it. And `CREATE INDEX … (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == "Label")') THEN JSON_VALUE(n.props, '$.p') END)`, over the property of the label's nodes alone, which a filter on the label's nodes reads. Composite supported |
-| Uniqueness | A unique index over the property for the nodes that carry the label. A node that lacks one of the properties is not constrained |
+| Uniqueness | A unique index over the property for the nodes that carry the label, with the range index a node is found by. A node that lacks one of the properties is not constrained. Over one property, the unique index stands for the range index's index over the label's nodes, and none is made beside it |
 | Item names | Recorded; the Oracle object's name is derived from the graph, label and properties, and recorded with it. A drop drops the object the record names |
 
 The store's identity (`DrivineStore`) and the schema marker are nodes of the graph on Oracle too, and the graph's tables are made for them when they are the first thing asked of a new graph.

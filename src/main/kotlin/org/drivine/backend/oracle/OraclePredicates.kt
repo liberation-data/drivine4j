@@ -76,8 +76,7 @@ internal class OraclePredicates(
      */
     private fun text(row: String, key: String): String {
         if (row != root || key == Stamps.PROPERTY) return property(row, key)
-        val label = scope.implied.firstOrNull { labelled.covers(it, key) } ?: return property(row, key)
-        return OracleSql.labelled(row, label, key)
+        return scope.implied.firstNotNullOfOrNull { labelled.expression(row, it, key) } ?: property(row, key)
     }
 
     /**

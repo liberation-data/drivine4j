@@ -6,6 +6,7 @@ import org.drivine.backend.GraphStatement
 import org.drivine.backend.oracle.LabelledIndexes
 import org.drivine.backend.oracle.OracleBackend
 import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.backend.oracle.OracleSelect
 import org.drivine.backend.oracle.OracleSql
 import org.drivine.mapper.Neo4jObjectMapper
@@ -16,6 +17,7 @@ import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.drivine.schema.EnsureResult
 import org.drivine.schema.RangeIndexSpec
+import org.drivine.schema.UniquenessConstraintSpec
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestInstance
@@ -45,8 +47,10 @@ class OracleLabelledIndexIntegrationTest {
     fun seed() {
         OracleTestDatabase.clear(pm)
         // What an earlier run left.
-        listOf("repoKey", "state", "number").forEach { pm.indexes.drop(RangeIndexSpec("Issue", it)) }
-        OracleTestDatabase.run("DROP INDEX IF EXISTS ${graph.objectName("ix", listOf("number"))}")
+        listOf("id", "key").forEach { pm.constraints.drop(UniquenessConstraintSpec("Issue", it)) }
+        listOf("repoKey", "state", "number", "id", "key").forEach { pm.indexes.drop(RangeIndexSpec("Issue", it)) }
+        listOf(graph.objectName("ix", listOf("number")), graph.objectName("ix", listOf("key")), graph.objectName("uq", listOf("Issue", "key")))
+            .forEach { OracleTestDatabase.run("DROP INDEX IF EXISTS $it") }
         // 6,000 issues over 60 repos, 95 in 100 of them open; one in ten carries a second label.
         // 12,000 comments with the same repos and states, and 6,000 people with neither.
         OracleTestDatabase.run(
@@ -163,26 +167,77 @@ class OracleLabelledIndexIntegrationTest {
         assertTrue(loaded.all { it.startsWith("i") })
     }
 
-    @Test
-    fun `a range index recorded before there were labelled indexes is made again, with its labelled index, and dropped with it`() {
-        val spec = RangeIndexSpec("Issue", "number")
-        val shared = graph.objectName("ix", listOf("number"))
-        val labelled = graph.objectName("lx", listOf("Issue", "number"))
-        // As an earlier version made it: the index over the property, and a record with no details.
+    /** As an earlier version made a range index on Issue's [property]: the index over the property, and a record with no details. */
+    private fun madeEarlier(property: String): String {
+        val shared = graph.objectName("ix", listOf(property))
         OracleTestDatabase.run(
-            "CREATE INDEX $shared ON ${graph.nodes} (JSON_VALUE(props, '$.number'))",
-            "INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details) VALUES ('RANGE_INDEX', 'Issue', '[\"number\"]', 'Issue_number_range', '$shared', '{}')",
+            "CREATE INDEX IF NOT EXISTS $shared ON ${graph.nodes} (JSON_VALUE(props, '$.$property'))",
+            "INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details) VALUES ('RANGE_INDEX', 'Issue', '[\"$property\"]', 'Issue_${property}_range', '$shared', '{}')",
         )
-        assertNull(pm.indexes.find(spec), "listed as not there, for its labelled index is not")
+        return shared
+    }
 
+    @Test
+    fun `a range index recorded before there were labelled indexes is found, listed and dropped as it is, and ensure makes it whole`() {
+        val spec = RangeIndexSpec("Issue", "number")
+        val labelled = graph.objectName("lx", listOf("Issue", "number"))
+
+        var shared = madeEarlier("number")
+        assertEquals(OracleSchemaGrammar.INCOMPLETE, assertNotNull(pm.indexes.find(spec)).status)
+        assertTrue(pm.indexes.list().any { it.label == "Issue" && it.properties == listOf("number") })
+        assertTrue(pm.indexes.drop(spec), "dropped without being made whole first")
+        assertNull(pm.indexes.find(spec))
+        assertFalse(indexed(shared))
+
+        shared = madeEarlier("number")
         assertTrue(pm.indexes.ensure(spec) is EnsureResult.Created)
-        assertNotNull(pm.indexes.find(spec))
+        assertNull(assertNotNull(pm.indexes.find(spec)).status)
         assertTrue(indexed(labelled))
         assertTrue(pm.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
 
         assertTrue(pm.indexes.drop(spec))
         assertFalse(indexed(labelled))
         assertFalse(indexed(shared))
+    }
+
+    @Test
+    fun `a uniqueness constraint over one property is read through by a unique scan, with no labelled index beside it, and answers as the property does`() {
+        // Issues whose id no comparison with a text meets: JSON null, empty, a list, none at all.
+        listOf("{\"id\": null}", "{\"id\": \"\"}", "{\"id\": [1]}", "{\"id\": {\"a\": 1}}", "{}").forEach {
+            OracleTestDatabase.run("INSERT INTO ${graph.nodes} (labels, props) VALUES (JSON('[\"Issue\"]'), JSON('$it'))")
+        }
+        assertTrue(pm.constraints.ensure(UniquenessConstraintSpec("Issue", "id")) is EnsureResult.Created)
+        assertFalse(indexed(graph.objectName("lx", listOf("Issue", "id"))), "the unique index stands for the labelled index")
+        assertNull(assertNotNull(pm.indexes.find(RangeIndexSpec("Issue", "id"))).status, "the range index is whole")
+
+        val load = backend.loadAll(LabelledIssue::class.java, query(eq("id", "i7"))).statement
+        val plan = plan(load)
+        assertTrue("UNIQUE SCAN" in plan && graph.objectName("uq", listOf("Issue", "id")).uppercase() in plan, plan)
+        assertFalse(overLabels in plan, plan)
+        assertEquals(setOf("i7"), ids(load))
+
+        listOf(ComparisonOperator.GREATER_THAN_OR_EQUAL to "i", ComparisonOperator.LESS_THAN to "i5", ComparisonOperator.EQUALS to "i5999").forEach { (operator, value) ->
+            val condition = PropertyCondition("n.id", operator, value)
+            val indexed = backend.count(LabelledIssue::class.java, query(condition))
+            assertTrue("JSON_EXISTS(n_.props, '$.id')" in indexed.statement, indexed.statement)
+            val plain = OracleSelect(graph, LabelledIssue::class.java, labelled = LabelledIndexes.NONE)
+            val unindexed = plain.count(listOfNotNull(plain.predicate(listOf(condition), indexed = true)))
+            assertEquals(counted(unindexed), counted(indexed), "$operator $value")
+        }
+    }
+
+    @Test
+    fun `a uniqueness constraint made by an earlier version is read through with nothing made again`() {
+        val uq = graph.objectName("uq", listOf("Issue", "key"))
+        madeEarlier("key")
+        OracleTestDatabase.run(
+            "CREATE UNIQUE INDEX $uq ON ${graph.nodes} n (${OracleSql.unique("n", "Issue", listOf("key"), "key")})",
+            "INSERT INTO ${graph.catalog} (kind, label, properties, name, object_name, details) VALUES ('UNIQUENESS_CONSTRAINT', 'Issue', '[\"key\"]', 'Issue_key_unique', '$uq', '{}')",
+        )
+        assertNull(assertNotNull(pm.indexes.find(RangeIndexSpec("Issue", "key"))).status, "a unique index stands for its labelled index")
+        val statement = OracleBackend(pm, Neo4jObjectMapper.instance).count(LabelledIssue::class.java, query(eq("key", "k1"))).statement
+        assertTrue("MATCH (n_ IS node)\n" in statement && "AND JSON_EXISTS(n_.props, '$.key') THEN" in statement, statement)
+        assertEquals(0, counted(GraphStatement(statement, mapOf("_p0" to "k1"))))
     }
 
     private fun indexed(name: String): Boolean =

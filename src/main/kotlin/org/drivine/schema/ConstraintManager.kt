@@ -40,6 +40,15 @@ class ConstraintManager internal constructor(
 
     private val logger = LoggerFactory.getLogger(ConstraintManager::class.java)
 
+    /** Runs [statements], which make or drop a constraint, and tells the grammar they have. */
+    private fun run(statements: List<SchemaStatement>) {
+        try {
+            executor.execute(statements)
+        } finally {
+            grammar.changed()
+        }
+    }
+
     /**
      * Ensures a constraint matching [spec] exists. Idempotent — safe to call on every startup.
      *
@@ -72,7 +81,7 @@ class ConstraintManager internal constructor(
         }
 
         try {
-            executor.execute(grammar.createConstraint(spec))
+            run(grammar.createConstraint(spec))
         } catch (e: Exception) {
             if (grammar.isConstraintViolation(e)) {
                 logger.warn(
@@ -114,7 +123,7 @@ class ConstraintManager internal constructor(
      */
     fun drop(spec: ConstraintSpec): Boolean {
         val existing = find(spec) ?: return false
-        executor.execute(grammar.dropConstraint(existing))
+        run(grammar.dropConstraint(existing))
         logger.info("Dropped {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
         return true
     }
@@ -129,7 +138,7 @@ class ConstraintManager internal constructor(
     fun recreate(spec: ConstraintSpec, violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE): EnsureResult {
         val existing = find(spec)
         if (existing != null) {
-            executor.execute(grammar.dropConstraint(existing))
+            run(grammar.dropConstraint(existing))
         }
         return when (val result = ensure(spec, violationSampleSize)) {
             is EnsureResult.Created -> EnsureResult.Recreated(existing, result.info)
@@ -159,7 +168,7 @@ class ConstraintManager internal constructor(
                 }
 
                 status.contains("FAILED") -> {
-                    executor.execute(grammar.dropConstraint(info))
+                    run(grammar.dropConstraint(info))
                     logger.warn(
                         "Constraint on {}{} failed to build: existing data violates it",
                         spec.label, spec.properties
