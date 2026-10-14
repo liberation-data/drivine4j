@@ -424,7 +424,7 @@ internal class OracleSelect(
     private fun gathered(parent: String, steps: List<Step>, row: String, value: String, collection: Boolean, order: String?): String =
         if (collection) {
             val array = "JSON_ARRAYAGG($value ORDER BY ${order ?: "$row.eid"} RETURNING JSON)"
-            "COALESCE(${rows.related(array, parent, steps, row).nested()}, ${GroupQuery.EMPTY}_ARRAY)"
+            "COALESCE(${rows.related(array, parent, steps, row).nested()}, $EMPTY_ARRAY)"
         } else {
             rows.related(value, parent, steps, row, tail = listOf(first("$row.eid"))).nested()
         }
@@ -443,7 +443,7 @@ internal class OracleSelect(
         val value = element(row, targetType, visits, relationship.fieldName)
         val reached = listOf("$row.nid IN ${rows.related("$path.nid", parent, steps, path).nested()}")
         return if (relationship.isCollection) {
-            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", rows.nodes(emptyList(), row), reached).nested()}, ${GroupQuery.EMPTY}_ARRAY)"
+            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", rows.nodes(emptyList(), row), reached).nested()}, $EMPTY_ARRAY)"
         } else {
             Query(value, rows.nodes(emptyList(), row), reached, listOf(first("$row.nid"))).nested()
         }
