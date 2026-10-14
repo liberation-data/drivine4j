@@ -4,6 +4,8 @@ import org.junit.jupiter.api.Test
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
+import java.time.OffsetDateTime
+import java.time.OffsetTime
 import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.ZonedDateTime
@@ -17,7 +19,7 @@ class TemporalCoercerTest {
         val now = Instant.parse("2026-04-23T05:07:53.295203Z")
         val out = TemporalCoercer.coerce(mapOf("ts" to now))
 
-        assertEquals("2026-04-23T05:07:53.295203Z", out["ts"])
+        assertEquals("2026-04-23T05:07:53.295203000Z", out["ts"])
     }
 
     @Test
@@ -26,7 +28,7 @@ class TemporalCoercerTest {
         val out = TemporalCoercer.coerce(mapOf("ts" to zdt))
 
         // Must NOT be the default "...Z[UTC]" form — Jackson's InstantDeserializer rejects it.
-        assertEquals("2026-04-23T05:07:53Z", out["ts"])
+        assertEquals("2026-04-23T05:07:53.000000000Z", out["ts"])
     }
 
     @Test
@@ -34,8 +36,8 @@ class TemporalCoercerTest {
         val zdt = ZonedDateTime.of(2040, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
         val out = TemporalCoercer.coerce(mapOf("zoned" to zdt, "offset" to zdt.toOffsetDateTime()))
 
-        assertEquals("2040-01-01T00:00:00Z", out["zoned"])
-        assertEquals("2040-01-01T00:00:00Z", out["offset"])
+        assertEquals("2040-01-01T00:00:00.000000000Z", out["zoned"])
+        assertEquals("2040-01-01T00:00:00.000000000Z", out["offset"])
     }
 
     @Test
@@ -43,7 +45,7 @@ class TemporalCoercerTest {
         val zdt = ZonedDateTime.of(2026, 4, 23, 1, 7, 53, 0, ZoneId.of("America/New_York"))
         val out = TemporalCoercer.coerce(mapOf("ts" to zdt))
 
-        assertEquals("2026-04-23T01:07:53-04:00", out["ts"])
+        assertEquals("2026-04-23T01:07:53.000000000-04:00", out["ts"])
     }
 
     @Test
@@ -68,7 +70,7 @@ class TemporalCoercerTest {
         val b = Instant.parse("2026-04-24T00:00:00Z")
         val out = TemporalCoercer.coerce(mapOf("stamps" to listOf(a, b)))
 
-        assertEquals(listOf("2026-04-23T00:00:00Z", "2026-04-24T00:00:00Z"), out["stamps"])
+        assertEquals(listOf("2026-04-23T00:00:00.000000000Z", "2026-04-24T00:00:00.000000000Z"), out["stamps"])
     }
 
     @Test
@@ -79,7 +81,7 @@ class TemporalCoercerTest {
         ))
 
         val event = out["event"] as Map<*, *>
-        assertEquals("2026-04-23T05:07:53Z", event["ts"])
+        assertEquals("2026-04-23T05:07:53.000000000Z", event["ts"])
         assertEquals("launch", event["name"])
     }
 
@@ -107,7 +109,38 @@ class TemporalCoercerTest {
         ))
 
         assertEquals("abc", out["id"])
-        assertEquals("2026-04-23T05:07:53Z", out["ts"])
+        assertEquals("2026-04-23T05:07:53.000000000Z", out["ts"])
         assertEquals(7, out["count"])
+    }
+
+    @Test
+    fun `times with an offset are of one width, so their text sorts as they do`() {
+        val second = Instant.parse("2026-03-01T12:00:00Z")
+        val moments = listOf(0L, 1_000, 120_000_000, 123_000_000, 500_000_000, 999_999_999, 1_000_000_000).map(second::plusNanos)
+
+        fun texts(of: (Instant) -> Any) = moments.map { TemporalCoercer.coerce(mapOf("v" to of(it)))["v"] as String }
+
+        val forms: List<(Instant) -> Any> = listOf(
+            { it },
+            { it.atZone(ZoneId.of("America/New_York")) },
+            { it.atOffset(ZoneOffset.ofHours(2)) },
+            { it.atOffset(ZoneOffset.UTC).toOffsetTime() },
+        )
+        forms.forEach { form ->
+            val written = texts(form)
+            assertEquals(written.sorted(), written)
+            assertEquals(1, written.map { it.length }.distinct().size)
+        }
+        assertEquals(moments, texts { it }.map(Instant::parse))
+        assertEquals(moments, texts { it.atOffset(ZoneOffset.ofHours(2)) }.map { OffsetDateTime.parse(it).toInstant() })
+        assertEquals("12:00:00.120000000Z", TemporalCoercer.coerce(mapOf("v" to OffsetTime.parse("12:00:00.12Z")))["v"])
+    }
+
+    @Test
+    fun `the shortest form writes a time in as few digits as it has`() {
+        val zoned = ZonedDateTime.of(2040, 1, 1, 0, 0, 0, 0, ZoneOffset.UTC)
+        val out = TemporalCoercer.shortest(mapOf("at" to listOf(zoned, Instant.parse("2026-04-23T05:07:53.5Z"))))
+
+        assertEquals(listOf("2040-01-01T00:00:00Z", "2026-04-23T05:07:53.500Z"), out["at"])
     }
 }
