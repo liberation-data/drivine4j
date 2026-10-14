@@ -10,6 +10,7 @@ import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.session.SessionManager
 import org.junit.jupiter.api.Test
+import sample.graphproperty.ChunkNode
 import sample.graphproperty.WidgetNode
 import sample.nullpolicy.VecSaveNode
 import sample.propertybag.BaggedNode
@@ -17,6 +18,7 @@ import sample.stateless.Claim
 import sample.stateless.Human
 import sample.stateless.Memo
 import sample.stateless.MemoView
+import sample.stateless.Tagged
 import sample.stateless.Thread
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
@@ -92,6 +94,35 @@ class BatchSaveOperationsTest {
     }
 
     @Test
+    fun `with fields named a row holds those alone, each named as declared and keyed as stored, for the class it is asked of`() {
+        val items = listOf(ChunkNode("k1", "text", sequenceNumber = 1), Human("h1", "Ada"))
+        val fields = mapOf<Class<*>, Set<String>?>(ChunkNode::class.java to setOf("sequenceNumber", "rootDocumentId"))
+
+        val ignoring = operations().buildBatchSpecs(items, CascadeType.NONE, NullPolicy.IGNORE) { fields[it] }.map { it.written.single() }
+        val clearing = operations().buildBatchSpecs(items, CascadeType.NONE, NullPolicy.CLEAR) { fields[it] }.map { it.written.single() }
+
+        assertEquals(listOf(mapOf("id" to "k1", "props" to mapOf("sequence_number" to 1L)), mapOf("id" to "h1", "props" to mapOf("name" to "Ada"))), ignoring)
+        // A null clears only where it is named: the section id, which is not, is no part of the row.
+        assertEquals(mapOf<String, Any?>("sequence_number" to 1L, "root_document_id" to null), clearing.first()["props"])
+    }
+
+    @Test
+    fun `with fields named a root saved by itself sets those alone`() {
+        val items = listOf(BaggedNode("b1", "one", mapOf("k" to "v")))
+
+        val whole = operations().buildBatchSpecs(items, CascadeType.NONE).single()
+        val titled = operations().buildBatchSpecs(items, CascadeType.NONE) { setOf("title") }.single()
+        val bagged = operations().buildBatchSpecs(items, CascadeType.NONE) { setOf("metadata") }.single()
+
+        assertContains(whole.text, "metadata.k")
+        assertContains(whole.text, "title")
+        assertContains(titled.text, "title")
+        assertFalse("metadata" in titled.text, "the bag is not written: ${titled.text}")
+        assertContains(bagged.text, "metadata.k")
+        assertFalse("title" in bagged.text, "the title is not written: ${bagged.text}")
+    }
+
+    @Test
     fun `a root an UNWIND cannot write is saved a statement to an object, among roots that go as rows`() {
         val specs = operations().buildBatchSpecs(
             listOf(BaggedNode("b1", "one", mapOf("k" to "v")), BaggedNode("b2", "two"), Human("h1", "Ada")),
@@ -140,6 +171,28 @@ class BatchSaveOperationsTest {
     }
 
     // ----- Stamped batches -----
+
+    @Test
+    fun `a stamped row holds the named fields alone`() {
+        val items = listOf(Claim("c1", "one", "first"), Claim("c2", "two")).withIndex().toList()
+
+        val spec = operations(stamping = Stamping(checked = false, handsBack = true)).buildStampedSpecs(items, NullPolicy.CLEAR) { setOf("note") }.single()
+
+        assertEquals(listOf<Any?>(mapOf("note" to "first"), mapOf("note" to null)), spec.rows.map { it["props"] })
+    }
+
+    @Test
+    fun `stamped rows of more than one class each hold the fields named for their own class`() {
+        val items = listOf(Claim("c1", "one", "first"), Tagged("t1", "kept"), Claim("c2", "two", "second")).withIndex().toList()
+        val fields = mapOf<Class<*>, Set<String>?>(Claim::class.java to setOf("note"), Tagged::class.java to setOf("text"))
+
+        val specs = operations(stamping = Stamping(checked = false, handsBack = true)).buildStampedSpecs(items, NullPolicy.IGNORE) { fields[it] }
+
+        assertEquals(
+            listOf(listOf<Any?>(mapOf("note" to "first"), mapOf("note" to "second")), listOf<Any?>(mapOf("text" to "kept"))),
+            specs.map { spec -> spec.rows.map { it["props"] } },
+        )
+    }
 
     @Test
     fun `a stamped batch offers each row a stamp of its own, taken only when the row changes the node`() {

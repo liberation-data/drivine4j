@@ -1520,6 +1520,8 @@ Persist a collection in one group of statements. Within an ambient `@Transaction
 ```kotlin
 val saved = graphObjectManager.saveAll(views)
 val replaced = graphObjectManager.saveAll(views, Replace(PropositionView::mentions))
+graphObjectManager.saveAll(chunks, only = setOf(Chunk::summary, Chunk::summaryModel))   // write just these fields of each
+graphObjectManager.saveAll(chunks, except = setOf(Chunk::embedding))                    // write everything but these
 ```
 
 - Fragments collapse into chunked `UNWIND … MERGE` statements (sub-linear round trips), with or without a `@NodeStamp` field. A view is saved by a statement of its own, as `save` does it.
@@ -1532,6 +1534,10 @@ val replaced = graphObjectManager.saveAll(views, Replace(PropositionView::mentio
 - **One object of a batch holding another's root.** A view's save changes the nodes it holds. So a view saved with `Replace`, whose root an earlier object of the batch holds, can be refused by the batch's own doing. The exception then says so: `StaleObjectException.bySameBatch` is true. Give such a view before the objects that hold its root, or save them one at a time, each from what the save before it returned.
 - A batch the engine turns away because another writer was changing the same nodes is run again, as a save is.
 - Null handling follows [`NullPolicy`](#null-write-policy-nullpolicy), as for `save`.
+- **`only` and `except`** name fields of each object, and for a view fields of its root. Every other field of the node is left as the store has it: neither written nor, under `NullPolicy.CLEAR`, cleared. A view's relationships are written whatever they name, and a related node is written whole. Give one or the other: both together are refused.
+- **A field is named by its name.** `Chunk::summary` names the field `summary` of every class in the batch, whichever class declares the property, so it is the same rule from Kotlin and from Java. This is where `saveAll` differs from `save`, which refuses a property of a class other than the one saved. Each name must be a field of every class in the batch, or the batch is refused before anything is written. The id and the stamp are refused in `only`: neither is written from the object. A `@PropertyBag` or the `@NodeLabels` field can be named, and is then written as a save writes it.
+- **With `only` or `except`, a node that is gone comes back.** `saveAll` is an upsert and a batch that only adds is not checked, so a node deleted since its object was loaded is made again, holding its id and the written fields alone, and for a view its relationships. It has its labels and a stamp, as any node a save makes. To write fields only where the node still exists, use [`patchAll`](#batch-patch-patchall).
+- A batched statement is the same with fields named: each row, or on Oracle each step, carries those fields alone. A statement that saves one object, as for a view, sets those fields alone. A node gets a new stamp if a named field differs, if the save made it, or if it had none.
 - The managers Drivine provides run the batch in one transaction. A `PersistenceManager` of your own that overrides `executeBatch` to do so must override `queryBatch` too, which `saveAll` calls and whose default runs each statement on its own.
 
 #### Conditional Write by Id (`patch`)
@@ -1618,6 +1624,7 @@ graphObjectManager.save(view, Replace.all());
 graphObjectManager.saveFields(person, Add.INSTANCE, NullPolicy.IGNORE, Set.of("name"));                // only these fields
 graphObjectManager.saveFields(chunk, Add.INSTANCE, NullPolicy.IGNORE, Set.of(), Set.of("embedding"));   // every field but these
 List<IssueView> saved = graphObjectManager.saveAll(views);
+graphObjectManager.saveAllFields(chunks, Add.INSTANCE, NullPolicy.IGNORE, Set.of("summary", "summaryModel")); // only these fields of each
 List<PatchResult> patched = graphObjectManager.patchAllFields(chunks, NullPolicy.IGNORE, Set.of("embedding"));  // nodes that are there
 PersonQueryDsl dsl = PersonQueryDsl.Companion.getINSTANCE();
 PatchResult touched = graphObjectManager.patch(id, Person.class, dsl,
@@ -1629,7 +1636,7 @@ graphObjectManager.update(id, Person.class, 5, p -> p.withName("Ada"));         
 graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), new NodeRef(Person.class, b, Set.of()), "ASSIGNED_TO");
 ```
 
-- Java names fields as strings, so it calls `saveFields` where Kotlin passes property references to `save`, and `patchAllFields` for `patchAll`.
+- Java names fields as strings, so it calls `saveFields` where Kotlin passes property references to `save`, `saveAllFields` for `saveAll`, and `patchAllFields` for `patchAll`.
 - A `patch` from Java names its fields with `property.assign(value)` and `property.cleared()` in `spec.set(…)`, and its predicate with the conditions of the Java query builder: `spec.onlyIf(…)` joins them by `AND`, and `spec.onlyIfAny(…)` by `OR`. The DSL object above is the one the Kotlin code generator makes; one the Java generator makes is `PersonQueryDsl.INSTANCE`, with `name()` for `getName()`.
 - `@NodeStamp` goes on a `String` field of a Java class or on a `String` component of a record. A Java object whose fields can be set is given its new stamp in place, and `save` returns that same object. A record comes back as a copy.
 - `update`'s function may change the object it is given and return it, or return another.

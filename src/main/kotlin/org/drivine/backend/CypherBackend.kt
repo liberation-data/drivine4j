@@ -89,7 +89,7 @@ internal class CypherBackend(
     /** Builds a whole save as one statement. */
     private val saves = SaveStatementBuilder(objectMapper, grammar, storedKeys)
 
-    /** The batches of a `saveAll`. Nothing is tracked: a batch writes every field of what it is given. */
+    /** The batches of a `saveAll`. Nothing is tracked: a batch writes every field of what it is given, or those it is told to. */
     private val batches = BatchSaveOperations(
         objectMapper, SessionManager.untracked(objectMapper), BatchSaveOperations.UNWIND_CHUNK_SIZE, grammar, storedKeys, Stamping(checked = false),
     )
@@ -214,12 +214,12 @@ internal class CypherBackend(
      * so does a stamped one, by a statement that returns its stamp. A stamped fragment an `UNWIND`
      * cannot write (see [savedByUnwind]) is saved alone, by the statement that hands its stamp back.
      */
-    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch {
+    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>?): FragmentBatch {
         val (stamped, plain) = fragments.partition { FragmentModel.from(it.value.javaClass).stampField != null }
         val (batched, alone) = stamped.partition { FragmentModel.from(it.value.javaClass).savedByUnwind(grammar) }
         return FragmentBatch(
-            unstamped = batches.buildBatchSpecs(plain.map { it.value }, CascadeType.NONE, nullPolicy),
-            stamped = batches.buildStampedSpecs(batched, nullPolicy),
+            unstamped = batches.buildBatchSpecs(plain.map { it.value }, CascadeType.NONE, nullPolicy, writeFields),
+            stamped = batches.buildStampedSpecs(batched, nullPolicy, writeFields),
             alone = alone,
         )
     }

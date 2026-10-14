@@ -530,6 +530,21 @@ class OracleSavePlanTest {
     // A batch of fragments
 
     @Test
+    fun `fragments saved together with fields named each set those of their own class`() {
+        val fields = mapOf<Class<*>, Set<String>?>(Claim::class.java to setOf("note"), Human::class.java to setOf("name"))
+        val fragments = listOf(Claim("a", "A", "noted"), Human("h", "Ada"), Claim("b", "B")).withIndex().toList()
+
+        val (_, clearing) = planner.together(fragments, NullPolicy.CLEAR) { fields[it] }
+
+        @Suppress("UNCHECKED_CAST")
+        val steps = clearing[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
+        assertEquals(listOf<Any?>(mapOf("note" to "noted"), mapOf("name" to "Ada"), emptyMap<String, Any?>()), steps.map { it["set"] ?: emptyMap<String, Any?>() })
+        // Under CLEAR a named field that is null is cleared, and the text, which is not named, is not touched.
+        assertContains(steps[2].toString(), "note")
+        assertFalse(steps.any { "text" in it.toString() }, "the text is no part of a step: $steps")
+    }
+
+    @Test
     fun `fragments saved together are a step each, returned under the index each was given, by the block that returns each stamp`() {
         val (text, bindings) = planner.together(listOf(Claim("a", "A"), Claim("b", "B"), Claim("c", "C")).withIndex().toList(), NullPolicy.IGNORE)
 

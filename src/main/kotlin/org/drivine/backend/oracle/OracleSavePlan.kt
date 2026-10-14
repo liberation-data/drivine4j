@@ -34,10 +34,15 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
     /**
      * The statement that saves [fragments] together, unchecked, each a step of one plan. It returns a
      * row for each, `index/found=stamp`, under the index the fragment is given here.
+     *
+     * @param writeFields the only fields to write of a fragment of the class it is asked of; null for
+     *   all of them. The fragments may be of more than one class, so each step asks for its own
      */
-    fun together(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): Pair<String, Map<String, Any?>> {
+    fun together(
+        fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>? = { null },
+    ): Pair<String, Map<String, Any?>> {
         val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null }, createsRoot = true)
-        fragments.forEach { (index, fragment) -> composition.fragment(fragment, index) }
+        fragments.forEach { (index, fragment) -> composition.fragment(fragment, index, writeFields(fragment.javaClass)) }
         return composition.plan.text(OracleWriteBlock.Returns.EACH_STAMP) to composition.plan.bindings()
     }
 
@@ -69,9 +74,9 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         }
 
         /** One fragment of a batch: saved as the root of a save on its own is, and returned under [index]. */
-        fun fragment(fragment: Any, index: Int) {
+        fun fragment(fragment: Any, index: Int, writeFields: Set<String>?) {
             val model = FragmentModel.from(fragment.javaClass)
-            node(fragment, model, objectMapper.toMap(fragment), null, nullPolicy, null, readsStore = true, index = index.toString())
+            node(fragment, model, objectMapper.toMap(fragment), null, nullPolicy, writeFields, readsStore = true, index = index.toString())
         }
 
         /** The root's number in the plan, which the steps of the view's fields join to. */

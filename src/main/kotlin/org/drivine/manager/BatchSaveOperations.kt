@@ -43,17 +43,26 @@ internal class BatchSaveOperations(
      * Builds the statements for [items] (assumed non-empty), grouped by runtime class. Within a group
      * UNWIND-root statements precede the per-item relationship statements that MATCH those roots, so the
      * list is safe to execute in order.
+     *
+     * @param writeFields the only root fields to write of an item of the class it is asked of, by
+     *   field name; null for all of them
      */
-    fun buildBatchSpecs(items: List<Any>, cascade: CascadeType, nullPolicy: NullPolicy = NullPolicy.IGNORE): List<QuerySpecification<*>> {
+    fun buildBatchSpecs(
+        items: List<Any>,
+        cascade: CascadeType,
+        nullPolicy: NullPolicy = NullPolicy.IGNORE,
+        writeFields: (Class<*>) -> Set<String>? = { null },
+    ): List<QuerySpecification<*>> {
         val specs = mutableListOf<QuerySpecification<*>>()
         items.groupBy { it.javaClass }.forEach { (clazz, group) ->
             val (rootModel, rootFieldName) = rootMetadata(clazz)
             val idField = rootModel.nodeIdField
+            val fields = writeFields(clazz)
             // A root an UNWIND cannot write is saved per item: see [savedByUnwind].
             if (idField != null && rootModel.savedByUnwind(grammar)) {
-                appendUnwindGroup(specs, clazz, group, rootModel, rootFieldName, idField, cascade, nullPolicy)
+                appendUnwindGroup(specs, clazz, group, rootModel, rootFieldName, idField, cascade, nullPolicy, fields)
             } else {
-                group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy).forEach { specs.add(it.toSpec()) } }
+                group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy, fields).forEach { specs.add(it.toSpec()) } }
             }
         }
         return specs
@@ -69,11 +78,12 @@ internal class BatchSaveOperations(
         idField: String,
         cascade: CascadeType,
         nullPolicy: NullPolicy,
+        writeFields: Set<String>?,
     ) {
         val labels = rootModel.labels.joinToString(":")
         // MERGE keys on the id field's on-disk property name (only differs under a @GraphProperty id).
         val idProperty = rootModel.nodeIdProperty ?: idField
-        val rows = group.map { obj -> unwindRootRow(obj, rootModel, rootFieldName, idField, nullPolicy) }
+        val rows = group.map { obj -> unwindRootRow(obj, rootModel, rootFieldName, idField, nullPolicy, writeFields) }
         rows.chunked(chunkSize).forEach { chunk ->
             specs.add(
                 QuerySpecification
@@ -83,7 +93,7 @@ internal class BatchSaveOperations(
         }
         // The UNWIND already upserted each root; the remaining statements MATCH it by id (statement[0]
         // is always the root upsert — see GraphViewMergeBuilder / FragmentMergeBuilderAdapter).
-        group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy).drop(1).forEach { specs.add(it.toSpec()) } }
+        group.forEach { obj -> mergeStatements(clazz, obj, cascade, nullPolicy, writeFields).drop(1).forEach { specs.add(it.toSpec()) } }
     }
 
     /**
@@ -93,13 +103,18 @@ internal class BatchSaveOperations(
      * that was there without a stamp. Each of [items] is a fragment that
      * [savedByUnwind] allows.
      */
-    fun buildStampedSpecs(items: List<IndexedValue<Any>>, nullPolicy: NullPolicy): List<QuerySpecification<String>> =
+    fun buildStampedSpecs(
+        items: List<IndexedValue<Any>>,
+        nullPolicy: NullPolicy,
+        writeFields: (Class<*>) -> Set<String>? = { null },
+    ): List<QuerySpecification<String>> =
         items.groupBy { it.value.javaClass }.flatMap { (clazz, group) ->
             val model = FragmentModel.from(clazz)
             val idField = requireNotNull(model.nodeIdField)
             val statement = stampedUnwind(model.labels.joinToString(":"), model.nodeIdProperty ?: idField, handsBack = true) +
                 "\nRETURN row.i + '/' + ${Stamps.FOUND} + '=' + n.${Stamps.QUOTED}"
-            group.map { (index, obj) -> unwindRootRow(obj, model, null, idField, nullPolicy) + ("i" to index.toString()) }
+            val fields = writeFields(clazz)
+            group.map { (index, obj) -> unwindRootRow(obj, model, null, idField, nullPolicy, fields) + ("i" to index.toString()) }
                 .chunked(chunkSize)
                 .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf("rows" to chunk)).transform(String::class.java) }
         }
@@ -129,8 +144,12 @@ internal class BatchSaveOperations(
      * - under [NullPolicy.CLEAR] nulls are **kept**, so `SET n += {x: null}` clears the property (the
      *   engines on this path — Neo4j / Memgraph, and non-vector FalkorDB — remove a key whose `+=` value
      *   is null). A vector-bearing root on FalkorDB never reaches here (it takes the per-item fallback).
+     *
+     * With [writeFields], `props` holds those fields alone, so the row neither writes nor clears any other.
      */
-    private fun unwindRootRow(obj: Any, rootModel: FragmentModel, rootFieldName: String?, idField: String, nullPolicy: NullPolicy): Map<String, Any?> {
+    private fun unwindRootRow(
+        obj: Any, rootModel: FragmentModel, rootFieldName: String?, idField: String, nullPolicy: NullPolicy, writeFields: Set<String>?,
+    ): Map<String, Any?> {
         val rootProps: Map<String, Any?> = if (rootFieldName != null) {
             @Suppress("UNCHECKED_CAST")
             objectMapper.toMap(obj)[rootFieldName] as? Map<String, Any?>
@@ -140,12 +159,15 @@ internal class BatchSaveOperations(
         }
         val id = rootProps[idField]
             ?: throw IllegalArgumentException("Cannot saveAll ${obj.javaClass.simpleName} with a null @GraphNodeId")
-        val props = rootModel.unwindProps(rootProps, nullPolicy)
+        // By field name, before the props are keyed by stored name: a field renamed with @GraphProperty is named as declared.
+        val written = if (writeFields == null) rootProps else rootProps.filterKeys { it in writeFields }
+        val props = rootModel.unwindProps(written, nullPolicy)
         return mapOf("id" to id, "props" to props, "stamp" to Stamps.fresh())
     }
 
-    private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType, nullPolicy: NullPolicy) =
-        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys, stamping.unchecked()).buildMergeStatements(obj, cascade, nullPolicy)
+    private fun mergeStatements(clazz: Class<*>, obj: Any, cascade: CascadeType, nullPolicy: NullPolicy, writeFields: Set<String>?) =
+        GraphObjectMergeBuilder.forClass(clazz, objectMapper, sessionManager, grammar, storedKeys, stamping.unchecked(), writeFields)
+            .buildMergeStatements(obj, cascade, nullPolicy)
 
     /** Root [FragmentModel] and (for views) the root field name; mirrors the manager's snapshot metadata. */
     private fun rootMetadata(clazz: Class<*>): Pair<FragmentModel, String?> =

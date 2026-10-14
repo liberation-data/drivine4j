@@ -142,8 +142,11 @@ internal interface GraphBackend {
      * How [fragments] are saved several at a time, unchecked, each under its index: which go together
      * and by what statements is the backend's to say, as it is what its store can write so. See
      * [FragmentBatch].
+     *
+     * @param writeFields the only fields to write of a fragment of the class it is asked of, by field
+     *   name; null for all of them
      */
-    fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy): FragmentBatch
+    fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>? = { null }): FragmentBatch
 
     /**
      * The statements that write named properties of many [graphClass] nodes, and make none. Each
