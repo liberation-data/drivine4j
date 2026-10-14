@@ -108,6 +108,15 @@ class OracleSelectTest {
     }
 
     @Test
+    fun `a statement whose roots are found already asks nothing about indexes`() {
+        // The node of a patch is found by its nid before its conditions are read: a patch is one statement.
+        var asked = 0
+        val select = OracleSelect(graph, Claim::class.java, indexed = { asked++; true })
+        select.meeting(listOf(PropertyCondition("n.note", ComparisonOperator.EQUALS, "seed")))
+        assertEquals(0, asked)
+    }
+
+    @Test
     fun `a property of a related node finds no root, whatever is indexed`() {
         val view = OracleSelect(graph, ClaimView::class.java, indexed = { true })
         val statement = view.load(listOfNotNull(view.predicate(listOf(PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada"))))).statement
@@ -274,6 +283,10 @@ class OracleSelectTest {
         val statement = select(SeqWindow2View::class.java).load(emptyList()).statement.squashed()
         assertTrue(statement.contains("(node_ IS node) -[e IS edge WHERE e.type = 'NEXT']->{1,2} (reached_ IS node"), statement)
         assertTrue(statement.contains("'following' VALUE COALESCE(( SELECT JSON_ARRAYAGG(following_.doc ORDER BY following_.nid RETURNING JSON)"), statement)
+        // Read from the root outward as a path is, each node once: never as a test of every node of the graph.
+        assertTrue(statement.contains("SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc"), statement)
+        assertTrue(statement.contains("GROUP BY reached_.src, reached_.nid ) following_ WHERE following_.src = node_.nid"), statement)
+        assertFalse(statement.contains(".nid IN ("), statement)
     }
 
     @Test

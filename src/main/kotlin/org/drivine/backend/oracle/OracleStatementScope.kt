@@ -10,8 +10,9 @@ internal class OracleStatementScope {
     private val names = mutableSetOf<String>()
 
     /**
-     * Whether the roots are found by something narrower than their labels: an id, or the node they are
-     * related to. The labels are then tested on what is found, and not used to find it.
+     * Whether the roots are found by something narrower than their labels: an id, the node they are
+     * related to, or a property whose index finds few nodes. The labels are then tested on what is
+     * found, and not used to find it.
      */
     var narrowed = false
 

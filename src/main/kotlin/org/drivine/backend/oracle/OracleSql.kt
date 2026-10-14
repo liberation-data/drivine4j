@@ -94,7 +94,8 @@ internal object OracleSql {
 
     /**
      * Whether the node [alias] carries [label], written so the index over labels cannot answer it:
-     * the form for a node that is found some other way, by its id or at the end of a relationship.
+     * the form for a node that is found some other way: by its id, by a property whose index finds
+     * few nodes, or at the end of a relationship.
      * Given the choice, Oracle reads every node of the label and tests each for the id, where the
      * index over the id gives the one node. The label is looked for as JSON writes it, in quotes,
      * among the labels as JSON writes them.

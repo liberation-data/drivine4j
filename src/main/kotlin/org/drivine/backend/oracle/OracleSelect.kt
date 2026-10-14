@@ -48,7 +48,7 @@ internal class OracleSelect(
     private val graphClass: Class<*>,
     private val collectionSorts: List<CollectionSortSpec> = emptyList(),
     private val depthOverrides: Map<String, Int> = emptyMap(),
-    /** Whether an index begins with a property, so that its nodes are found by it: see [OracleIndexedProperties]. */
+    /** Whether a property finds few nodes, through an index of its own: see [OracleIndexedProperties]. */
     private val indexed: (String) -> Boolean = { false },
 ) {
     private val viewModel: GraphViewModel? =
@@ -163,18 +163,19 @@ internal class OracleSelect(
     /**
      * The predicate [conditions] of the query DSL make on the root; null when there are none. See [OraclePredicates.predicate].
      *
-     * Where one of them finds the roots by a property with an index, the roots are no longer read by
-     * their labels, and the labels are tested on what is found. Left to choose between the two
-     * indexes, Oracle takes the one over labels: it estimates that a test of a label gives one row.
+     * Where one of them finds the roots by a property whose index finds few nodes, the roots are no
+     * longer read by their labels, and the labels are tested on what is found. Left to choose between
+     * the two indexes, Oracle takes the one over labels: it estimates that a test of a label gives one row.
      */
     fun predicate(conditions: List<WhereCondition>): String? {
-        if (conditions.any(::findsByIndex)) scope.narrowed = true
+        // Roots found already, by an id or by the node a block holds, have nothing to ask of the store.
+        if (!scope.narrowed && conditions.any(::findsByIndex)) scope.narrowed = true
         return predicates.predicate(conditions)
     }
 
     /**
-     * Whether [condition] is one every root meets, of a property of the root that an index begins
-     * with, for equality with a text. An index reads a property as text, so it does not answer a
+     * Whether [condition] is one every root meets, of a property of the root whose index finds few
+     * nodes, for equality with a text. An index reads a property as text, so it does not answer a
      * comparison with a number or a moment; and a stored empty string is read as null, which no
      * index holds.
      */

@@ -1,5 +1,13 @@
 package org.drivine.oracle
 
+import org.drivine.backend.oracle.OracleBackend
+import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.WhereCondition.PropertyCondition
+import org.drivine.schema.RangeIndexSpec
+import kotlin.test.assertFalse
+import kotlin.test.assertTrue
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
@@ -123,6 +131,56 @@ class OracleReadSmokeTest {
         val ids = (1..4000).joinToString(", ") { "'é$it'" }
         assertEquals(1, manager.deleteAll(Claim::class.java, "n.id IN ($ids, 'c1')"))
         assertEquals(listOf("c2"), manager.loadAll(Claim::class.java).map { it.id })
+    }
+
+    @Test
+    fun `a path gives a node once however many ways lead to it, and each root its own`() {
+        OracleTestDatabase.clear(pm)
+        OracleTestDatabase.seed(
+            pm,
+            """
+            CREATE (c1:Claim {id: 'c1', text: 'one'}), (c2:Claim {id: 'c2', text: 'two'}), (c3:Claim {id: 'c3', text: 'three'})
+            CREATE (ada:Human {id: 'ada', name: 'Ada'}), (bob:Human {id: 'bob', name: 'Bob'})
+            CREATE (acme:Company {id: 'acme', name: 'Acme'}), (initech:Company {id: 'initech', name: 'Initech'})
+            CREATE (c1)-[:MENTIONS]->(ada), (c1)-[:MENTIONS]->(bob), (c2)-[:MENTIONS]->(bob)
+            CREATE (ada)-[:WORKS_AT]->(acme), (bob)-[:WORKS_AT]->(acme), (ada)-[:WORKS_AT]->(initech)
+            """,
+        )
+
+        // Two ways from c1 to Acme, through Ada and through Bob: it is there once.
+        assertEquals(listOf("acme", "initech"), manager.load("c1", ClaimEmployers::class.java)!!.employers.map { it.id }.sorted())
+        // Loaded together, each claim has what its own path reaches, and one that reaches nothing has nothing.
+        assertEquals(
+            mapOf("c1" to listOf("acme", "initech"), "c2" to listOf("acme"), "c3" to emptyList()),
+            manager.loadAll(ClaimEmployers::class.java).associate { it.claim.id to it.employers.map { e -> e.id }.sorted() },
+        )
+    }
+
+    @Test
+    fun `roots are found by a property once Oracle counts its index as finding few, and read by their label until then`() {
+        fun load(property: String, value: String) = OracleBackend(pm, Neo4jObjectMapper.instance)
+            .loadAll(Claim::class.java, GraphQuerySpec(Any()).apply { conditions += PropertyCondition("n.$property", ComparisonOperator.EQUALS, value) })
+            .statement
+        val scansLabel = "JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")')"
+        val testsLabel = "INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0"
+
+        assertTrue(load("note", "unverified").statement.contains(scansLabel), "no index yet")
+        pm.indexes.ensure(RangeIndexSpec("Claim", "note"))
+        try {
+            pm.execute(QuerySpecification.withStatement("BEGIN DBMS_STATS.GATHER_TABLE_STATS(USER, 'SMOKE_NODE', cascade => TRUE); END;"))
+
+            // A backend asks which properties these are when it is first asked, so a new one knows of the index.
+            val found = load("note", "unverified")
+            assertTrue(found.statement.contains(testsLabel), found.statement)
+            assertFalse(found.statement.contains(scansLabel), found.statement)
+            val claims = pm.query(QuerySpecification.withStatement(found.statement).bind(found.bindings).transform(Claim::class.java))
+            assertEquals(listOf("c2"), claims.map { it.id })
+
+            // A property with no index is still read by the label.
+            assertTrue(load("text", "Bob left").statement.contains(scansLabel))
+        } finally {
+            pm.indexes.drop(RangeIndexSpec("Claim", "note"))
+        }
     }
 }
 

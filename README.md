@@ -2534,11 +2534,18 @@ joined to that row outside. `COLUMNS` names only what the statement reads of a r
 of the root once a `whereClause` written by hand is in it. A second row for
 one field is numbered (`people2_`), as when a condition on `people` is tested beside the field itself.
 A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
-which the index over labels answers, and with `INSTR` where the node is found by its id, by a property
-that a range index or a uniqueness constraint begins with, or at the end of a relationship. Oracle
-estimates that a test of a label gives one row, and given the choice reads every node of the label
-and not the few the property's index would give. Drivine reads which properties have an index from
-the graph's catalog, once a minute: an index it did not make is not known to it.
+which the index over labels answers, and with `INSTR` where the node is found by its id, at the end of
+a relationship, or by a property whose range index finds few nodes. Oracle estimates that a test of a
+label gives one row, and given the choice reads every node of the label and not the few the
+property's index would give.
+
+A property finds few nodes when it has a range index of its own, made by Drivine, whose statistics
+say a value is held by 1,000 nodes at most. So `indexes.ensure(RangeIndexSpec("Issue", "repoKey"))`
+is not all it takes: the index needs statistics, which Oracle gathers when an index is made over a
+table that holds rows, and in its nightly job, and which `DBMS_STATS.GATHER_TABLE_STATS` gathers on
+demand. A property that many nodes share a value of, the tenant of every node, is left to the index
+over labels, which reads less. Drivine asks which properties these are in one statement, and keeps
+the answer for a minute.
 
 A `@GraphPath` field, and a list read to a depth, is the path's own rows grouped by the node reached,
 so each node is there once however many ways lead to it:
