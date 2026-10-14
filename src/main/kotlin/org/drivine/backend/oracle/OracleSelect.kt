@@ -57,6 +57,7 @@ internal class OracleSelect(
     private val graphClass: Class<*>,
     private val collectionSorts: List<CollectionSortSpec> = emptyList(),
     private val depthOverrides: Map<String, Int> = emptyMap(),
+    labelled: LabelledIndexes = LabelledIndexes.NONE,
 ) {
     private val viewModel: GraphViewModel? =
         if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
@@ -82,7 +83,7 @@ internal class OracleSelect(
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
     private val rows = OracleRowSources(graph, scope)
-    private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel)
+    private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled)
     private val shorthand = CypherShorthand(rootAlias, root)
 
     private fun rootLabels(): List<String> {
@@ -135,7 +136,8 @@ internal class OracleSelect(
 
         // A pattern holds no subquery (`ORA-40988`), and a predicate on the rows of a traversal is to be kept from: see OracleRowSources.exists.
         val (onRows, inPattern) = if (paths.isEmpty()) spec.conditions to emptyList() else spec.conditions.partition { predicates.holdsSubquery(it) || holdsList(it) }
-        val filtered = listOfNotNull(predicate(onRows))
+        // A labelled index answers a condition on the roots where they are read by their labels, and not where they are reached by a path.
+        val filtered = listOfNotNull(predicate(onRows, indexed = paths.isEmpty()))
 
         // A key is one column, and a text key is two or three: see keyColumns.
         val keys = spec.keys.associateWith { key ->
@@ -204,7 +206,7 @@ internal class OracleSelect(
      * to each key's node, named as [nodes] names it. The root is named in each way, and is one node.
      */
     private fun pattern(query: GroupQuery, paths: List<Key<*>>, nodes: Map<Key<*>, String>, where: List<String>): String {
-        val met = (listOfNotNull(hasLabels(root, rootLabels(), scanned = !scope.narrowed)) + where).joinToString(" AND ")
+        val met = (listOfNotNull(scope.rootHasLabels(root, rootLabels())) + where).joinToString(" AND ")
         return paths.mapIndexed { index, key ->
             val path = key.source as KeySource.Path
             buildString {
@@ -317,7 +319,7 @@ internal class OracleSelect(
      * Cypher delete does; a load and a count also ask for the relationships the view requires.
      */
     fun selecting(predicates: List<String>): String =
-        (listOfNotNull(hasLabels(root, rootLabels(), scanned = !scope.narrowed)) + predicates).joinToString("\n  AND ")
+        (listOfNotNull(scope.rootHasLabels(root, rootLabels())) + predicates).joinToString("\n  AND ")
 
     /** The values the statement's parameters take, as written so far. */
     fun bindings(): Map<String, Any?> = scope.bindings()
@@ -354,8 +356,11 @@ internal class OracleSelect(
         return "SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = \$$NID\n  AND ${selecting(listOf(predicate))}"
     }
 
-    /** The predicate [conditions] of the query DSL make on the root; null when there are none. See [OraclePredicates.predicate]. */
-    fun predicate(conditions: List<WhereCondition>): String? = predicates.predicate(conditions)
+    /**
+     * The predicate [conditions] of the query DSL make on the root; null when there are none. [indexed]
+     * when every root the statement reads by its labels meets it. See [OraclePredicates.predicate].
+     */
+    fun predicate(conditions: List<WhereCondition>, indexed: Boolean = false): String? = predicates.predicate(conditions, indexed)
 
     /** The predicate that selects the rows after a keyset cursor. See [OraclePredicates.after]. */
     fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String = predicates.after(orders, values, collectionSortCount)

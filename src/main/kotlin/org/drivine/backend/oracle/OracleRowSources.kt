@@ -18,9 +18,9 @@ internal class Step(val type: String, val direction: Direction, val labels: List
  */
 internal class OracleRowSources(private val graph: OracleGraph, private val scope: OracleStatementScope) {
 
-    /** The nodes that carry [labels], as rows named [alias]. */
+    /** The nodes that carry [labels], as rows named [alias]: the roots of a statement. */
     fun nodes(labels: List<String>, alias: String): GraphTable =
-        graphTable(OracleSql.node(alias, hasLabels(alias, labels, scanned = !scope.narrowed)), GraphTable.node(alias), alias)
+        graphTable(OracleSql.node(alias, scope.rootHasLabels(alias, labels)), GraphTable.node(alias), alias)
 
     /** A `GRAPH_TABLE` over the graph that matches [pattern] and can give [columns], as rows named [alias]. */
     fun graphTable(pattern: String, columns: List<GraphTable.Column>, alias: String): GraphTable =

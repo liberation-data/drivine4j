@@ -36,6 +36,7 @@ import org.drivine.query.dsl.WhereCondition
 import org.drivine.schema.SchemaItemKind
 import org.drivine.query.grammar.CypherGrammar
 import java.sql.SQLException
+import java.util.concurrent.Executor
 
 /**
  * The backend of Oracle Database. A graph is two tables and the SQL property graph over them (see
@@ -45,10 +46,15 @@ import java.sql.SQLException
 internal class OracleBackend(
     private val persistenceManager: PersistenceManager,
     objectMapper: ObjectMapper,
+    /** Where the labelled indexes of the graph are read: see [LabelledIndexCatalog]. */
+    catalogReads: Executor? = null,
 ) : GraphBackend {
 
     /** The graph the manager names, made with the backend where it is not there yet. */
     private val graph = OracleGraph.ensured(persistenceManager)
+
+    /** The labelled indexes of the graph, which a filter on the nodes of a label is read through. */
+    private val labelled = catalogReads?.let { LabelledIndexCatalog(persistenceManager, graph, refresh = it) } ?: LabelledIndexCatalog(persistenceManager, graph)
 
     /** Plans a save, and a batch of fragments, as the steps of a write block. */
     private val saves = OracleSavePlan(graph, objectMapper)
@@ -76,9 +82,9 @@ internal class OracleBackend(
     override fun loadAll(graphClass: Class<*>, query: GraphQuerySpec<*>): LoadPlan {
         require(query.seekValues.isEmpty() || query.skip == null) { "seek and skip cannot be used together" }
         val (collectionSorts, rootOrders) = orders(graphClass, query)
-        val select = OracleSelect(graph, graphClass, collectionSorts, query.depthOverrides)
+        val select = OracleSelect(graph, graphClass, collectionSorts, query.depthOverrides, labelled.current())
         val seek = query.seekValues.takeIf { it.isNotEmpty() }?.let { select.after(rootOrders, it, collectionSorts.size) }
-        val statement = select.load(listOfNotNull(select.predicate(query.conditions), seek), rootOrders, query.skip, query.limit)
+        val statement = select.load(listOfNotNull(select.predicate(query.conditions, indexed = true), seek), rootOrders, query.skip, query.limit)
         return LoadPlan(statement, rootOrders, keyset = seek != null)
     }
 
@@ -109,12 +115,12 @@ internal class OracleBackend(
 
     override fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
         requireNoSeek(query)
-        val select = OracleSelect(graph, graphClass)
-        return select.count(listOfNotNull(select.predicate(query.conditions)))
+        val select = OracleSelect(graph, graphClass, labelled = labelled.current())
+        return select.count(listOfNotNull(select.predicate(query.conditions, indexed = true)))
     }
 
     override fun groups(graphClass: Class<*>, query: GroupQuerySpec<*>): GraphStatement =
-        OracleSelect(graph, graphClass).groups(GroupQuery.of(graphClass, query))
+        OracleSelect(graph, graphClass, labelled = labelled.current()).groups(GroupQuery.of(graphClass, query))
 
     override fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,
@@ -166,8 +172,8 @@ internal class OracleBackend(
 
     override fun deleteAll(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
         requireNoSeek(query)
-        val select = OracleSelect(graph, graphClass)
-        return deleting(select, listOfNotNull(select.predicate(query.conditions)))
+        val select = OracleSelect(graph, graphClass, labelled = labelled.current())
+        return deleting(select, listOfNotNull(select.predicate(query.conditions, indexed = true)))
     }
 
     /**

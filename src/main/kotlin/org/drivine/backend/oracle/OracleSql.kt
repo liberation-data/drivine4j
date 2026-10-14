@@ -102,6 +102,31 @@ internal object OracleSql {
     fun carriesLabel(alias: String, label: String): String =
         "INSTR(JSON_SERIALIZE($alias.labels), ${literal(quoted(label))}) > 0"
 
+    /**
+     * The property [key] of the node [alias], read as text, where the node carries [label], and null
+     * where it does not: the expression of the index a range index makes over the nodes of its label
+     * (see [OracleSchemaGrammar]). A comparison with it is met only by a node of the label, so the one
+     * index answers both the label and the property.
+     */
+    fun labelled(alias: String, label: String, key: String): String =
+        "CASE WHEN ${hasLabel(alias, label)} THEN JSON_VALUE($alias.props, ${path(key)}) END"
+
+    /**
+     * The property [key] of the node [alias], read as text, where the node carries [label] and has
+     * each of [keys], and null where it does not: the expression of each column of a uniqueness
+     * constraint's index over [keys] (see [OracleSchemaGrammar]). A unique index skips a row only
+     * when every column is null, so a node without the label or without one of the properties is
+     * not constrained.
+     *
+     * For a constraint over the one property [key] it is the same value as [labelled] on every
+     * node: a node without the property, or with it stored as JSON null, `""`, an array or an
+     * object, reads as null either way. So a filter on the property may be read through it.
+     */
+    fun unique(alias: String, label: String, keys: List<String>, key: String): String {
+        val constrained = (listOf(hasLabel(alias, label)) + keys.map { "JSON_EXISTS($alias.props, ${path(it)})" }).joinToString(" AND ")
+        return "CASE WHEN $constrained THEN JSON_VALUE($alias.props, ${path(key)}) END"
+    }
+
     /** [text] as JSON writes a string. */
     private fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 

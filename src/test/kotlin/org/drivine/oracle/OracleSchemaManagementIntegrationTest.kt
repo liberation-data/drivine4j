@@ -239,6 +239,8 @@ class OracleSchemaManagementIntegrationTest {
         @BeforeAll
         fun clean() {
             OracleTestDatabase.clear(pm)
+            // What an earlier run against the same database left: constraints first, for each comes with an index.
+            pm.constraints.list().forEach { runCatching { pm.constraints.drop(UniquenessConstraintSpec(it.label, it.properties)) } }
             pm.indexes.list().forEach { runCatching { pm.execute(QuerySpecification.withStatement(pm.indexes.grammar.dropIndex(it).single().let { s -> (s as org.drivine.schema.SchemaStatement.Cypher).statement })) } }
         }
     }

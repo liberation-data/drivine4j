@@ -68,7 +68,7 @@ class OracleBackendTest {
     private fun store(answer: (RecordingStore.Ran) -> Any? = { emptyList<Any?>() }) =
         RecordingStore(DatabaseType.ORACLE, ddl = OracleSchemaGrammar(graph), graphName = "g", answer = answer)
 
-    private fun backend(store: RecordingStore = store()) = OracleBackend(store, Neo4jObjectMapper.instance)
+    private fun backend(store: RecordingStore = store()) = OracleBackend(store, Neo4jObjectMapper.instance, catalogReads = Runnable::run)
 
     private fun query(build: GraphQuerySpec<Any>.() -> Unit = {}) = GraphQuerySpec(Any()).apply(build)
 
@@ -93,7 +93,7 @@ class OracleBackendTest {
     @Test
     fun `a manager that names no graph speaks to the default one`() {
         val store = RecordingStore(DatabaseType.ORACLE, ddl = OracleSchemaGrammar(OracleGraph("drivine")))
-        val backend = OracleBackend(store, Neo4jObjectMapper.instance)
+        val backend = OracleBackend(store, Neo4jObjectMapper.instance, catalogReads = Runnable::run)
 
         assertEquals(listOf(OracleGraph(OracleGraph.DEFAULT_NAME).ensuring), store.schema)
         assertContains(backend.load(Claim::class.java).statement, "GRAPH_TABLE (drivine")

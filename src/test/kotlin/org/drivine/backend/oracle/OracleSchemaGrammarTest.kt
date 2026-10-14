@@ -43,13 +43,26 @@ class OracleSchemaGrammarTest {
     }
 
     @Test
-    fun `a range index is over the properties read as text, whatever the label, and is recorded`() {
+    fun `a range index is over the properties read as text, whatever the label, and beside it over those of the label's nodes, and is recorded`() {
         val spec = RangeIndexSpec("Person", listOf("name", "metadata.source"))
-        val (index, record) = checked(grammar.createIndex(spec, null))
+        val (index, labelledIndex, record) = checked(grammar.createIndex(spec, null))
 
         val name = graph.objectName("ix", spec.properties)
         assertEquals("CREATE INDEX IF NOT EXISTS $name ON g_node (JSON_VALUE(props, '$.name'), JSON_VALUE(props, '$.\"metadata.source\"'))", index)
         assertFalse(index.contains("Person"), "a range index does not depend on the label")
+
+        val labelled = graph.objectName("lx", listOf("Person") + spec.properties)
+        val person = "JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")')"
+        val ddl = "CREATE INDEX IF NOT EXISTS $labelled ON g_node n (CASE WHEN $person THEN JSON_VALUE(n.props, '$.name') END, " +
+            "CASE WHEN $person THEN JSON_VALUE(n.props, '$.\"metadata.source\"') END)"
+        // Made unless a uniqueness constraint's index over the one property stands for it.
+        labelledIndex.inOrder(
+            "SELECT COUNT(*) INTO v_unique FROM g_schema u WHERE u.label = 'Person' AND u.properties = '[\"name\",\"metadata.source\"]' AND u.kind = 'UNIQUENESS_CONSTRAINT'",
+            "IF v_unique = 0 THEN",
+            "EXECUTE IMMEDIATE ${OracleSql.literal(ddl)};",
+            "END IF;",
+        )
+        assertTrue(ddl.contains(OracleSql.labelled("n", "Person", "name")), "a filter reads the property as the index does")
 
         assertTrue(record.startsWith("BEGIN\n"))
         assertTrue(record.endsWith("\nEND;"))
@@ -57,8 +70,10 @@ class OracleSchemaGrammarTest {
             "MERGE INTO g_schema c",
             "USING (SELECT 'RANGE_INDEX' AS kind, 'Person' AS label, '[\"name\",\"metadata.source\"]' AS properties FROM dual) k",
             "ON (c.kind = k.kind AND c.label = k.label AND c.properties = k.properties)",
+            // A record made before there were labelled indexes takes the name of the one now made.
+            "WHEN MATCHED THEN UPDATE SET c.details = '{\"labelled\": \"$labelled\"}'",
             "WHEN NOT MATCHED THEN INSERT (kind, label, properties, name, object_name, details)",
-            "VALUES (k.kind, k.label, k.properties, 'Person_name_metadata.source_range', '$name', '{}');",
+            "VALUES (k.kind, k.label, k.properties, 'Person_name_metadata.source_range', '$name', '{\"labelled\": \"$labelled\"}');",
             "EXCEPTION WHEN DUP_VAL_ON_INDEX THEN",
             "NULL;",
             "END;",
@@ -147,7 +162,10 @@ class OracleSchemaGrammarTest {
     @Test
     fun `a uniqueness constraint is a unique index with one expression per property, null for a node that is not constrained`() {
         val spec = UniquenessConstraintSpec("Person", listOf("email", "tenant"))
-        val (index, record) = checked(grammar.createConstraint(spec))
+        val texts = checked(grammar.createConstraint(spec))
+        // Over several properties, the range index is made whole first: no unique index stands for its labelled index.
+        assertEquals(checked(grammar.createIndex(RangeIndexSpec("Person", listOf("email", "tenant")), null)), texts.take(3))
+        val (index, record) = texts.drop(3)
 
         val name = graph.objectName("uq", listOf("Person", "email", "tenant"))
         val constrained = "JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_EXISTS(n.props, '$.email') AND JSON_EXISTS(n.props, '$.tenant')"
@@ -164,14 +182,16 @@ class OracleSchemaGrammarTest {
         val vector = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))).texts().single()
         vector.inOrder(
             "DECLARE",
-            "DELETE FROM g_schema",
-            "WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]'",
-            "RETURNING MAX(object_name) INTO v_object;",
-            "SELECT COUNT(*) INTO v_others FROM g_schema WHERE object_name = v_object;",
+            "SELECT MAX(object_name), MAX(JSON_VALUE(details, '$.labelled')) INTO v_object, v_labelled",
+            "FROM g_schema WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]';",
+            "SELECT COUNT(*) INTO v_others FROM g_schema WHERE object_name = v_object AND NOT (kind = 'VECTOR_INDEX'",
             "IF v_object IS NOT NULL AND v_others = 0 THEN",
             "EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';",
             "EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_object || ' PURGE';",
             "END IF;",
+            // Forgotten once dropped: a drop that fails leaves the record naming what is still there.
+            "DELETE FROM g_schema WHERE kind = 'VECTOR_INDEX'",
+            "COMMIT;",
             "END;",
         )
         assertFalse("DROP INDEX" in vector, "the index over the table goes with the table")
@@ -203,6 +223,7 @@ class OracleSchemaGrammarTest {
         )
 
         drops.zip(made).forEach { (drop, name) -> assertFalse(name in drop, "'$name' is written into:\n$drop") }
+        assertFalse(graph.objectName("lx", listOf("Person", "name")) in drops[2], "a labelled index is dropped by the name its record holds")
     }
 
     @Test
@@ -211,10 +232,17 @@ class OracleSchemaGrammarTest {
         assertEquals(1, range.size)
         range.single().inOrder(
             "DECLARE",
-            "DELETE FROM g_schema",
-            "WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]'",
+            "FROM g_schema WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]';",
+            // The labelled index is the record's own, and goes with it whatever else is recorded.
+            "IF v_labelled IS NOT NULL THEN",
+            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;",
+            "END IF;",
             "IF v_object IS NOT NULL AND v_others = 0 THEN",
             "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_object;",
+            "END IF;",
+            // Each drop commits what came before it: the record is forgotten last, so one that fails leaves it to be dropped again.
+            "DELETE FROM g_schema WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"name\"]';",
+            "COMMIT;",
         )
         assertFalse("DROP TABLE" in range.single() || "DROP TRIGGER" in range.single())
 
@@ -231,7 +259,7 @@ class OracleSchemaGrammarTest {
         val drop = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.VECTOR_INDEX, "Doc", listOf("embedding"))).texts().single()
 
         assertTrue(drop.startsWith("DECLARE\n    v_object VARCHAR2(128);"), drop)
-        assertTrue(drop.endsWith("\n    END IF;\nEND;"), drop)
+        assertTrue(drop.endsWith("\n    END IF;\n    DELETE FROM g_schema WHERE kind = 'VECTOR_INDEX' AND label = 'Doc' AND properties = '[\"embedding\"]';\n    COMMIT;\nEND;"), drop)
         assertTrue("\n        EXECUTE IMMEDIATE 'DROP TRIGGER IF EXISTS ' || v_object || '_t';\n        EXECUTE IMMEDIATE 'DROP TABLE IF EXISTS ' || v_object || ' PURGE';\n" in drop, drop)
     }
 
@@ -239,7 +267,12 @@ class OracleSchemaGrammarTest {
     fun `what is listed is what was recorded and is still there`() {
         val indexes = grammar.listIndexesQuery(SchemaItemKind.RANGE_INDEX)
         indexes.inOrder(
-            "SELECT JSON_OBJECT('kind' VALUE kind, 'label' VALUE label, 'properties' VALUE JSON(properties), 'name' VALUE name, 'details' VALUE details RETURNING JSON)",
+            "SELECT JSON_OBJECT('kind' VALUE kind, 'label' VALUE label, 'properties' VALUE JSON(properties), 'name' VALUE name, 'details' VALUE details,",
+            // A range index with neither its labelled index nor a unique index to stand for it is listed, as incomplete.
+            "'status' VALUE CASE WHEN kind = 'RANGE_INDEX' AND NOT EXISTS (SELECT 1 FROM user_indexes l WHERE l.index_name = UPPER(JSON_VALUE(c.details, '$.labelled')))",
+            "AND NOT EXISTS (SELECT 1 FROM g_schema u WHERE u.label = c.label AND u.properties = c.properties AND u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1",
+            "THEN 'INCOMPLETE' END",
+            "RETURNING JSON)",
             "FROM g_schema c",
             "WHERE kind IN ('RANGE_INDEX')",
             "object_name IS NULL",
@@ -304,10 +337,55 @@ class OracleSchemaGrammarTest {
     }
 
     @Test
+    fun `a uniqueness constraint over one property stands for the labelled index of its range index, which is recorded as served by it`() {
+        val spec = UniquenessConstraintSpec("Person", "email")
+        val (shared, range, unique, served, record) = checked(grammar.createConstraint(spec))
+
+        val ix = graph.objectName("ix", listOf("email"))
+        val uq = graph.objectName("uq", listOf("Person", "email"))
+        assertEquals("CREATE INDEX IF NOT EXISTS $ix ON g_node (JSON_VALUE(props, '$.email'))", shared)
+        assertFalse("lx" in range || "CASE WHEN" in range, "no labelled index is made:\n$range")
+        range.inOrder("'RANGE_INDEX' AS kind, 'Person' AS label, '[\"email\"]' AS properties", "'$ix', '{\"unique\": \"$uq\"}'")
+        assertFalse("WHEN MATCHED THEN UPDATE" in range, "a range index there already is changed only once the unique index is made")
+        assertEquals("CREATE UNIQUE INDEX IF NOT EXISTS $uq ON g_node n (${OracleSql.unique("n", "Person", listOf("email"), "email")})", unique)
+        served.inOrder(
+            "SELECT MAX(JSON_VALUE(details, '$.labelled')) INTO v_labelled FROM g_schema WHERE kind = 'RANGE_INDEX' AND label = 'Person' AND properties = '[\"email\"]';",
+            // Dropped before the record stops naming it: a drop that fails leaves it named, to be dropped next time.
+            "IF v_labelled IS NOT NULL THEN",
+            "EXECUTE IMMEDIATE 'DROP INDEX IF EXISTS ' || v_labelled;",
+            "END IF;",
+            "UPDATE g_schema SET details = '{\"unique\": \"$uq\"}' WHERE kind = 'RANGE_INDEX'",
+            "COMMIT;",
+        )
+        record.inOrder("'UNIQUENESS_CONSTRAINT' AS kind, 'Person' AS label", "'$uq', '{}'")
+    }
+
+    @Test
+    fun `the indexes a filter is read through are the labelled indexes there, and the unique indexes over one property there`() {
+        val query = grammar.labelledIndexesQuery()
+        query.inOrder(
+            "SELECT JSON_OBJECT('kind' VALUE kind, 'label' VALUE label, 'properties' VALUE JSON(properties) RETURNING JSON)",
+            "FROM g_schema u",
+            "WHERE (u.kind = 'UNIQUENESS_CONSTRAINT' AND JSON_VALUE(u.properties, '$.size()' RETURNING NUMBER) = 1 AND EXISTS (SELECT 1 FROM user_indexes q WHERE q.index_name = UPPER(u.object_name)))",
+            "OR (kind = 'RANGE_INDEX' AND EXISTS (SELECT 1 FROM user_indexes l WHERE l.index_name = UPPER(JSON_VALUE(u.details, '$.labelled'))))",
+        )
+        assertEquals(emptyList(), SqlParameters.positional(query).names)
+    }
+
+    @Test
+    fun `a range index listed as incomplete is made whole by ensure, and nothing else is`() {
+        assertTrue(grammar.isIncomplete(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Person", listOf("name"), status = OracleSchemaGrammar.INCOMPLETE)))
+        assertFalse(grammar.isIncomplete(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Person", listOf("name"))))
+        val row = mapOf("kind" to "RANGE_INDEX", "label" to "Person", "properties" to listOf("name"), "name" to null, "details" to emptyMap<String, Any?>(), "status" to "INCOMPLETE")
+        assertEquals(OracleSchemaGrammar.INCOMPLETE, grammar.parseIndexRows(listOf(row)).single().status)
+    }
+
+    @Test
     fun `the grammar says what it is`() {
         assertEquals("Oracle", grammar.engine)
         assertTrue(grammar.supportsIfNotExists)
         assertTrue(grammar.supportsNamedItems)
-        assertTrue(grammar.constraintsRequireBackingIndex)
+        // The constraint makes its own range index, without a labelled index where its unique index stands for one.
+        assertFalse(grammar.constraintsRequireBackingIndex)
     }
 }

@@ -39,6 +39,15 @@ class IndexManager internal constructor(
 
     private val logger = LoggerFactory.getLogger(IndexManager::class.java)
 
+    /** Runs [statements], which make or drop an index, and tells the grammar they have. */
+    private fun run(statements: List<SchemaStatement>) {
+        try {
+            executor.execute(statements)
+        } finally {
+            grammar.changed()
+        }
+    }
+
     /** Runs a schema statement that is not an index: on a connection of its own, committed as it runs. */
     internal fun run(statement: String): List<Any?> = executor.query(statement)
 
@@ -56,11 +65,17 @@ class IndexManager internal constructor(
             // per-label indexes (FalkorDB) create only the missing properties
             val related = items.firstOrNull { it.kind == spec.kind && it.label == spec.label }
             warnUnsupportedTuning(spec)
-            executor.execute(grammar.createIndex(spec, related))
+            run(grammar.createIndex(spec, related))
             val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
             logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
             logEffectiveVectorConfig(spec, created)
             return EnsureResult.Created(created)
+        }
+        if (grammar.isIncomplete(existing)) {
+            run(grammar.createIndex(spec, existing))
+            val completed = find(spec) ?: SchemaItemInfo.fromSpec(spec)
+            logger.info("Completed {} {} on {}{}: it lacked part of what is made for it", grammar.engine, spec.kind, spec.label, spec.properties)
+            return EnsureResult.Created(completed)
         }
         return if (grammar.matchesShape(existing, spec)) {
             EnsureResult.AlreadyMatching(existing)
@@ -139,7 +154,7 @@ class IndexManager internal constructor(
         val related = introspectIndexes(spec.kind)
             .firstOrNull { it.kind == spec.kind && it.label == spec.label }
         warnUnsupportedTuning(spec)
-        executor.execute(grammar.createIndex(spec, related))
+        run(grammar.createIndex(spec, related))
         val created = find(spec) ?: SchemaItemInfo.fromSpec(spec)
         logEffectiveVectorConfig(spec, created)
         logger.warn(
@@ -193,7 +208,7 @@ class IndexManager internal constructor(
      * looks (or recreates) sees the index it just removed.
      */
     private fun dropExisting(existing: SchemaItemInfo, spec: IndexSpec) {
-        executor.execute(grammar.dropIndex(narrowTo(existing, spec)))
+        run(grammar.dropIndex(narrowTo(existing, spec)))
         awaitDropped(spec)
         logger.info("Dropped {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
     }
