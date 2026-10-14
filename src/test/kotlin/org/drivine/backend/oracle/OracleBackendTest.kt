@@ -1,5 +1,16 @@
 package org.drivine.backend.oracle
 
+import java.time.Instant
+import org.drivine.annotation.Hop
+import org.drivine.query.dsl.GroupQuerySpec
+import org.drivine.query.dsl.query
+import sample.groups.Feedback
+import sample.groups.FeedbackQueryDsl
+import sample.groups.Message
+import sample.groups.MessageQueryDsl
+import sample.groups.Owner
+import sample.groups.Role
+import sample.groups.User
 import org.drivine.annotation.Direction
 import org.drivine.annotation.NodeFragment
 import org.drivine.backend.GraphBackend
@@ -19,6 +30,7 @@ import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderDirection.ASC
 import org.drivine.query.dsl.OrderDirection.DESC
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.SeekValueSpec
 import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.drivine.test.RecordingStore
@@ -622,5 +634,126 @@ class OracleBackendTest {
         val statement = backend().related(NodeRef(Claim::class.java, "c1"), "IT'S", Direction.OUTGOING, Human::class.java)
 
         assertContains(statement.statement, "e.type = 'IT''S'")
+    }
+
+    // ----- Grouped reads -----
+
+    /** Guide's page ratings: the votes of each page, with two filtered counts on one property. */
+    private fun pageVotes() = GroupQuerySpec(FeedbackQueryDsl.INSTANCE).apply {
+        key(query.page)
+        val votes = count()
+        count { query.helpful eq true }
+        count { query.helpful eq false }
+        having { votes gte 3 }
+    }
+
+    /** Guide's most active users: the messages of each owner, two hops away, most first. */
+    private fun topUsers() = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+        where { query.role eq Role.USER; query.createdAt gte Instant.parse("2026-03-01T00:00:00Z") }
+        key(path<User>(Hop("HAS_MESSAGE", Direction.INCOMING, label = "GroupSession"), Hop("OWNED_BY")))
+        val written = count()
+        sum(query.tokens) { query.role eq Role.USER }
+        orderBy { written.desc() }
+        skip(10)
+        limit(5)
+    }
+
+    @Test
+    fun `a grouped read by a property groups the roots, and the statement filters, orders and returns its rows`() {
+        val groups = backend().groups(Feedback::class.java, pageVotes())
+
+        assertEquals(
+            """
+            SELECT JSON_OBJECT( 'k0' VALUE g_.k0, 'k0e' VALUE g_.k0e, 'a0' VALUE g_.a0, 'a1' VALUE g_.a1, 'a2' VALUE g_.a2 RETURNING JSON) AS result
+            FROM ( SELECT JSON_VALUE(n_.props, '$.page') AS k0, CASE WHEN JSON_EXISTS(n_.props, '$.page?(@ == "")') THEN 1 ELSE 0 END AS k0e, COUNT(*) AS a0,
+            COALESCE(SUM(CASE WHEN JSON_VALUE(n_.props, '$.helpful') = ${'$'}_p0 THEN 1 ELSE 0 END), 0) AS a1,
+            COALESCE(SUM(CASE WHEN JSON_VALUE(n_.props, '$.helpful') = ${'$'}_p1 THEN 1 ELSE 0 END), 0) AS a2
+            FROM GRAPH_TABLE (g MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == "GroupFeedback")')) COLUMNS (n_.props)) n_
+            GROUP BY JSON_VALUE(n_.props, '$.page'), CASE WHEN JSON_EXISTS(n_.props, '$.page?(@ == "")') THEN 1 ELSE 0 END ) g_
+            WHERE g_.a0 >= ${'$'}_p2
+            ORDER BY CASE WHEN g_.k0 IS NULL AND g_.k0e = 0 THEN 1 ELSE 0 END, g_.k0e DESC, g_.k0 ASC
+            """.trimIndent().squashed(),
+            groups.statement.squashed(),
+        )
+        // A boolean is compared as the text JSON writes it.
+        assertEquals(mapOf<String, Any?>("_p0" to "true", "_p1" to "false", "_p2" to 3), groups.bindings)
+    }
+
+    @Test
+    fun `a grouped read by a node reads the distinct pairs of a root and its key node, and joins each back for what is read of it`() {
+        val sql = backend().groups(Message::class.java, topUsers()).statement.squashed()
+
+        // The where is tested in the pattern, on the node the path starts from.
+        assertContains(sql, "MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"GroupMessage\")') AND JSON_VALUE(n_.props, '$.role') = ${'$'}_p1 AND ")
+        assertContains(sql, "<-[e1_1 IS edge WHERE e1_1.type = 'HAS_MESSAGE']- (via_ IS node WHERE INSTR(JSON_SERIALIZE(via_.labels), '\"GroupSession\"') > 0)")
+        assertContains(sql, "-[e1_2 IS edge WHERE e1_2.type = 'OWNED_BY']-> (k0_ IS node WHERE INSTR(JSON_SERIALIZE(k0_.labels), '\"GroupUser\"') > 0 AND INSTR(JSON_SERIALIZE(k0_.labels), '\"GroupPerson\"') > 0)")
+        assertContains(sql, "SELECT DISTINCT r.nid, r.k0 FROM GRAPH_TABLE (g")
+        assertContains(sql, "COLUMNS (n_.nid, k0_.nid AS k0)) r ) pair_ JOIN g_node n_ ON n_.nid = pair_.nid GROUP BY pair_.k0 ) g_")
+        assertContains(sql, "COALESCE(SUM(CASE WHEN JSON_VALUE(n_.props, '$.role') = ${'$'}_p0 THEN JSON_VALUE(n_.props, '$.tokens' RETURNING NUMBER) END), 0) AS a1")
+        // The key's node is joined back for its document, and gives the order its last term.
+        assertContains(sql, "'k0' VALUE JSON_TRANSFORM(k0_.props, SET '$.labels' = k0_.labels, SET '$.\"__drivine.stamp\"' = k0_.stamp)")
+        assertContains(sql, "JOIN g_node k0_ ON k0_.nid = g_.k0 ORDER BY g_.a0 DESC, JSON_VALUE(k0_.props, '$.id') ASC OFFSET ${'$'}_p3 ROWS FETCH NEXT ${'$'}_p4 ROWS ONLY")
+    }
+
+    @Test
+    fun `a grouped read that counts by a node alone reads no row of the roots`() {
+        val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+            key(path<User>(Hop("OWNED_BY")))
+            count()
+        }
+
+        val sql = backend().groups(Message::class.java, spec).statement.squashed()
+
+        assertContains(sql, "SELECT pair_.k0 AS k0, COUNT(*) AS a0 FROM ( SELECT DISTINCT r.nid, r.k0 FROM GRAPH_TABLE (g")
+        assertFalse("JOIN g_node n_" in sql)
+    }
+
+    @Test
+    fun `two hops of one type in a path are two relationships, and a test against a list is asked of the root's own row`() {
+        val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+            where { query.role eq Role.USER; query.tokens inList listOf(1L, 2L) }
+            key(path<Message>(Hop("HAS_MESSAGE", Direction.INCOMING), Hop("HAS_MESSAGE")))
+            val least = min(query.createdAt)
+            having { least eq Instant.parse("2026-03-01T00:00:00Z") }
+        }
+
+        val groups = backend().groups(Message::class.java, spec)
+        val sql = groups.statement.squashed()
+
+        assertContains(sql, "WHERE e1_1.eid <> e1_2.eid COLUMNS (n_.nid, k0_.nid AS k0)) r ) pair_ JOIN g_node n_ ON n_.nid = pair_.nid WHERE JSON_VALUE(n_.props, '$.tokens' RETURNING NUMBER) IN (SELECT v FROM JSON_TABLE(")
+        // The condition a pattern can hold is in the pattern, and the one written with a subquery is not.
+        assertContains(sql, "AND JSON_VALUE(n_.props, '$.role') = ")
+        assertFalse("IN (SELECT" in sql.substringAfter("MATCH").substringBefore("COLUMNS"))
+        assertContains(sql, ") g_ JOIN g_node k0_ ON k0_.nid = g_.k0 WHERE g_.a0 = ")
+    }
+
+    @Test
+    fun `a key no field declares is grouped as its text, whether that is stored empty, and its number where it is one`() {
+        val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+            val priority = keyOrNull(PropertyReference<Any?>("n", "meta.priority"))
+            orderBy { priority.desc() }
+        }
+
+        val sql = backend().groups(Message::class.java, spec).statement.squashed()
+
+        assertContains(sql, "GROUP BY JSON_VALUE(n_.props, '$.\"meta.priority\"'), CASE WHEN JSON_EXISTS(n_.props, '$.\"meta.priority\"?(@ == \"\")') THEN 1 ELSE 0 END, JSON_VALUE(n_.props, '$.\"meta.priority\".numberOnly()' RETURNING NUMBER)")
+        assertContains(sql, "'k0' VALUE g_.k0, 'k0e' VALUE g_.k0e, 'k0n' VALUE g_.k0n")
+        assertContains(sql, "ORDER BY CASE WHEN g_.k0 IS NULL AND g_.k0e = 0 THEN 0 ELSE 1 END, g_.k0n DESC NULLS LAST, g_.k0e ASC, g_.k0 DESC")
+    }
+
+    @Test
+    fun `a key is read as the kind its field declares, and a least or greatest value as its own`() {
+        val spec = GroupQuerySpec(FeedbackQueryDsl.INSTANCE).apply {
+            keyOrNull(query.stars)
+            key(query.createdAt)
+            min(query.createdAt)
+            avg(query.stars)
+        }
+
+        val sql = backend().groups(Feedback::class.java, spec).statement.squashed()
+
+        assertContains(sql, "GROUP BY JSON_VALUE(n_.props, '$.stars' RETURNING NUMBER), JSON_VALUE(n_.props, '$.createdAt' RETURNING TIMESTAMP WITH TIME ZONE)")
+        assertContains(sql, "MIN(JSON_VALUE(n_.props, '$.createdAt' RETURNING TIMESTAMP WITH TIME ZONE)) AS a0, AVG(JSON_VALUE(n_.props, '$.stars' RETURNING NUMBER)) AS a1")
+        assertContains(sql, "ORDER BY g_.k0 ASC, g_.k1 ASC")
     }
 }

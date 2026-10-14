@@ -29,6 +29,9 @@ interface GraphObjectOperations {
     /** Relationships whose type is known only at runtime, between stored nodes. See [EdgeOperations]. */
     val edges: EdgeOperations
 
+    /** Grouped reads: the nodes of a fragment by a key, with a count or a sum for each group. See [GroupOperations]. */
+    val groups: GroupOperations
+
     /** What to do when an ordered or paginated query has no range index to seek into. */
     var indexAdvice: IndexAdvicePolicy
 

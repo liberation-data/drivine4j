@@ -1,5 +1,16 @@
 package org.drivine.backend
 
+import java.time.Instant
+import org.drivine.annotation.Hop
+import org.drivine.query.dsl.GroupQuerySpec
+import org.drivine.query.dsl.query
+import sample.groups.Feedback
+import sample.groups.FeedbackQueryDsl
+import sample.groups.Message
+import sample.groups.MessageQueryDsl
+import sample.groups.Owner
+import sample.groups.Role
+import sample.groups.User
 import org.drivine.annotation.Direction
 import org.drivine.backend.oracle.OracleBackend
 import org.drivine.backend.oracle.OracleGraph
@@ -339,5 +350,136 @@ class CypherBackendTest {
         assertEquals(mapOf<String, Any?>("a" to 1, "b" to 2), statement.spec().parameters)
         assertEquals(mapOf<String, Any?>("a" to 1, "b" to 9, "c" to 3), statement.spec(mapOf("b" to 9, "c" to 3)).parameters)
         assertEquals("RETURN \$a + \$b", statement.spec().statement!!.text)
+    }
+
+    // ----- Grouped reads -----
+
+    /** Guide's page ratings: the votes of each page, with two filtered counts on one property. */
+    private fun pageVotes() = GroupQuerySpec(FeedbackQueryDsl.INSTANCE).apply {
+        key(query.page)
+        val votes = count()
+        count { query.helpful eq true }
+        count { query.helpful eq false }
+        having { votes gte 3 }
+    }
+
+    /** Guide's most active users: the messages of each owner, two hops away, most first. */
+    private fun topUsers() = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+        where { query.role eq Role.USER; query.createdAt gte Instant.parse("2026-03-01T00:00:00Z") }
+        key(path<User>(Hop("HAS_MESSAGE", Direction.INCOMING, label = "GroupSession"), Hop("OWNED_BY")))
+        val written = count()
+        sum(query.tokens) { query.role eq Role.USER }
+        orderBy { written.desc() }
+        skip(10)
+        limit(5)
+    }
+
+    @Test
+    fun `a grouped read by a property is one statement, and two filters on one property bind two parameters`() {
+        val groups = backend().groups(Feedback::class.java, pageVotes())
+
+        assertEquals(
+            """
+            MATCH (n:GroupFeedback)
+            WITH n.page AS k0,
+                 count(n) AS a0,
+                 sum(CASE WHEN n.helpful = ${'$'}param_n_helpful_0 THEN 1 ELSE 0 END) AS a1,
+                 sum(CASE WHEN n.helpful = ${'$'}param_n_helpful_1 THEN 1 ELSE 0 END) AS a2
+            WHERE a0 >= ${'$'}_h0
+            RETURN { k0: k0, a0: a0, a1: a1, a2: a2 } AS row
+            ORDER BY k0 ASC
+            """.trimIndent(),
+            groups.statement,
+        )
+        assertEquals(mapOf<String, Any?>("param_n_helpful_0" to true, "param_n_helpful_1" to false, "_h0" to 3), groups.bindings)
+    }
+
+    @Test
+    fun `a grouped read by a node makes each pair one row before it counts, and orders by the node's id last`() {
+        val groups = backend().groups(Message::class.java, topUsers())
+
+        assertEquals(
+            """
+            MATCH (n:GroupMessage)<-[:HAS_MESSAGE]-(:GroupSession)-[:OWNED_BY]->(k0:GroupUser:GroupPerson)
+            WHERE n.role = ${'$'}param_n_role_0 AND n.createdAt >= ${'$'}param_n_createdAt_1
+            WITH DISTINCT n, k0
+            WITH k0,
+                 count(n) AS a0,
+                 coalesce(sum(CASE WHEN n.role = ${'$'}param_n_role_2 THEN n.tokens END), 0) AS a1
+            RETURN { k0: { id: k0.id, username: k0.user_name, labels: labels(k0) }, a0: a0, a1: a1 } AS row
+            ORDER BY a0 DESC, k0.id ASC
+            SKIP ${'$'}_skip
+            LIMIT ${'$'}_limit
+            """.trimIndent(),
+            groups.statement,
+        )
+        assertEquals(setOf("param_n_role_0", "param_n_createdAt_1", "param_n_role_2", "_skip", "_limit"), groups.bindings.keys)
+        assertEquals(10 to 5, groups.bindings["_skip"] to groups.bindings["_limit"])
+    }
+
+    @Test
+    fun `a key that is a sealed class is returned whole, and an order places its nulls by a test for null`() {
+        val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+            val author = key(path<Owner>(Hop("AUTHORED_BY")))
+            val least = min(query.tokens)
+            orderBy { least.desc().nullsLast(); author.desc() }
+        }
+
+        val statement = backend().groups(Message::class.java, spec).statement
+
+        assertContains(statement, "MATCH (n:GroupMessage)-[:AUTHORED_BY]->(k0:GroupOwner)")
+        assertContains(statement, "RETURN { k0: k0 { .*, labels: labels(k0) }, a0: a0 } AS row")
+        assertContains(statement, "ORDER BY a0 IS NULL, a0 DESC, k0.id DESC")
+    }
+
+    @Test
+    fun `each path key has a MATCH of its own, after the where, and keys alone are returned once each`() {
+        val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+            where { query.role eq Role.USER }
+            key(path<User>(Hop("HAS_MESSAGE", Direction.INCOMING), Hop("OWNED_BY")))
+            key(path<Owner>(Hop("AUTHORED_BY")))
+            key(query.role)
+        }
+
+        val statement = backend().groups(Message::class.java, spec).statement
+
+        assertContains(
+            statement,
+            """
+            MATCH (n:GroupMessage)<-[:HAS_MESSAGE]-()-[:OWNED_BY]->(k0:GroupUser:GroupPerson)
+            WHERE n.role = ${'$'}param_n_role_0
+            MATCH (n)-[:AUTHORED_BY]->(k1:GroupOwner)
+            WITH DISTINCT n, k0, k1
+            WITH DISTINCT k0,
+                 k1,
+                 n.role AS k2
+            RETURN
+            """.trimIndent(),
+        )
+    }
+
+    @Test
+    fun `two hops of one type in a path are named, and held to be two relationships`() {
+        val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+            where { query.role eq Role.USER }
+            key(path<Message>(Hop("HAS_MESSAGE", Direction.INCOMING), Hop("HAS_MESSAGE")))
+            count()
+        }
+
+        val statement = backend().groups(Message::class.java, spec).statement
+
+        assertContains(statement, "MATCH (n:GroupMessage)<-[r0_0:HAS_MESSAGE]-()-[r0_1:HAS_MESSAGE]->(k0:GroupMessage)\nWHERE n.role = \$param_n_role_0 AND r0_0 <> r0_1\n")
+    }
+
+    @Test
+    fun `a hop's type and label are quoted where they are no plain identifier`() {
+        val spec = GroupQuerySpec(MessageQueryDsl.INSTANCE).apply {
+            key(path<User>(Hop("HAS`MESSAGE]-()//", Direction.INCOMING, label = "Chat Session"), Hop("OWNED_BY")))
+            count()
+        }
+
+        val statement = backend().groups(Message::class.java, spec).statement
+
+        assertContains(statement, "MATCH (n:GroupMessage)<-[:`HAS``MESSAGE]-()//`]-(:`Chat Session`)-[:OWNED_BY]->(k0:GroupUser:GroupPerson)")
     }
 }

@@ -20,6 +20,8 @@ import org.drivine.query.FragmentQueryBuilder
 import org.drivine.query.FullTextSearchPlanner
 import org.drivine.query.GraphObjectQueryBuilder
 import org.drivine.query.GraphViewQueryBuilder
+import org.drivine.query.GroupQuery
+import org.drivine.query.GroupQueryBuilder
 import org.drivine.query.MergeStatement
 import org.drivine.query.PatchRow
 import org.drivine.query.PatchStatementBuilder
@@ -34,6 +36,7 @@ import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.VectorSearchPlanner
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.GroupQuerySpec
 import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.OrderClauseResult
 import org.drivine.query.dsl.WhereCondition
@@ -157,6 +160,9 @@ internal class CypherBackend(
         val ctx = queryContext(graphClass, query)
         return GraphStatement(builder(graphClass).buildCountQuery(ctx.whereClause, ctx.prologs, ctx.bridgeVariables), ctx.bindings)
     }
+
+    override fun groups(graphClass: Class<*>, query: GroupQuerySpec<*>): GraphStatement =
+        GroupQueryBuilder(grammar).build(GroupQuery.of(graphClass, query))
 
     override fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,

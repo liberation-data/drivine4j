@@ -360,6 +360,7 @@ class QueryDslGenerator(
                     fragmentDslExtension(fragmentClassName, dslClass, dslClassName, "deleteAll", Int::class.asClassName())
                 )
                 .addFunction(patchExtension(fragmentClassName, dslClass, dslClassName, finalBound = true))
+                .addFunction(groupsLoadExtension(fragmentClassName, dslClass, dslClassName))
 
             // Filtered full-text-search wrapper — only for fragments carrying a @FullTextIndex.
             if (fragmentHasFullTextIndex(fragmentClass)) {
@@ -556,6 +557,41 @@ class QueryDslGenerator(
             )
             .returns(ClassName("org.drivine.manager", "PatchResult"))
             .addStatement("return patch(id, T::class.java, $dslClassName.INSTANCE, spec)")
+            .build()
+    }
+
+    /**
+     * The grouped read wrapper that injects the fragment's `…QueryDsl.INSTANCE`:
+     *
+     * ```kotlin
+     * inline fun <reified T : FeedbackData, R> GroupOperations.load(
+     *     noinline spec: GroupQuerySpec<FeedbackDataQueryDsl>.() -> GroupRows<R>,
+     * ): List<R> = load(T::class.java, FeedbackDataQueryDsl.INSTANCE, spec)
+     * ```
+     *
+     * `groups.load<FeedbackData, _> { }` names the fragment and leaves the row type to the block's
+     * `rows`. Only a fragment has one: a grouped read's source is no view.
+     */
+    private fun groupsLoadExtension(fragmentClassName: ClassName, dslClass: ClassName, dslClassName: String): FunSpec {
+        val row = TypeVariableName("R")
+        return FunSpec.builder("load")
+            // A final (concrete) fragment makes `reified T : Fragment` predetermined, as for `loadAll`.
+            .addAnnotation(AnnotationSpec.builder(Suppress::class).addMember("%S", "FINAL_UPPER_BOUND").build())
+            .addModifiers(KModifier.INLINE)
+            .receiver(ClassName("org.drivine.manager", "GroupOperations"))
+            .addTypeVariable(TypeVariableName("T", fragmentClassName).copy(reified = true))
+            .addTypeVariable(row)
+            .addParameter(
+                ParameterSpec.builder(
+                    "spec",
+                    LambdaTypeName.get(
+                        receiver = ClassName("org.drivine.query.dsl", "GroupQuerySpec").parameterizedBy(dslClass),
+                        returnType = ClassName("org.drivine.query.dsl", "GroupRows").parameterizedBy(row),
+                    )
+                ).addModifiers(KModifier.NOINLINE).build()
+            )
+            .returns(List::class.asClassName().parameterizedBy(row))
+            .addStatement("return load(T::class.java, $dslClassName.INSTANCE, spec)")
             .build()
     }
 

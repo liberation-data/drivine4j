@@ -18,6 +18,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.FullTextIndexResolver
+import org.drivine.query.GroupQuery
 import org.drivine.query.PatchRow
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
@@ -28,6 +29,7 @@ import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.VectorIndexResolver
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.GroupQuerySpec
 import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.WhereCondition
@@ -110,6 +112,9 @@ internal class OracleBackend(
         val select = OracleSelect(graph, graphClass)
         return select.count(listOfNotNull(select.predicate(query.conditions)))
     }
+
+    override fun groups(graphClass: Class<*>, query: GroupQuerySpec<*>): GraphStatement =
+        OracleSelect(graph, graphClass).groups(GroupQuery.of(graphClass, query))
 
     override fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,

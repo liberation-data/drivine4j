@@ -16,6 +16,7 @@ import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.GroupQuerySpec
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.grammar.CypherGrammar
@@ -90,6 +91,14 @@ internal interface GraphBackend {
 
     /** The count of the [graphClass] objects that meet the conditions of [query]. A seek is refused: a count walks no order. */
     fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement
+
+    /**
+     * The grouped read [query] asks of the [graphClass] nodes: one map for each group, a key under
+     * `k0…` and an aggregate under `a0…`, as its handle names its column. A node key is the map a load
+     * of its fragment returns. Refused before anything is written: a source that is a view, a read
+     * with no key, and a condition that is not on the grouped nodes' own properties.
+     */
+    fun groups(graphClass: Class<*>, query: GroupQuerySpec<*>): GraphStatement
 
     /**
      * The search for the roots nearest [vector] by the embedding [property] names; null for the only
