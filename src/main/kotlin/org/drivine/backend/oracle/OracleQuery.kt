@@ -77,6 +77,11 @@ internal class GraphTable(
     }
 }
 
+/** A table of the graph, [name], as rows named [alias]. */
+internal class Table(private val name: String, override val alias: String) : RowSource {
+    override fun reading(readers: List<String>): String = "$name $alias"
+}
+
 /** A query written elsewhere, as rows named [alias]: every column it selects is there to read. */
 internal class Derived(private val query: String, override val alias: String) : RowSource {
     override fun reading(readers: List<String>): String = "(\n    ${query.under()}\n) $alias"
