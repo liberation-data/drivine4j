@@ -372,8 +372,13 @@ class OracleSelectTest {
             n_.nid IN (
                 SELECT related_.nid
                 FROM GRAPH_TABLE (g
-                    MATCH (from_ IS node WHERE JSON_VALUE(from_.props, '$.id') = ${'$'}_fromId AND INSTR(JSON_SERIALIZE(from_.labels), '"Human"') > 0) -[e IS edge WHERE e.type = 'MENTIONS']-> (related_ IS node)
-                    COLUMNS (related_.nid)) related_)
+                    MATCH (from_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (related_ IS node)
+                    COLUMNS (from_.nid AS src, related_.nid)) related_
+                WHERE related_.src IN (
+                    SELECT from_.nid
+                    FROM g_node from_
+                    WHERE JSON_VALUE(from_.props, '$.id') = ${'$'}_fromId
+                      AND INSTR(JSON_SERIALIZE(from_.labels), '"Human"') > 0))
             """.trimIndent(),
             out.relatedTo(listOf("Human"), "id", "_fromId", "MENTIONS", Direction.OUTGOING),
         )
@@ -383,6 +388,14 @@ class OracleSelectTest {
 
         assertTrue(select(Claim::class.java).relatedTo(listOf("Human"), "id", "_fromId", "MENTIONS", Direction.INCOMING).contains("<-[e IS edge WHERE e.type = 'MENTIONS']- (related_ IS node)"))
         assertTrue(select(Claim::class.java).relatedTo(listOf("Human"), "id", "_fromId", "MENTIONS", Direction.UNDIRECTED).contains(") -[e IS edge WHERE e.type = 'MENTIONS']- (related_ IS node)"))
+    }
+
+    @Test
+    fun `a node with no label that relationships are read from is found by its id alone, outside the pattern`() {
+        val related = select(Claim::class.java).relatedTo(emptyList(), "id", "_fromId", "TAGS", Direction.OUTGOING)
+
+        assertTrue(related.contains("MATCH (from_ IS node) -[e IS edge WHERE e.type = 'TAGS']-> (related_ IS node)"), related)
+        assertTrue(related.contains("FROM g_node from_\n        WHERE JSON_VALUE(from_.props, '$.id') = ${'$'}_fromId))"), related)
     }
 
     // ----- scored search -----
