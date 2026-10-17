@@ -721,6 +721,12 @@ data class CollectionSortSpec(
     fun nestedRelationship(): String? = if (isNested()) relationshipPath.substringAfter("_") else null
 }
 
+/** Orders parted by [CypherGenerator.splitOrders]: the sorts of relationship collections, and the orders of the roots. */
+internal data class SplitOrders(
+    val collectionSorts: List<CollectionSortSpec>,
+    val rootOrders: List<OrderTerm>,
+)
+
 /**
  * Result of processing order specifications.
  * Separates root-level ORDER BY from collection sorts that need apoc.coll.sortMaps().

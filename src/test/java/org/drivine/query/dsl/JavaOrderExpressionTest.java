@@ -10,6 +10,7 @@ import static org.drivine.query.dsl.OrderExpressions.floor;
 import static org.drivine.query.dsl.OrderExpressions.minus;
 import static org.drivine.query.dsl.OrderExpressions.times;
 import static org.drivine.query.dsl.OrderExpressions.unaryMinus;
+import static org.drivine.query.dsl.temporal.TemporalOrderExpressions.epochSeconds;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.mockito.Mockito.mock;
@@ -48,6 +49,14 @@ class JavaOrderExpressionTest {
                 result.getOrderByClause());
         assertEquals(asOf, result.getBindings().get("_order_0"));
         assertEquals(86400, result.getBindings().get("_order_5"));
+    }
+
+    @Test
+    void javaReadsAStoredMomentThroughTheStaticsOfItsCapability() {
+        OrderClauseResult result = CypherGenerator.INSTANCE.processOrders(
+                List.of(epochSeconds(q.getLastRead()).descending()), Set.of());
+
+        assertEquals("(n.lastRead.epochMillis / 1000.0) DESC", result.getOrderByClause());
     }
 
     @Test

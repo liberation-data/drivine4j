@@ -557,4 +557,14 @@ class CypherBackendTest {
 
         assertContains(statement, "MATCH (n:GroupMessage)<-[:`HAS``MESSAGE]-()//`]-(:`Chat Session`)-[:OWNED_BY]->(k0:GroupUser:GroupPerson)")
     }
+
+    @Test
+    fun `a parameter the order or the cursor reserves is refused where the where clause has bound it`() {
+        val refused = assertFailsWith<IllegalArgumentException> {
+            CypherBackend.requireUnclaimed(setOf("_order_0", "_order_1"), mapOf("_order_1" to 3), "Order expression")
+        }
+        assertEquals("Order expression parameter \$_order_1 collides with a where-clause binding", refused.message)
+
+        CypherBackend.requireUnclaimed(setOf("_order_0"), mapOf("param_n_confidence_0" to 0.1), "Order expression")
+    }
 }

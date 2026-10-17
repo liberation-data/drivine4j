@@ -174,6 +174,27 @@ class QueryIndexAdvisorTest {
     }
 
     @Test
+    fun `an order by an expression is not advised on, alone or before a property order`() {
+        val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
+
+        // No index holds an expression's value, so there is no index to name: FAIL lets the load run.
+        val alone = manager.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+            orderBy { (query.proposition.level * 2).desc() }
+            limit(2)
+        }
+        val beforeAProperty = manager.loadAll(PropositionView::class.java, PropositionViewQueryDsl.INSTANCE) {
+            orderBy {
+                (query.proposition.level * 2).desc()
+                query.proposition.id.desc()
+            }
+            limit(2)
+        }
+
+        assertEquals(1, alone.size)
+        assertEquals(1, beforeAProperty.size)
+    }
+
+    @Test
     fun `a query pinned to one root by its id is not advised on`() {
         val manager = gom().apply { indexAdvice = IndexAdvicePolicy.FAIL }
 

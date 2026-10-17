@@ -1,5 +1,6 @@
 package org.drivine.manager
 
+import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
@@ -17,6 +18,8 @@ import org.drivine.query.dsl.case
 import org.drivine.query.dsl.coalesce
 import org.drivine.query.dsl.div
 import org.drivine.query.dsl.epochSeconds
+import org.drivine.query.dsl.temporal.TemporalOrder
+import org.drivine.query.dsl.temporal.epochSeconds
 import org.drivine.query.dsl.exp
 import org.drivine.query.dsl.floor
 import org.drivine.query.dsl.hasValue
@@ -89,6 +92,7 @@ private val RANKED = listOf("g", "a", "h", "c", "b", "d", "e")
 private fun BeliefQueryDsl.daysFromSeconds(): OrderExpression = floor((asOf.epochSecond - lastReadSeconds) / 86400)
 
 /** The days since last read from the moment itself, which an engine must be able to read as a number. */
+@OptIn(TemporalOrder::class)
 private fun BeliefQueryDsl.daysFromMoment(): OrderExpression = floor((epochSeconds(asOf) - epochSeconds(lastRead)) / 86400)
 
 private fun BeliefQueryDsl.score(days: OrderExpression): OrderExpression = case(
@@ -99,8 +103,10 @@ private fun BeliefQueryDsl.score(days: OrderExpression): OrderExpression = case(
 /**
  * @param readsMoments whether the engine can read a stored moment as a number; where it cannot, an
  *   order that asks it to is refused before the load runs
+ * @param refusesDivisionByZero whether the engine fails a statement that divides by a whole-number
+ *   zero, as `div` documents; where it does not, the load runs and every root comes back
  */
-private fun verify(gom: StatelessGraphObjectManager, readsMoments: Boolean) {
+private fun verify(gom: StatelessGraphObjectManager, readsMoments: Boolean, refusesDivisionByZero: Boolean) {
     BELIEFS.forEach { gom.save(it) }
 
     fun fragments(spec: GraphQuerySpec<BeliefQueryDsl>.() -> Unit) =
@@ -143,6 +149,15 @@ private fun verify(gom: StatelessGraphObjectManager, readsMoments: Boolean) {
         listOf("b", "a", "c", "d", "e", "g", "h"),
         fragments { orderBy { case(query.boost.hasValue() then 1, otherwise = 0).desc(); query.id.asc() } },
     )
+
+    // Division by a whole-number zero: the engine's own behaviour, as `div` documents it.
+    val byZero = { fragments { orderBy { (query.confidence / 0).desc(); query.id.asc() } } }
+    if (refusesDivisionByZero) {
+        // The store fails it: an error of the engine, not a refusal as the statement is built.
+        assertThrows<DrivineException> { byZero() }
+    } else {
+        assertEquals(RANKED.sorted(), byZero().sorted())
+    }
 
     // From the moment itself, where the engine can read one as a number; refused before anything runs where it cannot.
     if (readsMoments) {
@@ -191,7 +206,7 @@ class OrderExpressionNeo4jTest {
     }
 
     @Test
-    fun `roots are ranked by a computed score on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()), readsMoments = true)
+    fun `roots are ranked by a computed score on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()), readsMoments = true, refusesDivisionByZero = true)
 }
 
 @Testcontainers
@@ -227,7 +242,7 @@ class OrderExpressionFalkorDbTest {
 
     @Test
     fun `roots are ranked by a computed score on FalkorDB, which refuses to read a moment as a number`() =
-        verify(buildGom(pm, SubtypeRegistry()), readsMoments = false)
+        verify(buildGom(pm, SubtypeRegistry()), readsMoments = false, refusesDivisionByZero = false)
 }
 
 @Testcontainers
@@ -262,7 +277,7 @@ class OrderExpressionMemgraphTest {
     }
 
     @Test
-    fun `roots are ranked by a computed score on Memgraph`() = verify(buildGom(pm, SubtypeRegistry()), readsMoments = true)
+    fun `roots are ranked by a computed score on Memgraph`() = verify(buildGom(pm, SubtypeRegistry()), readsMoments = true, refusesDivisionByZero = false)
 }
 
 @OracleTests
@@ -274,5 +289,5 @@ class OrderExpressionOracleTest {
     fun clear() = OracleTestDatabase.clear(pm)
 
     @Test
-    fun `roots are ranked by a computed score on Oracle`() = verify(buildGom(pm, registry), readsMoments = true)
+    fun `roots are ranked by a computed score on Oracle`() = verify(buildGom(pm, registry), readsMoments = true, refusesDivisionByZero = true)
 }

@@ -953,9 +953,12 @@ val top = graphObjectManager.loadAll<PropositionView> {
 }
 ```
 
-Neo4j, FalkorDB, Memgraph and Oracle each write the arithmetic, the functions and `case`.
-`epochSeconds(property)` reads a stored moment as a number, which FalkorDB cannot: there the load is
-refused with an `UnsupportedOrderFunctionException` before anything runs. An expression reads only the root's
+Neo4j, FalkorDB, Memgraph and Oracle each write the arithmetic, the functions and `case`, which live in
+`org.drivine.query.dsl`. A function that not every backend can write lives in a package named for its
+capability, behind a Kotlin opt-in: `epochSeconds(property)`, which reads a stored moment as a number, is
+`org.drivine.query.dsl.temporal.epochSeconds` and needs `@OptIn(TemporalOrder::class)` (from Java, the
+statics of `TemporalOrderExpressions`). FalkorDB cannot write it, and refuses the load with an
+`UnsupportedOrderFunctionException` before anything runs. An expression reads only the root's
 properties, and is refused under `seek`. See [docs/0.1.6-order-by-expression.md](docs/0.1.6-order-by-expression.md).
 
 #### Limit & Pagination

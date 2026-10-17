@@ -137,16 +137,8 @@ internal class CypherBackend(
             .joinToString(" AND ")
             .takeIf { it.isNotEmpty() }
             ?.let { if (keysetPlan == null) alone(it, graphClass, query.conditions) else it }
-        keysetPlan?.bindings?.keys?.forEach { reserved ->
-            require(reserved !in ctx.bindings) {
-                "Keyset cursor parameter \$$reserved collides with a where-clause binding"
-            }
-        }
-        orderResult.bindings.keys.forEach { reserved ->
-            require(reserved !in ctx.bindings) {
-                "Order expression parameter \$$reserved collides with a where-clause binding"
-            }
-        }
+        requireUnclaimed(keysetPlan?.bindings?.keys.orEmpty(), ctx.bindings, "Keyset cursor")
+        requireUnclaimed(orderResult.bindings.keys, ctx.bindings, "Order expression")
         val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap()) + orderResult.bindings
 
         val baseQuery = if (query.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
@@ -368,8 +360,18 @@ internal class CypherBackend(
         return GraphStatement(sb.toString(), merged)
     }
 
-    private companion object {
-        const val SKIP_PARAM = "_skip"
-        const val LIMIT_PARAM = "_limit"
+    internal companion object {
+        private const val SKIP_PARAM = "_skip"
+        private const val LIMIT_PARAM = "_limit"
+
+        /**
+         * Refuses a parameter of [reserved], which [what] binds, that a where clause has bound
+         * already: one value would replace the other. The where clause names its parameters
+         * `param_…`, so none of the reserved names, `_seek_…` and `_order_…`, is one today; this
+         * keeps it so.
+         */
+        fun requireUnclaimed(reserved: Collection<String>, bindings: Map<String, Any?>, what: String) = reserved.forEach { name ->
+            require(name !in bindings) { "$what parameter \$$name collides with a where-clause binding" }
+        }
     }
 }

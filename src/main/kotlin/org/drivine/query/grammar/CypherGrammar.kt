@@ -67,20 +67,17 @@ interface CypherGrammar {
     val indexesExcludeNulls: Boolean
         get() = false
 
-    /** The engine's name, as a refusal names it. */
-    val engineName: String
-        get() = "This engine"
-
     /**
-     * [moment], an expression that reads a moment as the engine holds one, as seconds since the epoch
-     * with their fraction; null where the engine cannot read a moment as a number. An order by an
-     * expression that asks for it there is refused, for the reason [epochSecondsLimit] gives.
+     * How the engine reads [moment], an expression that reads a moment as the engine holds one, as
+     * seconds since the epoch with their fraction: [TemporalOrderSupport.Written] with the expression, or
+     * [TemporalOrderSupport.Refused] with the engine and the reason it cannot. An order by an expression that
+     * asks for it where it is refused is refused before anything runs. A grammar that does not say
+     * refuses it.
      */
-    fun epochSeconds(moment: String): String? = null
-
-    /** Why the engine cannot read a moment as a number, where [epochSeconds] is null. */
-    val epochSecondsLimit: String
-        get() = "its grammar does not say how to read a moment as a number"
+    fun epochSeconds(moment: String): TemporalOrderSupport = TemporalOrderSupport.Refused(
+        engine = "This engine",
+        reason = "its grammar does not say how to read a moment as a number",
+    )
 
     /**
      * Whether what [existenceCheck] and [filteredExistenceCheck] give may stand only in a `WHERE`,
@@ -239,6 +236,22 @@ interface CypherGrammar {
 }
 
 /**
+ * Whether a grammar supports the temporal order capability (`org.drivine.query.dsl.temporal`): how it
+ * reads a moment as seconds since the epoch (see [CypherGrammar.epochSeconds]), written as an
+ * expression, or refused, with the reason.
+ */
+sealed interface TemporalOrderSupport {
+    /** The engine reads the moment as seconds by [expression]. */
+    data class Written(val expression: String) : TemporalOrderSupport
+
+    /** [engine] cannot read a moment as a number, for [reason]. */
+    data class Refused(val engine: String, val reason: String) : TemporalOrderSupport
+}
+
+/** Neo4j 4 and 5 hold a moment as a native temporal value, whose milliseconds since the epoch it gives as a property. */
+private fun neo4jEpochSeconds(moment: String) = TemporalOrderSupport.Written("$moment.epochMillis / 1000.0")
+
+/**
  * Neo4j 5.x — `EXISTS { pattern }` subquery syntax.
  */
 class Neo4j5Grammar(
@@ -254,10 +267,7 @@ class Neo4j5Grammar(
 
     override val indexesExcludeNulls: Boolean = true
 
-    override val engineName: String = "Neo4j"
-
-    /** A moment is a native temporal value, whose milliseconds since the epoch it gives as a property. */
-    override fun epochSeconds(moment: String): String = "$moment.epochMillis / 1000.0"
+    override fun epochSeconds(moment: String): TemporalOrderSupport = neo4jEpochSeconds(moment)
 
     override val supportsVectorSearch: Boolean = true
 
@@ -321,10 +331,7 @@ class Neo4j4Grammar(
 
     override val indexesExcludeNulls: Boolean = true
 
-    override val engineName: String = "Neo4j"
-
-    /** A moment is a native temporal value, whose milliseconds since the epoch it gives as a property. */
-    override fun epochSeconds(moment: String): String = "$moment.epochMillis / 1000.0"
+    override fun epochSeconds(moment: String): TemporalOrderSupport = neo4jEpochSeconds(moment)
 
     override val predicatesOnlyInWhere: Boolean = true
 }
@@ -337,9 +344,6 @@ class Neo4j4Grammar(
 open class OpenCypherGrammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
-    override val engineName: String
-        get() = "An openCypher engine"
-
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
         "($rootAlias)$direction(:$targetLabels)"
 
@@ -374,17 +378,18 @@ class FalkorDbCypherGrammar(
 
     override val testsPathEndAfterMatch: Boolean = true
 
-    override val engineName: String = "FalkorDB"
-
     /**
      * FalkorDB is given a moment as its ISO-8601 text (see [org.drivine.query.TemporalCoercer]), and
      * has no function that reads a moment as a number: no `epochMillis`, and no arithmetic on a
-     * datetime. So [epochSeconds] stays null, and an order that asks for it is refused.
+     * datetime. So an order that asks for one is refused.
      */
-    override val epochSecondsLimit: String = """
-        it holds a moment as its ISO-8601 text, and has no function that reads one as a number. Store the
-        moment's seconds since the epoch in a property of their own, and order by that.
-    """.trimIndent().replace("\n", " ")
+    override fun epochSeconds(moment: String): TemporalOrderSupport = TemporalOrderSupport.Refused(
+        engine = "FalkorDB",
+        reason = """
+            it holds a moment as its ISO-8601 text, and has no function that reads one as a number. Store the
+            moment's seconds since the epoch in a property of their own, and order by that.
+        """.trimIndent().replace("\n", " "),
+    )
 
     override val supportsVectorSearch: Boolean = true
 

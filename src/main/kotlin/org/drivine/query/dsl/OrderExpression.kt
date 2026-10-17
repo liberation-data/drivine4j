@@ -8,8 +8,9 @@ sealed interface Operand
 
 /**
  * A value computed for each root from its properties and from values the caller binds, by which
- * the roots may be ordered: arithmetic (`+ - * /`), [exp], [floor], [coalesce], [epochSeconds] and
- * [case]. Build one with those functions inside an `orderBy` block and order by it with [asc] or
+ * the roots may be ordered: arithmetic (`+ - * /`), [exp], [floor], [coalesce], [epochSeconds] of a
+ * moment the caller binds, and [case]. A stored moment read as seconds is a function of the temporal
+ * capability, `org.drivine.query.dsl.temporal.epochSeconds`, behind its opt-in. Build one with those functions inside an `orderBy` block and order by it with [asc] or
  * [desc]; a property order after it breaks its ties, as it does after a property.
  *
  * ```kotlin
@@ -172,33 +173,5 @@ internal fun Operand.expression(): OrderExpression = when (this) {
     is PropertyReference<*> -> OrderExpression.Property(alias, propertyName)
 }
 
-/** A value of the expression: an operand as it is, and anything else bound. */
-internal fun operandOrValue(value: Any): OrderExpression =
-    if (value is Operand) value.expression() else OrderExpression.Parameter(value)
-
-/**
- * Refuses [property] where it is not the root's: an expression orders the roots, one value for
- * each, and a related node is one of a collection. Each backend asks it of every property it writes.
- */
-internal fun requireRootProperty(property: OrderExpression.Property, isRoot: Boolean) = require(isRoot) {
-    "An order by an expression reads only the root's properties: ${property.path} is not one of them."
-}
-
-/** The properties [expression] reads, in the order they are written. */
-internal fun propertiesOf(expression: OrderExpression): List<OrderExpression.Property> = when (expression) {
-    is OrderExpression.Property -> listOf(expression)
-    is OrderExpression.Parameter -> emptyList()
-    is OrderExpression.Arithmetic -> propertiesOf(expression.left) + propertiesOf(expression.right)
-    is OrderExpression.Negation -> propertiesOf(expression.operand)
-    is OrderExpression.Call -> expression.arguments.flatMap(::propertiesOf)
-    is OrderExpression.EpochSeconds -> listOf(expression.moment)
-    is OrderExpression.Case -> expression.branches.flatMap { propertiesOf(it.condition) + propertiesOf(it.result) } + propertiesOf(expression.otherwise)
-}
-
-private fun propertiesOf(condition: OrderCondition): List<OrderExpression.Property> = when (condition) {
-    is OrderCondition.Comparison -> propertiesOf(condition.left) + propertiesOf(condition.right)
-    is OrderCondition.Missing -> propertiesOf(condition.operand)
-    is OrderCondition.All -> condition.conditions.flatMap(::propertiesOf)
-    is OrderCondition.AnyOf -> condition.conditions.flatMap(::propertiesOf)
-    is OrderCondition.Not -> propertiesOf(condition.condition)
-}
+/** A value of the expression: an operand as it is, and anything else bound (see [param], which refuses what is no value). */
+internal fun operandOrValue(value: Any): OrderExpression = if (value is Operand) value.expression() else param(value)

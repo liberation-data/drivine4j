@@ -4,6 +4,8 @@ import org.drivine.backend.CypherBackend
 import org.drivine.backend.oracle.OracleBackend
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.query.dsl.temporal.TemporalOrder
+import org.drivine.query.dsl.temporal.epochSeconds
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
@@ -11,7 +13,10 @@ import sample.decay.Belief
 import sample.decay.BeliefQueryDsl
 import sample.decay.BeliefView
 import sample.decay.BeliefViewQueryDsl
+import java.time.DateTimeException
 import java.time.Instant
+import java.time.LocalDateTime
+import java.time.temporal.TemporalAccessor
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -22,6 +27,7 @@ import kotlin.test.assertTrue
  * An order by an expression over the root's properties: what each backend writes for it, what it
  * binds, and what it refuses before anything runs.
  */
+@OptIn(TemporalOrder::class)
 class OrderExpressionTest {
 
     private val asOf: Instant = Instant.parse("2026-01-10T00:00:00Z")
@@ -185,6 +191,64 @@ class OrderExpressionTest {
         assertContains(seeking.message.orEmpty(), "seek")
     }
 
+    @Test
+    fun `on a fragment an expression that reads another node is refused before anything is sent, a moment of one among them`() {
+        val related = PropertyReference<Instant>("sources", "seenAt")
+        listOf(CypherDialect.NEO4J_5, CypherDialect.FALKORDB).forEach { dialect ->
+            assertFailsWith<IllegalArgumentException> {
+                cypher(dialect).loadAll(Belief::class.java, beliefs { orderBy { exp(related).desc() } })
+            }
+            assertFailsWith<IllegalArgumentException> {
+                cypher(dialect).loadAll(Belief::class.java, beliefs { orderBy { epochSeconds(related).desc() } })
+            }
+        }
+    }
+
+    @Test
+    fun `an expression orders the roots beside a sort of a relationship collection on a view`() {
+        val statement = cypher().loadAll(
+            BeliefView::class.java,
+            views { orderBy { (query.belief.confidence * 2).desc(); query.sources.weight.asc() } },
+        ).statement
+
+        assertContains(statement.statement, "ORDER BY (belief.confidence * \$_order_0) DESC")
+        assertFalse("sources.weight ASC" in statement.statement, "the collection sort is no term of the roots' order")
+        assertContains(statement.statement, "reverse(apoc.coll.sortMaps([(belief)-[:CITES]->(sources:BeliefSource)")
+        assertContains(statement.statement, "], 'weight')) AS sources")
+        assertEquals(2, statement.bindings["_order_0"])
+    }
+
+    @Test
+    fun `a node reference, a condition or an order is no value to bind, and is refused as it is built`() {
+        val q = BeliefQueryDsl.INSTANCE
+        val condition = q.confidence above 0.5
+        assertFailsWith<IllegalArgumentException> { q.confidence above q }
+        assertFailsWith<IllegalArgumentException> { q.confidence equalTo condition }
+        assertFailsWith<IllegalArgumentException> { condition then q }
+        assertFailsWith<IllegalArgumentException> { condition then condition }
+        assertFailsWith<IllegalArgumentException> { (condition then 1).otherwise(q.id.ascending()) }
+        assertFailsWith<IllegalArgumentException> { case(condition then 1, otherwise = condition then 0) }
+        assertFailsWith<IllegalArgumentException> { coalesce(q.boost, q) }
+        assertFailsWith<IllegalArgumentException> { param(q) }
+    }
+
+    @Test
+    fun `a stored moment read as a number is in the temporal capability, behind its opt-in, and a bound one is not`() {
+        val marker = Class.forName("org.drivine.query.dsl.temporal.TemporalOrder")
+        val temporal = Class.forName("org.drivine.query.dsl.temporal.TemporalOrderExpressions")
+            .getMethod("epochSeconds", PropertyReference::class.java)
+        assertTrue(temporal.annotations.any { it.annotationClass.java == marker }, "epochSeconds(property) is marked")
+
+        val everywhere = Class.forName("org.drivine.query.dsl.OrderExpressions")
+        assertFalse(everywhere.getMethod("epochSeconds", TemporalAccessor::class.java).annotations.any { it.annotationClass.java == marker })
+        assertFailsWith<NoSuchMethodException> { everywhere.getMethod("epochSeconds", PropertyReference::class.java) }
+    }
+
+    @Test
+    fun `a local date-time names no instant, so it is refused as seconds since the epoch`() {
+        assertFailsWith<DateTimeException> { epochSeconds(LocalDateTime.parse("2026-01-10T00:00:00")) }
+    }
+
     // ----- Oracle -----
 
     @Test
@@ -239,6 +303,42 @@ class OrderExpressionTest {
             .statement.statement.substringAfterLast("ORDER BY ")
 
         assertContains(order, "CASE WHEN JSON_VALUE(n_.props, '\$.note') IS NOT NULL THEN")
+    }
+
+    @Test
+    fun `on Oracle a property no field declares is read as the kind of the value it is compared with`() {
+        val note = PropertyReference<String>("n", "note")
+        val seenAt = PropertyReference<Instant>("n", "seenAt")
+        val rank = PropertyReference<Int>("n", "rank")
+        val order = oracle().loadAll(
+            Belief::class.java,
+            beliefs { orderBy { case(note equalTo "x" then 1, (seenAt above asOf) then 2, (rank atLeast 3) then 3, otherwise = 0).desc() } },
+        ).statement.statement.substringAfterLast("ORDER BY ")
+
+        assertContains(order, "WHEN JSON_VALUE(n_.props, '\$.note') = \$_p")
+        assertContains(order, "WHEN JSON_VALUE(n_.props, '\$.seenAt' RETURNING TIMESTAMP WITH TIME ZONE) > \$_p")
+        assertContains(order, "WHEN JSON_VALUE(n_.props, '\$.rank.numberOnly()' RETURNING NUMBER) >= \$_p")
+    }
+
+    @Test
+    fun `on Oracle an expression places its nulls on its term`() {
+        val order = oracle().loadAll(Belief::class.java, beliefs { orderBy { coalesce(query.boost, query.decay).asc().nullsFirst() } })
+            .statement.statement.substringAfterLast("ORDER BY ")
+
+        assertTrue(order.trimEnd().startsWith("COALESCE(JSON_VALUE(n_.props, '\$.boost' RETURNING NUMBER), JSON_VALUE(n_.props, '\$.decay' RETURNING NUMBER)) ASC NULLS FIRST"), order)
+    }
+
+    @Test
+    fun `on Oracle an expression orders the roots beside a sort of a relationship collection on a view`() {
+        val statement = oracle().loadAll(
+            BeliefView::class.java,
+            views { orderBy { (query.belief.confidence * 2).desc(); query.sources.weight.asc() } },
+        ).statement
+        val order = statement.statement.substringAfterLast("ORDER BY ")
+
+        assertTrue(order.startsWith("(JSON_VALUE(belief_.props, '\$.confidence' RETURNING NUMBER) * \$_p"), order)
+        assertTrue(2 in statement.bindings.values)
+        assertContains(statement.statement, "'\$.weight'")
     }
 
     @Test

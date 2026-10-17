@@ -12,12 +12,13 @@ import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.NullPlacement
 import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.dsl.ExpressionOrder
-import org.drivine.query.dsl.OrderCondition
 import org.drivine.query.dsl.OrderExpression
+import org.drivine.query.dsl.OrderExpressionWriter
+import org.drivine.query.dsl.OrderFunction
+import org.drivine.query.dsl.PropertyUse
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.UnsupportedOrderFunctionException
-import org.drivine.query.dsl.requireRootProperty
 import org.drivine.query.dsl.SeekValueSpec
 import org.drivine.query.dsl.WhereCondition
 
@@ -362,7 +363,7 @@ internal class OraclePredicates(
      * on the term. Every value it holds is bound.
      */
     private fun expressionTerm(order: ExpressionOrder): String =
-        "${expression(order.expression)} ${order.direction.name}${placement(order.nulls)}"
+        "${expressions.write(order.expression)} ${order.direction.name}${placement(order.nulls)}"
 
     /** Where a term of one value puts its nulls, as SQL says so after the direction. */
     private fun placement(nulls: NullPlacement?): String = when (nulls) {
@@ -371,58 +372,48 @@ internal class OraclePredicates(
         null -> ""
     }
 
-    /**
-     * [expression] in SQL. A property is read as the field that declares it is ordered (see
-     * [ordered]); one no field declares, as the kind of the value it is compared with in a case, as
-     * text in a test for a value, and as a number anywhere else, where it is a term of arithmetic.
-     */
-    private fun expression(expression: OrderExpression, kind: SqlKind? = null): String = when (expression) {
-        is OrderExpression.Property -> expressionProperty(expression, kind)
-        is OrderExpression.Parameter -> scope.bound(scalar(expression.value))
-        is OrderExpression.Arithmetic -> "(${expression(expression.left)} ${expression.operator.symbol} ${expression(expression.right)})"
-        is OrderExpression.Negation -> "(-${expression(expression.operand)})"
-        is OrderExpression.Call -> "${expression.function.written.uppercase()}(${expression.arguments.joinToString(", ") { expression(it) }})"
-        is OrderExpression.EpochSeconds -> epochSeconds(expression.moment)
-        is OrderExpression.Case -> {
-            val branches = expression.branches.joinToString(" ") { "WHEN ${condition(it.condition)} THEN ${expression(it.result)}" }
-            "CASE $branches ELSE ${expression(expression.otherwise)} END"
-        }
-    }
-
-    private fun expressionProperty(property: OrderExpression.Property, kind: SqlKind?): String {
-        requireRootProperty(property, property.alias == rootAlias)
-        val key = property.propertyName
-        if (key == Stamps.PROPERTY || declaredKind(key) != null) return ordered(key)
-        return if (kind == null || kind == SqlKind.NUMBER) undeclaredNumber(key) else property(root, key, kind)
-    }
+    private val expressions = OracleOrderExpressions()
 
     /**
-     * The moment a property holds as seconds since the epoch: the interval from the epoch to the
-     * moment in UTC, in its days, hours, minutes and seconds with their fraction. Only a property a
-     * field declares as a moment is read as one: any other is held as its text.
+     * Writes an order expression in SQL. A property is read as the field that declares it is ordered
+     * (see [ordered]); one no field declares, as the kind of the value it is compared with in a case,
+     * as text in a test for a value, and as a number anywhere else, where it is a term of arithmetic.
      */
-    private fun epochSeconds(moment: OrderExpression.Property): String {
-        requireRootProperty(moment, moment.alias == rootAlias)
-        if (declaredKind(moment.propertyName) != SqlKind.INSTANT) {
-            throw UnsupportedOrderFunctionException(
-                "epochSeconds", "Oracle", "it reads a moment only from a property a field declares as a moment, and ${moment.path} is not one.",
-            )
-        }
-        val since = "(SYS_EXTRACT_UTC(${ordered(moment.propertyName)}) - TIMESTAMP '1970-01-01 00:00:00')"
-        return "(EXTRACT(DAY FROM $since) * 86400 + EXTRACT(HOUR FROM $since) * 3600 + EXTRACT(MINUTE FROM $since) * 60 + EXTRACT(SECOND FROM $since))"
-    }
+    private inner class OracleOrderExpressions : OrderExpressionWriter(rootAlias) {
 
-    /** A condition of a case. A property no field declares is read as the kind of the value it is compared with. */
-    private fun condition(condition: OrderCondition): String = when (condition) {
-        is OrderCondition.Comparison -> {
-            val kind = (condition.right as? OrderExpression.Parameter ?: condition.left as? OrderExpression.Parameter)?.let { SqlKind.ofValue(it.value) }
-            "${expression(condition.left, kind)} ${condition.operator.symbol} ${expression(condition.right, kind)}"
+        override fun property(property: OrderExpression.Property, use: PropertyUse): String {
+            val key = property.propertyName
+            if (key == Stamps.PROPERTY || declaredKind(key) != null) return ordered(key)
+            val kind = when (use) {
+                PropertyUse.Plain -> SqlKind.NUMBER
+                is PropertyUse.ComparedWith -> SqlKind.ofValue(use.value)
+                // As text: read as a number, a property no field declares would have no value where it holds a text.
+                PropertyUse.TestedForValue -> SqlKind.TEXT
+            }
+            return if (kind == SqlKind.NUMBER) undeclaredNumber(key) else OracleSql.property(root, key, kind)
         }
-        // As text: read as a number, a property no field declares would have no value where it holds a text.
-        is OrderCondition.Missing -> "${expression(condition.operand, SqlKind.TEXT)} ${if (condition.negated) "IS NOT NULL" else "IS NULL"}"
-        is OrderCondition.All -> condition.conditions.joinToString(" AND ", "(", ")") { condition(it) }
-        is OrderCondition.AnyOf -> condition.conditions.joinToString(" OR ", "(", ")") { condition(it) }
-        is OrderCondition.Not -> "NOT (${condition(condition.condition)})"
+
+        override fun bind(value: Any): String = scope.bound(scalar(value))
+
+        /** SQL divides numbers as real numbers. */
+        override fun divide(left: String, right: String): String = "($left / $right)"
+
+        override fun function(function: OrderFunction): String = function.written.uppercase()
+
+        /**
+         * The moment a property holds as seconds since the epoch: the interval from the epoch to the
+         * moment in UTC, in its days, hours, minutes and seconds with their fraction. Only a property a
+         * field declares as a moment is read as one: any other is held as its text.
+         */
+        override fun epochSeconds(moment: OrderExpression.Property): String {
+            if (declaredKind(moment.propertyName) != SqlKind.INSTANT) {
+                throw UnsupportedOrderFunctionException(
+                    "epochSeconds", "Oracle", "it reads a moment only from a property a field declares as a moment, and ${moment.path} is not one.",
+                )
+            }
+            val since = "(SYS_EXTRACT_UTC(${ordered(moment.propertyName)}) - TIMESTAMP '1970-01-01 00:00:00')"
+            return "(EXTRACT(DAY FROM $since) * 86400 + EXTRACT(HOUR FROM $since) * 3600 + EXTRACT(MINUTE FROM $since) * 60 + EXTRACT(SECOND FROM $since))"
+        }
     }
 
     /**

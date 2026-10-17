@@ -11,12 +11,21 @@ import java.time.temporal.TemporalAccessor
 
 /**
  * A value the caller gives, bound as a parameter: an `asOf` moment, a threshold, a weight. A property
- * reference or an expression is no value to bind, and is refused: it is an operand as it stands.
+ * reference or an expression is no value to bind, and is refused: it is an operand as it stands. So
+ * is any other object of the DSL, a node reference, a condition or an order, which no store could
+ * hold as a value. The comparisons, `then`, `otherwise` and `coalesce` bind what is not an operand
+ * through this, and refuse the same.
  */
 fun param(value: Any): OrderExpression {
     require(value !is Operand) { "param binds a value, and $value is an operand: use it as it stands." }
+    require(!isQueryObject(value)) { "$value is an object of the query DSL, which is no value to bind: an expression reads only properties and values." }
     return OrderExpression.Parameter(value)
 }
+
+/** Whether [value] is an object of the DSL that is not an operand: a reference to a node or a bag, a condition, a branch or an order. */
+private fun isQueryObject(value: Any): Boolean =
+    value is NodeReference || value is PropertyBagReference || value is OrderCondition || value is CaseBranch ||
+        value is OrderTerm || value is WhereCondition || value is PropertyConditionBuilder
 
 // ----- Arithmetic -----
 
@@ -74,18 +83,10 @@ fun coalesce(first: Operand, vararg rest: Any): OrderExpression {
 }
 
 /**
- * The moment the property [moment] holds, as seconds since the epoch, with the fraction of a second
- * where the engine keeps one. The property holds an instant: an `Instant`, `OffsetDateTime` or
- * `ZonedDateTime`, not a local date or time, which names no instant. A backend that holds a moment in
- * a form it cannot read as a number refuses it: FalkorDB holds one as its ISO-8601 text. Store the
- * seconds beside it there.
- */
-fun epochSeconds(moment: PropertyReference<*>): OrderExpression =
-    OrderExpression.EpochSeconds(OrderExpression.Property(moment.alias, moment.propertyName))
-
-/**
  * The moment [moment] as seconds since the epoch, with its fraction, bound as a number. It is read
- * on the caller's side, so every backend can take it: `epochSeconds(asOf) - epochSeconds(query.lastRead)`.
+ * on the caller's side, so every backend can take it: `epochSeconds(asOf) - query.lastReadSeconds`.
+ * A stored moment read as seconds is `org.drivine.query.dsl.temporal.epochSeconds(property)`, which
+ * not every backend can write.
  *
  * @throws java.time.DateTimeException where [moment] names no instant, as a local date-time does not
  */
