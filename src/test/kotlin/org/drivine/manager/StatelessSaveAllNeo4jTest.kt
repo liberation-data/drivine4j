@@ -128,10 +128,11 @@ class StatelessSaveAllNeo4jTest {
 
         val failure = assertFails { gom(counting).saveAll(batch) }
 
-        // The engine refused the batch: it was sent, with the good statements ahead of the bad one.
+        // The engine refused the batch: it was sent, the two classes as one statement, the good rows
+        // ahead of the bad one.
         assertTrue(failure is DrivineException, "was $failure")
         assertEquals(1, counting.batchCalls)
-        assertTrue(counting.batchSpecCount > 1, "the batch held ${counting.batchSpecCount} statements")
+        assertEquals(1, counting.batchSpecCount)
         assertEquals(0L, gom.count(PropositionNode::class.java), "earlier good writes rolled back with the failure")
         assertEquals(0L, pm.getOne(
             QuerySpecification.withStatement("MATCH (n:BatchFail) RETURN count(n) AS c").transform(Long::class.java)

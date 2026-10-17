@@ -49,6 +49,14 @@ interface ConnectionProvider {
         get() = schemaGrammar !is UnsupportedSchemaGrammar
 
     /**
+     * Whether [Connection.rollbackTransaction] undoes the statements run since
+     * [Connection.startTransaction], so that a batch of statements is applied whole. False for an
+     * engine that commits each statement as it runs (FalkorDB).
+     */
+    val atomicBatches: Boolean
+        get() = true
+
+    /**
      * The graph this provider's connections read and write, on a store that keeps a graph under a
      * name: on Oracle it names the property graph and the tables beneath it. Null where the
      * connection itself selects the graph.

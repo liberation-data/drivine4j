@@ -80,6 +80,19 @@ interface PersistenceManager {
     val storeIdentity: StoreIdentity
         get() = StoreIdentityResolver(this).resolve()
 
+    /**
+     * Whether a batch of more than one statement ([executeBatch], [queryBatch]) is applied whole: all
+     * of it or none. True on an engine with transactions to roll back (Neo4j, Memgraph, Oracle).
+     * False on FalkorDB, which commits each statement as it runs: there a batch of several statements
+     * is run statement by statement, or, in [org.drivine.connection.FalkorDbTransactionMode.STRICT],
+     * refused with [org.drivine.NonAtomicBatchException] before any of it runs. A batch of one
+     * statement is applied whole on every engine.
+     *
+     * Ask this, as [supportsSchemaManagement], rather than matching [type] against known engines.
+     */
+    val atomicBatches: Boolean
+        get() = true
+
     /** The graph this manager reads and writes, where the store names it. See [org.drivine.connection.ConnectionProvider.graphName]. */
     val graphName: String?
         get() = null
@@ -112,11 +125,13 @@ interface PersistenceManager {
      * [GraphObjectManager.saveAll] and [StatelessGraphObjectManager.saveAll].
      *
      * The batch is **atomic** — all succeed or none do — on an engine with multi-statement
-     * transactions (Neo4j, Memgraph, Oracle). FalkorDB has none: in
-     * [org.drivine.connection.FalkorDbTransactionMode.WARN] each statement is committed as it runs,
-     * so a failure midway leaves the earlier statements applied, and in
-     * [org.drivine.connection.FalkorDbTransactionMode.STRICT] the batch is refused before any
-     * statement runs.
+     * transactions (Neo4j, Memgraph, Oracle), and a batch of one statement is atomic on every engine.
+     * FalkorDB has no such transactions ([atomicBatches] is false): there a batch of one statement
+     * runs with no transaction, and a batch of more, in
+     * [org.drivine.connection.FalkorDbTransactionMode.WARN], is committed statement by statement, so
+     * a failure midway leaves the earlier statements applied; the first such batch logs a warning. In
+     * [org.drivine.connection.FalkorDbTransactionMode.STRICT] a batch of more is refused with
+     * [org.drivine.NonAtomicBatchException] before any statement runs.
      *
      * The default loops [execute] (no extra atomicity — a fallback for impls that don't override);
      * the real managers override to run the statements in one transaction.

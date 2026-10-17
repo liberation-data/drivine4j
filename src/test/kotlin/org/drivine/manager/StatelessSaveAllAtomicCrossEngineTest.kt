@@ -1,0 +1,374 @@
+package org.drivine.manager
+
+import org.drivine.NonAtomicBatchException
+import org.drivine.StaleObjectException
+import org.drivine.connection.DatabaseType
+import org.drivine.connection.FalkorDbConnectionProvider
+import org.drivine.connection.FalkorDbTransactionMode
+import org.drivine.connection.Neo4jConnectionProvider
+import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.mapper.SubtypeRegistry
+import org.drivine.model.Stamps
+import org.drivine.query.QuerySpecification
+import org.drivine.query.grammar.CypherDialect
+import org.drivine.schema.UniquenessConstraintSpec
+import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Test
+import org.testcontainers.containers.GenericContainer
+import org.testcontainers.containers.Neo4jContainer
+import org.testcontainers.containers.wait.strategy.Wait
+import org.testcontainers.junit.jupiter.Container
+import org.testcontainers.junit.jupiter.Testcontainers
+import org.testcontainers.utility.DockerImageName
+import sample.atomic.Bookmark
+import sample.atomic.BookmarkHashes
+import sample.atomic.ChunkHash
+import sample.atomic.Ledger
+import sample.atomic.Watermark
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+/**
+ * A `saveAll` of fragments of more than one label is one statement, on every engine, and so is
+ * applied whole or not at all: on FalkorDB too, which cannot roll back a statement it has run.
+ */
+abstract class StatelessSaveAllAtomicContract {
+
+    abstract val pm: PersistenceManager
+
+    protected val stateless: StatelessGraphObjectManager
+        get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+
+    private val uniqueCursor = UniquenessConstraintSpec("Bookmark", "cursor")
+
+    protected fun run(cypher: String) = pm.execute(QuerySpecification.withStatement(cypher))
+
+    protected fun ids(label: String): Set<String> =
+        pm.query(QuerySpecification.withStatement("MATCH (n:$label) RETURN n.id").transform(String::class.java)).toSet()
+
+    private fun stamp(id: String): String? = pm.query(
+        QuerySpecification.withStatement("MATCH (n {id: \$id}) RETURN n.${Stamps.QUOTED}").bind(mapOf("id" to id)).transform(String::class.java)
+    ).firstOrNull()
+
+    /** Every node, with its labels and properties, as sorted lines. */
+    protected fun snapshot(): List<String> = pm.query(
+        QuerySpecification.withStatement("MATCH (n) RETURN {labels: labels(n), properties: properties(n)} AS row").transform(Map::class.java)
+    ).map { row ->
+        val properties = (row["properties"] as Map<*, *>).entries.sortedBy { it.key.toString() }.joinToString { "${it.key}=${it.value}" }
+        "(${(row["labels"] as List<*>).joinToString(":")} $properties)"
+    }.sorted()
+
+    /** The size of each batch [save] runs, through a manager of its own. */
+    protected fun batches(save: (StatelessGraphObjectManager) -> Unit): List<Int> {
+        val counting = BatchSizes(pm)
+        save(StatelessGraphObjectManager(counting, Neo4jObjectMapper.instance, SubtypeRegistry()))
+        return counting.batches
+    }
+
+    /** Runs [test] with the cursor of a bookmark unique, and the constraint dropped afterwards. */
+    protected fun withUniqueCursor(test: () -> Unit) {
+        pm.constraints.ensure(uniqueCursor)
+        try {
+            test()
+        } finally {
+            pm.constraints.drop(uniqueCursor)
+        }
+    }
+
+    @BeforeEach
+    fun clean() = run("MATCH (n) DETACH DELETE n")
+
+    @Test
+    fun `a batch of fragments of three labels is one statement`() {
+        val sizes = batches { it.saveAll(listOf(ChunkHash("h1", "one"), Bookmark("b1", "c-1"), Ledger("l1", 1))) }
+
+        assertEquals(listOf(1), sizes)
+        assertEquals(setOf("h1"), ids("ChunkHash"))
+        assertEquals(setOf("b1"), ids("Bookmark"))
+        assertEquals(setOf("l1"), ids("Ledger"))
+    }
+
+    @Test
+    fun `a batch of two labels hands each stamped fragment the stamp its node carries`() {
+        stateless.save(Bookmark("b1", "c-1"))
+
+        val saved = stateless.saveAll(listOf(ChunkHash("h1", "one"), Bookmark("b1", "c-2"), Bookmark("b2", "c-9")))
+
+        // A node that was there is handed its data's token alone to an object that carried no stamp.
+        val moved = saved[1] as Bookmark
+        val made = saved[2] as Bookmark
+        assertEquals("${Stamps.nodeToken(assertNotNull(stamp("b1")))}:", moved.stamp)
+        assertEquals(stamp("b2"), made.stamp)
+        assertEquals(ChunkHash("h1", "one"), saved[0])
+    }
+
+    @Test
+    fun `a batch of four labels writes each node to its own label, over nodes that are there and new ones`() {
+        stateless.saveAll(listOf(ChunkHash("h1", "one"), Ledger("l1", 1), Bookmark("b1", "c-1"), Watermark("w1", 1)))
+
+        val saved = stateless.saveAll(
+            listOf(
+                Watermark("w1", 2), ChunkHash("h1", "uno"), Bookmark("b1", "c-2"), Ledger("l1", 2),
+                Bookmark("b2", "c-9"), ChunkHash("h2", "two"), Watermark("w2", 9), Ledger("l2", 9),
+            ),
+        )
+
+        assertEquals(
+            listOf(
+                "(Bookmark cursor=c-2, id=b1)", "(Bookmark cursor=c-9, id=b2)",
+                "(ChunkHash chunk=two, id=h2)", "(ChunkHash chunk=uno, id=h1)",
+                "(Ledger id=l1, total=2)", "(Ledger id=l2, total=9)",
+                "(Watermark at=2, id=w1)", "(Watermark at=9, id=w2)",
+            ),
+            snapshot().map { it.replace(Regex("""__drivine\.stamp=[^,]*, """), "") }.sorted(),
+        )
+        assertEquals(stamp("w2"), (saved[6] as Watermark).stamp)
+        assertEquals(stamp("b2"), (saved[4] as Bookmark).stamp)
+    }
+
+    @Test
+    fun `a batch of two stamped labels writes each node to its own label and hands each its stamp`() {
+        stateless.saveAll(listOf(Bookmark("b1", "c-1"), Watermark("w1", 1)))
+
+        val saved = stateless.saveAll(listOf(Watermark("w1", 2), Bookmark("b1", "c-2"), Watermark("w2", 9)))
+
+        assertEquals(
+            listOf("(Bookmark cursor=c-2, id=b1)", "(Watermark at=2, id=w1)", "(Watermark at=9, id=w2)"),
+            snapshot().map { it.replace(Regex("""__drivine\.stamp=[^,]*, """), "") }.sorted(),
+        )
+        assertEquals(stamp("w2"), (saved[2] as Watermark).stamp)
+        assertEquals("${Stamps.nodeToken(assertNotNull(stamp("b1")))}:", (saved[1] as Bookmark).stamp)
+    }
+
+    @Test
+    fun `a bookmark handed back by a batch of two labels saves again, and a stale copy of it is refused`() {
+        val first = Bookmark("b1", "c-1")
+        val saved = stateless.saveAll(listOf(ChunkHash("h1", "one"), first))[1] as Bookmark
+
+        val again = stateless.save(saved.copy(cursor = "c-2"))
+        assertFailsWith<StaleObjectException> { stateless.save(saved.copy(cursor = "c-3")) }
+
+        assertEquals("c-2", stateless.load("b1", Bookmark::class.java)?.cursor)
+        assertEquals(stamp("b1"), again.stamp)
+    }
+
+    @Test
+    fun `a batch of two labels that fails on its last label writes nothing`() = withUniqueCursor {
+        stateless.save(Bookmark("b0", "c-1"))
+        val before = snapshot()
+
+        assertFailsWith<RuntimeException> {
+            stateless.saveAll(listOf(ChunkHash("h1", "one"), Ledger("l1", 1), Bookmark("b1", "c-1")))
+        }
+
+        assertEquals(before, snapshot())
+    }
+
+    @Test
+    fun `a batch of one label is the statement it always was`() {
+        val sizes = batches { it.saveAll(listOf(Bookmark("b1", "c-1"), Bookmark("b2", "c-2"))) }
+
+        assertEquals(listOf(1), sizes)
+        assertEquals(setOf("b1", "b2"), ids("Bookmark"))
+    }
+
+    @Test
+    fun `a batch of two labels that holds a view is a statement for the fragments and one for the view`() {
+        val sizes = batches {
+            it.saveAll(listOf(ChunkHash("h1", "one"), Ledger("l1", 1), BookmarkHashes(Bookmark("b1", "c-1"), listOf(ChunkHash("h2", "two")))))
+        }
+
+        assertEquals(listOf(2), sizes)
+        assertEquals(setOf("h1", "h2"), ids("ChunkHash"))
+    }
+}
+
+/** Counts the statements of each batch, and passes everything to [delegate]. */
+private class BatchSizes(private val delegate: PersistenceManager) : PersistenceManager by delegate {
+    val batches = mutableListOf<Int>()
+
+    override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
+        batches += specs.size
+        return delegate.queryBatch(specs)
+    }
+
+    override fun executeBatch(specs: List<QuerySpecification<*>>) {
+        batches += specs.size
+        delegate.executeBatch(specs)
+    }
+}
+
+@Testcontainers
+class StatelessSaveAllAtomicNeo4jTest : StatelessSaveAllAtomicContract() {
+    companion object {
+        private const val PASSWORD = "atomicsaveall"
+
+        @Container @JvmField
+        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
+            .apply { withAdminPassword(PASSWORD) }
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var manager: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "neo-atomic-save-all", type = DatabaseType.NEO4J,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "neo4j", password = PASSWORD, database = "neo4j",
+                config = emptyMap(), subtypeRegistry = registry, cypherDialect = CypherDialect.NEO4J_5,
+            )
+            manager = NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    override val pm: NonTransactionalPersistenceManager get() = manager
+
+    @Test
+    fun `Neo4j applies a batch of more than one statement whole`() {
+        assertTrue(pm.atomicBatches)
+    }
+
+    @Test
+    fun `a batch of two views that fails on the second writes neither`() = withUniqueCursor {
+        stateless.save(Bookmark("b0", "c-1"))
+        val before = snapshot()
+
+        assertFailsWith<RuntimeException> {
+            stateless.saveAll(
+                listOf(
+                    BookmarkHashes(Bookmark("b1", "c-2"), listOf(ChunkHash("h1", "one"))),
+                    BookmarkHashes(Bookmark("b2", "c-1"), listOf(ChunkHash("h2", "two"))),
+                ),
+            )
+        }
+
+        assertEquals(before, snapshot())
+    }
+}
+
+@Testcontainers
+class StatelessSaveAllAtomicFalkorDbTest : StatelessSaveAllAtomicContract() {
+    companion object {
+        private const val GRAPH = "atomicsaveall"
+
+        @Container @JvmField
+        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
+            .withExposedPorts(6379)
+
+        private lateinit var provider: FalkorDbConnectionProvider
+        private lateinit var strictProvider: FalkorDbConnectionProvider
+        lateinit var manager: NonTransactionalPersistenceManager
+        lateinit var strictManager: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = FalkorDbConnectionProvider(
+                name = "falkor-atomic-save-all", host = container.host, port = container.getMappedPort(6379),
+                password = null, graphName = GRAPH, subtypeRegistry = registry,
+            )
+            strictProvider = FalkorDbConnectionProvider(
+                name = "falkor-atomic-save-all-strict", host = container.host, port = container.getMappedPort(6379),
+                password = null, graphName = GRAPH, transactionMode = FalkorDbTransactionMode.STRICT, subtypeRegistry = registry,
+            )
+            manager = NonTransactionalPersistenceManager(provider, GRAPH, DatabaseType.FALKORDB, registry)
+            strictManager = NonTransactionalPersistenceManager(strictProvider, GRAPH, DatabaseType.FALKORDB, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() {
+            provider.end()
+            strictProvider.end()
+        }
+    }
+
+    override val pm: NonTransactionalPersistenceManager get() = manager
+
+    private val strict: StatelessGraphObjectManager
+        get() = StatelessGraphObjectManager(strictManager, Neo4jObjectMapper.instance, SubtypeRegistry())
+
+    private fun views() = listOf(
+        BookmarkHashes(Bookmark("b1", "c-1"), listOf(ChunkHash("h1", "one"))),
+        BookmarkHashes(Bookmark("b2", "c-2"), listOf(ChunkHash("h2", "two"))),
+    )
+
+    @Test
+    fun `FalkorDB says a batch of more than one statement is not applied whole`() {
+        assertFalse(pm.atomicBatches)
+        assertFalse(strictManager.atomicBatches)
+    }
+
+    @Test
+    fun `in WARN mode a batch that is more than one statement is run statement by statement`() {
+        val sizes = batches { it.saveAll(views()) }
+
+        assertEquals(listOf(2), sizes)
+        assertEquals(setOf("b1", "b2"), ids("Bookmark"))
+    }
+
+    @Test
+    fun `in STRICT mode a batch of fragments of three labels is written`() {
+        val saved = strict.saveAll(listOf(ChunkHash("h1", "one"), Bookmark("b1", "c-1"), Ledger("l1", 1)))
+
+        assertEquals(setOf("h1"), ids("ChunkHash"))
+        assertEquals(setOf("l1"), ids("Ledger"))
+        assertNotNull((saved[1] as Bookmark).stamp)
+    }
+
+    @Test
+    fun `in STRICT mode a single save is written`() {
+        strict.save(BookmarkHashes(Bookmark("b1", "c-1"), listOf(ChunkHash("h1", "one"))))
+
+        assertEquals(setOf("h1"), ids("ChunkHash"))
+    }
+
+    @Test
+    fun `in STRICT mode a batch that is more than one statement is refused before anything is written`() {
+        stateless.save(Bookmark("b0", "c-0"))
+        val before = snapshot()
+
+        val refusal = assertFailsWith<NonAtomicBatchException> { strict.saveAll(listOf(Ledger("l1", 1)) + views()) }
+
+        assertEquals(3, refusal.statements)
+        assertEquals(before, snapshot())
+    }
+}
+
+@Testcontainers
+class StatelessSaveAllAtomicMemgraphTest : StatelessSaveAllAtomicContract() {
+    companion object {
+        @Container @JvmField
+        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
+            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+
+        private lateinit var provider: Neo4jConnectionProvider
+        lateinit var manager: NonTransactionalPersistenceManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            provider = Neo4jConnectionProvider(
+                name = "memgraph-atomic-save-all", type = DatabaseType.MEMGRAPH,
+                host = container.host, port = container.getMappedPort(7687),
+                user = "", password = "", database = null, config = emptyMap(),
+                cypherDialect = CypherDialect.MEMGRAPH, subtypeRegistry = registry,
+            )
+            manager = NonTransactionalPersistenceManager(provider, "memgraph", DatabaseType.MEMGRAPH, registry)
+        }
+
+        @JvmStatic @AfterAll
+        fun teardown() = provider.end()
+    }
+
+    override val pm: NonTransactionalPersistenceManager get() = manager
+}

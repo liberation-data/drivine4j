@@ -597,7 +597,11 @@ class GraphObjectManager internal constructor(
      * change detection, MERGE identity) while cutting round trips. The whole call is **atomic** —
      * inside an ambient transaction it joins it, otherwise it runs in a single transaction of its own
      * (see [PersistenceManager.executeBatch]) — so a failure on any item rolls the whole call back and
-     * nothing is persisted.
+     * nothing is persisted, where the engine has transactions to roll back
+     * ([PersistenceManager.atomicBatches]). On FalkorDB a batch of more than one statement is run
+     * statement by statement, or in `STRICT` mode refused with [org.drivine.NonAtomicBatchException]
+     * before anything is written. This manager writes a statement for each class, and more for a
+     * view; [StatelessGraphObjectManager.saveAll] writes fragments of several classes as one.
      *
      * Heterogeneous collections are supported: items are grouped by runtime class and each group is
      * saved with its own model. The returned list is [objs] in input order, unchanged.

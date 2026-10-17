@@ -8,6 +8,7 @@ import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.drivine.NonAtomicBatchException
 import org.drivine.StaleObjectException
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.FalkorDbConnectionProvider
@@ -497,7 +498,7 @@ class StatelessPatchAllFalkorDbTest : StatelessPatchAllContract() {
     override val atomicBatch: Boolean = false
 
     @Test
-    fun `in STRICT mode the call is refused, as a saveAll is`() {
+    fun `in STRICT mode a call of one statement is written, and one of more is refused before anything is written, as a saveAll is`() {
         val registry = SubtypeRegistry()
         val strict = FalkorDbConnectionProvider(
             name = "falkor-patch-all-strict", host = container.host, port = container.getMappedPort(6379),
@@ -507,7 +508,17 @@ class StatelessPatchAllFalkorDbTest : StatelessPatchAllContract() {
             val patches = StatelessGraphObjectManager(
                 NonTransactionalPersistenceManager(strict, GRAPH, DatabaseType.FALKORDB, registry), Neo4jObjectMapper.instance, registry,
             )
-            assertFailsWith<UnsupportedOperationException> { patches.patchAll(listOf(Claim("c1", "one", "patched")), only = setOf(Claim::note)) }
+            val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, registry)
+            val ids = (1..chunk + 1).map { "c$it" }
+            stateless.saveAll(ids.map { Claim(it, "text") })
+
+            patches.patchAll(listOf(Claim("c1", "one", "patched")), only = setOf(Claim::note))
+            val refusal = assertFailsWith<NonAtomicBatchException> {
+                patches.patchAll(ids.map { Claim(it, "unwritten", "refused") }, only = setOf(Claim::note))
+            }
+
+            assertEquals(2, refusal.statements)
+            assertEquals(mapOf("patched" to 1), stateless.loadAll(Claim::class.java).mapNotNull { it.note }.groupingBy { it }.eachCount())
         } finally {
             strict.end()
         }
