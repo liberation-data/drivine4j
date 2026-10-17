@@ -17,6 +17,9 @@ class MemgraphGrammar(
 ) : OpenCypherGrammar(collectionSortEmitter) {
     override val nestedViewProjector: NestedViewProjector = InlineNestedViewProjector()
 
+    /** Memgraph has no `epochMillis`; `timestamp(moment)` gives the microseconds since the epoch. */
+    override fun epochSeconds(moment: String): TemporalOrderSupport = TemporalOrderSupport.Written("timestamp($moment) / 1000000.0")
+
     // Memgraph rejects `EXISTS` inside a `WITH` clause ("Not yet implemented: Exists cannot
     // be used within WITH!") which is what the CASCADE DELETE_ORPHAN query emits. Opt out so
     // callers get a clean UnsupportedOperationException instead of a cryptic server error.

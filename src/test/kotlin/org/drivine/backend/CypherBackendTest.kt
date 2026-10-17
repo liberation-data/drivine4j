@@ -48,6 +48,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -297,24 +298,37 @@ class CypherBackendTest {
 
         val batch = backend().saveTogether(fragments.withIndex().toList(), NullPolicy.IGNORE) { fields[it] }
 
-        fun props(spec: QuerySpecification<*>) = (spec.parameters["rows"] as List<*>).map { (it as Map<*, *>)["props"] }
-        assertEquals(listOf<Any?>(emptyMap<String, Any?>()), props(batch.unstamped.single()))
-        assertEquals(listOf<Any?>(mapOf("note" to "first")), props(batch.stamped.single()))
+        // Two classes are one statement, the rows of each bound apart: the unstamped class's first.
+        fun props(rows: String) = (batch.stamped.single().parameters[rows] as List<*>).map { (it as Map<*, *>)["props"] }
+        assertEquals(emptyList(), batch.unstamped)
+        assertEquals(listOf<Any?>(emptyMap<String, Any?>()), props("rows0"))
+        assertEquals(listOf<Any?>(mapOf("note" to "first")), props("rows1"))
     }
 
     @Test
-    fun `of a batch the fragments an UNWIND can write go as rows, stamped apart from unstamped, and a stamped one it cannot is left to be saved alone`() {
+    fun `of a batch the fragments an UNWIND can write go as rows of one statement, stamped apart from unstamped, and a stamped one it cannot is left to be saved alone`() {
         val fragments = listOf(Human("h1", "Ada"), Claim("c1", "one"), Tagged("t1", "kept", mapOf("k" to "v")), Claim("c2", "two"), Human("h2", "Grace"))
         val batch = backend().saveTogether(fragments.withIndex().toList(), NullPolicy.IGNORE)
 
-        fun ids(spec: QuerySpecification<*>) = (spec.parameters["rows"] as List<*>).map { (it as Map<*, *>)["id"] }
-        assertEquals(listOf("h1", "h2"), ids(batch.unstamped.single()))
-        assertFalse("RETURN" in batch.unstamped.single().statement!!.text)
+        val together = batch.stamped.single()
+        fun rows(name: String) = (together.parameters[name] as List<*>).map { it as Map<*, *> }
+        assertEquals(emptyList(), batch.unstamped)
+        assertEquals(listOf("h1", "h2"), rows("rows0").map { it["id"] })
+        assertFalse(rows("rows0").any { "i" in it })
         // A stamped row is returned under the index its fragment had in the batch.
-        assertEquals(listOf("c1", "c2"), ids(batch.stamped.single()))
-        assertEquals(listOf("1", "3"), (batch.stamped.single().parameters["rows"] as List<*>).map { (it as Map<*, *>)["i"] })
-        assertContains(batch.stamped.single().statement!!.text, "RETURN row.i + '/' + ")
+        assertEquals(listOf("c1", "c2"), rows("rows1").map { it["id"] })
+        assertEquals(listOf("1", "3"), rows("rows1").map { it["i"] })
+        assertContains(assertNotNull(together.statement).text, "collect(row.i + '/' + ")
         assertEquals(listOf(IndexedValue(2, fragments[2])), batch.alone)
+    }
+
+    @Test
+    fun `of a batch of one class the fragments go as rows of the statement that class has on its own`() {
+        val batch = backend().saveTogether(listOf(Human("h1", "Ada"), Human("h2", "Grace")).withIndex().toList(), NullPolicy.IGNORE)
+
+        assertEquals(listOf("h1", "h2"), (batch.unstamped.single().parameters["rows"] as List<*>).map { (it as Map<*, *>)["id"] })
+        assertFalse("RETURN" in assertNotNull(batch.unstamped.single().statement).text)
+        assertEquals(emptyList(), batch.stamped)
     }
 
     @Test
@@ -556,5 +570,15 @@ class CypherBackendTest {
         val statement = backend().groups(Message::class.java, spec).statement
 
         assertContains(statement, "MATCH (n:GroupMessage)<-[:`HAS``MESSAGE]-()//`]-(:`Chat Session`)-[:OWNED_BY]->(k0:GroupUser:GroupPerson)")
+    }
+
+    @Test
+    fun `a parameter the order or the cursor reserves is refused where the where clause has bound it`() {
+        val refused = assertFailsWith<IllegalArgumentException> {
+            CypherBackend.requireUnclaimed(setOf("_order_0", "_order_1"), mapOf("_order_1" to 3), "Order expression")
+        }
+        assertEquals("Order expression parameter \$_order_1 collides with a where-clause binding", refused.message)
+
+        CypherBackend.requireUnclaimed(setOf("_order_0"), mapOf("param_n_confidence_0" to 0.1), "Order expression")
     }
 }

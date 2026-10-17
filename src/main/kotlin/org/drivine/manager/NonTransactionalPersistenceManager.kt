@@ -1,6 +1,7 @@
 package org.drivine.manager
 
 import org.drivine.DrivineException
+import org.drivine.NonAtomicBatchException
 import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.SubtypeRegistry
@@ -29,6 +30,9 @@ class NonTransactionalPersistenceManager(
     override val graphName: String?
         get() = connectionProvider.graphName
 
+    override val atomicBatches: Boolean
+        get() = connectionProvider.atomicBatches
+
     override val schemaGrammar: SchemaGrammar
         get() = connectionProvider.schemaGrammar
 
@@ -41,6 +45,7 @@ class NonTransactionalPersistenceManager(
 
     private val logger = LoggerFactory.getLogger(NonTransactionalPersistenceManager::class.java)
     private val finderOperations = FinderOperations(this)
+    private val nonAtomic = NonAtomicBatches(logger, database)
 
     override fun <T: Any> query(spec: QuerySpecification<T>): List<T> {
         val connection = connectionProvider.connect()
@@ -61,7 +66,7 @@ class NonTransactionalPersistenceManager(
     /**
      * Runs all [specs] on a single connection in one explicit transaction — atomic even though this
      * manager is otherwise auto-commit. On any failure the whole transaction is rolled back, where
-     * the engine has transactions to roll back (see [PersistenceManager.executeBatch]).
+     * the engine has transactions to roll back ([atomicBatches]; see [PersistenceManager.executeBatch]).
      */
     override fun executeBatch(specs: List<QuerySpecification<*>>) {
         queryBatch(specs)
@@ -71,16 +76,27 @@ class NonTransactionalPersistenceManager(
      * [executeBatch], returning each statement's rows. The connection is released however the batch
      * ends, including when the transaction cannot be started. A commit that fails is reported as a
      * failing statement is, as a [DrivineException] with the engine's error as its cause.
+     *
+     * Where the store cannot roll back ([atomicBatches] is false), a batch of one statement runs as
+     * [query] runs it, with no transaction: the statement is applied whole on its own, and a
+     * transaction would add nothing but a refusal in FalkorDB's `STRICT` mode. A batch of more is
+     * refused with [NonAtomicBatchException] before any of it runs where the store refuses to start a
+     * transaction, and otherwise runs statement by statement, which is reported (see [NonAtomicBatches]).
      */
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         if (specs.isEmpty()) return emptyList()
+        if (specs.size == 1 && !atomicBatches) {
+            @Suppress("UNCHECKED_CAST")
+            return listOf(query(specs.single() as QuerySpecification<Any>))
+        }
         val connection = connectionProvider.connect()
         try {
             connection.startTransaction()
         } catch (e: Throwable) {
             connection.release(e)
-            throw e
+            throw if (!atomicBatches && e is UnsupportedOperationException) NonAtomicBatchException(specs.size, e) else e
         }
+        if (!atomicBatches) nonAtomic.report(specs.size)
         val results = try {
             specs.map { spec ->
                 try {

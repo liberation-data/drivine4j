@@ -11,6 +11,7 @@ import org.drivine.schema.IndexManager
 import org.drivine.store.StoreIdentity
 import org.drivine.transaction.DrivineTransactionObject
 import org.drivine.transaction.TransactionContextHolder
+import org.slf4j.LoggerFactory
 
 
 class TransactionalPersistenceManager(
@@ -28,12 +29,22 @@ class TransactionalPersistenceManager(
 ) : PersistenceManager {
 
     private val finderOperations: FinderOperations = FinderOperations(this)
+    private val nonAtomic = NonAtomicBatches(LoggerFactory.getLogger(TransactionalPersistenceManager::class.java), database)
 
     override val graphName: String?
         get() = schemaManagerSource?.graphName
 
     override val schemaGrammar: SchemaGrammar?
         get() = schemaManagerSource?.schemaGrammar
+
+    /**
+     * As the provider this manager's transactions connect through says (see
+     * [DrivineTransactionObject.getOrCreateConnection]), with or without a schema source.
+     */
+    override val atomicBatches: Boolean
+        get() = contextHolder.databaseRegistry.connectionProvider(database)?.atomicBatches
+            ?: schemaManagerSource?.atomicBatches
+            ?: true
 
     /** False when no schema source was supplied: nothing here could run DDL even if the engine could. */
     override val supportsSchemaManagement: Boolean
@@ -80,7 +91,9 @@ class TransactionalPersistenceManager(
 
     /**
      * Runs all [specs] on the ambient transaction's connection. Atomicity is the caller's transaction:
-     * a failing statement propagates and the surrounding `@Transactional` rolls the whole thing back.
+     * a failing statement propagates and the surrounding `@Transactional` rolls the whole thing back,
+     * where the store can roll back ([atomicBatches]). Where it cannot, a batch of more than one
+     * statement is reported as run statement by statement (see [NonAtomicBatches]).
      */
     override fun executeBatch(specs: List<QuerySpecification<*>>) {
         queryBatch(specs)
@@ -91,6 +104,7 @@ class TransactionalPersistenceManager(
         if (specs.isEmpty()) return emptyList()
         val txObject = currentTransactionOrThrow()
         val connection = txObject.getOrCreateConnection(database, contextHolder)
+        if (specs.size > 1 && !atomicBatches) nonAtomic.report(specs.size)
         return specs.map { spec ->
             try {
                 @Suppress("UNCHECKED_CAST")

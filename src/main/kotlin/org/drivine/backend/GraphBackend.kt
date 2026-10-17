@@ -17,7 +17,7 @@ import org.drivine.query.StampWrite
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.GroupQuerySpec
-import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.grammar.CypherGrammar
 
@@ -32,7 +32,7 @@ internal class GraphStatement(val statement: String, val bindings: Map<String, A
  * The statement of a load through the query DSL, with what the object manager needs to advise on
  * indexes: the orders on the root, and whether the load seeks from a cursor.
  */
-internal class LoadPlan(val statement: GraphStatement, val rootOrders: List<OrderSpec>, val keyset: Boolean)
+internal class LoadPlan(val statement: GraphStatement, val rootOrders: List<OrderTerm>, val keyset: Boolean)
 
 /**
  * What the object managers ask of a store. An object manager knows the model, hydrates what comes
@@ -217,8 +217,9 @@ internal interface GraphBackend {
  *
  * @param unstamped the statements that save fragments no stamp is handed back for. Their rows say nothing
  * @param stamped the statements that save fragments whose stamp is handed back. Each returns a row
- *   for every fragment it saves, `index/found=stamp`: `found` the stamp the node carried before,
- *   empty when it had none
+ *   for every such fragment it saves, `index/found=stamp`: `found` the stamp the node carried before,
+ *   empty when it had none. One may also save fragments no stamp is handed back for, and returns no
+ *   row for them
  * @param alone the fragments no statement here saves: each is saved by a statement of its own, as
  *   an object saved by itself is
  */

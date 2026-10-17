@@ -6,6 +6,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
+import kotlin.random.Random
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
 import org.drivine.query.RootMode
@@ -225,5 +227,16 @@ class SaveExecutorTest {
 
         assertSame(failure, thrown)
         assertEquals(listOf<Throwable>(unread), thrown.suppressed.toList())
+    }
+
+    @Test
+    fun `a pause after a turned-away attempt grows with the attempts, and varies up to as much again`() {
+        val random = Random(42)
+        (0 until 5).forEach { attempt ->
+            val least = (attempt + 1) * 15L
+            val pauses = (1..200).map { SaveExecutor.contendedPause(attempt, random) }
+            assertTrue(pauses.all { it in least until 2 * least }, "attempt $attempt: $pauses")
+            assertTrue(pauses.toSet().size > 1, "attempt $attempt paused alike every time")
+        }
     }
 }
