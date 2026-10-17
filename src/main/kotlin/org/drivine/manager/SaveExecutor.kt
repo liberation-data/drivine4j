@@ -11,6 +11,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.ReturnedStamps
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
+import kotlin.random.Random
 
 /** Runs the statements of a save. */
 internal class SaveExecutor(private val persistenceManager: PersistenceManager, private val backend: GraphBackend) {
@@ -164,7 +165,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
                 if (!failure.isRetryable()) throw first?.apply { addSuppressed(failure) } ?: failure
                 first = first ?: failure
                 // No pause after the last attempt: nothing follows it.
-                if (attempt < CONTENDED_ATTEMPTS - 1) Thread.sleep((attempt + 1) * CONTENDED_PAUSE_MILLIS)
+                if (attempt < CONTENDED_ATTEMPTS - 1) Thread.sleep(contendedPause(attempt))
             }
         }
         throw checkNotNull(first)
@@ -174,15 +175,25 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
     private fun DrivineException.isRetryable(): Boolean =
         generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
 
-    private companion object {
-        /** How many times a statement the engine turns away is run before its first failure is thrown. */
-        const val CONTENDED_ATTEMPTS = 6
+    internal companion object {
+        /**
+         * The pause after [attempt] is turned away: as many [CONTENDED_PAUSE_MILLIS] as attempts so far,
+         * and up to as much again at random. Two writers turned away by each other would otherwise pause
+         * alike, run again together and collide again, until both run out of attempts.
+         */
+        internal fun contendedPause(attempt: Int, random: Random = Random.Default): Long {
+            val base = (attempt + 1) * CONTENDED_PAUSE_MILLIS
+            return base + random.nextLong(base)
+        }
 
-        /** The pause after the first attempt that is turned away; each later one is as much longer. */
-        const val CONTENDED_PAUSE_MILLIS = 15L
+        /** How many times a statement the engine turns away is run before its first failure is thrown. */
+        private const val CONTENDED_ATTEMPTS = 6
+
+        /** The least pause after the first attempt that is turned away; each later one is as much longer. */
+        private const val CONTENDED_PAUSE_MILLIS = 15L
 
         /** How far down a failure's causes the engine's own error is looked for. */
-        const val MAX_CAUSE_DEPTH = 10
+        private const val MAX_CAUSE_DEPTH = 10
     }
 
     /** Says why a checked save matched nothing: the node is gone, or carries another stamp. */
