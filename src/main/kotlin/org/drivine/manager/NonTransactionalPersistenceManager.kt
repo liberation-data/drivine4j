@@ -80,8 +80,9 @@ class NonTransactionalPersistenceManager(
      * Where the store cannot roll back ([atomicBatches] is false), a batch of one statement runs as
      * [query] runs it, with no transaction: the statement is applied whole on its own, and a
      * transaction would add nothing but a refusal in FalkorDB's `STRICT` mode. A batch of more is
-     * refused with [NonAtomicBatchException] before any of it runs where the store refuses to start a
-     * transaction, and otherwise runs statement by statement, which is reported (see [NonAtomicBatches]).
+     * refused with [NonAtomicBatchException] before a connection is taken where the provider says so
+     * ([ConnectionProvider.refusesNonAtomicBatches]), and otherwise runs statement by statement,
+     * which is reported (see [NonAtomicBatches]).
      */
     override fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>> {
         if (specs.isEmpty()) return emptyList()
@@ -89,12 +90,13 @@ class NonTransactionalPersistenceManager(
             @Suppress("UNCHECKED_CAST")
             return listOf(query(specs.single() as QuerySpecification<Any>))
         }
+        if (!atomicBatches && connectionProvider.refusesNonAtomicBatches) throw NonAtomicBatchException(specs.size)
         val connection = connectionProvider.connect()
         try {
             connection.startTransaction()
         } catch (e: Throwable) {
             connection.release(e)
-            throw if (!atomicBatches && e is UnsupportedOperationException) NonAtomicBatchException(specs.size, e) else e
+            throw e
         }
         if (!atomicBatches) nonAtomic.report(specs.size)
         val results = try {

@@ -25,7 +25,11 @@ import org.testcontainers.utility.DockerImageName
 import sample.atomic.Bookmark
 import sample.atomic.BookmarkHashes
 import sample.atomic.ChunkHash
+import sample.atomic.Keyed
 import sample.atomic.Ledger
+import sample.atomic.LedgerNote
+import sample.atomic.StampedTagged
+import sample.atomic.Tagged
 import sample.atomic.Watermark
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -185,6 +189,59 @@ abstract class StatelessSaveAllAtomicContract {
 
         assertEquals(listOf(2), sizes)
         assertEquals(setOf("h1", "h2"), ids("ChunkHash"))
+        assertEquals(setOf("l1"), ids("Ledger"))
+    }
+
+    @Test
+    fun `a batch that holds an unstamped fragment an UNWIND cannot write saves it alone and the other labels as one statement`() {
+        val sizes = batches {
+            it.saveAll(listOf(ChunkHash("h1", "one"), Tagged("t1", mapOf("colour" to "red")), Ledger("l1", 1), Bookmark("b1", "c-1")))
+        }
+
+        assertEquals(listOf(2), sizes)
+        assertEquals(mapOf("colour" to "red"), stateless.load("t1", Tagged::class.java)?.tags)
+        listOf("ChunkHash" to "h1", "Ledger" to "l1", "Bookmark" to "b1").forEach { (label, id) -> assertEquals(setOf(id), ids(label)) }
+    }
+
+    @Test
+    fun `a batch that holds a stamped fragment an UNWIND cannot write hands it and the fragments saved as one statement each their stamp`() {
+        val saved = stateless.saveAll(listOf(StampedTagged("s1", mapOf("colour" to "red")), ChunkHash("h1", "one"), Bookmark("b1", "c-1")))
+
+        assertEquals(stamp("s1"), (saved[0] as StampedTagged).stamp)
+        assertEquals(stamp("b1"), (saved[2] as Bookmark).stamp)
+        assertEquals(ChunkHash("h1", "one"), saved[1])
+    }
+
+    @Test
+    fun `two fragments of one node in a batch of two labels write their fields to that node`() {
+        stateless.saveAll(listOf(Ledger("l1", 1), LedgerNote("l1", "noted"), ChunkHash("h1", "one"), Ledger("l2", 2)))
+
+        assertEquals(
+            listOf("(ChunkHash chunk=one, id=h1)", "(Ledger id=l1, note=noted, total=1)", "(Ledger id=l2, total=2)"),
+            snapshot().map { it.replace(Regex("""__drivine\.stamp=[^,]*, """), "") }.sorted(),
+        )
+    }
+
+    @Test
+    fun `a batch of two labels merges a fragment on the name its id is stored under, and clears a null under CLEAR`() {
+        stateless.saveAll(listOf(Keyed("k1", "kept"), Keyed("k2", "cleared"), ChunkHash("h1", "one")))
+
+        stateless.saveAll(listOf(Keyed("k1", null), ChunkHash("h1", "uno")))
+        stateless.saveAllFields(listOf(Keyed("k2", null), ChunkHash("h1", "eins")), nullPolicy = NullPolicy.CLEAR)
+
+        assertEquals(
+            listOf("(ChunkHash chunk=eins, id=h1)", "(Keyed keyed_id=k1, note=kept)", "(Keyed keyed_id=k2)"),
+            snapshot().map { it.replace(Regex("""__drivine\.stamp=[^,]*(, )?"""), "") }.sorted(),
+        )
+    }
+
+    @Test
+    fun `a batch of two labels writes no field it is told to leave`() {
+        stateless.saveAll(listOf(Keyed("k1", "kept"), LedgerNote("l1", "kept")))
+
+        stateless.saveAllFields(listOf(Keyed("k1", "unwritten"), LedgerNote("l1", "unwritten")), except = setOf("note"))
+
+        assertEquals(listOf("kept", "kept"), listOf(stateless.load("k1", Keyed::class.java)?.note, stateless.load("l1", LedgerNote::class.java)?.note))
     }
 }
 

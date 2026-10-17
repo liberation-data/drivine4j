@@ -28,6 +28,9 @@ class FalkorDbConnectionProvider(
     /** FalkorDB commits each statement as it runs: a rollback undoes nothing. See [FalkorDbTransactionMode]. */
     override val atomicBatches: Boolean = false
 
+    /** In [FalkorDbTransactionMode.STRICT], as a transaction is refused. */
+    override val refusesNonAtomicBatches: Boolean = transactionMode == FalkorDbTransactionMode.STRICT
+
     private val driver: Driver = if (password != null) {
         FalkorDB.driver(host, port, "default", password)
     } else {
