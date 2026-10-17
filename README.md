@@ -959,7 +959,7 @@ capability, behind a Kotlin opt-in: `epochSeconds(property)`, which reads a stor
 `org.drivine.query.dsl.temporal.epochSeconds` and needs `@OptIn(TemporalOrder::class)` (from Java, the
 statics of `TemporalOrderExpressions`). FalkorDB cannot write it, and refuses the load with an
 `UnsupportedOrderFunctionException` before anything runs. An expression reads only the root's
-properties, and is refused under `seek`. See [docs/0.1.6-order-by-expression.md](docs/0.1.6-order-by-expression.md).
+properties, and is refused under `seek`. See [docs/0.1.7-order-by-expression.md](docs/0.1.7-order-by-expression.md).
 
 #### Limit & Pagination
 
@@ -1538,7 +1538,7 @@ A `save` of an object built from scratch cannot do this. Two writers that each l
 - The statement is run again when the engine turns it away because another writer was changing the node, as a save is.
 - `create` is on `StatelessGraphObjectManager` alone, as `save` and `update` are. There is no `createAll`: make each node with its own `create`.
 
-See [docs/0.1.6-create-if-absent.md](docs/0.1.6-create-if-absent.md) for why `create` returns null and how each engine makes the node only if it is absent.
+See [docs/0.1.7-create-if-absent.md](docs/0.1.7-create-if-absent.md) for why `create` returns null and how each engine makes the node only if it is absent.
 
 #### Null-Write Policy (`NullPolicy`)
 
@@ -1568,7 +1568,7 @@ left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-writ
 
 Persist a collection in one group of statements. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back.
 
-On Neo4j, FalkorDB and Memgraph, a batch of fragments alone, of any number of labels, is **one statement** where each fragment can be written as a row of an `UNWIND` and there are no more than 1,000 of them: it is applied whole on any of them, FalkorDB included. On Oracle a batch of fragments is one block for each 500 of them. Each view is a statement of its own, and so is a fragment with a `@PropertyBag` or a `@NodeLabels` field, or on FalkorDB one with a `@VectorIndex` field. FalkorDB has no multi-statement transactions, so a batch of more than one statement is not applied whole there: in the default `WARN` mode it runs statement by statement and the first such batch logs a warning, and with `falkorDbTransactionMode` set to `STRICT` it is refused with `NonAtomicBatchException` before anything is written (inside `@Transactional`, `STRICT` refuses the transaction itself, at its first statement). `PersistenceManager.atomicBatches` says which a store does. See [docs/0.1.6-atomic-save-all.md](docs/0.1.6-atomic-save-all.md).
+On Neo4j, FalkorDB and Memgraph, a batch of fragments alone, of any number of labels, is **one statement** where each fragment can be written as a row of an `UNWIND` and there are no more than 1,000 of them: it is applied whole on any of them, FalkorDB included. On Oracle a batch of fragments is one block for each 500 of them. Each view is a statement of its own, and so is a fragment with a `@PropertyBag` or a `@NodeLabels` field, or on FalkorDB one with a `@VectorIndex` field. FalkorDB has no multi-statement transactions, so a batch of more than one statement is not applied whole there: in the default `WARN` mode it runs statement by statement and the first such batch logs a warning, and with `falkorDbTransactionMode` set to `STRICT` it is refused with `NonAtomicBatchException` before anything is written (inside `@Transactional`, `STRICT` refuses the transaction itself, at its first statement). `PersistenceManager.atomicBatches` says which a store does. See [docs/0.1.7-atomic-save-all.md](docs/0.1.7-atomic-save-all.md).
 
 ```kotlin
 val saved = graphObjectManager.saveAll(views)
