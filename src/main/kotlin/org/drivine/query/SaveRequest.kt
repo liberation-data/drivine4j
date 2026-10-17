@@ -19,8 +19,8 @@ import org.drivine.model.RelationshipModel
  *   statement writes what differs: it drops the relationships that are gone, leaves alone the
  *   related nodes that are as they were, and of one that was altered writes the fields that differ,
  *   clearing one set to null
- * @param createsRoot whether a root that is not there is made. When false, the statement gives no
- *   row for a root that is gone, and writes nothing
+ * @param rootMode whether a root that is not there is made, and one that is there written. A save
+ *   that only makes its root ([RootMode.ABSENT]) is of a whole object, unchecked
  */
 internal class SaveRequest(
     val obj: Any,
@@ -30,10 +30,12 @@ internal class SaveRequest(
     val replaced: (RelationshipModel) -> RemovedTargets? = { null },
     val before: JsonNode? = null,
     val after: JsonNode? = null,
-    val createsRoot: Boolean = true,
+    val rootMode: RootMode = RootMode.EITHER,
 ) {
     init {
         require((before == null) == (after == null)) { "A save of what a change altered needs the object's digest as loaded and its digest now." }
+        // A root made by the save has no stamp to compare and nothing loaded to differ from.
+        require(rootMode != RootMode.ABSENT || (!checked && before == null)) { "A save that only makes its root is of a whole object, unchecked." }
     }
 
     companion object {
@@ -43,6 +45,12 @@ internal class SaveRequest(
          * change set to null, and it makes no node: one that was loaded and is gone stays gone.
          */
         fun changed(obj: Any, before: JsonNode, after: JsonNode, dirty: Set<String>?): SaveRequest =
-            SaveRequest(obj, checked = true, NullPolicy.CLEAR, dirty, before = before, after = after, createsRoot = false)
+            SaveRequest(obj, checked = true, NullPolicy.CLEAR, dirty, before = before, after = after, rootMode = RootMode.FOUND)
+
+        /**
+         * The save that makes [obj] only if its root is not there: of the whole object, unchecked, a
+         * null field left alone. A root that is there is not written, nor anything else.
+         */
+        fun absent(obj: Any): SaveRequest = SaveRequest(obj, checked = false, NullPolicy.IGNORE, rootMode = RootMode.ABSENT)
     }
 }

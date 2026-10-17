@@ -2,6 +2,7 @@ package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
 import org.drivine.model.Stamps
+import org.drivine.query.RootMode
 
 /** How a block finds a node: the labels it carries and the property its id is stored under. */
 internal data class NodeShape(val labels: List<String>, val key: String)
@@ -44,9 +45,10 @@ internal class OwnedLabels(val property: String, val clear: Boolean = false, val
  * @param carried the stamp the object carries, which the stamp handed back is composed from
  * @param expect the stamp, or its node token, the node must carry for the save to go ahead
  * @param whole whether [expect] is the whole stamp rather than its node token
- * @param creates whether the step makes the node when it is not there; an update does not
+ * @param mode whether the step makes the node when it is not there, and writes it when it is; where
+ *   it does not, the block gives no row
  */
-internal class RootStep(val carried: String?, val expect: String?, val whole: Boolean, val creates: Boolean)
+internal class RootStep(val carried: String?, val expect: String?, val whole: Boolean, val mode: RootMode)
 
 /**
  * The kinds of step a plan holds. A step says its kind under `op`, and the block carries each kind out
@@ -106,7 +108,8 @@ internal class WritePlan(private val graph: OracleGraph) {
             "add" to writes.addLabels.takeIf { it.isNotEmpty() }, "drop" to writes.dropLabels.takeIf { it.isNotEmpty() }, "owned" to writes.owned?.toMap(),
             "i" to index,
             "root" to root?.let { true }, "carried" to root?.carried, "expect" to root?.expect,
-            "whole" to root?.whole?.takeIf { it }, "create" to root?.creates?.takeIf { !it },
+            "whole" to root?.whole?.takeIf { it }, "create" to false.takeIf { root?.mode == RootMode.FOUND },
+            "absent" to true.takeIf { root?.mode == RootMode.ABSENT },
         )
         return node
     }

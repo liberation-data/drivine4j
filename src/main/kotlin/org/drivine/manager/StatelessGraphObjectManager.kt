@@ -43,6 +43,8 @@ import kotlin.reflect.jvm.javaGetter
  *   stamp applies only if the node's own data is as it was loaded, and with [Replace] its
  *   relationships too, and otherwise throws [StaleObjectException]. In a view, the root is checked.
  *   A node reached through a relationship is written unchecked.
+ * - [create] makes the node only if it is not there, in one statement, and otherwise writes nothing
+ *   and returns null.
  * - [update] loads an object, applies a change, and writes only what the change altered.
  * - [patch] writes named fields of one node by its id, if it meets a predicate, in one statement,
  *   and makes no node.
@@ -141,6 +143,60 @@ class StatelessGraphObjectManager private constructor(
         val statement = statementFor(obj, relationships, nullPolicy, writeFields(obj, only, except), checked = true)
         requireStampable(obj, statement)
         return stamped(obj, statement, executor.save(statement))
+    }
+
+    /**
+     * Makes the node of [obj] if no node has its id, and returns the object carrying the whole stamp
+     * the save left, as [save] does. If the node is there, nothing is written, not the root, not a
+     * related node, not a relationship, and null is returned. A view is made as [save] makes it: its
+     * root, each related node, and the relationship to it. A related node is written as [save] writes
+     * it, unchecked, so one that was there takes the object's fields.
+     *
+     * It is one statement: no load comes before it whose answer another writer can make stale, as
+     * one does before a [save] of an object built from scratch. With [update], it gives a save that
+     * keeps every writer's data:
+     *
+     * ```kotlin
+     * sgom.create(p) ?: sgom.update<Proposition>(p.id) { it.merge(p) }
+     * ```
+     *
+     * Two writers that make the node at the same moment both find it absent, as two `MERGE`s do, and
+     * only a uniqueness constraint on the id keeps the second from making it again, on Neo4j,
+     * Memgraph and Oracle. With one (`constraints.ensure(UniquenessConstraintSpec(label, id))`),
+     * the second waits for the first and finds its node, or is refused by the constraint; either way
+     * it writes nothing and returns null. FalkorDB runs one write at a time, so there the second
+     * always finds the first's node. Inside a transaction, Memgraph checks the constraint when the
+     * transaction commits: the second of two that each made the node fails there, and not here.
+     * Where the engine refuses the statement inside a transaction and the node is then found, this
+     * returns null, but the transaction may already be marked for rollback: run it again.
+     *
+     * The node is found by every label of the object's class, as [save] finds it. A node with the
+     * id and fewer of those labels is not found: a second node is made, or, with a uniqueness
+     * constraint on a label they share, the store's refusal is thrown.
+     *
+     * The object is refused, before anything is written, when it carries a stamp: a stamp comes from
+     * a node that was loaded, and the node this makes is not there. Save it, or [update] it.
+     *
+     * @return the object carrying its stamps, or null when a node with its id is there
+     * @throws IllegalArgumentException when the object carries a stamp, or could not be handed the
+     *   stamps the save would leave; nothing is written then
+     */
+    fun <T : Any> create(obj: T): T? {
+        val stamp = stamps.stampOf(obj)
+        require(stamp == null) {
+            """
+            This ${obj.javaClass.simpleName} carries a stamp, $stamp, so it was loaded from a node; create makes a node that is not there.
+            Save it, or update it. To make the node anew, give the object without its stamp.
+            """.trimIndent()
+        }
+        val statement = backend.save(SaveRequest.absent(obj))
+        requireStampable(obj, statement)
+        return try {
+            stamped(obj, statement, executor.save(statement))
+        } catch (present: SaveExecutor.RootPresent) {
+            logger.debug("{} '{}' is there already, so create wrote nothing", obj.javaClass.simpleName, present.root.id, present)
+            null
+        }
     }
 
     /**

@@ -1,6 +1,7 @@
 package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
+import org.drivine.query.RootMode
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -27,8 +28,8 @@ class WritePlanTest {
 
     @Test
     fun `a root that is checked whole and may be made says so, and one checked by its node token alone does not say whole`() {
-        val whole = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n:l", whole = true, creates = true))
-        val token = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n", whole = false, creates = true))
+        val whole = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n:l", whole = true, mode = RootMode.EITHER))
+        val token = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n", whole = false, mode = RootMode.EITHER))
 
         assertEquals(mapOf<String, Any?>("root" to true, "carried" to "n:l", "expect" to "n:l", "whole" to true), whole)
         assertEquals(mapOf<String, Any?>("root" to true, "carried" to "n:l", "expect" to "n"), token)
@@ -36,15 +37,22 @@ class WritePlanTest {
 
     @Test
     fun `an update says the root is not made, which is the one thing a root says by a false`() {
-        val update = root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, creates = false))
+        val update = root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.FOUND))
 
         // The block reads an absent `create` as null and makes the node: only a false keeps a node that is gone, gone.
         assertEquals(mapOf<String, Any?>("root" to true, "create" to false), update)
     }
 
     @Test
+    fun `a create says the root is not written when it is there, by a true`() {
+        val create = root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.ABSENT))
+
+        assertEquals(mapOf<String, Any?>("root" to true, "absent" to true), create)
+    }
+
+    @Test
     fun `a root that carries no stamp and expects none says only that it is the root, and any other node says nothing of it`() {
-        assertEquals(mapOf<String, Any?>("root" to true), root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, creates = true)))
+        assertEquals(mapOf<String, Any?>("root" to true), root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.EITHER)))
         assertEquals(emptyMap(), root(WritePlan(graph), null))
     }
 

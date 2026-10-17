@@ -35,7 +35,7 @@ interface GraphObjectMergeBuilder {
          * Creates the appropriate merge builder for a graph object class.
          * Detects whether it's a GraphFragment or GraphView and returns the correct builder.
          */
-        fun forClass(
+        internal fun forClass(
             graphClass: Class<*>,
             objectMapper: ObjectMapper,
             sessionManager: SessionManager,
@@ -58,7 +58,7 @@ interface GraphObjectMergeBuilder {
         /**
          * Creates the appropriate merge builder for a graph object class using KClass.
          */
-        fun forClass(
+        internal fun forClass(
             graphClass: kotlin.reflect.KClass<*>,
             objectMapper: ObjectMapper,
             sessionManager: SessionManager,
@@ -75,7 +75,7 @@ interface GraphObjectMergeBuilder {
  * Adapter to make FragmentMergeBuilder conform to GraphObjectMergeBuilder interface.
  * Wraps the single-statement fragment builder into a list-based interface.
  */
-class FragmentMergeBuilderAdapter(
+internal class FragmentMergeBuilderAdapter(
     private val fragmentModel: FragmentModel,
     private val objectMapper: ObjectMapper,
     private val sessionManager: SessionManager,
