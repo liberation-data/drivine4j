@@ -20,14 +20,19 @@ enum class FalkorDbTransactionMode {
     /**
      * Default. `startTransaction` / `commitTransaction` are no-ops.
      * `rollbackTransaction` logs a warning (writes already executed).
-     * All queries execute immediately regardless of transaction state.
+     * All queries execute immediately regardless of transaction state, and a batch of more than one
+     * statement runs statement by statement: the first such batch logs a warning that it is not
+     * applied whole.
      */
     WARN,
 
     /**
-     * `startTransaction` throws [UnsupportedOperationException].
-     * Use this to enforce that no code path accidentally relies on
-     * multi-statement transactions against FalkorDB.
+     * `startTransaction` throws [UnsupportedOperationException], and a batch of more than one
+     * statement (`executeBatch`, `queryBatch`, and the `saveAll` and `patchAll` built on them) is
+     * refused with [org.drivine.NonAtomicBatchException] before any of it runs. A batch of one
+     * statement runs: it is applied whole without a transaction. Inside `@Transactional` the
+     * transaction is started at its first statement, and refused there, whatever the batch. Use this
+     * to enforce that no code path accidentally relies on multi-statement transactions against FalkorDB.
      */
     STRICT,
 }

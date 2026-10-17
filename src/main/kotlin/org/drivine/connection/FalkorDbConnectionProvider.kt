@@ -25,6 +25,9 @@ class FalkorDbConnectionProvider(
 
     override val type: DatabaseType = DatabaseType.FALKORDB
 
+    /** FalkorDB commits each statement as it runs: a rollback undoes nothing. See [FalkorDbTransactionMode]. */
+    override val atomicBatches: Boolean = false
+
     private val driver: Driver = if (password != null) {
         FalkorDB.driver(host, port, "default", password)
     } else {

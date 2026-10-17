@@ -80,15 +80,12 @@ internal class BatchSaveOperations(
         nullPolicy: NullPolicy,
         writeFields: Set<String>?,
     ) {
-        val labels = rootModel.labels.joinToString(":")
-        // MERGE keys on the id field's on-disk property name (only differs under a @GraphProperty id).
-        val idProperty = rootModel.nodeIdProperty ?: idField
         val rows = group.map { obj -> unwindRootRow(obj, rootModel, rootFieldName, idField, nullPolicy, writeFields) }
         rows.chunked(chunkSize).forEach { chunk ->
             specs.add(
                 QuerySpecification
-                    .withStatement(stampedUnwind(labels, idProperty))
-                    .bind(mapOf("rows" to chunk))
+                    .withStatement(stampedUnwind(rootModel))
+                    .bind(mapOf(ROWS to chunk))
             )
         }
         // The UNWIND already upserted each root; the remaining statements MATCH it by id (statement[0]
@@ -110,29 +107,118 @@ internal class BatchSaveOperations(
     ): List<QuerySpecification<String>> =
         items.groupBy { it.value.javaClass }.flatMap { (clazz, group) ->
             val model = FragmentModel.from(clazz)
-            val idField = requireNotNull(model.nodeIdField)
-            val statement = stampedUnwind(model.labels.joinToString(":"), model.nodeIdProperty ?: idField, handsBack = true) +
-                "\nRETURN row.i + '/' + ${Stamps.FOUND} + '=' + n.${Stamps.QUOTED}"
-            val fields = writeFields(clazz)
-            group.map { (index, obj) -> unwindRootRow(obj, model, null, idField, nullPolicy, fields) + ("i" to index.toString()) }
+            val statement = stampedUnwind(model, handsBack = true) + "\nRETURN $HANDED_BACK"
+            unwindRows(model, group, handsBack = true, nullPolicy, writeFields(clazz))
                 .chunked(chunkSize)
-                .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf("rows" to chunk)).transform(String::class.java) }
+                .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf(ROWS to chunk)).transform(String::class.java) }
         }
 
     /**
-     * The UNWIND upsert that gives a node a new stamp only when the row changes it. It takes the
-     * node's lock before it reads the node to say so: see [Stamps.lock].
+     * The fragments of [plain] and [stamped] as one statement, so that they are written whole or not
+     * at all on an engine that cannot roll back a statement it has run. Null where they are of one
+     * class, where a fragment of [plain] is one an `UNWIND` cannot write (see [savedByUnwind]), and
+     * where they are more rows than one statement takes ([chunkSize]): then [buildBatchSpecs] and
+     * [buildStampedSpecs] write them, by a statement or more for each class.
+     *
+     * Each class is written by the `UNWIND` it has on its own, one class after another, the rows of
+     * each bound under a parameter of their own. Each `UNWIND` is folded to one row before the next
+     * begins, so the next runs once: and every `UNWIND` has a row, since each class is there because
+     * a fragment of it is. The statement returns a row for each fragment of [stamped], as
+     * [buildStampedSpecs] does, and none for one of [plain]. Each of [stamped] is a fragment that
+     * [savedByUnwind] allows.
      */
-    private fun stampedUnwind(labels: String, idProperty: String, handsBack: Boolean = false): String = listOfNotNull(
-        "UNWIND \$rows AS row",
-        "MERGE (n:$labels {$idProperty: row.id})",
-        // A node the statement makes is told from one it finds, for the stamp that is handed back.
-        Stamps.onCreate("n").takeIf { handsBack },
-        Stamps.lock("n"),
-        "WITH n, row, ${if (handsBack) Stamps.foundOf("n") else "coalesce(n.${Stamps.QUOTED}, '')"} AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed",
-        "SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}",
-        "REMOVE ${Stamps.unmark("n")}".takeIf { handsBack },
-    ).joinToString("\n")
+    fun buildTogetherSpec(
+        plain: List<IndexedValue<Any>>,
+        stamped: List<IndexedValue<Any>>,
+        nullPolicy: NullPolicy,
+        writeFields: (Class<*>) -> Set<String>? = { null },
+    ): QuerySpecification<String>? {
+        val groups = plain.groupBy { it.value.javaClass }.map { TogetherGroup(it.key, it.value, handsBack = false) } +
+            stamped.groupBy { it.value.javaClass }.map { TogetherGroup(it.key, it.value, handsBack = true) }
+        if (groups.size < 2 || plain.size + stamped.size > chunkSize) return null
+        if (groups.any { !it.model.savedByUnwind(grammar) }) return null
+        // Only the stamps handed back are carried on. FalkorDB 6 fails a statement that carries a
+        // count through two folds after it ("Type mismatch: ... but was Integer"), and no count is
+        // needed: https://github.com/FalkorDB/FalkorDB/issues/3369
+        val stampedAt = groups.indices.filter { groups[it].handsBack }
+        val segments = groups.mapIndexed { index, group -> togetherSegment(group, index, stampedAt.filter { it < index }.map { "${SAVED}$it" }) }
+        val handedBack = stampedAt.joinToString(" + ") { "${SAVED}$it" }.ifEmpty { "[]" }
+        val statement = (segments + "UNWIND $handedBack AS saved\nRETURN saved").joinToString("\n")
+        val bindings = groups.mapIndexed { index, group ->
+            "${ROWS}$index" to unwindRows(group.model, group.items, group.handsBack, nullPolicy, writeFields(group.clazz))
+        }.toMap()
+        return QuerySpecification.withStatement(statement).bind(bindings).transform(String::class.java)
+    }
+
+    /** The fragments of one class in a statement of [buildTogetherSpec], and whether a stamp is handed back for each. */
+    private class TogetherGroup(val clazz: Class<*>, val items: List<IndexedValue<Any>>, val handsBack: Boolean) {
+        val model: FragmentModel = FragmentModel.from(clazz)
+    }
+
+    /**
+     * The `UNWIND` that writes [group] as the [index]th class of a statement of [buildTogetherSpec],
+     * folded to one row that carries the stamps the classes before it hand back, [carried], and its
+     * own: the stamps it hands back, or for a class that hands none back the count of its rows, which
+     * nothing after it carries.
+     */
+    private fun togetherSegment(group: TogetherGroup, index: Int, carried: List<String>): String {
+        val unwind = stampedUnwind(group.model, group.handsBack, "${ROWS}$index", carried, afterFold = index > 0)
+        val fold = if (group.handsBack) "collect($HANDED_BACK)" else "count(*)"
+        return "$unwind\nWITH ${(carried + "$fold AS ${SAVED}$index").joinToString(", ")}"
+    }
+
+    /** The `UNWIND` rows of fragments of [model], each with its index (`i`) where a stamp is handed back for it. */
+    private fun unwindRows(
+        model: FragmentModel,
+        items: List<IndexedValue<Any>>,
+        handsBack: Boolean,
+        nullPolicy: NullPolicy,
+        writeFields: Set<String>?,
+    ): List<Map<String, Any?>> {
+        val idField = requireNotNull(model.nodeIdField)
+        return items.map { (index, obj) ->
+            val row = unwindRootRow(obj, model, null, idField, nullPolicy, writeFields)
+            if (handsBack) row + ("i" to index.toString()) else row
+        }
+    }
+
+    /**
+     * The UNWIND upsert of nodes of [model] that gives a node a new stamp only when the row changes
+     * it. It takes the node's lock before it reads the node to say so: see [Stamps.lock]. The `MERGE`
+     * keys on the id field's stored property name, which differs from the field's under a
+     * `@GraphProperty` id.
+     *
+     * @param rows the parameter the rows are bound under
+     * @param carried the variables of the statement before it to carry through it
+     * @param afterFold whether it follows a fold of the statement before it to one row, as in
+     *   [buildTogetherSpec]. The rows are then projected before the `MERGE`: without that FalkorDB 6,
+     *   given a `MERGE` after two folds of which the later follows a `WITH`, binds the node of the
+     *   `MERGE` before it, and writes this row to that node
+     *   (https://github.com/FalkorDB/FalkorDB/issues/3368).
+     */
+    private fun stampedUnwind(
+        model: FragmentModel,
+        handsBack: Boolean = false,
+        rows: String = ROWS,
+        carried: List<String> = emptyList(),
+        afterFold: Boolean = false,
+    ): String {
+        val labels = model.labels.joinToString(":")
+        val idProperty = model.nodeIdProperty ?: requireNotNull(model.nodeIdField)
+        val found = if (handsBack) Stamps.foundOf("n") else "coalesce(n.${Stamps.QUOTED}, '')"
+        val through = (carried + listOf("n", "row")).joinToString(", ")
+        return listOfNotNull(
+            "UNWIND \$$rows AS row",
+            "WITH ${(carried + "row").joinToString(", ")}".takeIf { afterFold },
+            "MERGE (n:$labels {$idProperty: row.id})",
+            // A node the statement makes is told from one it finds, for the stamp that is handed back.
+            Stamps.onCreate("n").takeIf { handsBack },
+            Stamps.lock("n"),
+            "WITH $through, $found AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed",
+            "SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}",
+            "REMOVE ${Stamps.unmark("n")}".takeIf { handsBack },
+        ).joinToString("\n")
+    }
 
     /**
      * One `{ id, props }` UNWIND row for an UNWIND-eligible root (id excluded). The `props` map is keyed
@@ -182,6 +268,15 @@ internal class BatchSaveOperations(
         // Max rows per UNWIND statement in saveAll — caps server-side batch size; each chunk is one
         // statement (and, when not in an ambient transaction, still within the single batch transaction).
         const val UNWIND_CHUNK_SIZE = 1000
+
+        /** The parameter an `UNWIND` binds its rows under; in a statement of [buildTogetherSpec], with the class's place after it. */
+        private const val ROWS = "rows"
+
+        /** What a class of a statement of [buildTogetherSpec] is folded to, with its place after it. */
+        private const val SAVED = "_saved"
+
+        /** What a row of a stamped `UNWIND` hands back: `index/found=stamp`. */
+        private const val HANDED_BACK = "row.i + '/' + ${Stamps.FOUND} + '=' + n.${Stamps.QUOTED}"
     }
 }
 

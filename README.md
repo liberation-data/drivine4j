@@ -1515,7 +1515,9 @@ left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-writ
 
 #### Batch Save (`saveAll`)
 
-Persist a collection in one group of statements. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back. FalkorDB has no multi-statement transactions: there each statement is atomic and the batch is not, and with `falkorDbTransactionMode` set to `STRICT` a batch is refused, as any transaction is.
+Persist a collection in one group of statements. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back.
+
+On Neo4j, FalkorDB and Memgraph, a batch of fragments alone, of any number of labels, is **one statement** where each fragment can be written as a row of an `UNWIND` and there are no more than 1,000 of them: it is applied whole on any of them, FalkorDB included. On Oracle a batch of fragments is one block for each 500 of them. Each view is a statement of its own, and so is a fragment with a `@PropertyBag` or a `@NodeLabels` field, or on FalkorDB one with a `@VectorIndex` field. FalkorDB has no multi-statement transactions, so a batch of more than one statement is not applied whole there: in the default `WARN` mode it runs statement by statement and the first such batch logs a warning, and with `falkorDbTransactionMode` set to `STRICT` it is refused with `NonAtomicBatchException` before anything is written (inside `@Transactional`, `STRICT` refuses the transaction itself, at its first statement). `PersistenceManager.atomicBatches` says which a store does. See [docs/0.1.6-atomic-save-all.md](docs/0.1.6-atomic-save-all.md).
 
 ```kotlin
 val saved = graphObjectManager.saveAll(views)
@@ -1611,7 +1613,7 @@ val rewritten = results.count { it.found }
 - Under `NullPolicy.IGNORE`, the default, a named field that is null on an object is left as the store has it. Under `CLEAR` it is cleared.
 - The objects are of one class, and each id is given once and is not null. A call that breaks one of these is refused before anything is written.
 - The id is taken to be unique. Where two nodes of the class share one, the graph engines write both, and Oracle the one it finds first.
-- The rows go 1,000 to a statement, and 100 where a `@VectorIndex` field is written, as one batch: atomic as `saveAll` is, run again when the engine turns it away for contention, and refused on FalkorDB in `STRICT` mode. The rows are sent in the order of their ids, so two calls over the same nodes take their locks in the same order.
+- The rows go 1,000 to a statement, and 100 where a `@VectorIndex` field is written, as one batch: atomic as `saveAll` is, run again when the engine turns it away for contention, and, where it is more than one statement, refused on FalkorDB in `STRICT` mode. The rows are sent in the order of their ids, so two calls over the same nodes take their locks in the same order.
 - A `@VectorIndex` field is written in the engine's own vector type, on FalkorDB too: a patch sets each field by name, where a batch save of such a fragment there is a statement for each.
 
 #### Saving from Java
@@ -1650,7 +1652,7 @@ graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), ne
 - A refused save has written nothing. What the transaction wrote before it is undone only if the transaction rolls back: code that catches the exception and carries on commits it.
 - A checked save holds the node's write lock until the transaction commits, so another writer to the same node waits for it.
 - A statement the engine turns away because another writer was changing the same node is run again, six attempts in all, on Neo4j and Memgraph. Inside a transaction the engine has usually failed the transaction with the statement, so the later attempts fail too and the first failure is what the caller sees.
-- On FalkorDB each statement commits by itself. A save is still atomic, being one statement. An `update` is two, a load and a checked save, and a `saveAll` is several: what ran before a failure or a refusal stays applied.
+- On FalkorDB each statement commits by itself. A save is still atomic, being one statement, and so is a `saveAll` of fragments alone that fits in one. An `update` is two, a load and a checked save, and a `saveAll` that holds a view is several: what ran before a failure or a refusal stays applied, unless `STRICT` mode refuses the batch before it runs.
 
 See [docs/0.1.0-stateless-object-manager.md](docs/0.1.0-stateless-object-manager.md) for the release that introduced this manager and what it changed.
 
@@ -2350,10 +2352,11 @@ interface PersistenceManager {
     fun <T> execute(spec: QuerySpecification<T>)
     fun executeBatch(specs: List<QuerySpecification<*>>)                      // several statements, one transaction
     fun queryBatch(specs: List<QuerySpecification<*>>): List<List<Any?>>      // the same, returning each statement's rows
+    val atomicBatches: Boolean                                                // whether a batch of several statements is applied whole
 }
 ```
 
-`executeBatch` and `queryBatch` run their statements in one transaction on the managers Drivine provides, or in the transaction they are called in. FalkorDB has no transactions: there each statement commits by itself. The interface's own defaults run each statement on its own, so a `PersistenceManager` you implement must override both to make a batch atomic; `saveAll` calls `queryBatch`.
+`executeBatch` and `queryBatch` run their statements in one transaction on the managers Drivine provides, or in the transaction they are called in. FalkorDB has no transactions: there each statement commits by itself, `atomicBatches` is false, a batch of one statement runs with no transaction, and a batch of more runs statement by statement (`WARN`) or is refused with `NonAtomicBatchException` before any of it runs (`STRICT`). The interface's own defaults run each statement on its own, so a `PersistenceManager` you implement must override both to make a batch atomic; `saveAll` calls `queryBatch`.
 
 ### QuerySpecification
 
@@ -2463,7 +2466,7 @@ database:
       database-name: mygraph
 ```
 
-**Transactions:** FalkorDB does not support multi-statement transactions. `@Transactional` methods work but each query executes and commits independently. An object-manager `save` is one statement and so still atomic; an `update` is two and a `saveAll` several, and what ran before a failure or a refused save stays applied. By default, `startTransaction()` logs a debug message and `rollbackTransaction()` logs a warning. To enforce strict no-transaction usage (throw on `@Transactional`), set:
+**Transactions:** FalkorDB does not support multi-statement transactions. `@Transactional` methods work but each query executes and commits independently. An object-manager `save` is one statement and so still atomic, and so is a `saveAll` of fragments alone that fits in one; an `update` is two and a `saveAll` that holds a view several, and what ran before a failure or a refused save stays applied. By default, `startTransaction()` logs a debug message, `rollbackTransaction()` logs a warning, and the first batch of more than one statement logs a warning that it is not applied whole. To enforce strict no-transaction usage (throw on `@Transactional`, and refuse a batch of more than one statement with `NonAtomicBatchException` before any of it runs), set:
 
 ```yaml
       falkor-db-transaction-mode: STRICT   # default: WARN

@@ -32,6 +32,9 @@ class DelegatingPersistenceManager(
     override val graphName: String?
         get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).graphName
 
+    override val atomicBatches: Boolean
+        get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).atomicBatches
+
     override val schemaGrammar: SchemaGrammar?
         get() = factory.get(database, PersistenceManagerType.NON_TRANSACTIONAL).schemaGrammar
 

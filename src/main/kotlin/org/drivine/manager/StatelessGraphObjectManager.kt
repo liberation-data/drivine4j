@@ -165,12 +165,21 @@ class StatelessGraphObjectManager private constructor(
      *
      * The whole call is atomic: inside a transaction it joins it, and otherwise it runs in one of its
      * own, on an engine that has transactions. A [Replace] is part of it. FalkorDB has none: there
-     * each statement is atomic, and what the batch saved before a failure or a refusal stays saved.
+     * each statement is atomic, and what the batch saved before a failure or a refusal stays saved;
+     * in its `STRICT` mode a batch of more than one statement is refused with
+     * [org.drivine.NonAtomicBatchException] before anything is written. On Neo4j, FalkorDB and
+     * Memgraph a batch of fragments alone, of any number of classes, is one statement, and so atomic
+     * on any of them, where each can be written as a row of an `UNWIND` and they are no more than one
+     * statement takes ([BatchSaveOperations.UNWIND_CHUNK_SIZE]): not one with a `@PropertyBag` or a
+     * `@NodeLabels` field, nor on FalkorDB one with a vector. On Oracle a batch of fragments is one
+     * block for each 500 of them. [PersistenceManager.atomicBatches] says whether a batch of more
+     * than one statement is applied whole.
      * Inside a caller's transaction, a refusal undoes the batch only if the caller's transaction is
      * rolled back, as it is when the exception leaves it.
      * A batch the engine turns away because another writer was changing the same nodes is run again.
      *
-     * Fragments are saved in batches. A view is saved by a statement of its own. An object the batch
+     * Fragments are saved in batches: one statement for them all where they fit, as above. A view is
+     * saved by a statement of its own. An object the batch
      * holds more than once is handed the stamp its node is left with each time.
      *
      * A batch that only adds is not checked, and it makes any node it does not find. With [only] or
@@ -214,6 +223,10 @@ class StatelessGraphObjectManager private constructor(
      *   no field named, among them a [Replace] that cannot be applied, an object with a null id, and
      *   one that could not be handed the stamps its save would leave. Nothing is written then
      * @throws StaleObjectException with [Replace], when a view that carries a stamp changed after it was loaded
+     * @throws org.drivine.NonAtomicBatchException on a store that cannot roll back and is set to refuse
+     *   what it cannot apply whole (FalkorDB `STRICT`), when the batch is more than one statement and
+     *   is not run in a caller's transaction. Nothing is written then. In a caller's transaction the
+     *   store refuses the transaction itself, with its own [UnsupportedOperationException]
      */
     @JvmOverloads
     fun <T : Any> saveAllFields(
@@ -349,8 +362,10 @@ class StatelessGraphObjectManager private constructor(
      *
      * The whole call is atomic, as [saveAll] is: inside a transaction it joins it, and otherwise it
      * runs in one of its own, on an engine that has transactions. FalkorDB has none: there each
-     * statement is atomic, and what earlier statements wrote stays written. A call the engine turns
-     * away because another writer was changing the same nodes is run again.
+     * statement is atomic, and what earlier statements wrote stays written; in its `STRICT` mode a
+     * call of more than one statement is refused with [org.drivine.NonAtomicBatchException] before
+     * anything is written. A call the engine turns away because another writer was changing the same
+     * nodes is run again.
      *
      * @param nullPolicy under [NullPolicy.IGNORE], a named field that is null on an object is left as
      *   the store has it; under [NullPolicy.CLEAR] it is cleared

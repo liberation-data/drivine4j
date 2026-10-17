@@ -213,10 +213,17 @@ internal class CypherBackend(
      * A fragment with no stamp to hand back goes as a row of an `UNWIND` where one can write it, and
      * so does a stamped one, by a statement that returns its stamp. A stamped fragment an `UNWIND`
      * cannot write (see [savedByUnwind]) is saved alone, by the statement that hands its stamp back.
+     *
+     * Fragments of more than one class are one statement where every one of them goes as a row and
+     * they fit in one: see [BatchSaveOperations.buildTogetherSpec]. One statement is applied whole on
+     * every engine, FalkorDB among them, where statements in a transaction are not.
      */
     override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>?): FragmentBatch {
         val (stamped, plain) = fragments.partition { FragmentModel.from(it.value.javaClass).stampField != null }
         val (batched, alone) = stamped.partition { FragmentModel.from(it.value.javaClass).savedByUnwind(grammar) }
+        batches.buildTogetherSpec(plain, batched, nullPolicy, writeFields)?.let { together ->
+            return FragmentBatch(stamped = listOf(together), alone = alone)
+        }
         return FragmentBatch(
             unstamped = batches.buildBatchSpecs(plain.map { it.value }, CascadeType.NONE, nullPolicy, writeFields),
             stamped = batches.buildStampedSpecs(batched, nullPolicy, writeFields),
