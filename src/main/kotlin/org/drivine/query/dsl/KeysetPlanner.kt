@@ -137,6 +137,18 @@ internal object KeysetPlanner {
 
     private fun paramName(index: Int): String = "_seek_$index"
 
+    /**
+     * [orders] as the property orders a cursor continues: an order by an expression is refused, as a
+     * cursor holds the values of properties and an expression's value is computed. Shared with the
+     * Oracle backend's seek.
+     */
+    fun propertyOrders(orders: List<OrderTerm>): List<OrderSpec> = orders.map { order ->
+        require(order is OrderSpec) {
+            "seek cannot continue an order by an expression: a cursor holds the values of properties, and an expression's value is computed for each row."
+        }
+        order
+    }
+
     /** Why a keyset refuses an order that places its nulls; shared with the Oracle backend's seek. */
     const val NULLS_UNDER_SEEK = "under seek: a cursor does not say which side of the nulls it is on"
 }

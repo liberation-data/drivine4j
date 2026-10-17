@@ -112,7 +112,7 @@ internal class CypherBackend(
         // Process order clauses - separate root ordering from collection sorting
         val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
         val orderResult = if (query.orders.isNotEmpty()) {
-            CypherGenerator.processOrders(query.orders, relationshipNames, ctx.viewModel)
+            CypherGenerator.processOrders(query.orders, relationshipNames, ctx.viewModel, grammar)
         } else {
             OrderClauseResult(null, emptyList())
         }
@@ -122,7 +122,7 @@ internal class CypherBackend(
         }
         val keysetPlan = if (query.seekValues.isNotEmpty()) {
             KeysetPlanner.plan(
-                orderResult.rootOrders,
+                KeysetPlanner.propertyOrders(orderResult.rootOrders),
                 query.seekValues,
                 orderResult.collectionSorts.size,
                 guardAgainstNulls = grammar.indexesExcludeNulls,
@@ -137,12 +137,9 @@ internal class CypherBackend(
             .joinToString(" AND ")
             .takeIf { it.isNotEmpty() }
             ?.let { if (keysetPlan == null) alone(it, graphClass, query.conditions) else it }
-        keysetPlan?.bindings?.keys?.forEach { reserved ->
-            require(reserved !in ctx.bindings) {
-                "Keyset cursor parameter \$$reserved collides with a where-clause binding"
-            }
-        }
-        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
+        requireUnclaimed(keysetPlan?.bindings?.keys.orEmpty(), ctx.bindings, "Keyset cursor")
+        requireUnclaimed(orderResult.bindings.keys, ctx.bindings, "Order expression")
+        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap()) + orderResult.bindings
 
         val baseQuery = if (query.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
             builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, query.depthOverrides, ctx.prologs, ctx.bridgeVariables)
@@ -370,8 +367,18 @@ internal class CypherBackend(
         return GraphStatement(sb.toString(), merged)
     }
 
-    private companion object {
-        const val SKIP_PARAM = "_skip"
-        const val LIMIT_PARAM = "_limit"
+    internal companion object {
+        private const val SKIP_PARAM = "_skip"
+        private const val LIMIT_PARAM = "_limit"
+
+        /**
+         * Refuses a parameter of [reserved], which [what] binds, that a where clause has bound
+         * already: one value would replace the other. The where clause names its parameters
+         * `param_…`, so none of the reserved names, `_seek_…` and `_order_…`, is one today; this
+         * keeps it so.
+         */
+        fun requireUnclaimed(reserved: Collection<String>, bindings: Map<String, Any?>, what: String) = reserved.forEach { name ->
+            require(name !in bindings) { "$what parameter \$$name collides with a where-clause binding" }
+        }
     }
 }

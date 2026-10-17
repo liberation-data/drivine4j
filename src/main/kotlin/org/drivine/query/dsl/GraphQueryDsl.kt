@@ -32,7 +32,7 @@ package org.drivine.query.dsl
  */
 class GraphQuerySpec<T : Any>(private val queryObject: T) {
     internal val conditions = mutableListOf<WhereCondition>()
-    internal val orders = mutableListOf<OrderSpec>()
+    internal val orders = mutableListOf<OrderTerm>()
     internal val seekValues = mutableListOf<SeekValueSpec>()
     internal val depthOverrides = mutableMapOf<String, Int>()
     internal var limit: Int? = null
@@ -352,7 +352,7 @@ class OrderBuilder<T : Any>(
      */
     val queryObject: T
 ) {
-    internal val orders = mutableListOf<OrderSpec>()
+    internal val orders = mutableListOf<OrderTerm>()
 
     /**
      * Adds an order specification.
@@ -364,7 +364,7 @@ class OrderBuilder<T : Any>(
     }
 
     /** Registers [order], and gives the handle through which its nulls may then be placed. */
-    internal fun register(order: OrderSpec): RegisteredOrder {
+    internal fun register(order: OrderTerm): RegisteredOrder {
         orders.add(order)
         return RegisteredOrder(orders, orders.lastIndex)
     }
@@ -375,7 +375,7 @@ class OrderBuilder<T : Any>(
  * so that `desc().nullsLast()` places the nulls of the order just registered.
  */
 class RegisteredOrder internal constructor(
-    private val orders: MutableList<OrderSpec>,
+    private val orders: MutableList<OrderTerm>,
     private val index: Int,
 ) {
     /** Rows with no value for the property come before every row that has one. See [NullPlacement]. */
@@ -619,28 +619,47 @@ enum class ComparisonOperator(val cypherOperator: String) {
 }
 
 /**
+ * One term of an order: by a property ([OrderSpec]) or by an expression over the root's properties
+ * ([ExpressionOrder]). The terms of an `orderBy` are applied in turn, each breaking the ties of
+ * those before it.
+ */
+sealed interface OrderTerm {
+    val direction: OrderDirection
+
+    /** Where the rows with no value go; unset, where the database puts them. See [NullPlacement]. */
+    val nulls: NullPlacement?
+
+    /** This term, with the rows that have no value before every row that has one. */
+    fun nullsFirst(): OrderTerm
+
+    /** This term, with the rows that have no value after every row that has one. */
+    fun nullsLast(): OrderTerm
+}
+
+/**
  * Represents an ORDER BY specification.
  *
  * Obtain these through the typed property references — `property.asc()` or `property.desc()` inside
  * a [GraphQuerySpec.orderBy] block — rather than constructing them directly. [propertyPath] is an
  * alias and a property, `alias.property`, and is not written into the statement as it is given:
  * whatever follows the first dot is one property name, backtick-quoted where it is not a plain
- * identifier, and on the root of a view it is read by the key the view projects it under. An
- * expression such as `toLower(n.name)` is therefore no path, and renders as a name no node has.
+ * identifier, and on the root of a view it is read by the key the view projects it under. A path is
+ * no place for an expression such as `toLower(n.name)`, which would render as a name no node has:
+ * order by an expression with an [ExpressionOrder], built from the functions of `OrderExpressions`.
  *
  * [nulls] says where the rows with no value for the property go; unset, they go where the database
  * puts them, which is not the same place on each. See [NullPlacement].
  */
 data class OrderSpec @JvmOverloads constructor(
     val propertyPath: String,  // e.g., "issue.id"
-    val direction: OrderDirection,
-    val nulls: NullPlacement? = null,
-) {
+    override val direction: OrderDirection,
+    override val nulls: NullPlacement? = null,
+) : OrderTerm {
     /** This order, with the rows that have no value for the property before every row that has one. */
-    fun nullsFirst(): OrderSpec = copy(nulls = NullPlacement.FIRST)
+    override fun nullsFirst(): OrderSpec = copy(nulls = NullPlacement.FIRST)
 
     /** This order, with the rows that have no value for the property after every row that has one. */
-    fun nullsLast(): OrderSpec = copy(nulls = NullPlacement.LAST)
+    override fun nullsLast(): OrderSpec = copy(nulls = NullPlacement.LAST)
 
     /**
      * Refuses a null placement where one cannot be kept: [where] completes "nulls cannot be placed …".
@@ -702,6 +721,12 @@ data class CollectionSortSpec(
     fun nestedRelationship(): String? = if (isNested()) relationshipPath.substringAfter("_") else null
 }
 
+/** Orders parted by [CypherGenerator.splitOrders]: the sorts of relationship collections, and the orders of the roots. */
+internal data class SplitOrders(
+    val collectionSorts: List<CollectionSortSpec>,
+    val rootOrders: List<OrderTerm>,
+)
+
 /**
  * Result of processing order specifications.
  * Separates root-level ORDER BY from collection sorts that need apoc.coll.sortMaps().
@@ -710,5 +735,7 @@ data class OrderClauseResult(
     val orderByClause: String?,
     val collectionSorts: List<CollectionSortSpec>,
     /** Root-entity orders, retained for keyset planning after collection sorts are separated. */
-    val rootOrders: List<OrderSpec> = emptyList(),
+    val rootOrders: List<OrderTerm> = emptyList(),
+    /** The values the order's expressions bind, by parameter name (`_order_0`, …). */
+    val bindings: Map<String, Any?> = emptyMap(),
 )

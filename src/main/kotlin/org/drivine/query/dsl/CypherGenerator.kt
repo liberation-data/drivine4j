@@ -1,6 +1,7 @@
 package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
+import org.drivine.query.FragmentQueryBuilder
 import org.drivine.query.projectedKey
 import org.drivine.query.projectedKeyOrNull
 import org.drivine.query.grammar.CypherGrammar
@@ -310,8 +311,15 @@ object CypherGenerator {
      * @param relationshipNames Set of relationship field names (to distinguish collection sorts)
      * @return OrderClauseResult with separate ORDER BY clause and collection sorts
      */
-    fun processOrders(orders: List<OrderSpec>, relationshipNames: Set<String> = emptySet()): OrderClauseResult =
+    fun processOrders(orders: List<OrderTerm>, relationshipNames: Set<String> = emptySet()): OrderClauseResult =
         processOrders(orders, relationshipNames, viewModel = null)
+
+    /**
+     * As [processOrders], for the load of a view, written for Neo4j 5 as that form is: a caller that
+     * knows its engine passes the grammar to the form that takes one.
+     */
+    fun processOrders(orders: List<OrderTerm>, relationshipNames: Set<String>, viewModel: GraphViewModel?): OrderClauseResult =
+        processOrders(orders, relationshipNames, viewModel, Neo4j5Grammar(ApocSortMapsEmitter()))
 
     /**
      * As [processOrders], for the load of a view. A view's `ORDER BY` follows its projection, where
@@ -322,54 +330,60 @@ object CypherGenerator {
      * A root order that places its nulls is two terms: the test for null, then the value. An order
      * of a relationship collection that places them is refused.
      *
+     * An order by an expression orders the roots, and is written by [CypherOrderExpressions] with
+     * its values bound, in [OrderClauseResult.bindings]. It may read only the root's properties: the
+     * view's root field, or on a fragment its alias, [FragmentQueryBuilder.NODE_ALIAS].
+     *
      * @param viewModel The view being loaded, or null when the load is of a fragment
+     * @param grammar The engine's grammar, which says what of an expression it can write
+     * @throws IllegalArgumentException where an expression reads a property of a node other than the root
+     * @throws UnsupportedOrderFunctionException where an expression asks for what the engine cannot write
      */
     fun processOrders(
-        orders: List<OrderSpec>,
+        orders: List<OrderTerm>,
         relationshipNames: Set<String>,
         viewModel: GraphViewModel?,
+        grammar: CypherGrammar,
     ): OrderClauseResult {
-        val rootOrders = mutableListOf<OrderSpec>()
-        val collectionSorts = mutableListOf<CollectionSortSpec>()
-
-        orders.forEach { order ->
-            val alias = order.propertyPath.substringBefore(".")
-            val propertyName = order.propertyPath.substringAfter(".")
-
-            // Check if this is a collection sort (relationship alias or nested relationship)
-            val isCollectionSort = alias in relationshipNames || alias.contains("_")
-
-            if (isCollectionSort) {
-                order.requireNoNullPlacement("in the order of a relationship collection")
-                collectionSorts.add(
-                    CollectionSortSpec(
-                        relationshipPath = alias,
-                        propertyName = propertyName,
-                        ascending = order.direction == OrderDirection.ASC
-                    )
-                )
-            } else {
-                rootOrders.add(order)
+        val (collectionSorts, rootOrders) = splitOrders(orders, relationshipNames)
+        val rootAlias = viewModel?.rootFragment?.fieldName ?: FragmentQueryBuilder.NODE_ALIAS
+        val expressions = CypherOrderExpressions(grammar, rootAlias) { rootPath(it, viewModel, projected = true) }
+        val orderByClause = rootOrders.takeIf { it.isNotEmpty() }?.joinToString(", ") { order ->
+            val term = when (order) {
+                is OrderSpec -> rootPath(order.propertyPath, viewModel, projected = true)
+                is ExpressionOrder -> expressions.write(order.expression)
             }
-        }
-
-        val orderByClause = if (rootOrders.isNotEmpty()) {
-            rootOrders.joinToString(", ") { order ->
-                val path = rootPath(order.propertyPath, viewModel, projected = true)
-                // Cypher has no NULLS FIRST / LAST. Ordering by the test for null before the value
-                // does the same: false sorts before true, so `IS NULL` leaves the null rows last.
-                val nulls = when (order.nulls) {
-                    NullPlacement.FIRST -> "$path IS NOT NULL, "
-                    NullPlacement.LAST -> "$path IS NULL, "
-                    null -> ""
-                }
-                "$nulls$path ${order.direction.name}"
+            // Cypher has no NULLS FIRST / LAST. Ordering by the test for null before the value
+            // does the same: false sorts before true, so `IS NULL` leaves the null rows last.
+            val nulls = when (order.nulls) {
+                NullPlacement.FIRST -> "$term IS NOT NULL, "
+                NullPlacement.LAST -> "$term IS NULL, "
+                null -> ""
             }
-        } else {
-            null
+            "$nulls$term ${order.direction.name}"
         }
+        return OrderClauseResult(orderByClause, collectionSorts, rootOrders, expressions.bindings)
+    }
 
-        return OrderClauseResult(orderByClause, collectionSorts, rootOrders)
+    /**
+     * [orders] parted into the sorts of relationship collections and the orders of the roots. A
+     * property order whose alias is a relationship field, or holds an underscore (`field_nested`, a
+     * nested collection), sorts a collection, and is refused where it places its nulls; every other
+     * order, an order by an expression among them, orders the roots. Shared with the Oracle backend.
+     */
+    internal fun splitOrders(orders: List<OrderTerm>, relationshipNames: Set<String>): SplitOrders {
+        val (sorts, roots) = orders.partition { order ->
+            order is OrderSpec && order.propertyPath.substringBefore('.').let { it in relationshipNames || '_' in it }
+        }
+        val collectionSorts = sorts.filterIsInstance<OrderSpec>().map { order ->
+            order.requireNoNullPlacement("in the order of a relationship collection")
+            CollectionSortSpec(
+                relationshipPath = order.propertyPath.substringBefore('.'),
+                propertyName = order.propertyPath.substringAfter('.'),
+                ascending = order.direction == OrderDirection.ASC,
+            )
+        }
+        return SplitOrders(collectionSorts, roots)
     }
 
     /**

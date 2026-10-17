@@ -68,6 +68,18 @@ interface CypherGrammar {
         get() = false
 
     /**
+     * How the engine reads [moment], an expression that reads a moment as the engine holds one, as
+     * seconds since the epoch with their fraction: [TemporalOrderSupport.Written] with the expression, or
+     * [TemporalOrderSupport.Refused] with the engine and the reason it cannot. An order by an expression that
+     * asks for it where it is refused is refused before anything runs. A grammar that does not say
+     * refuses it.
+     */
+    fun epochSeconds(moment: String): TemporalOrderSupport = TemporalOrderSupport.Refused(
+        engine = "This engine",
+        reason = "its grammar does not say how to read a moment as a number",
+    )
+
+    /**
      * Whether what [existenceCheck] and [filteredExistenceCheck] give may stand only in a `WHERE`,
      * and not as a value of a `WITH`. Neo4j 4 takes `EXISTS { }` nowhere else. A statement that
      * must know whether a node met a predicate, and not only find the nodes that do, then reads the
@@ -224,6 +236,22 @@ interface CypherGrammar {
 }
 
 /**
+ * Whether a grammar supports the temporal order capability (`org.drivine.query.dsl.temporal`): how it
+ * reads a moment as seconds since the epoch (see [CypherGrammar.epochSeconds]), written as an
+ * expression, or refused, with the reason.
+ */
+sealed interface TemporalOrderSupport {
+    /** The engine reads the moment as seconds by [expression]. */
+    data class Written(val expression: String) : TemporalOrderSupport
+
+    /** [engine] cannot read a moment as a number, for [reason]. */
+    data class Refused(val engine: String, val reason: String) : TemporalOrderSupport
+}
+
+/** Neo4j 4 and 5 hold a moment as a native temporal value, whose milliseconds since the epoch it gives as a property. */
+private fun neo4jEpochSeconds(moment: String) = TemporalOrderSupport.Written("$moment.epochMillis / 1000.0")
+
+/**
  * Neo4j 5.x — `EXISTS { pattern }` subquery syntax.
  */
 class Neo4j5Grammar(
@@ -238,6 +266,8 @@ class Neo4j5Grammar(
     override val supportsIndexBackedOrdering: Boolean = true
 
     override val indexesExcludeNulls: Boolean = true
+
+    override fun epochSeconds(moment: String): TemporalOrderSupport = neo4jEpochSeconds(moment)
 
     override val supportsVectorSearch: Boolean = true
 
@@ -301,6 +331,8 @@ class Neo4j4Grammar(
 
     override val indexesExcludeNulls: Boolean = true
 
+    override fun epochSeconds(moment: String): TemporalOrderSupport = neo4jEpochSeconds(moment)
+
     override val predicatesOnlyInWhere: Boolean = true
 }
 
@@ -312,7 +344,6 @@ class Neo4j4Grammar(
 open class OpenCypherGrammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
-
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
         "($rootAlias)$direction(:$targetLabels)"
 
@@ -346,6 +377,19 @@ class FalkorDbCypherGrammar(
     // Inherits supportsOrphanDelete = true from the interface default (FalkorDB#1890 fixed).
 
     override val testsPathEndAfterMatch: Boolean = true
+
+    /**
+     * FalkorDB is given a moment as its ISO-8601 text (see [org.drivine.query.TemporalCoercer]), and
+     * has no function that reads a moment as a number: no `epochMillis`, and no arithmetic on a
+     * datetime. So an order that asks for one is refused.
+     */
+    override fun epochSeconds(moment: String): TemporalOrderSupport = TemporalOrderSupport.Refused(
+        engine = "FalkorDB",
+        reason = """
+            it holds a moment as its ISO-8601 text, and has no function that reads one as a number. Store the
+            moment's seconds since the epoch in a property of their own, and order by that.
+        """.trimIndent().replace("\n", " "),
+    )
 
     override val supportsVectorSearch: Boolean = true
 

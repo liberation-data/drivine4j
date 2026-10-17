@@ -17,7 +17,7 @@ import org.drivine.query.StampWrite
 import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.GroupQuerySpec
-import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.grammar.CypherGrammar
 
@@ -32,7 +32,7 @@ internal class GraphStatement(val statement: String, val bindings: Map<String, A
  * The statement of a load through the query DSL, with what the object manager needs to advise on
  * indexes: the orders on the root, and whether the load seeks from a cursor.
  */
-internal class LoadPlan(val statement: GraphStatement, val rootOrders: List<OrderSpec>, val keyset: Boolean)
+internal class LoadPlan(val statement: GraphStatement, val rootOrders: List<OrderTerm>, val keyset: Boolean)
 
 /**
  * What the object managers ask of a store. An object manager knows the model, hydrates what comes

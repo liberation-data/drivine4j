@@ -18,6 +18,7 @@ import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.IndexAdvicePolicy
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.QueryIndexAdvisor
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.query.dsl.ComparisonOperator
@@ -423,17 +424,18 @@ class GraphObjectManager internal constructor(
      * Only root-level orders participate — a collection sort happens inside a pattern comprehension,
      * where no index applies. Nor does one to an order that places its nulls: it sorts by the test
      * for null before the value, and an index holds no node without the property, so the query
-     * sorts whatever is indexed and there is no index to recommend.
+     * sorts whatever is indexed and there is no index to recommend. Nor to an order by an
+     * expression, whose value no index holds.
      */
     private fun <Q : Any> adviseOnIndexes(
         graphClass: Class<*>,
-        rootOrders: List<OrderSpec>,
+        rootOrders: List<OrderTerm>,
         querySpec: GraphQuerySpec<Q>,
         isKeyset: Boolean,
     ) {
         if (indexAdvice == IndexAdvicePolicy.OFF || rootOrders.isEmpty()) return
         if (!backend.supportsIndexBackedOrdering) return
-        if (rootOrders.any { it.nulls != null }) return
+        if (rootOrders.any { it.nulls != null || it !is OrderSpec }) return
 
         val viewModel = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
         val fragmentType = viewModel?.rootFragment?.fragmentType ?: graphClass
@@ -444,7 +446,7 @@ class GraphObjectManager internal constructor(
         indexAdvisor.check(
             policy = indexAdvice,
             label = label,
-            properties = rootOrders.map { it.propertyPath.substringAfter(".") },
+            properties = rootOrders.filterIsInstance<OrderSpec>().map { it.propertyPath.substringAfter(".") },
             operation = if (isKeyset) "seek" else "orderBy",
             pinnedBy = pinningEqualities(querySpec, rootAlias),
             // The node id is unique by the model's own contract (it is the MERGE key and the load

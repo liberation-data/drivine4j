@@ -161,11 +161,11 @@ class ContextParametersSyntaxTest {
 
         assertEquals(2, spec.orders.size)
 
-        val order1 = spec.orders[0]
+        val order1 = spec.orders[0] as OrderSpec
         assertEquals("test.age", order1.propertyPath)
         assertEquals(OrderDirection.DESC, order1.direction)
 
-        val order2 = spec.orders[1]
+        val order2 = spec.orders[1] as OrderSpec
         assertEquals("test.name", order2.propertyPath)
         assertEquals(OrderDirection.ASC, order2.direction)
     }

@@ -11,7 +11,14 @@ import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.NullPlacement
 import org.drivine.query.dsl.OrderDirection
+import org.drivine.query.dsl.ExpressionOrder
+import org.drivine.query.dsl.OrderExpression
+import org.drivine.query.dsl.OrderExpressionWriter
+import org.drivine.query.dsl.OrderFunction
+import org.drivine.query.dsl.PropertyUse
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.OrderTerm
+import org.drivine.query.dsl.UnsupportedOrderFunctionException
 import org.drivine.query.dsl.SeekValueSpec
 import org.drivine.query.dsl.WhereCondition
 
@@ -331,16 +338,16 @@ internal class OraclePredicates(
      * texts with the rows that have no value, and the texts and the numbers would change places. It
      * is ordered by whether the property has a value first, and then as it is without a placement.
      */
-    fun orderTerms(order: OrderSpec): String {
+    fun orderTerms(order: OrderTerm): String = when (order) {
+        is OrderSpec -> propertyTerms(order)
+        is ExpressionOrder -> expressionTerm(order)
+    }
+
+    private fun propertyTerms(order: OrderSpec): String {
         val key = order.propertyPath.substringAfter('.')
         val direction = order.direction.name
         if (key == Stamps.PROPERTY || declaredKind(key) != null || key in scope.inferredKinds) {
-            val nulls = when (order.nulls) {
-                NullPlacement.FIRST -> " NULLS FIRST"
-                NullPlacement.LAST -> " NULLS LAST"
-                null -> ""
-            }
-            return "${ordered(key)} $direction$nulls"
+            return "${ordered(key)} $direction${placement(order.nulls)}"
         }
         val text = property(root, key)
         val nulls = when (order.nulls) {
@@ -349,6 +356,64 @@ internal class OraclePredicates(
             null -> ""
         }
         return "$nulls${undeclaredNumber(key)} $direction, $text $direction"
+    }
+
+    /**
+     * The `ORDER BY` term for an order by an expression: the expression in SQL, with its nulls placed
+     * on the term. Every value it holds is bound.
+     */
+    private fun expressionTerm(order: ExpressionOrder): String =
+        "${expressions.write(order.expression)} ${order.direction.name}${placement(order.nulls)}"
+
+    /** Where a term of one value puts its nulls, as SQL says so after the direction. */
+    private fun placement(nulls: NullPlacement?): String = when (nulls) {
+        NullPlacement.FIRST -> " NULLS FIRST"
+        NullPlacement.LAST -> " NULLS LAST"
+        null -> ""
+    }
+
+    private val expressions = OracleOrderExpressions()
+
+    /**
+     * Writes an order expression in SQL. A property is read as the field that declares it is ordered
+     * (see [ordered]); one no field declares, as the kind of the value it is compared with in a case,
+     * as text in a test for a value, and as a number anywhere else, where it is a term of arithmetic.
+     */
+    private inner class OracleOrderExpressions : OrderExpressionWriter(rootAlias) {
+
+        override fun property(property: OrderExpression.Property, use: PropertyUse): String {
+            val key = property.propertyName
+            if (key == Stamps.PROPERTY || declaredKind(key) != null) return ordered(key)
+            val kind = when (use) {
+                PropertyUse.Plain -> SqlKind.NUMBER
+                is PropertyUse.ComparedWith -> SqlKind.ofValue(use.value)
+                // As text: read as a number, a property no field declares would have no value where it holds a text.
+                PropertyUse.TestedForValue -> SqlKind.TEXT
+            }
+            return if (kind == SqlKind.NUMBER) undeclaredNumber(key) else OracleSql.property(root, key, kind)
+        }
+
+        override fun bind(value: Any): String = scope.bound(scalar(value))
+
+        /** SQL divides numbers as real numbers. */
+        override fun divide(left: String, right: String): String = "($left / $right)"
+
+        override fun function(function: OrderFunction): String = function.written.uppercase()
+
+        /**
+         * The moment a property holds as seconds since the epoch: the interval from the epoch to the
+         * moment in UTC, in its days, hours, minutes and seconds with their fraction. Only a property a
+         * field declares as a moment is read as one: any other is held as its text.
+         */
+        override fun epochSeconds(moment: OrderExpression.Property): String {
+            if (declaredKind(moment.propertyName) != SqlKind.INSTANT) {
+                throw UnsupportedOrderFunctionException(
+                    "epochSeconds", "Oracle", "it reads a moment only from a property a field declares as a moment, and ${moment.path} is not one.",
+                )
+            }
+            val since = "(SYS_EXTRACT_UTC(${ordered(moment.propertyName)}) - TIMESTAMP '1970-01-01 00:00:00')"
+            return "(EXTRACT(DAY FROM $since) * 86400 + EXTRACT(HOUR FROM $since) * 3600 + EXTRACT(MINUTE FROM $since) * 60 + EXTRACT(SECOND FROM $since))"
+        }
     }
 
     /**
