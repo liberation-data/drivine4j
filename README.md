@@ -959,7 +959,7 @@ capability, behind a Kotlin opt-in: `epochSeconds(property)`, which reads a stor
 `org.drivine.query.dsl.temporal.epochSeconds` and needs `@OptIn(TemporalOrder::class)` (from Java, the
 statics of `TemporalOrderExpressions`). FalkorDB cannot write it, and refuses the load with an
 `UnsupportedOrderFunctionException` before anything runs. An expression reads only the root's
-properties, and is refused under `seek`. See [docs/0.1.6-order-by-expression.md](docs/0.1.6-order-by-expression.md).
+properties, and is refused under `seek`. See [docs/0.1.7-order-by-expression.md](docs/0.1.7-order-by-expression.md).
 
 #### Limit & Pagination
 
@@ -1462,6 +1462,7 @@ graphObjectManager.save(view, Replace.all())                               // ev
 graphObjectManager.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
 graphObjectManager.save(person, only = setOf(Person::name))                // write just these
 graphObjectManager.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
+graphObjectManager.create(person)                                          // make it only if it is not there; null when it is
 graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
 ```
 
@@ -1516,6 +1517,29 @@ A save adds the relationships the object holds and removes none. To remove, name
 - A change that gives the object another id, or returns an object of another class, is refused.
 - The load and the save are two statements. The save is one, and is refused if the node changed in between. A change to an open `@NodeLabels` field adds a read of the labels the node records as its own.
 
+#### Create If Absent (`create`)
+
+`create` makes the node only if no node has its id, in one statement. If one does, it writes nothing and returns null. With `update`, that is a save of an aggregate that loses no writer's data:
+
+```kotlin
+val stored = graphObjectManager.create(proposition)
+    ?: graphObjectManager.update<Proposition>(proposition.id) { it.merge(proposition) }
+```
+
+A `save` of an object built from scratch cannot do this. Two writers that each load null and each save write the same node, and the second overwrites the first.
+
+- **It returns the object carrying the whole stamp** the save left, as `save` does, or null when a node has the id. It is then for `update` to merge into what is there.
+- **When the node is there, nothing is written**: not the root, not a related node, not a relationship, not the stamp.
+- **A view** is made as `save` makes it: its root, each related node and the relationship to it. A related node is written unchecked, as `save` writes it, so one that was already there takes the object's fields.
+- **An object that carries a stamp is refused**, with `IllegalArgumentException` and before anything is written: a stamp comes from a node that was loaded, and `create` makes one that is not there. Save it, or update it.
+- **Two writers at the same moment.** Both find the node absent, as two `MERGE`s do. On Neo4j, Memgraph and Oracle only a uniqueness constraint on the id keeps the second from making the node again: `constraints.ensure(UniquenessConstraintSpec("Proposition", "id"))`. With one, the second waits for the first and finds its node (Neo4j), or is refused by the constraint (Memgraph, Oracle); either way it writes nothing and returns null. FalkorDB runs one write at a time, so there the second always finds the first's node, constraint or not. Without a constraint on an engine that runs writes side by side, both can make a node, and the id is then on two nodes.
+- **In a transaction.** `create` joins it. On Memgraph a uniqueness constraint is checked when the transaction commits, so two transactions that each made the node fail at the commit of the second, and not at its `create`: run that transaction again, and its `create` returns null. Where the engine refuses the statement itself and the node is then found, `create` returns null, but the engine may already have marked the transaction for rollback, so an `update` after it in the same transaction fails. Run the transaction again.
+- **The node is found by every label of the object's class**, as a `save` finds it. A `Manager` labelled `Worker:Manager` is found by `create(worker)`, but a node labelled only `Worker` is not found by `create(manager)`. Without a constraint, a second node is made. With a uniqueness constraint on a label the two share, the store refuses it and `create` throws.
+- The statement is run again when the engine turns it away because another writer was changing the node, as a save is.
+- `create` is on `StatelessGraphObjectManager` alone, as `save` and `update` are. There is no `createAll`: make each node with its own `create`.
+
+See [docs/0.1.7-create-if-absent.md](docs/0.1.7-create-if-absent.md) for why `create` returns null and how each engine makes the node only if it is absent.
+
 #### Null-Write Policy (`NullPolicy`)
 
 How a **null** field is treated on save is one declared, uniform contract (`save`, `saveAll`, every
@@ -1544,7 +1568,7 @@ left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-writ
 
 Persist a collection in one group of statements. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back.
 
-On Neo4j, FalkorDB and Memgraph, a batch of fragments alone, of any number of labels, is **one statement** where each fragment can be written as a row of an `UNWIND` and there are no more than 1,000 of them: it is applied whole on any of them, FalkorDB included. On Oracle a batch of fragments is one block for each 500 of them. Each view is a statement of its own, and so is a fragment with a `@PropertyBag` or a `@NodeLabels` field, or on FalkorDB one with a `@VectorIndex` field: the other fragments are still one statement. In it the classes go in the order of their names and the rows of each in the order of their ids, so two batches over the same nodes take their locks in the same order. FalkorDB has no multi-statement transactions, so a batch of more than one statement is not applied whole there: in the default `WARN` mode it runs statement by statement and the first such batch logs a warning, and with `falkorDbTransactionMode` set to `STRICT` it is refused with `NonAtomicBatchException` before anything is written (inside `@Transactional`, `STRICT` refuses the transaction itself, at its first statement). `PersistenceManager.atomicBatches` says which a store does. See [docs/0.1.6-atomic-save-all.md](docs/0.1.6-atomic-save-all.md).
+On Neo4j, FalkorDB and Memgraph, a batch of fragments alone, of any number of labels, is **one statement** where each fragment can be written as a row of an `UNWIND` and there are no more than 1,000 of them: it is applied whole on any of them, FalkorDB included. On Oracle a batch of fragments is one block for each 500 of them. Each view is a statement of its own, and so is a fragment with a `@PropertyBag` or a `@NodeLabels` field, or on FalkorDB one with a `@VectorIndex` field: the other fragments are still one statement. In it the classes go in the order of their names and the rows of each in the order of their ids, so two batches over the same nodes take their locks in the same order. FalkorDB has no multi-statement transactions, so a batch of more than one statement is not applied whole there: in the default `WARN` mode it runs statement by statement and the first such batch logs a warning, and with `falkorDbTransactionMode` set to `STRICT` it is refused with `NonAtomicBatchException` before anything is written (inside `@Transactional`, `STRICT` refuses the transaction itself, at its first statement). `PersistenceManager.atomicBatches` says which a store does. See [docs/0.1.7-atomic-save-all.md](docs/0.1.7-atomic-save-all.md).
 
 ```kotlin
 val saved = graphObjectManager.saveAll(views)
@@ -1661,6 +1685,7 @@ PatchResult touched = graphObjectManager.patch(id, Person.class, dsl,
 
 Person updated = graphObjectManager.update(id, Person.class, p -> { p.setName("Ada"); return p; });   // null when there is no such node
 graphObjectManager.update(id, Person.class, 5, p -> p.withName("Ada"));                                // five attempts
+Person made = graphObjectManager.create(person);                                                      // null when a node has its id
 
 graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), new NodeRef(Person.class, b, Set.of()), "ASSIGNED_TO");
 ```

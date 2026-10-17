@@ -17,8 +17,8 @@ import org.drivine.query.PatchOutcomes
  *
  * - `node` saves a node: found by its labels and id and locked, or made. `set` holds the properties to
  *   write and `unset` those to remove; `add` and `drop` are labels. With `expect`, the node must carry
- *   that stamp, or the block returns no row and writes nothing. The node gets a new first token only
- *   if the step changes it.
+ *   that stamp, or the block returns no row and writes nothing; with `absent`, the node must not be
+ *   there, or the same. The node gets a new first token only if the step changes it.
  * - `ref` finds a node that must be there, and locks it.
  * - `patch` writes `set` and removes `unset` on a node that is there, and does nothing for one that is
  *   not, nor for one that does not meet the block's predicate when it has one. The node gets a new
@@ -466,6 +466,11 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
                 v_o := JSON_OBJECT_T();
                 v_o.put(op.get_string('key'), op.get('id'));
                 v_stamp := NULL;
+            ELSIF NVL(op.get_boolean('absent'), FALSE) THEN
+                -- A step that only makes the node writes nothing to one that is there: one that was there
+                -- before, or one another writer made as a uniqueness constraint refused this one's. The
+                -- block gives no row.
+                RAISE e_stale;
             ELSE
                 v_o := JSON_OBJECT_T.parse(v_props);
             END IF;

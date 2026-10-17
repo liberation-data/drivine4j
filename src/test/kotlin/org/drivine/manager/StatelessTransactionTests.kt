@@ -122,6 +122,37 @@ class StatelessTransactionTests @Autowired constructor(
         }
     }
 
+    // ----- create in a transaction -----
+
+    @Test
+    fun `create joins its caller's transaction, and the node it made goes when the transaction rolls back`() {
+        assumeTransactions()
+        assertFailsWith<IllegalStateException> {
+            tx.execute {
+                assertNotNull(stateless.create(ClaimView(Claim("$run-c1", "one"), people = listOf(Human("$run-ada", "Ada")))))
+                assertNull(stateless.create(Claim("$run-c1", "again")), "the transaction sees the node it made")
+                error("rolled back")
+            }
+        }
+
+        assertNull(stateless.load<Claim>("$run-c1"))
+        assertNull(stateless.load<Human>("$run-ada"))
+        assertNotNull(stateless.create(Claim("$run-c1", "one")), "nothing was left to find")
+    }
+
+    @Test
+    fun `a create that finds the node there leaves its transaction to commit`() {
+        stateless.save(Claim("$run-c1", "one"))
+
+        tx.execute {
+            assertNull(stateless.create(Claim("$run-c1", "two")))
+            stateless.save(Human("$run-ada", "Ada"))
+        }
+
+        assertEquals("one", stateless.load<Claim>("$run-c1")?.text)
+        assertNotNull(stateless.load<Human>("$run-ada"), "what the transaction wrote after the create committed")
+    }
+
     // ----- saveAll in a transaction -----
 
     @Test

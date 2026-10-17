@@ -20,8 +20,9 @@ import org.drivine.query.grammar.CypherGrammar
  * made, [Stamps.NEVER_STAMPED] for one that was there without a stamp. A node the object holds more
  * than once is saved by more than one part, and the later ones find what the earlier wrote: [keys]
  * says which of [stamped] are one node, so the first of them tells what the node carried before the
- * statement. It returns no row when [root] expected a stamp the node no longer carries, or when the
- * root is not there and the statement does not make it, and then it has written nothing.
+ * statement. It returns no row when [root] expected a stamp the node no longer carries, or when
+ * [rootMode] does not write the root as the statement finds it: gone, for an update, or there, for a
+ * create. Then it has written nothing.
  */
 internal class SaveStatement(
     val statement: String,
@@ -37,8 +38,8 @@ internal class SaveStatement(
     val repeats: List<Repeat> = emptyList(),
     /** The stamps the statement offers the nodes it changes: a token of one of them on a node is this statement's doing. */
     val offered: List<String> = emptyList(),
-    /** Whether the root is made when it is not there. When false, the statement gives no row for a root that is gone. */
-    val createsRoot: Boolean = true,
+    /** Whether the root is made when it is not there, and written when it is. Where it is not, the statement gives no row. */
+    val rootMode: RootMode = RootMode.EITHER,
 ) {
     /** The node the root is saved to. */
     val rootKey: NodeKey get() = NodeKey(root.labelNames.toSet(), root.id)
@@ -92,7 +93,7 @@ internal class SaveStatementBuilder(
 
     /** The statement that saves what [request] asks. */
     fun build(request: SaveRequest): SaveStatement = with(request) {
-        Composition(checked, nullPolicy, rootWriteFields, replaced, createsRoot).compose(obj, before, after)
+        Composition(checked, nullPolicy, rootWriteFields, replaced, rootMode).compose(obj, before, after)
     }
 
     /** The related fragments of one field that one `UNWIND` part saves: one class, joined or not. */
@@ -104,7 +105,7 @@ internal class SaveStatementBuilder(
         private val nullPolicy: NullPolicy,
         private val rootWriteFields: Set<String>?,
         replaced: (RelationshipModel) -> RemovedTargets?,
-        private val createsRoot: Boolean,
+        private val rootMode: RootMode,
     ) : SaveTraversal<Unit>(objectMapper, replaced) {
         private val text = StringBuilder()
         private val mark = Stamps.fresh()
@@ -124,7 +125,7 @@ internal class SaveStatementBuilder(
                 rootPart(obj, FragmentModel.from(obj.javaClass), 0, replaces = false, before, after, alone = true)
                 line(returned(rootStamp("n", Stamps.FOUND)))
             }
-            return SaveStatement(text.toString(), bindings, root, stamped, carried, keys, repeats, listOfNotNull(mark, rootOffered), createsRoot)
+            return SaveStatement(text.toString(), bindings, root, stamped, carried, keys, repeats, listOfNotNull(mark, rootOffered), rootMode)
         }
 
         /**
@@ -198,7 +199,7 @@ internal class SaveStatementBuilder(
                 // The digest of the object as loaded says which property-bag keys it has dropped, so
                 // they are not read from the store.
                 val prefix = prefix()
-                val stamping = Stamping(checked, relationships = replaces, create = createsRoot, handsBack = true)
+                val stamping = Stamping(checked, relationships = replaces, root = rootMode, handsBack = true)
                 val statement = FragmentMergeBuilder(model, objectMapper, grammar, storedKeys, stamping, parameterPrefix = prefix)
                     .buildMergeStatement(fragment, null, before, nullPolicy, rootWriteFields)
                 add(statement)

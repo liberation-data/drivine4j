@@ -22,7 +22,7 @@ import org.drivine.session.SessionManager
  * 3. Recursively saving nested fragments and views
  * 4. Creating/deleting relationships
  */
-class GraphViewMergeBuilder(
+internal class GraphViewMergeBuilder(
     private val viewModel: GraphViewModel,
     private val objectMapper: ObjectMapper,
     private val sessionManager: SessionManager,
