@@ -26,7 +26,7 @@ import org.drivine.query.grammar.CypherGrammar
  * [grammar] is optional; when null (e.g. in unit tests that only assert plain SET shape) vector
  * fields are written plainly, exactly as any other field.
  */
-class FragmentMergeBuilder(
+internal class FragmentMergeBuilder(
     private val fragmentModel: FragmentModel,
     private val objectMapper: ObjectMapper,
     private val grammar: CypherGrammar? = null,
@@ -342,10 +342,8 @@ fun interface StoredPropertyKeys {
  * the statement changes it, and keeps the one it has otherwise. When [checked], the save of an object
  * that carries a stamp applies only if the node's own data is as the stamp says. With [relationships],
  * its relationships must be as the stamp says too.
- *
- * Part of how Drivine builds its statements, and public only for that: not for callers.
  */
-data class Stamping(
+internal data class Stamping(
     val checked: Boolean,
     val relationships: Boolean = false,
     /**
