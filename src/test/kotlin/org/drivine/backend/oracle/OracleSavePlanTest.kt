@@ -12,6 +12,7 @@ import org.drivine.manager.RemovedTargets
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.FragmentModel
 import org.drivine.query.JdbcParameterCoercer
+import org.drivine.query.RootMode
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.session.SnapshotDigest
@@ -89,9 +90,9 @@ class OracleSavePlanTest {
         replaced: RemovedTargets? = null,
         before: JsonNode? = null,
         after: JsonNode? = null,
-        createsRoot: Boolean = true,
+        rootMode: RootMode = RootMode.MERGE,
         rootWriteFields: Set<String>? = null,
-    ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields, replaced = { replaced }, before, after, createsRoot))
+    ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields, replaced = { replaced }, before, after, rootMode))
 
     @Suppress("UNCHECKED_CAST")
     private fun steps(statement: SaveStatement): List<Map<String, Any?>> = statement.bindings[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
@@ -135,10 +136,19 @@ class OracleSavePlanTest {
 
     @Test
     fun `a save that does not make the root says so`() {
-        val root = steps(build(Claim("c1", "one", stamp = stamp), createsRoot = false)).single()
+        val root = steps(build(Claim("c1", "one", stamp = stamp), rootMode = RootMode.FOUND)).single()
 
         assertEquals(false, root["create"])
-        assertFalse(build(Claim("c1", "one"), createsRoot = true).createsRoot.not())
+        assertTrue(build(Claim("c1", "one")).rootMode.makes)
+    }
+
+    @Test
+    fun `a save that only makes the root says so, and a save of either says nothing`() {
+        val root = steps(build(Claim("c1", "one"), checked = false, rootMode = RootMode.ABSENT)).single()
+
+        assertEquals(true, root["absent"])
+        assertFalse("create" in root, root.toString())
+        assertFalse("absent" in steps(build(Claim("c1", "one"))).single(), "a save writes a root it finds")
     }
 
     @Test

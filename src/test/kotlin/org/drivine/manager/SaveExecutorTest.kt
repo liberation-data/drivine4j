@@ -8,6 +8,7 @@ import kotlin.test.assertFalse
 import kotlin.test.assertSame
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
+import org.drivine.query.RootMode
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 import org.junit.jupiter.api.Test
@@ -160,5 +161,50 @@ class SaveExecutorTest {
         val failure = assertFailsWith<IllegalStateException> { SaveExecutor(manager).save(statement(expected = null)) }
 
         assertEquals("The save of Claim 'c1' returned nothing.", failure.message)
+    }
+
+    private fun creating() =
+        SaveStatement("RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null), emptyList(), rootMode = RootMode.ABSENT)
+
+    @Test
+    fun `no row from a save that makes its root only when absent says the root is there`() {
+        val (manager, calls) = answering(emptyList<String>())
+
+        val present = assertFailsWith<SaveExecutor.RootPresent> { SaveExecutor(manager).save(creating()) }
+
+        assertEquals("c1", present.root.id)
+        assertEquals(1, calls(), "no row is the answer: nothing more is read")
+    }
+
+    @Test
+    fun `a save that makes its root only when absent, which fails while another writer makes the root, says the root is there`() {
+        // A uniqueness constraint refuses the second of two writers that each found no node.
+        val refused = DrivineException.withRootCause(IllegalStateException("constraint"))
+        val (manager, calls) = answering(refused, listOf("theirs:links"))
+
+        val present = assertFailsWith<SaveExecutor.RootPresent> { SaveExecutor(manager).save(creating()) }
+
+        assertSame(refused, present.cause)
+        assertEquals(2, calls())
+    }
+
+    @Test
+    fun `a save that makes its root only when absent, which fails with no root there, throws the failure`() {
+        val failure = DrivineException.withRootCause(IllegalStateException("syntax"))
+        val (manager, _) = answering(failure, emptyList<String>())
+
+        assertSame(failure, assertFailsWith<DrivineException> { SaveExecutor(manager).save(creating()) })
+    }
+
+    @Test
+    fun `a save that makes its root only when absent throws its failure when the root cannot be read either`() {
+        val failure = DrivineException.withRootCause(IllegalStateException("transaction failed"))
+        val unread = DrivineException.withRootCause(IllegalStateException("transaction failed, still"))
+        val (manager, _) = answering(failure, unread)
+
+        val thrown = assertFailsWith<DrivineException> { SaveExecutor(manager).save(creating()) }
+
+        assertSame(failure, thrown)
+        assertEquals(listOf<Throwable>(unread), thrown.suppressed.toList())
     }
 }

@@ -29,8 +29,8 @@ class SaveStatementPartsTest {
 
     private val builder = SaveStatementBuilder(Neo4jObjectMapper.instance, null, null)
 
-    private fun build(obj: Any, replaced: RemovedTargets? = null, checked: Boolean = true, createsRoot: Boolean = true): SaveStatement =
-        builder.build(SaveRequest(obj, checked, NullPolicy.IGNORE, replaced = { replaced }, createsRoot = createsRoot))
+    private fun build(obj: Any, replaced: RemovedTargets? = null, checked: Boolean = true, rootMode: RootMode = RootMode.MERGE): SaveStatement =
+        builder.build(SaveRequest(obj, checked, NullPolicy.IGNORE, replaced = { replaced }, rootMode = rootMode))
 
     /** The parameters [statement] names, a quoted identifier or a string not being one. */
     private fun parameters(statement: String): Set<String> =
@@ -122,11 +122,11 @@ class SaveStatementPartsTest {
 
     @Test
     fun `a statement that does not make its root matches it`() {
-        val statement = build(Memo("m1", "one"), createsRoot = false)
+        val statement = build(Memo("m1", "one"), rootMode = RootMode.FOUND)
 
         assertTrue(statement.statement.startsWith("MATCH (n:Memo {id: \$p0_id})"), statement.statement)
         assertFalse(statement.statement.contains("MERGE"))
-        assertFalse(statement.createsRoot)
+        assertEquals(RootMode.FOUND, statement.rootMode)
     }
 
     @Test

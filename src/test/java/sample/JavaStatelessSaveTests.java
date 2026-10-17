@@ -177,6 +177,30 @@ public class JavaStatelessSaveTests {
     }
 
     @Test
+    public void createsANodeOnlyIfItIsNotThere() {
+        Claim made = stateless.create(new Claim(id, "Ada founded Acme", null, null));
+
+        assertNotNull(made.getStamp());
+        assertEquals(made.getStamp(), stateless.load(id, Claim.class).getStamp());
+        assertNull(stateless.create(new Claim(id, "late", "lost", null)));
+        assertEquals(made, stateless.load(id, Claim.class));
+        assertThrows(IllegalArgumentException.class, () -> stateless.create(made));
+    }
+
+    @Test
+    public void createsOrElseUpdates() {
+        stateless.create(new Claim(id, "Ada founded Acme", null, null));
+        Claim incoming = new Claim(id, "ignored", "noted", null);
+
+        Claim stored = stateless.create(incoming);
+        if (stored == null) {
+            stored = stateless.update(id, Claim.class, claim -> new Claim(claim.getId(), claim.getText(), incoming.getNote(), claim.getStamp()));
+        }
+
+        assertEquals(List.of("Ada founded Acme", "noted"), List.of(stored.getText(), stored.getNote()));
+    }
+
+    @Test
     public void savesAllAndHandsEachItsStamp() {
         List<Claim> saved = stateless.saveAll(List.of(new Claim(id + "-1", "one", null, null), new Claim(id + "-2", "two", null, null)));
 

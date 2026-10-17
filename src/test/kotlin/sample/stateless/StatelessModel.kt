@@ -24,6 +24,20 @@ data class Claim(
     @NodeStamp val stamp: String? = null,
 )
 
+/**
+ * A node every writer of its id adds sources to: the aggregate `create` and `update` compose for. A
+ * first write that overwrote another would lose that writer's sources.
+ */
+@NodeFragment(labels = ["Finding"])
+data class Finding(
+    @NodeId val id: String,
+    val sources: List<String>,
+    @NodeStamp val stamp: String? = null,
+) {
+    /** This finding with the sources of [other] it does not have yet. */
+    fun merge(other: Finding): Finding = copy(sources = (sources + other.sources).distinct())
+}
+
 /** A node type with no stamp field. */
 @NodeFragment(labels = ["Memo"])
 data class Memo(@NodeId val id: String, val text: String)

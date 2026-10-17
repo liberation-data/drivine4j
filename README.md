@@ -1435,6 +1435,7 @@ graphObjectManager.save(view, Replace.all())                               // ev
 graphObjectManager.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
 graphObjectManager.save(person, only = setOf(Person::name))                // write just these
 graphObjectManager.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
+graphObjectManager.create(person)                                          // make it only if it is not there; null when it is
 graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
 ```
 
@@ -1488,6 +1489,26 @@ A save adds the relationships the object holds and removes none. To remove, name
 - A `StaleObjectException` that your change throws itself, from a save of its own, is thrown on and not tried again.
 - A change that gives the object another id, or returns an object of another class, is refused.
 - The load and the save are two statements. The save is one, and is refused if the node changed in between. A change to an open `@NodeLabels` field adds a read of the labels the node records as its own.
+
+#### Make If Absent (`create`)
+
+`create` makes the node only if no node has its id, in one statement. If one does, it writes nothing and returns null. With `update`, that is a save of an aggregate that loses no writer's data:
+
+```kotlin
+val stored = graphObjectManager.create(proposition)
+    ?: graphObjectManager.update<Proposition>(proposition.id) { it.merge(proposition) }
+```
+
+A `save` of an object built from scratch cannot do this. Two writers that each load null and each save write the same node, and the second overwrites the first.
+
+- **It returns the object carrying the whole stamp** the save left, as `save` does, or null when a node has the id. It is then for `update` to merge into what is there.
+- **When the node is there, nothing is written**: not the root, not a related node, not a relationship, not the stamp.
+- **A view** is made as `save` makes it: its root, each related node and the relationship to it. A related node is written unchecked, as `save` writes it, so one that was already there takes the object's fields.
+- **An object that carries a stamp is refused**, with `IllegalArgumentException` and before anything is written: a stamp comes from a node that was loaded, and `create` makes one that is not there. Save it, or update it.
+- **Two writers at the same moment.** Both find the node absent, as two `MERGE`s do. On Neo4j, Memgraph and Oracle only a uniqueness constraint on the id keeps the second from making the node again: `constraints.ensure(UniquenessConstraintSpec("Proposition", "id"))`. With one, the second waits for the first and finds its node (Neo4j), or is refused by the constraint (Memgraph, Oracle); either way it writes nothing and returns null. FalkorDB runs one write at a time, so there the second always finds the first's node, constraint or not. Without a constraint on an engine that runs writes side by side, both can make a node, and the id is then on two nodes.
+- **In a transaction.** `create` joins it. On Memgraph a uniqueness constraint is checked when the transaction commits, so two transactions that each made the node fail at the commit of the second, and not at its `create`: run that transaction again, and its `create` returns null.
+- The statement is run again when the engine turns it away because another writer was changing the node, as a save is.
+- `create` is on `StatelessGraphObjectManager` alone, as `save` and `update` are.
 
 #### Null-Write Policy (`NullPolicy`)
 
@@ -1632,6 +1653,7 @@ PatchResult touched = graphObjectManager.patch(id, Person.class, dsl,
 
 Person updated = graphObjectManager.update(id, Person.class, p -> { p.setName("Ada"); return p; });   // null when there is no such node
 graphObjectManager.update(id, Person.class, 5, p -> p.withName("Ada"));                                // five attempts
+Person made = graphObjectManager.create(person);                                                      // null when a node has its id
 
 graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), new NodeRef(Person.class, b, Set.of()), "ASSIGNED_TO");
 ```

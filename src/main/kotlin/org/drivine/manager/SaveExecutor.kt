@@ -9,6 +9,7 @@ import org.drivine.query.MergeStatement
 import org.drivine.query.NodeKey
 import org.drivine.query.QuerySpecification
 import org.drivine.query.ReturnedStamps
+import org.drivine.query.RootMode
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 
@@ -24,7 +25,8 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
      * Runs a whole save. Returns the stamps to hand back: the root's, then that of each of the statement's
      * stamped targets, in their order, then that of each of its repeats. Throws [StaleObjectException]
      * when the root is not as it was when the object was loaded, and [RootGone] when the statement
-     * does not make its root and the root is not there; the statement has then written nothing. That
+     * does not make its root and the root is not there, and [RootPresent] when the statement only
+     * makes its root and the root is there; the statement has then written nothing. That
      * is so too when the engine turns a checked save away each time it is run: inside a transaction
      * that read the node before another writer changed it, Memgraph refuses the write itself.
      */
@@ -32,6 +34,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
         val rows = try {
             whenNotContended { persistenceManager.query(spec(statement)) }
         } catch (failure: DrivineException) {
+            if (statement.rootMode == RootMode.ABSENT) throw presentOr(statement.root, failure)
             // Turned away every time: another writer was changing a node this save writes, and the
             // engine will not let it write over that. A checked save reports it as a stale object: it
             // wrote nothing, and the answer is the same, to load again and re-apply.
@@ -91,6 +94,30 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
     /** A statement that does not make its root found the root gone. It wrote nothing. */
     class RootGone(val root: StampWrite) : RuntimeException("${root.fragmentClass.simpleName} '${root.id}' is not there.")
 
+    /**
+     * A statement that only makes its root found the root there, or failed while another writer made
+     * it. It wrote nothing. The [cause] is the store's refusal, where there was one.
+     */
+    class RootPresent(val root: StampWrite, cause: Throwable? = null) :
+        RuntimeException("${root.fragmentClass.simpleName} '${root.id}' is there already.", cause)
+
+    /**
+     * What a statement that only makes its root, and failed with [failure], is to throw. It wrote
+     * nothing, so a root that is there now was made by another writer at the same moment: a
+     * uniqueness constraint on the id refused the second of two that each found none. That is told
+     * by reading the node, not by the engine's error, which differs from engine to engine. Where the
+     * node is not there, or cannot be read, the failure was something else and is thrown.
+     */
+    private fun presentOr(root: StampWrite, failure: DrivineException): Throwable {
+        val present = try {
+            persistenceManager.query(backend.foundStamp(root).spec().transform(String::class.java)).isNotEmpty()
+        } catch (unread: DrivineException) {
+            failure.addSuppressed(unread)
+            return failure
+        }
+        return if (present) RootPresent(root, failure) else failure
+    }
+
     /** The stamps in the [rows] a save statement returned: the root's, each stamped target's, each repeat's. */
     fun stamps(statement: SaveStatement, rows: List<Any?>): List<String> {
         val row = rows.firstOrNull() as? String ?: throw noRow(statement)
@@ -127,15 +154,16 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
     }
 
     /**
-     * Why a save returned no row: a checked root is stale, or a root the statement does not make is
-     * gone. From any other save it is the store answering nothing, which no save statement does.
+     * Why a save returned no row: a checked root is stale, a root the statement does not make is
+     * gone, or a root the statement only makes is there. From any other save it is the store
+     * answering nothing, which no save statement does.
      */
     private fun noRow(statement: SaveStatement): Throwable =
         statement.root.expected?.let { staleObject(statement.root, it) }
-            ?: if (statement.createsRoot) {
-                IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
-            } else {
-                RootGone(statement.root)
+            ?: when (statement.rootMode) {
+                RootMode.ABSENT -> RootPresent(statement.root)
+                RootMode.FOUND -> RootGone(statement.root)
+                RootMode.MERGE -> IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
             }
 
     /**

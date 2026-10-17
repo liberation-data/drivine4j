@@ -11,6 +11,7 @@ import org.drivine.model.GraphViewModel
 import org.drivine.model.PropertyBagModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
+import org.drivine.query.RootMode
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.SaveTraversal
@@ -28,7 +29,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
 
     /** The statement that saves what [request] asks. */
     fun build(request: SaveRequest): SaveStatement = with(request) {
-        Composition(checked, nullPolicy, rootWriteFields, replaced, createsRoot).compose(obj, before, after)
+        Composition(checked, nullPolicy, rootWriteFields, replaced, rootMode).compose(obj, before, after)
     }
 
     /**
@@ -41,7 +42,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
     fun together(
         fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>? = { null },
     ): Pair<String, Map<String, Any?>> {
-        val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null }, createsRoot = true)
+        val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null }, RootMode.MERGE)
         fragments.forEach { (index, fragment) -> composition.fragment(fragment, index, writeFields(fragment.javaClass)) }
         return composition.plan.text(OracleWriteBlock.Returns.EACH_STAMP) to composition.plan.bindings()
     }
@@ -52,7 +53,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         private val nullPolicy: NullPolicy,
         private val rootWriteFields: Set<String>?,
         replaced: (RelationshipModel) -> RemovedTargets?,
-        private val createsRoot: Boolean,
+        private val rootMode: RootMode,
     ) : SaveTraversal<Int>(objectMapper, replaced) {
         /** The steps, in the order the walk decides them. */
         val plan = WritePlan(graph)
@@ -69,7 +70,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
                 rootNode(obj, FragmentModel.from(obj.javaClass), replaces = false, before)
             }
             return SaveStatement(
-                plan.text(OracleWriteBlock.Returns.STAMPS), plan.bindings(), root, stamped, carried, keys, repeats, plan.offered.toList(), createsRoot,
+                plan.text(OracleWriteBlock.Returns.STAMPS), plan.bindings(), root, stamped, carried, keys, repeats, plan.offered.toList(), rootMode,
             )
         }
 
@@ -116,8 +117,9 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
             val whole = expected != null && (replaces || !Stamps.hasNodeToken(expected))
             val node = node(
                 fragment, model, values, before, nullPolicy, rootWriteFields, readsStore = true,
-                // An update makes no node: one that is gone stays gone, and the block gives no row.
-                root = RootStep(carriedStamp, expected?.let { if (whole) it else Stamps.nodeToken(it) }, whole, createsRoot),
+                // An update makes no node: one that is gone stays gone, and the block gives no row. A
+                // create writes to no node it finds: one that is there stays as it is, and so too.
+                root = RootStep(carriedStamp, expected?.let { if (whole) it else Stamps.nodeToken(it) }, whole, rootMode),
             )
             root = StampWrite(fragment.javaClass, idOf(model, values), model.labels.joinToString(":"), keyOf(model), expected, carriedStamp, model.labels)
             return node

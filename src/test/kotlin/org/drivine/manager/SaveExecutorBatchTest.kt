@@ -11,6 +11,7 @@ import org.drivine.StaleObjectException
 import org.drivine.query.NodeKey
 import org.drivine.query.QuerySpecification
 import org.drivine.query.Repeat
+import org.drivine.query.RootMode
 import org.drivine.query.SaveStatement
 import org.drivine.query.StampWrite
 import org.junit.jupiter.api.Test
@@ -174,7 +175,7 @@ class SaveExecutorBatchTest {
     @Test
     fun `no row from a statement that does not make its root says the root is gone`() {
         val statement = SaveStatement(
-            "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null), emptyList(), createsRoot = false,
+            "RETURN 1", emptyMap(), StampWrite(Claim::class.java, "c1", "Claim", "id", null), emptyList(), rootMode = RootMode.FOUND,
         )
 
         assertEquals("c1", assertFailsWith<SaveExecutor.RootGone> { SaveExecutor(answering().first).stamps(statement, emptyList()) }.root.id)

@@ -15,6 +15,7 @@ import sample.stateless.ClaimView
 import sample.stateless.Company
 import sample.stateless.Human
 import sample.stateless.HumanClaims
+import sample.stateless.Memo
 
 /** The text of a save statement: an engine plans a statement once for each text it is given. */
 class SaveStatementBuilderTest {
@@ -114,5 +115,28 @@ class SaveStatementBuilderTest {
 
         assertFalse("CASE WHEN (true)" in replacing, replacing)
         assertFalse("CASE WHEN true" in replacing, replacing)
+    }
+
+    @Test
+    fun `a save that makes its root only when it is absent goes on only from a root it made`() {
+        val fragment = builder.build(SaveRequest(Claim("c1", "one"), checked = false, NullPolicy.IGNORE, rootMode = RootMode.ABSENT)).statement
+        val made = "MERGE (n:Claim {id: \$p0_id})\nON CREATE SET n.`__drivine.made` = true\nWITH n WHERE n.`__drivine.made` IS NOT NULL"
+
+        assertTrue(fragment.startsWith(made), fragment)
+        assertTrue("REMOVE n.`__drivine.made`" in fragment, fragment)
+        assertFalse("`__drivine.lock`" in fragment.lines().take(4).joinToString("\n"), "a node the statement made is no other writer's to lock against")
+
+        val view = builder.build(
+            SaveRequest(ClaimView(Claim("c1", "one"), people = people(2)), checked = false, NullPolicy.IGNORE, rootMode = RootMode.ABSENT),
+        ).statement
+        assertTrue(view.startsWith(made), view)
+    }
+
+    @Test
+    fun `a node with no stamp field is marked when it is made only if absent, as one with a stamp field is`() {
+        val memo = builder.build(SaveRequest(Memo("m1", "one"), checked = false, NullPolicy.IGNORE, rootMode = RootMode.ABSENT)).statement
+
+        assertTrue("ON CREATE SET n.`__drivine.made` = true\nWITH n WHERE n.`__drivine.made` IS NOT NULL" in memo, memo)
+        assertTrue("REMOVE n.`__drivine.made`" in memo, memo)
     }
 }
