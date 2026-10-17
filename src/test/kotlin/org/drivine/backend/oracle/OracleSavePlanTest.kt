@@ -90,7 +90,7 @@ class OracleSavePlanTest {
         replaced: RemovedTargets? = null,
         before: JsonNode? = null,
         after: JsonNode? = null,
-        rootMode: RootMode = RootMode.MERGE,
+        rootMode: RootMode = RootMode.EITHER,
         rootWriteFields: Set<String>? = null,
     ): SaveStatement = planner.build(SaveRequest(obj, checked, nullPolicy, rootWriteFields, replaced = { replaced }, before, after, rootMode))
 
@@ -139,7 +139,7 @@ class OracleSavePlanTest {
         val root = steps(build(Claim("c1", "one", stamp = stamp), rootMode = RootMode.FOUND)).single()
 
         assertEquals(false, root["create"])
-        assertTrue(build(Claim("c1", "one")).rootMode.makes)
+        assertEquals(RootMode.EITHER, build(Claim("c1", "one")).rootMode)
     }
 
     @Test

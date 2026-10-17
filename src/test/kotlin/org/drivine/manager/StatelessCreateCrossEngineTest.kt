@@ -36,7 +36,9 @@ import sample.stateless.Claim
 import sample.stateless.ClaimView
 import sample.stateless.Finding
 import sample.stateless.Human
+import sample.stateless.Manager
 import sample.stateless.Memo
+import sample.stateless.Worker
 
 /**
  * `create`: a save that makes the node only if it is not there, in one statement, and otherwise
@@ -50,8 +52,7 @@ abstract class StatelessCreateContract {
 
     private fun manager() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
 
-    private val stateless: StatelessGraphObjectManager
-        get() = manager()
+    private val stateless: StatelessGraphObjectManager by lazy { manager() }
 
     private fun run(cypher: String) = pm.execute(QuerySpecification.withStatement(cypher))
 
@@ -79,6 +80,7 @@ abstract class StatelessCreateContract {
         assertTrue(Stamps.isTwoTokens(stamp), "a node the save made is vouched for whole: $stamp")
         assertEquals(stamp, property("c1", Stamps.PROPERTY))
         assertEquals(Claim("c1", "Ada founded Acme", stamp = stamp), stateless.load<Claim>("c1"))
+        assertNull(property("c1", "__drivine.made"), "the mark that tells a made node is taken off again")
     }
 
     @Test
@@ -107,6 +109,18 @@ abstract class StatelessCreateContract {
 
         assertNotNull(made.claim.stamp)
         assertEquals(listOf(Human("h1", "Ada")), stateless.load<ClaimView>("c1")?.people)
+        assertNull(property("c1", "__drivine.made"), "the root's mark is taken off again")
+        assertNull(property("h1", "__drivine.made"), "and a related node's")
+    }
+
+    @Test
+    fun `create of a view writes a related node that is there already, which takes the object's fields`() {
+        stateless.save(Human("h1", "Ada"))
+
+        assertNotNull(stateless.create(ClaimView(Claim("c1", "one"), people = listOf(Human("h1", "Ada Lovelace")))))
+
+        assertEquals(listOf(Human("h1", "Ada Lovelace")), stateless.load<ClaimView>("c1")?.people)
+        assertEquals(1, count("Human"))
     }
 
     @Test
@@ -135,6 +149,28 @@ abstract class StatelessCreateContract {
             assertNotNull(stateless.create(Claim("c1", "one")))
         } finally {
             pm.constraints.drop(uniqueName)
+        }
+    }
+
+    @Test
+    fun `create finds a node by every label of the object's class, so a node with more labels is there and one with fewer is not`() {
+        // The node is found as a save finds it: a Worker by its one label, a Manager by both of its.
+        val uniqueWorker = UniquenessConstraintSpec("Worker", "id")
+        pm.constraints.ensure(uniqueWorker)
+        try {
+            stateless.save(Manager("m1", "Ada"))
+            assertNull(stateless.create(Worker("m1", "Bob")), "the manager is a worker")
+
+            stateless.save(Worker("w1", "Ada"))
+            assertFailsWith<DrivineException>("the worker is not a manager, and the constraint refuses a second w1") {
+                stateless.create(Manager("w1", "Bob"))
+            }
+
+            assertEquals("Ada", property("m1", "name"))
+            assertEquals("Ada", property("w1", "name"))
+            assertEquals(2, count("Worker"))
+        } finally {
+            pm.constraints.drop(uniqueWorker)
         }
     }
 
@@ -179,6 +215,8 @@ abstract class StatelessCreateContract {
             }
             go.countDown()
             writers.forEach { it.join(120_000) }
+
+            assertTrue(writers.none { it.isAlive }, "round $round: a writer did not finish in two minutes")
 
             assertEquals(emptyList(), failures, "round $round")
             assertEquals((1..WRITERS).map { "w$it" }.toSet(), stateless.load<Finding>(id)?.sources?.toSet(), "round $round")

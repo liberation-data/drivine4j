@@ -17,7 +17,6 @@ import org.drivine.query.FoundStamp
 import org.drivine.query.PatchOutcomes
 import org.drivine.query.PatchRow
 import org.drivine.query.ReturnedStamps
-import org.drivine.query.RootMode
 import org.drivine.query.SaveRequest
 import org.drivine.query.SaveStatement
 import org.drivine.query.Stamping
@@ -168,6 +167,12 @@ class StatelessGraphObjectManager private constructor(
      * it writes nothing and returns null. FalkorDB runs one write at a time, so there the second
      * always finds the first's node. Inside a transaction, Memgraph checks the constraint when the
      * transaction commits: the second of two that each made the node fails there, and not here.
+     * Where the engine refuses the statement inside a transaction and the node is then found, this
+     * returns null, but the transaction may already be marked for rollback: run it again.
+     *
+     * The node is found by every label of the object's class, as [save] finds it. A node with the
+     * id and fewer of those labels is not found: a second node is made, or, with a uniqueness
+     * constraint on a label they share, the store's refusal is thrown.
      *
      * The object is refused, before anything is written, when it carries a stamp: a stamp comes from
      * a node that was loaded, and the node this makes is not there. Save it, or [update] it.
@@ -184,7 +189,7 @@ class StatelessGraphObjectManager private constructor(
             Save it, or update it. To make the node anew, give the object without its stamp.
             """.trimIndent()
         }
-        val statement = backend.save(SaveRequest(obj, checked = false, NullPolicy.IGNORE, rootMode = RootMode.ABSENT))
+        val statement = backend.save(SaveRequest.absent(obj))
         requireStampable(obj, statement)
         return try {
             stamped(obj, statement, executor.save(statement))

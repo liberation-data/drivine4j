@@ -28,7 +28,7 @@ class SaveRequestTest {
         assertNull(request.rootWriteFields)
         assertNull(request.before)
         assertNull(request.after)
-        assertEquals(RootMode.MERGE, request.rootMode)
+        assertEquals(RootMode.EITHER, request.rootMode)
         GraphViewModel.from(ClaimSupports::class.java).relationships.forEach { assertNull(request.replaced(it), it.fieldName) }
     }
 
@@ -60,9 +60,11 @@ class SaveRequestTest {
 
     @Test
     fun `a save that makes its root only when it is absent is a whole object's, unchecked, and makes the root`() {
-        val request = SaveRequest(claim, checked = false, NullPolicy.IGNORE, rootMode = RootMode.ABSENT)
-        assertTrue(request.rootMode.makes)
-        assertFalse(request.rootMode.writesFound)
+        val request = SaveRequest.absent(claim)
+        assertEquals(RootMode.ABSENT, request.rootMode)
+        assertFalse(request.checked)
+        assertEquals(NullPolicy.IGNORE, request.nullPolicy)
+        assertNull(request.before)
 
         assertFailsWith<IllegalArgumentException> { SaveRequest(claim, checked = true, NullPolicy.IGNORE, rootMode = RootMode.ABSENT) }
         val digest = digests.of(claim)

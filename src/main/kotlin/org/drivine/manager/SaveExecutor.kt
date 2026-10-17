@@ -97,6 +97,8 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
     /**
      * A statement that only makes its root found the root there, or failed while another writer made
      * it. It wrote nothing. The [cause] is the store's refusal, where there was one.
+     *
+     * It does not reach a caller: [StatelessGraphObjectManager.create] answers it with null.
      */
     class RootPresent(val root: StampWrite, cause: Throwable? = null) :
         RuntimeException("${root.fragmentClass.simpleName} '${root.id}' is there already.", cause)
@@ -163,7 +165,7 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
             ?: when (statement.rootMode) {
                 RootMode.ABSENT -> RootPresent(statement.root)
                 RootMode.FOUND -> RootGone(statement.root)
-                RootMode.MERGE -> IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
+                RootMode.EITHER -> IllegalStateException("The save of ${statement.root.fragmentClass.simpleName} '${statement.root.id}' returned nothing.")
             }
 
     /**

@@ -30,7 +30,7 @@ internal class SaveRequest(
     val replaced: (RelationshipModel) -> RemovedTargets? = { null },
     val before: JsonNode? = null,
     val after: JsonNode? = null,
-    val rootMode: RootMode = RootMode.MERGE,
+    val rootMode: RootMode = RootMode.EITHER,
 ) {
     init {
         require((before == null) == (after == null)) { "A save of what a change altered needs the object's digest as loaded and its digest now." }
@@ -46,20 +46,11 @@ internal class SaveRequest(
          */
         fun changed(obj: Any, before: JsonNode, after: JsonNode, dirty: Set<String>?): SaveRequest =
             SaveRequest(obj, checked = true, NullPolicy.CLEAR, dirty, before = before, after = after, rootMode = RootMode.FOUND)
+
+        /**
+         * The save that makes [obj] only if its root is not there: of the whole object, unchecked, a
+         * null field left alone. A root that is there is not written, nor anything else.
+         */
+        fun absent(obj: Any): SaveRequest = SaveRequest(obj, checked = false, NullPolicy.IGNORE, rootMode = RootMode.ABSENT)
     }
-}
-
-/**
- * Which root a save writes: one it makes, one it finds, or either. Where the root is not one the
- * save writes, the statement gives no row and writes nothing.
- */
-internal enum class RootMode(val makes: Boolean, val writesFound: Boolean) {
-    /** A save: the root is made when it is not there, and written when it is. */
-    MERGE(makes = true, writesFound = true),
-
-    /** An update: a root that is gone stays gone. */
-    FOUND(makes = false, writesFound = true),
-
-    /** A create: a root that is there is not written. */
-    ABSENT(makes = true, writesFound = false),
 }

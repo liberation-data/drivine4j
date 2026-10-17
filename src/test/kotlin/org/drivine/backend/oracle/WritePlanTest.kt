@@ -28,8 +28,8 @@ class WritePlanTest {
 
     @Test
     fun `a root that is checked whole and may be made says so, and one checked by its node token alone does not say whole`() {
-        val whole = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n:l", whole = true, mode = RootMode.MERGE))
-        val token = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n", whole = false, mode = RootMode.MERGE))
+        val whole = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n:l", whole = true, mode = RootMode.EITHER))
+        val token = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n", whole = false, mode = RootMode.EITHER))
 
         assertEquals(mapOf<String, Any?>("root" to true, "carried" to "n:l", "expect" to "n:l", "whole" to true), whole)
         assertEquals(mapOf<String, Any?>("root" to true, "carried" to "n:l", "expect" to "n"), token)
@@ -52,7 +52,7 @@ class WritePlanTest {
 
     @Test
     fun `a root that carries no stamp and expects none says only that it is the root, and any other node says nothing of it`() {
-        assertEquals(mapOf<String, Any?>("root" to true), root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.MERGE)))
+        assertEquals(mapOf<String, Any?>("root" to true), root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.EITHER)))
         assertEquals(emptyMap(), root(WritePlan(graph), null))
     }
 

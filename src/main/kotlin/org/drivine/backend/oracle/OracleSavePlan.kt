@@ -42,7 +42,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
     fun together(
         fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>? = { null },
     ): Pair<String, Map<String, Any?>> {
-        val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null }, RootMode.MERGE)
+        val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null }, RootMode.EITHER)
         fragments.forEach { (index, fragment) -> composition.fragment(fragment, index, writeFields(fragment.javaClass)) }
         return composition.plan.text(OracleWriteBlock.Returns.EACH_STAMP) to composition.plan.bindings()
     }

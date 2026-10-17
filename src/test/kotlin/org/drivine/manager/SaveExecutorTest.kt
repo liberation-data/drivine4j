@@ -189,6 +189,25 @@ class SaveExecutorTest {
     }
 
     @Test
+    fun `a save that makes its root only when absent, turned away every time, says the root is there when another writer made it`() {
+        val first = contended()
+        val (manager, calls) = answering(first, contended(), contended(), contended(), contended(), contended(), listOf("theirs:links"))
+
+        val present = assertFailsWith<SaveExecutor.RootPresent> { SaveExecutor(manager).save(creating()) }
+
+        assertSame(first, present.cause)
+        assertEquals(7, calls(), "six attempts, then one read of the node")
+    }
+
+    @Test
+    fun `a save that makes its root only when absent, turned away every time with no root there, throws the first failure`() {
+        val first = contended()
+        val (manager, _) = answering(first, contended(), contended(), contended(), contended(), contended(), emptyList<String>())
+
+        assertSame(first, assertFailsWith<DrivineException> { SaveExecutor(manager).save(creating()) })
+    }
+
+    @Test
     fun `a save that makes its root only when absent, which fails with no root there, throws the failure`() {
         val failure = DrivineException.withRootCause(IllegalStateException("syntax"))
         val (manager, _) = answering(failure, emptyList<String>())

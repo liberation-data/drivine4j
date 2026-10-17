@@ -97,20 +97,19 @@ class FragmentMergeBuilder(
         // object that carried no stamp is handed the whole stamp only of a node its save made.
         // A statement that only makes the node goes on from one it made, and from no other: what tells
         // them apart is the same mark, whether or not the fragment has a stamp to hand back.
-        val onlyIfAbsent = stamping?.onlyIfAbsent == true
-        val marksMade = onlyIfAbsent ||
-            (expected == null && stamping?.create == true && stamping.handsBack && fragmentModel.stampField != null)
+        val marksMade = stamping?.root == RootMode.ABSENT ||
+            (expected == null && stamping?.root == RootMode.EITHER && stamping.handsBack && fragmentModel.stampField != null)
         val match = "(n:$labels {$nodeIdProperty: \$${parameter(nodeIdField)}})"
         val mergeClause = when {
             stamping == null -> "MERGE $match"
             // A node that was there gives no row, so nothing is written to it. One the statement made
             // is no other writer's yet, and has no lock to take.
-            onlyIfAbsent -> "MERGE $match\n${Stamps.onCreate("n")}\nWITH ${carry}n WHERE n.${Stamps.MADE} IS NOT NULL"
+            stamping.root == RootMode.ABSENT -> "MERGE $match\n${Stamps.onCreate("n")}\nWITH ${carry}n WHERE n.${Stamps.MADE} IS NOT NULL"
             // The node's lock is taken before the statement reads it to say whether it changes it.
             // Without the lock, a writer that changes the node at the same moment can be missed: the
             // node is then left changed, carrying a stamp that speaks for what it held before.
             // The node is written only if it is there: the statement gives no row when it is gone.
-            expected == null && !stamping.create -> "MATCH $match\n${Stamps.lock("n")}"
+            expected == null && stamping.root == RootMode.FOUND -> "MATCH $match\n${Stamps.lock("n")}"
             expected == null -> "MERGE $match" + (if (marksMade) "\n${Stamps.onCreate("n")}" else "") + "\n${Stamps.lock("n")}"
             // And before the stamp is compared. Without the lock, two writers holding the same stamp
             // could both pass the comparison before either had written.
@@ -349,15 +348,19 @@ fun interface StoredPropertyKeys {
 data class Stamping(
     val checked: Boolean,
     val relationships: Boolean = false,
-    /** Whether a node that is not there is made. When false, an unchecked save of one gives no row and writes nothing. */
-    val create: Boolean = true,
+    /**
+     * Which node is written: one that is made, one that is found, or either. Where the node is not one
+     * the statement writes, it gives no row and writes nothing.
+     */
+    val root: RootMode = RootMode.EITHER,
     /** Whether the stamp the statement leaves is handed back to the object, which needs a node it made told from one it found. */
     val handsBack: Boolean = false,
-    /** Whether the node is made only: when it is there, the statement gives no row and writes nothing. */
-    val onlyIfAbsent: Boolean = false,
 ) {
-    /** The same stamping without the check, for the nodes a view save reaches through a relationship. */
-    fun unchecked(): Stamping = if (checked) Stamping(false) else this
+    /**
+     * The stamping of the nodes a view save reaches through a relationship: unchecked, and made or
+     * written whichever they are. What the root is held to is the root's alone.
+     */
+    fun unchecked(): Stamping = if (checked || root != RootMode.EITHER) Stamping(false) else this
 }
 
 /**

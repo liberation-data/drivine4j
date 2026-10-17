@@ -29,7 +29,7 @@ class SaveStatementPartsTest {
 
     private val builder = SaveStatementBuilder(Neo4jObjectMapper.instance, null, null)
 
-    private fun build(obj: Any, replaced: RemovedTargets? = null, checked: Boolean = true, rootMode: RootMode = RootMode.MERGE): SaveStatement =
+    private fun build(obj: Any, replaced: RemovedTargets? = null, checked: Boolean = true, rootMode: RootMode = RootMode.EITHER): SaveStatement =
         builder.build(SaveRequest(obj, checked, NullPolicy.IGNORE, replaced = { replaced }, rootMode = rootMode))
 
     /** The parameters [statement] names, a quoted identifier or a string not being one. */

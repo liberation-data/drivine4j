@@ -229,6 +229,21 @@ class OracleWriteBlockTest {
     // What a save hands back
 
     @Test
+    fun `a step that only makes its node refuses one it finds, before it writes, and a node another writer made is found again`() {
+        val plan = WritePlan(graph)
+        plan.node(plan.shape(listOf("Human"), "id"), "id", "ada", "ada", listOf("Human"), NodeWrites())
+        val text = plan.text(OracleWriteBlock.Returns.STAMPS)
+        val step = text.substringAfter("find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);\n            v_made")
+
+        val absent = step.indexOf("op.get_boolean('absent')")
+        assertTrue(absent in 0 until step.indexOf("write_props(op, v_o);"), "the refusal comes before anything is written to the node")
+        assertContains(step.substringAfter("op.get_boolean('absent')").substringBefore("END IF;"), "RAISE e_stale;")
+        // A uniqueness constraint that refused the insert sends the step round the loop once more, to
+        // find the other writer's node and so refuse it.
+        assertContains(step.substringAfter("DUP_VAL_ON_INDEX"), "IF v_dup > 1 THEN RAISE; END IF;")
+    }
+
+    @Test
     fun `a made root whose object carried a stamp without a relationship token is handed the new one, as the block and the model agree`() {
         val plan = WritePlan(graph)
         plan.node(plan.shape(listOf("Claim"), "id"), "id", "c", "c", listOf("Claim"), NodeWrites())

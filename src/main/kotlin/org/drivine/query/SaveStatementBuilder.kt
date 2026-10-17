@@ -39,7 +39,7 @@ internal class SaveStatement(
     /** The stamps the statement offers the nodes it changes: a token of one of them on a node is this statement's doing. */
     val offered: List<String> = emptyList(),
     /** Whether the root is made when it is not there, and written when it is. Where it is not, the statement gives no row. */
-    val rootMode: RootMode = RootMode.MERGE,
+    val rootMode: RootMode = RootMode.EITHER,
 ) {
     /** The node the root is saved to. */
     val rootKey: NodeKey get() = NodeKey(root.labelNames.toSet(), root.id)
@@ -199,7 +199,7 @@ internal class SaveStatementBuilder(
                 // The digest of the object as loaded says which property-bag keys it has dropped, so
                 // they are not read from the store.
                 val prefix = prefix()
-                val stamping = Stamping(checked, relationships = replaces, create = rootMode.makes, handsBack = true, onlyIfAbsent = !rootMode.writesFound)
+                val stamping = Stamping(checked, relationships = replaces, root = rootMode, handsBack = true)
                 val statement = FragmentMergeBuilder(model, objectMapper, grammar, storedKeys, stamping, parameterPrefix = prefix)
                     .buildMergeStatement(fragment, null, before, nullPolicy, rootWriteFields)
                 add(statement)
