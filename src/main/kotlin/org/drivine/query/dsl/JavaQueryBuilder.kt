@@ -105,7 +105,7 @@ class JavaQueryBuilder<T : Any, Q : Any>(
     private val graphObjectManager: org.drivine.manager.GraphObjectOperations
 ) {
     private val conditions = mutableListOf<WhereCondition>()
-    private val orders = mutableListOf<OrderSpec>()
+    private val orders = mutableListOf<OrderTerm>()
     private val seekValues = mutableListOf<SeekValueSpec>()
     private var limit: Int? = null
     private var skip: Int? = null
@@ -175,10 +175,13 @@ class JavaQueryBuilder<T : Any, Q : Any>(
      * builder.orderBy(q -> q.person().name().ascending())
      * ```
      *
-     * @param order Function that returns an OrderSpec from the query DSL
+     * An order by an expression is given the same way, built with the static functions of
+     * `OrderExpressions`: `builder.orderBy(q -> times(q.getConfidence(), exp(q.getDecay())).descending())`.
+     *
+     * @param order Function that returns an OrderSpec, or an ExpressionOrder, from the query DSL
      * @return This builder for chaining
      */
-    fun orderBy(order: java.util.function.Function<Q, OrderSpec>): JavaQueryBuilder<T, Q> {
+    fun orderBy(order: java.util.function.Function<Q, out OrderTerm>): JavaQueryBuilder<T, Q> {
         orders.add(order.apply(queryDsl))
         return this
     }

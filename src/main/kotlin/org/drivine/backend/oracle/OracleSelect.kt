@@ -27,6 +27,7 @@ import org.drivine.query.dsl.Key
 import org.drivine.query.dsl.KeySource
 import org.drivine.query.dsl.NullPlacement
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.SeekValueSpec
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.schema.SimilarityFunction
@@ -100,7 +101,7 @@ internal class OracleSelect(
      * @param orders the orders on the root, in turn
      * @param skip and [limit] the page to return, bound as parameters so the text is the same for every page
      */
-    fun load(predicates: List<String>, orders: List<OrderSpec> = emptyList(), skip: Int? = null, limit: Int? = null): GraphStatement {
+    fun load(predicates: List<String>, orders: List<OrderTerm> = emptyList(), skip: Int? = null, limit: Int? = null): GraphStatement {
         val result = "${projection()} AS result"
         val selected = predicates + requiredRelationships()
         val page = listOfNotNull(

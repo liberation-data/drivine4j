@@ -67,6 +67,21 @@ interface CypherGrammar {
     val indexesExcludeNulls: Boolean
         get() = false
 
+    /** The engine's name, as a refusal names it. */
+    val engineName: String
+        get() = "This engine"
+
+    /**
+     * [moment], an expression that reads a moment as the engine holds one, as seconds since the epoch
+     * with their fraction; null where the engine cannot read a moment as a number. An order by an
+     * expression that asks for it there is refused, for the reason [epochSecondsLimit] gives.
+     */
+    fun epochSeconds(moment: String): String? = null
+
+    /** Why the engine cannot read a moment as a number, where [epochSeconds] is null. */
+    val epochSecondsLimit: String
+        get() = "its grammar does not say how to read a moment as a number"
+
     /**
      * Whether what [existenceCheck] and [filteredExistenceCheck] give may stand only in a `WHERE`,
      * and not as a value of a `WITH`. Neo4j 4 takes `EXISTS { }` nowhere else. A statement that
@@ -239,6 +254,11 @@ class Neo4j5Grammar(
 
     override val indexesExcludeNulls: Boolean = true
 
+    override val engineName: String = "Neo4j"
+
+    /** A moment is a native temporal value, whose milliseconds since the epoch it gives as a property. */
+    override fun epochSeconds(moment: String): String = "$moment.epochMillis / 1000.0"
+
     override val supportsVectorSearch: Boolean = true
 
     /**
@@ -301,6 +321,11 @@ class Neo4j4Grammar(
 
     override val indexesExcludeNulls: Boolean = true
 
+    override val engineName: String = "Neo4j"
+
+    /** A moment is a native temporal value, whose milliseconds since the epoch it gives as a property. */
+    override fun epochSeconds(moment: String): String = "$moment.epochMillis / 1000.0"
+
     override val predicatesOnlyInWhere: Boolean = true
 }
 
@@ -312,6 +337,8 @@ class Neo4j4Grammar(
 open class OpenCypherGrammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
+    override val engineName: String
+        get() = "An openCypher engine"
 
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
         "($rootAlias)$direction(:$targetLabels)"
@@ -346,6 +373,18 @@ class FalkorDbCypherGrammar(
     // Inherits supportsOrphanDelete = true from the interface default (FalkorDB#1890 fixed).
 
     override val testsPathEndAfterMatch: Boolean = true
+
+    override val engineName: String = "FalkorDB"
+
+    /**
+     * FalkorDB is given a moment as its ISO-8601 text (see [org.drivine.query.TemporalCoercer]), and
+     * has no function that reads a moment as a number: no `epochMillis`, and no arithmetic on a
+     * datetime. So [epochSeconds] stays null, and an order that asks for it is refused.
+     */
+    override val epochSecondsLimit: String = """
+        it holds a moment as its ISO-8601 text, and has no function that reads one as a number. Store the
+        moment's seconds since the epoch in a property of their own, and order by that.
+    """.trimIndent().replace("\n", " ")
 
     override val supportsVectorSearch: Boolean = true
 

@@ -219,7 +219,7 @@ class KeysetPlannerTest {
         }
 
         assertEquals(
-            listOf(
+            listOf<OrderTerm>(
                 OrderSpec("p.score", OrderDirection.DESC, NullPlacement.LAST),
                 OrderSpec("p.id", OrderDirection.ASC),
                 OrderSpec("p.score", OrderDirection.ASC, NullPlacement.FIRST),

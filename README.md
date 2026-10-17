@@ -934,6 +934,30 @@ refused, and so is one under `seek`, whose cursor does not say which side of the
 From inside an `orderBy` block it follows `asc()` / `desc()`; an order built apart from one, with
 `ascending()` / `descending()`, takes the same two calls.
 
+**Ordering by an expression.** A ranking computed from several properties is an expression over
+the root's properties, built from arithmetic, `exp`, `floor`, `coalesce`, `epochSeconds` and `case`,
+with every value the caller gives bound as a parameter. The ranking runs in the database with its
+`LIMIT`, and the terms after it break its ties:
+
+```kotlin
+val top = graphObjectManager.loadAll<PropositionView> {
+    orderBy {
+        case(
+            (proposition.validFrom above asOf) or (proposition.validTo atMost asOf) then 0.0,
+            otherwise = proposition.confidence *
+                exp(-proposition.decay * floor((epochSeconds(asOf) - proposition.lastAccessedSeconds) / 86400)),
+        ).desc()
+        proposition.id.asc()
+    }
+    limit(20)
+}
+```
+
+Neo4j, FalkorDB, Memgraph and Oracle each write the arithmetic, the functions and `case`.
+`epochSeconds(property)` reads a stored moment as a number, which FalkorDB cannot: there the load is
+refused with an `UnsupportedOrderFunctionException` before anything runs. An expression reads only the root's
+properties, and is refused under `seek`. See [docs/0.1.6-order-by-expression.md](docs/0.1.6-order-by-expression.md).
+
 #### Limit & Pagination
 
 `limit(n)` and `skip(n)` push a row bound into the generated Cypher (bound as `$_limit` / `$_skip`,

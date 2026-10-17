@@ -112,7 +112,7 @@ internal class CypherBackend(
         // Process order clauses - separate root ordering from collection sorting
         val relationshipNames = ctx.viewModel?.relationships?.map { it.fieldName }?.toSet() ?: emptySet()
         val orderResult = if (query.orders.isNotEmpty()) {
-            CypherGenerator.processOrders(query.orders, relationshipNames, ctx.viewModel)
+            CypherGenerator.processOrders(query.orders, relationshipNames, ctx.viewModel, grammar)
         } else {
             OrderClauseResult(null, emptyList())
         }
@@ -122,7 +122,7 @@ internal class CypherBackend(
         }
         val keysetPlan = if (query.seekValues.isNotEmpty()) {
             KeysetPlanner.plan(
-                orderResult.rootOrders,
+                KeysetPlanner.propertyOrders(orderResult.rootOrders),
                 query.seekValues,
                 orderResult.collectionSorts.size,
                 guardAgainstNulls = grammar.indexesExcludeNulls,
@@ -142,7 +142,12 @@ internal class CypherBackend(
                 "Keyset cursor parameter \$$reserved collides with a where-clause binding"
             }
         }
-        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap())
+        orderResult.bindings.keys.forEach { reserved ->
+            require(reserved !in ctx.bindings) {
+                "Order expression parameter \$$reserved collides with a where-clause binding"
+            }
+        }
+        val effectiveBindings = ctx.bindings + (keysetPlan?.bindings ?: emptyMap()) + orderResult.bindings
 
         val baseQuery = if (query.depthOverrides.isNotEmpty() && builder is GraphViewQueryBuilder) {
             builder.buildQuery(effectiveWhereClause, orderResult.orderByClause, orderResult.collectionSorts, query.depthOverrides, ctx.prologs, ctx.bridgeVariables)

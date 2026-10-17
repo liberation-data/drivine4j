@@ -140,11 +140,13 @@ fun extractLabelsFromNodeFragment(clazz: Class<*>): List<String> {
  *     .where(q -> q.person().name().isEqualTo("Alice"))
  *     .loadAll();
  * ```
+ *
+ * A reference is also an [Operand] of an [OrderExpression]: `query.confidence * exp(-query.decay)`.
  */
 open class PropertyReference<T>(
     internal val alias: String,
     internal val propertyName: String
-) {
+) : Operand {
     // ==================== Java methods (return PropertyConditionBuilder / OrderSpec) ====================
     // For JavaQueryBuilder, which has no context parameters. Each has a different NAME from its Kotlin
     // context-parameter twin below, not just a different return type: from Kotlin 2.3 a context

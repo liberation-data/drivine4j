@@ -31,7 +31,9 @@ import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.GroupQuerySpec
 import org.drivine.query.dsl.OrderDirection
+import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.OrderSpec
+import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.WhereCondition
 import org.drivine.schema.SchemaItemKind
 import org.drivine.query.grammar.CypherGrammar
@@ -83,7 +85,7 @@ internal class OracleBackend(
         require(query.seekValues.isEmpty() || query.skip == null) { "seek and skip cannot be used together" }
         val (collectionSorts, rootOrders) = orders(graphClass, query)
         val select = OracleSelect(graph, graphClass, collectionSorts, query.depthOverrides, labelled.current())
-        val seek = query.seekValues.takeIf { it.isNotEmpty() }?.let { select.after(rootOrders, it, collectionSorts.size) }
+        val seek = query.seekValues.takeIf { it.isNotEmpty() }?.let { select.after(KeysetPlanner.propertyOrders(rootOrders), it, collectionSorts.size) }
         val statement = select.load(listOfNotNull(select.predicate(query.conditions, indexed = true), seek), rootOrders, query.skip, query.limit)
         return LoadPlan(statement, rootOrders, keyset = seek != null)
     }
@@ -93,13 +95,13 @@ internal class OracleBackend(
      * with an underscore in it names a nested collection (`field_nested`), as `CypherGenerator.processOrders`
      * reads it, and is taken for a collection sort even on a fragment, where it then sorts nothing.
      */
-    private fun orders(graphClass: Class<*>, query: GraphQuerySpec<*>): Pair<List<CollectionSortSpec>, List<OrderSpec>> {
+    private fun orders(graphClass: Class<*>, query: GraphQuerySpec<*>): Pair<List<CollectionSortSpec>, List<OrderTerm>> {
         val relationships = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass).relationships.map { it.fieldName }.toSet() else emptySet()
         val (sorts, roots) = query.orders.partition { order ->
-            val alias = order.propertyPath.substringBefore('.')
-            alias in relationships || '_' in alias
+            val alias = (order as? OrderSpec)?.propertyPath?.substringBefore('.')
+            alias != null && (alias in relationships || '_' in alias)
         }
-        return sorts.map {
+        return sorts.filterIsInstance<OrderSpec>().map {
             it.requireNoNullPlacement("in the order of a relationship collection")
             CollectionSortSpec(it.propertyPath.substringBefore('.'), it.propertyPath.substringAfter('.'), it.direction == OrderDirection.ASC)
         } to roots
