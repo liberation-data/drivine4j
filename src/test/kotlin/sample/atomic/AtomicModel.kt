@@ -1,11 +1,13 @@
 package sample.atomic
 
 import org.drivine.annotation.Direction
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
+import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.Root
 
 /**
@@ -42,3 +44,29 @@ data class Watermark(
     val at: Int,
     @NodeStamp val stamp: String? = null,
 )
+
+/** An unstamped fragment an `UNWIND` cannot write: its bag's stale keys are cleared per object. */
+@NodeFragment(labels = ["Tagged"])
+data class Tagged(
+    @NodeId val id: String,
+    @PropertyBag val tags: Map<String, Any?> = emptyMap(),
+)
+
+/** A stamped fragment an `UNWIND` cannot write. */
+@NodeFragment(labels = ["StampedTagged"])
+data class StampedTagged(
+    @NodeId val id: String,
+    @PropertyBag val tags: Map<String, Any?> = emptyMap(),
+    @NodeStamp val stamp: String? = null,
+)
+
+/** A fragment whose id is stored under a name of its own. */
+@NodeFragment(labels = ["Keyed"])
+data class Keyed(
+    @NodeId @GraphProperty("keyed_id") val key: String,
+    val note: String? = null,
+)
+
+/** A second fragment of a [Ledger]'s node: the same label and id, another field. */
+@NodeFragment(labels = ["Ledger"])
+data class LedgerNote(@NodeId val id: String, val note: String? = null)

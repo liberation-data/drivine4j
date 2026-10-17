@@ -170,8 +170,9 @@ class StatelessGraphObjectManager private constructor(
      * [org.drivine.NonAtomicBatchException] before anything is written. On Neo4j, FalkorDB and
      * Memgraph a batch of fragments alone, of any number of classes, is one statement, and so atomic
      * on any of them, where each can be written as a row of an `UNWIND` and they are no more than one
-     * statement takes ([BatchSaveOperations.UNWIND_CHUNK_SIZE]): not one with a `@PropertyBag` or a
-     * `@NodeLabels` field, nor on FalkorDB one with a vector. On Oracle a batch of fragments is one
+     * statement takes ([BatchSaveOperations.UNWIND_CHUNK_SIZE]). A fragment with a `@PropertyBag` or a
+     * `@NodeLabels` field, or on FalkorDB one with a vector, is saved by statements of its own, and
+     * the others are still one. On Oracle a batch of fragments is one
      * block for each 500 of them. [PersistenceManager.atomicBatches] says whether a batch of more
      * than one statement is applied whole.
      * Inside a caller's transaction, a refusal undoes the batch only if the caller's transaction is

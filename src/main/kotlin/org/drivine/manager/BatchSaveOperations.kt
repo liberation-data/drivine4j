@@ -116,16 +116,19 @@ internal class BatchSaveOperations(
     /**
      * The fragments of [plain] and [stamped] as one statement, so that they are written whole or not
      * at all on an engine that cannot roll back a statement it has run. Null where they are of one
-     * class, where a fragment of [plain] is one an `UNWIND` cannot write (see [savedByUnwind]), and
-     * where they are more rows than one statement takes ([chunkSize]): then [buildBatchSpecs] and
-     * [buildStampedSpecs] write them, by a statement or more for each class.
+     * class, and where they are more rows than one statement takes ([chunkSize]): then
+     * [buildBatchSpecs] and [buildStampedSpecs] write them, by a statement or more for each class.
+     * Each fragment is one an `UNWIND` can write (see [savedByUnwind]).
      *
      * Each class is written by the `UNWIND` it has on its own, one class after another, the rows of
      * each bound under a parameter of their own. Each `UNWIND` is folded to one row before the next
      * begins, so the next runs once: and every `UNWIND` has a row, since each class is there because
      * a fragment of it is. The statement returns a row for each fragment of [stamped], as
-     * [buildStampedSpecs] does, and none for one of [plain]. Each of [stamped] is a fragment that
-     * [savedByUnwind] allows.
+     * [buildStampedSpecs] does, and none for one of [plain].
+     *
+     * The classes go in the order of their names, those of [plain] first, and the rows of each in the
+     * order of their ids, so that two batches over the same nodes take their locks in the same order
+     * whatever order they were given in. Rows of one id keep the order they were given in.
      */
     fun buildTogetherSpec(
         plain: List<IndexedValue<Any>>,
@@ -133,10 +136,9 @@ internal class BatchSaveOperations(
         nullPolicy: NullPolicy,
         writeFields: (Class<*>) -> Set<String>? = { null },
     ): QuerySpecification<String>? {
-        val groups = plain.groupBy { it.value.javaClass }.map { TogetherGroup(it.key, it.value, handsBack = false) } +
-            stamped.groupBy { it.value.javaClass }.map { TogetherGroup(it.key, it.value, handsBack = true) }
+        val groups = togetherGroups(plain, handsBack = false) + togetherGroups(stamped, handsBack = true)
         if (groups.size < 2 || plain.size + stamped.size > chunkSize) return null
-        if (groups.any { !it.model.savedByUnwind(grammar) }) return null
+        require(groups.all { it.model.savedByUnwind(grammar) }) { "Only fragments an UNWIND can write are saved together." }
         // Only the stamps handed back are carried on. FalkorDB 6 fails a statement that carries a
         // count through two folds after it ("Type mismatch: ... but was Integer"), and no count is
         // needed: https://github.com/FalkorDB/FalkorDB/issues/3369
@@ -146,9 +148,13 @@ internal class BatchSaveOperations(
         val statement = (segments + "UNWIND $handedBack AS saved\nRETURN saved").joinToString("\n")
         val bindings = groups.mapIndexed { index, group ->
             "${ROWS}$index" to unwindRows(group.model, group.items, group.handsBack, nullPolicy, writeFields(group.clazz))
+                .sortedBy { it["id"].toString() }
         }.toMap()
         return QuerySpecification.withStatement(statement).bind(bindings).transform(String::class.java)
     }
+
+    private fun togetherGroups(items: List<IndexedValue<Any>>, handsBack: Boolean): List<TogetherGroup> =
+        items.groupBy { it.value.javaClass }.entries.sortedBy { it.key.name }.map { TogetherGroup(it.key, it.value, handsBack) }
 
     /** The fragments of one class in a statement of [buildTogetherSpec], and whether a stamp is handed back for each. */
     private class TogetherGroup(val clazz: Class<*>, val items: List<IndexedValue<Any>>, val handsBack: Boolean) {

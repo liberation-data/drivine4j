@@ -96,17 +96,39 @@ class NonTransactionalBatchTest {
     }
 
     @Test
-    fun `on a store that cannot roll back and refuses a transaction, a batch of more is refused before any of it runs`() {
-        val refusal = UnsupportedOperationException("refused")
-        val connection = RecordingConnection(onStart = { throw refusal })
+    fun `on a store that cannot roll back and refuses such a batch, a batch of more is refused before a connection is taken`() {
+        val connection = RecordingConnection()
+        val provider = RecordingProvider(connection, atomicBatches = false, refusesNonAtomicBatches = true)
 
         val thrown = assertFailsWith<NonAtomicBatchException> {
-            managerOver(connection, atomicBatches = false).queryBatch(listOf(statement("RETURN 1"), statement("RETURN 2")))
+            managerOver(provider).queryBatch(listOf(statement("RETURN 1"), statement("RETURN 2")))
         }
 
         assertEquals(2, thrown.statements)
-        assertSame(refusal, thrown.cause)
-        assertEquals(listOf("start", "release:$refusal"), connection.calls)
+        assertEquals(0, provider.connections)
+        assertEquals(emptyList(), connection.calls)
+    }
+
+    @Test
+    fun `on a store that cannot roll back and refuses such a batch, a batch of one runs`() {
+        val connection = RecordingConnection()
+
+        managerOver(RecordingProvider(connection, atomicBatches = false, refusesNonAtomicBatches = true))
+            .queryBatch(listOf(statement("RETURN 1")))
+
+        assertEquals(listOf("query:RETURN 1", "release"), connection.calls)
+    }
+
+    @Test
+    fun `on a store that cannot roll back and does not say it refuses, a refused transaction is passed on as it was`() {
+        val refusal = UnsupportedOperationException("refused")
+        val connection = RecordingConnection(onStart = { throw refusal })
+
+        val thrown = assertFailsWith<UnsupportedOperationException> {
+            managerOver(connection, atomicBatches = false).queryBatch(listOf(statement("RETURN 1"), statement("RETURN 2")))
+        }
+
+        assertSame(refusal, thrown)
     }
 
     @Test
@@ -132,7 +154,10 @@ class NonTransactionalBatchTest {
     private fun statement(cypher: String) = QuerySpecification.withStatement(cypher)
 
     private fun managerOver(connection: RecordingConnection, atomicBatches: Boolean = true) =
-        NonTransactionalPersistenceManager(RecordingProvider(connection, atomicBatches), "fake", DatabaseType.NEO4J, SubtypeRegistry())
+        managerOver(RecordingProvider(connection, atomicBatches))
+
+    private fun managerOver(provider: RecordingProvider) =
+        NonTransactionalPersistenceManager(provider, "fake", DatabaseType.NEO4J, SubtypeRegistry())
 }
 
 /**
@@ -189,6 +214,7 @@ class TransactionalBatchTest {
 private class RecordingProvider(
     private val connection: RecordingConnection,
     override val atomicBatches: Boolean = true,
+    override val refusesNonAtomicBatches: Boolean = false,
 ) : ConnectionProvider {
     var connections = 0
     override val name = "fake"

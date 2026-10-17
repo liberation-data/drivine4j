@@ -57,6 +57,14 @@ interface ConnectionProvider {
         get() = true
 
     /**
+     * Whether a batch of more than one statement is refused before any of it runs, on a store that
+     * cannot apply it whole ([atomicBatches] false) and is set to refuse what it cannot: FalkorDB in
+     * [FalkorDbTransactionMode.STRICT]. False where [atomicBatches] is true.
+     */
+    val refusesNonAtomicBatches: Boolean
+        get() = false
+
+    /**
      * The graph this provider's connections read and write, on a store that keeps a graph under a
      * name: on Oracle it names the property graph and the tables beneath it. Null where the
      * connection itself selects the graph.

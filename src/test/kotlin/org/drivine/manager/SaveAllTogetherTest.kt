@@ -7,7 +7,9 @@ import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
 import sample.atomic.Bookmark
 import sample.atomic.ChunkHash
+import sample.atomic.Keyed
 import sample.atomic.Ledger
+import sample.atomic.Tagged
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -64,5 +66,42 @@ class SaveAllTogetherTest {
         stateless.saveAll(hashes + ledgers)
 
         assertEquals(listOf(listOf("rows"), listOf("rows")), store.queried.map { it.parameters.keys.toList() })
+    }
+
+    @Test
+    fun `an unstamped fragment an UNWIND cannot write is saved by a statement of its own, and the other classes are still one`() {
+        stateless.saveAll(listOf(ChunkHash("h1", "one"), Tagged("t1", mapOf("a" to 1)), Ledger("l1", 1), Bookmark("b1", "c-1")))
+
+        val (tagged, together) = store.queried
+        assertContains(tagged.statement, "MERGE (n:Tagged")
+        listOf("MERGE (n:ChunkHash", "MERGE (n:Ledger", "MERGE (n:Bookmark").forEach { assertContains(together.statement, it) }
+        assertEquals(setOf("rows0", "rows1", "rows2"), together.parameters.keys)
+        assertEquals(2, store.queried.size)
+    }
+
+    @Test
+    fun `the classes of one statement are written in the order of their names, unstamped before stamped, whatever order they are given in`() {
+        stateless.saveAll(listOf(Ledger("l1", 1), Bookmark("b1", "c-1"), ChunkHash("h1", "one")))
+        stateless.saveAll(listOf(ChunkHash("h2", "two"), Bookmark("b2", "c-2"), Ledger("l2", 2)))
+
+        val orders = store.queried.map { statement ->
+            listOf("ChunkHash", "Ledger", "Bookmark").sortedBy { statement.statement.indexOf("MERGE (n:$it") }
+        }
+        assertEquals(listOf(listOf("ChunkHash", "Ledger", "Bookmark"), listOf("ChunkHash", "Ledger", "Bookmark")), orders)
+    }
+
+    @Test
+    fun `the rows of each class of one statement go in the order of their ids`() {
+        stateless.saveAll(listOf(ChunkHash("h2", "two"), Ledger("l1", 1), ChunkHash("h1", "one"), ChunkHash("h3", "three")))
+
+        val rows = store.queried.single().parameters.getValue("rows0") as List<*>
+        assertEquals(listOf("h1", "h2", "h3"), rows.map { (it as Map<*, *>)["id"] })
+    }
+
+    @Test
+    fun `a fragment whose id is stored under a name of its own is merged on that name in one statement`() {
+        stateless.saveAll(listOf(Keyed("k1", "one"), ChunkHash("h1", "one")))
+
+        assertContains(store.queried.single().statement, "MERGE (n:Keyed {keyed_id: row.id})")
     }
 }
