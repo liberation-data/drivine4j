@@ -1,7 +1,11 @@
+<a href="https://drivine.org/"><img src="https://raw.githubusercontent.com/liberation-data/drivine/master/website/public/images/splash.jpg" alt="Drivine: graph database client for TypeScript and the JVM"></a>
+
 # Drivine4j
 
 [![CI](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml/badge.svg)](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+
+**Docs: [drivine.org](https://drivine.org/jvm/)**, for Kotlin & Java and for TypeScript.
 
 A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph** and **Oracle** (SQL/PGQ) with two approaches to graph mapping:
 
