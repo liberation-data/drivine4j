@@ -324,7 +324,7 @@ inline fun <reified T : Any> GraphObjectOperations.count(whereClause: String): L
  * Counts graph objects using the type-safe query DSL, with a reified type parameter.
  *
  * ```kotlin
- * graphObjectManager.count<RaisedAndAssignedIssue>(RaisedAndAssignedIssueQueryDsl.INSTANCE) {
+ * graphObjectManager.count<RaisedAndAssignedIssue, _>(RaisedAndAssignedIssueQueryDsl.INSTANCE) {
  *     where { query.issue.state eq "open" }
  * }
  * ```
@@ -372,7 +372,7 @@ inline fun <reified T : Any> GraphObjectOperations.loadNearest(
  * reified type parameter.
  *
  * ```kotlin
- * graphObjectManager.loadNearest<PropositionView>(PropositionViewQueryDsl.INSTANCE, queryVector, topK = 20) {
+ * graphObjectManager.loadNearest<PropositionView, _>(PropositionViewQueryDsl.INSTANCE, queryVector, topK = 20) {
  *     where { query.proposition.contextId eq ctx }
  * }
  * ```
@@ -421,7 +421,7 @@ inline fun <reified T : Any> GraphObjectOperations.loadMatching(
  * reified type parameter.
  *
  * ```kotlin
- * graphObjectManager.loadMatching<ChunkView>(ChunkViewQueryDsl.INSTANCE, "graph databases", topK = 20) {
+ * graphObjectManager.loadMatching<ChunkView, _>(ChunkViewQueryDsl.INSTANCE, "graph databases", topK = 20) {
  *     where { query.containerSectionId eq "sec-1" }
  * }
  * ```
