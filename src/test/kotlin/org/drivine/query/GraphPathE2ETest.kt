@@ -88,6 +88,13 @@ class GraphPathE2ETest @Autowired constructor(
     }
 
     @Test
+    fun `a path ordered by a property that holds texts and numbers reads every text before every number`() {
+        persistenceManager.execute(QuerySpecification.withStatement(MIXED_SEED.trimIndent()))
+
+        assertMixedOrderedPaths { id, view -> graphObjectManager.load(id, view) }
+    }
+
+    @Test
     fun `required path filters out roots lacking it`() {
         val ids = graphObjectManager.loadAll(ActorRequiredDirector::class.java).map { it.actor.id }.toSet()
         assertEquals(setOf("a1", "a3"), ids)  // a2 has no director path → excluded

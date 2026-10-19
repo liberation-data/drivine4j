@@ -12,8 +12,9 @@ package org.drivine.annotation
  *   the targets of a list come in the order of the first node of this hop that leads to each, and a
  *   single target is the one the first such node leads to. Empty means no order. One hop of a path
  *   may name one, and a path that is a group key may name none. A node of this hop that has no
- *   value comes last whichever way the path is read. The property should hold values of one type
- *   on every node of the hop: the engines do not order a text and a number alike.
+ *   value comes last whichever way the path is read, and targets whose first values are equal
+ *   come in no set order. The property should hold values of one type on every node of the hop:
+ *   the engines do not order a text and a number alike.
  * @param ascending whether [orderBy] reads lowest first (the default) or highest first
  */
 @Retention(AnnotationRetention.RUNTIME)

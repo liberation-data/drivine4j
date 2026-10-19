@@ -1,6 +1,8 @@
 package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
+import org.drivine.query.ActorDirectorsByReleaseYear
+import org.drivine.query.JavaActorDirectorsLatestFirst
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.schema.SimilarityFunction
 import org.junit.jupiter.api.Test
@@ -220,6 +222,30 @@ class OracleSelectTest {
         )
         // Two hops give no single relationship to carry.
         assertFalse(statement.substringBefore("'people'").contains(".eid"), statement)
+    }
+
+    @Test
+    fun `a path ordered by a hop reads the order from the node that hop reaches, by kind and then by value`() {
+        val statement = select(ActorDirectorsByReleaseYear::class.java).load(emptyList()).statement.squashed()
+        // The node the ordered hop reaches is m1, and its property's name is quoted as a JSON path step.
+        assertTrue(statement.contains("JSON_VALUE(m1.props, '$.\"release year\".numberOnly()' RETURNING NUMBER) AS order_number"), statement)
+        assertTrue(statement.contains("JSON_VALUE(m1.props, '$.\"release year\"') AS order_text"), statement)
+        assertTrue(statement.contains("JSON_EXISTS(m1.props, '$.\"release year\"?(@ == \"\")')"), statement)
+        assertTrue(
+            statement.contains(
+                "ORDER BY directors_.order_kind ASC NULLS LAST, " +
+                    "CASE WHEN directors_.order_kind = 1 THEN directors_.order_number END ASC, " +
+                    "CASE WHEN directors_.order_kind = 0 THEN directors_.order_text END ASC NULLS FIRST, directors_.nid",
+            ),
+            statement,
+        )
+    }
+
+    @Test
+    fun `a path ordered highest first keeps the highest value of each node, and an empty text last among the texts`() {
+        val statement = select(JavaActorDirectorsLatestFirst::class.java).load(emptyList()).statement.squashed()
+        assertTrue(statement.contains("MAX(reached_.order_number) AS order_number"), statement)
+        assertTrue(statement.contains("CASE WHEN directors_.order_kind = 0 THEN directors_.order_text END DESC NULLS LAST, directors_.nid"), statement)
     }
 
     @Test

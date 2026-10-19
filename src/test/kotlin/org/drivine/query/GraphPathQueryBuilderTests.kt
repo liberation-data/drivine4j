@@ -151,6 +151,9 @@ data class ActorDirectorByLastCode(
  * puts Murnau last. A movie with no year comes last whichever way the path is read. Two movies
  * carry a code, a text of digits: '0100' is before '99' as text and after it as a number. o2 acted
  * in nothing; o3 acted in Memento only.
+ *
+ * e1's movies hold their years as texts, one of them empty, which is a text and the lowest one:
+ * Tarr is reached by 'c' and by '', Ozu by 'a', Varda by 'b', and Kurosawa's movie has no year.
  */
 const val ORDERED_SEED = """
     CREATE (o1:PActor {id: 'o1', name: 'Ordered', createdBy: 'path-test'})
@@ -172,6 +175,20 @@ const val ORDERED_SEED = """
     CREATE (o3)-[:ACTED_IN]->(y3)
     CREATE (y1)-[:DIRECTED_BY]->(murnau) CREATE (y2)-[:DIRECTED_BY]->(lynch) CREATE (y3)-[:DIRECTED_BY]->(nolan)
     CREATE (y4)-[:DIRECTED_BY]->(bigelow) CREATE (y5)-[:DIRECTED_BY]->(nolan) CREATE (y6)-[:DIRECTED_BY]->(kubrick)
+    CREATE (e1:PActor {id: 'e1', name: 'Texts', createdBy: 'path-test'})
+    CREATE (z1:PMovie {id: 'z1', title: 'Satantango', year: 'c', createdBy: 'path-test'})
+    CREATE (z2:PMovie {id: 'z2', title: 'Werckmeister', year: '', createdBy: 'path-test'})
+    CREATE (z3:PMovie {id: 'z3', title: 'Cleo', year: 'b', createdBy: 'path-test'})
+    CREATE (z4:PMovie {id: 'z4', title: 'Tokyo Story', year: 'a', createdBy: 'path-test'})
+    CREATE (z5:PMovie {id: 'z5', title: 'Ran', createdBy: 'path-test'})
+    CREATE (tarr:PDirector {id: 'tarr', name: 'Tarr', createdBy: 'path-test'})
+    CREATE (varda:PDirector {id: 'varda', name: 'Varda', createdBy: 'path-test'})
+    CREATE (ozu:PDirector {id: 'ozu', name: 'Ozu', createdBy: 'path-test'})
+    CREATE (kurosawa:PDirector {id: 'kurosawa', name: 'Kurosawa', createdBy: 'path-test'})
+    CREATE (e1)-[:ACTED_IN]->(z1) CREATE (e1)-[:ACTED_IN]->(z5) CREATE (e1)-[:ACTED_IN]->(z3)
+    CREATE (e1)-[:ACTED_IN]->(z2) CREATE (e1)-[:ACTED_IN]->(z4)
+    CREATE (z1)-[:DIRECTED_BY]->(tarr) CREATE (z2)-[:DIRECTED_BY]->(tarr) CREATE (z3)-[:DIRECTED_BY]->(varda)
+    CREATE (z4)-[:DIRECTED_BY]->(ozu) CREATE (z5)-[:DIRECTED_BY]->(kurosawa)
 """
 
 /**
@@ -198,7 +215,63 @@ fun assertOrderedPaths(load: (String, Class<*>) -> Any?) {
     assertEquals(emptyList(), directors("o2"))
     assertEquals(null, first("o2"))
     assertEquals(null, latest("o2"))
+    assertEquals(listOf("Tarr", "Ozu", "Varda", "Kurosawa"), directors("e1"), "an empty text is the lowest text, and has a value")
+    assertEquals("Tarr", first("e1"))
+    assertEquals("Tarr", latest("e1"))
+    assertEquals(listOf("Tarr", "Varda", "Ozu", "Kurosawa"), java("e1"))
 }
+
+/**
+ * mx's movies hold their years as texts on some and numbers on others: Akerman 'unknown', Bergman
+ * 1950, Chaplin 'early', Dreyer 20, and Eisenstein both 'zz' and 5. Neo4j, FalkorDB and Oracle read
+ * every text before every number, lowest first; Memgraph refuses to compare them.
+ */
+const val MIXED_SEED = """
+    CREATE (mx:PActor {id: 'mx', name: 'Mixed', createdBy: 'path-test'})
+    CREATE (x1:PMovie {id: 'x1', title: 'One', year: 'unknown', createdBy: 'path-test'})
+    CREATE (x2:PMovie {id: 'x2', title: 'Two', year: 1950, createdBy: 'path-test'})
+    CREATE (x3:PMovie {id: 'x3', title: 'Three', year: 'early', createdBy: 'path-test'})
+    CREATE (x4:PMovie {id: 'x4', title: 'Four', year: 20, createdBy: 'path-test'})
+    CREATE (x5:PMovie {id: 'x5', title: 'Five', year: 'zz', createdBy: 'path-test'})
+    CREATE (x6:PMovie {id: 'x6', title: 'Six', year: 5, createdBy: 'path-test'})
+    CREATE (akerman:PDirector {id: 'akerman', name: 'Akerman', createdBy: 'path-test'})
+    CREATE (bergman:PDirector {id: 'bergman', name: 'Bergman', createdBy: 'path-test'})
+    CREATE (chaplin:PDirector {id: 'chaplin', name: 'Chaplin', createdBy: 'path-test'})
+    CREATE (dreyer:PDirector {id: 'dreyer', name: 'Dreyer', createdBy: 'path-test'})
+    CREATE (eisenstein:PDirector {id: 'eisenstein', name: 'Eisenstein', createdBy: 'path-test'})
+    CREATE (mx)-[:ACTED_IN]->(x1) CREATE (mx)-[:ACTED_IN]->(x2) CREATE (mx)-[:ACTED_IN]->(x3)
+    CREATE (mx)-[:ACTED_IN]->(x4) CREATE (mx)-[:ACTED_IN]->(x5) CREATE (mx)-[:ACTED_IN]->(x6)
+    CREATE (x1)-[:DIRECTED_BY]->(akerman) CREATE (x2)-[:DIRECTED_BY]->(bergman) CREATE (x3)-[:DIRECTED_BY]->(chaplin)
+    CREATE (x4)-[:DIRECTED_BY]->(dreyer) CREATE (x5)-[:DIRECTED_BY]->(eisenstein) CREATE (x6)-[:DIRECTED_BY]->(eisenstein)
+"""
+
+/** What Neo4j, FalkorDB and Oracle read from [MIXED_SEED]: every text before every number, and each node by the first value that leads to it. */
+fun assertMixedOrderedPaths(load: (String, Class<*>) -> Any?) {
+    assertEquals(
+        listOf("Chaplin", "Akerman", "Eisenstein", "Dreyer", "Bergman"),
+        (load("mx", ActorDirectorsByYear::class.java) as ActorDirectorsByYear).directors.map { it.name },
+        "Eisenstein is reached first by 'zz', a text",
+    )
+    assertEquals(
+        listOf("Bergman", "Dreyer", "Eisenstein", "Akerman", "Chaplin"),
+        (load("mx", JavaActorDirectorsLatestFirst::class.java) as JavaActorDirectorsLatestFirst).directors.map { it.name },
+        "Eisenstein is reached first by 5, a number",
+    )
+    assertEquals("Chaplin", (load("mx", ActorFirstDirector::class.java) as ActorFirstDirector).director?.name)
+    assertEquals("Bergman", (load("mx", ActorLatestDirector::class.java) as ActorLatestDirector).director?.name)
+}
+
+/** The directors an actor worked with, by a property whose name is no identifier on its own. */
+@GraphView
+data class ActorDirectorsByReleaseYear(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "release year"),
+        Hop("DIRECTED_BY", Direction.OUTGOING),
+    ])
+    val directors: List<PDirector>,
+)
 
 /** Two hops that each name an order: refused, since the path can be read in one order only. */
 @GraphView
@@ -292,6 +365,12 @@ class GraphPathQueryBuilderTests {
         assertEquals("year", hop.orderBy)
         assertFalse(hop.ascending)
         assertTrue(query(JavaActorDirectorsLatestFirst::class, CypherDialect.NEO4J_5).contains("ORDER BY directors_hop0.year IS NULL, directors_hop0.year DESC"))
+    }
+
+    @Test
+    fun `a path ordered by a property whose name is no identifier quotes it`() {
+        val q = query(ActorDirectorsByReleaseYear::class, CypherDialect.NEO4J_5)
+        assertTrue(q.contains("ORDER BY directors_hop0.`release year` IS NULL, directors_hop0.`release year` ASC"), q)
     }
 
     @Test

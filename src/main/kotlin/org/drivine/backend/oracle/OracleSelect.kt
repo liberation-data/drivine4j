@@ -474,7 +474,8 @@ internal class OracleSelect(
      * highest. The property's type is not known here, since the node the hop reaches is mapped to no
      * class, so it is read twice: as a number where it is stored as one, and as text. As the graph
      * engines order them, every text comes before every number, lowest first; and a node of the hop
-     * that has no value comes last whichever way the path is read.
+     * that has no value comes last whichever way the path is read. `JSON_VALUE` reads a stored `""`
+     * as null, so whether the node holds one is read on its own: it is a text, and the lowest.
      */
     private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
         val i = relationship.orderedHop ?: return null
@@ -485,6 +486,7 @@ internal class OracleSelect(
             listOf(
                 GraphTable.Column("order_number", SqlKind.NUMBER.read("$node.props", path(key, ".numberOnly()"))),
                 GraphTable.Column("order_text", property(node, key, SqlKind.TEXT)),
+                GraphTable.Column("order_empty", "CASE WHEN JSON_EXISTS($node.props, ${path(key, "?(@ == \"\")")}) THEN 1 END"),
             ),
             hop.ascending,
             path,
@@ -494,26 +496,41 @@ internal class OracleSelect(
     /**
      * The order of a path, read from the [columns] of each way to a node and kept for the node by
      * [selected]: `order_kind` is 0 for a text and 1 for a number, and null where the node of the hop
-     * has no value; `order_text` is the value of a text only, so that a number is ordered as one.
+     * has no value; `order_number` is the value of a number, and `order_text` of a text other than
+     * `""`. Each is ordered only where the node's value is of its kind, so a node kept as a text is
+     * not ordered by a number that also leads to it.
      */
     private class PathOrder(val columns: List<GraphTable.Column>, private val ascending: Boolean, private val path: String) {
         private val keep = if (ascending) "MIN" else "MAX"
         private val direction = if (ascending) "ASC" else "DESC"
 
-        /** What the rows grouped by the node reached keep of the order. */
+        /**
+         * What the rows grouped by the node reached keep of the order. Read lowest first, a node that
+         * a `""` leads to keeps no text, which orders first among the texts; read highest first, it
+         * keeps the highest text, and none only where every text that leads to it is `""`.
+         */
         val selected: String
-            get() = """
-                , $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL THEN 0 END) AS order_kind
-                , $keep($path.order_number) AS order_number
-                , $keep(CASE WHEN $path.order_number IS NULL THEN $path.order_text END) AS order_text
-            """.trimIndent().lines().joinToString(" ")
+            get() {
+                val text = "CASE WHEN $path.order_number IS NULL THEN $path.order_text END"
+                val kept = if (ascending) "CASE WHEN MAX($path.order_empty) IS NULL THEN MIN($text) END" else "MAX($text)"
+                return """
+                    , $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL OR $path.order_empty = 1 THEN 0 END) AS order_kind
+                    , $keep($path.order_number) AS order_number
+                    , $kept AS order_text
+                """.trimIndent().lines().joinToString(" ")
+            }
 
         /**
          * The order of the row [row]: the nodes with no value last, texts before numbers, then the
-         * value, with the node's id last so that equal values are read in one order.
+         * value, with the node's id last so that equal values are read in one order. A text with no
+         * value is `""`, the lowest text.
          */
-        fun by(row: String): String =
-            "$row.order_kind $direction NULLS LAST, $row.order_number $direction NULLS LAST, $row.order_text $direction NULLS LAST, $row.nid"
+        fun by(row: String): String = listOf(
+            "$row.order_kind $direction NULLS LAST",
+            "CASE WHEN $row.order_kind = 1 THEN $row.order_number END $direction",
+            "CASE WHEN $row.order_kind = 0 THEN $row.order_text END $direction NULLS ${if (ascending) "FIRST" else "LAST"}",
+            "$row.nid",
+        ).joinToString(", ")
     }
 
     /**

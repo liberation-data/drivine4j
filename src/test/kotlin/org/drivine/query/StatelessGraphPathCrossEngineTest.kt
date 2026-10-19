@@ -34,9 +34,9 @@ private fun verifyPaths(gom: StatelessGraphObjectManager) {
     // node without that label is no end of it, on a1's path either.
     assertTrue(gom.load("a2", ActorDirectors::class.java)!!.directors.isEmpty())
     // required path filters a2 out: the studio is no director
-    // o1 and o3 are from ORDERED_SEED, which is seeded beside SEED, and have directors of their own.
+    // o1, o3 and e1 are from ORDERED_SEED, which is seeded beside SEED, and have directors of their own.
     val ids = gom.loadAll(ActorRequiredDirector::class.java).map { it.actor.id }.toSet()
-    assertEquals(setOf("a1", "o1", "o3"), ids)
+    assertEquals(setOf("a1", "o1", "o3", "e1"), ids)
     assertOrderedPaths { id, view -> gom.load(id, view) }
 }
 
@@ -105,6 +105,12 @@ class StatelessGraphPathMemgraphTest {
 
     @Test
     fun `paths and aggregates work on Memgraph`() { verifyPaths(gom); verifyAggregates(gom) }
+
+    @Test
+    fun `Memgraph refuses to order a path by a property that holds texts and numbers`() {
+        pm.execute(QuerySpecification.withStatement(MIXED_SEED.trimIndent()))
+        assertTrue(runCatching { gom.load("mx", ActorDirectorsByYear::class.java) }.isFailure)
+    }
 }
 
 @Testcontainers
@@ -144,4 +150,10 @@ class StatelessGraphPathFalkorDbTest {
 
     @Test
     fun `paths and aggregates work on FalkorDB`() { verifyPaths(gom); verifyAggregates(gom) }
+
+    @Test
+    fun `a path ordered by a property that holds texts and numbers reads every text first on FalkorDB`() {
+        pm.execute(QuerySpecification.withStatement(MIXED_SEED.trimIndent()))
+        assertMixedOrderedPaths { id, view -> gom.load(id, view) }
+    }
 }

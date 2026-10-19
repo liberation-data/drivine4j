@@ -24,7 +24,8 @@ package org.drivine.annotation
  * The targets come in no set order unless one hop names one with [Hop.orderBy]: a list then holds
  * them in the order of the first node of that hop that leads to each, and a single field holds the
  * target the first such node leads to. A path inside a view that is itself nested in another view
- * is not read as a path on the Cypher engines; declare it on the view that is loaded.
+ * is read on the Cypher engines as its first hop alone, in no order; declare it on the view that is
+ * loaded.
  *
  * Unlike a recursive [GraphRelationship], a path is a fixed, heterogeneous hop list — `maxDepth`
  * does not apply.
