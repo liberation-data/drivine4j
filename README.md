@@ -10,6 +10,11 @@ A graph database client library for Java and Kotlin supporting **Neo4j**, **Falk
 
 Drivine4j is the graph database client library for [Embabel](https://hub.embabel.com) - Agentic AI for the JVM. 
 
+> **On Node.js?** [Drivine](https://github.com/liberation-data/drivine) is drivine4j's TypeScript twin
+> (`npm install @liberation-data/drivine`), with the same object manager, query DSL, schema management and engines.
+> The two share a storage format: a store written from the JVM is read, stamped and checked alike from Node, and the
+> other way round.
+
 ## Philosophy
 
 ### Composition Over Inheritance
