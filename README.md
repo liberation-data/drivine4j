@@ -561,8 +561,8 @@ remain (the latter for Java).
 **Views count only roots that satisfy the view's _required_ relationships** — non-optional, non-collection `@GraphRelationship`s — so the result equals `loadAll(...).size`, *not* a naive node count. For example, `RaisedAndAssignedIssue` requires `raisedBy` (a single, non-null `RAISED_BY`):
 
 ```kotlin
-graphObjectManager.count(Issue::class.java)                    // 3 — every Issue node
-graphObjectManager.count(RaisedAndAssignedIssue::class.java)   // 2 — only Issues with a RAISED_BY edge
+graphObjectManager.count<Issue>()                    // 3 — every Issue node
+graphObjectManager.count<RaisedAndAssignedIssue>()   // 2 — only Issues with a RAISED_BY edge
 ```
 
 An `Issue` with no `RAISED_BY` is a valid `Issue` node but is **not** a `RaisedAndAssignedIssue`, so it is excluded — just as `loadAll` would exclude it. Optional (nullable) and collection relationships place no such constraint.
@@ -579,11 +579,11 @@ searching and returning the bare nodes:
 ```kotlin
 // Search a view: ranks PropositionViews by their root proposition's embedding
 val views: List<Scored<PropositionView>> =
-    graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
+    graphObjectManager.loadNearest<PropositionView>(queryEmbedding, topK = 20)
 
 // Search a fragment: ranks bare PropositionNodes
 val nodes: List<Scored<PropositionNode>> =
-    graphObjectManager.loadNearest(PropositionNode::class.java, queryEmbedding, topK = 20)
+    graphObjectManager.loadNearest<PropositionNode>(queryEmbedding, topK = 20)
 ```
 
 The embedding to search is identified by a `@VectorIndex` annotation on the searched fragment (the
@@ -615,12 +615,12 @@ data class PropositionView(
 ```kotlin
 // Single embedding on the root fragment → inferred, no property argument
 val hits: List<Scored<PropositionView>> =
-    graphObjectManager.loadNearest(PropositionView::class.java, queryEmbedding, topK = 20)
+    graphObjectManager.loadNearest<PropositionView>(queryEmbedding, topK = 20)
 
 hits.forEach { println("${it.score} → ${it.value.proposition.text}") }
 
 // Disambiguate when a node carries several embeddings, and/or floor by similarity
-graphObjectManager.loadNearest(PropositionView::class.java, "titleEmbedding", queryEmbedding, topK = 20, threshold = 0.8)
+graphObjectManager.loadNearest<PropositionView>("titleEmbedding", queryEmbedding, topK = 20, threshold = 0.8)
 ```
 
 Each result is a `Scored<T>(value, score)`; the score is normalized to **similarity, higher = more
@@ -724,7 +724,7 @@ The codegen emits this `loadNearest<T>(vector, topK, threshold) { where { } }` e
 
 ```kotlin
 // filtered vector search over a bare @NodeFragment
-graphObjectManager.loadNearest(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
+graphObjectManager.loadNearest<ChunkNode>(ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
@@ -767,7 +767,7 @@ full-text index throw `UnsupportedOperationException`.
 predicates in one query, on a view or a bare fragment:
 
 ```kotlin
-graphObjectManager.loadMatching(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE, "graph databases", topK = 20) {
+graphObjectManager.loadMatching<ChunkNode>(ChunkNodeQueryDsl.INSTANCE, "graph databases", topK = 20) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
@@ -834,8 +834,8 @@ graphObjectManager.count<ChunkNode> { where { query.containerSectionId eq "sec-1
 // a sealed fragment dispatches each row to its concrete subtype; narrow with instanceOf()
 graphObjectManager.loadAll<ContentElementNode> { where { query.instanceOf<ChunkNode>() } }
 
-// to filter a subtype by its OWN property, use the explicit 3-arg form with that subtype's DSL
-graphObjectManager.loadAll(ChunkNode::class.java, ChunkNodeQueryDsl.INSTANCE) {
+// to filter a subtype by its OWN property, pass that subtype's DSL
+graphObjectManager.loadAll<ChunkNode>(ChunkNodeQueryDsl.INSTANCE) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
