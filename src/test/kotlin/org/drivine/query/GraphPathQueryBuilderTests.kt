@@ -8,8 +8,11 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.ReadOnly
 import org.drivine.annotation.Root
+import org.drivine.model.GraphViewModel
+import org.drivine.query.dsl.GroupQuerySpec
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -57,6 +60,231 @@ data class ActorRequiredDirector(
     val director: PDirector,    // required single
 )
 
+/** The directors an actor worked with, in the order of the year of the first movie that led to each. */
+@GraphView
+data class ActorDirectorsByYear(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "year"),
+        Hop("DIRECTED_BY", Direction.OUTGOING),
+    ])
+    val directors: List<PDirector>,
+)
+
+/** The director of an actor's earliest movie. */
+@GraphView
+data class ActorFirstDirector(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "year"),
+        Hop("DIRECTED_BY", Direction.OUTGOING),
+    ])
+    val director: PDirector?,
+)
+
+/** The director of an actor's latest movie. */
+@GraphView
+data class ActorLatestDirector(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "year", ascending = false),
+        Hop("DIRECTED_BY", Direction.OUTGOING),
+    ])
+    val director: PDirector?,
+)
+
+/** The directors an actor worked with, by name from the last: the hop the path is ordered by is its last. */
+@GraphView
+data class ActorDirectorsByName(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie"),
+        Hop("DIRECTED_BY", Direction.OUTGOING, orderBy = "name", ascending = false),
+    ])
+    val directors: List<PDirector>,
+)
+
+/** The actors of a director's movies, those of the latest movie first: a path read against its direction. */
+@GraphView
+data class DirectorActorsLatestFirst(
+    @Root val director: PDirector,
+    @ReadOnly
+    @GraphPath([
+        Hop("DIRECTED_BY", Direction.INCOMING, label = "PMovie", orderBy = "year", ascending = false),
+        Hop("ACTED_IN", Direction.INCOMING),
+    ])
+    val actors: List<PActor>,
+)
+
+/** The directors an actor worked with, by the code of the movie: a text of digits, read as text. */
+@GraphView
+data class ActorDirectorsByCode(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "code"),
+        Hop("DIRECTED_BY", Direction.OUTGOING),
+    ])
+    val directors: List<PDirector>,
+)
+
+/** [ActorDirectorsByCode] highest first, as a single field. */
+@GraphView
+data class ActorDirectorByLastCode(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "code", ascending = false),
+        Hop("DIRECTED_BY", Direction.OUTGOING),
+    ])
+    val director: PDirector?,
+)
+
+/**
+ * o1 acted in six movies by five directors; Nolan directed two of them, so is reached twice. By
+ * year: Murnau 999, Lynch 1986, Nolan 2000, Bigelow 2008, Nolan 2010, and Kubrick's movie has no
+ * year. 999 is first as a number and last as text, so an engine that compares the years as text
+ * puts Murnau last. A movie with no year comes last whichever way the path is read. Two movies
+ * carry a code, a text of digits: '0100' is before '99' as text and after it as a number. o2 acted
+ * in nothing; o3 acted in Memento only.
+ *
+ * e1's movies hold their years as texts, one of them empty, which is a text and the lowest one:
+ * Tarr is reached by 'c' and by '', Ozu by 'a', Varda by 'b', and Kurosawa's movie has no year.
+ */
+const val ORDERED_SEED = """
+    CREATE (o1:PActor {id: 'o1', name: 'Ordered', createdBy: 'path-test'})
+    CREATE (o2:PActor {id: 'o2', name: 'Idle', createdBy: 'path-test'})
+    CREATE (o3:PActor {id: 'o3', name: 'Third', createdBy: 'path-test'})
+    CREATE (y1:PMovie {id: 'y1', title: 'Nosferatu', year: 999, code: '99', createdBy: 'path-test'})
+    CREATE (y2:PMovie {id: 'y2', title: 'Blue Velvet', year: 1986, code: '0100', createdBy: 'path-test'})
+    CREATE (y3:PMovie {id: 'y3', title: 'Memento', year: 2000, createdBy: 'path-test'})
+    CREATE (y4:PMovie {id: 'y4', title: 'The Hurt Locker', year: 2008, createdBy: 'path-test'})
+    CREATE (y5:PMovie {id: 'y5', title: 'Inception', year: 2010, createdBy: 'path-test'})
+    CREATE (y6:PMovie {id: 'y6', title: 'Untitled', createdBy: 'path-test'})
+    CREATE (murnau:PDirector {id: 'murnau', name: 'Murnau', createdBy: 'path-test'})
+    CREATE (lynch:PDirector {id: 'lynch', name: 'Lynch', createdBy: 'path-test'})
+    CREATE (nolan:PDirector {id: 'nolan', name: 'Nolan', createdBy: 'path-test'})
+    CREATE (bigelow:PDirector {id: 'bigelow', name: 'Bigelow', createdBy: 'path-test'})
+    CREATE (kubrick:PDirector {id: 'kubrick', name: 'Kubrick', createdBy: 'path-test'})
+    CREATE (o1)-[:ACTED_IN]->(y5) CREATE (o1)-[:ACTED_IN]->(y6) CREATE (o1)-[:ACTED_IN]->(y3)
+    CREATE (o1)-[:ACTED_IN]->(y1) CREATE (o1)-[:ACTED_IN]->(y4) CREATE (o1)-[:ACTED_IN]->(y2)
+    CREATE (o3)-[:ACTED_IN]->(y3)
+    CREATE (y1)-[:DIRECTED_BY]->(murnau) CREATE (y2)-[:DIRECTED_BY]->(lynch) CREATE (y3)-[:DIRECTED_BY]->(nolan)
+    CREATE (y4)-[:DIRECTED_BY]->(bigelow) CREATE (y5)-[:DIRECTED_BY]->(nolan) CREATE (y6)-[:DIRECTED_BY]->(kubrick)
+    CREATE (e1:PActor {id: 'e1', name: 'Texts', createdBy: 'path-test'})
+    CREATE (z1:PMovie {id: 'z1', title: 'Satantango', year: 'c', createdBy: 'path-test'})
+    CREATE (z2:PMovie {id: 'z2', title: 'Werckmeister', year: '', createdBy: 'path-test'})
+    CREATE (z3:PMovie {id: 'z3', title: 'Cleo', year: 'b', createdBy: 'path-test'})
+    CREATE (z4:PMovie {id: 'z4', title: 'Tokyo Story', year: 'a', createdBy: 'path-test'})
+    CREATE (z5:PMovie {id: 'z5', title: 'Ran', createdBy: 'path-test'})
+    CREATE (tarr:PDirector {id: 'tarr', name: 'Tarr', createdBy: 'path-test'})
+    CREATE (varda:PDirector {id: 'varda', name: 'Varda', createdBy: 'path-test'})
+    CREATE (ozu:PDirector {id: 'ozu', name: 'Ozu', createdBy: 'path-test'})
+    CREATE (kurosawa:PDirector {id: 'kurosawa', name: 'Kurosawa', createdBy: 'path-test'})
+    CREATE (e1)-[:ACTED_IN]->(z1) CREATE (e1)-[:ACTED_IN]->(z5) CREATE (e1)-[:ACTED_IN]->(z3)
+    CREATE (e1)-[:ACTED_IN]->(z2) CREATE (e1)-[:ACTED_IN]->(z4)
+    CREATE (z1)-[:DIRECTED_BY]->(tarr) CREATE (z2)-[:DIRECTED_BY]->(tarr) CREATE (z3)-[:DIRECTED_BY]->(varda)
+    CREATE (z4)-[:DIRECTED_BY]->(ozu) CREATE (z5)-[:DIRECTED_BY]->(kurosawa)
+"""
+
+/**
+ * What every engine must read from [ORDERED_SEED]: the directors by year either way, the first and
+ * the latest, the directors by name, the actors of a director, and the same from a Java view.
+ */
+fun assertOrderedPaths(load: (String, Class<*>) -> Any?) {
+    fun directors(id: String) = (load(id, ActorDirectorsByYear::class.java) as ActorDirectorsByYear).directors.map { it.name }
+    fun first(id: String) = (load(id, ActorFirstDirector::class.java) as ActorFirstDirector).director?.name
+    fun latest(id: String) = (load(id, ActorLatestDirector::class.java) as ActorLatestDirector).director?.name
+    fun byName(id: String) = (load(id, ActorDirectorsByName::class.java) as ActorDirectorsByName).directors.map { it.name }
+    fun actors(id: String) = (load(id, DirectorActorsLatestFirst::class.java) as DirectorActorsLatestFirst).actors.map { it.name }
+    fun java(id: String) = (load(id, JavaActorDirectorsLatestFirst::class.java) as JavaActorDirectorsLatestFirst).directors.map { it.name }
+    assertEquals(listOf("Murnau", "Lynch", "Nolan", "Bigelow", "Kubrick"), directors("o1"))
+    assertEquals("Murnau", first("o1"))
+    assertEquals("Nolan", latest("o1"), "the movie with no year is not the latest")
+    assertEquals(listOf("Nolan", "Murnau", "Lynch", "Kubrick", "Bigelow"), byName("o1"))
+    assertEquals(listOf("Ordered", "Third"), actors("nolan"))
+    assertEquals(listOf("Nolan", "Bigelow", "Lynch", "Murnau", "Kubrick"), java("o1"))
+    val byCode = (load("o1", ActorDirectorsByCode::class.java) as ActorDirectorsByCode).directors.map { it.name }
+    assertEquals(listOf("Lynch", "Murnau"), byCode.take(2), "codes are texts; the movies with none come last")
+    assertEquals(5, byCode.size)
+    assertEquals("Murnau", (load("o1", ActorDirectorByLastCode::class.java) as ActorDirectorByLastCode).director?.name)
+    assertEquals(emptyList(), directors("o2"))
+    assertEquals(null, first("o2"))
+    assertEquals(null, latest("o2"))
+    assertEquals(listOf("Tarr", "Ozu", "Varda", "Kurosawa"), directors("e1"), "an empty text is the lowest text, and has a value")
+    assertEquals("Tarr", first("e1"))
+    assertEquals("Tarr", latest("e1"))
+    assertEquals(listOf("Tarr", "Varda", "Ozu", "Kurosawa"), java("e1"))
+}
+
+/**
+ * mx's movies hold their years as texts on some and numbers on others: Akerman 'unknown', Bergman
+ * 1950, Chaplin 'early', Dreyer 20, and Eisenstein both 'zz' and 5. Neo4j, FalkorDB and Oracle read
+ * every text before every number, lowest first; Memgraph refuses to compare them.
+ */
+const val MIXED_SEED = """
+    CREATE (mx:PActor {id: 'mx', name: 'Mixed', createdBy: 'path-test'})
+    CREATE (x1:PMovie {id: 'x1', title: 'One', year: 'unknown', createdBy: 'path-test'})
+    CREATE (x2:PMovie {id: 'x2', title: 'Two', year: 1950, createdBy: 'path-test'})
+    CREATE (x3:PMovie {id: 'x3', title: 'Three', year: 'early', createdBy: 'path-test'})
+    CREATE (x4:PMovie {id: 'x4', title: 'Four', year: 20, createdBy: 'path-test'})
+    CREATE (x5:PMovie {id: 'x5', title: 'Five', year: 'zz', createdBy: 'path-test'})
+    CREATE (x6:PMovie {id: 'x6', title: 'Six', year: 5, createdBy: 'path-test'})
+    CREATE (akerman:PDirector {id: 'akerman', name: 'Akerman', createdBy: 'path-test'})
+    CREATE (bergman:PDirector {id: 'bergman', name: 'Bergman', createdBy: 'path-test'})
+    CREATE (chaplin:PDirector {id: 'chaplin', name: 'Chaplin', createdBy: 'path-test'})
+    CREATE (dreyer:PDirector {id: 'dreyer', name: 'Dreyer', createdBy: 'path-test'})
+    CREATE (eisenstein:PDirector {id: 'eisenstein', name: 'Eisenstein', createdBy: 'path-test'})
+    CREATE (mx)-[:ACTED_IN]->(x1) CREATE (mx)-[:ACTED_IN]->(x2) CREATE (mx)-[:ACTED_IN]->(x3)
+    CREATE (mx)-[:ACTED_IN]->(x4) CREATE (mx)-[:ACTED_IN]->(x5) CREATE (mx)-[:ACTED_IN]->(x6)
+    CREATE (x1)-[:DIRECTED_BY]->(akerman) CREATE (x2)-[:DIRECTED_BY]->(bergman) CREATE (x3)-[:DIRECTED_BY]->(chaplin)
+    CREATE (x4)-[:DIRECTED_BY]->(dreyer) CREATE (x5)-[:DIRECTED_BY]->(eisenstein) CREATE (x6)-[:DIRECTED_BY]->(eisenstein)
+"""
+
+/** What Neo4j, FalkorDB and Oracle read from [MIXED_SEED]: every text before every number, and each node by the first value that leads to it. */
+fun assertMixedOrderedPaths(load: (String, Class<*>) -> Any?) {
+    assertEquals(
+        listOf("Chaplin", "Akerman", "Eisenstein", "Dreyer", "Bergman"),
+        (load("mx", ActorDirectorsByYear::class.java) as ActorDirectorsByYear).directors.map { it.name },
+        "Eisenstein is reached first by 'zz', a text",
+    )
+    assertEquals(
+        listOf("Bergman", "Dreyer", "Eisenstein", "Akerman", "Chaplin"),
+        (load("mx", JavaActorDirectorsLatestFirst::class.java) as JavaActorDirectorsLatestFirst).directors.map { it.name },
+        "Eisenstein is reached first by 5, a number",
+    )
+    assertEquals("Chaplin", (load("mx", ActorFirstDirector::class.java) as ActorFirstDirector).director?.name)
+    assertEquals("Bergman", (load("mx", ActorLatestDirector::class.java) as ActorLatestDirector).director?.name)
+}
+
+/** The directors an actor worked with, by a property whose name is no identifier on its own. */
+@GraphView
+data class ActorDirectorsByReleaseYear(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "release year"),
+        Hop("DIRECTED_BY", Direction.OUTGOING),
+    ])
+    val directors: List<PDirector>,
+)
+
+/** Two hops that each name an order: refused, since the path can be read in one order only. */
+@GraphView
+data class ActorDirectorsOrderedTwice(
+    @Root val actor: PActor,
+    @ReadOnly
+    @GraphPath([
+        Hop("ACTED_IN", Direction.OUTGOING, label = "PMovie", orderBy = "year"),
+        Hop("DIRECTED_BY", Direction.OUTGOING, orderBy = "name"),
+    ])
+    val directors: List<PDirector>,
+)
+
 /**
  * Cypher-generation tests for `@GraphPath`. Paths emit a uniform CALL-subquery prolog
  * (OPTIONAL MATCH through the intermediate, `collect(DISTINCT … null-guard …)`), `head()` for a
@@ -102,6 +330,67 @@ class GraphPathQueryBuilderTests {
         listOf(CypherDialect.NEO4J_5, CypherDialect.NEO4J_4, CypherDialect.MEMGRAPH, CypherDialect.NEPTUNE).forEach { d ->
             assertTrue(query(ActorDirectors::class, d).contains("-[:DIRECTED_BY]->(directors:PDirector)"), "$d")
         }
+    }
+
+    @Test
+    fun `a hop that names an order sorts the path by the node it reaches before the targets are collected`() {
+        listOf(CypherDialect.NEO4J_5, CypherDialect.MEMGRAPH, CypherDialect.FALKORDB).forEach { d ->
+            val q = query(ActorFirstDirector::class, d)
+            assertTrue(q.contains("-[:ACTED_IN]->(director_hop0:PMovie)-[:DIRECTED_BY]->"), "$d: $q")
+            assertTrue(q.contains("WITH actor, director, director_hop0 ORDER BY director_hop0.year IS NULL, director_hop0.year ASC"), "$d: $q")
+            assertTrue(q.indexOf("ORDER BY director_hop0.year") < q.indexOf("head(collect(DISTINCT"), "$d: $q")
+        }
+        assertTrue(query(ActorLatestDirector::class, CypherDialect.NEO4J_5).contains("ORDER BY director_hop0.year IS NULL, director_hop0.year DESC"))
+    }
+
+    @Test
+    fun `a path ordered by its last hop sorts by the target, which it names once`() {
+        listOf(CypherDialect.NEO4J_5, CypherDialect.FALKORDB).forEach { d ->
+            val q = query(ActorDirectorsByName::class, d)
+            assertTrue(q.contains("-[:ACTED_IN]->(:PMovie)-[:DIRECTED_BY]->(directors"), "$d: $q")
+            assertTrue(q.contains("WITH actor, directors ORDER BY directors.name IS NULL, directors.name DESC"), "$d: $q")
+        }
+    }
+
+    @Test
+    fun `a path ordered by a hop read against its direction names the node that hop reaches`() {
+        val q = query(DirectorActorsLatestFirst::class, CypherDialect.NEO4J_5)
+        assertTrue(q.contains("(director)<-[:DIRECTED_BY]-(actors_hop0:PMovie)<-[:ACTED_IN]-(actors:PActor)"), q)
+        assertTrue(q.contains("ORDER BY actors_hop0.year IS NULL, actors_hop0.year DESC"), q)
+    }
+
+    @Test
+    fun `a Java view names the order of a hop as a Kotlin view does`() {
+        val hop = GraphViewModel.from(JavaActorDirectorsLatestFirst::class.java).relationships.single().hops.first()
+        assertEquals("year", hop.orderBy)
+        assertFalse(hop.ascending)
+        assertTrue(query(JavaActorDirectorsLatestFirst::class, CypherDialect.NEO4J_5).contains("ORDER BY directors_hop0.year IS NULL, directors_hop0.year DESC"))
+    }
+
+    @Test
+    fun `a path ordered by a property whose name is no identifier quotes it`() {
+        val q = query(ActorDirectorsByReleaseYear::class, CypherDialect.NEO4J_5)
+        assertTrue(q.contains("ORDER BY directors_hop0.`release year` IS NULL, directors_hop0.`release year` ASC"), q)
+    }
+
+    @Test
+    fun `a path with no order names no node it passes through`() {
+        val q = query(ActorDirectors::class, CypherDialect.NEO4J_5)
+        assertFalse(q.contains("ORDER BY"), q)
+        assertTrue(q.contains("-[:ACTED_IN]->(:PMovie)-"), q)
+    }
+
+    @Test
+    fun `a path a group key is read by may name no order`() {
+        val spec = GroupQuerySpec(Unit)
+        val e = runCatching { spec.path(PDirector::class.java, Hop("ACTED_IN", orderBy = "year"), Hop("DIRECTED_BY")) }.exceptionOrNull()
+        assertTrue(e is IllegalArgumentException, "$e")
+    }
+
+    @Test
+    fun `a path may be ordered by one hop only`() {
+        val e = runCatching { query(ActorDirectorsOrderedTwice::class, CypherDialect.NEO4J_5) }.exceptionOrNull()
+        assertTrue(e is IllegalArgumentException && e.message.orEmpty().contains("directors"), "$e")
     }
 
     @Test

@@ -275,7 +275,12 @@ data class GraphViewModel(
                     type = hop.type,
                     direction = hop.direction,
                     intermediateLabel = hop.label.ifEmpty { null },
+                    orderBy = hop.orderBy.ifEmpty { null },
+                    ascending = hop.ascending,
                 )
+            }
+            require(hops.count { it.orderBy != null } <= 1) {
+                "@GraphPath on field '$fieldName' names an order on more than one hop; a path is read in one order"
             }
             return RelationshipModel(
                 fieldName = fieldName,

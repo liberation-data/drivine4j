@@ -766,7 +766,7 @@ internal class GraphViewProjectionAssembler(
         // Where the grammar asks, the far node's labels are tested on what the path reached, and the
         // pattern names none: see CypherGrammar.testsPathEndAfterMatch.
         val afterMatch = grammar.testsPathEndAfterMatch
-        val matchPattern = buildPathMatchPattern(rootFieldName, rel, if (afterMatch) "($targetAlias)" else "($targetAlias:$targetLabelString)")
+        val matchPattern = buildPathMatchPattern(rootFieldName, rel, targetAlias, if (afterMatch) "($targetAlias)" else "($targetAlias:$targetLabelString)")
         val projection = buildRelationshipProjection(targetAlias, rel.elementType, visitCounts)
 
         // Guard against OPTIONAL MATCH null rows (mandatory for FalkorDB #1889); DISTINCT dedups
@@ -780,12 +780,41 @@ internal class GraphViewProjectionAssembler(
             appendLine("CALL {")
             appendLine("    WITH $rootFieldName")
             appendLine("    OPTIONAL MATCH $matchPattern")
+            orderedPathClause(rootFieldName, rel, targetAlias)?.let { appendLine("    $it") }
             append("    RETURN $returnExpr AS $targetAlias\n}")
         }
 
         context.addProlog(prolog)
         context.addBridgeVariables(listOf(targetAlias))
         return "$targetAlias AS $targetAlias"
+    }
+
+    /**
+     * The node a path's hop [i] reaches, as the pattern names it: the target where it is the last
+     * hop, a name of its own where it is the hop the path is ordered by, and none otherwise.
+     */
+    private fun pathNode(rel: RelationshipModel, targetAlias: String, i: Int): String? = when {
+        i == rel.hops.lastIndex -> targetAlias
+        i == rel.orderedHop -> "${targetAlias}_hop$i"
+        else -> null
+    }
+
+    /**
+     * For a path ordered by one of its hops, the rows sorted by that hop's node before the targets
+     * are collected. `collect(DISTINCT …)` keeps each target where it first occurs, so a list holds
+     * its targets in the order of the first node that leads to each, and `head` takes the first.
+     * A node of the hop with no value comes last whichever way the path is read: the engines put a
+     * null last when they read lowest first and first when they read highest first, so the sort asks
+     * whether the value is null before it reads the value.
+     */
+    private fun orderedPathClause(rootFieldName: String, rel: RelationshipModel, targetAlias: String): String? {
+        val i = rel.orderedHop ?: return null
+        val hop = rel.hops[i]
+        val node = requireNotNull(pathNode(rel, targetAlias, i)) { "The hop a path is ordered by names the node it reaches" }
+        val carried = listOf(rootFieldName, targetAlias, node).distinct().joinToString(", ")
+        val direction = if (hop.ascending) "ASC" else "DESC"
+        val value = "$node.${SchemaGrammar.identifier(requireNotNull(hop.orderBy))}"
+        return "WITH $carried ORDER BY $value IS NULL, $value $direction"
     }
 
     /**
@@ -821,7 +850,7 @@ internal class GraphViewProjectionAssembler(
      * anonymous (optionally labelled per [HopModel.intermediateLabel]); [finalNode] is the rendered
      * final node, e.g. `(directors:Director)` for projection or `(:Director)` for an existence check.
      */
-    private fun buildPathMatchPattern(rootAlias: String, rel: RelationshipModel, finalNode: String): String =
+    private fun buildPathMatchPattern(rootAlias: String, rel: RelationshipModel, targetAlias: String, finalNode: String): String =
         buildString {
             append("($rootAlias)")
             rel.hops.forEachIndexed { i, hop ->
@@ -830,7 +859,7 @@ internal class GraphViewProjectionAssembler(
                     append(finalNode)
                 } else {
                     val label = hop.intermediateLabel?.let { ":$it" } ?: ""
-                    append("($label)")
+                    append("(${pathNode(rel, targetAlias, i).orEmpty()}$label)")
                 }
             }
         }

@@ -32,8 +32,12 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
      * step also gives the relationship, as `eid` and `eprops`. A step with a depth above one is taken
      * from one to that many times, and a node may then be reached more than once. The nodes reached
      * are those that meet [where], which the pattern tests them for beside the last step's labels.
+     * [extra] are further columns, which may read any node of the pattern: the last as [alias], one
+     * before it as [stepNode] names it.
      */
-    fun reached(from: String, steps: List<Step>, alias: String, where: List<String> = emptyList()): GraphTable {
+    fun reached(
+        from: String, steps: List<Step>, alias: String, where: List<String> = emptyList(), extra: List<GraphTable.Column> = emptyList(),
+    ): GraphTable {
         val single = steps.size == 1 && steps.single().maxDepth == 1
         // A path of several steps is a line to a step, so each is read as the hop it is.
         val hop = if (steps.size == 1) " " else "\n        "
@@ -42,14 +46,17 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
             steps.forEachIndexed { i, step ->
                 append(hop).append(OracleSql.arrow(if (steps.size == 1) "e" else "e${i + 1}", step.type, step.direction))
                 if (step.maxDepth > 1) append("{1,${step.maxDepth}}")
-                val node = if (i == steps.lastIndex) alias else "m${i + 1}"
+                val node = stepNode(steps, i, alias)
                 val met = listOfNotNull(hasLabels(node, step.labels)) + if (i == steps.lastIndex) where else emptyList()
                 append(" ").append(OracleSql.node(node, met.takeIf { it.isNotEmpty() }?.joinToString(" AND ")))
             }
         }
         val relationship = if (single) listOf(GraphTable.Column("eid", "e.eid"), GraphTable.Column("eprops", "e.props")) else emptyList()
-        return graphTable(pattern, listOf(GraphTable.Column("src", "$from.nid")) + relationship + GraphTable.node(alias), alias)
+        return graphTable(pattern, listOf(GraphTable.Column("src", "$from.nid")) + relationship + GraphTable.node(alias) + extra, alias)
     }
+
+    /** The name [reached] gives the node step [i] of [steps] reaches: [alias] for the last, `m1`, `m2`… before it. */
+    fun stepNode(steps: List<Step>, i: Int, alias: String): String = if (i == steps.lastIndex) alias else "m${i + 1}"
 
     /**
      * The steps that reach the nodes of [relationship]: for a path, one for each hop, the far node of

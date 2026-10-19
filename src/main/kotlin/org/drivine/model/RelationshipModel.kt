@@ -15,6 +15,9 @@ data class HopModel(
     val type: String,
     val direction: Direction,
     val intermediateLabel: String? = null,
+    /** The property of the node this hop reaches that the path is read in the order of; null for none. */
+    val orderBy: String? = null,
+    val ascending: Boolean = true,
 )
 
 /**
@@ -142,6 +145,9 @@ data class RelationshipModel(
 
     /** Whether this relationship is a multi-hop path (a @GraphPath rather than a @GraphRelationship). */
     val isPath: Boolean get() = hops.isNotEmpty()
+
+    /** The index of the hop of a path that names its order, or null when it is read in no order. */
+    val orderedHop: Int? get() = hops.indexOfFirst { it.orderBy != null }.takeIf { it >= 0 }
 
     /**
      * Whether the field is a flat list read over a variable-length pattern (`maxDepth` above 1), so

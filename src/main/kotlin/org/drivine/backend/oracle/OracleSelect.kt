@@ -450,16 +450,87 @@ internal class OracleSelect(
         val row = scope.row(relationship.fieldName)
         val path = scope.row("reached")
         val value = element(row, targetType, visits, relationship.fieldName)
+        val order = pathOrder(relationship, steps, path)
         val once = Derived(
-            Query("$path.src, $path.nid, ANY_VALUE($path.doc) AS doc", rows.reached(parent, steps, path), tail = listOf("GROUP BY $path.src, $path.nid")).text(),
+            Query(
+                "$path.src, $path.nid, ANY_VALUE($path.doc) AS doc${order?.selected.orEmpty()}",
+                rows.reached(parent, steps, path, extra = order?.columns.orEmpty()),
+                tail = listOf("GROUP BY $path.src, $path.nid"),
+            ).text(),
             row,
         )
         val reached = listOf("$row.src = $parent.nid")
+        val sort = order?.by(row) ?: "$row.nid"
         return if (relationship.isCollection) {
-            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", once, reached).nested()}, $EMPTY_ARRAY)"
+            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $sort RETURNING JSON)", once, reached).nested()}, $EMPTY_ARRAY)"
         } else {
-            Query(value, once, reached, listOf(first("$row.nid"))).nested()
+            Query(value, once, reached, listOf(first(sort))).nested()
         }
+    }
+
+    /**
+     * The order of a path that one of its hops names, as Cypher reads it: each node reached keeps the
+     * value of the first node of that hop that leads to it, the lowest or, read highest first, the
+     * highest. The property's type is not known here, since the node the hop reaches is mapped to no
+     * class, so it is read twice: as a number where it is stored as one, and as text. As the graph
+     * engines order them, every text comes before every number, lowest first; and a node of the hop
+     * that has no value comes last whichever way the path is read. `JSON_VALUE` reads a stored `""`
+     * as null, so whether the node holds one is read on its own: it is a text, and the lowest.
+     */
+    private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
+        val i = relationship.orderedHop ?: return null
+        val hop = relationship.hops[i]
+        val node = rows.stepNode(steps, i, path)
+        val key = requireNotNull(hop.orderBy)
+        return PathOrder(
+            listOf(
+                GraphTable.Column("order_number", SqlKind.NUMBER.read("$node.props", path(key, ".numberOnly()"))),
+                GraphTable.Column("order_text", property(node, key, SqlKind.TEXT)),
+                GraphTable.Column("order_empty", "CASE WHEN JSON_EXISTS($node.props, ${path(key, "?(@ == \"\")")}) THEN 1 END"),
+            ),
+            hop.ascending,
+            path,
+        )
+    }
+
+    /**
+     * The order of a path, read from the [columns] of each way to a node and kept for the node by
+     * [selected]: `order_kind` is 0 for a text and 1 for a number, and null where the node of the hop
+     * has no value; `order_number` is the value of a number, and `order_text` of a text other than
+     * `""`. Each is ordered only where the node's value is of its kind, so a node kept as a text is
+     * not ordered by a number that also leads to it.
+     */
+    private class PathOrder(val columns: List<GraphTable.Column>, private val ascending: Boolean, private val path: String) {
+        private val keep = if (ascending) "MIN" else "MAX"
+        private val direction = if (ascending) "ASC" else "DESC"
+
+        /**
+         * What the rows grouped by the node reached keep of the order. Read lowest first, a node that
+         * a `""` leads to keeps no text, which orders first among the texts; read highest first, it
+         * keeps the highest text, and none only where every text that leads to it is `""`.
+         */
+        val selected: String
+            get() {
+                val text = "CASE WHEN $path.order_number IS NULL THEN $path.order_text END"
+                val kept = if (ascending) "CASE WHEN MAX($path.order_empty) IS NULL THEN MIN($text) END" else "MAX($text)"
+                return """
+                    , $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL OR $path.order_empty = 1 THEN 0 END) AS order_kind
+                    , $keep($path.order_number) AS order_number
+                    , $kept AS order_text
+                """.trimIndent().lines().joinToString(" ")
+            }
+
+        /**
+         * The order of the row [row]: the nodes with no value last, texts before numbers, then the
+         * value, with the node's id last so that equal values are read in one order. A text with no
+         * value is `""`, the lowest text.
+         */
+        fun by(row: String): String = listOf(
+            "$row.order_kind $direction NULLS LAST",
+            "CASE WHEN $row.order_kind = 1 THEN $row.order_number END $direction",
+            "CASE WHEN $row.order_kind = 0 THEN $row.order_text END $direction NULLS ${if (ascending) "FIRST" else "LAST"}",
+            "$row.nid",
+        ).joinToString(", ")
     }
 
     /**
