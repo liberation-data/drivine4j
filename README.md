@@ -719,12 +719,12 @@ graphObjectManager.loadNearest<PropositionView>(queryVector, topK = 20) {
 ```
 
 The codegen emits this `loadNearest<T>(vector, topK, threshold) { where { } }` extension for each
-`@VectorIndex`-bearing **view** (its root fragment) *and* bare **fragment** (mirroring the generated
-`loadAll { }`). The filtered form works on a fragment too — filter its own properties directly:
+`@VectorIndex`-bearing **view** (its root fragment). The filtered form works on a bare **fragment** too,
+given the fragment's generated query object — filter its own properties directly:
 
 ```kotlin
 // filtered vector search over a bare @NodeFragment
-graphObjectManager.loadNearest<ChunkNode>(ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
+graphObjectManager.loadNearest<ChunkNode, _>(ChunkNodeQueryDsl.INSTANCE, queryVector, topK = 20) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
@@ -767,7 +767,7 @@ full-text index throw `UnsupportedOperationException`.
 predicates in one query, on a view or a bare fragment:
 
 ```kotlin
-graphObjectManager.loadMatching<ChunkNode>(ChunkNodeQueryDsl.INSTANCE, "graph databases", topK = 20) {
+graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
@@ -835,7 +835,7 @@ graphObjectManager.count<ChunkNode> { where { query.containerSectionId eq "sec-1
 graphObjectManager.loadAll<ContentElementNode> { where { query.instanceOf<ChunkNode>() } }
 
 // to filter a subtype by its OWN property, pass that subtype's DSL
-graphObjectManager.loadAll<ChunkNode>(ChunkNodeQueryDsl.INSTANCE) {
+graphObjectManager.loadAll<ChunkNode, _>(ChunkNodeQueryDsl.INSTANCE) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
