@@ -7,6 +7,8 @@ import org.drivine.annotation.Root
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.ActorDirectorsByYear
+import org.drivine.query.JavaActorDirectorsLatestFirst
 import org.drivine.query.ORDERED_SEED
 import org.drivine.query.assertOrderedPaths
 import org.junit.jupiter.api.BeforeEach
@@ -133,6 +135,25 @@ class OracleReadSmokeTest {
         OracleTestDatabase.seed(pm, ORDERED_SEED)
 
         assertOrderedPaths { id, view -> manager.load(id, view) }
+    }
+
+    @Test
+    fun `a path ordered by a property that holds texts and numbers reads every text before every number, as Neo4j does`() {
+        OracleTestDatabase.clear(pm)
+        OracleTestDatabase.seed(
+            pm,
+            """
+            CREATE (o:PActor {id: 'o', name: 'Mixed'})
+            CREATE (t1:PMovie {id: 't1', title: 'One', year: 'unknown'}), (t2:PMovie {id: 't2', title: 'Two', year: 1950})
+            CREATE (t3:PMovie {id: 't3', title: 'Three', year: 'early'}), (t4:PMovie {id: 't4', title: 'Four', year: 20})
+            CREATE (a:PDirector {id: 'a', name: 'A'}), (b:PDirector {id: 'b', name: 'B'}), (c:PDirector {id: 'c', name: 'C'}), (d:PDirector {id: 'd', name: 'D'})
+            CREATE (o)-[:ACTED_IN]->(t1), (o)-[:ACTED_IN]->(t2), (o)-[:ACTED_IN]->(t3), (o)-[:ACTED_IN]->(t4)
+            CREATE (t1)-[:DIRECTED_BY]->(a), (t2)-[:DIRECTED_BY]->(b), (t3)-[:DIRECTED_BY]->(c), (t4)-[:DIRECTED_BY]->(d)
+            """,
+        )
+
+        assertEquals(listOf("C", "A", "D", "B"), manager.load("o", ActorDirectorsByYear::class.java)!!.directors.map { it.name })
+        assertEquals(listOf("B", "D", "A", "C"), manager.load("o", JavaActorDirectorsLatestFirst::class.java)!!.directors.map { it.name })
     }
 
     @Test

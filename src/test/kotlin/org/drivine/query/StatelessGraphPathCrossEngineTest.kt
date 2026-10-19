@@ -34,9 +34,9 @@ private fun verifyPaths(gom: StatelessGraphObjectManager) {
     // node without that label is no end of it, on a1's path either.
     assertTrue(gom.load("a2", ActorDirectors::class.java)!!.directors.isEmpty())
     // required path filters a2 out: the studio is no director
-    // o1 is from ORDERED_SEED, which is seeded beside SEED, and has directors of its own.
+    // o1 and o3 are from ORDERED_SEED, which is seeded beside SEED, and have directors of their own.
     val ids = gom.loadAll(ActorRequiredDirector::class.java).map { it.actor.id }.toSet()
-    assertEquals(setOf("a1", "o1"), ids)
+    assertEquals(setOf("a1", "o1", "o3"), ids)
     assertOrderedPaths { id, view -> gom.load(id, view) }
 }
 

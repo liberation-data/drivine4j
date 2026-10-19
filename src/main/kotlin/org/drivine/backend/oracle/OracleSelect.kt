@@ -472,8 +472,9 @@ internal class OracleSelect(
      * The order of a path that one of its hops names, as Cypher reads it: each node reached keeps the
      * value of the first node of that hop that leads to it, the lowest or, read highest first, the
      * highest. The property's type is not known here, since the node the hop reaches is mapped to no
-     * class, so it is read twice: as a number, which is null for any value that is not one, and as
-     * text. Numbers come first, in their order, then the rest in the order of their text.
+     * class, so it is read twice: as a number where it is stored as one, and as text. As the graph
+     * engines order them, every text comes before every number, lowest first; and a node of the hop
+     * that has no value comes last whichever way the path is read.
      */
     private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
         val i = relationship.orderedHop ?: return null
@@ -482,7 +483,7 @@ internal class OracleSelect(
         val key = requireNotNull(hop.orderBy)
         return PathOrder(
             listOf(
-                GraphTable.Column("order_number", property(node, key, SqlKind.NUMBER)),
+                GraphTable.Column("order_number", SqlKind.NUMBER.read("$node.props", path(key, ".numberOnly()"))),
                 GraphTable.Column("order_text", property(node, key, SqlKind.TEXT)),
             ),
             hop.ascending,
@@ -490,16 +491,29 @@ internal class OracleSelect(
         )
     }
 
+    /**
+     * The order of a path, read from the [columns] of each way to a node and kept for the node by
+     * [selected]: `order_kind` is 0 for a text and 1 for a number, and null where the node of the hop
+     * has no value; `order_text` is the value of a text only, so that a number is ordered as one.
+     */
     private class PathOrder(val columns: List<GraphTable.Column>, private val ascending: Boolean, private val path: String) {
         private val keep = if (ascending) "MIN" else "MAX"
         private val direction = if (ascending) "ASC" else "DESC"
 
         /** What the rows grouped by the node reached keep of the order. */
         val selected: String
-            get() = ", $keep($path.order_number) AS order_number, $keep($path.order_text) AS order_text"
+            get() = """
+                , $keep(CASE WHEN $path.order_number IS NOT NULL THEN 1 WHEN $path.order_text IS NOT NULL THEN 0 END) AS order_kind
+                , $keep($path.order_number) AS order_number
+                , $keep(CASE WHEN $path.order_number IS NULL THEN $path.order_text END) AS order_text
+            """.trimIndent().lines().joinToString(" ")
 
-        /** The order of the row [row], with the node's id last so that equal values are read in one order. */
-        fun by(row: String): String = "$row.order_number $direction NULLS LAST, $row.order_text $direction, $row.nid"
+        /**
+         * The order of the row [row]: the nodes with no value last, texts before numbers, then the
+         * value, with the node's id last so that equal values are read in one order.
+         */
+        fun by(row: String): String =
+            "$row.order_kind $direction NULLS LAST, $row.order_number $direction NULLS LAST, $row.order_text $direction NULLS LAST, $row.nid"
     }
 
     /**

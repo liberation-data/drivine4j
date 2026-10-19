@@ -803,14 +803,18 @@ internal class GraphViewProjectionAssembler(
      * For a path ordered by one of its hops, the rows sorted by that hop's node before the targets
      * are collected. `collect(DISTINCT …)` keeps each target where it first occurs, so a list holds
      * its targets in the order of the first node that leads to each, and `head` takes the first.
+     * A node of the hop with no value comes last whichever way the path is read: the engines put a
+     * null last when they read lowest first and first when they read highest first, so the sort asks
+     * whether the value is null before it reads the value.
      */
     private fun orderedPathClause(rootFieldName: String, rel: RelationshipModel, targetAlias: String): String? {
         val i = rel.orderedHop ?: return null
         val hop = rel.hops[i]
-        val node = pathNode(rel, targetAlias, i) ?: return null
+        val node = requireNotNull(pathNode(rel, targetAlias, i)) { "The hop a path is ordered by names the node it reaches" }
         val carried = listOf(rootFieldName, targetAlias, node).distinct().joinToString(", ")
         val direction = if (hop.ascending) "ASC" else "DESC"
-        return "WITH $carried ORDER BY $node.${SchemaGrammar.identifier(requireNotNull(hop.orderBy))} $direction"
+        val value = "$node.${SchemaGrammar.identifier(requireNotNull(hop.orderBy))}"
+        return "WITH $carried ORDER BY $value IS NULL, $value $direction"
     }
 
     /**

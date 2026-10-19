@@ -504,7 +504,7 @@ data class SessionStarter(
 )
 ```
 
-Every backend reads the order the same way. On Oracle the node a hop passes through is mapped to no class, so its property is compared as a number where it is one and as text otherwise, numbers first.
+A node of the ordered hop that has no value for the property comes last, whichever way the path is read. The property should hold values of one type: every backend reads the order the same way where it does, and a text of digits such as `'0100'` is ordered as text. Where it holds texts on some nodes and numbers on others, Neo4j, FalkorDB and Oracle read every text before every number, lowest first, and Memgraph refuses to compare them.
 
 #### 6. Aggregates - Counting & Summarizing Without Loading
 
