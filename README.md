@@ -489,6 +489,23 @@ data class ActorDirectors(
 
 The far node is **de-duplicated** (an actor who made two movies by the same director gets that director once). Field cardinality mirrors `@GraphRelationship`: `List<T>` is a collection, `T?` a single optional, `T` a required single (roots lacking the path are filtered out). Each `Hop`'s `label` optionally constrains the node it reaches; `maxDepth` does not apply (a path is a fixed hop list, not variable-length recursion).
 
+One hop may name an **order**: a property of the node it reaches, read lowest first unless `ascending = false`. A list then holds its targets in the order of the first node of that hop that leads to each, and a single field holds the target the first such node leads to:
+
+```kotlin
+@GraphView
+data class SessionStarter(
+    @Root val session: Session,
+    @ReadOnly
+    @GraphPath([
+        Hop("HAS_MESSAGE", Direction.OUTGOING, label = "Message", orderBy = "sentAt"),  // earliest message first
+        Hop("AUTHORED_BY", Direction.OUTGOING),
+    ])
+    val startedBy: Person?,   // who wrote the first message
+)
+```
+
+Every backend reads the order the same way. On Oracle the node a hop passes through is mapped to no class, so its property is compared as a number where it is one and as text otherwise, numbers first.
+
 #### 6. Aggregates - Counting & Summarizing Without Loading
 
 `@Count` and `@Aggregate` add per-root scalar fields computed in the query, so you don't load a collection just to size or summarize it:

@@ -103,8 +103,14 @@ class GroupQuerySpec<Q : Any>(
      */
     inline fun <reified N : Any> path(vararg hops: Hop): NodePath<N> = path(N::class.java, *hops)
 
-    /** [path] with the class as an argument, for Java. */
-    fun <N : Any> path(target: Class<N>, vararg hops: Hop): NodePath<N> = NodePath(target, hops.toList())
+    /**
+     * [path] with the class as an argument, for Java. A key is the node at the end, which every way
+     * to it gives alike, so no hop of it may name an order.
+     */
+    fun <N : Any> path(target: Class<N>, vararg hops: Hop): NodePath<N> {
+        require(hops.none { it.orderBy.isNotEmpty() }) { "A path a key is read by is read in no order; no hop of it may name one" }
+        return NodePath(target, hops.toList())
+    }
 
     /** A [Hop] for Java, which cannot write an annotation as a value. An empty [label] asks nothing of the node the hop reaches. */
     @JvmOverloads

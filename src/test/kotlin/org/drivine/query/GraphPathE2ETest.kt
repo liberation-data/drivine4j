@@ -81,6 +81,13 @@ class GraphPathE2ETest @Autowired constructor(
     }
 
     @Test
+    fun `a path ordered by a hop reaches its targets in that order, and a single one is the first`() {
+        persistenceManager.execute(QuerySpecification.withStatement(ORDERED_SEED.trimIndent()))
+
+        assertOrderedPaths { id, view -> graphObjectManager.load(id, view) }
+    }
+
+    @Test
     fun `required path filters out roots lacking it`() {
         val ids = graphObjectManager.loadAll(ActorRequiredDirector::class.java).map { it.actor.id }.toSet()
         assertEquals(setOf("a1", "a3"), ids)  // a2 has no director path → excluded

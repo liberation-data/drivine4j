@@ -8,10 +8,17 @@ package org.drivine.annotation
  * @param label optional label constraining the node this hop reaches; empty means unconstrained.
  *   On the final hop the target's labels come from the mapped field's element type, so a label here
  *   is redundant; on intermediate hops it constrains (and documents) the node being skipped.
+ * @param orderBy optional property of the node this hop reaches, to read the path in its order:
+ *   the targets of a list come in the order of the first node of this hop that leads to each, and a
+ *   single target is the one the first such node leads to. Empty means no order. One hop of a path
+ *   may name one.
+ * @param ascending whether [orderBy] reads lowest first (the default) or highest first
  */
 @Retention(AnnotationRetention.RUNTIME)
 annotation class Hop(
     val type: String,
     val direction: Direction = Direction.OUTGOING,
     val label: String = "",
+    val orderBy: String = "",
+    val ascending: Boolean = true,
 )

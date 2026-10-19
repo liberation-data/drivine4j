@@ -34,8 +34,10 @@ private fun verifyPaths(gom: StatelessGraphObjectManager) {
     // node without that label is no end of it, on a1's path either.
     assertTrue(gom.load("a2", ActorDirectors::class.java)!!.directors.isEmpty())
     // required path filters a2 out: the studio is no director
+    // o1 is from ORDERED_SEED, which is seeded beside SEED, and has directors of its own.
     val ids = gom.loadAll(ActorRequiredDirector::class.java).map { it.actor.id }.toSet()
-    assertEquals(setOf("a1"), ids)
+    assertEquals(setOf("a1", "o1"), ids)
+    assertOrderedPaths { id, view -> gom.load(id, view) }
 }
 
 private fun verifyAggregates(gom: StatelessGraphObjectManager) {
@@ -98,6 +100,7 @@ class StatelessGraphPathMemgraphTest {
     fun seed() {
         pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
         pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+        pm.execute(QuerySpecification.withStatement(ORDERED_SEED.trimIndent()))
     }
 
     @Test
@@ -136,6 +139,7 @@ class StatelessGraphPathFalkorDbTest {
     fun seed() {
         pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
         pm.execute(QuerySpecification.withStatement(SEED.trimIndent()))
+        pm.execute(QuerySpecification.withStatement(ORDERED_SEED.trimIndent()))
     }
 
     @Test

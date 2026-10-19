@@ -450,16 +450,56 @@ internal class OracleSelect(
         val row = scope.row(relationship.fieldName)
         val path = scope.row("reached")
         val value = element(row, targetType, visits, relationship.fieldName)
+        val order = pathOrder(relationship, steps, path)
         val once = Derived(
-            Query("$path.src, $path.nid, ANY_VALUE($path.doc) AS doc", rows.reached(parent, steps, path), tail = listOf("GROUP BY $path.src, $path.nid")).text(),
+            Query(
+                "$path.src, $path.nid, ANY_VALUE($path.doc) AS doc${order?.selected.orEmpty()}",
+                rows.reached(parent, steps, path, extra = order?.columns.orEmpty()),
+                tail = listOf("GROUP BY $path.src, $path.nid"),
+            ).text(),
             row,
         )
         val reached = listOf("$row.src = $parent.nid")
+        val sort = order?.by(row) ?: "$row.nid"
         return if (relationship.isCollection) {
-            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $row.nid RETURNING JSON)", once, reached).nested()}, $EMPTY_ARRAY)"
+            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $sort RETURNING JSON)", once, reached).nested()}, $EMPTY_ARRAY)"
         } else {
-            Query(value, once, reached, listOf(first("$row.nid"))).nested()
+            Query(value, once, reached, listOf(first(sort))).nested()
         }
+    }
+
+    /**
+     * The order of a path that one of its hops names, as Cypher reads it: each node reached keeps the
+     * value of the first node of that hop that leads to it, the lowest or, read highest first, the
+     * highest. The property's type is not known here, since the node the hop reaches is mapped to no
+     * class, so it is read twice: as a number, which is null for any value that is not one, and as
+     * text. Numbers come first, in their order, then the rest in the order of their text.
+     */
+    private fun pathOrder(relationship: RelationshipModel, steps: List<Step>, path: String): PathOrder? {
+        val i = relationship.orderedHop ?: return null
+        val hop = relationship.hops[i]
+        val node = rows.stepNode(steps, i, path)
+        val key = requireNotNull(hop.orderBy)
+        return PathOrder(
+            listOf(
+                GraphTable.Column("order_number", property(node, key, SqlKind.NUMBER)),
+                GraphTable.Column("order_text", property(node, key, SqlKind.TEXT)),
+            ),
+            hop.ascending,
+            path,
+        )
+    }
+
+    private class PathOrder(val columns: List<GraphTable.Column>, private val ascending: Boolean, private val path: String) {
+        private val keep = if (ascending) "MIN" else "MAX"
+        private val direction = if (ascending) "ASC" else "DESC"
+
+        /** What the rows grouped by the node reached keep of the order. */
+        val selected: String
+            get() = ", $keep($path.order_number) AS order_number, $keep($path.order_text) AS order_text"
+
+        /** The order of the row [row], with the node's id last so that equal values are read in one order. */
+        fun by(row: String): String = "$row.order_number $direction NULLS LAST, $row.order_text $direction, $row.nid"
     }
 
     /**

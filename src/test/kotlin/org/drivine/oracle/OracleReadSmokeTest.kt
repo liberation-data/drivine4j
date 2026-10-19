@@ -7,6 +7,8 @@ import org.drivine.annotation.Root
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.ORDERED_SEED
+import org.drivine.query.assertOrderedPaths
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import sample.fulltext.ArticleNode
@@ -123,6 +125,14 @@ class OracleReadSmokeTest {
         val ids = (1..4000).joinToString(", ") { "'é$it'" }
         assertEquals(1, manager.deleteAll(Claim::class.java, "n.id IN ($ids, 'c1')"))
         assertEquals(listOf("c2"), manager.loadAll(Claim::class.java).map { it.id })
+    }
+
+    @Test
+    fun `a path ordered by a hop reaches its targets in that order, and a single one is the first`() {
+        OracleTestDatabase.clear(pm)
+        OracleTestDatabase.seed(pm, ORDERED_SEED)
+
+        assertOrderedPaths { id, view -> manager.load(id, view) }
     }
 
     @Test
