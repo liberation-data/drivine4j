@@ -52,6 +52,10 @@ private fun verify(gom: StatelessGraphObjectManager) {
     // none: no mention matches — includes propositions with no mentions at all (p3)
     assertEquals(setOf("p2", "p3"), ids { where { query.mentions.none { resolvedId eq "ent-1" } } })
     assertEquals(setOf("p1", "p2", "p3"), ids { where { query.mentions.none { resolvedId eq "absent" } } })
+
+    // An empty block asks only whether there is a mention at all.
+    assertEquals(setOf("p1", "p2"), ids { where { query.mentions.any { } } })
+    assertEquals(setOf("p3"), ids { where { query.mentions.none { } } })
 }
 
 /**
