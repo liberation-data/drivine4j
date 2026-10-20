@@ -102,7 +102,8 @@ interface CypherGrammar {
 
     /**
      * Generates a WHERE-clause condition asserting that a relationship exists.
-     * Used for non-nullable single relationships in GraphView queries.
+     * Used for non-nullable single relationships in GraphView queries, and for an empty `any { }` /
+     * `none { }` block, which passes no [targetLabels]: the far node is then left unlabelled.
      */
     fun existenceCheck(rootAlias: String, direction: String, targetLabels: String): String
 
@@ -251,6 +252,9 @@ sealed interface TemporalOrderSupport {
 /** Neo4j 4 and 5 hold a moment as a native temporal value, whose milliseconds since the epoch it gives as a property. */
 private fun neo4jEpochSeconds(moment: String) = TemporalOrderSupport.Written("$moment.epochMillis / 1000.0")
 
+/** `:A:B` for labels `A:B`, and nothing for none: `(:)` parses on no engine. */
+private fun labelled(targetLabels: String) = if (targetLabels.isEmpty()) "" else ":$targetLabels"
+
 /**
  * Neo4j 5.x — `EXISTS { pattern }` subquery syntax.
  */
@@ -258,7 +262,7 @@ class Neo4j5Grammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
-        "EXISTS { ($rootAlias)$direction(_:$targetLabels) }"
+        "EXISTS { ($rootAlias)$direction(_${labelled(targetLabels)}) }"
 
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int) =
         FilteredExistenceResult("EXISTS { $relationshipPattern WHERE $whereClause }")
@@ -322,7 +326,7 @@ class Neo4j4Grammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
-        "exists(($rootAlias)$direction(:$targetLabels))"
+        "exists(($rootAlias)$direction(${labelled(targetLabels)}))"
 
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int) =
         FilteredExistenceResult("EXISTS { $relationshipPattern WHERE $whereClause }")
@@ -345,7 +349,7 @@ open class OpenCypherGrammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
-        "($rootAlias)$direction(:$targetLabels)"
+        "($rootAlias)$direction(${labelled(targetLabels)})"
 
     override fun filteredExistenceCheck(relationshipPattern: String, whereClause: String, uniqueId: Int): FilteredExistenceResult {
         val countVar = "_ec$uniqueId"

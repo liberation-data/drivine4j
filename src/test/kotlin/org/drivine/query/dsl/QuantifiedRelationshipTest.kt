@@ -1,7 +1,9 @@
 package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
+import org.drivine.query.grammar.FalkorDbCypherGrammar
 import org.drivine.query.grammar.MemgraphGrammar
+import org.drivine.query.grammar.Neo4j4Grammar
 import org.drivine.query.grammar.Neo4j5Grammar
 import org.drivine.query.sort.ApocSortMapsEmitter
 import org.drivine.query.sort.CallSubqueryEmitter
@@ -102,6 +104,27 @@ class QuantifiedRelationshipTest {
             conditionsOf { where { query.mentions.none { resolvedId eq "ent-1" } } }, viewModel, grammar,
         ).whereClause!!
         assertTrue(none.startsWith("NOT (size(["))
+    }
+
+    @Test
+    fun `an empty block checks for the relationship with an unlabelled far node`() {
+        val rendered = listOf(
+            Neo4j5Grammar(ApocSortMapsEmitter()) to "EXISTS { (proposition)-[:HAS_MENTION]->(_) }",
+            Neo4j4Grammar(ApocSortMapsEmitter()) to "exists((proposition)-[:HAS_MENTION]->())",
+            MemgraphGrammar(CallSubqueryEmitter()) to "(proposition)-[:HAS_MENTION]->()",
+            FalkorDbCypherGrammar(CallSubqueryEmitter()) to "(proposition)-[:HAS_MENTION]->()",
+        )
+        rendered.forEach { (grammar, check) ->
+            val any = CypherGenerator.buildWhereClause(
+                conditionsOf { where { query.mentions.any { } } }, viewModel, grammar,
+            ).whereClause!!
+            assertEquals(check, any)
+
+            val none = CypherGenerator.buildWhereClause(
+                conditionsOf { where { query.mentions.none { } } }, viewModel, grammar,
+            ).whereClause!!
+            assertEquals("NOT ($check)", none)
+        }
     }
 
     // ----- Projected-collection mode (the vector-search path) -----
