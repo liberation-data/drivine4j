@@ -4,6 +4,8 @@ import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.schema.SchemaGrammar
@@ -28,9 +30,13 @@ class JdbcConnectionProvider(
     override val graphName: String = DEFAULT_GRAPH,
 ) : ConnectionProvider, NativeDriverSource<DataSource> {
 
-    /** Oracle keeps a graph's indexes and constraints over its tables; no other JDBC store has a graph yet. */
+    /** Oracle and Postgres keep a graph's indexes and constraints over its tables; another JDBC store has no graph. */
     override val schemaGrammar: SchemaGrammar by lazy {
-        if (type == DatabaseType.ORACLE) OracleSchemaGrammar(OracleGraph(graphName)) else UnsupportedSchemaGrammar(type.value)
+        when (type) {
+            DatabaseType.ORACLE -> OracleSchemaGrammar(OracleGraph(graphName))
+            DatabaseType.POSTGRES -> PostgresSchemaGrammar(PostgresGraph(graphName))
+            else -> UnsupportedSchemaGrammar(type.value)
+        }
     }
 
     /** The data source behind this provider. Closed by [end] only if this provider made it. */

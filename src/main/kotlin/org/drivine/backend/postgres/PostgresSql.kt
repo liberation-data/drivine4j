@@ -31,26 +31,38 @@ internal object PostgresSql {
         return literal(key)
     }
 
-    /** Whether the node [alias] carries [label]: the form the index over labels answers. A label is data, so it is written into the literal. */
-    fun hasLabel(alias: String, label: String): String = "$alias.labels @> ${literal("[${quoted(label)}]")}"
-
-    /** Whether the node [alias] carries every one of [labels], in one test the index over labels answers; null when there are none to carry. */
-    fun hasLabels(alias: String, labels: Collection<String>): String? =
-        labels.takeIf { it.isNotEmpty() }?.let { "$alias.labels @> ${literal(it.joinToString(",", "[", "]", transform = ::quoted))}" }
-
-    /** The JSON value of the property [key] of the node or relationship [alias]. */
-    fun value(alias: String, key: String): String = "($alias.props -> ${keyOf(key)})"
+    /** [alias]'s column [column]; the column of the table itself, as an index names it, for an empty alias. */
+    private fun column(alias: String, column: String): String = if (alias.isEmpty()) column else "$alias.$column"
 
     /**
-     * The property [key] of the node or relationship [alias], read as [kind]. The stamp is a column.
+     * Whether the node [alias] carries [label]: the form the index over labels answers, and the predicate
+     * of a partial index over the label's nodes (see [PostgresSchemaGrammar]). A label is data, so it is
+     * written into the literal.
+     */
+    fun hasLabel(alias: String, label: String): String = "${column(alias, "labels")} @> ${literal("[${quoted(label)}]")}"
+
+    /**
+     * Whether the node [alias] carries every one of [labels]; null when there are none to carry. Each
+     * label is a test of its own, so a partial index over the nodes of any one of them is seen to hold
+     * the nodes asked for.
+     */
+    fun hasLabels(alias: String, labels: Collection<String>): String? =
+        labels.takeIf { it.isNotEmpty() }?.joinToString(" AND ") { hasLabel(alias, it) }
+
+    /** The JSON value of the property [key] of the node or relationship [alias]. */
+    fun value(alias: String, key: String): String = "(${column(alias, "props")} -> ${keyOf(key)})"
+
+    /**
+     * The property [key] of the node or relationship [alias], read as [kind]. The stamp is a column. For
+     * an empty alias, the table's own column, as an index over the property names it.
      *
      * A number is read only where one is stored, and is null where the property holds anything else, as
      * the graph engines compare a text with a number as unequal: `'7'` is not `7`. A moment or a date is
      * read from the text it is stored as.
      */
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String {
-        if (key == Stamps.PROPERTY) return "$alias.stamp"
-        val text = "($alias.props ->> ${keyOf(key)})"
+        if (key == Stamps.PROPERTY) return column(alias, "stamp")
+        val text = "(${column(alias, "props")} ->> ${keyOf(key)})"
         return when (kind) {
             SqlKind.TEXT -> text
             SqlKind.NUMBER -> number(alias, key)

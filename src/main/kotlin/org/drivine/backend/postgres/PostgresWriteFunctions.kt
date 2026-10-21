@@ -17,7 +17,7 @@ import org.drivine.query.PatchOutcomes
  * - `<graph>_find(labels, key, id)` finds the node of a shape by its id and locks it. The node is found
  *   without a lock, then locked by its key and looked at again: another writer may have changed it in
  *   between. The query is written for the shape it is asked, so it is planned as a query over that
- *   label and property, which a labelled index answers.
+ *   label and property, which the partial index of a range index or a uniqueness constraint answers.
  * - `<graph>_owns(bag, key)` says whether a property bag owns a stored key.
  * - `<graph>_write(plan, shapes, mark, returns, patched_if)` carries out the plan. `shapes` are the
  *   shapes its steps name by number, each `{labels, key}`; `mark` is the stamp new relationship tokens
@@ -49,7 +49,9 @@ DECLARE
     v_row $nodes;
 BEGIN
     LOOP
-        EXECUTE format('SELECT min(n.nid) FROM $nodes n WHERE n.props ->> %L = ${'$'}1 AND n.labels @> %L::jsonb', p_key, p_labels)
+        -- Each label is a test of its own, as a statement writes it, so a partial index over one is used.
+        EXECUTE format('SELECT min(n.nid) FROM $nodes n WHERE (n.props ->> %L) = ${'$'}1', p_key) ||
+            COALESCE((SELECT string_agg(format(' AND n.labels @> %L::jsonb', jsonb_build_array(l)), '') FROM jsonb_array_elements_text(p_labels) l), '')
             INTO v_nid USING p_id;
         IF v_nid IS NULL THEN
             RETURN NULL;

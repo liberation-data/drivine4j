@@ -1,6 +1,7 @@
 package org.drivine.connection
 
 import org.drivine.backend.oracle.OracleSchemaGrammar
+import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.schema.UnsupportedSchemaGrammar
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -69,11 +70,19 @@ class JdbcConnectionProviderTest {
     }
 
     @Test
-    fun `a provider for another JDBC store has no graph to manage a schema for`() {
-        val postgres = JdbcConnectionProvider("default", DatabaseType.POSTGRES, dataSource)
+    fun `a provider for Postgres manages the schema of the graph it names`() {
+        val postgres = JdbcConnectionProvider("default", DatabaseType.POSTGRES, dataSource, graphName = "g")
 
-        assertIs<UnsupportedSchemaGrammar>(postgres.schemaGrammar)
-        assertFalse(postgres.supportsSchemaManagement)
+        assertIs<PostgresSchemaGrammar>(postgres.schemaGrammar)
+        assertTrue(postgres.supportsSchemaManagement)
+    }
+
+    @Test
+    fun `a provider for a store that keeps no graph over JDBC has none to manage a schema for`() {
+        val other = JdbcConnectionProvider("default", DatabaseType.NEO4J, dataSource)
+
+        assertIs<UnsupportedSchemaGrammar>(other.schemaGrammar)
+        assertFalse(other.supportsSchemaManagement)
     }
 
     @Test

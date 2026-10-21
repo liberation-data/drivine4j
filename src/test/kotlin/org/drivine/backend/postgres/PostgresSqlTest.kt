@@ -13,7 +13,9 @@ class PostgresSqlTest {
     @Test
     fun `a label is written into a JSON literal the index over labels answers, its quotes escaped for JSON and for SQL`() {
         assertEquals("n.labels @> '[\"Person\"]'", PostgresSql.hasLabel("n", "Person"))
-        assertEquals("n.labels @> '[\"Person\",\"Author\"]'", PostgresSql.hasLabels("n", listOf("Person", "Author")))
+        // A test for each label, so a partial index over the nodes of either is seen to hold them.
+        assertEquals("n.labels @> '[\"Person\"]' AND n.labels @> '[\"Author\"]'", PostgresSql.hasLabels("n", listOf("Person", "Author")))
+        assertEquals("labels @> '[\"Person\"]'", PostgresSql.hasLabel("", "Person"), "the table's own column, as an index names it")
         assertEquals("n.labels @> '[\"O''Brien \\\"x\\\"\"]'", PostgresSql.hasLabel("n", "O'Brien \"x\""))
         assertNull(PostgresSql.hasLabels("n", emptyList()))
     }

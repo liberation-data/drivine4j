@@ -169,6 +169,14 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   and its key nodes where a key is a path, each path walked from the root's row by a lateral join.
   A text key no field declares carries its number beside it, as on Oracle; Postgres keeps `""` apart
   from null, so it needs no column for that. The 43 tests of the groups contract pass.
-- [ ] 7. Schema
+- [x] 7. Schema: `PostgresSchemaGrammar`. A range index is a partial index over the property for the
+  nodes of its label, `((props ->> 'p')) WHERE labels @> '["L"]'`, and a uniqueness constraint the
+  same made `UNIQUE`, which also finds a node, so no range index is made beside it. A statement and
+  the write function test each label of a node on its own, so the planner sees a partial index over
+  any one of them holds the nodes asked for (Oracle's labelled-index catalog has no counterpart: the
+  planner does that work). Recorded in the graph's catalog as on Oracle; the version marker and store
+  stamp are nodes of the graph. `PostgresSchemaManagementIntegrationTest` checks the plans; the read
+  path contract runs on Postgres. `SqlSchemaGrammar` is not pulled out: the two grammars share the
+  catalog's shape and little of their text.
 - [ ] 8. Search
 - [ ] 9. Finish
