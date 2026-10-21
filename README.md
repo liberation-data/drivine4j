@@ -1146,7 +1146,7 @@ The DSL supports sorting nested relationship collections directly in the databas
 |--------|----------|----------------------------|-----------------------------------|
 | Neo4j (default) | `apoc.coll.sortMaps()` | Sorted | Sorted |
 | Neo4j (CALL) | `CALL { ORDER BY + collect }` | Sorted | Refused |
-| FalkorDB | `CALL { ORDER BY + collect }` | Sorted | Sorted |
+| FalkorDB | `CALL { ORDER BY + collect }` | Sorted | Sorted; refused in a nested view that holds views of its own, which is projected inline |
 | Neptune | `CALL { ORDER BY + collect }` | Sorted | Refused |
 | Memgraph | `CALL { ORDER BY + collect }` | Sorted | Refused |
 
@@ -2579,7 +2579,8 @@ ext['jedis.version'] = '8.0.1'
 ```
 
 **Known limitations:**
-- Nested pattern comprehensions return NULL ([FalkorDB#1888](https://github.com/FalkorDB/FalkorDB/issues/1888)) — Drivine works around this with CALL subquery prologs
+- Nested pattern comprehensions returned NULL before [FalkorDB#1888](https://github.com/FalkorDB/FalkorDB/issues/1888) was fixed — Drivine projects a nested view with a CALL subquery prolog, one level of its relationships deep. A nested view that holds views of its own, itself among them, is projected inline with nested comprehensions, which current FalkorDB reads
+- FalkorDB 6 empties a pattern comprehension that follows one nesting another in the same projection ([FalkorDB#3004](https://github.com/FalkorDB/FalkorDB/issues/3004); 4.x reads it right) — a recursive view whose levels hold a nested view loads its first level only there, until the fix is released
 - `collect()` on null includes null maps ([FalkorDB#1889](https://github.com/FalkorDB/FalkorDB/issues/1889)) — Drivine filters with `CASE WHEN IS NOT NULL`
 - FalkorDB 6 plans an `OPTIONAL MATCH` of several hops from the labelled node it ends at, and reads every relationship into that label ([FalkorDB#3332](https://github.com/FalkorDB/FalkorDB/issues/3332)) — a `@GraphPath` field leaves the label out of its pattern there and tests it on the node reached
 - FalkorDB 6 scans a label for a `WHERE` in parentheses, where it would have used an index ([FalkorDB#3331](https://github.com/FalkorDB/FalkorDB/issues/3331)) — a load writes none around its conditions or around a keyset cursor (`seek`), and a load or a count of a fragment writes none around an `anyOf` that is its whole filter. An `anyOf` keeps its parentheses everywhere else, and FalkorDB 6 scans for it where nothing else in the filter has an index: beside another condition, nested in another `anyOf`, in a view, and in a `deleteAll`
