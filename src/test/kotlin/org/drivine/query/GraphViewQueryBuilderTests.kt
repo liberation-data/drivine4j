@@ -101,9 +101,10 @@ class GraphViewQueryBuilderTests {
 
         // Verify PersonContext (a nested GraphView) includes its worksFor relationship
         assertTrue(query.contains("worksFor: ["))
-        assertTrue(query.contains("(raisedBy)-[:WORKS_FOR]->(worksFor:Organization)"))
-        assertTrue(query.contains("name: worksFor.name"))
-        assertTrue(query.contains("uuid: worksFor.uuid"))
+        // The nested view's relationship is named under the node it is reached from.
+        assertTrue(query.contains("(raisedBy)-[:WORKS_FOR]->(raisedBy_worksFor:Organization)"))
+        assertTrue(query.contains("name: raisedBy_worksFor.name"))
+        assertTrue(query.contains("uuid: raisedBy_worksFor.uuid"))
     }
 
     @Test

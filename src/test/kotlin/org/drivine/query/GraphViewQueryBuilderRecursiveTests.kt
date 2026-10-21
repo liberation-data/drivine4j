@@ -1,5 +1,6 @@
 package org.drivine.query
 
+import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
@@ -8,10 +9,13 @@ import org.junit.jupiter.api.Test
 import sample.mapped.fragment.Location
 import sample.mapped.fragment.Organization
 import sample.mapped.fragment.Person
+import sample.mapped.view.DeletableSessionShelf
+import sample.mapped.view.DeletableSessionTreeDeep
 import sample.mapped.view.LocationHierarchy
 import sample.mapped.view.OrgPersonView
 import sample.mapped.view.PersonOrgView
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -213,6 +217,64 @@ class GraphViewQueryBuilderRecursiveTests {
         assertTrue(query.contains("-[:ASSIGNED_TO]->"))
         assertTrue(query.contains("-[:RAISED_BY]->"))
         assertTrue(query.contains("RETURN {"))
+    }
+
+    @Test
+    fun `a recursive view nested in another names each level under the one above it`() {
+        val query = GraphViewQueryBuilder.forView(DeletableSessionShelf::class, CypherDialect.NEO4J_5.grammar()).buildQuery()
+
+        // Each level of parts is a node of its own: a name shared with the level above would match a self-loop.
+        assertTrue(query.contains("(trees)<-[:PART_OF]-(trees_parts:Session)"), query)
+        assertTrue(query.contains("(trees_parts)<-[:PART_OF]-(trees_parts_parts:Session)"), query)
+        assertFalse(query.contains("(parts)<-[:PART_OF]-(parts:Session)"), query)
+    }
+
+    @Test
+    fun `a nested view that holds views is projected inline on FalkorDB, where its CALL projector reads one level`() {
+        val query = GraphViewQueryBuilder.forView(DeletableSessionShelf::class, CypherDialect.FALKORDB.grammar()).buildQuery()
+
+        assertFalse(query.contains("CALL {"), query)
+        assertTrue(query.contains("(trees_parts)<-[:PART_OF]-(trees_parts_parts:Session)"), query)
+    }
+
+    @Test
+    fun `a sort of a nested view that holds views orders it on FalkorDB, every level collected with it`() {
+        val sort = CollectionSortSpec("trees", "id", ascending = true)
+        val query = GraphViewQueryBuilder.forView(DeletableSessionShelf::class, CypherDialect.FALKORDB.grammar())
+            .buildQuery(null, null, listOf(sort))
+
+        val prolog = query.substringAfter("CALL {").substringBefore("AS trees_sorted")
+        assertTrue(prolog.contains("WITH trees ORDER BY trees.id ASC"), query)
+        assertTrue(prolog.contains("(trees_parts)<-[:PART_OF]-(trees_parts_parts:Session)"), query)
+    }
+
+    @Test
+    fun `each level of a recursive view names its relationships by the level, apart from the root's`() {
+        val query = GraphViewQueryBuilder.forView(DeletableSessionTreeDeep::class, CypherDialect.FALKORDB.grammar()).buildQuery()
+
+        // The root's messages come from a CALL prolog that binds `messages`; the levels must not reuse it.
+        assertTrue(query.contains("RETURN collect("), query)
+        assertTrue(query.contains("(parts_d1)-[:HAS_MESSAGE]->(parts_d1_messages:Message)"), query)
+        assertTrue(query.contains("(parts_d2)-[:HAS_MESSAGE]->(parts_d2_messages:Message)"), query)
+        assertFalse(query.contains("->(messages:Message) |"), query)
+    }
+
+    @Test
+    fun `a sort of a nested view's collection orders it at every level of a recursive view`() {
+        val sort = CollectionSortSpec("messages_attachments", "name", ascending = true)
+        val query = GraphViewQueryBuilder.forView(DeletableSessionTreeDeep::class, CypherDialect.NEO4J_5.grammar())
+            .buildQuery(null, null, listOf(sort))
+
+        // The root's messages and each of the three levels' messages: a tree in one order.
+        assertEquals(4, Regex("apoc\\.coll\\.sortMaps").findAll(query).count(), query)
+    }
+
+    @Test
+    fun `a nested sort in a nested view that holds views is refused on FalkorDB, which projects that view inline`() {
+        val sort = CollectionSortSpec("trees_messages", "text", ascending = true)
+        val builder = GraphViewQueryBuilder.forView(DeletableSessionShelf::class, CypherDialect.FALKORDB.grammar())
+
+        assertFailsWith<UnsupportedOperationException> { builder.buildQuery(null, null, listOf(sort)) }
     }
 }
 
