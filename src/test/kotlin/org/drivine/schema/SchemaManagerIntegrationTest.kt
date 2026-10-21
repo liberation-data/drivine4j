@@ -9,6 +9,7 @@ import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.manager.PersistenceManagerType
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.test.SharedNeo4j
 import org.drivine.transaction.TransactionContextHolder
 import org.junit.jupiter.api.*
 import org.testcontainers.containers.Neo4jContainer
@@ -31,12 +32,10 @@ import kotlin.test.assertTrue
 class SchemaManagerIntegrationTest {
 
     companion object {
-        private const val PASSWORD = "schemamgrtest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container
         @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var registry: DatabaseRegistry
         private lateinit var factory: PersistenceManagerFactory

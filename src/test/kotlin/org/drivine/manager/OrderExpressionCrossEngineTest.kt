@@ -28,6 +28,7 @@ import org.drivine.query.dsl.query
 import org.drivine.query.dsl.times
 import org.drivine.query.dsl.unaryMinus
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -172,14 +173,12 @@ private fun verify(gom: StatelessGraphObjectManager, readsMoments: Boolean, refu
 private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry) =
     StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, registry)
 
-@Testcontainers
 class OrderExpressionNeo4jTest {
     companion object {
-        private const val PASSWORD = "orderexpressiontest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager

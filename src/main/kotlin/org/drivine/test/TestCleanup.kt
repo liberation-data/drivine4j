@@ -5,6 +5,7 @@ import org.drivine.backend.oracle.OracleSql
 import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.drivine.query.quotedIdentifier
 
 /**
  * Test cleanup utility that adapts to the database backend.
@@ -13,6 +14,8 @@ import org.drivine.query.QuerySpecification
  * - **FalkorDB**: nukes all nodes (`@Rollback` is a no-op, so full cleanup is needed)
  * - **Oracle**: deletes the nodes of the manager's graph that carry the tag, in SQL; their
  *   relationships go with them
+ *
+ * [resetGraph] empties a whole graph, its schema too, for a class that shares a database with others.
  */
 object TestCleanup {
 
@@ -31,6 +34,33 @@ object TestCleanup {
             else -> "MATCH (n) WHERE n.$markerField = '$markerValue' DETACH DELETE n"
         }
         persistenceManager.execute(QuerySpecification.withStatement(statement))
+    }
+
+    /**
+     * Empties the graph [persistenceManager] speaks to of everything a test can leave in it: every
+     * node and relationship, every constraint, and every index but Neo4j's own token lookups. A test
+     * class that shares one database with others calls it before it starts, so no index or
+     * constraint another class made changes what it sees.
+     *
+     * Constraints go first: a uniqueness constraint owns its index, which can't be dropped while the
+     * constraint holds it. `apoc.schema.assert` is not used: it leaves vector indexes, and APOC need
+     * not be installed. Only Neo4j is supported yet.
+     *
+     * @throws UnsupportedOperationException on any other engine
+     */
+    fun resetGraph(persistenceManager: PersistenceManager) {
+        if (persistenceManager.type != DatabaseType.NEO4J) {
+            throw UnsupportedOperationException("resetGraph supports Neo4j only, not ${persistenceManager.type}")
+        }
+        fun names(statement: String): List<String> =
+            persistenceManager.query(QuerySpecification.withStatement(statement).transform(String::class.java))
+        names("SHOW CONSTRAINTS YIELD name RETURN name").forEach {
+            persistenceManager.execute(QuerySpecification.withStatement("DROP CONSTRAINT ${quotedIdentifier(it)}"))
+        }
+        names("SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name").forEach {
+            persistenceManager.execute(QuerySpecification.withStatement("DROP INDEX ${quotedIdentifier(it)}"))
+        }
+        persistenceManager.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     }
 
     /** The graph is made where it is not yet: a cleanup may run before anything else has spoken to it. */

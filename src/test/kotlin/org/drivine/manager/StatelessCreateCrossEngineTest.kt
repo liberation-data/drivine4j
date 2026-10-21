@@ -22,6 +22,7 @@ import org.drivine.oracle.OracleTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.UniquenessConstraintSpec
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -281,14 +282,12 @@ abstract class StatelessCreateContract {
     }
 }
 
-@Testcontainers
 class StatelessCreateNeo4jTest : StatelessCreateContract() {
     companion object {
-        private const val PASSWORD = "statelesscreate"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager

@@ -5,6 +5,7 @@ import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.connection.DatabaseType
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 /** What [TestCleanup] sends each engine to remove what an earlier run of a test left. The store is a [RecordingStore]. */
@@ -65,5 +66,14 @@ class TestCleanupTest {
 
         assertEquals(listOf(OracleGraph("drivine").ensuring), store.schema)
         assertTrue(store.executed.single().statement.startsWith("DELETE FROM drivine_node n WHERE "))
+    }
+
+    @Test
+    fun `a graph is reset on Neo4j only`() {
+        for (type in listOf(DatabaseType.FALKORDB, DatabaseType.MEMGRAPH, DatabaseType.ORACLE)) {
+            val store = RecordingStore(type)
+            assertFailsWith<UnsupportedOperationException>("$type") { TestCleanup.resetGraph(store) }
+            assertTrue(store.executed.isEmpty(), "$type")
+        }
     }
 }

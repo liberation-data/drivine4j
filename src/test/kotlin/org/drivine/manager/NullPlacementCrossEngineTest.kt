@@ -12,6 +12,7 @@ import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -86,14 +87,12 @@ private const val SEED = """
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) =
     StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, registry)
 
-@Testcontainers
 class NullPlacementNeo4jTest {
     companion object {
-        private const val PASSWORD = "nullplacementtest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager

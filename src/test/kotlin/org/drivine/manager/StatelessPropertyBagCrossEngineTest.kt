@@ -9,6 +9,7 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -129,14 +130,12 @@ private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRe
     return StatelessGraphObjectManager(pm, mapper, registry)
 }
 
-@Testcontainers
 class StatelessPropertyBagNeo4jTest {
     companion object {
-        private const val PASSWORD = "propbagtest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
