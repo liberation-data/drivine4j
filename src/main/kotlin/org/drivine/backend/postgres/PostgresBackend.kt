@@ -9,6 +9,7 @@ import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.LoadPlan
 import org.drivine.backend.sql.SqlSavePlan
+import org.drivine.backend.sql.under
 import org.drivine.backend.sql.WritePlan
 import org.drivine.backend.sql.WriteReturns
 import org.drivine.manager.CascadeType
@@ -39,7 +40,7 @@ import java.sql.SQLException
  * [PostgresSelect]) and written by a plan of steps that a function the store keeps carries out (see
  * [PostgresWriteFunctions]): the plan is the one Oracle's block carries out.
  *
- * Reads and writes are here; what deletes, groups and searches is being built (see
+ * Reads, writes and deletes are here; what groups and searches is being built (see
  * `docs/postgres-sql-backend-plan.md`) and is refused until it is.
  */
 internal class PostgresBackend(private val persistenceManager: PersistenceManager, objectMapper: ObjectMapper) : GraphBackend {
@@ -55,9 +56,9 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
 
     override val cypherGrammar: CypherGrammar? = null
 
-    override val supportsOrphanDelete: Boolean = false
+    override val supportsOrphanDelete: Boolean = true
 
-    override val orphanDeleteLimit: String? = "Postgres's object manager does not delete yet."
+    override val orphanDeleteLimit: String? = null
 
     /** A range index on Postgres reads a property as text, so an order by a number or a moment is not served by one. */
     override val supportsIndexBackedOrdering: Boolean = false
@@ -218,18 +219,102 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         cut(found(from), null, type, direction)
     }
 
-    // ----- Not yet -----
+    // ----- Deleting -----
 
-    override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement = notYet("a delete")
+    override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement {
+        val select = PostgresSelect(graph, graphClass)
+        val predicates = byId(select, where)
+        val cascaded = if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) select.cascaded(predicates) else null
+        return if (cascaded == null) deleting(select, predicates) else cascading(select, predicates, cascaded, orphansOnly = cascade == CascadeType.DELETE_ORPHAN)
+    }
 
-    override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> = notYet("a cascading delete")
+    override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> {
+        val select = PostgresSelect(graph, graphClass)
+        val checks = select.cascadeDepthChecks(byId(select, where))
+        return checks.map { (recursion, sql) -> CascadeDepthCheck(recursion.view, recursion.field, recursion.step.maxDepth, GraphStatement(sql, select.bindings())) }
+    }
 
-    override fun deleteAll(graphClass: Class<*>, where: String?): GraphStatement = notYet("a delete")
+    /** The predicates a delete by id selects its root by: the checks it runs first read the same root. */
+    private fun byId(select: PostgresSelect, where: String?): List<String> =
+        listOfNotNull(select.hasId(GraphBackend.ID_PARAM), where?.let(select::written))
 
-    override fun deleteAll(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement = notYet("a delete")
+    override fun deleteAll(graphClass: Class<*>, where: String?): GraphStatement =
+        PostgresSelect(graph, graphClass).let { select -> deleting(select, listOfNotNull(where?.let(select::written))) }
+
+    override fun deleteAll(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
+        requireNoSeek(query)
+        val select = PostgresSelect(graph, graphClass)
+        return deleting(select, listOfNotNull(select.predicate(query.conditions)))
+    }
+
+    /**
+     * Deletes the roots [predicates] select, whether or not they have the relationships the view
+     * requires, as the Cypher delete does, and counts them. A node's relationships go with it: the
+     * relationship table cascades.
+     */
+    private fun deleting(select: PostgresSelect, predicates: List<String>): GraphStatement =
+        GraphStatement(
+            "WITH deleted AS (\n    DELETE FROM ${graph.nodes} ${select.root}\n    WHERE ${select.selecting(predicates).replace("\n", "\n    ")}\n    RETURNING 1)\nSELECT COUNT(*) FROM deleted",
+            select.bindings(),
+        )
+
+    /**
+     * Deletes the roots [predicates] select, and of the nodes [cascaded] reaches from them either every
+     * one, or with [orphansOnly] those not kept, in one statement, and counts them. A node is kept when a
+     * node outside the cascade is related to it, or when it is one step of a relationship the cascade
+     * follows below a kept one: a kept message keeps its attachments, and its session is still deleted.
+     * What is kept is read before anything is deleted, so a node's relationships to the others the
+     * cascade takes do not keep it.
+     */
+    private fun cascading(select: PostgresSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
+        val roots = "cascade_roots AS (\n    ${select.roots(predicates).under()})"
+        val everything = "cascade_all AS (\n    SELECT nid FROM cascade_roots\n    UNION\n    ${cascaded.under()})"
+        val text = if (orphansOnly) {
+            // The far end of the edge e from the kept node k.
+            val far = "CASE WHEN e.src = k.nid THEN e.dst ELSE e.src END"
+            val holds = select.cascadeSteps().joinToString("\n       OR ") { step ->
+                val type = PostgresSql.literal(step.type)
+                when (step.direction) {
+                    Direction.OUTGOING -> "(e.type = $type AND e.src = k.nid)"
+                    Direction.INCOMING -> "(e.type = $type AND e.dst = k.nid)"
+                    Direction.UNDIRECTED -> "(e.type = $type AND (e.src = k.nid OR e.dst = k.nid))"
+                }
+            }
+            listOf(
+                "WITH RECURSIVE $roots,",
+                "$everything,",
+                "cascade_targets AS (SELECT nid FROM cascade_all WHERE nid NOT IN (SELECT nid FROM cascade_roots)),",
+                "cascade_kept (nid) AS (",
+                "    SELECT c.nid FROM cascade_targets c",
+                "    WHERE EXISTS (",
+                "        SELECT 1 FROM ${graph.edges} e",
+                "        WHERE (e.src = c.nid AND e.dst NOT IN (SELECT nid FROM cascade_all))",
+                "           OR (e.dst = c.nid AND e.src NOT IN (SELECT nid FROM cascade_all)))",
+                "    UNION",
+                "    SELECT $far",
+                "    FROM cascade_kept k JOIN ${graph.edges} e ON ${holds.under()}",
+                "    WHERE $far IN (SELECT nid FROM cascade_targets)",
+                "),",
+                "deleted AS (",
+                "    DELETE FROM ${graph.nodes}",
+                "    WHERE nid IN (SELECT nid FROM cascade_roots)",
+                "       OR nid IN (SELECT nid FROM cascade_targets WHERE nid NOT IN (SELECT nid FROM cascade_kept))",
+                "    RETURNING 1)",
+                "SELECT COUNT(*) FROM deleted",
+            )
+        } else {
+            listOf(
+                "WITH $roots,",
+                "$everything,",
+                "deleted AS (DELETE FROM ${graph.nodes} WHERE nid IN (SELECT nid FROM cascade_all) RETURNING 1)",
+                "SELECT COUNT(*) FROM deleted",
+            )
+        }.joinToString("\n")
+        return GraphStatement(text, select.bindings())
+    }
 
     private fun notYet(what: String): Nothing =
-        throw UnsupportedOperationException("Postgres's object manager does not yet support $what: it reads and writes, and the rest is being built (see docs/postgres-sql-backend-plan.md).")
+        throw UnsupportedOperationException("Postgres's object manager does not yet support $what: it reads, writes and deletes, and the rest is being built (see docs/postgres-sql-backend-plan.md).")
 
     private companion object {
         /** The parameter [related] binds the id of the node it starts from as. */

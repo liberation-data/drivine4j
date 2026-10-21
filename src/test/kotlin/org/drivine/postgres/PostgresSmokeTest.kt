@@ -7,6 +7,7 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.oracle.Ordered
 import org.drivine.query.MIXED_SEED
+import org.drivine.query.QuerySpecification
 import org.drivine.query.ORDERED_SEED
 import org.drivine.query.assertMixedOrderedPaths
 import org.drivine.query.assertOrderedPaths
@@ -22,14 +23,15 @@ import sample.stateless.Company
 import sample.stateless.Dossier
 import sample.stateless.Human
 import sample.stateless.UndeclaredAggregate
+import sample.vector.DocNode
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
-/** Loads and counts through `StatelessGraphObjectManager` on Postgres, over a graph written as rows. */
+/** Loads, counts and deletes through `StatelessGraphObjectManager` on Postgres, over a graph written as rows. */
 @PostgresTests
-class PostgresReadSmokeTest {
+class PostgresSmokeTest {
 
     private val pm = PostgresTestDatabase.graphManager("smoke")
     private val manager = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
@@ -114,6 +116,23 @@ class PostgresReadSmokeTest {
     }
 
     @Test
+    fun `a delete takes the node and its relationships, and says how many it took`() {
+        assertEquals(1, manager.delete("c1", Claim::class.java))
+        assertEquals(0, manager.delete("c1", Claim::class.java))
+        assertEquals(listOf("c2"), manager.loadAll(ClaimView::class.java).map { it.claim.id })
+        assertEquals(2, manager.deleteAll(Human::class.java))
+        assertEquals(emptyList(), manager.load("c2", ClaimView::class.java)!!.people)
+        assertEquals(listOf<Any>(0L), pm.query(QuerySpecification.withStatement("SELECT COUNT(*) FROM smoke_edge WHERE type = 'MENTIONS'")))
+    }
+
+    @Test
+    fun `a delete takes a predicate as it is written, a quote or a dollar in it, and through a field SQL keeps for its own`() {
+        assertEquals(1, manager.deleteAll(Claim::class.java, "n.text = 'Bob left' OR n.note = 'it''s \$id' /* isn't \$one */"))
+        assertEquals(1, manager.delete("c1", Ordered::class.java, "order.text = 'Ada founded Acme'"))
+        assertEquals(emptyList(), manager.loadAll(Claim::class.java))
+    }
+
+    @Test
     fun `the nodes related to one are loaded once each, in any direction`() {
         val bob = NodeRef(Human::class.java, "bob")
         assertEquals(setOf("c1", "c2"), manager.edges.loadRelated(bob, "MENTIONS", Direction.INCOMING, Claim::class.java).map { it.id }.toSet())
@@ -161,7 +180,7 @@ class PostgresReadSmokeTest {
 
     @Test
     fun `what is not built yet is refused, saying so`() {
-        val failure = assertFailsWith<UnsupportedOperationException> { manager.delete("c1", Claim::class.java) }
+        val failure = assertFailsWith<UnsupportedOperationException> { manager.loadNearest(DocNode::class.java, listOf(1f, 0f, 0f, 0f), 1) }
         assertTrue("Postgres" in failure.message.orEmpty() && "not yet" in failure.message.orEmpty(), failure.message)
     }
 }

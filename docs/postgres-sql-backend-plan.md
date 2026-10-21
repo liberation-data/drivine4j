@@ -158,7 +158,13 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   values written in as literals. Save, batch save, patch, patch-all, relate, unrelate and
   `contended` (`40001`, `40P01`). Every contract that saves now has a Postgres subclass; a test that
   reaches a later step is skipped by `PostgresNotYet` (removed in step 9): 283 pass, 25 skip.
-- [ ] 5. Deletes
+- [x] 5. Deletes: `delete`, `deleteAll` and cascades, each one statement of CTEs ending in a
+  `DELETE … RETURNING` that is counted. `DELETE_ORPHAN` keeps what a node outside the cascade holds,
+  walked by a recursive CTE, as Oracle's PL/SQL does. A path is anchored at a set of nodes as well as
+  at a row, and a cascade below a field that holds views of its own class chains a walk after hops.
+  The recursive cascade contract runs on Postgres. `SqlBackend` is not pulled out yet: Oracle's
+  deletes are PL/SQL and Postgres's CTEs, so what the two share is the operations' shape, not their
+  code; it is weighed again at the end.
 - [ ] 6. Groups
 - [ ] 7. Schema
 - [ ] 8. Search
