@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.SqlSavePlan
 import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
@@ -78,7 +79,7 @@ data class ClaimVessels(
 /** The steps a save on Oracle plans: what `SaveStatementBuilder` decides for the graph engines, written for the write block. */
 class OracleSavePlanTest {
 
-    private val planner = OracleSavePlan(OracleGraph("g"), Neo4jObjectMapper.instance)
+    private val planner = SqlSavePlan(OracleWriteBlocks(OracleGraph("g")), Neo4jObjectMapper.instance, OracleSql::key)
     private val digests = SnapshotDigest(Neo4jObjectMapper.instance)
 
     private val stamp = "aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb"

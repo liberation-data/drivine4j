@@ -10,6 +10,10 @@ import org.drivine.backend.FragmentBatch
 import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.LoadPlan
+import org.drivine.backend.sql.NodeShape
+import org.drivine.backend.sql.SqlSavePlan
+import org.drivine.backend.sql.WritePlan
+import org.drivine.backend.sql.WriteReturns
 import org.drivine.manager.CascadeType
 import org.drivine.manager.NodeRef
 import org.drivine.manager.NullPolicy
@@ -58,8 +62,11 @@ internal class OracleBackend(
     /** The labelled indexes of the graph, which a filter on the nodes of a label is read through. */
     private val labelled = catalogReads?.let { LabelledIndexCatalog(persistenceManager, graph, refresh = it) } ?: LabelledIndexCatalog(persistenceManager, graph)
 
+    /** How a plan of steps is carried out: by a PL/SQL block written for the shapes it names. */
+    private val blocks = OracleWriteBlocks(graph)
+
     /** Plans a save, and a batch of fragments, as the steps of a write block. */
-    private val saves = OracleSavePlan(graph, objectMapper)
+    private val saves = SqlSavePlan(blocks, objectMapper, OracleSql::key)
 
     override val cypherGrammar: CypherGrammar? = null
 
@@ -279,7 +286,7 @@ internal class OracleBackend(
         val model = FragmentModel.from(graphClass)
         val key = requireNotNull(model.nodeIdProperty) { "${graphClass.simpleName} has no @NodeId field to find a node by." }
         return rows.chunked(PatchRow.toAStatement(model, properties, BATCH)).map { chunk ->
-            val plan = WritePlan(graph)
+            val plan = WritePlan(blocks)
             val shape = plan.shape(model.labels, key)
             chunk.forEach { row ->
                 plan.patch(
@@ -288,7 +295,7 @@ internal class OracleBackend(
                     unset = if (clears) row.values.filterValues { it == null }.keys.toList() else emptyList(),
                 )
             }
-            QuerySpecification.withStatement(plan.text(OracleWriteBlock.Returns.EACH_STAMP)).bind(plan.bindings()).transform(String::class.java)
+            QuerySpecification.withStatement(plan.text(WriteReturns.EACH_STAMP)).bind(plan.bindings()).transform(String::class.java)
         }
     }
 
@@ -300,12 +307,12 @@ internal class OracleBackend(
         val select = OracleSelect(graph, graphClass)
         val model = FragmentModel.from(select.rootFragment)
         val key = requireNotNull(model.nodeIdProperty) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.patch(
             plan.shape(model.labels, key), OracleSql.key(id), "0",
             set = values.filterValues { it != null }, unset = values.filterValues { it == null }.keys.toList(),
         )
-        return GraphStatement(plan.text(OracleWriteBlock.Returns.EACH_STAMP, select.meeting(conditions)), plan.bindings() + select.bindings())
+        return GraphStatement(plan.text(WriteReturns.EACH_STAMP, select.meeting(conditions)), plan.bindings() + select.bindings())
     }
 
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
@@ -347,8 +354,8 @@ internal class OracleBackend(
     /** The write block that carries out [steps], which write relationships of [type], and returns the number they counted. */
     private fun counting(type: String, steps: WritePlan.() -> Unit): GraphStatement {
         requireType(type)
-        val plan = WritePlan(graph).apply(steps)
-        return GraphStatement(plan.text(OracleWriteBlock.Returns.COUNT), plan.bindings())
+        val plan = WritePlan(blocks).apply(steps)
+        return GraphStatement(plan.text(WriteReturns.COUNT), plan.bindings())
     }
 
     override fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement = counting(type) {

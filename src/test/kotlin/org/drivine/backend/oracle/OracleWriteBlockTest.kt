@@ -1,5 +1,10 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.WriteReturns
+import org.drivine.backend.sql.NodeWrites
+import org.drivine.backend.sql.OwnedLabels
+import org.drivine.backend.sql.StepKind
+import org.drivine.backend.sql.WritePlan
 import org.drivine.annotation.Direction
 import org.drivine.model.Stamps
 import org.drivine.query.SqlParameters
@@ -13,6 +18,7 @@ import kotlin.test.assertTrue
 class OracleWriteBlockTest {
 
     private val graph = OracleGraph("g")
+    private val blocks = OracleWriteBlocks(graph)
 
     @Suppress("UNCHECKED_CAST")
     private fun steps(plan: WritePlan): List<Map<String, Any?>> = plan.bindings()[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
@@ -21,7 +27,7 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a ref step finds a node of a shape by its stored id, and gives it the next number`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         val node = plan.node(shape, "id", "ada", "ada", listOf("Human"), NodeWrites())
         val ref = plan.ref(shape, "bob")
@@ -33,7 +39,7 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a link step says always only when it makes one more relationship`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         val a = plan.ref(shape, "a")
         val b = plan.ref(shape, "b")
@@ -47,7 +53,7 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a cut step names the other node only when there is one`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         val a = plan.ref(shape, "a")
         val b = plan.ref(shape, "b")
@@ -62,7 +68,7 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a shape is one number for one pair of labels and key, and the next for another`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
 
         assertEquals(0, plan.shape(listOf("Human"), "id"))
         assertEquals(0, plan.shape(listOf("Human"), "id"))
@@ -73,7 +79,7 @@ class OracleWriteBlockTest {
 
     @Test
     fun `the plan offers its mark and one fresh stamp for each node step, in the order the steps are added`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         plan.node(shape, "id", "a", "a", listOf("Human"), NodeWrites())
         plan.ref(shape, "b")
@@ -87,7 +93,7 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a node step lays out its writes under the names the block reads, leaving out what is empty`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         plan.node(
             shape, "id", 7L, "7", listOf("Human"),
@@ -109,7 +115,7 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a patch step names a node by its shape and stored id, with the index it is returned under, and takes no number`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         plan.patch(shape, "7", "3", set = mapOf("name" to "Ada"), unset = listOf("note"))
         plan.patch(shape, "8", "4", set = emptyMap(), unset = emptyList())
@@ -129,49 +135,49 @@ class OracleWriteBlockTest {
 
     @Test
     fun `the block has two parameters, the plan and the mark, whatever it returns`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.node(plan.shape(listOf("Claim"), "id"), "id", "c", "c", listOf("Claim"), NodeWrites())
         plan.node(plan.shape(listOf("Human"), "a.b"), "a.b", "h", "h", listOf("Human"), NodeWrites())
 
         OracleWriteBlock.Returns.entries.forEach { returns ->
-            assertEquals(listOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK), SqlParameters.positional(plan.text(returns)).names, returns.name)
+            assertEquals(listOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK), SqlParameters.positional(plan.text(WriteReturns.valueOf(returns.name))).names, returns.name)
         }
     }
 
     @Test
     fun `the block finds a node of each shape by one arm of its case, and its text is the same however many nodes a shape has`() {
-        fun plan(count: Int) = WritePlan(graph).apply {
+        fun plan(count: Int) = WritePlan(blocks).apply {
             val claim = shape(listOf("Claim"), "id")
             val human = shape(listOf("Human"), "id")
             repeat(count) { node(claim, "id", "c$it", "c$it", listOf("Claim"), NodeWrites()) }
             node(human, "id", "h", "h", listOf("Human"), NodeWrites())
         }
-        val text = plan(1).text(OracleWriteBlock.Returns.STAMPS)
+        val text = plan(1).text(WriteReturns.STAMPS)
 
         val finding = text.substringAfter("PROCEDURE find(").substringBefore("END CASE;")
         assertEquals(listOf("0", "1"), Regex("WHEN (\\d+) THEN").findAll(finding).map { it.groupValues[1] }.toList())
-        assertEquals(text, plan(50).text(OracleWriteBlock.Returns.STAMPS))
+        assertEquals(text, plan(50).text(WriteReturns.STAMPS))
     }
 
     @Test
     fun `each way of returning ends the block with its own row`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.node(plan.shape(listOf("Claim"), "id"), "id", "c", "c", listOf("Claim"), NodeWrites())
 
-        val count = plan.text(OracleWriteBlock.Returns.COUNT)
+        val count = plan.text(WriteReturns.COUNT)
         assertTrue(count.trimEnd().endsWith("OPEN v_rows FOR SELECT v_count FROM dual;\n    DBMS_SQL.RETURN_RESULT(v_rows);\nEND;"), count.takeLast(120))
-        assertContains(plan.text(OracleWriteBlock.Returns.EACH_STAMP), "JSON_TABLE(v_result")
-        assertContains(plan.text(OracleWriteBlock.Returns.STAMPS), "SELECT v_result FROM dual WHERE v_result IS NOT NULL")
+        assertContains(plan.text(WriteReturns.EACH_STAMP), "JSON_TABLE(v_result")
+        assertContains(plan.text(WriteReturns.STAMPS), "SELECT v_result FROM dual WHERE v_result IS NOT NULL")
         assertContains(count, "SELECT v_count FROM dual")
-        assertFalse("#NODES#" in plan.text(OracleWriteBlock.Returns.STAMPS), "the node table stands in for its placeholder")
-        assertContains(plan.text(OracleWriteBlock.Returns.STAMPS), "FROM g_node WHERE nid = v_root")
+        assertFalse("#NODES#" in plan.text(WriteReturns.STAMPS), "the node table stands in for its placeholder")
+        assertContains(plan.text(WriteReturns.STAMPS), "FROM g_node WHERE nid = v_root")
     }
 
     @Test
     fun `each kind of step has one arm of the block's dispatch, to a procedure the block declares`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.shape(listOf("Claim"), "id")
-        val text = plan.text(OracleWriteBlock.Returns.COUNT)
+        val text = plan.text(WriteReturns.COUNT)
 
         val dispatch = text.substringAfter("CASE v_op.get_string('op')").substringBefore("END CASE;")
         val arms = Regex("WHEN '(\\w+)' THEN (\\w+)\\(v_op\\);").findAll(dispatch).map { it.groupValues[1] to it.groupValues[2] }.toList()
@@ -182,10 +188,10 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a procedure is declared before the one that calls it, as PL-SQL asks`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.shape(listOf("Claim"), "id")
         // What is said in a comment is not a call.
-        val text = plan.text(OracleWriteBlock.Returns.STAMPS).lines().joinToString("\n") { it.substringBefore("--") }
+        val text = plan.text(WriteReturns.STAMPS).lines().joinToString("\n") { it.substringBefore("--") }
 
         val declared = Regex("(?m)^    (?:PROCEDURE|FUNCTION) (\\w+)").findAll(text).map { it.groupValues[1] to it.groups[1]!!.range.first }.toList()
         assertEquals(declared.size, declared.map { it.first }.distinct().size, "each is declared once: ${declared.map { it.first }}")
@@ -199,25 +205,25 @@ class OracleWriteBlockTest {
 
     @Test
     fun `the stamps are gathered once every marked node has its relationship token, and not for a save that was refused`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.shape(listOf("Claim"), "id")
 
         listOf(OracleWriteBlock.Returns.STAMPS, OracleWriteBlock.Returns.EACH_STAMP).forEach { returns ->
-            val main = plan.text(returns).substringAfter("\nBEGIN\n    BEGIN\n")
+            val main = plan.text(WriteReturns.valueOf(returns.name)).substringAfter("\nBEGIN\n    BEGIN\n")
             val relinked = main.indexOf("relink_marked;")
             val gathered = main.indexOf("SELECT stamp INTO v_stamp FROM g_node")
             val refused = main.indexOf("EXCEPTION")
             assertTrue(relinked in 0 until gathered && gathered < refused, "${returns.name}: $relinked, $gathered, $refused")
         }
-        val counting = plan.text(OracleWriteBlock.Returns.COUNT).substringAfter("\nBEGIN\n    BEGIN\n")
+        val counting = plan.text(WriteReturns.COUNT).substringAfter("\nBEGIN\n    BEGIN\n")
         assertFalse("INTO v_stamp" in counting, "a count reads no stamp")
     }
 
     @Test
     fun `a stamp that is not two tokens is read as none, by the step that saves a node and by the one that marks it`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.shape(listOf("Claim"), "id")
-        val text = plan.text(OracleWriteBlock.Returns.STAMPS)
+        val text = plan.text(WriteReturns.STAMPS)
 
         assertContains(text, "v_two := CASE WHEN LENGTH(v_stamp) = 33 AND SUBSTR(v_stamp, 17, 1) = ':' THEN v_stamp END;")
         assertContains(text, "SET stamp = NVL(SUBSTR(CASE WHEN LENGTH(stamp) = 33 AND SUBSTR(stamp, 17, 1) = ':' THEN stamp END, 1, 17), SUBSTR(v_mark, 1, 17)) || SUBSTR(v_mark, 18)")
@@ -230,9 +236,9 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a step that only makes its node refuses one it finds, before it writes, and a node another writer made is found again`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.node(plan.shape(listOf("Human"), "id"), "id", "ada", "ada", listOf("Human"), NodeWrites())
-        val text = plan.text(OracleWriteBlock.Returns.STAMPS)
+        val text = plan.text(WriteReturns.STAMPS)
         val step = text.substringAfter("find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);\n            v_made")
 
         val absent = step.indexOf("op.get_boolean('absent')")
@@ -245,10 +251,10 @@ class OracleWriteBlockTest {
 
     @Test
     fun `a made root whose object carried a stamp without a relationship token is handed the new one, as the block and the model agree`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.node(plan.shape(listOf("Claim"), "id"), "id", "c", "c", listOf("Claim"), NodeWrites())
 
-        assertContains(plan.text(OracleWriteBlock.Returns.STAMPS), "(v_root_made AND SUBSTR(v_carried, 18) IS NULL)")
+        assertContains(plan.text(WriteReturns.STAMPS), "(v_root_made AND SUBSTR(v_carried, 18) IS NULL)")
         val now = Stamps.fresh()
         val handed = Stamps.handedBack(carried = "X:", found = "", now = now)
         assertEquals("X:" + Stamps.linksToken(now), handed)
