@@ -27,6 +27,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -183,4 +185,15 @@ class StatelessNullPolicyOracleTest {
     fun clean() = OracleTestDatabase.clear(pm)
 
     @Test fun `null-write policy on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
+}
+
+@PostgresTests
+class StatelessNullPolicyPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = PostgresTestDatabase.clear(pm)
+
+    @Test fun `null-write policy on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
 }

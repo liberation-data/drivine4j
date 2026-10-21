@@ -19,7 +19,7 @@ internal object GraphBackends {
         val type = persistenceManager.type
         return when {
             type == DatabaseType.ORACLE -> OracleBackend(persistenceManager, objectMapper)
-            type == DatabaseType.POSTGRES -> PostgresBackend(persistenceManager)
+            type == DatabaseType.POSTGRES -> PostgresBackend(persistenceManager, objectMapper)
             type.speaksCypher -> CypherBackend(persistenceManager, persistenceManager.grammar, objectMapper)
             else -> throw UnsupportedOperationException("Drivine has no object manager for $type: it does not speak Cypher, and has no backend of its own.")
         }

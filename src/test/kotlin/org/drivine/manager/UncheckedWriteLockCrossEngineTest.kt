@@ -31,6 +31,8 @@ import sample.stateless.Human
 import sample.stateless.HumanClaims
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * A write that is not checked still says truly whether it changed the node, when another writer
@@ -203,4 +205,12 @@ class UncheckedWriteLockOracleTest : UncheckedWriteLockContract() {
 
     // Over the expression a save finds a node by, so the index serves it.
     override val index = "CREATE INDEX IF NOT EXISTS contracts_node_id ON contracts_node (JSON_VALUE(props, '$.\"id\"'))"
+}
+
+@PostgresTests
+class UncheckedWriteLockPostgresTest : UncheckedWriteLockContract() {
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
+
+    // Over the expression a save finds a node by, so the index serves it.
+    override val index = "CREATE INDEX IF NOT EXISTS contracts_node_id ON contracts_node ((props ->> 'id'))"
 }

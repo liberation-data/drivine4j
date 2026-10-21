@@ -8,6 +8,8 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderExpression
@@ -287,4 +289,16 @@ class OrderExpressionOracleTest {
 
     @Test
     fun `roots are ranked by a computed score on Oracle`() = verify(buildGom(pm, registry), readsMoments = true, refusesDivisionByZero = true)
+}
+
+@PostgresTests
+class OrderExpressionPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clear() = PostgresTestDatabase.clear(pm)
+
+    @Test
+    fun `roots are ranked by a computed score on Postgres`() = verify(buildGom(pm, registry), readsMoments = true, refusesDivisionByZero = true)
 }

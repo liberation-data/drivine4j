@@ -148,7 +148,16 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   recursive views), and `PostgresReadSmokeTest` covers the rest. Contracts that also save, delete or
   make indexes join their steps. The shared select (`SqlSelect`) is not pulled out yet: Oracle's is
   shaped by `GRAPH_TABLE` and its workarounds, and the two are compared again once writes exist.
-- [ ] 4. Writes
+- [x] 4. Writes: `WritePlan`, its shapes and `SqlSavePlan` (was `OracleSavePlan`) moved to
+  `backend/sql` behind `WriteBlocks`, Oracle's block unchanged. On Postgres the plan is carried out by
+  `<graph>_write`, a PL/pgSQL function the store keeps, with `<graph>_find` (found, then locked by
+  key and looked at again) and `<graph>_owns`; one call is one statement, rolled back whole when its
+  root is stale. A node insert that a uniqueness constraint refuses is looked for again, as on
+  Oracle, but with `ON CONFLICT DO NOTHING` rather than a caught error, which would cost a
+  subtransaction per node. The query a conditional `patch` asks is passed to the function with its
+  values written in as literals. Save, batch save, patch, patch-all, relate, unrelate and
+  `contended` (`40001`, `40P01`). Every contract that saves now has a Postgres subclass; a test that
+  reaches a later step is skipped by `PostgresNotYet` (removed in step 9): 283 pass, 25 skip.
 - [ ] 5. Deletes
 - [ ] 6. Groups
 - [ ] 7. Schema

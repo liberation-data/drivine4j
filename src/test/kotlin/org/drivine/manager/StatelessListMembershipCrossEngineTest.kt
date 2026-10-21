@@ -29,6 +29,8 @@ import sample.proposition.PropositionViewQueryDsl
 import kotlin.test.assertEquals
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -228,4 +230,20 @@ class StatelessListMembershipOracleTest {
 
     @Test
     fun `hasItem load and vector paths on Oracle`() = verify(buildGom(pm, registry))
+}
+
+@PostgresTests
+class StatelessListMembershipPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+    private val fixtures = PostgresTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun seed() {
+        pm.indexes.ensure(VectorIndexSpec("Proposition", "embedding", 4))
+        seed(fixtures) { it }
+    }
+
+    @Test
+    fun `hasItem load and vector paths on Postgres`() = verify(buildGom(pm, registry))
 }

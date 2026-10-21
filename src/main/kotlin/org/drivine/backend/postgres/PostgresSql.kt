@@ -1,7 +1,10 @@
 package org.drivine.backend.postgres
 
 import org.drivine.backend.sql.SqlKind
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
+import org.drivine.query.JdbcParameterCoercer
+import java.math.BigDecimal
 
 /**
  * The pieces of SQL every statement over a [PostgresGraph] is made of.
@@ -100,6 +103,31 @@ internal object PostgresSql {
             SqlKind.LOCAL_DATE -> "($text)::date"
         }
         return "SELECT $read FROM jsonb_array_elements(CAST($parameter AS jsonb)) v"
+    }
+
+    /**
+     * The id [id] as the text a node is found by: what `->>` reads its stored property back as. A
+     * property is written as JSON, so a number is its JSON form, which `jsonb` keeps as it was written.
+     */
+    fun key(id: Any): String = when (id) {
+        is Number, is Boolean -> Neo4jObjectMapper.instance.writeValueAsString(id)
+        else -> id.toString()
+    }
+
+    /**
+     * [value] written into a statement as a literal, for a statement that is run where its values cannot
+     * be bound: the query a `patch` step asks inside the write function. It is a value the query DSL was
+     * given, as JDBC would bind it (see [JdbcParameterCoercer]): a number as itself, anything else as a
+     * string literal, which Postgres reads as the type the statement wants there, as it reads a string
+     * bound without a type.
+     */
+    fun inline(value: Any?): String = when (val coerced = JdbcParameterCoercer.coerce(mapOf("v" to value))["v"]) {
+        null -> "NULL"
+        is BigDecimal -> coerced.toPlainString()
+        is Byte, is Short, is Int, is Long -> coerced.toString()
+        is Float, is Double -> BigDecimal(coerced.toString()).toPlainString()
+        is java.util.Date -> literal(coerced.toInstant().toString())
+        else -> literal(coerced.toString())
     }
 
     /** [parameter], a bound value, read as text: a function of text is not left to guess the type of a value bound without one. */

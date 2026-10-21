@@ -20,6 +20,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphTypeLabels
+import org.drivine.query.SqlParameters
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.OrderTerm
@@ -130,6 +131,21 @@ internal class PostgresSelect(
     fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         return "${property(root, idProperty)} = CAST(\$$parameter AS text)"
+    }
+
+    /**
+     * The query that counts the node whose `nid` is its parameter `$1`, if it is a root that meets
+     * [conditions]: 1, or 0. Null when there are no conditions to meet. The node is read from the node
+     * table, as a delete reads the roots it selects. For the write function, which has found the node
+     * and locked it, and runs the query where its values cannot be bound: they are written into it as
+     * literals (see [PostgresSql.inline]).
+     */
+    fun meeting(conditions: List<WhereCondition>): String? {
+        val predicate = predicate(conditions) ?: return null
+        val query = "SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = \$1\n  AND ${selecting(listOf(predicate))}"
+        val values = bindings()
+        val names = SqlParameters.positional(query).names
+        return SqlParameters.positional(query) { PostgresSql.inline(values.getValue(names[it])) }.statement
     }
 
     /** The predicate [conditions] of the query DSL make on the root; null when there are none. */

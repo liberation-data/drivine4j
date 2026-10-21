@@ -161,7 +161,7 @@ class PostgresReadSmokeTest {
 
     @Test
     fun `what is not built yet is refused, saying so`() {
-        val failure = assertFailsWith<UnsupportedOperationException> { manager.save(Claim("c3", "new")) }
+        val failure = assertFailsWith<UnsupportedOperationException> { manager.delete("c1", Claim::class.java) }
         assertTrue("Postgres" in failure.message.orEmpty() && "not yet" in failure.message.orEmpty(), failure.message)
     }
 }

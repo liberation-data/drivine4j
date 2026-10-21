@@ -30,6 +30,8 @@ import sample.nodelabels.Role
 import sample.nodelabels.ThingNode
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * [EdgeOperations.relate] and [EdgeOperations.loadRelated], verified on Neo4j, FalkorDB and
@@ -195,4 +197,15 @@ class StatelessRelateOracleTest {
     fun clean() = OracleTestDatabase.clear(pm)
 
     @Test fun `edges on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
+}
+
+@PostgresTests
+class StatelessRelatePostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = PostgresTestDatabase.clear(pm)
+
+    @Test fun `edges on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
 }

@@ -34,6 +34,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * `@GraphProperty` verified on Neo4j, FalkorDB, and Memgraph: a field maps to a differently-named
@@ -218,4 +220,15 @@ class StatelessGraphPropertyOracleTest {
     fun clean() = OracleTestDatabase.clear(pm)
 
     @Test fun `graph property name mapping on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
+}
+
+@PostgresTests
+class StatelessGraphPropertyPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = PostgresTestDatabase.clear(pm)
+
+    @Test fun `graph property name mapping on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
 }

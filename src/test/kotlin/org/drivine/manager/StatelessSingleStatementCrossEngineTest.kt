@@ -62,6 +62,8 @@ import sample.stateless.Pals
 import sample.stateless.Tagged
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
@@ -594,7 +596,7 @@ abstract class StatelessSingleStatementContract {
 
     @Test
     fun `Replace is refused after GraphObjectManager wrote a relationship`() {
-        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
+        assumeTrue(pm.type.speaksCypher, "GraphObjectManager's own save is written in Cypher alone")
         stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
         val mine = assertNotNull(stateless.load<ClaimView>("c1"))
 
@@ -749,7 +751,7 @@ abstract class StatelessSingleStatementContract {
     @Test
     @Suppress("DEPRECATION")
     fun `GraphObjectManager does not double an undirected relationship stored towards the root`() {
-        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
+        assumeTrue(pm.type.speaksCypher, "GraphObjectManager's own save is written in Cypher alone")
         run("CREATE (:Human {id: 'bob', name: 'Bob'})-[:KNOWS]->(:Human {id: 'ada', name: 'Ada'})")
         val gom = GraphObjectManager(pm, org.drivine.session.SessionManager(Neo4jObjectMapper.instance), Neo4jObjectMapper.instance, SubtypeRegistry())
 
@@ -1564,6 +1566,13 @@ class StatelessSingleStatementMemgraphTest : StatelessSingleStatementContract() 
 @OracleTests
 class StatelessSingleStatementOracleTest : StatelessSingleStatementContract() {
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+    override val storesEmptyText: Boolean = false
+    override val readsBagKeysFirst: Boolean = false
+}
+
+@PostgresTests
+class StatelessSingleStatementPostgresTest : StatelessSingleStatementContract() {
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
     override val storesEmptyText: Boolean = false
     override val readsBagKeysFirst: Boolean = false
 }

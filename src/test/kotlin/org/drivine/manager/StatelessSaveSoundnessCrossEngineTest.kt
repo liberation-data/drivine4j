@@ -65,6 +65,8 @@ import sample.stateless.Widget
 import sample.stateless.WidgetView
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
@@ -408,7 +410,7 @@ abstract class StatelessSaveSoundnessContract {
 
     @Test
     fun `GraphObjectManager marks neither end when it saves a relationship that is there as it is`() {
-        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
+        assumeTrue(pm.type.speaksCypher, "GraphObjectManager's own save is written in Cypher alone")
         val mapper = Neo4jObjectMapper.instance
         fun legacy() = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
         val view = ClaimSupports(Claim("c1", "one"), supports = listOf(Claim("c2", "two")))
@@ -639,4 +641,11 @@ class StatelessSaveSoundnessOracleTest : StatelessSaveSoundnessContract() {
     private val store = OracleTestDatabase.graphManager("contracts")
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(store)
     override val connections: ConnectionProvider = OracleTestDatabase.connections(store)
+}
+
+@PostgresTests
+class StatelessSaveSoundnessPostgresTest : StatelessSaveSoundnessContract() {
+    private val store = PostgresTestDatabase.graphManager("contracts")
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(store)
+    override val connections: ConnectionProvider = PostgresTestDatabase.connections(store)
 }
