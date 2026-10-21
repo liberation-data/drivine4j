@@ -1,5 +1,8 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.Derived
+import org.drivine.backend.sql.Query
+import org.drivine.backend.sql.under
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 

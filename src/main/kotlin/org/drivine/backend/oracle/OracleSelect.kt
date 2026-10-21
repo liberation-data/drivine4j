@@ -1,5 +1,13 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.CypherShorthand
+import org.drivine.backend.sql.Derived
+import org.drivine.backend.sql.Query
+import org.drivine.backend.sql.RowSource
+import org.drivine.backend.sql.SqlKind
+import org.drivine.backend.sql.Step
+import org.drivine.backend.sql.Table
+import org.drivine.backend.sql.under
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
@@ -85,7 +93,7 @@ internal class OracleSelect(
 
     private val rows = OracleRowSources(graph, scope)
     private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled)
-    private val shorthand = CypherShorthand(rootAlias, root)
+    private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     private fun rootLabels(): List<String> {
         val labels = if (viewModel != null) GraphTypeLabels.fragmentLabels(viewModel.rootFragment.fragmentType) else rootModel.labels

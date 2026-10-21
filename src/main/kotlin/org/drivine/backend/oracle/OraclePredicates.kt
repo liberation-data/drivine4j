@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.SqlKind
 import org.drivine.annotation.GraphView
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path

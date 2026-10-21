@@ -1,5 +1,8 @@
-package org.drivine.backend.oracle
+package org.drivine.backend.sql
 
+import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleSelect
+import org.drivine.backend.oracle.OracleSql
 import org.junit.jupiter.api.Test
 import sample.stateless.ClaimView
 import kotlin.test.assertEquals
@@ -7,7 +10,10 @@ import kotlin.test.assertEquals
 /** A predicate written by hand, with the root's properties written as Cypher writes them, read on Oracle. */
 class CypherShorthandTest {
 
-    private val shorthand = CypherShorthand("n", "n_")
+    /** How Oracle reads a property, which these cases are written in. */
+    private val oracle: (String, String) -> String = { row, key -> OracleSql.property(row, key) }
+
+    private val shorthand = CypherShorthand("n", "n_", oracle)
 
     @Test
     fun `a property of the root is read from its document`() {
@@ -57,7 +63,7 @@ class CypherShorthandTest {
 
     @Test
     fun `a view's root is written by its field name`() {
-        assertEquals("JSON_VALUE(claim_.props, '$.id') = 'c1'", CypherShorthand("claim", "claim_").rewrite("claim.id = 'c1'"))
+        assertEquals("JSON_VALUE(claim_.props, '$.id') = 'c1'", CypherShorthand("claim", "claim_", oracle).rewrite("claim.id = 'c1'"))
         val select = OracleSelect(OracleGraph("g"), ClaimView::class.java)
         assertEquals("(JSON_VALUE(claim_.props, '$.id') = 'c1' AND people.name = 'x')", select.written("claim.id = 'c1' AND people.name = 'x'"))
     }

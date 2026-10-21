@@ -1,14 +1,10 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.Query
+import org.drivine.backend.sql.Step
 import org.drivine.annotation.Direction
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.model.RelationshipModel
-
-/**
- * One step from a node to the nodes it is related to: the relationship's type and direction, and the
- * labels the far node carries. A step with a depth is taken [minDepth] to [maxDepth] times.
- */
-internal class Step(val type: String, val direction: Direction, val labels: List<String>, val maxDepth: Int = 1, val minDepth: Int = 1)
 
 /**
  * The row sources a statement over an [OracleGraph] reads from: the nodes of some labels, and the

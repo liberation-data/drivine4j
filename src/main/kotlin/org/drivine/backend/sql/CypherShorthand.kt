@@ -1,14 +1,14 @@
-package org.drivine.backend.oracle
-
-import org.drivine.backend.oracle.OracleSql.property
+package org.drivine.backend.sql
 
 /**
  * Rewrites a predicate the caller wrote, with a property of the root written as Cypher writes it,
  * `issue.state` or ``issue.`metadata.source` ``, to read that property. So the plain comparisons a
- * Cypher predicate makes are the same text on Oracle; anything more is SQL, over the root's columns
- * `issue.props`, `issue.labels` and `issue.stamp`. Text inside a string literal is left as it is.
+ * Cypher predicate makes are the same text on a SQL store; anything more is SQL, over the root's
+ * columns `issue.props`, `issue.labels` and `issue.stamp`. Text inside a string literal is left as it is.
+ *
+ * @param property how the store reads the property of a row, given the row and the property's name
  */
-internal class CypherShorthand(private val alias: String, private val row: String) {
+internal class CypherShorthand(private val alias: String, private val row: String, private val property: (String, String) -> String) {
 
     /** [predicate] with each `alias.name` of the root read as that property, or as that column of the row. */
     fun rewrite(predicate: String): String {

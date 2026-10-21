@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.SqlKind
 import org.drivine.model.Stamps
 import org.drivine.schema.SimilarityFunction
 import org.junit.jupiter.api.Test
