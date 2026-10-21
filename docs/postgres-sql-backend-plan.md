@@ -137,7 +137,17 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   `SqlCypherFixtures` (was `OracleCypherFixtures`, kept as a deprecated alias) seeds either store, and
   `TestCleanup` cleans a Postgres graph. `SqlDialect` and the moves of `Query`, `RowSource` and the
   statement scope wait for step 3, where the reads first need them.
-- [ ] 3. Reads
+- [x] 3. Reads: the dialect-free pieces moved to `backend/sql` (`Query`, `RowSource`, `Step`,
+  `SqlKind`, `StatementScope`, `CypherShorthand`) with Oracle's statements unchanged. `PostgresBackend`
+  loads, counts, pages, seeks and loads related nodes: views with nested views, relationships with
+  properties, paths (each node once, ordered by a hop), depths and recursion, aggregates and
+  collection sorts. A path is joins over the edge table, and a step to a depth a recursive query
+  anchored at the node it starts from. A number is read only where one is stored, so `'7'` is not
+  `7`, as on the graph engines. The fragment and view read contracts that seed with fixtures pass
+  (null placement, dynamic property filters, flat variable length, limit and skip, polymorphic
+  recursive views), and `PostgresReadSmokeTest` covers the rest. Contracts that also save, delete or
+  make indexes join their steps. The shared select (`SqlSelect`) is not pulled out yet: Oracle's is
+  shaped by `GRAPH_TABLE` and its workarounds, and the two are compared again once writes exist.
 - [ ] 4. Writes
 - [ ] 5. Deletes
 - [ ] 6. Groups

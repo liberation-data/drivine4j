@@ -13,6 +13,8 @@ import sample.groups.Role
 import sample.groups.User
 import org.drivine.annotation.Direction
 import org.drivine.backend.oracle.OracleBackend
+import org.drivine.backend.postgres.PostgresBackend
+import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.connection.DatabaseType
@@ -85,12 +87,13 @@ class CypherBackendTest {
     }
 
     @Test
-    fun `a store that speaks neither Cypher nor a language Drivine has a backend for is refused, and sent nothing`() {
-        val store = RecordingStore(DatabaseType.POSTGRES)
+    fun `Postgres gets its own backend, which has no Cypher grammar and makes the graph the manager names`() {
+        val store = RecordingStore(DatabaseType.POSTGRES, graphName = "g")
+        val backend = GraphBackends.of(store, Neo4jObjectMapper.instance)
 
-        val refused = assertFailsWith<UnsupportedOperationException> { GraphBackends.of(store, Neo4jObjectMapper.instance) }
-        assertContains(refused.message!!, "POSTGRES")
-        assertTrue(store.schema.isEmpty() && store.queried.isEmpty())
+        assertIs<PostgresBackend>(backend)
+        assertNull(backend.cypherGrammar)
+        assertEquals(listOf(PostgresGraph("g").ensuring), store.schema)
     }
 
     @Test

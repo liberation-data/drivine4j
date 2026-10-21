@@ -34,6 +34,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * `limit` / `skip` in the query DSL, verified on Neo4j, FalkorDB, and Memgraph. Proves the
@@ -348,4 +350,22 @@ class StatelessLimitSkipOracleTest {
 
     @Test
     fun `index advice stays silent on Oracle`() = verifyAdviceIsSilent(buildGom(pm, registry))
+}
+
+@PostgresTests
+class StatelessLimitSkipPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun seed() {
+        PostgresTestDatabase.clear(pm)
+        PostgresTestDatabase.seed(pm, SEED)
+    }
+
+    @Test
+    fun `limit and skip on Postgres`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `index advice stays silent on Postgres`() = verifyAdviceIsSilent(buildGom(pm, registry))
 }
