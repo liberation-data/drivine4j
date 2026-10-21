@@ -187,11 +187,22 @@ internal class CypherBackend(
 
     override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement {
         val builder = builder(graphClass)
-        val idCondition = builder.buildIdWhereClause(GraphBackend.ID_PARAM)
-        val fullWhereClause = if (where != null) "$idCondition AND $where" else idCondition
+        val fullWhereClause = byId(builder, where)
         return GraphStatement(
             if (cascade == CascadeType.NONE) builder.buildDeleteQuery(fullWhereClause) else builder.buildCascadeDeleteQuery(fullWhereClause, cascade)
         )
+    }
+
+    override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> {
+        // A fragment has no relationships to cascade through.
+        val builder = builder(graphClass) as? GraphViewQueryBuilder ?: return emptyList()
+        return builder.buildCascadeDepthChecks(byId(builder, where))
+    }
+
+    /** The conditions a delete by id selects its root by: the checks it runs first read the same root. */
+    private fun byId(builder: GraphObjectQueryBuilder, where: String?): String {
+        val idCondition = builder.buildIdWhereClause(GraphBackend.ID_PARAM)
+        return if (where != null) "$idCondition AND $where" else idCondition
     }
 
     override fun deleteAll(graphClass: Class<*>, where: String?): GraphStatement =

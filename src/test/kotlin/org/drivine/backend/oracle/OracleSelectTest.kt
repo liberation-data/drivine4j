@@ -7,6 +7,8 @@ import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.schema.SimilarityFunction
 import org.junit.jupiter.api.Test
 import sample.flatexpand.SeqWindow2View
+import sample.mapped.view.DeletableSessionShelf
+import sample.mapped.view.DeletableSessionTree
 import sample.mapped.view.LocationHierarchy
 import sample.readpath.KeptShelfView
 import sample.readpath.Shelf
@@ -386,6 +388,32 @@ class OracleSelectTest {
         val recursive = assertNotNull(select(LocationHierarchy::class.java).cascaded(emptyList()))
         assertFalse(recursive.contains("UNION"), recursive)
         assertTrue(recursive.contains("(location_ IS node) -[e IS edge WHERE e.type = 'HAS_LOCATION']->{1,3} (cascaded_ IS node"), recursive)
+    }
+
+    @Test
+    fun `each level of a recursive field holds what the root does, from the far node of its steps`() {
+        val tree = assertNotNull(select(DeletableSessionTree::class.java).cascaded(emptyList()))
+        // The root's messages, the parts to their depth, and the messages of every part.
+        assertEquals(2, count(tree, "UNION"), tree)
+        assertTrue(tree.contains("MATCH (session_ IS node)\n        <-[e1 IS edge WHERE e1.type = 'PART_OF']-{1,3} (m1 IS node"), tree)
+        assertTrue(tree.contains("\n        -[e2 IS edge WHERE e2.type = 'HAS_MESSAGE']-> (cascaded3_ IS node"), tree)
+        // A part's own parts are the field's next level, which its depth already takes.
+        assertFalse(tree.contains("e2.type = 'PART_OF'"), tree)
+    }
+
+    @Test
+    fun `a recursive field is checked one level below its depth, from where the cascade reaches it`() {
+        assertEquals(emptyList(), select(ClaimView::class.java).cascadeDepthChecks(emptyList()))
+
+        val (recursion, sql) = select(DeletableSessionShelf::class.java).cascadeDepthChecks(emptyList()).single()
+        assertEquals(DeletableSessionTree::class.java.name, recursion.view)
+        assertEquals("parts", recursion.field)
+        assertEquals(3, recursion.step.maxDepth)
+        // Reached through the shelf, past the depth: the nodes not within it, nor the trees it starts from.
+        assertTrue(sql.startsWith("SELECT COUNT(DISTINCT beyond_.nid)"), sql)
+        assertTrue(sql.contains("<-[e2 IS edge WHERE e2.type = 'PART_OF']-{4,4} (beyond_ IS node"), sql)
+        assertTrue(sql.contains("<-[e2 IS edge WHERE e2.type = 'PART_OF']-{1,3} (cascaded"), sql)
+        assertEquals(2, count(sql, "NOT IN"), sql)
     }
 
     // ----- relatedTo -----

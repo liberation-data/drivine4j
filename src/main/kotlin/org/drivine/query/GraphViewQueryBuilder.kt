@@ -1,5 +1,6 @@
 package org.drivine.query
 
+import org.drivine.backend.CascadeDepthCheck
 import org.drivine.manager.CascadeType
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
@@ -119,6 +120,10 @@ class GraphViewQueryBuilder(
 
     override fun buildCascadeDeleteQuery(whereClause: String?, cascade: CascadeType): String =
         deleteBuilder.buildCascadeDeleteQuery(whereClause, cascade)
+
+    /** The reads a cascading delete runs first: see [GraphViewDeleteBuilder.buildCascadeDepthChecks]. */
+    internal fun buildCascadeDepthChecks(whereClause: String?): List<CascadeDepthCheck> =
+        deleteBuilder.buildCascadeDepthChecks(whereClause)
 
     companion object {
         fun forView(viewClass: Class<*>, grammar: CypherGrammar): GraphViewQueryBuilder {

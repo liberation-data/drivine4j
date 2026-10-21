@@ -1974,12 +1974,15 @@ Deleting a `@GraphView` by id can also delete the nodes the view reaches:
 
 ```kotlin
 graphObjectManager.delete<SessionView>(sessionId)                               // NONE: the root only
-graphObjectManager.delete<SessionView>(sessionId, CascadeType.DELETE_ORPHAN)    // and each node in the view left with no relationship
+graphObjectManager.delete<SessionView>(sessionId, CascadeType.DELETE_ORPHAN)    // and each node in the view that nothing outside it still needs
 graphObjectManager.delete<SessionView>(sessionId, CascadeType.DELETE_ALL)       // and every node in the view
 ```
 
 - The cascade follows the view's declared relationships, through nested views. A node outside the view is never deleted.
+- A view that contains itself (`val parts: List<SessionTree>`, with a `maxDepth`) deletes what a load of it reads: the nodes at every level, and what each level holds through the view's other relationships.
+- A cascade never stops short. If a recursive relationship reaches below its `maxDepth`, the delete throws `IllegalStateException` before anything is written, saying how deep the view reaches; raise the `maxDepth` to cover the deepest level.
 - `DELETE_ALL` permanently deletes nodes that other nodes may still point at. Use it for nodes the root owns.
+- `DELETE_ORPHAN` keeps a node in the view that a node outside it still refers to, at any level, together with everything the view holds below it: a bookmarked message keeps its attachments, and a pinned sub-session keeps its messages and its own sub-sessions. The rest of the view is deleted, including the session that held a kept message.
 - `DELETE_ORPHAN` is not available on Memgraph.
 
 ### Generated Cypher Examples

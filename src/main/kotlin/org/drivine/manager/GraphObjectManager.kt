@@ -523,6 +523,7 @@ class GraphObjectManager internal constructor(
 
     override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
         validateCascadeSupport(cascade)
+        if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) refuseCascadeBelowDepth(id, graphClass, whereClause)
         return persistenceManager.getOne(
             backend.delete(graphClass, whereClause, cascade).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java)
         )
@@ -648,6 +649,28 @@ class GraphObjectManager internal constructor(
             throw UnsupportedOperationException(
                 "GraphObjectManager.save is not available on ${persistenceManager.type}. Use StatelessGraphObjectManager, from GraphObjectManagerFactory.stateless()."
             )
+        }
+    }
+
+    /**
+     * Refuses, before anything is written, a cascading delete that would stop short of the nodes a
+     * recursive relationship reaches. The cascade follows such a relationship to its maxDepth; a node
+     * one level further would have its edge to a deleted node dropped and stay, with all it holds.
+     * The check is a read run before the delete: on FalkorDB, which has no transactions, nothing
+     * else could stop the delete midway.
+     */
+    private fun refuseCascadeBelowDepth(id: String, graphClass: Class<*>, whereClause: String?) {
+        backend.cascadeDepthChecks(graphClass, whereClause).forEach { check ->
+            val beyond = persistenceManager.getOne(check.statement.spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java))
+            if (beyond > 0) {
+                val view = check.view.substringAfterLast('.')
+                throw IllegalStateException(
+                    "Cannot cascade-delete ${graphClass.simpleName} '$id': $view.${check.field} reaches ${check.maxDepth} " +
+                        "level${if (check.maxDepth == 1) "" else "s"} deep (maxDepth = ${check.maxDepth}), and $beyond " +
+                        "node${if (beyond == 1) "" else "s"} below that would be left behind. " +
+                        "Raise maxDepth on ${check.field} to cover the deepest level. Nothing was deleted."
+                )
+            }
         }
     }
 

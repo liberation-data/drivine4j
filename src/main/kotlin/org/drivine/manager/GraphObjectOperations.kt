@@ -355,6 +355,7 @@ interface GraphObjectOperations {
      * @param cascade The cascade policy (default NONE = root-only DETACH DELETE)
      * @return The number of nodes deleted (root plus any cascaded fragments)
      * @throws UnsupportedOperationException for [CascadeType.DELETE_ORPHAN] on Memgraph
+     * @throws IllegalStateException when a cascade would leave nodes below a recursive relationship's maxDepth
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>, cascade: CascadeType): Int
 
@@ -386,9 +387,15 @@ interface GraphObjectOperations {
      * - [CascadeType.DELETE_ALL] → also deletes every fragment reachable through the view's
      *   declared relationships (honoring direction and maxDepth). Nodes the view does not include
      *   survive; DETACH merely drops the edges to them.
-     * - [CascadeType.DELETE_ORPHAN] → also deletes each included related fragment, but only if it
-     *   has no relationships left once the root is removed. Throws `UnsupportedOperationException`
-     *   on Memgraph, which cannot run the check.
+     * - [CascadeType.DELETE_ORPHAN] → also deletes each included related fragment except those
+     *   kept: one a node outside the view refers to, and everything the view holds below a kept
+     *   one (a kept message keeps its attachments). A kept node's parent is still deleted.
+     *   Throws `UnsupportedOperationException` on Memgraph, which cannot run the check.
+     *
+     * A view that contains itself is deleted as it loads: every level of the recursive
+     * relationship, and what each level holds through the view's other relationships. The
+     * recursive relationship is followed to its maxDepth, and a cascade that finds a node below
+     * that is refused before anything is written, rather than leave that node and what it holds.
      *
      * Ids are always bound as parameters; nothing is interpolated into the Cypher.
      *
@@ -398,6 +405,7 @@ interface GraphObjectOperations {
      * @param cascade The cascade policy
      * @return The number of nodes deleted (root plus any cascaded fragments)
      * @throws UnsupportedOperationException for [CascadeType.DELETE_ORPHAN] on Memgraph
+     * @throws IllegalStateException when a cascade would leave nodes below a recursive relationship's maxDepth
      */
     fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int
 

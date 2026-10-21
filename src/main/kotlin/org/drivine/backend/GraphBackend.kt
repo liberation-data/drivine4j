@@ -29,6 +29,13 @@ internal class GraphStatement(val statement: String, val bindings: Map<String, A
 }
 
 /**
+ * A recursive relationship a cascading delete follows, to [maxDepth] levels, and the read that counts
+ * the nodes one level further that the delete would leave behind: a node there is related to one
+ * the cascade deletes, and keeps everything it holds. [view] declares [field].
+ */
+internal class CascadeDepthCheck(val view: String, val field: String, val maxDepth: Int, val statement: GraphStatement)
+
+/**
  * The statement of a load through the query DSL, with what the object manager needs to advise on
  * indexes: the orders on the root, and whether the load seeks from a cursor.
  */
@@ -53,7 +60,7 @@ internal interface GraphBackend {
     /** The grammar of a backend that speaks Cypher; null for one that does not. What only Cypher does asks for it. */
     val cypherGrammar: CypherGrammar?
 
-    /** Whether a delete can cascade to the nodes it leaves with no relationship (`DELETE_ORPHAN`). */
+    /** Whether a save or delete can cascade to the nodes nothing else refers to (`DELETE_ORPHAN`). */
     val supportsOrphanDelete: Boolean
 
     /** What to tell a caller refused `DELETE_ORPHAN`: which engine cannot, and why. */
@@ -123,6 +130,13 @@ internal interface GraphBackend {
 
     /** The delete of the object whose id is bound as [ID_PARAM], if it also meets [where]. */
     fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement
+
+    /**
+     * The reads a cascading [delete] of the same object runs first, one for each recursive
+     * relationship it follows, each giving how many nodes lie below that relationship's depth: see
+     * [CascadeDepthCheck]. Empty when the cascade follows none.
+     */
+    fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck>
 
     /** The delete of every [graphClass] root, or of those that meet [where]. Nothing a root is related to is deleted. */
     fun deleteAll(graphClass: Class<*>, where: String? = null): GraphStatement
