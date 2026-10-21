@@ -91,8 +91,8 @@ interface GraphObjectQueryBuilder {
      * - [CascadeType.NONE] → identical to [buildDeleteQuery] (root-only DETACH DELETE).
      * - [CascadeType.DELETE_ALL] → DETACH DELETE the root and every fragment reachable
      *   through the view's relationships (respecting direction and maxDepth).
-     * - [CascadeType.DELETE_ORPHAN] → delete the root, then delete each included related
-     *   fragment only if it has no relationships left once the root is removed.
+     * - [CascadeType.DELETE_ORPHAN] → delete the root, and each included related fragment
+     *   except one a node outside the view refers to, and what the view holds below it.
      *
      * For plain fragments (no view) there is nothing to cascade into, so the default
      * implementation falls back to the root-only delete regardless of [cascade].

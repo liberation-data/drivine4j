@@ -41,6 +41,8 @@ import sample.stateless.Claim
 import sample.stateless.ClaimStats
 import sample.stateless.ClaimView
 import sample.stateless.Human
+import sample.stateless.Pals
+import sample.mapped.view.DeletableSessionTree
 import sample.vectorfilter.VecDocNode
 import java.sql.SQLException
 import kotlin.test.assertContains
@@ -376,15 +378,31 @@ class OracleBackendTest {
     }
 
     @Test
-    fun `a cascade that deletes orphans reads what the roots reach before it deletes them, and keeps a node something else still relates to`() {
+    fun `a cascade that deletes orphans reads what it keeps before it deletes the roots, and keeps what a kept node holds`() {
         val sql = backend().delete(ClaimView::class.java, null, CascadeType.DELETE_ORPHAN).statement.squashed()
 
         val collected = sql.indexOf("BULK COLLECT INTO v_ids")
         val rootsDeleted = sql.indexOf("DELETE FROM g_node claim_ WHERE")
-        val orphansDeleted = sql.indexOf("DELETE FROM g_node n WHERE n.nid = v_ids(i) AND NOT EXISTS (SELECT 1 FROM g_edge e WHERE e.src = n.nid OR e.dst = n.nid);")
+        val orphansDeleted = sql.indexOf("FORALL i IN 1 .. v_ids.COUNT DELETE FROM g_node WHERE nid = v_ids(i);")
         assertTrue(collected in 0 until rootsDeleted && rootsDeleted < orphansDeleted, sql)
-        assertContains(sql, "v_count := v_count + SQL%ROWCOUNT;")
-        assertFalse("FORALL" in sql)
+        // Kept: a node something outside the cascade relates to, and what a kept node holds by a step the cascade follows.
+        assertContains(sql, "WHERE (e.src = c.nid AND e.dst NOT IN (SELECT nid FROM cascade_all)) OR (e.dst = c.nid AND e.src NOT IN (SELECT nid FROM cascade_all)))")
+        assertContains(sql, "FROM cascade_kept k JOIN g_edge e ON (e.type = 'MENTIONS' AND e.src = k.nid)")
+        assertContains(sql, ") CYCLE nid SET looped TO 'Y' DEFAULT 'N'")
+        assertContains(sql, "SELECT nid BULK COLLECT INTO v_ids FROM cascade_targets WHERE nid NOT IN (SELECT nid FROM cascade_kept);")
+        assertContains(sql, "v_count := v_count + v_ids.COUNT;")
+    }
+
+    @Test
+    fun `a kept node holds the far end of each step the cascade follows, in the step's direction`() {
+        // Each type and direction once: the root's messages, and the parts PART_OF it, at every level.
+        val tree = backend().delete(DeletableSessionTree::class.java, null, CascadeType.DELETE_ORPHAN).statement.squashed()
+        assertContains(tree, "ON (e.type = 'HAS_MESSAGE' AND e.src = k.nid) OR (e.type = 'PART_OF' AND e.dst = k.nid)")
+        assertEquals(1, Regex("e.type = 'PART_OF' AND").findAll(tree).count(), tree)
+
+        val pals = backend().delete(Pals::class.java, null, CascadeType.DELETE_ORPHAN).statement.squashed()
+        assertContains(pals, "ON (e.type = 'KNOWS' AND (e.src = k.nid OR e.dst = k.nid))")
+        assertContains(pals, "SELECT CASE WHEN e.src = k.nid THEN e.dst ELSE e.src END")
     }
 
     @Test

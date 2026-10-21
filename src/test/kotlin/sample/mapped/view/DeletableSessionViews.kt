@@ -77,3 +77,46 @@ data class DeletableSessionDeep(
     @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
     val messages: List<MessageWithAttachments>,
 )
+
+/**
+ * A recursive delete view: a Session, its messages, and the sessions `PART_OF` it, to three levels.
+ * Each level holds its own messages, as the root does, so a cascade must delete those at every
+ * level, and refuse a tree deeper than three levels rather than leave the rest of it behind.
+ */
+@GraphView
+data class DeletableSessionTree(
+    @Root val session: Session,
+
+    @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
+    val messages: List<Message> = emptyList(),
+
+    @GraphRelationship(type = "PART_OF", direction = Direction.INCOMING, maxDepth = 3)
+    val parts: List<DeletableSessionTree> = emptyList(),
+)
+
+/**
+ * [DeletableSessionTree] whose messages are a nested view, so each level of the tree reaches the
+ * attachments of its messages too.
+ */
+@GraphView
+data class DeletableSessionTreeDeep(
+    @Root val session: Session,
+
+    @GraphRelationship(type = "HAS_MESSAGE", direction = Direction.OUTGOING)
+    val messages: List<MessageWithAttachments> = emptyList(),
+
+    @GraphRelationship(type = "PART_OF", direction = Direction.INCOMING, maxDepth = 3)
+    val parts: List<DeletableSessionTreeDeep> = emptyList(),
+)
+
+/**
+ * A session that shelves session trees: the recursive relationship is one nested view in, so a
+ * cascade reaches it only through the shelf's own relationship.
+ */
+@GraphView
+data class DeletableSessionShelf(
+    @Root val session: Session,
+
+    @GraphRelationship(type = "SHELVES", direction = Direction.OUTGOING)
+    val trees: List<DeletableSessionTree> = emptyList(),
+)

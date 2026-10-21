@@ -4,8 +4,11 @@ import org.drivine.annotation.Direction
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.model.RelationshipModel
 
-/** One step from a node to the nodes it is related to: the relationship's type and direction, and the labels the far node carries. */
-internal class Step(val type: String, val direction: Direction, val labels: List<String>, val maxDepth: Int = 1)
+/**
+ * One step from a node to the nodes it is related to: the relationship's type and direction, and the
+ * labels the far node carries. A step with a depth is taken [minDepth] to [maxDepth] times.
+ */
+internal class Step(val type: String, val direction: Direction, val labels: List<String>, val maxDepth: Int = 1, val minDepth: Int = 1)
 
 /**
  * The row sources a statement over an [OracleGraph] reads from: the nodes of some labels, and the
@@ -30,7 +33,7 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
      * The nodes reached by [steps] from the node [from], as rows named [alias]: `src` is the node the
      * path starts from, which the pattern calls what the statement calls that node's row. A single
      * step also gives the relationship, as `eid` and `eprops`. A step with a depth above one is taken
-     * from one to that many times, and a node may then be reached more than once. The nodes reached
+     * from its least depth to that many times, and a node may then be reached more than once. The nodes reached
      * are those that meet [where], which the pattern tests them for beside the last step's labels.
      * [extra] are further columns, which may read any node of the pattern: the last as [alias], one
      * before it as [stepNode] names it.
@@ -45,7 +48,7 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
             append(OracleSql.node(from))
             steps.forEachIndexed { i, step ->
                 append(hop).append(OracleSql.arrow(if (steps.size == 1) "e" else "e${i + 1}", step.type, step.direction))
-                if (step.maxDepth > 1) append("{1,${step.maxDepth}}")
+                if (step.maxDepth > 1) append("{${step.minDepth},${step.maxDepth}}")
                 val node = stepNode(steps, i, alias)
                 val met = listOfNotNull(hasLabels(node, step.labels)) + if (i == steps.lastIndex) where else emptyList()
                 append(" ").append(OracleSql.node(node, met.takeIf { it.isNotEmpty() }?.joinToString(" AND ")))

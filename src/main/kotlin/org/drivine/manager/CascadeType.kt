@@ -34,6 +34,10 @@ enum class CascadeType {
      * Safe option - only deletes if the target becomes orphaned (no incoming or outgoing relationships).
      * Uses a two-step Cypher query: DELETE relationship, then DELETE target WHERE NOT EXISTS relationships.
      *
+     * On a delete of a view, each node the view includes is deleted unless a node outside the view
+     * refers to it, or it is held below such a node through the view: a kept message keeps its
+     * attachments, while the session that held it is still deleted.
+     *
      * Not supported on Memgraph, where it throws `UnsupportedOperationException`.
      */
     DELETE_ORPHAN,

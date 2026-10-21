@@ -19,10 +19,10 @@ internal object Directions {
     /** Single-hop direction from a relationship, e.g. `-[:ASSIGNED_TO]->`. */
     fun directionString(rel: RelationshipModel): String = hopArrow(rel.type, rel.direction)
 
-    /** Variable-length direction expanding 1..[maxDepth] hops, e.g. `-[:HAS_LOCATION*1..3]->`. */
-    fun varLengthDirectionString(rel: RelationshipModel, maxDepth: Int): String = when (rel.direction) {
-        Direction.OUTGOING -> "-[:${rel.type}*1..$maxDepth]->"
-        Direction.INCOMING -> "<-[:${rel.type}*1..$maxDepth]-"
-        Direction.UNDIRECTED -> "-[:${rel.type}*1..$maxDepth]-"
+    /** Variable-length direction expanding [minDepth]..[maxDepth] hops, e.g. `-[:HAS_LOCATION*1..3]->`. */
+    fun varLengthDirectionString(rel: RelationshipModel, maxDepth: Int, minDepth: Int = 1): String = when (rel.direction) {
+        Direction.OUTGOING -> "-[:${rel.type}*$minDepth..$maxDepth]->"
+        Direction.INCOMING -> "<-[:${rel.type}*$minDepth..$maxDepth]-"
+        Direction.UNDIRECTED -> "-[:${rel.type}*$minDepth..$maxDepth]-"
     }
 }

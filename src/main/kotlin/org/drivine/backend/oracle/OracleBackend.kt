@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
+import org.drivine.backend.CascadeDepthCheck
 import org.drivine.backend.FragmentBatch
 import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphStatement
@@ -156,10 +157,20 @@ internal class OracleBackend(
 
     override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement {
         val select = OracleSelect(graph, graphClass)
-        val predicates = listOfNotNull(select.hasId(GraphBackend.ID_PARAM), where?.let(select::written))
+        val predicates = byId(select, where)
         val cascaded = if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) select.cascaded(predicates) else null
         return if (cascaded == null) deleting(select, predicates) else cascading(select, predicates, cascaded, orphansOnly = cascade == CascadeType.DELETE_ORPHAN)
     }
+
+    override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> {
+        val select = OracleSelect(graph, graphClass)
+        val checks = select.cascadeDepthChecks(byId(select, where))
+        return checks.map { (recursion, sql) -> CascadeDepthCheck(recursion.view, recursion.field, recursion.step.maxDepth, GraphStatement(sql, select.bindings())) }
+    }
+
+    /** The predicates a delete by id selects its root by: the checks it runs first read the same root. */
+    private fun byId(select: OracleSelect, where: String?): List<String> =
+        listOfNotNull(select.hasId(GraphBackend.ID_PARAM), where?.let(select::written))
 
     override fun deleteAll(graphClass: Class<*>, where: String?): GraphStatement =
         OracleSelect(graph, graphClass).let { select -> deleting(select, listOfNotNull(where?.let(select::written))) }
@@ -182,24 +193,55 @@ internal class OracleBackend(
 
     /**
      * Deletes the roots [predicates] select, and of the nodes [cascaded] reaches from them either every
-     * one, or with [orphansOnly] those left with no relationship once the roots are gone.
+     * one, or with [orphansOnly] those not kept. A node is kept when a node outside the cascade is
+     * related to it, or when it is one step of a relationship the cascade follows below a kept one:
+     * a kept message keeps its attachments, and its session is still deleted. What is kept is read
+     * before anything is deleted, so a node's relationships to the others the cascade takes do not
+     * keep it.
      */
     private fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
         val roots = "FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"
+        val everything = "SELECT ${select.root}.nid\n$roots\nUNION\n$cascaded"
         // Lines joined, not a template: what is put in has lines of its own, each laid out under the one that opens it.
         val body = if (orphansOnly) {
+            // The far end of the edge e from the kept node k.
+            val far = "CASE WHEN e.src = k.nid THEN e.dst ELSE e.src END"
+            val holds = select.cascadeSteps().joinToString("\n       OR ") { step ->
+                val type = OracleSql.literal(step.type)
+                when (step.direction) {
+                    Direction.OUTGOING -> "(e.type = $type AND e.src = k.nid)"
+                    Direction.INCOMING -> "(e.type = $type AND e.dst = k.nid)"
+                    Direction.UNDIRECTED -> "(e.type = $type AND (e.src = k.nid OR e.dst = k.nid))"
+                }
+            }
+            val orphans = listOf(
+                "WITH cascade_targets AS (",
+                "    SELECT c.nid FROM (\n        ${cascaded.under().under()}) c",
+                "    WHERE c.nid NOT IN (\n        ${"SELECT ${select.root}.nid\n$roots".under().under()})),",
+                "cascade_all AS (\n    ${everything.under()}),",
+                "cascade_kept (nid) AS (",
+                "    SELECT c.nid FROM cascade_targets c",
+                "    WHERE EXISTS (",
+                "        SELECT 1 FROM ${graph.edges} e",
+                "        WHERE (e.src = c.nid AND e.dst NOT IN (SELECT nid FROM cascade_all))",
+                "           OR (e.dst = c.nid AND e.src NOT IN (SELECT nid FROM cascade_all)))",
+                "    UNION ALL",
+                "    SELECT $far",
+                "    FROM cascade_kept k JOIN ${graph.edges} e ON ${holds.under()}",
+                "    WHERE $far IN (SELECT nid FROM cascade_targets)",
+                ") CYCLE nid SET looped TO 'Y' DEFAULT 'N'",
+            ).joinToString("\n")
             listOf(
-                "SELECT nid BULK COLLECT INTO v_ids FROM (\n    ${cascaded.under()});",
+                "$orphans\nSELECT nid BULK COLLECT INTO v_ids FROM cascade_targets WHERE nid NOT IN (SELECT nid FROM cascade_kept);",
                 "DELETE $roots;",
                 "v_count := SQL%ROWCOUNT;",
-                "FOR i IN 1 .. v_ids.COUNT LOOP",
-                "    DELETE FROM ${graph.nodes} n WHERE n.nid = v_ids(i) AND NOT EXISTS (SELECT 1 FROM ${graph.edges} e WHERE e.src = n.nid OR e.dst = n.nid);",
-                "    v_count := v_count + SQL%ROWCOUNT;",
-                "END LOOP;",
+                "FORALL i IN 1 .. v_ids.COUNT",
+                "    DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);",
+                "v_count := v_count + v_ids.COUNT;",
             )
         } else {
             listOf(
-                "SELECT nid BULK COLLECT INTO v_ids FROM (\n    ${"SELECT ${select.root}.nid\n$roots\nUNION\n$cascaded".under()});",
+                "SELECT nid BULK COLLECT INTO v_ids FROM (\n    ${everything.under()});",
                 "FORALL i IN 1 .. v_ids.COUNT",
                 "    DELETE FROM ${graph.nodes} WHERE nid = v_ids(i);",
                 "v_count := v_ids.COUNT;",
