@@ -9,6 +9,8 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -68,12 +70,10 @@ private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRe
     return GraphObjectManager(pm, SessionManager(mapper), mapper, registry)
 }
 
-@Testcontainers
 class GraphPathMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var gom: GraphObjectManager
@@ -113,14 +113,12 @@ class GraphPathMemgraphTest {
     }
 }
 
-@Testcontainers
 class GraphPathFalkorDbTest {
     companion object {
         private const val GRAPH = "pathtest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var gom: GraphObjectManager

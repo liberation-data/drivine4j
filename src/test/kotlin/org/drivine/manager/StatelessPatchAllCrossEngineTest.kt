@@ -22,6 +22,9 @@ import org.drivine.oracle.OracleTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.VectorIndexSpec
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -437,14 +440,12 @@ private class FailingLastStatement(private val delegate: PersistenceManager) : P
         delegate.queryBatch(specs.dropLast(1) + QuerySpecification.withStatement("THIS IS NO STATEMENT"))
 }
 
-@Testcontainers
 class StatelessPatchAllNeo4jTest : StatelessPatchAllContract() {
     companion object {
-        private const val PASSWORD = "patchall1"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager
@@ -468,14 +469,12 @@ class StatelessPatchAllNeo4jTest : StatelessPatchAllContract() {
     override val pm: NonTransactionalPersistenceManager get() = manager
 }
 
-@Testcontainers
 class StatelessPatchAllFalkorDbTest : StatelessPatchAllContract() {
     companion object {
         private const val GRAPH = "patchall"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager
@@ -525,12 +524,10 @@ class StatelessPatchAllFalkorDbTest : StatelessPatchAllContract() {
     }
 }
 
-@Testcontainers
 class StatelessPatchAllMemgraphTest : StatelessPatchAllContract() {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager

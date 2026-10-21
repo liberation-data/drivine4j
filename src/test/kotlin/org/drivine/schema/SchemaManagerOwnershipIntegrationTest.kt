@@ -11,6 +11,7 @@ import org.drivine.manager.PersistenceManagerType
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.transform
+import org.drivine.test.SharedNeo4j
 import org.drivine.transaction.TransactionContextHolder
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -38,16 +39,13 @@ import kotlin.test.assertTrue
  *  - `enforce(name)` / `recreateAll(name)` act selectively;
  *  - an unnamed catalog still uses the historical `scope: 'schema'` marker (backward compatibility).
  */
-@Testcontainers
 class SchemaManagerOwnershipIntegrationTest {
 
     companion object {
-        private const val PASSWORD = "ownertest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container
         @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var registry: DatabaseRegistry
         private lateinit var factory: PersistenceManagerFactory

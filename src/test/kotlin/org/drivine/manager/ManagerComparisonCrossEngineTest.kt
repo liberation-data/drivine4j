@@ -10,6 +10,9 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -251,14 +254,12 @@ abstract class ManagerComparisonContract {
     }
 }
 
-@Testcontainers
 class ManagerComparisonNeo4jTest : ManagerComparisonContract() {
     companion object {
-        private const val PASSWORD = "managercomparison"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager
@@ -282,14 +283,12 @@ class ManagerComparisonNeo4jTest : ManagerComparisonContract() {
     override val pm: NonTransactionalPersistenceManager get() = manager
 }
 
-@Testcontainers
 class ManagerComparisonFalkorDbTest : ManagerComparisonContract() {
     companion object {
         private const val GRAPH = "managercomparison"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager
@@ -311,12 +310,10 @@ class ManagerComparisonFalkorDbTest : ManagerComparisonContract() {
     override val pm: NonTransactionalPersistenceManager get() = manager
 }
 
-@Testcontainers
 class ManagerComparisonMemgraphTest : ManagerComparisonContract() {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager

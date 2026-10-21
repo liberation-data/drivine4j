@@ -9,6 +9,8 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -86,14 +88,12 @@ private fun seed(pm: PersistenceManager, vec: (String) -> String) {
     )
 }
 
-@Testcontainers
 class StatelessVectorSearchFalkorDbTest {
     companion object {
         private const val GRAPH = "vectortest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -139,12 +139,10 @@ class StatelessVectorSearchFalkorDbTest {
     }
 }
 
-@Testcontainers
 class StatelessVectorSearchMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager

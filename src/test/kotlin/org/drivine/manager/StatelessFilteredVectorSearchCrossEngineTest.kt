@@ -12,6 +12,9 @@ import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -126,14 +129,12 @@ private fun seed(pm: PersistenceManager, vec: (String) -> String) {
     )
 }
 
-@Testcontainers
 class StatelessFilteredVectorSearchNeo4jTest {
     companion object {
-        private const val PASSWORD = "filteredvectortest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -180,14 +181,12 @@ class StatelessFilteredVectorSearchNeo4jTest {
     }
 }
 
-@Testcontainers
 class StatelessFilteredVectorSearchFalkorDbTest {
     companion object {
         private const val GRAPH = "fvstest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -214,12 +213,10 @@ class StatelessFilteredVectorSearchFalkorDbTest {
     fun `filtered vector search on FalkorDB`() = verify(gom)
 }
 
-@Testcontainers
 class StatelessFilteredVectorSearchMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager

@@ -10,6 +10,9 @@ import org.drivine.query.dsl.instanceOf
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -79,14 +82,12 @@ private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRe
     return GraphObjectManager(pm, SessionManager(mapper), mapper, registry)
 }
 
-@Testcontainers
 class FragmentDslNeo4jTest {
     companion object {
-        private const val PW = "fragdsltest"
+        private const val PW = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PW) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -113,14 +114,12 @@ class FragmentDslNeo4jTest {
     @Test fun `bare fragment DSL on Neo4j`() = verify(buildGom(pm, registry), pm)
 }
 
-@Testcontainers
 class FragmentDslFalkorDbTest {
     companion object {
         private const val GRAPH = "fragdsltest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -145,12 +144,10 @@ class FragmentDslFalkorDbTest {
     @Test fun `bare fragment DSL on FalkorDB`() = verify(buildGom(pm, registry), pm)
 }
 
-@Testcontainers
 class FragmentDslMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager

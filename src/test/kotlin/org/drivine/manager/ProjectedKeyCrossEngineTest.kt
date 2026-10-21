@@ -17,6 +17,8 @@ import org.drivine.query.sort.CallSubqueryEmitter
 import org.drivine.query.transform
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.VectorIndexSpec
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -486,14 +488,12 @@ class ProjectedKeyNeo4jTest {
         assertEquals(0L, probesLeftByAFailedBatch(pm, "neo"))
 }
 
-@Testcontainers
 class ProjectedKeyFalkorDbTest {
     companion object {
         private const val GRAPH = "projectedkeytest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -542,12 +542,10 @@ class ProjectedKeyFalkorDbTest {
         assertEquals(1L, probesLeftByAFailedBatch(pm, "falkor"))
 }
 
-@Testcontainers
 class ProjectedKeyMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager

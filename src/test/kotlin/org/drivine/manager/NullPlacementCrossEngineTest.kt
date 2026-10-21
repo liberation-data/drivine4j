@@ -12,6 +12,9 @@ import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.PropertyReference
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -86,14 +89,12 @@ private const val SEED = """
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) =
     StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, registry)
 
-@Testcontainers
 class NullPlacementNeo4jTest {
     companion object {
-        private const val PASSWORD = "nullplacementtest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -124,14 +125,12 @@ class NullPlacementNeo4jTest {
     fun `nulls go where the order says on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()))
 }
 
-@Testcontainers
 class NullPlacementFalkorDbTest {
     companion object {
         private const val GRAPH = "nullplacementtest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -160,12 +159,10 @@ class NullPlacementFalkorDbTest {
     fun `nulls go where the order says on FalkorDB`() = verify(buildGom(pm, SubtypeRegistry()))
 }
 
-@Testcontainers
 class NullPlacementMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager

@@ -12,6 +12,9 @@ import org.drivine.query.dsl.none
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
+import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -71,14 +74,12 @@ private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRe
     return GraphObjectManager(pm, SessionManager(mapper), mapper, registry)
 }
 
-@Testcontainers
 class QuantifiedRelationshipNeo4jTest {
     companion object {
-        private const val PASSWORD = "quantifiedtest"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -107,14 +108,12 @@ class QuantifiedRelationshipNeo4jTest {
     fun `any and none over a to-many relationship on Neo4j`() = verify(gom)
 }
 
-@Testcontainers
 class QuantifiedRelationshipFalkorDbTest {
     companion object {
         private const val GRAPH = "quanttest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -141,12 +140,10 @@ class QuantifiedRelationshipFalkorDbTest {
     fun `any and none over a to-many relationship on FalkorDB`() = verify(gom)
 }
 
-@Testcontainers
 class QuantifiedRelationshipMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager

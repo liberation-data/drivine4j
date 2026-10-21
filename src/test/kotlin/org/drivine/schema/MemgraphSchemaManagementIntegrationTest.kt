@@ -7,6 +7,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.test.SharedMemgraph
 import org.junit.jupiter.api.*
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -29,11 +30,8 @@ class MemgraphSchemaManagementIntegrationTest {
 
     companion object {
 
-        @Container
         @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687)
-            .waitingFor(Wait.forListeningPort())
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var manager: PersistenceManager

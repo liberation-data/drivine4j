@@ -3,6 +3,7 @@ package org.drivine.connection
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.query.transform
+import org.drivine.test.SharedMemgraph
 import org.junit.jupiter.api.*
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.wait.strategy.Wait
@@ -28,11 +29,8 @@ class MemgraphConnectionIntegrationTest {
         // Wait for the mapped Bolt port to actually accept TCP connections — Memgraph's
         // "You are running Memgraph" log line prints before Bolt is ready, so a log-based
         // wait races with the first test.
-        @Container
         @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687)
-            .waitingFor(Wait.forListeningPort())
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
 

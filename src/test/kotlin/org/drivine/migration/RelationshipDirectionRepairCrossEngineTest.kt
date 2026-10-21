@@ -23,6 +23,9 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
+import org.drivine.test.SharedNeo4j
 import org.drivine.transaction.TransactionContextHolder
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -919,14 +922,12 @@ abstract class RelationshipDirectionRepairContract {
     }
 }
 
-@Testcontainers
 class RelationshipDirectionRepairNeo4jTest : RelationshipDirectionRepairContract() {
     companion object {
-        private const val PASSWORD = "directionrepair"
+        private const val PASSWORD = SharedNeo4j.PASSWORD
 
-        @Container @JvmField
-        val container: Neo4jContainer<*> = Neo4jContainer(DockerImageName.parse("neo4j:latest"))
-            .apply { withAdminPassword(PASSWORD) }
+        @JvmField
+        val container: Neo4jContainer<*> = SharedNeo4j.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager
@@ -950,14 +951,12 @@ class RelationshipDirectionRepairNeo4jTest : RelationshipDirectionRepairContract
     override val pm: NonTransactionalPersistenceManager get() = manager
 }
 
-@Testcontainers
 class RelationshipDirectionRepairFalkorDbTest : RelationshipDirectionRepairContract() {
     companion object {
         private const val GRAPH = "directionrepair"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager
@@ -979,12 +978,10 @@ class RelationshipDirectionRepairFalkorDbTest : RelationshipDirectionRepairContr
     override val pm: NonTransactionalPersistenceManager get() = manager
 }
 
-@Testcontainers
 class RelationshipDirectionRepairMemgraphTest : RelationshipDirectionRepairContract() {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var manager: NonTransactionalPersistenceManager

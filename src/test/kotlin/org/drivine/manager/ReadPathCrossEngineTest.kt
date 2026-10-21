@@ -26,6 +26,8 @@ import org.drivine.query.sort.CallSubqueryEmitter
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.VectorIndexSpec
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
@@ -316,14 +318,12 @@ class ReadPathNeo4jTest {
     @Test fun `a not over a relationship target's property is a predicate on the relationship on Neo4j`() = verifyNotOverRelationship(gom)
 }
 
-@Testcontainers
 class ReadPathFalkorDbTest {
     companion object {
         private const val GRAPH = "readpathtest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -363,12 +363,10 @@ class ReadPathFalkorDbTest {
     @Test fun `a not over a relationship target's property is a predicate on the relationship on FalkorDB`() = verifyNotOverRelationship(gom)
 }
 
-@Testcontainers
 class ReadPathMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager

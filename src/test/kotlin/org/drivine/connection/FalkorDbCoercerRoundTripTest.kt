@@ -3,6 +3,7 @@ package org.drivine.connection
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
+import org.drivine.test.SharedFalkorDb
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
@@ -25,16 +26,13 @@ import kotlin.test.assertEquals
  *
  * Maps as parameter values (JFalkorDB#68) are covered in FalkorDbConnectionIntegrationTest.
  */
-@Testcontainers
 class FalkorDbCoercerRoundTripTest {
 
     companion object {
         private const val GRAPH = "coercer-round-trip"
 
-        @Container
         @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
 
