@@ -1,224 +1,138 @@
-# Plan: `GraphObjectManager` on plain Postgres (SQL, no AGE)
+# Plan: the object manager on plain Postgres
 
-Status: **proposal** · Target API: `GraphObjectManager` (`@GraphView` / `@NodeFragment`) over a
-plain relational Postgres schema + pgvector. **No Apache AGE, no AgensGraph, no Cypher engine** —
-graph composition is reproduced in pure SQL via `LATERAL` + `json_agg`.
+Status: **in progress** · Replaces the July proposal (a table per label, join tables, one label per
+node), which was written before the Oracle backend and its layout existed.
 
 ## Goal
 
-Make `@GraphView`-based reads, vector search, and writes work against ordinary Postgres tables, so
-`embabel-chat-store` / `dice` can run on Postgres + pgvector with real `vector` columns and HNSW
-indexes. The type-safe DSL (`where {}`, `loadNearest`) should work unchanged from the caller's side.
+`GraphObjectManager` and the stateless manager work on plain Postgres, with pgvector for vector
+search, as they work on Oracle: the same annotations, the same query DSL, the same results. No
+Apache AGE, no extension beyond pgvector, and nothing new for a caller to declare.
 
-## Why this is feasible (the load-bearing facts)
+## The layout: Oracle's, so a store is one store
 
-Established earlier in design discussion, verified against the code:
+A graph is kept as Oracle keeps it (`OracleGraph`):
 
-1. **`GraphObjectManager` has no execution path of its own.** It builds a `QuerySpecification` and
-   runs everything through `persistenceManager.query(...)` / `.execute(...)` / `.executeBatch(...)`
-   (`manager/GraphObjectManager.kt:69,108,832,876`). So it is pure *generation + hydration* on top
-   of the same substrate `PersistenceManager` uses. Give that substrate a SQL backend and the
-   high-level API rides on it.
-2. **A GraphView already `RETURN`s a single nested map column.** The result mapper collapses a
-   one-column row straight to the object. A Postgres `SELECT json_build_object(...) AS row` returns
-   the same single-`jsonb` shape → the hydration / `TransformPostProcessor` layer is reused
-   essentially unchanged. (This is the biggest risk, and it's retired in Phase 0 with a hand-written
-   query before any generator code is written.)
-3. **`json_agg` is the relational equivalent of a Cypher pattern comprehension.**
-   `[(p)-[:R]->(c) | c {.*}]` ⇄ `LEFT JOIN LATERAL (SELECT jsonb_agg(to_jsonb(c)) ...) ON true`.
-4. **The `where {}` DSL has a backend-neutral AST.** `sealed class WhereCondition`
-   (`PropertyCondition`, `RelationshipCondition`, `LabelCondition`, `OrCondition`,
-   `ListMembershipCondition`) is walked by `CypherGenerator` to emit Cypher. A `SqlGenerator` can
-   walk the *same* AST. Only `ComparisonOperator.cypherOperator` and the final emitter are dialect-
-   specific.
-5. **The connection seam is driver-neutral.** `Connection { query(spec): List<T>; tx control }` has
-   no Bolt/Cypher types in its signature. A `PostgresConnection` over JDBC is structurally allowed.
-6. **pgvector fits the existing vector contract.** `vectorSearchHead` already promises "normalized
-   similarity, higher = better, normalized per-backend." pgvector cosine is `1 - (embedding <=> $q)`,
-   `ORDER BY embedding <=> $q LIMIT k` — an exact match.
-7. **Precedent.** The TypeScript Drivine shipped plain-Postgres support: `POSTGRES` and
-   `AGENS_GRAPH` shared one `pg`-driver provider; the only difference was the default language
-   (`SQL` vs `CYPHER`). Plain Postgres worked at the PersistenceManager level — hand-written SQL,
-   mapped rows. We are re-expressing that as JDBC and then *generating* the SQL.
-
-## Where the work is NOT
-
-The `CypherGrammar` interface is **not** the extension point. Every method emits Cypher/openCypher
-text; FalkorDB/Memgraph/Neptune were cheap *because they all speak Cypher*. Postgres means a
-**sibling generation pipeline**, not a `CypherGrammar` implementation. The reused assets are the
-*model* (`GraphViewModel`, fragment/relationship metadata), the `WhereCondition` AST, the connection
-seam, and the hydration layer.
-
----
-
-## Strategy: substrate first, then generation
-
-Two layers, built and validated in order:
-
-- **Phase 0 — Execution substrate (JDBC).** What "PersistenceManager on Postgres" *is*. Lets us run
-  *hand-written* `json_agg` SQL through `persistenceManager.query(View::class)` and prove hydration
-  reuse. This is the foundation everything else sits on AND the test harness that de-risks it.
-- **Phase 1+ — SQL generation.** Teach a SQL builder family to emit the `json_agg` SQL from
-  `@GraphView` annotations: reads, then vector search, then writes + DDL.
-
----
-
-## Phase 0 — Execution substrate (the prerequisite)
-
-Deliver raw-SQL execution through the existing `Connection` / `PersistenceManager` seam. No grammar,
-no builders involved — `PersistenceManager` runs statement text.
-
-### Tasks (file-by-file, mirroring existing structure)
-
-- `connection/PostgresConnectionProvider.kt` — JDBC pool (HikariCP), `type = POSTGRES`, hands out
-  `PostgresConnection`. Default language `SQL`.
-- `connection/PostgresConnection.kt` — `implements Connection`: compile spec → SQL + ordered params,
-  `PreparedStatement`, execute, map rows; `startTransaction`/`commit`/`rollback` via JDBC
-  `setAutoCommit(false)` + `commit`/`rollback`.
-- `query/` SQL compile path — render `$name` params to positional `?`/`$n` (exactly what the TS
-  `AgensGraphSpecCompiler` did); `OFFSET`/`LIMIT` (the `SpecCompiler.skipClause()` SQL branch already
-  exists). Decide: extend `SpecCompiler` vs a `PostgresSpecCompiler`.
-- `mapper/PostgresResultMapper.kt` — `ResultSet` → read the single `json`/`jsonb` column → Jackson →
-  object; reuse existing `ResultPostProcessor`s (incl. `TransformPostProcessor`). Multi-column rows →
-  tuple, mirroring `GraphResultMapper`.
-- **Decouple param binding** — `QuerySpecification.bind()` hard-codes
-  `Neo4jObjectMapper.convertValueForNeo4j` (`query/QuerySpecification.kt:54,84`). Introduce a value-
-  converter seam (default = current Neo4j behavior; Postgres variant for JDBC types). Must not
-  regress the Neo4j path.
-- `connection/ConnectionProviderBuilder` + `DatabaseType.POSTGRES` wiring + `CypherDialect`/registry
-  (note: raw SQL needs no grammar; the dialect entry is for Phase 1).
-- `build.gradle` — `org.postgresql:postgresql`, HikariCP, and a pgvector type strategy
-  (`com.pgvector:pgvector` or `::vector` cast on string params).
-
-### Acceptance criteria
-
-Against a `pgvector/pgvector` testcontainer:
-1. `PersistenceManager` executes a hand-written `SELECT`, params bound, rows mapped. Transactions
-   commit/rollback.
-2. **The hydration proof:** hand-write a `json_agg` query for a real `@GraphView` (one to-one + one
-   to-many), run `persistenceManager.query(View::class)`, assert the typed object (incl. the nested
-   collection) hydrates correctly. *This validates the central reuse claim before any generator is
-   written.*
-
----
-
-## Phase 1 — SQL generation for reads (`loadAll` + `where {}`)
-
-The core build: `GraphViewModel` → `LATERAL`/`json_agg` SQL.
-
-### Mapping rules (annotation → relational)
-
-| Annotation | Relational mapping |
+| Table | Columns |
 |---|---|
-| `@NodeFragment(labels=["Person"])` | table (label → table name) |
-| property | column (name strategy: explicit or camel→snake) |
-| `@NodeId` | primary key |
-| `@Root` | `FROM <root table>` |
-| `@GraphRelationship` to-one | `LEFT JOIN LATERAL (… LIMIT 1)` → nested object (or scalar `to_jsonb` subquery) |
-| `@GraphRelationship` to-many | `LEFT JOIN LATERAL (SELECT jsonb_agg(to_jsonb(c)) …) ON true`, `COALESCE(…, '[]')` |
-| `@GraphRelationship(direction=…)` | chooses FK side / join direction |
-| nested `@GraphView` target | nested `jsonb_build_object` inside the agg |
-| `@Aggregate` / `@Count` | aggregate subquery (`count`, `sum`, …) |
-| `@PropertyBag` | `jsonb` column |
-| required (non-null) relationship | `INNER JOIN` or post-projection `IS NOT NULL` (mirrors the existing required-rel filter) |
+| `<graph>_node` | `nid` identity key, `labels` (array), `props` (JSON object keyed by stored name), `stamp` |
+| `<graph>_edge` | `eid` identity key, `src` and `dst` (cascading to the nodes), `type`, `props` |
+| `<graph>_schema` | what Drivine made of indexes and constraints |
 
-### Tasks
+On Postgres, `labels` is `text[]` with a GIN index and `props` is `jsonb`. So:
 
-- `query/sql/SqlGraphViewBuilder.kt` — sibling to `GraphViewProjectionAssembler`; emits the
-  `json_build_object` + `LATERAL`/`json_agg` projection from the resolved view model.
-- `query/dsl/SqlGenerator.kt` — walks the `WhereCondition` AST → SQL `WHERE`. Add
-  `ComparisonOperator.sqlOperator`. Relationship-existence conditions → `EXISTS (SELECT 1 …)` (the
-  SQL analog of `filteredExistenceCheck`).
-- **Relationship-mapping annotations** — graph edges are schemaless; SQL needs to know *how* a
-  relationship is stored. Add params (or a companion annotation), e.g.
-  `@GraphRelationship(joinTable=…, sourceColumn=…, targetColumn=…)` for many-to-many, FK column for
-  to-one — or infer from FK metadata. **This is the main new public surface.** (See Open Decisions.)
-- **Generalize builder selection** — today `PersistenceManagerFactory` grabs
-  `connectionProvider.grammar` (a `CypherGrammar`) and threads it into `GraphObjectManager`. Widen
-  this into a query-backend abstraction so a `POSTGRES` dialect dispatches to the SQL builder family.
+- **A node has as many labels as it likes**, and a label is found through the index
+  (`labels @> ARRAY['Person']`). This is the mistake of AGE, a label being a table, not made again.
+- **Nothing new to declare.** No table, column or join annotations: a fragment is a set of labels,
+  as everywhere else.
+- **One store format across Oracle and Postgres, and across drivine4j, Drivine and drivine-python**,
+  as Oracle already is. A store written from the JVM reads the same from Node or Python.
+- **Indexes are partial**, which suits the layout better than Oracle's `CASE` expressions: a range
+  index on `Person.email` is `CREATE INDEX … ((props->>'email')) WHERE labels @> '{Person}'`, a
+  uniqueness constraint the same index made `UNIQUE`.
 
-### Acceptance criteria
+Mapping onto hand-made relational tables is a different feature, a mode of its own if it is ever
+wanted, and out of scope here.
 
-A real chat-store `@GraphView` loads via `graphObjectManager.query(View::class).loadAll()` and via
-`.filterWith(...).where { … }.loadAll()`, against table DDL, producing identical typed objects to the
-Neo4j path. Cross-checked by a testcontainer test.
+## Shape of the work: two SQL backends, one family
 
----
+Oracle's backend is about 4,000 lines in `backend/oracle`. Much of it is not about Oracle: the
+model walk that turns a view into nested JSON, the predicates of the query DSL, the plan a save is
+written as, the scope of a statement's names and parameters, the catalog of what was made. What is
+Oracle's own is the dialect: `GRAPH_TABLE`, `JSON_VALUE`, `JSON_OBJECT`, PL/SQL.
 
-## Phase 2 — Vector search (`loadNearest`) on pgvector
+The work pulls the shared part into `backend/sql`, behind seams, with Oracle and Postgres each
+implementing them:
 
-- Embedding property (`@VectorIndex`) → real `vector(N)` column + HNSW index.
-- SQL vector head: `ORDER BY embedding <=> $q LIMIT $k`, score `1 - (embedding <=> $q)` (cosine) /
-  `1 / (1 + (embedding <=> $q))` (euclidean) — matches the normalized-similarity contract.
-- Reproduce the **post-filter-after-ANN** pattern (documented for FalkorDB): wrap the ANN in a CTE,
-  then apply the view's required-relationship `IS NOT NULL` and `threshold` over the projected value.
-- `VectorIndexResolver` already resolves index/property/similarity from `@VectorIndex` — reuse.
+| Seam | Shared (in `backend/sql`) | Oracle | Postgres |
+|---|---|---|---|
+| `SqlDialect` (from `OracleSql`) | the vocabulary: property, label test, JSON object/array, literal, page | `JSON_VALUE`, `JSON_EXISTS`, `JSON_OBJECT`, `JSON_ARRAYAGG` | `->>`, `?`, `@>`, `jsonb_build_object`, `jsonb_agg` |
+| `SqlGraph` (from `OracleGraph`) | table names, `objectName`, the catalog, `ensure` | 128-character names, PL/SQL ensuring block, property graph | 63-character names, `CREATE … IF NOT EXISTS` |
+| `RowSources` (from `OracleRowSources`) | `Step`, `Query`, `RowSource`, `StatementScope` | `GRAPH_TABLE` patterns | joins over the edge table; recursive CTEs for depth |
+| `SqlSelect`, `SqlPredicates` (from `OracleSelect`, `OraclePredicates`) | the whole model walk, written against the dialect and row sources | | |
+| `WriteBlock` (from `OracleWriteBlock`) | `WritePlan`, `NodeShape`, `SqlSavePlan`: a save as a JSON plan of steps | the PL/SQL block | a PL/pgSQL function the store is given (see below) |
+| `SqlSchemaGrammar` (from `OracleSchemaGrammar`) | the catalog, `recorded`/`forgotten`, listing and parsing | JSON expression indexes, Oracle Text, vector side tables | partial btree indexes, `tsvector` GIN indexes, pgvector HNSW |
+| `SqlBackend` (from `OracleBackend`) | almost all of `GraphBackend` | contention codes, cascading delete in PL/SQL | contention codes (`40001`, `40P01`), cascading delete in a CTE |
 
-### Acceptance
+**Each seam is pulled out when Postgres first needs it, not ahead of it.** A step is a refactor
+commit, which leaves Oracle's behaviour and statements as they were (its tests are the proof), then
+a commit that adds the Postgres side. A seam drawn with both sides in view is a better seam than
+one guessed at with only Oracle's.
 
-`loadNearest(View::class, queryVec, topK, threshold)` returns ranked `Scored<View>` from pgvector,
-(as of 0.0.79 the signature also carries `searchK` and `partitionLabel`; pgvector's `ivfflat`/`hnsw`
-probe settings are the natural home for `searchK`, and a partitioned index or a partial index for
-`partitionLabel`)
-with the same ranking/prune/threshold assertions the cross-engine vector tests already make.
+### Writes on Postgres
 
----
+A save on Oracle is a plan, a JSON array of steps (`node`, `ref`, `link`, `unlink`, `cut`, `patch`),
+carried out by one PL/SQL block whose text depends only on the node shapes it names. The plan is not
+Oracle's and is kept (`WritePlan`, `SqlSavePlan`, with their tests). On Postgres the interpreter
+is a PL/pgSQL function, `<graph>_write(plan jsonb, mark text, patched_if text)` returning the rows a
+block returns, installed by `ensure` beside the tables. A `DO` block cannot return rows, so a function
+it is. The `patch` step's predicate, which is SQL and cannot be data, is passed as text the function
+runs with `EXECUTE … USING`, with its values in the plan. Drivine writes that text itself, from the
+query DSL, so no caller's text reaches it.
 
-## Phase 3 — Writes + schema DDL
+### Kept in view: an openCypher layer
 
-- **Save/merge** — `GraphViewMergeBuilder` analog: `INSERT … ON CONFLICT (id) DO UPDATE` per
-  fragment; relationship writes = FK updates / join-table upserts. Cascade semantics mapped to
-  multi-statement transactions.
-- **Delete** — `GraphViewDeleteBuilder` analog (FK `ON DELETE` or explicit deletes; orphan handling).
-- **`PostgresSchemaGrammar`** — the DDL/introspection family (sibling to `Neo4jSchemaGrammar` etc.):
-  `CREATE TABLE`, FK constraints, `@RangeIndex` → btree, `@Unique` → unique constraint,
-  `@VectorIndex` → `CREATE INDEX … USING hnsw (embedding vector_cosine_ops)`. Feeds the existing
-  schema-management feature.
+Embabel's virtual Cypher will want Cypher read on the SQL stores. Nothing here builds it, but:
 
----
+- **`Step` and `RowSources` are the lowering target.** A Cypher pattern is a list of steps, and a
+  translator that emits steps gets both stores for free.
+- **`MiniCypher`** (the parser and evaluator of the test kit, which already writes Cypher `CREATE`
+  fixtures to Oracle) is where a parser starts. Its fixtures are generalised to Postgres in step 2.
+- **`CypherShorthand`**, which reads `n.prop` in a raw `where`, moves to `backend/sql` unchanged.
 
-## Open decisions (resolve before Phase 1)
+## Steps
 
-1. **Relationship storage convention + annotation surface.** Always join-table? FK for to-one +
-   join-table for to-many? Inferred from DB FK metadata, or declared on `@GraphRelationship`?
-   *Recommendation:* declared (explicit `joinTable`/columns), inference as a later convenience.
-2. **Who owns the schema?** Drivine generates DDL from annotations (consistent with the existing
-   schema feature) vs. maps onto a pre-existing hand-authored schema. *Recommendation:* generate, but
-   allow explicit `@Table`/`@Column` name overrides so it can also bind to existing tables.
-3. **Table/column naming.** Convention (camel→snake) vs. explicit annotations. *Recommendation:*
-   convention + override.
-4. **Identity.** Use `@NodeId` business key as PK, or a surrogate? Generated vs. caller-supplied?
-5. **Relationship properties (`@RelationshipFragment`).** Join-table-with-columns. In scope for v1?
+Each step is a commit or two on `postgres-backend`, with the gate green:
+`./gradlew :test` and `ORACLE_TESTS=true ./gradlew :test --tests '*Oracle*'`, plus
+`POSTGRES_TESTS=true ./gradlew :test --tests '*Postgres*'` once there are Postgres tests.
 
-## Out of scope for v1
+1. **Substrate.** `DatabaseType.POSTGRES` through `JdbcConnectionProvider`: URL, pool, the driver
+   as an optional dependency (as `ojdbc11` is), `$name` parameters bound positionally, `jsonb` and
+   `text[]` values bound and read. `PostgresTestContainer` (`pgvector/pgvector`), `PostgresTestDatabase`,
+   `@PostgresTests`. A connection test: queries, parameters, transactions commit and roll back.
+2. **The graph.** Pull out `SqlDialect` and `SqlGraph`, move the dialect-free pieces (`Query`,
+   `RowSource`, `StatementScope`, `Step`, `CypherShorthand`, `TextQuery`) to `backend/sql`.
+   `PostgresGraph` and `PostgresDialect`; `ensure` makes the tables. `OracleCypherFixtures` becomes
+   `SqlCypherFixtures`, so the cross-engine contracts seed Postgres as they seed Oracle.
+3. **Reads.** Pull out `RowSources`, then `SqlSelect` and `SqlPredicates`. `PostgresRowSources`.
+   `PostgresBackend`, reading only: `load`, `loadAll` (raw `where` and the DSL, orders, pages, keyset
+   seeks), `count`, `related`, views with nested views, paths, depths and recursion, collection sorts.
+   The read contracts gain a Postgres subclass each.
+4. **Writes.** Pull out `WriteBlock`, `SqlSavePlan`. The PL/pgSQL write function. `save`,
+   `saveTogether`, `patch`, `patchAll`, `relate`, `unrelate`, `unrelateAll`, `foundStamp`, stamps and
+   stale checks, `contended`. The save, patch, null-policy, property-bag and edge contracts.
+5. **Deletes.** `delete`, `deleteAll`, cascades (`DELETE_ALL`, `DELETE_ORPHAN`) and the depth checks,
+   as one statement of CTEs. Pull out `SqlBackend` here, when both backends are whole.
+6. **Groups.** `groups`, against the groups contract.
+7. **Schema.** `SqlSchemaGrammar`; `PostgresSchemaGrammar` for range indexes and uniqueness
+   constraints (partial indexes), the labelled-index catalog that filters are read through, the
+   version marker and store stamp. The schema-management contract.
+8. **Search.** Vector search through pgvector (an HNSW index over a partial expression, or a side
+   table as on Oracle, whichever the planner serves; `searchK` as `hnsw.ef_search`), full-text search
+   through `tsvector` and `ts_rank_cd`, read with `TextQuery`. The search contracts.
+9. **Finish.** README (a Postgres section beside Oracle's, the engine table), `TEST_CONTAINERS.md`,
+   Spring Boot starter properties, the benchmark run against Postgres.
 
-- Multi-label / polymorphic nodes (`instanceOf`, `@NodeFragment(labels=[a,b])`) — single-table per
-  fragment first; discriminator/STI later.
-- Variable-length / arbitrary-depth traversal (`maxDepth`, `@GraphPath` multi-hop) → recursive CTEs;
-  defer. Single-hop relationships only in v1.
-- The raw-Cypher `PersistenceManager` API on Postgres (un-portable by definition; SQL Persistence
-  Manager is the analog and is delivered in Phase 0).
+Then the same for Drivine (TypeScript) and drivine-python, guided by statements that match.
 
-## Risks
+## Open questions
 
-- **Param-binding decoupling touches shared code** — guard the Neo4j path with existing tests.
-- **Deep/wide views → large nested `jsonb` + many `LATERAL`s.** Single round-trip (no N+1), but watch
-  payload size / planner behavior; measure on a realistic chat-store view.
-- **Relationship-mapping ergonomics** — the new annotation surface is the part most likely to feel
-  awkward; validate it against ≥2 real views early.
+- **Postgres tests by default, or behind `POSTGRES_TESTS=true`?** The image is small and starts in
+  seconds, unlike Oracle's; by default seems right once the suite is stable. Gated until then.
+- **Lowest Postgres version.** 14 has everything the layout needs (`jsonb`, GIN, partial indexes,
+  identity columns, `CREATE … IF NOT EXISTS`); 15 if `MERGE` turns out to be wanted. Tests run on 17.
+- **Comparisons across types.** Oracle compares the string `'7'` with the number `7` as equal through
+  `JSON_VALUE`; the graph engines do not. Postgres with `jsonb` can match the graph engines. Which
+  is right is a question for both SQL backends, to settle in step 3.
 
-## Testing
+## Progress
 
-- Testcontainers (`pgvector/pgvector`), following the existing `*ConnectionIntegrationTest` /
-  `VectorSearchCrossEngineTest` patterns.
-- Phase 0: `PostgresConnectionIntegrationTest` + the hand-written-`json_agg` hydration test.
-- Phase 1+: per-view load / filter / vector / save round-trip tests, asserting parity with the Neo4j
-  path where the same fixture can run on both.
-
-## Milestones
-
-1. **M0 — Substrate.** Phase 0 complete; hand-written `json_agg` hydrates a `@GraphView`. *Go/no-go
-   on the hydration claim.*
-2. **M1 — Read.** One real chat-store view loads + filters via generated SQL.
-3. **M2 — Vector.** `loadNearest` on pgvector, ranked + post-filtered.
-4. **M3 — Write + DDL.** Save/delete + schema generation; a full chat-store vertical on Postgres.
+- [ ] 1. Substrate
+- [ ] 2. The graph
+- [ ] 3. Reads
+- [ ] 4. Writes
+- [ ] 5. Deletes
+- [ ] 6. Groups
+- [ ] 7. Schema
+- [ ] 8. Search
+- [ ] 9. Finish
