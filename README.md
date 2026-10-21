@@ -1,11 +1,11 @@
-<a href="https://drivine.org/"><img src="https://raw.githubusercontent.com/liberation-data/drivine/master/website/public/images/splash.jpg" alt="Drivine: graph database client for TypeScript and the JVM"></a>
+<a href="https://drivine.org/"><img src="https://raw.githubusercontent.com/liberation-data/drivine/master/website/public/images/splash.jpg" alt="Drivine: graph database client for TypeScript, Python and the JVM"></a>
 
 # Drivine4j
 
 [![CI](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml/badge.svg)](https://github.com/liberation-data/drivine4j/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 
-**Docs: [drivine.org](https://drivine.org/jvm/)**, for Kotlin & Java and for TypeScript.
+**Docs: [drivine.org](https://drivine.org/jvm/)**, for Kotlin & Java, TypeScript, and Python.
 
 A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph** and **Oracle** (SQL/PGQ) with two approaches to graph mapping:
 
@@ -14,10 +14,10 @@ A graph database client library for Java and Kotlin supporting **Neo4j**, **Falk
 
 Drivine4j is the graph database client library for [Embabel](https://hub.embabel.com) - Agentic AI for the JVM. 
 
-> **On Node.js?** [Drivine](https://github.com/liberation-data/drivine) is drivine4j's TypeScript twin
-> (`npm install @liberation-data/drivine`), with the same object manager, query DSL, schema management and engines.
-> The two share a storage format: a store written from the JVM is read, stamped and checked alike from Node, and the
-> other way round.
+> **On Node.js or Python?** [Drivine](https://github.com/liberation-data/drivine) (`npm install @liberation-data/drivine`)
+> and [drivine-python](https://github.com/liberation-data/drivine-python) (`pip install drivine`) are drivine4j's
+> TypeScript and Python twins, with the same object manager, query DSL, schema management and engines. The three share
+> a storage format: a store written from any of them is read, stamped and checked alike by the others.
 
 ## Philosophy
 
