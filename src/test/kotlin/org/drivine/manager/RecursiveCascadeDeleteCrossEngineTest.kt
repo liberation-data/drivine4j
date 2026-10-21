@@ -27,6 +27,7 @@ import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
 
 /**
  * A cascade delete through a recursive `@GraphView` deletes exactly what a load of it reads: the
@@ -90,8 +91,9 @@ private fun verifyDeleteAllMatchesLoad(gom: StatelessGraphObjectManager, pm: Per
 }
 
 /**
- * [loads] is false where the deep tree does not load: on FalkorDB a level's `(messages:Message)`
- * names the root's `messages`, which a `CALL { }` has already bound.
+ * [loads] is false where the deep tree loads short: on FalkorDB 6 a pattern comprehension after one
+ * that nests another comes back empty (FalkorDB/FalkorDB#3004), and a level's messages and parts each nest.
+ * It still loads there, its root whole, and reads nothing the tree does not hold.
  */
 private fun verifyDeleteAllThroughNestedViewsMatchesLoad(gom: StatelessGraphObjectManager, pm: PersistenceManager, loads: Boolean = true) {
     pm.execute(QuerySpecification.withStatement(TREE))
@@ -107,7 +109,12 @@ private fun verifyDeleteAllThroughNestedViewsMatchesLoad(gom: StatelessGraphObje
         )
     )
     val tree = setOf("rc-root", "rc-m0", "rc-child", "rc-m1", "rc-a1", "rc-grand", "rc-m2", "rc-a2")
-    if (loads) assertEquals(tree, treeIds(assertNotNull(gom.load("rc-root", DeletableSessionTreeDeep::class.java))))
+    val loaded = treeIds(assertNotNull(gom.load("rc-root", DeletableSessionTreeDeep::class.java)))
+    if (loads) {
+        assertEquals(tree, loaded)
+    } else {
+        assertTrue(loaded.containsAll(setOf("rc-root", "rc-m0")) && tree.containsAll(loaded), "$loaded")
+    }
 
     val (removed, deleted) = removedBy(pm) { gom.delete("rc-root", DeletableSessionTreeDeep::class.java, CascadeType.DELETE_ALL) }
 
@@ -118,8 +125,10 @@ private fun verifyDeleteAllThroughNestedViewsMatchesLoad(gom: StatelessGraphObje
 
 private fun verifyDeleteAllFromAShelfMatchesLoad(gom: StatelessGraphObjectManager, pm: PersistenceManager) {
     pm.execute(QuerySpecification.withStatement(TREE + "\nCREATE (shelf:Session {id: 'rc-shelf'}) CREATE (shelf)-[:SHELVES]->(root)"))
-    // The tree as it loads on its own: loaded through the shelf, the inline Cypher projection reads one level of it.
-    val loaded = setOf("rc-shelf") + treeIds(assertNotNull(gom.load("rc-root", DeletableSessionTree::class.java)))
+    // Loaded through the shelf, the tree holds every level it holds loaded on its own.
+    val shelf = assertNotNull(gom.load("rc-shelf", DeletableSessionShelf::class.java))
+    assertEquals(treeIds(assertNotNull(gom.load("rc-root", DeletableSessionTree::class.java))), treeIds(shelf.trees.single()))
+    val loaded = setOf(shelf.session.id) + shelf.trees.flatMap(::treeIds)
 
     val (removed, deleted) = removedBy(pm) { gom.delete("rc-shelf", DeletableSessionShelf::class.java, CascadeType.DELETE_ALL) }
 

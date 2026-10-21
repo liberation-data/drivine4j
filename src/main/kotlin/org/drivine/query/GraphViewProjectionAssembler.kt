@@ -485,6 +485,11 @@ internal class GraphViewProjectionAssembler(
     /**
      * Tries the grammar's nested view projector. Returns null if the projector
      * signals inline mode (Neo4j), otherwise returns the projection result.
+     *
+     * Also null where the nested view holds views of its own, itself among them: a projector
+     * projects one level of the nested view's relationships, each target as a flat map, and a view
+     * there needs its own relationships. The inline projection nests a comprehension for each level,
+     * which every engine reads since FalkorDB/FalkorDB#1888 was fixed.
      */
     private fun tryNestedViewProjector(
         rootFieldName: String,
@@ -494,6 +499,7 @@ internal class GraphViewProjectionAssembler(
         targetLabelString: String,
     ): NestedViewProjection? {
         val nestedViewModel = GraphViewModel.from(rel.elementType)
+        if (nestedViewModel.relationships.any { it.elementType.isAnnotationPresent(GraphView::class.java) }) return null
 
         val ctx = NestedViewContext(
             rootFieldName = rootFieldName,
@@ -578,8 +584,10 @@ internal class GraphViewProjectionAssembler(
                 val nestedDirection = Directions.directionString(nestedRel)
                 val nestedTargetLabels = GraphTypeLabels.labelsForType(nestedRel.elementType)
                 val nestedTargetLabelString = nestedTargetLabels.joinToString(":")
-                val nestedTargetAlias = nestedRel.deriveTargetAlias()
-                val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType, visitCounts)
+                // Named by the level: a relationship the root also has is bound already, by a CALL prolog
+                // that projects it, and a name the levels shared would match that binding.
+                val nestedTargetAlias = "${depthAlias}_${nestedRel.deriveTargetAlias()}"
+                val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType, visitCounts, nestedRel.fieldName)
 
                 if (nestedRel.isCollection) {
                     "${nestedRel.fieldName}: [\n                    ($depthAlias)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |\n                    $nestedProjection\n                ]"
@@ -873,11 +881,13 @@ internal class GraphViewProjectionAssembler(
      * @param varName The Cypher variable name for this target
      * @param targetType The Java class of the target
      * @param visitCounts Visit counter map for cycle detection
+     * @param fieldName The field that holds the target, which a nested sort names; [varName] where the two agree
      */
     private fun buildRelationshipProjection(
         varName: String,
         targetType: Class<*>,
-        visitCounts: Map<String, Int> = emptyMap()
+        visitCounts: Map<String, Int> = emptyMap(),
+        fieldName: String = varName,
     ): String {
         // Check if it's a GraphView (nested)
         val viewAnnotation = targetType.getAnnotation(GraphView::class.java)
@@ -888,7 +898,7 @@ internal class GraphViewProjectionAssembler(
 
             // Recursively handle nested GraphView
             val nestedViewModel = GraphViewModel.from(targetType)
-            return buildNestedViewProjection(varName, nestedViewModel, updatedCounts)
+            return buildNestedViewProjection(varName, nestedViewModel, updatedCounts, fieldName)
         }
 
         // It's a GraphFragment, project its fields with explicit mapping
@@ -920,11 +930,14 @@ internal class GraphViewProjectionAssembler(
      * @param varName The Cypher variable name for this nested view
      * @param nestedViewModel The view model for the nested GraphView
      * @param visitCounts Visit counter map for cycle detection
+     * @param fieldName The field that holds this view. A nested sort names it, not [varName]: a level of a
+     *   recursive view holds the field under a name of its own, and the sort must order every level alike.
      */
     private fun buildNestedViewProjection(
         varName: String,
         nestedViewModel: GraphViewModel,
-        visitCounts: Map<String, Int> = emptyMap()
+        visitCounts: Map<String, Int> = emptyMap(),
+        fieldName: String = varName,
     ): String {
         val fields = mutableListOf<String>()
 
@@ -949,8 +962,9 @@ internal class GraphViewProjectionAssembler(
             }
             val nestedTargetLabelString = nestedTargetLabels.joinToString(":")
 
-            // Derive the target alias for the nested relationship
-            val nestedTargetAlias = nestedRel.deriveTargetAlias()
+            // Named under the node it is reached from: a view nested in itself reaches the same field
+            // again a level down, and the same name there would bind both ends of the pattern.
+            val nestedTargetAlias = "${varName}_${nestedRel.deriveTargetAlias()}"
 
             // Check for chain cycle: target is a @GraphView that's already been visited
             val targetClassName = nestedRel.elementType.name
@@ -972,7 +986,7 @@ internal class GraphViewProjectionAssembler(
             // Build projection for the nested target - this handles both GraphView and fragment targets
             // For GraphView targets, it recursively builds the full structure (root + relationships)
             // For fragment targets, it builds field mappings
-            val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType, visitCounts)
+            val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType, visitCounts, nestedRel.fieldName)
 
             // Use [0] suffix for single-object relationships to return object instead of array
             if (nestedRel.isCollection) {
@@ -981,8 +995,8 @@ internal class GraphViewProjectionAssembler(
                 ($varName)${nestedDirection}(${nestedTargetAlias}:$nestedTargetLabelString) |
                 $nestedProjection
             ]"""
-                // Check for nested sort (e.g., "raisedBy_worksFor" where varName is "raisedBy")
-                val sort = findSortForNestedRelationship(varName, nestedRel.fieldName)
+                // Check for nested sort (e.g., "raisedBy_worksFor" where fieldName is "raisedBy")
+                val sort = findSortForNestedRelationship(fieldName, nestedRel.fieldName)
                 val wrappedPattern = wrapWithNestedSortIfNeeded(listComprehension, sort, nestedRel.elementType)
                 fields.add("\n            ${nestedRel.fieldName}: $wrappedPattern")
             } else {
