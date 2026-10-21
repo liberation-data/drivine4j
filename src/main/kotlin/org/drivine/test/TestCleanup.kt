@@ -42,25 +42,56 @@ object TestCleanup {
      * class that shares one database with others calls it before it starts, so no index or
      * constraint another class made changes what it sees.
      *
-     * Constraints go first: a uniqueness constraint owns its index, which can't be dropped while the
-     * constraint holds it. `apoc.schema.assert` is not used: it leaves vector indexes, and APOC need
-     * not be installed. Only Neo4j is supported yet.
+     * - **Neo4j**: constraints go first, since a uniqueness constraint owns its index, which can't be
+     *   dropped while the constraint holds it. Then each index by name, then the nodes.
+     *   `apoc.schema.assert` is not used: it leaves vector indexes, and APOC need not be installed.
+     * - **Memgraph**: `DROP GRAPH` takes the data and every kind of index, but runs only in analytical
+     *   storage mode, which Memgraph won't enter while a constraint exists. So each constraint
+     *   `SHOW CONSTRAINT INFO` lists is dropped first. `schema.assert({}, {}, {}, true)` is not used:
+     *   on Memgraph 3.12 one call drops one of several uniqueness constraints (memgraph/memgraph#5185),
+     *   and never a composite or nested-property index (memgraph/memgraph#2462). The switch is refused while a transaction is open, so it runs on an
+     *   auto-commit manager.
      *
      * @throws UnsupportedOperationException on any other engine
      */
     fun resetGraph(persistenceManager: PersistenceManager) {
-        if (persistenceManager.type != DatabaseType.NEO4J) {
-            throw UnsupportedOperationException("resetGraph supports Neo4j only, not ${persistenceManager.type}")
+        fun run(statement: String) = persistenceManager.execute(QuerySpecification.withStatement(statement))
+        when (persistenceManager.type) {
+            DatabaseType.NEO4J -> {
+                fun names(statement: String): List<String> =
+                    persistenceManager.query(QuerySpecification.withStatement(statement).transform(String::class.java))
+                names("SHOW CONSTRAINTS YIELD name RETURN name").forEach { run("DROP CONSTRAINT ${quotedIdentifier(it)}") }
+                names("SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name").forEach { run("DROP INDEX ${quotedIdentifier(it)}") }
+                run("MATCH (n) DETACH DELETE n")
+            }
+            DatabaseType.MEMGRAPH -> {
+                persistenceManager.query(QuerySpecification.withStatement("SHOW CONSTRAINT INFO"))
+                    .forEach { run(memgraphConstraintDrop(it as List<*>)) }
+                run("STORAGE MODE IN_MEMORY_ANALYTICAL")
+                run("DROP GRAPH")
+                run("STORAGE MODE IN_MEMORY_TRANSACTIONAL")
+            }
+            else -> throw UnsupportedOperationException("resetGraph supports Neo4j and Memgraph, not ${persistenceManager.type}")
         }
-        fun names(statement: String): List<String> =
-            persistenceManager.query(QuerySpecification.withStatement(statement).transform(String::class.java))
-        names("SHOW CONSTRAINTS YIELD name RETURN name").forEach {
-            persistenceManager.execute(QuerySpecification.withStatement("DROP CONSTRAINT ${quotedIdentifier(it)}"))
+    }
+
+    /**
+     * The drop of the constraint a `SHOW CONSTRAINT INFO` row describes: its type, label, properties
+     * (a list for a uniqueness constraint, one name for the others) and, for a type constraint, the type.
+     */
+    private fun memgraphConstraintDrop(row: List<*>): String {
+        val label = quotedIdentifier((row[1] as String).removePrefix(":"))
+        val properties = when (val p = row[2]) {
+            is List<*> -> p.map { "n.${quotedIdentifier(it as String)}" }
+            else -> listOf("n.${quotedIdentifier(p as String)}")
         }
-        names("SHOW INDEXES YIELD name, type WHERE type <> 'LOOKUP' RETURN name").forEach {
-            persistenceManager.execute(QuerySpecification.withStatement("DROP INDEX ${quotedIdentifier(it)}"))
+        val assertion = when (row[0]) {
+            "unique" -> "${properties.joinToString(", ")} IS UNIQUE"
+            "exists" -> "EXISTS (${properties.single()})"
+            "data_type" -> "${properties.single()} IS TYPED ${row[3]}"
+            else -> throw UnsupportedOperationException("A Memgraph constraint of type ${row[0]} can't be dropped by resetGraph")
         }
-        persistenceManager.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
+        return "DROP CONSTRAINT ON (n:$label) ASSERT $assertion"
     }
 
     /** The graph is made where it is not yet: a cleanup may run before anything else has spoken to it. */

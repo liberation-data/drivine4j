@@ -10,6 +10,8 @@ import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -184,14 +186,12 @@ class StatelessFullTextSearchNeo4jTest {
     @Test fun `a backslash makes a star, a sign and a colon text on Neo4j`() = verifyEscapes(buildGom(pm, registry), pm, awaitIndexes = true, backslashBeforeLetter = setOf("D"))
 }
 
-@Testcontainers
 class StatelessFullTextSearchFalkorDbTest {
     companion object {
         private const val GRAPH = "fulltexttest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -214,13 +214,10 @@ class StatelessFullTextSearchFalkorDbTest {
     @Test fun `full-text search ranks, projects, and dispatches on FalkorDB`() = verify(buildGom(pm, registry), pm, awaitIndexes = false)
 }
 
-@Testcontainers
 class StatelessFullTextSearchMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687)
-            .waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager

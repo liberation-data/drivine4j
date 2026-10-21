@@ -8,6 +8,8 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -136,14 +138,12 @@ class StatelessPolymorphicRecursiveViewNeo4jTest {
     @Test fun `polymorphic recursive view on Neo4j`() = verify(buildGom(pm, registry), pm, registry)
 }
 
-@Testcontainers
 class StatelessPolymorphicRecursiveViewFalkorDbTest {
     companion object {
         private const val GRAPH = "polytreetest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -168,12 +168,10 @@ class StatelessPolymorphicRecursiveViewFalkorDbTest {
     @Test fun `polymorphic recursive view on FalkorDB`() = verify(buildGom(pm, registry), pm, registry)
 }
 
-@Testcontainers
 class StatelessPolymorphicRecursiveViewMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager

@@ -69,8 +69,8 @@ class TestCleanupTest {
     }
 
     @Test
-    fun `a graph is reset on Neo4j only`() {
-        for (type in listOf(DatabaseType.FALKORDB, DatabaseType.MEMGRAPH, DatabaseType.ORACLE)) {
+    fun `a graph is reset on Neo4j and Memgraph only`() {
+        for (type in listOf(DatabaseType.FALKORDB, DatabaseType.ORACLE)) {
             val store = RecordingStore(type)
             assertFailsWith<UnsupportedOperationException>("$type") { TestCleanup.resetGraph(store) }
             assertTrue(store.executed.isEmpty(), "$type")

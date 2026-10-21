@@ -11,6 +11,8 @@ import org.drivine.query.dsl.anyOf
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -256,14 +258,12 @@ class StatelessLimitSkipNeo4jTest {
     fun `limit and skip on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()))
 }
 
-@Testcontainers
 class StatelessLimitSkipFalkorDbTest {
     companion object {
         private const val GRAPH = "limittest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -295,12 +295,10 @@ class StatelessLimitSkipFalkorDbTest {
     fun `index advice stays silent on FalkorDB`() = verifyAdviceIsSilent(buildGom(pm, SubtypeRegistry()))
 }
 
-@Testcontainers
 class StatelessLimitSkipMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager

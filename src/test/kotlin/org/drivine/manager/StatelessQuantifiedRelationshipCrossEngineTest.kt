@@ -12,6 +12,8 @@ import org.drivine.query.dsl.none
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -137,14 +139,12 @@ class StatelessQuantifiedRelationshipNeo4jTest {
     fun `a delete of all by a predicate on a to-many relationship on Neo4j`() = verifyDelete(gom)
 }
 
-@Testcontainers
 class StatelessQuantifiedRelationshipFalkorDbTest {
     companion object {
         private const val GRAPH = "quanttest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager
@@ -178,12 +178,10 @@ class StatelessQuantifiedRelationshipFalkorDbTest {
     fun `a delete of all by a predicate on a to-many relationship on FalkorDB`() = verifyDelete(gom)
 }
 
-@Testcontainers
 class StatelessQuantifiedRelationshipMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         private lateinit var pm: NonTransactionalPersistenceManager

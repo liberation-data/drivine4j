@@ -6,6 +6,7 @@ import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.test.SharedFalkorDb
 import org.junit.jupiter.api.*
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -32,10 +33,8 @@ class FalkorDbSchemaManagementIntegrationTest {
     companion object {
         private const val GRAPH = "schematest"
 
-        @Container
         @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var manager: PersistenceManager

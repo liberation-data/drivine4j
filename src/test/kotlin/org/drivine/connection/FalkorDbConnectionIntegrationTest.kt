@@ -3,6 +3,7 @@ package org.drivine.connection
 import org.drivine.mapper.FalkorDbResultMapper
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
+import org.drivine.test.SharedFalkorDb
 import org.junit.jupiter.api.*
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.junit.jupiter.Container
@@ -19,10 +20,8 @@ class FalkorDbConnectionIntegrationTest {
     companion object {
         private const val GRAPH = "test"
 
-        @Container
         @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
 

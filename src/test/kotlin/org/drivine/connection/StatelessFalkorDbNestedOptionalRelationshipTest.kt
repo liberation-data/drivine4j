@@ -13,6 +13,7 @@ import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.session.SessionManager
+import org.drivine.test.SharedFalkorDb
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
@@ -43,16 +44,13 @@ import kotlin.test.assertNull
  * exact pattern — a root GraphView with a `List<NestedGraphView>` where the nested view has
  * optional single relationships — which isn't covered by the Neo4j-side test suite.
  */
-@Testcontainers
 class StatelessFalkorDbNestedOptionalRelationshipTest {
 
     companion object {
         private const val GRAPH = "nested-optional"
 
-        @Container
         @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         private lateinit var persistenceManager: NonTransactionalPersistenceManager

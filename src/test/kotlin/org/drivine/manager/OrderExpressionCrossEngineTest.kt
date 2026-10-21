@@ -28,6 +28,8 @@ import org.drivine.query.dsl.query
 import org.drivine.query.dsl.times
 import org.drivine.query.dsl.unaryMinus
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.test.SharedFalkorDb
+import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -208,14 +210,12 @@ class OrderExpressionNeo4jTest {
     fun `roots are ranked by a computed score on Neo4j`() = verify(buildGom(pm, SubtypeRegistry()), readsMoments = true, refusesDivisionByZero = true)
 }
 
-@Testcontainers
 class OrderExpressionFalkorDbTest {
     companion object {
         private const val GRAPH = "orderexpressiontest"
 
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
+        @JvmField
+        val container: GenericContainer<*> = SharedFalkorDb.forClass()
 
         private lateinit var provider: FalkorDbConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
@@ -244,12 +244,10 @@ class OrderExpressionFalkorDbTest {
         verify(buildGom(pm, SubtypeRegistry()), readsMoments = false, refusesDivisionByZero = false)
 }
 
-@Testcontainers
 class OrderExpressionMemgraphTest {
     companion object {
-        @Container @JvmField
-        val container: GenericContainer<*> = GenericContainer(DockerImageName.parse("memgraph/memgraph:latest"))
-            .withExposedPorts(7687).waitingFor(Wait.forListeningPort())
+        @JvmField
+        val container: GenericContainer<*> = SharedMemgraph.forClass()
 
         private lateinit var provider: Neo4jConnectionProvider
         lateinit var pm: NonTransactionalPersistenceManager
