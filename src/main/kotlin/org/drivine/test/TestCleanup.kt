@@ -2,6 +2,8 @@ package org.drivine.test
 
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSql
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.backend.postgres.PostgresSql
 import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
@@ -31,6 +33,7 @@ object TestCleanup {
         val statement = when (persistenceManager.type) {
             DatabaseType.FALKORDB -> "MATCH (n) DETACH DELETE n"
             DatabaseType.ORACLE -> oracle(persistenceManager, markerField, markerValue)
+            DatabaseType.POSTGRES -> postgres(persistenceManager, markerField, markerValue)
             else -> "MATCH (n) WHERE n.$markerField = '$markerValue' DETACH DELETE n"
         }
         persistenceManager.execute(QuerySpecification.withStatement(statement))
@@ -101,5 +104,11 @@ object TestCleanup {
     private fun oracle(persistenceManager: PersistenceManager, field: String, value: String): String {
         val graph = OracleGraph.ensured(persistenceManager)
         return "DELETE FROM ${graph.nodes} n WHERE ${OracleSql.property("n", field)} = ${OracleSql.literal(value)}"
+    }
+
+    /** As on Oracle: the graph is made where it is not yet. */
+    private fun postgres(persistenceManager: PersistenceManager, field: String, value: String): String {
+        val graph = PostgresGraph.ensured(persistenceManager)
+        return "DELETE FROM ${graph.nodes} n WHERE ${PostgresSql.property("n", field)} = ${PostgresSql.literal(value)}"
     }
 }

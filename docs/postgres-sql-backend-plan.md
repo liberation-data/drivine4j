@@ -19,16 +19,17 @@ A graph is kept as Oracle keeps it (`OracleGraph`):
 | `<graph>_edge` | `eid` identity key, `src` and `dst` (cascading to the nodes), `type`, `props` |
 | `<graph>_schema` | what Drivine made of indexes and constraints |
 
-On Postgres, `labels` is `text[]` with a GIN index and `props` is `jsonb`. So:
+On Postgres, `labels` and `props` are `jsonb`, the labels a JSON array under a GIN index, as they are
+JSON on Oracle: a list is bound as JSON, and a node's map is made of the two with no conversion. So:
 
 - **A node has as many labels as it likes**, and a label is found through the index
-  (`labels @> ARRAY['Person']`). This is the mistake of AGE, a label being a table, not made again.
+  (`labels @> '["Person"]'`). This is the mistake of AGE, a label being a table, not made again.
 - **Nothing new to declare.** No table, column or join annotations: a fragment is a set of labels,
   as everywhere else.
 - **One store format across Oracle and Postgres, and across drivine4j, Drivine and drivine-python**,
   as Oracle already is. A store written from the JVM reads the same from Node or Python.
 - **Indexes are partial**, which suits the layout better than Oracle's `CASE` expressions: a range
-  index on `Person.email` is `CREATE INDEX … ((props->>'email')) WHERE labels @> '{Person}'`, a
+  index on `Person.email` is `CREATE INDEX … ((props->>'email')) WHERE labels @> '["Person"]'`, a
   uniqueness constraint the same index made `UNIQUE`.
 
 Mapping onto hand-made relational tables is a different feature, a mode of its own if it is ever
@@ -131,7 +132,11 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   connection properties, and the starter's test configuration); `jsonb`, `text[]`, `timestamptz`,
   pgvector and integer columns read as the graph drivers give them; dollar-quoted bodies pass
   through `$name` parsing; `PostgresTestContainer`, `PostgresConnectionIntegrationTest`.
-- [ ] 2. The graph
+- [x] 2. The graph: `SqlGraph` (tables, names, catalog) under `OracleGraph` and `PostgresGraph`;
+  Postgres makes its tables in one locked, transactional block marked with its version.
+  `SqlCypherFixtures` (was `OracleCypherFixtures`, kept as a deprecated alias) seeds either store, and
+  `TestCleanup` cleans a Postgres graph. `SqlDialect` and the moves of `Query`, `RowSource` and the
+  statement scope wait for step 3, where the reads first need them.
 - [ ] 3. Reads
 - [ ] 4. Writes
 - [ ] 5. Deletes

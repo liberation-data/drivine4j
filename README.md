@@ -2855,15 +2855,16 @@ val provider = JdbcConnectionProvider.pooled(
 ```
 
 A test written for the graph engines usually seeds its graph and reads it back in Cypher, which Oracle
-does not run. `OracleCypherFixtures` works such a statement out over the graph instead, so the test's
-fixtures stay as they are:
+does not run. `SqlCypherFixtures` works such a statement out over the graph instead, so the test's
+fixtures stay as they are (it was `OracleCypherFixtures`, which still works, before Postgres kept a
+graph the same way):
 
 ```kotlin
-val fixtures = OracleCypherFixtures.over(persistenceManager)   // Cypher fixtures here, everything else to Oracle
+val fixtures = SqlCypherFixtures.over(persistenceManager)   // Cypher fixtures here, everything else to Oracle
 fixtures.execute(QuerySpecification.withStatement("CREATE (:Person {id: 'ada'})-[:KNOWS]->(:Person {id: 'bob'})"))
 
-OracleCypherFixtures.run(persistenceManager, "MATCH (p:Person) RETURN p.id ORDER BY p.id")   // ["ada", "bob"]
-OracleCypherFixtures.clear(persistenceManager)                                               // every node and relationship
+SqlCypherFixtures.run(persistenceManager, "MATCH (p:Person) RETURN p.id ORDER BY p.id")   // ["ada", "bob"]
+SqlCypherFixtures.clear(persistenceManager)                                               // every node and relationship
 ```
 
 - It reads the Cypher fixtures use and no more: `CREATE`, `MATCH` and `MERGE` patterns with literal or

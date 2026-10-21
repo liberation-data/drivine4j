@@ -9,10 +9,10 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * Which statements [OracleCypherFixtures] works out as a fixture and which it hands to the store as
+ * Which statements [SqlCypherFixtures] works out as a fixture and which it hands to the store as
  * they are, over an in-memory store.
  */
-class OracleCypherFixturesTest {
+class SqlCypherFixturesTest {
 
     private val fake = FakeGraphStore()
 
@@ -42,7 +42,7 @@ class OracleCypherFixturesTest {
         }
     }
 
-    private val fixtures = OracleCypherFixtures.over(store)
+    private val fixtures = SqlCypherFixtures.over(store)
 
     private fun statement(text: String, vararg parameters: Pair<String, Any?>) = QuerySpecification.withStatement(text).bind(mapOf(*parameters))
 
@@ -107,15 +107,15 @@ class OracleCypherFixturesTest {
             override val graphName: String? = null
         }
 
-        assertEquals("The manager names no graph.", assertFailsWith<IllegalArgumentException> { OracleCypherFixtures.clear(nameless) }.message)
+        assertEquals("The manager names no graph.", assertFailsWith<IllegalArgumentException> { SqlCypherFixtures.clear(nameless) }.message)
     }
 
     @Test
     fun `a fixture run on its own gives the rows it returns, whatever space it is written in`() {
-        OracleCypherFixtures.run(fake, "\n  CREATE (:Human {id: \$id})\n", mapOf("id" to "ada"))
+        SqlCypherFixtures.run(fake, "\n  CREATE (:Human {id: \$id})\n", mapOf("id" to "ada"))
 
-        assertEquals(listOf<Any?>("ada"), OracleCypherFixtures.run(fake, "  MATCH (h:Human) RETURN h.id  "))
-        assertEquals(emptyList(), OracleCypherFixtures.run(fake, "MATCH (h:Human {id: 'nobody'}) RETURN h.id"))
+        assertEquals(listOf<Any?>("ada"), SqlCypherFixtures.run(fake, "  MATCH (h:Human) RETURN h.id  "))
+        assertEquals(emptyList(), SqlCypherFixtures.run(fake, "MATCH (h:Human {id: 'nobody'}) RETURN h.id"))
     }
 
     @Test

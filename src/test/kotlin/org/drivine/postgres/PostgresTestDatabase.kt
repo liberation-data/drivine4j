@@ -1,11 +1,14 @@
 package org.drivine.postgres
 
+import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
+import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.test.PostgresTestContainer
+import org.drivine.test.SqlCypherFixtures
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 
 /**
@@ -34,4 +37,24 @@ object PostgresTestDatabase {
 
     /** Runs each statement on its own, committed as it runs. */
     fun run(vararg statements: String) = statements.forEach { pm.execute(QuerySpecification.withStatement(it.trimIndent())) }
+
+    /** A manager for the graph [graph], with its tables made. Its connections come from [provider]'s pool. */
+    fun graphManager(graph: String, registry: SubtypeRegistry = SubtypeRegistry()): NonTransactionalPersistenceManager =
+        NonTransactionalPersistenceManager(
+            JdbcConnectionProvider(graph, DatabaseType.POSTGRES, provider.nativeDriver, registry, graphName = graph), graph, DatabaseType.POSTGRES, registry,
+        ).also { PostgresGraph(graph).ensure(it) }
+
+    /** Removes every node and relationship of the graph [pm] speaks to. */
+    fun clear(pm: NonTransactionalPersistenceManager) = SqlCypherFixtures.clear(pm)
+
+    /** Writes the nodes and relationships a Cypher `CREATE` fixture describes to the graph [pm] speaks to. */
+    fun seed(pm: PersistenceManager, cypher: String) {
+        SqlCypherFixtures.run(pm, cypher)
+    }
+
+    /** [pm] as the cross-engine tests use a manager: see [SqlCypherFixtures.over]. */
+    fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = SqlCypherFixtures.over(pm)
+
+    /** Drops the tables of the graph [graph], when they are there. */
+    fun drop(graph: String) = run("DROP TABLE IF EXISTS ${graph}_edge, ${graph}_node, ${graph}_schema")
 }
