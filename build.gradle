@@ -73,7 +73,10 @@ dependencies {
 	// Oracle tests run against Oracle Free, when ORACLE_TESTS=true
 	testImplementation 'com.oracle.database.jdbc:ojdbc11'
 
-	// Connection pool for JDBC databases (Oracle). The JDBC driver itself is the application's to add.
+	// Postgres tests run against pgvector's image, when POSTGRES_TESTS=true
+	testImplementation 'org.postgresql:postgresql'
+
+	// Connection pool for JDBC databases (Oracle, Postgres). The JDBC driver itself is the application's to add.
 	implementation 'com.zaxxer:HikariCP'
 
 	// FalkorDB driver

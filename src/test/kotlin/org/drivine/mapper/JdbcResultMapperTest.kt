@@ -132,6 +132,18 @@ class JdbcResultMapperTest {
     }
 
     @Test
+    fun `Postgres's jsonb, timestamptz, pgvector and arrays are told by their names`() {
+        assertEquals(mapOf("a" to 1L), single(Column("DOC", "jsonb", Types.OTHER)) { `when`(it.getString(1)).thenReturn("""{"a":1}""") })
+        val moment = OffsetDateTime.of(2024, 3, 1, 12, 0, 0, 0, ZoneOffset.UTC)
+        assertEquals(moment.toZonedDateTime(), single(Column("AT", "timestamptz", Types.TIMESTAMP)) { `when`(it.getObject(1, OffsetDateTime::class.java)).thenReturn(moment) })
+        assertEquals(listOf(0.25, 1.0, -2.0), single(Column("E", "vector", Types.OTHER)) { `when`(it.getString(1)).thenReturn("[0.25,1,-2]") })
+        val labels = Mockito.mock(java.sql.Array::class.java)
+        `when`(labels.array).thenReturn(arrayOf("Person", "Author"))
+        assertEquals(listOf("Person", "Author"), single(Column("LABELS", "_text", Types.ARRAY)) { `when`(it.getArray(1)).thenReturn(labels) })
+        assertEquals(36L, single(Column("AGE", "int4", Types.INTEGER)) { `when`(it.getLong(1)).thenReturn(36L) })
+    }
+
+    @Test
     fun `a column whose type has no name is read by its code`() {
         val meta = Mockito.mock(ResultSetMetaData::class.java)
         `when`(meta.columnCount).thenReturn(1)

@@ -127,7 +127,10 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
 
 ## Progress
 
-- [ ] 1. Substrate
+- [x] 1. Substrate: `DatabaseType.POSTGRES` connects through `JdbcConnectionProvider` (and from
+  connection properties, and the starter's test configuration); `jsonb`, `text[]`, `timestamptz`,
+  pgvector and integer columns read as the graph drivers give them; dollar-quoted bodies pass
+  through `$name` parsing; `PostgresTestContainer`, `PostgresConnectionIntegrationTest`.
 - [ ] 2. The graph
 - [ ] 3. Reads
 - [ ] 4. Writes

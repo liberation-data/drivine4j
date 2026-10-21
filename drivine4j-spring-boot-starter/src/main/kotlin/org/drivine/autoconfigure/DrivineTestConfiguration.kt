@@ -7,6 +7,7 @@ import org.drivine.test.DrivineTestContainer
 import org.drivine.test.FalkorDbTestContainer
 import org.drivine.test.MemgraphTestContainer
 import org.drivine.test.OracleTestContainer
+import org.drivine.test.PostgresTestContainer
 import org.slf4j.LoggerFactory
 import org.springframework.beans.factory.annotation.Value
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
@@ -36,6 +37,10 @@ import org.springframework.context.annotation.Primary
  * ## Oracle
  * - `test.oracle.use-local=true` or `USE_LOCAL_ORACLE=true` → uses local instance
  * - Otherwise starts an Oracle Free Testcontainer, and connects as its own user to its own service
+ *
+ * ## Postgres
+ * - `test.postgres.use-local=true` or `USE_LOCAL_POSTGRES=true` → uses local instance
+ * - Otherwise starts a Postgres Testcontainer with pgvector, and connects as its own user to its own database
  */
 @Configuration
 class DrivineTestConfiguration {
@@ -51,6 +56,7 @@ class DrivineTestConfiguration {
         @Value("\${test.falkordb.use-local:#{null}}") useLocalFalkorFromSpring: String?,
         @Value("\${test.memgraph.use-local:#{null}}") useLocalMemgraphFromSpring: String?,
         @Value("\${test.oracle.use-local:#{null}}") useLocalOracleFromSpring: String?,
+        @Value("\${test.postgres.use-local:#{null}}") useLocalPostgresFromSpring: String?,
     ): DataSourceMap {
         val datasources = properties.datasources.toMutableMap()
 
@@ -121,6 +127,26 @@ class DrivineTestConfiguration {
                             databaseName = OracleTestContainer.SERVICE,
                             userName = OracleTestContainer.getConnectionUsername(),
                             password = OracleTestContainer.getConnectionPassword(),
+                        )
+                    }
+                }
+
+                DatabaseType.POSTGRES -> {
+                    val useLocal = useLocalPostgresFromSpring?.toBoolean()
+                        ?: System.getenv("USE_LOCAL_POSTGRES")?.toBoolean()
+                        ?: false
+
+                    log.info("Drivine Test Config [$name]: Postgres use-local=$useLocal")
+
+                    if (!useLocal) {
+                        log.info("Starting Postgres Testcontainer...")
+                        // The container has a database and a user of its own; the graph's name is the datasource's.
+                        datasources[name] = props.copy(
+                            host = PostgresTestContainer.getConnectionHost(),
+                            port = PostgresTestContainer.getConnectionPort(),
+                            databaseName = PostgresTestContainer.DATABASE,
+                            userName = PostgresTestContainer.getConnectionUsername(),
+                            password = PostgresTestContainer.getConnectionPassword(),
                         )
                     }
                 }
