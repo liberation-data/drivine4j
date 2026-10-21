@@ -165,7 +165,10 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   The recursive cascade contract runs on Postgres. `SqlBackend` is not pulled out yet: Oracle's
   deletes are PL/SQL and Postgres's CTEs, so what the two share is the operations' shape, not their
   code; it is weighed again at the end.
-- [ ] 6. Groups
+- [x] 6. Groups: a grouped read is `GROUP BY` over the roots, and over the distinct pairs of a root
+  and its key nodes where a key is a path, each path walked from the root's row by a lateral join.
+  A text key no field declares carries its number beside it, as on Oracle; Postgres keeps `""` apart
+  from null, so it needs no column for that. The 43 tests of the groups contract pass.
 - [ ] 7. Schema
 - [ ] 8. Search
 - [ ] 9. Finish

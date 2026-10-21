@@ -19,6 +19,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.manager.RelateMode
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.query.GroupQuery
 import org.drivine.query.PatchRow
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
@@ -40,7 +41,7 @@ import java.sql.SQLException
  * [PostgresSelect]) and written by a plan of steps that a function the store keeps carries out (see
  * [PostgresWriteFunctions]): the plan is the one Oracle's block carries out.
  *
- * Reads, writes and deletes are here; what groups and searches is being built (see
+ * Reads, grouped reads, writes and deletes are here; what searches is being built (see
  * `docs/postgres-sql-backend-plan.md`) and is refused until it is.
  */
 internal class PostgresBackend(private val persistenceManager: PersistenceManager, objectMapper: ObjectMapper) : GraphBackend {
@@ -102,7 +103,8 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         return select.count(listOfNotNull(select.predicate(query.conditions)))
     }
 
-    override fun groups(graphClass: Class<*>, query: GroupQuerySpec<*>): GraphStatement = notYet("a grouped read")
+    override fun groups(graphClass: Class<*>, query: GroupQuerySpec<*>): GraphStatement =
+        PostgresSelect(graph, graphClass).groups(GroupQuery.of(graphClass, query))
 
     override fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,
@@ -314,7 +316,7 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     }
 
     private fun notYet(what: String): Nothing =
-        throw UnsupportedOperationException("Postgres's object manager does not yet support $what: it reads, writes and deletes, and the rest is being built (see docs/postgres-sql-backend-plan.md).")
+        throw UnsupportedOperationException("Postgres's object manager does not yet support $what: it reads, groups, writes and deletes, and searching is being built (see docs/postgres-sql-backend-plan.md).")
 
     private companion object {
         /** The parameter [related] binds the id of the node it starts from as. */

@@ -20,6 +20,15 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphTypeLabels
+import org.drivine.query.dsl.OrderDirection
+import org.drivine.query.dsl.NullPlacement
+import org.drivine.query.dsl.KeySource
+import org.drivine.query.dsl.Key
+import org.drivine.query.dsl.GroupOrder
+import org.drivine.query.dsl.GroupFunction
+import org.drivine.query.dsl.Aggregate
+import org.drivine.query.GroupQuery
+import org.drivine.model.Stamps
 import org.drivine.query.SqlParameters
 import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.query.dsl.OrderSpec
@@ -95,6 +104,141 @@ internal class PostgresSelect(
     /** The count of the roots [predicates] select, and that have the relationships the view requires. */
     fun count(predicates: List<String>): GraphStatement =
         GraphStatement(Query("COUNT(*)", roots(), selected(predicates)).text(), bindings())
+
+    /**
+     * The grouped read [query] asks of the roots: one `jsonb` document for each group, a key under `k0…`
+     * and an aggregate under `a0…`.
+     *
+     * The groups are made by a query of their own, `GROUP BY` over the roots, and the statement reads
+     * its rows: it filters them for a `having`, orders and pages them, and joins the node of a node key
+     * back for its document.
+     *
+     * A node key is a path, and a path gives a root once for each way to a key node. The roots are then
+     * read as the distinct pairs of a root and its key nodes, by their ids, each path walked from the
+     * root's row, and each root's row is joined to its pairs again where a key, an aggregate or a
+     * predicate reads it.
+     */
+    fun groups(query: GroupQuery): GraphStatement {
+        val spec = query.spec
+        val paths = spec.keys.filter { it.source is KeySource.Path }
+        val nodes = paths.associateWith { scope.row(it.column) }
+        val filtered = listOfNotNull(predicate(spec.conditions))
+
+        // A key is one column, and a text key no field declares is two: see keyColumns.
+        val pairs = scope.row("pair")
+        val keys = spec.keys.associateWith { key ->
+            when (val from = key.source) {
+                is KeySource.Property -> keyColumns(query, key.column, from.propertyName)
+                is KeySource.Path -> listOf(key.column to "$pairs.${key.column}")
+            }
+        }
+        val selected = keys.values.flatten().map { (column, expression) -> "$expression AS $column" } +
+            spec.aggregates.map { "${aggregate(it)} AS ${it.column}" }
+        val select = selected.joinToString(",\n    ")
+        val grouping = "GROUP BY " + keys.values.flatten().joinToString(", ") { it.second }
+
+        val grouped = if (paths.isEmpty()) {
+            // A grouped read's source is a fragment, which requires no relationship.
+            Query(select, roots(), listOfNotNull(PostgresSql.hasLabels(root, rootLabels())) + filtered, listOf(grouping)).text()
+        } else {
+            // Each path is walked from the root's row: a lateral join, which may read the row it is joined to.
+            val walked = paths.joinToString("") { key ->
+                val path = key.source as KeySource.Path
+                val steps = path.hops.mapIndexed { i, hop ->
+                    Step(hop.type, hop.direction, if (i == path.hops.lastIndex) query.target(path).labels else listOfNotNull(hop.label.takeIf { it.isNotEmpty() }))
+                }
+                val reached = rows.reached(PostgresRowSources.Anchor.row(root), steps, nodes.getValue(key))
+                "\nJOIN LATERAL ${reached.reading(emptyList())} ON TRUE"
+            }
+            val where = listOfNotNull(PostgresSql.hasLabels(root, rootLabels())) + filtered
+            val distinct = "SELECT DISTINCT $root.nid, ${paths.joinToString(", ") { "${nodes.getValue(it)}.nid AS ${it.column}" }}\n" +
+                "FROM ${graph.nodes} $root$walked" + if (where.isEmpty()) "" else "\nWHERE ${where.joinToString("\n  AND ")}"
+            // The root's own row is read only where a key or an aggregate reads a property of it.
+            val readsRoot = selected.any { "$root." in it }
+            val from = "(\n    ${distinct.under()}\n) $pairs" + if (readsRoot) "\nJOIN ${graph.nodes} $root ON $root.nid = $pairs.nid" else ""
+            "SELECT $select\nFROM $from\n$grouping"
+        }
+
+        val groups = scope.row("g")
+        val keyNodes = paths.associateWith { scope.row("${it.column}_node") }
+        val entries = spec.keys.flatMap { key -> keyNodes[key]?.let { listOf(key.column to document(it)) } ?: keys.getValue(key).map { (column, _) -> column to "$groups.$column" } } +
+            spec.aggregates.map { it.column to "$groups.${it.column}" }
+        val joins = keyNodes.entries.joinToString("") { (key, node) -> "\nJOIN ${graph.nodes} $node ON $node.nid = $groups.${key.column}" }
+        return GraphStatement(
+            buildString {
+                append("SELECT ").append(PostgresSql.jsonObject(entries)).append(" AS result")
+                append("\nFROM (\n    ").append(grouped.under()).append("\n) ").append(groups).append(joins)
+                if (spec.havings.isNotEmpty()) {
+                    append("\nWHERE ").append(spec.havings.joinToString("\n  AND ") { "$groups.${it.aggregate.column} ${it.operator.cypherOperator} ${scope.bound(if (it.value is Boolean) it.value.toString() else it.value)}" })
+                }
+                append("\nORDER BY ").append(query.orders.joinToString(", ") { groupOrder(query, it, groups, keyNodes, keys[it.column].orEmpty().map { (column, _) -> column }) })
+                spec.skip?.let { append("\nOFFSET ${scope.bound(it)} ROWS") }
+                spec.limit?.let { append("\nFETCH NEXT ${scope.bound(it)} ROWS ONLY") }
+            },
+            bindings(),
+        )
+    }
+
+    /**
+     * An aggregate over the rows of a group, or over those that meet its filter. A filtered count is a
+     * sum of ones and zeros; any other filtered aggregate skips the rows that do not meet the filter,
+     * as it skips a null. SQL's sum over no values is null, and a grouped read's is 0.
+     */
+    private fun aggregate(aggregate: Aggregate<*>): String {
+        val filter = predicate(aggregate.filter)
+        if (aggregate.function == GroupFunction.COUNT) {
+            return if (filter == null) "COUNT(*)" else "COALESCE(SUM(CASE WHEN $filter THEN 1 ELSE 0 END), 0)"
+        }
+        val key = requireNotNull(aggregate.propertyName)
+        // A sum and a mean read a number; the least and the greatest are of the kind the field declares.
+        val kind = if (aggregate.function == GroupFunction.MIN || aggregate.function == GroupFunction.MAX) predicates.declaredKind(key) ?: SqlKind.TEXT else SqlKind.NUMBER
+        val stored = property(root, key, kind)
+        val value = if (filter == null) stored else "CASE WHEN $filter THEN $stored END"
+        return if (aggregate.function == GroupFunction.SUM) "COALESCE(SUM($value), 0)" else "${aggregate.function.name}($value)"
+    }
+
+    /**
+     * The columns a property key is grouped by, each with the expression that gives it: the key's own,
+     * `k0`, and for a property no field declares, `k0n`, its value where it is stored as a number and
+     * null for anything else: as text, a number would order `10` before `9`, and come back as text. A
+     * field that is no text is read as the kind it declares, and is one column.
+     */
+    private fun keyColumns(query: GroupQuery, column: String, key: String): List<Pair<String, String>> {
+        val field = query.field(key)
+        val plain = key == Stamps.PROPERTY || (field != null && field.type != String::class.java)
+        if (plain) return listOf(column to property(root, key, predicates.declaredKind(key) ?: SqlKind.TEXT))
+        return listOfNotNull(column to property(root, key), if (field == null) "$column${GroupQuery.NUMBER}" to PostgresSql.number(root, key) else null)
+    }
+
+    /**
+     * One term of a grouped read's order: a column of the row [groups], or for a node key the id of its
+     * node. A key no field declares is ordered as the graph engines order it, from the [columns] it is
+     * grouped by: the nodes with no value where the nulls go, and a number after every text.
+     */
+    private fun groupOrder(query: GroupQuery, order: GroupOrder, groups: String, nodes: Map<Key<*>, String>, columns: List<String>): String {
+        if (columns.size > 1) {
+            val key = "$groups.${order.column.column}"
+            val number = "$key${GroupQuery.NUMBER}"
+            val ascending = order.direction == OrderDirection.ASC
+            val nullsFirst = order.nulls?.let { it == NullPlacement.FIRST } ?: !ascending
+            val absent = "CASE WHEN $key IS NULL THEN ${if (nullsFirst) 0 else 1} ELSE ${if (nullsFirst) 1 else 0} END"
+            return listOf(absent, "$number ${if (ascending) "ASC NULLS FIRST" else "DESC NULLS LAST"}", "$key ${order.direction.name}").joinToString(", ")
+        }
+        val node = nodes[order.column]
+        val term = if (node == null) {
+            "$groups.${order.column.column}"
+        } else {
+            val target = query.target((order.column as Key<*>).source as KeySource.Path)
+            val id = requireNotNull(target.nodeIdProperty)
+            property(node, id, SqlKind.ofType(target.fields.firstOrNull { it.propertyName == id }?.type))
+        }
+        val nulls = when (order.nulls) {
+            NullPlacement.FIRST -> " NULLS FIRST"
+            NullPlacement.LAST -> " NULLS LAST"
+            null -> ""
+        }
+        return "$term ${order.direction.name}$nulls"
+    }
 
     /** What a load or a count asks of a root: its labels, [predicates], and the relationships the view requires. */
     private fun selected(predicates: List<String>): List<String> =
