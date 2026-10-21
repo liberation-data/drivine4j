@@ -1,10 +1,7 @@
 package org.drivine.test
 
 import org.testcontainers.containers.GenericContainer
-import org.testcontainers.containers.wait.strategy.Wait
-import org.testcontainers.utility.DockerImageName
 import redis.clients.jedis.Jedis
-import java.time.Duration
 
 /**
  * One FalkorDB for the test JVM, which the cross-engine test classes share in place of a container
@@ -14,13 +11,7 @@ import java.time.Duration
  */
 object SharedFalkorDb {
 
-    private val container: GenericContainer<*> by lazy {
-        GenericContainer(DockerImageName.parse("falkordb/falkordb:latest"))
-            .withExposedPorts(6379)
-            .waitingFor(Wait.forListeningPort().withStartupTimeout(Duration.ofMinutes(5)))
-            .withStartupAttempts(2)
-            .also { it.start() }
-    }
+    private val container: GenericContainer<*> by lazy { sharedContainer("falkordb/falkordb:latest", 6379) }
 
     /**
      * The shared container, emptied for the class that asks: each class calls this once, from its

@@ -1,9 +1,7 @@
 package org.drivine.test
 
 import org.drivine.connection.DatabaseType
-import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
-import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.grammar.CypherDialect
 import org.testcontainers.containers.Neo4jContainer
 import org.testcontainers.utility.DockerImageName
@@ -37,17 +35,11 @@ object SharedNeo4j {
      */
     @JvmStatic
     fun forClass(): Neo4jContainer<*> {
-        val provider = Neo4jConnectionProvider(
-            name = "shared-neo4j-reset", type = DatabaseType.NEO4J,
-            host = container.host, port = container.getMappedPort(7687),
-            user = "neo4j", password = PASSWORD, database = "neo4j",
-            config = emptyMap(), subtypeRegistry = SubtypeRegistry(), cypherDialect = CypherDialect.NEO4J_5,
-        )
-        try {
-            TestCleanup.resetGraph(NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, SubtypeRegistry()))
-        } finally {
-            provider.end()
-        }
+        withManager(TestCleanup::resetGraph)
         return container
     }
+
+    /** Runs [use] with an auto-commit manager on the shared container. */
+    internal fun <T> withManager(use: (NonTransactionalPersistenceManager) -> T): T =
+        overBolt(container, DatabaseType.NEO4J, CypherDialect.NEO4J_5, "neo4j", PASSWORD, "neo4j", use)
 }

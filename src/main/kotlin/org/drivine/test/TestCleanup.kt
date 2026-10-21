@@ -49,8 +49,11 @@ object TestCleanup {
      *   storage mode, which Memgraph won't enter while a constraint exists. So each constraint
      *   `SHOW CONSTRAINT INFO` lists is dropped first. `schema.assert({}, {}, {}, true)` is not used:
      *   on Memgraph 3.12 one call drops one of several uniqueness constraints (memgraph/memgraph#5185),
-     *   and never a composite or nested-property index (memgraph/memgraph#2462). The switch is refused while a transaction is open, so it runs on an
-     *   auto-commit manager.
+     *   and never a composite or nested-property index (memgraph/memgraph#2462).
+     *
+     * Give it a manager that commits each statement on its own, not one inside a transaction: Neo4j
+     * refuses a data write in a transaction that has changed the schema, and Memgraph refuses the
+     * storage mode switch while a transaction is open.
      *
      * @throws UnsupportedOperationException on any other engine
      */

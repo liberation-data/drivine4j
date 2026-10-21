@@ -1,11 +1,6 @@
 package org.drivine.test
 
-import org.drivine.connection.DatabaseType
-import org.drivine.connection.Neo4jConnectionProvider
-import org.drivine.manager.NonTransactionalPersistenceManager
-import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
-import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
@@ -14,15 +9,8 @@ class SharedNeo4jTest {
 
     @Test
     fun `a class is handed the shared Neo4j with no data, index or constraint of an earlier class`() {
-        val container = SharedNeo4j.forClass()
-        val provider = Neo4jConnectionProvider(
-            name = "shared-neo4j-test", type = DatabaseType.NEO4J,
-            host = container.host, port = container.getMappedPort(7687),
-            user = "neo4j", password = SharedNeo4j.PASSWORD, database = "neo4j",
-            config = emptyMap(), subtypeRegistry = SubtypeRegistry(), cypherDialect = CypherDialect.NEO4J_5,
-        )
-        val pm = NonTransactionalPersistenceManager(provider, "neo4j", DatabaseType.NEO4J, SubtypeRegistry())
-        try {
+        SharedNeo4j.forClass()
+        SharedNeo4j.withManager { pm ->
             // One of each kind a test makes, a name that needs quoting among them.
             listOf(
                 "CREATE INDEX range_a FOR (n:A) ON (n.x)",
@@ -43,8 +31,6 @@ class SharedNeo4jTest {
             assertEquals(0, count("MATCH (n) RETURN count(n)"))
             // Neo4j's own token lookups stay: a label scan needs them.
             assertEquals(2, count("SHOW INDEXES YIELD type WHERE type = 'LOOKUP' RETURN count(type)"))
-        } finally {
-            provider.end()
         }
     }
 }

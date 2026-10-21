@@ -70,10 +70,22 @@ class TestCleanupTest {
 
     @Test
     fun `a graph is reset on Neo4j and Memgraph only`() {
-        for (type in listOf(DatabaseType.FALKORDB, DatabaseType.ORACLE)) {
+        for (type in DatabaseType.entries - DatabaseType.NEO4J - DatabaseType.MEMGRAPH) {
             val store = RecordingStore(type)
             assertFailsWith<UnsupportedOperationException>("$type") { TestCleanup.resetGraph(store) }
             assertTrue(store.executed.isEmpty(), "$type")
         }
+    }
+
+    @Test
+    fun `a Memgraph constraint of a kind resetGraph can't spell a drop for is refused, and Memgraph is left in transactional mode`() {
+        val store = RecordingStore(DatabaseType.MEMGRAPH) {
+            if (it.statement == "SHOW CONSTRAINT INFO") listOf(listOf("edge_unique", "R", listOf("w"), "")) else null
+        }
+
+        val refused = assertFailsWith<UnsupportedOperationException> { TestCleanup.resetGraph(store) }
+
+        assertTrue(refused.message!!.contains("edge_unique"), refused.message)
+        assertTrue(store.executed.isEmpty())
     }
 }

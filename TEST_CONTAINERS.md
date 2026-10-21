@@ -21,7 +21,7 @@ To bypass testcontainers and point at a locally running instance, set the corres
 
 Spring Boot tests resolve the container vs. local choice automatically via `DrivineTestConfiguration` based on each configured datasource's `type`. Local profile settings belong in `application.yml` / `application-test.yml`.
 
-Raw Testcontainers tests (see `org.drivine.connection.*IntegrationTest`) declare their own `@Container` and always use a fresh container — they do not read the `USE_LOCAL_*` flags.
+Raw Testcontainers tests (the cross-engine `*Neo4jTest`, `*FalkorDbTest` and `*MemgraphTest` classes, and `org.drivine.connection.*IntegrationTest`) do not read the `USE_LOCAL_*` flags. They share one container per engine for the test JVM — `org.drivine.test.SharedNeo4j`, `SharedFalkorDb` and `SharedMemgraph` — taken from the class's companion with `@JvmField val container = SharedNeo4j.forClass()`. `forClass()` empties the database first, so a class starts with no data, index or constraint another class left: `TestCleanup.resetGraph` on Neo4j and Memgraph, `FLUSHALL` on FalkorDB. A class that needs a container no other can share (APOC, another Neo4j version) declares its own `@Container`.
 
 ## Oracle
 

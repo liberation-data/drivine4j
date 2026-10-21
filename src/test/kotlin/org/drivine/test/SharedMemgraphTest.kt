@@ -1,11 +1,6 @@
 package org.drivine.test
 
-import org.drivine.connection.DatabaseType
-import org.drivine.connection.Neo4jConnectionProvider
-import org.drivine.manager.NonTransactionalPersistenceManager
-import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
-import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
 
@@ -14,15 +9,8 @@ class SharedMemgraphTest {
 
     @Test
     fun `a class is handed the shared Memgraph with no data, index or constraint of an earlier class, in transactional mode`() {
-        val container = SharedMemgraph.forClass()
-        val provider = Neo4jConnectionProvider(
-            name = "shared-memgraph-test", type = DatabaseType.MEMGRAPH,
-            host = container.host, port = container.getMappedPort(7687),
-            user = "", password = "", database = null, config = emptyMap(),
-            cypherDialect = CypherDialect.MEMGRAPH, subtypeRegistry = SubtypeRegistry(),
-        )
-        val pm = NonTransactionalPersistenceManager(provider, "memgraph", DatabaseType.MEMGRAPH, SubtypeRegistry())
-        try {
+        SharedMemgraph.forClass()
+        SharedMemgraph.withManager { pm ->
             // One of each kind a test makes, and several constraints and a composite and a nested-property
             // index, which Memgraph's schema.assert leaves behind.
             listOf(
@@ -51,8 +39,6 @@ class SharedMemgraphTest {
             assertEquals(0, pm.getOne(QuerySpecification.withStatement("MATCH (n) RETURN count(n)").transform(Int::class.java)))
             // Back where the tests expect it: analytical mode has no transactions to roll back.
             pm.execute(QuerySpecification.withStatement("CREATE CONSTRAINT ON (n:B) ASSERT n.id IS UNIQUE"))
-        } finally {
-            provider.end()
         }
     }
 }
