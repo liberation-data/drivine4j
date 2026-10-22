@@ -169,10 +169,11 @@ class ConstraintManager internal constructor(
 
                 status.contains("FAILED") -> {
                     run(grammar.dropConstraint(info))
-                    return confirmedViolation(spec, violationSampleSize, null) ?: throw DrivineException(
+                    val failed = DrivineException(
                         "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
                             "but no key it covers repeats in the data"
                     )
+                    return confirmedViolation(spec, violationSampleSize, failed) ?: throw failed
                 }
 
                 // UNDER CONSTRUCTION → keep polling
@@ -187,7 +188,7 @@ class ConstraintManager internal constructor(
 
     /**
      * The violation a failure to make [spec] is suspected of, confirmed against the data: the key
-     * values that repeat, at most [limit] of them (none when [limit] is 0, though the data is still
+     * values that repeat, at most [limit] of them (none when [limit] is 0 or less, though the data is still
      * read). Null when no key repeats, or the data cannot be read, so that a failure with another
      * cause is not blamed on the data: the caller then throws it. [failure], when there is one, keeps
      * why the data could not be read.
@@ -204,7 +205,7 @@ class ConstraintManager internal constructor(
         }
         if (conflicts.isEmpty()) return null
         logger.warn("Could not create constraint on {}{}: existing data violates it", spec.label, spec.properties)
-        return EnsureResult.Violation(spec, conflicts.take(limit))
+        return EnsureResult.Violation(spec, conflicts.take(limit.coerceAtLeast(0)))
     }
 
     /**

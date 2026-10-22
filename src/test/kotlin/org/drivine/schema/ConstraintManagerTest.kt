@@ -69,6 +69,13 @@ class ConstraintManagerTest {
     }
 
     @Test
+    fun `a negative sample size leaves the sample empty, as 0 does`() {
+        val result = store(violated) { listOf(repeated) }.constraints.ensure(spec, violationSampleSize = -1)
+
+        assertEquals(EnsureResult.Violation(spec, emptyList()), result)
+    }
+
+    @Test
     fun `a refusal the grammar does not suspect is thrown without reading the data`() {
         val refusal = Neo4jException("Neo.ClientError.Statement.SyntaxError", "Invalid input")
         val store = store(refusal) { listOf(repeated) }
@@ -88,7 +95,7 @@ class ConstraintManagerTest {
     }
 
     /** A store whose constraint is missing before CREATE and failed after it, answering the query for repeated keys with [conflicts]. */
-    private fun failingBuildStore(conflicts: List<Any?>): RecordingStore {
+    private fun failingBuildStore(conflicts: Any?): RecordingStore {
         var created = false
         val constraint = mapOf("name" to "Person_email", "type" to "UNIQUENESS", "entityType" to "NODE", "labelsOrTypes" to listOf("Person"), "properties" to listOf("email"))
         return RecordingStore(DatabaseType.NEO4J, failingBuild) { ran ->
@@ -111,11 +118,22 @@ class ConstraintManagerTest {
 
     @Test
     fun `a constraint whose build fails is dropped, and thrown when no key repeats`() {
-        val store = failingBuildStore(emptyList())
+        val store = failingBuildStore(emptyList<Any?>())
 
         val thrown = assertFailsWith<DrivineException> { store.constraints.ensure(spec) }
 
         assertContains(thrown.message!!, "no key it covers repeats")
+        assertTrue(store.schema.any { it.startsWith("DROP CONSTRAINT") })
+    }
+
+    @Test
+    fun `a constraint whose build fails is dropped, and thrown with why the data could not be read`() {
+        val unread = DrivineException("connection lost")
+        val store = failingBuildStore(unread)
+
+        val thrown = assertFailsWith<DrivineException> { store.constraints.ensure(spec) }
+
+        assertSame(unread, thrown.suppressed.single())
         assertTrue(store.schema.any { it.startsWith("DROP CONSTRAINT") })
     }
 }

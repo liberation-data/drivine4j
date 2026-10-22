@@ -7,7 +7,8 @@ package org.drivine.schema
  * @param recreateOnDrift destructively recreate items whose existing shape differs from their
  *   declaration (e.g. a vector index whose dimensions changed)
  * @param recreateOnStartup destructively recreate every declared item on every [SchemaManager.enforce]
- * @param violationSampleSize how many conflicting rows to sample on a constraint violation (0 disables)
+ * @param violationSampleSize how many conflicting rows to sample on a constraint violation (0 leaves the sample empty;
+ *   the data is still read, to confirm the violation)
  */
 data class SchemaPolicy(
     val mode: SchemaMode = SchemaMode.FAIL_FAST,
