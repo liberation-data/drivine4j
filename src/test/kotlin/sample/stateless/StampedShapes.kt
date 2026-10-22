@@ -47,6 +47,16 @@ data class Sticker(
     @NodeStamp val stamp: String? = null,
 )
 
+/** A stamped node with a closed set of labels: the field speaks for the [Shade] labels and no other. */
+@NodeFragment(labels = ["Swatch"])
+data class Swatch(
+    @NodeId val id: String,
+    @NodeLabels val shades: Set<Shade> = emptySet(),
+    @NodeStamp val stamp: String? = null,
+)
+
+enum class Shade { Red, Green, Blue }
+
 /** A view whose fields can be set. */
 @GraphView
 class DraftBoard(
