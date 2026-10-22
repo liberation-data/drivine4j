@@ -2,7 +2,6 @@ package org.drivine.backend.oracle
 
 import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.under
-import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphView
@@ -20,10 +19,8 @@ import org.drivine.manager.NodeRef
 import org.drivine.manager.NullPolicy
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.RelateMode
-import org.drivine.manager.RemovedTargets
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
-import org.drivine.model.RelationshipModel
 import org.drivine.query.FullTextIndexResolver
 import org.drivine.query.GroupQuery
 import org.drivine.query.PatchRow

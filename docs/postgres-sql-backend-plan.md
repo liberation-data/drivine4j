@@ -129,75 +129,9 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   `'7'` as 7. Whether Oracle should change to match is a question for Oracle's backend.
 - **More shared code.** What the two SQL backends share is in `backend/sql`: the tables and names
   (`SqlGraph`), a statement's parts (`Query`, `RowSource`, `Step`, `StatementScope`, `SqlKind`), the
-  plan a save is written as (`WritePlan`, `SqlSavePlan`, `WriteBlocks`), `TextQuery` and
-  `CypherShorthand`. The model walk of a read (`OracleSelect`, `PostgresSelect`) and their predicates
-  repeat each other in shape: the cascade walk, the grouping of relationship conditions, the keyset
-  predicate and the collection sorts could be shared next, behind a dialect of the expressions each
-  writes.
-
-## Progress
-
-- [x] 1. Substrate: `DatabaseType.POSTGRES` connects through `JdbcConnectionProvider` (and from
-  connection properties, and the starter's test configuration); `jsonb`, `text[]`, `timestamptz`,
-  pgvector and integer columns read as the graph drivers give them; dollar-quoted bodies pass
-  through `$name` parsing; `PostgresTestContainer`, `PostgresConnectionIntegrationTest`.
-- [x] 2. The graph: `SqlGraph` (tables, names, catalog) under `OracleGraph` and `PostgresGraph`;
-  Postgres makes its tables in one locked, transactional block marked with its version.
-  `SqlCypherFixtures` (was `OracleCypherFixtures`, kept as a deprecated alias) seeds either store, and
-  `TestCleanup` cleans a Postgres graph. `SqlDialect` and the moves of `Query`, `RowSource` and the
-  statement scope wait for step 3, where the reads first need them.
-- [x] 3. Reads: the dialect-free pieces moved to `backend/sql` (`Query`, `RowSource`, `Step`,
-  `SqlKind`, `StatementScope`, `CypherShorthand`) with Oracle's statements unchanged. `PostgresBackend`
-  loads, counts, pages, seeks and loads related nodes: views with nested views, relationships with
-  properties, paths (each node once, ordered by a hop), depths and recursion, aggregates and
-  collection sorts. A path is joins over the edge table, and a step to a depth a recursive query
-  anchored at the node it starts from. A number is read only where one is stored, so `'7'` is not
-  `7`, as on the graph engines. The fragment and view read contracts that seed with fixtures pass
-  (null placement, dynamic property filters, flat variable length, limit and skip, polymorphic
-  recursive views), and `PostgresReadSmokeTest` covers the rest. Contracts that also save, delete or
-  make indexes join their steps. The shared select (`SqlSelect`) is not pulled out yet: Oracle's is
-  shaped by `GRAPH_TABLE` and its workarounds, and the two are compared again once writes exist.
-- [x] 4. Writes: `WritePlan`, its shapes and `SqlSavePlan` (was `OracleSavePlan`) moved to
-  `backend/sql` behind `WriteBlocks`, Oracle's block unchanged. On Postgres the plan is carried out by
-  `<graph>_write`, a PL/pgSQL function the store keeps, with `<graph>_find` (found, then locked by
-  key and looked at again) and `<graph>_owns`; one call is one statement, rolled back whole when its
-  root is stale. A node insert that a uniqueness constraint refuses is looked for again, as on
-  Oracle, but with `ON CONFLICT DO NOTHING` rather than a caught error, which would cost a
-  subtransaction per node. The query a conditional `patch` asks is passed to the function with its
-  values written in as literals. Save, batch save, patch, patch-all, relate, unrelate and
-  `contended` (`40001`, `40P01`). Every contract that saves now has a Postgres subclass; a test that
-  reaches a later step is skipped by `PostgresNotYet` (removed in step 9): 283 pass, 25 skip.
-- [x] 5. Deletes: `delete`, `deleteAll` and cascades, each one statement of CTEs ending in a
-  `DELETE … RETURNING` that is counted. `DELETE_ORPHAN` keeps what a node outside the cascade holds,
-  walked by a recursive CTE, as Oracle's PL/SQL does. A path is anchored at a set of nodes as well as
-  at a row, and a cascade below a field that holds views of its own class chains a walk after hops.
-  The recursive cascade contract runs on Postgres. `SqlBackend` is not pulled out yet: Oracle's
-  deletes are PL/SQL and Postgres's CTEs, so what the two share is the operations' shape, not their
-  code; it is weighed again at the end.
-- [x] 6. Groups: a grouped read is `GROUP BY` over the roots, and over the distinct pairs of a root
-  and its key nodes where a key is a path, each path walked from the root's row by a lateral join.
-  A text key no field declares carries its number beside it, as on Oracle; Postgres keeps `""` apart
-  from null, so it needs no column for that. The 43 tests of the groups contract pass.
-- [x] 7. Schema: `PostgresSchemaGrammar`. A range index is a partial index over the property for the
-  nodes of its label, `((props ->> 'p')) WHERE labels @> '["L"]'`, and a uniqueness constraint the
-  same made `UNIQUE`, which also finds a node, so no range index is made beside it. A statement and
-  the write function test each label of a node on its own, so the planner sees a partial index over
-  any one of them holds the nodes asked for (Oracle's labelled-index catalog has no counterpart: the
-  planner does that work). Recorded in the graph's catalog as on Oracle; the version marker and store
-  stamp are nodes of the graph. `PostgresSchemaManagementIntegrationTest` checks the plans; the read
-  path contract runs on Postgres. `SqlSchemaGrammar` is not pulled out: the two grammars share the
-  catalog's shape and little of their text.
-- [x] 8. Search: vector search through pgvector, made where the server has it: without an index, an
-  exact measure of every node of the label whose embedding is of the vector's size; with one, a partial
-  HNSW index over the embeddings of that size, read as the index reads them. Scores as the graph
-  engines give them. Full-text search counts each term's regular expression in the text, as Oracle
-  without Oracle Text does, so the two score alike; a full-text index is a GIN index of `pg_trgm`
-  trigrams, which narrows a search to the nodes holding a term's words (a `LIKE` it answers; it cannot
-  answer the regular expressions themselves), and the same counting then scores them. `TextQuery`
-  moved to `backend/sql`. Every search contract runs on Postgres. With nothing left unbuilt,
-  `PostgresNotYet` is gone: the Postgres tests' only skips are the contracts' own assumptions.
-- [x] 9. Finish: a Postgres section in the README beside Oracle's (its example statement generated
-  from the code), the engine table, connection properties and per-engine schema notes;
-  `TEST_CONTAINERS.md`; a `test (Postgres)` CI job beside Oracle's; the starter's test configuration
-  (step 1). The benchmark was not run against Postgres: `OracleManagerBenchmarkTest` is Oracle's, and
-  a Postgres one is left for when there is a workload to measure.
+  plan a save is written as (`WritePlan`, `SqlSavePlan`, `WriteBlocks`), what a cascade follows
+  (`Cascade`), how conditions and sorts are read against a view (`RelationshipConditions`), the keyset
+  predicate (`KeysetPredicate`), `TextQuery` and `CypherShorthand`. What is left in each backend is
+  the SQL it writes: Oracle's `GRAPH_TABLE` patterns, PL/SQL and workarounds, Postgres's joins,
+  recursive queries and PL/pgSQL. A base select over a dialect of expressions is the next step if a
+  third SQL store comes.

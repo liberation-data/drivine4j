@@ -1,5 +1,7 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.RelationshipConditions
+import org.drivine.backend.sql.KeysetPredicate
 import org.drivine.backend.sql.SqlKind
 import org.drivine.annotation.GraphView
 import org.drivine.backend.oracle.OracleSql.hasLabels
@@ -9,9 +11,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
 import org.drivine.query.dsl.ComparisonOperator
-import org.drivine.query.dsl.KeysetPlanner
 import org.drivine.query.dsl.NullPlacement
-import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.dsl.ExpressionOrder
 import org.drivine.query.dsl.OrderExpression
 import org.drivine.query.dsl.OrderExpressionWriter
@@ -94,29 +94,8 @@ internal class OraclePredicates(
         return scope.implied.firstNotNullOfOrNull { labelled.expression(row, it, key) } ?: property(row, key)
     }
 
-    /**
-     * Conditions on a relationship's alias are gathered into one condition on that relationship: they
-     * are met together by one related node, not each by some related node.
-     */
-    private fun grouped(conditions: List<WhereCondition>): List<WhereCondition> {
-        val relationships = viewModel?.relationships?.map { it.fieldName }?.toSet() ?: return conditions
-        val kept = mutableListOf<WhereCondition>()
-        val byRelationship = linkedMapOf<String, MutableList<WhereCondition>>()
-        conditions.forEach { condition ->
-            when (condition) {
-                is WhereCondition.PropertyCondition -> {
-                    val alias = condition.propertyPath.substringBefore('.')
-                    val relationship = if (alias in relationships) alias else alias.substringBefore('_').takeIf { '_' in alias && it in relationships }
-                    if (relationship != null) byRelationship.getOrPut(relationship) { mutableListOf() }.add(condition) else kept += condition
-                }
-                is WhereCondition.LabelCondition ->
-                    kept += if (condition.alias in relationships) WhereCondition.RelationshipCondition(condition.alias, listOf(condition)) else condition
-                else -> kept += condition
-            }
-        }
-        byRelationship.forEach { (name, conditions) -> kept += WhereCondition.RelationshipCondition(name, conditions) }
-        return kept
-    }
+    /** Conditions on a relationship's alias, gathered into one condition on it: see [RelationshipConditions.grouped]. */
+    private fun grouped(conditions: List<WhereCondition>): List<WhereCondition> = RelationshipConditions.grouped(conditions, viewModel)
 
     /**
      * @param rows the row each alias of the query stands for
@@ -417,42 +396,9 @@ internal class OraclePredicates(
         }
     }
 
-    /**
-     * The predicate that selects the rows after a cursor: for orders `a, b` and the cursor `(A, B)`,
-     * `a > A OR (a = A AND b > B)`, each comparison turned round for a descending order. A row whose
-     * ordered property is absent meets no comparison, and is not returned. A property no field
-     * declares is compared, and ordered, as the kind of the cursor value.
-     */
-    fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String {
-        require(orders.isNotEmpty()) { "seek requires at least one root orderBy property" + hint(collectionSortCount) }
-        require(orders.size == values.size) {
-            "seek supplied ${values.size} cursor values for ${orders.size} root orderBy properties" + hint(collectionSortCount)
-        }
-        orders.forEach { it.requireNoNullPlacement(KeysetPlanner.NULLS_UNDER_SEEK) }
-        orders.zip(values).forEachIndexed { index, (order, value) ->
-            require(order.propertyPath == value.propertyPath) {
-                "seek property #${index + 1} is ${value.propertyPath}, but orderBy property #${index + 1} is ${order.propertyPath}"
-            }
-        }
-        val cursor = values.map { scope.bound(scalar(it.value)) }
-        orders.zip(values).forEach { (order, value) ->
-            val key = order.propertyPath.substringAfter('.')
-            if (declaredKind(key) == null) scope.inferredKinds[key] = SqlKind.ofValue(value.value)
-        }
-        fun key(index: Int) = ordered(orders[index].propertyPath.substringAfter('.'))
-        val branches = orders.indices.map { branch ->
-            val equal = (0 until branch).map { "${key(it)} = ${cursor[it]}" }
-            val beyond = "${key(branch)} ${if (orders[branch].direction == OrderDirection.ASC) ">" else "<"} ${cursor[branch]}"
-            // The first branch is one comparison, which needs no parentheses of its own.
-            (equal + beyond).let { if (it.size == 1) it.single() else it.joinToString(" AND ", "(", ")") }
-        }
-        // One order is one comparison, which `AND` joins to the statement's other predicates as it stands.
-        return branches.singleOrNull() ?: branches.joinToString(" OR ", "(", ")")
-    }
-
-    /** Why a seek may have fewer root orders than the query gave: some sort a relationship collection. */
-    private fun hint(collectionSortCount: Int): String =
-        if (collectionSortCount == 0) "" else " ($collectionSortCount declared orderBy properties sort a relationship collection, which cannot participate in a keyset cursor)"
+    /** The predicate that selects the rows after a cursor: see [KeysetPredicate.after]. */
+    fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String =
+        KeysetPredicate.after(orders, values, collectionSortCount, scope.inferredKinds, ::declaredKind, { scope.bound(scalar(it)) }, ::ordered)
 
     private companion object {
         /** The comparisons an index answers. */
