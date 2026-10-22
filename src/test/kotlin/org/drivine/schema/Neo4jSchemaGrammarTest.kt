@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.neo4j.driver.exceptions.Neo4jException
 
 class Neo4jSchemaGrammarTest {
 
@@ -322,16 +323,39 @@ class Neo4jSchemaGrammarTest {
 
     // ----- Violations -----
 
+    /** An error as the driver gives it, with a GQL status and the error beneath it. */
+    private fun error(status: String, code: String, message: String, cause: Neo4jException? = null) =
+        Neo4jException(status, message, code, message, emptyMap(), cause)
+
     @Test
-    fun `recognizes constraint violation errors`() {
-        assertTrue(
-            grammar.isConstraintViolation(
-                RuntimeException(
-                    "Unable to create Constraint( name='x', type='UNIQUENESS' ): " +
-                        "Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'"
-                )
-            )
+    fun `a violation is known by the GQL status a server gives beneath the refusal`() {
+        val refusal = error(
+            "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):",
+            error("22N79", "N/A", "Property uniqueness constraint violated: Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'."),
         )
+
+        assertTrue(grammar.isConstraintViolation(DrivineException(refusal.message!!, refusal)))
+    }
+
+    @Test
+    fun `a refusal to make a constraint whose GQL status names another cause is not a violation`() {
+        val refusal = error(
+            "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( type='NODE KEY', schema=(:U {e}) ):",
+            error("51N27", "N/A", "Key constraint is not supported in community edition."),
+        )
+
+        assertFalse(grammar.isConstraintViolation(DrivineException(refusal.message!!, refusal)))
+    }
+
+    @Test
+    fun `a server older than GQL statuses names a violation by its code alone`() {
+        assertTrue(grammar.isConstraintViolation(Neo4jException("Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x' ):")))
+        assertFalse(grammar.isConstraintViolation(Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}).")))
+    }
+
+    @Test
+    fun `an error without a driver's code is not a violation, whatever it says`() {
+        assertFalse(grammar.isConstraintViolation(RuntimeException("Unable to create Constraint: both nodes have the same value")))
         assertFalse(grammar.isConstraintViolation(RuntimeException("Connection refused")))
     }
 

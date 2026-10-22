@@ -194,12 +194,16 @@ class MemgraphSchemaGrammar(
 
     // ----- Violations -----
 
+    /**
+     * By the message: Memgraph gives every error one code, `Memgraph.ClientError.MemgraphError.MemgraphError`.
+     * "Unable to create unique constraint :Label(prop), because an existing node violates it." Its
+     * other refusals to make one ("Constraints are not supported in analytical storage mode") say
+     * nothing of a violation.
+     */
     override fun isConstraintViolation(e: Throwable): Boolean {
         val messages = SchemaGrammar.messagesOf(e)
-        // "Unable to create constraint :Label(prop), because an existing node violates it."
         return messages.contains("constraint", ignoreCase = true) &&
-            (messages.contains("violat", ignoreCase = true) ||
-                messages.contains("unable to create", ignoreCase = true))
+            messages.contains("violat", ignoreCase = true)
     }
 
     // ----- Helpers -----

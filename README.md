@@ -3259,7 +3259,7 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `Created` | Nothing existed and the item was created, or it existed without part of what the engine makes for it (on Oracle, a range index without its index over the label's nodes) and that part was made |
 | `AlreadyMatching` | A matching item exists; nothing changed |
 | `Drift` | An item exists with a **different shape** (e.g. vector dimensions changed). Nothing changed — call `recreate(spec)` to replace it (destructive) |
-| `Violation` | Constraint only: existing data violates it. Includes a bounded sample of the conflicting values |
+| `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
 | `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
 
 ### Declarative: SchemaCatalog bean

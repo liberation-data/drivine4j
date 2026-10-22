@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.neo4j.driver.exceptions.Neo4jException
 
 /**
  * Schema DDL and introspection for Neo4j (4.x and 5.x — schema syntax is shared across both,
@@ -169,14 +170,16 @@ class Neo4jSchemaGrammar : SchemaGrammar {
 
     // ----- Violations -----
 
+    /**
+     * By the driver's codes. A server that gives GQL statuses (Neo4j 5.26 and later) names the
+     * violation in a cause, `22N79` or `22N80`; its `ConstraintCreationFailed` covers other refusals
+     * too, as of a key constraint on Community Edition (`51N27`). An older server gives only that
+     * code, and the data decides.
+     */
     override fun isConstraintViolation(e: Throwable): Boolean {
-        val messages = SchemaGrammar.messagesOf(e)
-        return messages.contains("ConstraintCreationFailed", ignoreCase = true) ||
-            messages.contains("ConstraintValidationFailed", ignoreCase = true) ||
-            // "Unable to create Constraint … both nodes … have the same value …"
-            (messages.contains("unable to create constraint", ignoreCase = true)) ||
-            (messages.contains("constraint", ignoreCase = true) &&
-                messages.contains("same value", ignoreCase = true))
+        val errors = generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().toList()
+        if (errors.any { it.gqlStatus() in VIOLATED }) return true
+        return errors.all { it.gqlStatus() == GENERAL_STATUS } && errors.any { it.code() in VIOLATION_CODES }
     }
 
     // ----- Helpers -----
@@ -229,5 +232,18 @@ class Neo4jSchemaGrammar : SchemaGrammar {
         "cosine" -> SimilarityFunction.COSINE
         "euclidean" -> SimilarityFunction.EUCLIDEAN
         else -> null
+    }
+
+    private companion object {
+        /** A uniqueness constraint violated, and the index entry conflict beneath it. */
+        val VIOLATED = setOf("22N79", "22N80")
+
+        /** The status the driver gives an error from a server that sends none. */
+        const val GENERAL_STATUS = "50N42"
+
+        val VIOLATION_CODES = setOf(
+            "Neo.DatabaseError.Schema.ConstraintCreationFailed",
+            "Neo.ClientError.Schema.ConstraintValidationFailed",
+        )
     }
 }
