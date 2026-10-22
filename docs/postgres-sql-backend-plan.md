@@ -1,6 +1,6 @@
 # Plan: the object manager on plain Postgres
 
-Status: **in progress** · Replaces the July proposal (a table per label, join tables, one label per
+Status: **done** in drivine4j; Drivine (TypeScript) and drivine-python to follow · Replaces the July proposal (a table per label, join tables, one label per
 node), which was written before the Oracle backend and its layout existed.
 
 ## Goal
@@ -119,12 +119,21 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
 ## Open questions
 
 - **Postgres tests by default, or behind `POSTGRES_TESTS=true`?** The image is small and starts in
-  seconds, unlike Oracle's; by default seems right once the suite is stable. Gated until then.
-- **Lowest Postgres version.** 14 has everything the layout needs (`jsonb`, GIN, partial indexes,
-  identity columns, `CREATE … IF NOT EXISTS`); 15 if `MERGE` turns out to be wanted. Tests run on 17.
-- **Comparisons across types.** Oracle compares the string `'7'` with the number `7` as equal through
-  `JSON_VALUE`; the graph engines do not. Postgres with `jsonb` can match the graph engines. Which
-  is right is a question for both SQL backends, to settle in step 3.
+  seconds, unlike Oracle's, so they could run in the default suite. Gated for now, with a CI job of
+  their own, as Oracle's are.
+- **Lowest Postgres version.** 14: nothing used is newer (`jsonb`, GIN, partial indexes, identity
+  columns, `ON CONFLICT`, `starts_with`, `regexp_matches`; no `MERGE`, `any_value` or `regexp_count`).
+  Tests run on 17 only.
+- **Comparisons across types.** Postgres compares a number only with a number stored as one, as the
+  graph engines do: `'7'` is not `7`. Oracle, through `JSON_VALUE … RETURNING NUMBER`, reads the text
+  `'7'` as 7. Whether Oracle should change to match is a question for Oracle's backend.
+- **More shared code.** What the two SQL backends share is in `backend/sql`: the tables and names
+  (`SqlGraph`), a statement's parts (`Query`, `RowSource`, `Step`, `StatementScope`, `SqlKind`), the
+  plan a save is written as (`WritePlan`, `SqlSavePlan`, `WriteBlocks`), `TextQuery` and
+  `CypherShorthand`. The model walk of a read (`OracleSelect`, `PostgresSelect`) and their predicates
+  repeat each other in shape: the cascade walk, the grouping of relationship conditions, the keyset
+  predicate and the collection sorts could be shared next, behind a dialect of the expressions each
+  writes.
 
 ## Progress
 
@@ -187,4 +196,8 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   answer the regular expressions themselves), and the same counting then scores them. `TextQuery`
   moved to `backend/sql`. Every search contract runs on Postgres. With nothing left unbuilt,
   `PostgresNotYet` is gone: the Postgres tests' only skips are the contracts' own assumptions.
-- [ ] 9. Finish
+- [x] 9. Finish: a Postgres section in the README beside Oracle's (its example statement generated
+  from the code), the engine table, connection properties and per-engine schema notes;
+  `TEST_CONTAINERS.md`; a `test (Postgres)` CI job beside Oracle's; the starter's test configuration
+  (step 1). The benchmark was not run against Postgres: `OracleManagerBenchmarkTest` is Oracle's, and
+  a Postgres one is left for when there is a workload to measure.

@@ -1,6 +1,7 @@
 package org.drivine.backend.postgres
 
 import org.drivine.backend.sql.SqlKind
+import org.drivine.backend.sql.under
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
 import org.drivine.query.JdbcParameterCoercer
@@ -141,9 +142,9 @@ internal object PostgresSql {
     /** The columns of a row of a node, each as [alias]'s. */
     fun columns(alias: String): String = NODE_COLUMNS.joinToString(", ") { "$alias.$it" }
 
-    /** A JSON object of [entries], each a key and the expression for its value. */
+    /** A JSON object of [entries], each a key and the expression for its value, laid out under the key. */
     fun jsonObject(entries: List<Pair<String, String>>): String =
-        entries.joinToString(",\n    ", "jsonb_build_object(\n    ", ")") { (key, value) -> "${literal(key)}, $value" }
+        entries.joinToString(",\n    ", "jsonb_build_object(\n    ", ")") { (key, value) -> "${literal(key)}, ${value.under()}" }
 
     /** The JSON array of [value] over the rows a query reads, in [order]. */
     fun arrayOf(value: String, order: String): String = "jsonb_agg($value ORDER BY $order)"

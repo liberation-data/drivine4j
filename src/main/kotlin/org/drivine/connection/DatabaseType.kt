@@ -17,6 +17,10 @@ enum class DatabaseType(
     val speaksCypher: Boolean = true,
 ) {
     NEO4J("NEO4J"),
+    /**
+     * Postgres, 14 or later, over JDBC. It speaks SQL: a graph is two tables, read with joins over them
+     * and written through a function the store keeps, with pgvector for vector search.
+     */
     POSTGRES("POSTGRES", speaksCypher = false),
     NEPTUNE("NEPTUNE"),
     FALKORDB("FALKORDB"),

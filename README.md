@@ -7,7 +7,7 @@
 
 **Docs: [drivine.org](https://drivine.org/jvm/)**, for Kotlin & Java, TypeScript, and Python.
 
-A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph** and **Oracle** (SQL/PGQ) with two approaches to graph mapping:
+A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph**, **Oracle** (SQL/PGQ) and **Postgres** (plain SQL, with pgvector for vector search) with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
 2. **Object manager** (`StatelessGraphObjectManager`) - High-level API with annotated models and type-safe DSL.
@@ -2456,16 +2456,16 @@ QuerySpecification
 
 ```kotlin
 data class ConnectionProperties(
-    val type: DatabaseType,                  // NEO4J, FALKORDB, NEPTUNE, MEMGRAPH, ORACLE
+    val type: DatabaseType,                  // NEO4J, FALKORDB, NEPTUNE, MEMGRAPH, ORACLE, POSTGRES
     val host: String = "",
-    val port: Int? = null,                   // the engine's own when null: 1521 on Oracle
+    val port: Int? = null,                   // the engine's own when null: 1521 on Oracle, 5432 on Postgres
     val userName: String? = null,
     val password: String? = null,
     val idleTimeout: Int? = null,
     val connectionTimeout: Int? = null,
     val poolMax: Int? = null,
-    val databaseName: String? = null,        // on Oracle, the service to connect to
-    val defaultGraphPath: String? = null,    // on Oracle, the name of the property graph and its tables
+    val databaseName: String? = null,        // on Oracle, the service to connect to; on Postgres, the database
+    val defaultGraphPath: String? = null,    // on Oracle and Postgres, the name of the graph and its tables
     val protocol: String? = null,
     val cypherDialect: CypherDialect? = null,
     val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
@@ -2516,6 +2516,7 @@ Drivine4j supports multiple graph database engines from the same codebase. Switc
 | Amazon Neptune | `NEPTUNE` | Full ACID | CALL subquery | IAM SigV4 or None (tunnel) |
 | Memgraph | `MEMGRAPH` | Full ACID | CALL subquery | Basic (user/pass) or None |
 | Oracle 23ai / 26ai | `ORACLE` | Full ACID | In the statement | User and password |
+| Postgres 14+ | `POSTGRES` | Full ACID | In the statement | User and password |
 
 ### Neo4j
 
@@ -2888,6 +2889,156 @@ ORACLE_TESTS=true ./gradlew :test --tests '*Oracle*'
 
 CI runs the same command, in a job of its own (`test (Oracle)`).
 
+### Postgres
+
+Postgres 14 or later (tested on 17), over JDBC: plain SQL, with no extension beyond pgvector, which
+vector search uses where the server has it. Drivine keeps a graph in the same tables as on Oracle, so
+a node carries any number of labels (a label is data, not a table), and models, the query DSL and
+`StatelessGraphObjectManager` are the same as on the graph engines. Add the driver yourself:
+`org.postgresql:postgresql`.
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: POSTGRES
+      host: localhost
+      port: 5432
+      database-name: app          # the database to connect to
+      user-name: app
+      password: secret
+      default-graph-path: drivine # names the graph's tables; this is the default
+```
+
+`user-name` and `database-name` are required, and `port` is 5432 unless given. A `cypher-dialect` or a
+`protocol` means nothing here and is ignored with a warning. The graph's name names tables, so it is
+letters, digits and underscores, begins with a letter, and is at most 49 characters; Postgres folds
+it to lower case, so `Contracts` and `contracts` are one graph. The pool is as on Oracle (HikariCP,
+`pool-max`, `connection-timeout`, `idle-timeout`), and sends a string without a type, so a statement
+casts it as it needs (`stringtype=unspecified`). To use a `DataSource` the application already has:
+`registry.register(JdbcConnectionProvider("graph", DatabaseType.POSTGRES, dataSource, graphName = "drivine"))`,
+or for a pool of Drivine's own without the YAML:
+
+```kotlin
+val provider = JdbcConnectionProvider.pooled(
+    "graph", DatabaseType.POSTGRES, JdbcConnectionProvider.postgresUrl("localhost", 5432, "app"), "app", "secret",
+    graphName = "drivine",
+)
+```
+
+**How a graph is stored.** The tables Oracle keeps, made when a manager first speaks to the graph:
+`<graph>_node (nid, labels, props, stamp)` and `<graph>_edge (eid, src, dst, type, props)`, with
+`labels` (a JSON array) and `props` as `jsonb`, and `<graph>_schema` for what schema management made.
+A GIN index over `labels` answers whether a node carries a label. Beside them are three functions,
+`<graph>_write`, `<graph>_find` and `<graph>_owns`, which a save is carried out by. A store that an
+earlier version of Drivine made is brought up to date on first use, and keeps its rows. A node's stamp
+is the `stamp` column, returned by a load as `__drivine.stamp`. Deleting a node's row deletes its
+relationships with it.
+
+**Notes:**
+- A statement written by hand is SQL. Parameters are named `$name`; a collection is bound as JSON, for
+  `CAST($list AS jsonb)` to read. A `json` or `jsonb` column comes back as a map, so
+  `SELECT jsonb_build_object(…)` hydrates with `.transform(MyView::class.java)`. A function body in
+  dollar quotes, `$fn$ … $fn$`, is left as it is.
+- A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
+  statement, which writes nothing when it fails.
+- A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
+  (`issue.state = 'open'`); anything more is SQL over `issue.props`, `issue.labels` and `issue.stamp`
+  (`issue.props ->> 'state'`). Postgres's `?` operators cannot be used: JDBC takes a `?` for a parameter.
+- A save is a plan of steps, the same plan Oracle's block carries out, which `<graph>_write` carries
+  out in one statement: applied whole or not at all, and stamped and checked as on the graph engines.
+  A node is found by its id and its labels, then locked by its key and looked at again. Another writer
+  that changes a node in SQL should give it a new stamp, as on Oracle.
+- A save the database turns away for a serialization failure (`40001`) or a deadlock (`40P01`) is run
+  again, as on Neo4j, Memgraph and Oracle.
+- `saveAll` saves fragments 500 to a statement, and each view by a statement of its own, in one
+  transaction; `patchAll` writes 500 nodes to a statement.
+- A delete is one statement, and can cascade with `DELETE_ALL` and `DELETE_ORPHAN`.
+- A number is compared and ordered as a number only where one is stored: the text `'7'` is not `7`,
+  as on the graph engines. Postgres keeps an empty string apart from null, so `""` is a value.
+- Index the id of each node type you save, `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`,
+  or with a range index: without one a save reads the label's nodes to find the one it writes.
+- `matches` takes a regular expression in Postgres's dialect, matched against the whole value. A
+  leading `(?i)` ignores case.
+- A vector index is a partial HNSW index of pgvector over the embeddings of the label's nodes that
+  are of its size; a node written with another size is left out, not refused. `loadNearest` goes
+  through it and is approximate; with no index made, it measures every node of the label whose
+  embedding is of the vector's size, and is exact. pgvector is made with the graph where the server
+  has it and the user may: without it, everything else works.
+- `loadMatching` reads the full-text syntax Oracle reads, and counts each term in the text as Oracle
+  does without Oracle Text, so the two score alike. A full-text index is a GIN index of `pg_trgm`
+  trigrams over the text, which narrows a search to the nodes that hold a term's words; the same
+  counting then scores them, and a search sees its own transaction's writes. An `analyzer` is
+  recorded with the index and not applied.
+- The deprecated `GraphObjectManager.save` and `saveAll`, and the Cypher migration tools, do not run
+  on Postgres, as on Oracle; that manager's loads, queries and deletes work.
+
+**What a read looks like.** A load is one statement, written to be read beside the Cypher it stands
+for. A row is called what the model calls it, with an underscore so that a field may be called `user`
+or `order`. A relationship field is a subquery over the nodes reached from the root's row: a path is
+joins over the edge table, a step to a depth is a recursive query anchored at the node it starts from,
+and each label is tested on its own, so that a partial index over the nodes of one is used. Where
+Cypher loads a view with
+
+```cypher
+MATCH (claim:Claim) WHERE claim.id = $id
+RETURN { claim: claim {.*},
+         companies: [(claim)-[:MENTIONS]->(companies:Company) | companies {.*}],
+         people: [(claim)-[:MENTIONS]->(people:Human) | people {.*}] } AS result
+```
+
+Postgres is sent
+
+```sql
+SELECT jsonb_build_object(
+    'claim', (claim_.props || jsonb_build_object('labels', claim_.labels) || jsonb_strip_nulls(jsonb_build_object('__drivine.stamp', claim_.stamp))),
+    'companies', COALESCE((
+        SELECT jsonb_agg((companies_.props || jsonb_build_object('labels', companies_.labels) || jsonb_strip_nulls(jsonb_build_object('__drivine.stamp', companies_.stamp))) ORDER BY companies_.eid)
+        FROM (
+            SELECT e.src AS src, e.eid, e.props AS eprops, companies_.nid, companies_.labels, companies_.props, companies_.stamp
+            FROM drivine_edge e
+                JOIN drivine_node companies_ ON companies_.nid = e.dst
+            WHERE e.src = claim_.nid
+              AND e.type = 'MENTIONS'
+              AND companies_.labels @> '["Company"]'
+        ) companies_), '[]'::jsonb),
+    'people', COALESCE((
+        SELECT jsonb_agg((people_.props || jsonb_build_object('labels', people_.labels) || jsonb_strip_nulls(jsonb_build_object('__drivine.stamp', people_.stamp))) ORDER BY people_.eid)
+        FROM (
+            SELECT e.src AS src, e.eid, e.props AS eprops, people_.nid, people_.labels, people_.props, people_.stamp
+            FROM drivine_edge e
+                JOIN drivine_node people_ ON people_.nid = e.dst
+            WHERE e.src = claim_.nid
+              AND e.type = 'MENTIONS'
+              AND people_.labels @> '["Human"]'
+        ) people_), '[]'::jsonb)) AS result
+FROM drivine_node claim_
+WHERE claim_.labels @> '["Claim"]'
+  AND (claim_.props ->> 'id') = CAST($id AS text)
+```
+
+**Testing.** `PostgresTestContainer` starts Postgres with pgvector (`pgvector/pgvector:pg17`; another
+with `POSTGRES_TEST_IMAGE` or `-Dtest.postgres.image`) and gives a user, `drivine`, and a database,
+`drivine`. `@EnableDrivineTestConfig` uses it for a datasource of type `POSTGRES`, or a local
+instance with `USE_LOCAL_POSTGRES=true` (see [TEST_CONTAINERS.md](TEST_CONTAINERS.md)). Add the JDBC
+driver to the test classpath. A test that seeds its graph in Cypher keeps its fixtures with
+`SqlCypherFixtures`, as on Oracle, and `TestCleanup.beforeEach` works on Postgres too. Without Spring:
+
+```kotlin
+val provider = JdbcConnectionProvider.pooled(
+    "graph", DatabaseType.POSTGRES, PostgresTestContainer.getJdbcUrl(),
+    PostgresTestContainer.getConnectionUsername(), PostgresTestContainer.getConnectionPassword(),
+)
+```
+
+Drivine's own Postgres tests run with
+
+```bash
+POSTGRES_TESTS=true ./gradlew :test --tests '*Postgres*'
+```
+
+CI runs the same command, in a job of its own (`test (Postgres)`).
+
 ### @JsonPacked Annotation
 
 For engines that don't support list property values (Neptune), annotate collection fields to transparently serialize as JSON strings:
@@ -3228,6 +3379,16 @@ drivine:
 | Item names | Recorded; the Oracle object's name is derived from the graph, label and properties, and recorded with it. A drop drops the object the record names |
 
 The store's identity (`DrivineStore`) and the schema marker are nodes of the graph on Oracle too, and the graph's tables are made for them when they are the first thing asked of a new graph.
+
+**Postgres.** Every item is a partial index over the nodes of its label, recorded in `<graph>_schema` as on Oracle. An index dropped by hand is not listed, and is made again by the next `ensure`. The store's identity and the schema marker are nodes of the graph, as on Oracle.
+
+| | Postgres |
+|---|---|
+| Vector indexes | `CREATE INDEX … USING hnsw ((CAST(CAST(props -> 'p' AS text) AS vector(n))) vector_cosine_ops) WHERE labels @> '["Label"]' AND …`, over the embeddings of the label's nodes that are of its size (`vector_l2_ops` for Euclidean). Needs pgvector, which the index makes where it may |
+| Full-text indexes | `CREATE INDEX … USING gin ((lower(…)) gin_trgm_ops) WHERE labels @> '["Label"]'`, over the text a search reads, with `pg_trgm`, which the index makes where it may |
+| Range indexes | `CREATE INDEX … ((props ->> 'p')) WHERE labels @> '["Label"]'`, one per label. Composite supported |
+| Uniqueness | The same index made `UNIQUE`, which also finds a node, so no range index is made beside it. A node that lacks one of the properties is not constrained |
+| Item names | Recorded; the index's name is derived from the graph, label and properties, and Postgres keeps it in lower case. A drop drops the index the record names |
 
 Neptune and generic openCypher have no schema management support — operations fail loudly rather than silently no-op.
 

@@ -1,7 +1,7 @@
 
 ## Using Test Containers (Default)
 
-By default, tests start a Testcontainer for whichever backend(s) the suite targets — Neo4j, FalkorDB, or Memgraph. No additional setup required beyond Docker being available on the host. Oracle's container is started only by the Oracle tests, which a plain `./gradlew test` leaves out: see [Oracle](#oracle).
+By default, tests start a Testcontainer for whichever backend(s) the suite targets — Neo4j, FalkorDB, or Memgraph. No additional setup required beyond Docker being available on the host. Oracle's and Postgres's containers are started only by their own tests, which a plain `./gradlew test` leaves out: see [Oracle](#oracle) and [Postgres](#postgres).
 
 ```bash
 # Run tests with test containers (default)
@@ -18,6 +18,7 @@ To bypass testcontainers and point at a locally running instance, set the corres
 | FalkorDB | `USE_LOCAL_FALKORDB=true` / `-Dtest.falkordb.use-local=true` | `FALKORDB_LOCAL_HOST`, `FALKORDB_LOCAL_PORT`                                   |
 | Memgraph | `USE_LOCAL_MEMGRAPH=true` / `-Dtest.memgraph.use-local=true` | `MEMGRAPH_LOCAL_HOST`, `MEMGRAPH_LOCAL_PORT`                                   |
 | Oracle   | `USE_LOCAL_ORACLE=true` / `-Dtest.oracle.use-local=true`   | `ORACLE_LOCAL_HOST`, `ORACLE_LOCAL_PORT`                                       |
+| Postgres | `USE_LOCAL_POSTGRES=true` / `-Dtest.postgres.use-local=true` | `POSTGRES_LOCAL_HOST`, `POSTGRES_LOCAL_PORT`                                 |
 
 Spring Boot tests resolve the container vs. local choice automatically via `DrivineTestConfiguration` based on each configured datasource's `type`. Local profile settings belong in `application.yml` / `application-test.yml`.
 
@@ -38,3 +39,19 @@ They are in the root module. Without `ORACLE_TESTS=true` every class marked `@Or
 - **A local instance** (`USE_LOCAL_ORACLE=true`) must open the service `FREEPDB1` and hold that user with that password: `OracleTestContainer` lets only its host and port be changed, with `ORACLE_LOCAL_HOST` and `ORACLE_LOCAL_PORT` or `-Dtest.oracle.local.host` and `-Dtest.oracle.local.port` (`localhost` and 1521 unless given). A Spring Boot test through `@EnableDrivineTestConfig` takes a local instance's host, port, service and user from its own datasource properties instead.
 - **The tests share one database and a few named graphs in it**: `contracts` for the cross-engine contracts, and `smoke`, `schema`, `identity`, `readpath` and `bench` for the rest. A graph is a set of tables under that name, made when a test first speaks to it. The tests of plain SQL (`OracleConnectionIntegrationTest`) and the spikes keep tables of their own beside them.
 - **The cross-engine contracts seed and read back in Cypher.** On Oracle (and Postgres) those statements are worked out by `org.drivine.test.SqlCypherFixtures`, a small interpreter for the Cypher such fixtures use; a statement outside what it reads is refused, and is a reason to extend it or to write that fixture in SQL.
+
+## Postgres
+
+The Postgres tests run against Postgres with pgvector, and only when asked for, as the Oracle tests are:
+
+```bash
+POSTGRES_TESTS=true ./gradlew :test --tests '*Postgres*'
+```
+
+They are in the root module. Without `POSTGRES_TESTS=true` every class marked `@PostgresTests` is skipped, so `./gradlew test` neither pulls the image nor starts the container.
+
+- **The image** is `pgvector/pgvector:pg17`; choose another with `POSTGRES_TEST_IMAGE` or `-Dtest.postgres.image`. One without pgvector runs every test but those of vector search.
+- **The container** (`org.drivine.test.PostgresTestContainer`) is started once for the test JVM, when a test first asks for it. Tests connect as the user `drivine`, password `drivine`, to the database `drivine`.
+- **A local instance** (`USE_LOCAL_POSTGRES=true`) must hold that database and that user with that password, as the container does: only its host and port can be changed, with `POSTGRES_LOCAL_HOST` and `POSTGRES_LOCAL_PORT` or `-Dtest.postgres.local.host` and `-Dtest.postgres.local.port` (`localhost` and 5432 unless given).
+- **The tests share one database and a few named graphs in it**, as on Oracle: `contracts` for the cross-engine contracts, and `smoke`, `schema`, `readpath` and others for the rest. The tests of plain SQL (`PostgresConnectionIntegrationTest`) keep tables of their own beside them.
+- **The cross-engine contracts seed and read back in Cypher**, worked out by `org.drivine.test.SqlCypherFixtures`, as on Oracle.
