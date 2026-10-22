@@ -1,44 +1,20 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.SqlBackend
+import org.drivine.query.dsl.CollectionSortSpec
 import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.under
 import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.annotation.Direction
-import org.drivine.annotation.GraphView
-import org.drivine.backend.CascadeDepthCheck
-import org.drivine.backend.FragmentBatch
-import org.drivine.backend.GraphBackend
 import org.drivine.backend.GraphStatement
-import org.drivine.backend.LoadPlan
-import org.drivine.backend.sql.NodeShape
-import org.drivine.backend.sql.SqlSavePlan
-import org.drivine.backend.sql.WritePlan
-import org.drivine.backend.sql.WriteReturns
-import org.drivine.manager.CascadeType
-import org.drivine.manager.NodeRef
-import org.drivine.manager.NullPolicy
 import org.drivine.manager.PersistenceManager
-import org.drivine.manager.RelateMode
-import org.drivine.model.FragmentModel
-import org.drivine.model.GraphViewModel
 import org.drivine.query.FullTextIndexResolver
-import org.drivine.query.GroupQuery
-import org.drivine.query.PatchRow
 import org.drivine.query.QuerySpecification
-import org.drivine.query.SaveRequest
-import org.drivine.query.SaveStatement
 import org.drivine.query.ScoredSearchPlan
 import org.drivine.query.StampWrite
-import org.drivine.query.StoredPropertyKeys
 import org.drivine.query.VectorIndexResolver
-import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
-import org.drivine.query.dsl.GroupQuerySpec
-import org.drivine.query.dsl.KeysetPlanner
-import org.drivine.query.dsl.SplitOrders
-import org.drivine.query.dsl.WhereCondition
 import org.drivine.schema.SchemaItemKind
-import org.drivine.query.grammar.CypherGrammar
 import java.sql.SQLException
 import java.util.concurrent.Executor
 
@@ -52,7 +28,7 @@ internal class OracleBackend(
     objectMapper: ObjectMapper,
     /** Where the labelled indexes of the graph are read: see [LabelledIndexCatalog]. */
     catalogReads: Executor? = null,
-) : GraphBackend {
+) : SqlBackend<OracleSelect>(objectMapper) {
 
     /** The graph the manager names, made with the backend where it is not there yet. */
     private val graph = OracleGraph.ensured(persistenceManager)
@@ -61,73 +37,21 @@ internal class OracleBackend(
     private val labelled = catalogReads?.let { LabelledIndexCatalog(persistenceManager, graph, refresh = it) } ?: LabelledIndexCatalog(persistenceManager, graph)
 
     /** How a plan of steps is carried out: by a PL/SQL block written for the shapes it names. */
-    private val blocks = OracleWriteBlocks(graph)
+    override val blocks = OracleWriteBlocks(graph)
 
-    /** Plans a save, and a batch of fragments, as the steps of a write block. */
-    private val saves = SqlSavePlan(blocks, objectMapper, OracleSql::key)
+    /** A filter through the query DSL is read through the labelled indexes of the graph. */
+    override fun select(graphClass: Class<*>, collectionSorts: List<CollectionSortSpec>, depthOverrides: Map<String, Int>, indexed: Boolean): OracleSelect =
+        OracleSelect(graph, graphClass, collectionSorts, depthOverrides, if (indexed) labelled.current() else LabelledIndexes.NONE)
 
-    override val cypherGrammar: CypherGrammar? = null
+    override fun key(id: Any): String = OracleSql.key(id)
 
-    override val supportsOrphanDelete: Boolean = true
-
-    override val orphanDeleteLimit: String? = null
-
-    /**
-     * A range index reads a property as text. An order by a number or a moment reads it as that, and is
-     * not served by the index, so no index is advised for an order.
-     */
-    override val supportsIndexBackedOrdering: Boolean = false
-
-    /** A save on Oracle clears a node's stale keys where it writes the node, so nothing is read ahead of it. */
-    override val storedKeys: StoredPropertyKeys = StoredPropertyKeys { _, _, _ -> emptySet() }
-
-    // ----- Reading -----
-
-    override fun loadAll(graphClass: Class<*>, where: String?): GraphStatement =
-        OracleSelect(graph, graphClass).let { select -> select.load(listOfNotNull(where?.let(select::written))) }
-
-    override fun loadAll(graphClass: Class<*>, query: GraphQuerySpec<*>): LoadPlan {
-        require(query.seekValues.isEmpty() || query.skip == null) { "seek and skip cannot be used together" }
-        val (collectionSorts, rootOrders) = orders(graphClass, query)
-        val select = OracleSelect(graph, graphClass, collectionSorts, query.depthOverrides, labelled.current())
-        val seek = query.seekValues.takeIf { it.isNotEmpty() }?.let { select.after(KeysetPlanner.propertyOrders(rootOrders), it, collectionSorts.size) }
-        val statement = select.load(listOfNotNull(select.predicate(query.conditions, indexed = true), seek), rootOrders, query.skip, query.limit)
-        return LoadPlan(statement, rootOrders, keyset = seek != null)
-    }
-
-    /**
-     * The orders of [query] parted into the sorts of relationship collections and the orders of the
-     * roots, as `CypherGenerator.splitOrders` parts them. An alias with an underscore in it names a
-     * nested collection (`field_nested`), and is taken for a collection sort even on a fragment,
-     * where it then sorts nothing.
-     */
-    private fun orders(graphClass: Class<*>, query: GraphQuerySpec<*>): SplitOrders {
-        val relationships = if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass).relationships.map { it.fieldName }.toSet() else emptySet()
-        return CypherGenerator.splitOrders(query.orders, relationships)
-    }
-
-    override fun load(graphClass: Class<*>): GraphStatement {
-        val select = OracleSelect(graph, graphClass)
-        return select.load(listOf(select.hasId(GraphBackend.ID_PARAM)))
-    }
-
-    override fun count(graphClass: Class<*>, where: String?): GraphStatement =
-        OracleSelect(graph, graphClass).let { select -> select.count(listOfNotNull(where?.let(select::written))) }
-
-    override fun count(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
-        requireNoSeek(query)
-        val select = OracleSelect(graph, graphClass, labelled = labelled.current())
-        return select.count(listOfNotNull(select.predicate(query.conditions, indexed = true)))
-    }
-
-    override fun groups(graphClass: Class<*>, query: GroupQuerySpec<*>): GraphStatement =
-        OracleSelect(graph, graphClass, labelled = labelled.current()).groups(GroupQuery.of(graphClass, query))
+    // ----- Searching -----
 
     override fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,
         topK: Int, threshold: Double?, searchK: Int?, partitionLabel: String?,
     ): ScoredSearchPlan {
-        val select = OracleSelect(graph, graphClass)
+        val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
         // What the search measures is the nearest searchK, and of what is left of them topK come back.
         // Through the index for the label when one has been made; else by measuring every node.
@@ -142,7 +66,7 @@ internal class OracleBackend(
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
-        val select = OracleSelect(graph, graphClass)
+        val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
         val words = TextQuery.parse(text)
         val texts = made(SchemaItemKind.FULLTEXT_INDEX, index.label, index.properties)
@@ -161,37 +85,11 @@ internal class OracleBackend(
 
     // ----- Deleting -----
 
-    override fun delete(graphClass: Class<*>, where: String?, cascade: CascadeType): GraphStatement {
-        val select = OracleSelect(graph, graphClass)
-        val predicates = byId(select, where)
-        val cascaded = if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) select.cascaded(predicates) else null
-        return if (cascaded == null) deleting(select, predicates) else cascading(select, predicates, cascaded, orphansOnly = cascade == CascadeType.DELETE_ORPHAN)
-    }
-
-    override fun cascadeDepthChecks(graphClass: Class<*>, where: String?): List<CascadeDepthCheck> {
-        val select = OracleSelect(graph, graphClass)
-        val checks = select.cascadeDepthChecks(byId(select, where))
-        return checks.map { (recursion, sql) -> CascadeDepthCheck(recursion.view, recursion.field, recursion.step.maxDepth, GraphStatement(sql, select.bindings())) }
-    }
-
-    /** The predicates a delete by id selects its root by: the checks it runs first read the same root. */
-    private fun byId(select: OracleSelect, where: String?): List<String> =
-        listOfNotNull(select.hasId(GraphBackend.ID_PARAM), where?.let(select::written))
-
-    override fun deleteAll(graphClass: Class<*>, where: String?): GraphStatement =
-        OracleSelect(graph, graphClass).let { select -> deleting(select, listOfNotNull(where?.let(select::written))) }
-
-    override fun deleteAll(graphClass: Class<*>, query: GraphQuerySpec<*>): GraphStatement {
-        requireNoSeek(query)
-        val select = OracleSelect(graph, graphClass, labelled = labelled.current())
-        return deleting(select, listOfNotNull(select.predicate(query.conditions, indexed = true)))
-    }
-
     /**
      * Deletes the roots [predicates] select, whether or not they have the relationships the view
      * requires, as the Cypher delete does. A node's relationships go with it: the relationship table cascades.
      */
-    private fun deleting(select: OracleSelect, predicates: List<String>): GraphStatement =
+    override fun deleting(select: OracleSelect, predicates: List<String>): GraphStatement =
         GraphStatement(
             OracleSql.counted("DELETE FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"),
             select.bindings(),
@@ -205,7 +103,7 @@ internal class OracleBackend(
      * before anything is deleted, so a node's relationships to the others the cascade takes do not
      * keep it.
      */
-    private fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
+    override fun cascading(select: OracleSelect, predicates: List<String>, cascaded: String, orphansOnly: Boolean): GraphStatement {
         val roots = "FROM ${graph.nodes} ${select.root}\nWHERE ${select.selecting(predicates)}"
         val everything = "SELECT ${select.root}.nid\n$roots\nUNION\n$cascaded"
         // Lines joined, not a template: what is put in has lines of its own, each laid out under the one that opens it.
@@ -256,62 +154,10 @@ internal class OracleBackend(
         return GraphStatement(OracleSql.counting(body, "TYPE t_ids IS TABLE OF NUMBER;\nv_ids t_ids;"), select.bindings())
     }
 
-    /** A seek walks an order, which a count or a delete does not have: it would be ignored, and a delete would take every match. */
-    private fun requireNoSeek(query: GraphQuerySpec<*>) =
-        require(query.seekValues.isEmpty()) { "seek is only supported by loadAll; this operation would ignore the cursor" }
+    /** The query a `patch` step asks has parameters of its own, bound beside the plan. */
+    override fun patchedIfBindings(select: OracleSelect): Map<String, Any?> = select.bindings()
 
-    // ----- Saving -----
-
-    override fun save(request: SaveRequest): SaveStatement = saves.build(request)
-
-    /**
-     * A batch of fragments is one block for each [BATCH] of them. Every fragment is a step of its
-     * block, stamped or not, and the block hands a row back for each: so every statement is among the
-     * stamped, and no fragment is left to be saved alone.
-     */
-    override fun saveTogether(fragments: List<IndexedValue<Any>>, nullPolicy: NullPolicy, writeFields: (Class<*>) -> Set<String>?): FragmentBatch = FragmentBatch(
-        stamped = fragments.chunked(BATCH).map { chunk ->
-            val (text, bindings) = saves.together(chunk, nullPolicy, writeFields)
-            QuerySpecification.withStatement(text).bind(bindings).transform(String::class.java)
-        },
-    )
-
-    /**
-     * A `patch` step for each row, [BATCH] to a block, and fewer where a vector is written: see [PatchRow.toAStatement]. What a null does is in the step: the property
-     * is left out of what the step sets, and when the call clears, named among what it removes.
-     */
-    override fun patchAll(graphClass: Class<*>, properties: List<String>, rows: List<PatchRow>, clears: Boolean): List<QuerySpecification<String>> {
-        val model = FragmentModel.from(graphClass)
-        val key = requireNotNull(model.nodeIdProperty) { "${graphClass.simpleName} has no @NodeId field to find a node by." }
-        return rows.chunked(PatchRow.toAStatement(model, properties, BATCH)).map { chunk ->
-            val plan = WritePlan(blocks)
-            val shape = plan.shape(model.labels, key)
-            chunk.forEach { row ->
-                plan.patch(
-                    shape, OracleSql.key(row.id), row.index.toString(),
-                    set = row.values.filterValues { it != null },
-                    unset = if (clears) row.values.filterValues { it == null }.keys.toList() else emptyList(),
-                )
-            }
-            QuerySpecification.withStatement(plan.text(WriteReturns.EACH_STAMP)).bind(plan.bindings()).transform(String::class.java)
-        }
-    }
-
-    /**
-     * One block with one `patch` step. The values are in the plan, and the predicate in the block's
-     * text: so the text is the node's shape and the predicate, and the same for every id and value.
-     */
-    override fun patch(graphClass: Class<*>, id: Any, values: Map<String, Any?>, conditions: List<WhereCondition>): GraphStatement {
-        val select = OracleSelect(graph, graphClass)
-        val model = FragmentModel.from(select.rootFragment)
-        val key = requireNotNull(model.nodeIdProperty) { "${model.clazz.simpleName} has no @NodeId field to find a node by." }
-        val plan = WritePlan(blocks)
-        plan.patch(
-            plan.shape(model.labels, key), OracleSql.key(id), "0",
-            set = values.filterValues { it != null }, unset = values.filterValues { it == null }.keys.toList(),
-        )
-        return GraphStatement(plan.text(WriteReturns.EACH_STAMP, select.meeting(conditions)), plan.bindings() + select.bindings())
-    }
+    // ----- Writing -----
 
     /** A stamp that is null says the node is there and has none; no row, that the node is gone. */
     override fun foundStamp(root: StampWrite): GraphStatement = GraphStatement(
@@ -326,64 +172,8 @@ internal class OracleBackend(
      */
     override fun contended(failure: Throwable): Boolean = failure is SQLException && failure.errorCode in CONTENTION
 
-    // ----- Relationships on their own -----
-
-    /** The step that finds the node [ref] names, which must be there. Gives the number later steps know it by. */
-    private fun WritePlan.found(ref: NodeRef): Int {
-        val node = shapeOf(ref)
-        return ref(shape(node.labels, node.key), OracleSql.key(ref.id))
-    }
-
-    /**
-     * How the node [ref] names is found: by the labels of its class and those the ref adds, and the
-     * property its class keeps its id under. A class with no `@NodeId` field names no node.
-     */
-    private fun shapeOf(ref: NodeRef): NodeShape {
-        val model = FragmentModel.from(ref.fragmentClass)
-        val key = requireNotNull(model.nodeIdProperty) {
-            "${ref.fragmentClass.simpleName} has no @NodeId field, so a node of it cannot be referred to by id."
-        }
-        return NodeShape((model.labels + ref.labels).distinct(), key)
-    }
-
-    /** A relationship is found by its type, so one with none is refused before anything is written for it. */
-    private fun requireType(type: String) = require(type.isNotBlank()) { "A relationship needs a type." }
-
-    /** The write block that carries out [steps], which write relationships of [type], and returns the number they counted. */
-    private fun counting(type: String, steps: WritePlan.() -> Unit): GraphStatement {
-        requireType(type)
-        val plan = WritePlan(blocks).apply(steps)
-        return GraphStatement(plan.text(WriteReturns.COUNT), plan.bindings())
-    }
-
-    override fun relate(from: NodeRef, to: NodeRef, type: String, properties: Map<String, Any?>, mode: RelateMode): GraphStatement = counting(type) {
-        link(found(from), found(to), type, Direction.OUTGOING, properties.filterValues { it != null }, always = mode == RelateMode.CREATE)
-    }
-
-    override fun unrelate(from: NodeRef, to: NodeRef, type: String): GraphStatement = counting(type) {
-        cut(found(from), found(to), type, Direction.OUTGOING)
-    }
-
-    override fun unrelateAll(from: NodeRef, type: String, direction: Direction): GraphStatement = counting(type) {
-        cut(found(from), null, type, direction)
-    }
-
-    override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement {
-        requireType(type)
-        val source = shapeOf(from)
-        val select = OracleSelect(graph, targetClass)
-        val statement = select.load(listOf(select.relatedTo(source.labels, source.key, FROM_PARAM, type, direction)))
-        return GraphStatement(statement.statement, statement.bindings + (FROM_PARAM to OracleSql.key(from.id)))
-    }
-
     private companion object {
         /** The error codes of a deadlock and of a serialization failure. */
         val CONTENTION = setOf(60, 8177)
-
-        /** The parameter [related] binds the stored id of the node it starts from as. */
-        const val FROM_PARAM = "_fromId"
-
-        /** The fragments one block saves: enough that a round trip is not what a batch costs, and a plan stays small. */
-        const val BATCH = 500
     }
 }
