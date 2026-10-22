@@ -8,33 +8,36 @@ import org.drivine.backend.postgres.PostgresSql.EMPTY_ARRAY
 import org.drivine.backend.postgres.PostgresSql.document
 import org.drivine.backend.postgres.PostgresSql.property
 import org.drivine.backend.sql.CypherShorthand
+import org.drivine.backend.sql.Derived
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.RowSource
 import org.drivine.backend.sql.SqlKind
 import org.drivine.backend.sql.StatementScope
 import org.drivine.backend.sql.Step
 import org.drivine.backend.sql.Table
+import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.under
 import org.drivine.model.AggregateFieldModel
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
-import org.drivine.query.GraphTypeLabels
-import org.drivine.query.dsl.OrderDirection
-import org.drivine.query.dsl.NullPlacement
-import org.drivine.query.dsl.KeySource
-import org.drivine.query.dsl.Key
-import org.drivine.query.dsl.GroupOrder
-import org.drivine.query.dsl.GroupFunction
-import org.drivine.query.dsl.Aggregate
-import org.drivine.query.GroupQuery
 import org.drivine.model.Stamps
+import org.drivine.query.GraphTypeLabels
+import org.drivine.query.GroupQuery
 import org.drivine.query.SqlParameters
+import org.drivine.query.dsl.Aggregate
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.dsl.GroupFunction
+import org.drivine.query.dsl.GroupOrder
+import org.drivine.query.dsl.Key
+import org.drivine.query.dsl.KeySource
+import org.drivine.query.dsl.NullPlacement
+import org.drivine.query.dsl.OrderDirection
 import org.drivine.query.dsl.OrderSpec
 import org.drivine.query.dsl.OrderTerm
 import org.drivine.query.dsl.SeekValueSpec
 import org.drivine.query.dsl.WhereCondition
+import org.drivine.schema.SimilarityFunction
 
 /**
  * Writes one statement that reads a graph kept by Postgres: a load, a count, or the predicate of a
@@ -509,6 +512,88 @@ internal class PostgresSelect(
             val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
             rows.exists(root, rows.steps(relationship, GraphTypeLabels.labelsForType(targetType)), scope.row(relationship.fieldName))
         }
+
+    // ----- Scored search -----
+
+    /**
+     * The search whose candidates are the rows of [candidates], each with a `score`: one document for
+     * each, `{value, score}`, best first. [predicates], the score's [threshold] and a view's required
+     * relationships are applied to the candidates, not before them: a search finds its nearest and then
+     * filters, as an index of the graph engines does.
+     */
+    fun scored(candidates: String, predicates: List<String>, threshold: Double?, limit: Int?): GraphStatement {
+        val result = "${PostgresSql.jsonObject(listOf("value" to projection(), "score" to "$root.score"))} AS result"
+        val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$root.score >= ${scope.bound(it)}" }) + predicates
+        val best = listOfNotNull("ORDER BY $root.score DESC, $root.nid", limit?.let { "LIMIT ${scope.bound(it)}" })
+        return GraphStatement(Query(result, Derived(candidates, root), filters, best).text(), bindings())
+    }
+
+    /**
+     * The [nearest] nodes to [vector] by the embedding stored under [key]: every node of the root's labels,
+     * and [partitionLabel] when there is one, that holds an embedding of the vector's size is measured,
+     * so the answer is exact.
+     */
+    fun nearestTo(key: String, similarity: SimilarityFunction, partitionLabel: String?, vector: List<Float>, nearest: Int): String {
+        val distance = "${PostgresSql.embedding("c", key)} ${PostgresSql.distance(similarity)} CAST(${scope.bound(vector)} AS vector)"
+        val has = listOfNotNull(PostgresSql.hasLabels("c", rootLabels() + listOfNotNull(partitionLabel)), PostgresSql.holdsEmbedding("c", key, vector.size))
+        return Query(
+            "${PostgresSql.columns("c")}, ${PostgresSql.score(similarity, distance)} AS score",
+            Table(graph.nodes, "c"), has, listOf("ORDER BY score DESC, c.nid", "LIMIT ${scope.bound(nearest)}"),
+        ).text()
+    }
+
+    /**
+     * The [nearest] nodes to [vector] through the vector index over the embeddings under [key] of the
+     * nodes of [label], which are of [dimensions]: the index gives its nearest, approximately, and they
+     * are then tested for the root's own labels. The search reads the embedding as the index does, and
+     * names what the index holds, so the index answers it.
+     */
+    fun nearestThrough(label: String, key: String, dimensions: Int, similarity: SimilarityFunction, vector: List<Float>, nearest: Int): String {
+        val distance = "${PostgresSql.embedding("s", key, dimensions)} ${PostgresSql.distance(similarity)} CAST(${scope.bound(vector)} AS vector($dimensions))"
+        val indexed = Query(
+            "s.nid, $distance AS distance", Table(graph.nodes, "s"),
+            listOf(PostgresSql.hasLabel("s", label), PostgresSql.holdsEmbedding("s", key, dimensions)),
+            listOf("ORDER BY distance", "LIMIT ${scope.bound(nearest)}"),
+        )
+        return """
+            SELECT ${PostgresSql.columns("c")}, ${PostgresSql.score(similarity, "k.distance")} AS score
+            FROM ${indexed.nested()} k
+            JOIN ${graph.nodes} c ON c.nid = k.nid
+            WHERE ${PostgresSql.hasLabels("c", rootLabels())}
+        """.trimIndent()
+    }
+
+    /**
+     * The nodes whose text under [keys] meets [query], scored by how often its terms occur and then
+     * against the best of them, so the best scores one. Each term is a regular expression that matches
+     * it as a whole word, counted as Oracle counts it without a text index, so the two score alike.
+     * With [indexed], the nodes are first narrowed to those whose text holds every word of some scoring
+     * term, which the trigram index of a full-text index answers (see [PostgresSchemaGrammar]): a node
+     * that does not cannot match the term, and scores nothing, so the answer is the same.
+     */
+    fun matching(keys: List<String>, query: TextQuery, indexed: Boolean = false): String {
+        val text = PostgresSql.searchedText("c", keys)
+        fun count(pattern: String) = "(SELECT count(*) FROM regexp_matches(s.text, ${PostgresSql.text(scope.bound(pattern))}, 'g'))"
+        // A node that matches a term holds each of its words: what the trigram index answers is whether it holds them.
+        val narrowed = if (indexed) {
+            listOf(query.scoredWords.joinToString(" OR ", "(", ")") { words -> words.joinToString(" AND ", "(", ")") { "$text LIKE ${PostgresSql.text(scope.bound("%${likeText(it)}%"))}" } })
+        } else {
+            emptyList()
+        }
+        val texts = Query("${PostgresSql.columns("c")}, $text AS text", Table(graph.nodes, "c"), listOfNotNull(PostgresSql.hasLabels("c", rootLabels())) + narrowed)
+        val counted = Query(
+            "${PostgresSql.columns("s")}, ${query.scored.joinToString(" + ") { count(it) }} AS score",
+            Derived(texts.text(), "s"),
+            query.required.map { "${count(it)} > 0" } + query.excluded.map { "${count(it)} = 0" },
+        )
+        return Query(
+            "${PostgresSql.columns("h")}, CAST(h.score AS double precision) / MAX(h.score) OVER () AS score",
+            Derived(counted.text(), "h"), listOf("h.score > 0"),
+        ).text()
+    }
+
+    /** [word] as text a `LIKE` pattern matches as it is: its own `%`, `_` and backslash taken as themselves. */
+    private fun likeText(word: String): String = word.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     // ----- What a delete selects -----
 

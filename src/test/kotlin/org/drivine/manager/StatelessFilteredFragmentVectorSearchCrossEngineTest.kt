@@ -34,6 +34,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -205,4 +207,19 @@ class StatelessFilteredFragmentVectorSearchOracleTest {
     }
 
     @Test fun `filtered fragment vector search on Oracle`() = verify(buildGom(pm, registry), fixtures) { it }
+}
+
+@PostgresTests
+class StatelessFilteredFragmentVectorSearchPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+    private val fixtures = PostgresTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun clean() {
+        PostgresTestDatabase.clear(pm)
+        ensureIndexes(pm)
+    }
+
+    @Test fun `filtered fragment vector search on Postgres`() = verify(buildGom(pm, registry), fixtures) { it }
 }

@@ -1,4 +1,4 @@
-package org.drivine.backend.oracle
+package org.drivine.backend.sql
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals

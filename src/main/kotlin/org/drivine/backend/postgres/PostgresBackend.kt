@@ -19,7 +19,11 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.manager.RelateMode
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.backend.sql.TextQuery
+import org.drivine.query.FullTextIndexResolver
 import org.drivine.query.GroupQuery
+import org.drivine.query.VectorIndexResolver
+import org.drivine.schema.SchemaItemKind
 import org.drivine.query.PatchRow
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SaveRequest
@@ -41,8 +45,7 @@ import java.sql.SQLException
  * [PostgresSelect]) and written by a plan of steps that a function the store keeps carries out (see
  * [PostgresWriteFunctions]): the plan is the one Oracle's block carries out.
  *
- * Reads, grouped reads, writes and deletes are here; what searches is being built (see
- * `docs/postgres-sql-backend-plan.md`) and is refused until it is.
+ * Everything an object manager asks of a store is here.
  */
 internal class PostgresBackend(private val persistenceManager: PersistenceManager, objectMapper: ObjectMapper) : GraphBackend {
 
@@ -109,10 +112,40 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     override fun nearest(
         graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, vector: List<Float>,
         topK: Int, threshold: Double?, searchK: Int?, partitionLabel: String?,
-    ): ScoredSearchPlan = notYet("a vector search")
+    ): ScoredSearchPlan {
+        val select = PostgresSelect(graph, graphClass)
+        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
+        // What the search measures is the nearest searchK, and of what is left of them topK come back.
+        // Through the index for the label when one has been made for embeddings of the vector's size; else by measuring every node.
+        val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
+        val candidates = if (dimensions == vector.size) {
+            select.nearestThrough(index.label, index.property, dimensions, index.similarity, vector, searchK ?: topK)
+        } else {
+            select.nearestTo(index.property, index.similarity, partitionLabel, vector, searchK ?: topK)
+        }
+        val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
+        return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
+    }
 
-    override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan =
-        notYet("a full-text search")
+    override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
+        val select = PostgresSelect(graph, graphClass)
+        val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        val indexed = made(SchemaItemKind.FULLTEXT_INDEX, index.label, index.properties) != null
+        val candidates = select.matching(index.properties, TextQuery.parse(text), indexed)
+        val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK)
+        return ScoredSearchPlan(statement.statement, statement.bindings)
+    }
+
+    /** The details of a recorded index of [kind] on [label]'s [properties] that is there; null when it has not been made. */
+    private fun made(kind: SchemaItemKind, label: String, properties: List<String>): Map<*, *>? = persistenceManager.query(
+        QuerySpecification
+            .withStatement(
+                "SELECT details FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties " +
+                    "AND object_name IS NOT NULL AND to_regclass(object_name) IS NOT NULL"
+            )
+            .bind(mapOf("kind" to kind.name, "label" to label, "properties" to PostgresSchemaGrammar.json(properties)))
+            .transform(Map::class.java)
+    ).firstOrNull()
 
     override fun related(from: NodeRef, type: String, direction: Direction, targetClass: Class<*>): GraphStatement {
         require(type.isNotBlank()) { "A relationship needs a type." }

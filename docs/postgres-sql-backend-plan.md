@@ -178,5 +178,13 @@ Then the same for Drivine (TypeScript) and drivine-python, guided by statements 
   stamp are nodes of the graph. `PostgresSchemaManagementIntegrationTest` checks the plans; the read
   path contract runs on Postgres. `SqlSchemaGrammar` is not pulled out: the two grammars share the
   catalog's shape and little of their text.
-- [ ] 8. Search
+- [x] 8. Search: vector search through pgvector, made where the server has it: without an index, an
+  exact measure of every node of the label whose embedding is of the vector's size; with one, a partial
+  HNSW index over the embeddings of that size, read as the index reads them. Scores as the graph
+  engines give them. Full-text search counts each term's regular expression in the text, as Oracle
+  without Oracle Text does, so the two score alike; a full-text index is a GIN index of `pg_trgm`
+  trigrams, which narrows a search to the nodes holding a term's words (a `LIKE` it answers; it cannot
+  answer the regular expressions themselves), and the same counting then scores them. `TextQuery`
+  moved to `backend/sql`. Every search contract runs on Postgres. With nothing left unbuilt,
+  `PostgresNotYet` is gone: the Postgres tests' only skips are the contracts' own assumptions.
 - [ ] 9. Finish

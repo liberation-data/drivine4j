@@ -23,11 +23,10 @@ import sample.stateless.Company
 import sample.stateless.Dossier
 import sample.stateless.Human
 import sample.stateless.UndeclaredAggregate
+import sample.fulltext.ArticleNode
 import sample.vector.DocNode
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
-import kotlin.test.assertTrue
 
 /** Loads, counts and deletes through `StatelessGraphObjectManager` on Postgres, over a graph written as rows. */
 @PostgresTests
@@ -179,8 +178,20 @@ class PostgresSmokeTest {
     }
 
     @Test
-    fun `what is not built yet is refused, saying so`() {
-        val failure = assertFailsWith<UnsupportedOperationException> { manager.loadNearest(DocNode::class.java, listOf(1f, 0f, 0f, 0f), 1) }
-        assertTrue("Postgres" in failure.message.orEmpty() && "not yet" in failure.message.orEmpty(), failure.message)
+    fun `a search with no index made for it reads every node of the label, and its own transaction's writes`() {
+        PostgresTestDatabase.seed(
+            pm,
+            """
+            CREATE (:Doc {id: 'd1', title: 'near', embedding: [1.0, 0.0, 0.0, 0.0]}), (:Doc {id: 'd2', title: 'far', embedding: [0.0, 1.0, 0.0, 0.0]})
+            CREATE (:Doc {id: 'd3', title: 'wrong size', embedding: [1.0, 0.0]})
+            CREATE (:Article {id: 'a1', title: 'Graphs', body: 'graph databases store graph data'}), (:Article {id: 'a2', title: 'Soup', body: 'a recipe'})
+            """,
+        )
+
+        // A node whose embedding is of another size is not measured, rather than refused.
+        val nearest = manager.loadNearest(DocNode::class.java, listOf(0.9f, 0.1f, 0.0f, 0.0f), 3)
+        assertEquals(listOf("d1", "d2"), nearest.map { it.value.id })
+        val matching = manager.loadMatching(ArticleNode::class.java, "graph -recipe", 10, 0.0)
+        assertEquals(listOf("a1" to 1.0), matching.map { it.value.id to it.score })
     }
 }

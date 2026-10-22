@@ -13,17 +13,14 @@ import org.drivine.test.MiniCypher
 import org.drivine.test.PostgresTestContainer
 import org.drivine.test.SqlCypherFixtures
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
-import org.junit.jupiter.api.extension.ExtendWith
 
 /**
- * Marks a test class that needs a Postgres database. They run only with `POSTGRES_TESTS=true` while
- * the Postgres backend is being built: see `docs/postgres-sql-backend-plan.md`. A test that reaches
- * what is not built yet is skipped: see [PostgresNotYet].
+ * Marks a test class that needs a Postgres database. They run only with `POSTGRES_TESTS=true`, as the
+ * Oracle tests run only with `ORACLE_TESTS=true`: see `TEST_CONTAINERS.md`.
  */
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
 @EnabledIfEnvironmentVariable(named = "POSTGRES_TESTS", matches = "true")
-@ExtendWith(PostgresNotYet::class)
 annotation class PostgresTests
 
 /** The test JVM's Postgres, from [PostgresTestContainer]: a container started when a test first asks for it, or a local instance. */

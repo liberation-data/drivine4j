@@ -3,10 +3,12 @@ package org.drivine.postgres
 import org.drivine.DrivineException
 import org.drivine.query.QuerySpecification
 import org.drivine.schema.EnsureResult
+import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.SchemaVersionStore
 import org.drivine.schema.UniquenessConstraintSpec
+import org.drivine.schema.VectorIndexSpec
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -26,12 +28,15 @@ class PostgresSchemaManagementIntegrationTest {
 
     /**
      * The plan Postgres makes for [sql], with a scan of the whole table ruled out: so it names an index
-     * only where one can answer. An index's name is in it as Postgres keeps it, in lower case.
+     * only where one can answer. An index's name is in it as Postgres keeps it, in lower case. [without]
+     * are indexes the planner would rather use, dropped for the plan in a transaction that is rolled
+     * back: what is left to it shows whether another index can answer.
      */
-    private fun plan(sql: String): String {
+    private fun plan(sql: String, without: List<String> = emptyList()): String {
         val connection = PostgresTestDatabase.provider.connect()
         try {
             connection.startTransaction()
+            without.forEach { connection.query(QuerySpecification.withStatement("DROP INDEX $it")) }
             connection.query(QuerySpecification.withStatement("SET LOCAL enable_seqscan = off"))
             return connection.query(QuerySpecification.withStatement("EXPLAIN $sql")).joinToString("\n")
         } finally {
@@ -129,6 +134,41 @@ class PostgresSchemaManagementIntegrationTest {
         assertTrue(manager.constraints.drop(spec))
         assertNull(manager.constraints.find(spec))
         execute("CREATE (:Ticket {number: 1})")
+    }
+
+    @Test
+    fun `vector index - recorded, found, a change of dimension is drift, and a search through it uses it`() {
+        val spec = VectorIndexSpec("Passage", "embedding", 3)
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
+        assertEquals(3, manager.indexes.find(spec)?.dimensions)
+        assertTrue(manager.indexes.ensure(VectorIndexSpec("Passage", "embedding", 5)) is EnsureResult.Drift)
+
+        // A node with an embedding of another size is left out of the index, and not refused.
+        execute("CREATE (:Passage {id: 'p1', embedding: [1.0, 0.0, 0.0]}), (:Passage {id: 'p2', embedding: [1.0, 0.0]})")
+        val search = "SELECT s.nid FROM schema_node s WHERE s.labels @> '[\"Passage\"]' AND jsonb_typeof((s.props -> 'embedding')) = 'array' " +
+            "AND jsonb_array_length((s.props -> 'embedding')) = 3 ORDER BY CAST(CAST((s.props -> 'embedding') AS text) AS vector(3)) <=> CAST('[1,0,0]' AS vector(3)) LIMIT 5"
+        val plan = plan(search)
+        assertTrue("schema_v_passageembedding" in plan, plan)
+    }
+
+    @Test
+    fun `full-text index - its trigrams answer whether the text holds a term's words`() {
+        val spec = FullTextIndexSpec("Essay", listOf("title", "body"))
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.Created)
+        assertTrue(manager.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
+
+        // Essays enough that the label alone is no way to find one, and the planner told so.
+        manager.execute(QuerySpecification.withStatement(
+            "INSERT INTO schema_node (labels, props) SELECT '[\"Essay\"]', jsonb_build_object('title', 'essay ' || i, 'body', 'soup ' || i) FROM generate_series(1, 500) i"
+        ))
+        manager.execute(QuerySpecification.withStatement("ANALYZE schema_node"))
+        val text = "lower(COALESCE((c.props ->> 'title'), '') || ' ' || COALESCE((c.props ->> 'body'), ''))"
+        // Over a few hundred nodes the planner reads the label's through the index over labels; without it, the trigrams answer.
+        val plan = plan("SELECT c.nid FROM schema_node c WHERE c.labels @> '[\"Essay\"]' AND ($text LIKE '%graph%')", without = listOf("schema_node_labels"))
+        assertTrue("schema_t_essaytitlebody" in plan, plan)
+        assertTrue(manager.indexes.drop(spec))
+        assertNull(manager.indexes.find(spec))
     }
 
     @Test

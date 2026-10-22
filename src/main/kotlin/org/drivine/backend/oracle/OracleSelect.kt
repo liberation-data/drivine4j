@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.CypherShorthand
 import org.drivine.backend.sql.Derived
 import org.drivine.backend.sql.Query

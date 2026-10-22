@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.TextQuery
 import org.drivine.annotation.Direction
 import org.drivine.query.ActorDirectorsByReleaseYear
 import org.drivine.query.JavaActorDirectorsLatestFirst

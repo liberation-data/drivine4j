@@ -34,6 +34,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -251,4 +253,15 @@ class StatelessFullTextSearchOracleTest {
     @Test fun `full-text search ranks, projects, and dispatches on Oracle`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
 
     @Test fun `a backslash makes a star, a sign and a colon text on Oracle`() = verifyEscapes(buildGom(pm, registry), fixtures, awaitIndexes = false, backslashBeforeLetter = setOf("E"))
+}
+
+@PostgresTests
+class StatelessFullTextSearchPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+    private val fixtures = PostgresTestDatabase.fixtures(pm)
+
+    @Test fun `full-text search ranks, projects, and dispatches on Postgres`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
+
+    @Test fun `a backslash makes a star, a sign and a colon text on Postgres`() = verifyEscapes(buildGom(pm, registry), fixtures, awaitIndexes = false, backslashBeforeLetter = setOf("E"))
 }

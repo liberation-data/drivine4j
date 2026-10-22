@@ -4,6 +4,7 @@ import org.drivine.backend.sql.SqlKind
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
 import org.drivine.query.JdbcParameterCoercer
+import org.drivine.schema.SimilarityFunction
 import java.math.BigDecimal
 
 /**
@@ -87,6 +88,52 @@ internal object PostgresSql {
      */
     fun document(alias: String): String =
         "($alias.props || jsonb_build_object('labels', $alias.labels) || jsonb_strip_nulls(jsonb_build_object(${literal(Stamps.PROPERTY)}, $alias.stamp)))"
+
+    /**
+     * The embedding stored under [key] of [alias] as a pgvector `vector`: the JSON array's text, which
+     * is the text pgvector reads a vector from. Of [dimensions] when given, as an index over it is made,
+     * so a statement that reads it so is answered by the index.
+     */
+    fun embedding(alias: String, key: String, dimensions: Int? = null): String =
+        "CAST(CAST(${value(alias, key)} AS text) AS vector${dimensions?.let { "($it)" }.orEmpty()})"
+
+    /**
+     * Whether [alias] holds an embedding of [dimensions] under [key]: a search measures only those, as
+     * pgvector refuses to measure vectors of two sizes, and a vector index holds only those, so a node
+     * written with another is left out of it and not refused.
+     */
+    fun holdsEmbedding(alias: String, key: String, dimensions: Int): String =
+        "jsonb_typeof(${value(alias, key)}) = 'array' AND jsonb_array_length(${value(alias, key)}) = $dimensions"
+
+    /** pgvector's operator for the distance [similarity] measures, and the operators an index over it is made with. */
+    fun distance(similarity: SimilarityFunction): String = when (similarity) {
+        SimilarityFunction.COSINE -> "<=>"
+        SimilarityFunction.EUCLIDEAN -> "<->"
+    }
+
+    /** The operator class a vector index is made with to answer [distance]. */
+    fun operators(similarity: SimilarityFunction): String = when (similarity) {
+        SimilarityFunction.COSINE -> "vector_cosine_ops"
+        SimilarityFunction.EUCLIDEAN -> "vector_l2_ops"
+    }
+
+    /**
+     * The score the graph engines give for a [distance] by [similarity]: in `[0, 1]`, higher the nearer.
+     * pgvector's cosine distance is `1 - cos`, so the score is `(1 + cos) / 2`; its Euclidean distance is
+     * `d`, so the score is `1 / (1 + d²)`, as on Oracle and the graph engines.
+     */
+    fun score(similarity: SimilarityFunction, distance: String): String = when (similarity) {
+        SimilarityFunction.COSINE -> "(2 - ($distance)) / 2"
+        SimilarityFunction.EUCLIDEAN -> "1 / (1 + ($distance) * ($distance))"
+    }
+
+    /**
+     * The text a full-text search reads of [alias]: its properties [keys], each as text, a space between
+     * them, in lower case. A property it does not have is no text. The expression of a full-text index
+     * too (with an empty alias), so a statement that reads it so is answered by the index.
+     */
+    fun searchedText(alias: String, keys: List<String>): String =
+        "lower(${keys.joinToString(" || ' ' || ") { "COALESCE(${property(alias, it)}, '')" }})"
 
     /** The columns a row of a node has, which every row source of a node gives. */
     val NODE_COLUMNS = listOf("nid", "labels", "props", "stamp")

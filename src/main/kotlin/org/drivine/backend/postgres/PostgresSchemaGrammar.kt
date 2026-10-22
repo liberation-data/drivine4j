@@ -31,6 +31,13 @@ import java.sql.SQLException
  *   null, which a unique index does not hold, so it is not constrained, as on the graph engines; and
  *   the index finds a node as a range index does, so no range index is made beside it.
  *
+ * - a vector index is an HNSW index of pgvector over the embeddings of the label's nodes that are of
+ *   its size, read from the JSON array they are stored as (see [PostgresSql.embedding]);
+ * - a full-text index is a GIN index of the trigrams of the text a search reads (see
+ *   [PostgresSql.searchedText]). It narrows a search to the nodes whose text holds the words of a term,
+ *   which it answers as a `LIKE`; the regular expressions a search matches its terms by then score
+ *   them, so a search scores alike with an index and without one.
+ *
  * What Drivine made is recorded in the graph's catalog table, as on Oracle, and read back from there:
  * an index's expression does not say which label and properties it was made for. An index is named
  * bare, so Postgres keeps its name in lower case, and finds it by the name recorded however it is cased.
@@ -104,8 +111,27 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
             val name = graph.objectName("ix", listOf(spec.label) + spec.properties)
             statements("CREATE INDEX IF NOT EXISTS $name ON ${over(spec.label, spec.properties)}", recorded(spec, name))
         }
-        is VectorIndexSpec -> throw UnsupportedOperationException("Postgres's object manager does not yet support a vector index: see docs/postgres-sql-backend-plan.md.")
-        is FullTextIndexSpec -> throw UnsupportedOperationException("Postgres's object manager does not yet support a full-text index: see docs/postgres-sql-backend-plan.md.")
+        is VectorIndexSpec -> {
+            // An HNSW index over the embeddings of the label's nodes that are of its size: one of another size is left out, not refused.
+            val property = spec.properties.single()
+            val name = graph.objectName("v", listOf(spec.label, property))
+            statements(
+                "CREATE EXTENSION IF NOT EXISTS vector",
+                "CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} USING hnsw ((${PostgresSql.embedding("", property, spec.dimensions)}) ${PostgresSql.operators(spec.similarity)}) " +
+                    "WHERE ${hasLabel("", spec.label)} AND ${PostgresSql.holdsEmbedding("", property, spec.dimensions)}",
+                recorded(spec, name, """{"dimensions": ${spec.dimensions}, "similarity": "${spec.similarity.name}"}"""),
+            )
+        }
+        is FullTextIndexSpec -> {
+            // Trigrams of the text a search reads, which answer whether it holds a term's words.
+            val name = graph.objectName("t", listOf(spec.label) + spec.properties)
+            val details = spec.analyzer?.let { "{\"analyzer\": ${json(listOf(it)).removeSurrounding("[", "]")}}" } ?: "{}"
+            statements(
+                "CREATE EXTENSION IF NOT EXISTS pg_trgm",
+                "CREATE INDEX IF NOT EXISTS $name ON ${graph.nodes} USING gin ((${PostgresSql.searchedText("", spec.properties)}) gin_trgm_ops) WHERE ${hasLabel("", spec.label)}",
+                recorded(spec, name, details),
+            )
+        }
     }
 
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))

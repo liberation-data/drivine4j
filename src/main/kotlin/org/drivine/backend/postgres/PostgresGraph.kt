@@ -66,6 +66,13 @@ internal class PostgresGraph(name: String) : SqlGraph(name, "Postgres", MAX_OBJE
         BEGIN
             IF obj_description(to_regclass('$nodes'), 'pg_class') IS DISTINCT FROM '$VERSION' THEN
                 PERFORM pg_advisory_xact_lock(hashtext('drivine:$name'));
+                -- pgvector, for vector search, where the server has it and the user may make it: without it,
+                -- everything but a vector search works.
+                BEGIN
+                    CREATE EXTENSION IF NOT EXISTS vector;
+                EXCEPTION WHEN OTHERS THEN
+                    NULL;
+                END;
         ${ddl.joinToString("\n") { "        ${it.replace("\n", "\n        ")};" }}
             END IF;
         END
@@ -81,7 +88,7 @@ internal class PostgresGraph(name: String) : SqlGraph(name, "Postgres", MAX_OBJE
         private const val MAX_OBJECT_NAME = 63
 
         /** What the node table's comment says of a store this version made. */
-        const val VERSION = "drivine:3"
+        const val VERSION = "drivine:4"
 
         /** The graph [persistenceManager] speaks to, made in the store if it is not there. */
         fun ensured(persistenceManager: PersistenceManager): PostgresGraph =
