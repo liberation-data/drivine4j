@@ -6,6 +6,7 @@ import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.model.Stamps
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
@@ -166,6 +167,28 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a statement of hundreds of creates, each naming nodes made before it, makes them all`() {
+        val clauses = (0 until 300).flatMap { i ->
+            listOf("CREATE (n$i:CyWrite {i: $i})") + if (i > 0) listOf("CREATE (n${i - 1})-[:NEXT]->(n$i)") else emptyList()
+        }
+        query(clauses.joinToString("\n"))
+        assertEquals(listOf(listOf(300L, 299L)), query("MATCH (n:CyWrite) OPTIONAL MATCH (n)-[r:NEXT]->() RETURN [count(DISTINCT n), count(r)]"))
+    }
+
+    @Test
+    fun `drivine's stamp is written as a node's property is, and read back as one`() {
+        val stamp = Stamps.QUOTED
+        query("CREATE (:CyWrite {id: 1, $stamp: 'aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb'})")
+        assertEquals(listOf("aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb"), query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp"))
+        query("MATCH (n:CyWrite {id: 1}) SET ${Stamps.setClause("n")}")
+        val (token, links) = (query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp").single() as String).split(':')
+        assertTrue(token.length == 16 && token != "aaaaaaaaaaaaaaaa" && links == "bbbbbbbbbbbbbbbb", "$token:$links")
+        assertEquals(listOf(mapOf("id" to 1L, Stamps.PROPERTY to "$token:$links")), query("MATCH (n:CyWrite {id: 1}) RETURN properties(n)"))
+        query("MATCH (n:CyWrite {id: 1}) REMOVE n.$stamp")
+        assertEquals(listOf(null), query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp"))
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>
@@ -237,4 +260,19 @@ class CypherWriteOracleTest : CypherWriteContract() {
     override val compiles = true
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
+    @Test
+    fun `nodes of two labels a transaction has made and not yet committed are found by both`() {
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String) = connection.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        connection.startTransaction()
+        try {
+            query("CREATE (:CyWrite:Dog {name: 'Buddy'}), (:CyWrite:Cat {name: 'Tom'}), (:CyWrite:Dog {name: 'Max'})")
+            assertEquals(listOf("Buddy", "Max"), query("MATCH (d:CyWrite:Dog) RETURN d.name ORDER BY d.name"))
+            assertEquals(listOf("Tom"), query("MATCH (c) WHERE c:Cat:CyWrite RETURN c.name"))
+        } finally {
+            connection.rollbackTransaction()
+            connection.release()
+        }
+    }
 }

@@ -12,7 +12,7 @@ import org.drivine.model.Stamps
  * A value is Oracle's `JSON`, which compares, groups and orders as JSON and keeps a map's keys in the
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
  * number the statement writes is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
- * most 4,000 bytes, and an empty one is null, as Oracle's empty text is.
+ * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` does not run.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
  * takes no `JSON` that changes from row to row. A recursive query reads no row outside it, so a walk
@@ -34,21 +34,22 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun scalar(sql: String) = "JSON_SCALAR($sql)"
 
     /** A floating-point number is a number, as JSON has it. */
-    override fun typeOf(json: String) = "DECODE(${kind(json)}, 'double', 'number', 'float', 'number', ${kind(json)})"
+    override fun typeOf(json: String) = shared(json) { (x) -> "DECODE(${kind(x)}, 'double', 'number', 'float', 'number', ${kind(x)})" }
 
     override fun isJsonNull(json: String) = "NVL(${kind(json)}, 'null') = 'null'"
 
-    override fun nullIfJsonNull(json: String) = "CASE WHEN ${kind(json)} <> 'null' THEN $json END"
+    override fun nullIfJsonNull(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} <> 'null' THEN $x END" }
 
-    override fun number(json: String) = "CASE WHEN ${typeOf(json)} = 'number' THEN JSON_VALUE($json, '$' RETURNING NUMBER) END"
+    override fun number(json: String) = shared(json) { (x) -> "CASE WHEN ${typeOf(x)} = 'number' THEN JSON_VALUE($x, '$' RETURNING NUMBER) END" }
 
     /** A whole number, and no floating-point number, as Cypher has an integer. */
-    override fun integral(json: String) =
-        "(${kind(json)} = 'number' AND JSON_VALUE($json, '$' RETURNING NUMBER) = TRUNC(JSON_VALUE($json, '$' RETURNING NUMBER)))"
+    override fun integral(json: String) = shared(json) { (x) ->
+        "(${kind(x)} = 'number' AND JSON_VALUE($x, '$' RETURNING NUMBER) = TRUNC(JSON_VALUE($x, '$' RETURNING NUMBER)))"
+    }
 
-    override fun text(json: String) = "CASE WHEN ${kind(json)} = 'string' THEN JSON_VALUE($json, '$') END"
+    override fun text(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'string' THEN JSON_VALUE($x, '$') END" }
 
-    override fun boolOf(json: String) = "CASE WHEN ${kind(json)} = 'boolean' THEN JSON_VALUE($json, '$' RETURNING BOOLEAN) END"
+    override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'boolean' THEN JSON_VALUE($x, '$' RETURNING BOOLEAN) END" }
 
     override fun float(sql: String) = "TO_BINARY_DOUBLE($sql)"
 
@@ -65,20 +66,36 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun propertyOf(json: String, key: String) = "JSON_QUERY($json, ${OracleSql.path(key)} RETURNING JSON)"
 
     /** Counted from the end where negative: a JSON path counts from the start. */
-    override fun element(json: String, index: String): String {
-        val at = "JSON_VALUE($index, '$' RETURNING NUMBER)"
-        return "JSON_QUERY($json, '\$[\$i]' PASSING CASE WHEN $at < 0 THEN JSON_VALUE($json, '\$.size()' RETURNING NUMBER) + $at ELSE $at END AS \"i\" RETURNING JSON)"
+    override fun element(json: String, index: String) = shared(json, index) { (list, i) ->
+        val at = "JSON_VALUE($i, '$' RETURNING NUMBER)"
+        "JSON_QUERY($list, '\$[\$i]' PASSING CASE WHEN $at < 0 THEN JSON_VALUE($list, '\$.size()' RETURNING NUMBER) + $at ELSE $at END AS \"i\" RETURNING JSON)"
     }
 
     /** A JSON path names a key as it is written, so a key an expression gives is not read. */
     override fun keyed(json: String, key: String): String? = null
 
     /** A merge of [map] over [props] that changes nothing: each of its entries is there, with an equal value. */
-    override fun containsAll(props: String, map: String) = "JSON_EQUAL(JSON_MERGEPATCH($props, $map RETURNING JSON), $props)"
+    override fun containsAll(props: String, map: String) = shared(props) { (p) -> "JSON_EQUAL(JSON_MERGEPATCH($p, $map RETURNING JSON), $p)" }
 
     override fun hasLabel(labels: String, label: String) = "JSON_EXISTS($labels, ${literal("\$[*]?(@ == ${quoted(label)})")})"
 
-    override fun elements(json: String, alias: String) = "JSON_TABLE($json, '\$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '\$')) $alias"
+    /**
+     * The first label as the index over labels answers it, and the rest by the labels' text: when two tests
+     * of the labels are answered by that index, Oracle (23.26) finds no node the open transaction has written
+     * and not yet committed.
+     */
+    override fun hasLabels(labels: String, all: List<String>) =
+        (listOf(hasLabel(labels, all.first())) + all.drop(1).map { "INSTR(JSON_SERIALIZE($labels), ${literal(quoted(it))}) > 0" }).joinToString(" AND ")
+
+    /**
+     * A list that holds a subquery is read from a lateral view first: a subquery in `JSON_TABLE`'s argument
+     * reads no table beside it in the `FROM`.
+     */
+    override fun elements(json: String, alias: String): String {
+        val items = "COLUMNS (item_no FOR ORDINALITY, item JSON PATH '\$')) $alias"
+        if (!json.contains("SELECT", ignoreCase = true)) return "JSON_TABLE($json, '\$[*]' $items"
+        return "LATERAL (SELECT $json AS list) ${alias}_l CROSS JOIN JSON_TABLE(${alias}_l.list, '\$[*]' $items"
+    }
 
     override fun aggregateList(value: String, order: String?) =
         "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} NULL ON NULL RETURNING JSON), JSON('[]'))"
@@ -108,9 +125,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun modulo(a: String, b: String) = "MOD($a, $b)"
 
-    override fun startsWith(a: String, b: String) = "(SUBSTR($a, 1, LENGTH($b)) = $b)"
+    override fun startsWith(a: String, b: String) = shared(b) { (x) -> "(SUBSTR($a, 1, LENGTH($x)) = $x)" }
 
-    override fun endsWith(a: String, b: String) = "(SUBSTR($a, -LENGTH($b)) = $b)"
+    override fun endsWith(a: String, b: String) = shared(b) { (x) -> "(SUBSTR($a, -LENGTH($x)) = $x)" }
 
     override fun containsText(a: String, b: String) = "(INSTR($a, $b) > 0)"
 
@@ -125,8 +142,22 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"
         "last" -> "JSON_QUERY($json, '\$[last]' RETURNING JSON)"
         "abs" -> "JSON_SCALAR(ABS(${number(json)}))"
-        "keys" -> throw DrivineException("keys() does not run on Oracle: its JSON paths read no map's keys.")
+        "keys" -> keys(json)
         else -> null
+    }
+
+    /**
+     * A JSON path reads no map's keys, so they are read from the map's data guide: each path it lists one step
+     * from the top is a key, written `$.name`, or `$."…"` as JSON writes a string where the name is any other.
+     * The map is bound first: the data guide's query reads a column of a row outside it, and not an expression of one.
+     */
+    private fun keys(json: String): String = bound(json) { (map) -> keysOf(map) }
+
+    private fun keysOf(json: String): String {
+        val key = """CASE WHEN SUBSTR(d.p, 3, 1) = '"' THEN JSON_VALUE(JSON(SUBSTR(d.p, 3)), '${'$'}') ELSE SUBSTR(d.p, 3) END"""
+        val guide = """JSON_TABLE((SELECT JSON_DATAGUIDE($json, 2) FROM DUAL), '${'$'}[*]' COLUMNS (p VARCHAR2(4000) PATH '${'$'}."o:path"')) d"""
+        val topLevel = """REGEXP_LIKE(d.p, '^\${'$'}\.(\w+|"([^"\\]|\\.)*")${'$'}')"""
+        return "(SELECT COALESCE(JSON_ARRAYAGG(g.k ORDER BY g.k RETURNING JSON), JSON('[]')) FROM (SELECT $key AS k FROM $guide WHERE $topLevel) g)"
     }
 
     override fun page(skip: String?, limit: String?) = listOfNotNull(skip?.let { "OFFSET $it ROWS" }, limit?.let { "FETCH NEXT $it ROWS ONLY" })
@@ -181,6 +212,23 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun nodeJson(node: Value.Node) =
         "CASE WHEN ${node.nid} IS NOT NULL THEN JSON_TRANSFORM(${node.props}, SET ${OracleSql.path(Stamps.PROPERTY)} = ${node.stamp} IGNORE ON NULL) END"
+
+    override fun reduce(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String =
+        throw DrivineException("reduce() does not run on Oracle: its recursive queries read nothing of the row they are in.")
+
+    /** As many rows as the range has numbers, from a hierarchical query of one row. */
+    override fun range(from: String, to: String, step: String) = shared(from, to, step) { (first, last, by) ->
+        val count = "FLOOR(($last - $first) / $by) + 1"
+        "(SELECT COALESCE(JSON_ARRAYAGG($first + (r.n - 1) * $by ORDER BY r.n RETURNING JSON), JSON('[]')) " +
+            "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST($count, 1)) r WHERE r.n <= $count)"
+    }
+
+    /** Oracle's GUID, in a UUID's form: unique, though not random as a version 4 UUID is. */
+    override fun uuid() = "LOWER(REGEXP_REPLACE(RAWTOHEX(SYS_GUID()), '(.{8})(.{4})(.{4})(.{4})(.{12})', '\\1-\\2-\\3-\\4-\\5'))"
+
+    /** SUBSTR from the end gives null where it is asked for more than there is. */
+    override fun rightText(text: String, count: String) =
+        shared(text, count) { (t, n) -> "CASE WHEN $n >= LENGTH($t) THEN $t WHEN $n > 0 THEN SUBSTR($t, -$n) END" }
 
     override fun epochMillisNow(): String {
         val since = "(SYS_EXTRACT_UTC(SYSTIMESTAMP) - TIMESTAMP '1970-01-01 00:00:00')"

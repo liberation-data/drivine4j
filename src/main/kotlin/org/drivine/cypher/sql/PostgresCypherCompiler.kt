@@ -31,13 +31,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun nullIfJsonNull(json: String) = "NULLIF($json, 'null'::jsonb)"
 
-    override fun number(json: String) = "CASE WHEN jsonb_typeof($json) = 'number' THEN CAST($json #>> '{}' AS numeric) END"
+    override fun number(json: String) = shared(json) { (x) -> "CASE WHEN jsonb_typeof($x) = 'number' THEN CAST($x #>> '{}' AS numeric) END" }
 
-    override fun integral(json: String) = "(jsonb_typeof($json) = 'number' AND ($json #>> '{}') ~ '^-?[0-9]+$')"
+    override fun integral(json: String) = shared(json) { (x) -> "(jsonb_typeof($x) = 'number' AND ($x #>> '{}') ~ '^-?[0-9]+$')" }
 
-    override fun text(json: String) = "CASE WHEN jsonb_typeof($json) = 'string' THEN $json #>> '{}' END"
+    override fun text(json: String) = shared(json) { (x) -> "CASE WHEN jsonb_typeof($x) = 'string' THEN $x #>> '{}' END" }
 
-    override fun boolOf(json: String) = "CASE WHEN jsonb_typeof($json) = 'boolean' THEN CAST($json AS boolean) END"
+    override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN jsonb_typeof($x) = 'boolean' THEN CAST($x AS boolean) END" }
 
     /** A `numeric` with a fraction, so a whole one is written `2.0`, as a graph engine writes a float, and stays one in arithmetic. */
     override fun float(sql: String) = "(CAST($sql AS numeric) + 0.0)"
@@ -85,7 +85,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun startsWith(a: String, b: String) = "starts_with($a, $b)"
 
-    override fun endsWith(a: String, b: String) = "right($a, length($b)) = $b"
+    override fun endsWith(a: String, b: String) = shared(b) { (x) -> "right($a, length($x)) = $x" }
 
     override fun containsText(a: String, b: String) = "strpos($a, $b) > 0"
 
@@ -148,6 +148,29 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun nodeJson(node: Value.Node) =
         "CASE WHEN ${node.nid} IS NOT NULL THEN ${node.props} || jsonb_strip_nulls(jsonb_build_object(${literal(Stamps.PROPERTY)}, ${node.stamp})) END"
+
+    /** A recursive query, a row for each item taken, that reads the row it is in, as Postgres's may. */
+    override fun reduce(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String =
+        shared(list) { (items) -> fold(name, initial, items, step) }
+
+    private fun fold(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String {
+        val text = listOf(
+            "WITH RECURSIVE $name (i, acc) AS (",
+            "    SELECT 0, CAST($initial AS jsonb)",
+            "    UNION ALL",
+            "    SELECT $name.i + 1, CAST(${step("$name.acc", "($list -> $name.i)")} AS jsonb) FROM $name WHERE $name.i < jsonb_array_length($list)",
+            ")",
+            "SELECT acc FROM $name ORDER BY i DESC LIMIT 1",
+        ).joinToString("\n")
+        return "CASE WHEN jsonb_typeof($list) = 'array' THEN (\n${indent(text)}\n) END"
+    }
+
+    override fun range(from: String, to: String, step: String) =
+        "(SELECT COALESCE(jsonb_agg(g ORDER BY o), '[]'::jsonb) FROM generate_series(CAST($from AS bigint), CAST($to AS bigint), CAST($step AS bigint)) WITH ORDINALITY r (g, o))"
+
+    override fun uuid() = "CAST(gen_random_uuid() AS text)"
+
+    override fun rightText(text: String, count: String) = "right($text, $count)"
 
     override fun epochMillisNow() = "to_jsonb(CAST(trunc(extract(epoch FROM statement_timestamp()) * 1000) AS bigint))"
 

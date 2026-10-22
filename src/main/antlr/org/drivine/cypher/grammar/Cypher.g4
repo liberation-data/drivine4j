@@ -366,6 +366,7 @@ oC_Atom
         | oC_ListComprehension
         | oC_PatternComprehension
         | oC_Quantifier
+        | oC_Reduce
         | oC_PatternPredicate
         | oC_ParenthesizedExpression
         | oC_FunctionInvocation
@@ -373,6 +374,14 @@ oC_Atom
         | oC_MapProjection
         | oC_Variable
         ;
+
+// drivine4j: reduce, of openCypher's current specification (2024.2, "Map projection, comprehensions,
+// reduce, and quantifiers"), which this release of the grammar (M23) predates:
+// `reduce(total = 0, x IN xs | total + x)`. Its rule follows the specification's BNF.
+oC_Reduce
+      :  REDUCE SP? '(' SP? oC_Variable SP? '=' SP? oC_Expression SP? ',' SP? oC_IdInColl SP? '|' SP? oC_Expression SP? ')' ;
+
+REDUCE : ( 'R' | 'r' ) ( 'E' | 'e' ) ( 'D' | 'd' ) ( 'U' | 'u' ) ( 'C' | 'c' ) ( 'E' | 'e' ) ;
 
 // drivine4j: the map projection of openCypher's current specification (2024.2, "Map projection,
 // comprehensions, reduce, and quantifiers"), which this release of the grammar (M23) predates:
@@ -670,6 +679,7 @@ oC_SymbolicName
                 | ANY
                 | NONE
                 | SINGLE
+                | REDUCE
                 ;
 
 FILTER : ( 'F' | 'f' ) ( 'I' | 'i' ) ( 'L' | 'l' ) ( 'T' | 't' ) ( 'E' | 'e' ) ( 'R' | 'r' ) ;

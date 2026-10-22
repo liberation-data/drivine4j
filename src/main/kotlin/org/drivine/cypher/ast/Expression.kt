@@ -74,6 +74,9 @@ sealed interface Expression {
     /** `[variable IN list WHERE filter | projection]`. */
     data class ListComprehension(val variable: String, val list: Expression, val where: Expression?, val projection: Expression?) : Expression
 
+    /** `reduce(accumulator = initial, variable IN list | expression)`: the list folded, from the first item to the last. */
+    data class Reduce(val accumulator: String, val initial: Expression, val variable: String, val list: Expression, val expression: Expression) : Expression
+
     /** `[(a)-[:R]->(b) WHERE filter | projection]`: a value for each way the pattern is found from what is bound. */
     data class PatternComprehension(val pattern: Pattern, val where: Expression?, val projection: Expression) : Expression
 

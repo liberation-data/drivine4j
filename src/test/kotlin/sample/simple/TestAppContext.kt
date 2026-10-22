@@ -20,7 +20,7 @@ class TestAppContext {
 
     /**
      * The manager the tests seed and read back through, in Cypher. On Oracle or Postgres the Cypher is
-     * worked out over the graph's tables (see [SqlCypherFixtures]), so the tests run on every store.
+     * compiled to SQL over the graph's tables (see [SqlCypherFixtures]), so the tests run on every store.
      */
     @Bean
     fun persistenceManager(

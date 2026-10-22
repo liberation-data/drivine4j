@@ -1,8 +1,10 @@
 package sample.simple
 
+import org.drivine.connection.DatabaseType
 import org.drivine.connection.HolidayingPerson
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -255,6 +257,7 @@ class HolidayingPersonTests @Autowired constructor(
 
     @Test
     fun testFloatArrayParameter() {
+        Assumptions.assumeTrue(manager.type != DatabaseType.ORACLE, "reduce() does not run on Oracle")
         // Create a node with embedding vector using pure Cypher
         val embeddingVector = floatArrayOf(0.5f, 0.8f, 0.3f, 0.9f, 0.1f)
 

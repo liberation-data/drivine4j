@@ -239,6 +239,42 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `substring, left, right and replace work on text, counted from 0, and randomUUID gives a new UUID each time`() {
+        assertEquals(
+            listOf(listOf("trix", "tr", "Ma", "rix", "The Matrix", "The M_trix")),
+            query("MATCH (m:Movie {title: 'The Matrix'}) RETURN [substring(m.title, 6), substring(m.title, 6, 2), left('Matrix', 2), right('Matrix', 3), right(m.title, 50), replace(m.title, 'a', '_')]"),
+        )
+        val (a, b) = query("UNWIND [1, 2] AS x RETURN randomUUID()").map { it as String }
+        assertTrue(a != b && Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(a), "$a $b")
+    }
+
+    @Test
+    fun `keys gives a map's keys, and a node's, whatever they are called`() {
+        assertEquals(setOf("b", "a", "odd key", "q\"t"), (query("RETURN keys({b: 1, a: {x: 2}, `odd key`: [1], `q\"t`: null})").single() as List<*>).toSet())
+        assertEquals(setOf("name", "born"), query("MATCH (p:Person {name: 'Keanu'}) UNWIND keys(p) AS k RETURN k").toSet())
+        assertEquals(listOf(emptyList<String>()), query("RETURN keys({})"))
+    }
+
+    @Test
+    fun `range gives whole numbers, and reduce folds a list from its first item`() {
+        assertEquals(listOf(listOf(listOf(0L, 1L, 2L, 3L), listOf(10L, 7L, 4L), emptyList<Long>())), query("RETURN [range(0, 3), range(10, 4, -3), range(1, 0)]"))
+        if (pm.type == DatabaseType.ORACLE) return
+        assertEquals(listOf(6L), query("RETURN reduce(total = 0, x IN [1, 2, 3] | total + x)"))
+        assertEquals(listOf(null), query("RETURN reduce(total = 0, x IN null | total + x)"))
+        assertEquals(
+            listOf("Carrie,Hugo,Keanu,Laurence"),
+            query(
+                """
+                MATCH (p:Person) WITH p ORDER BY p.name
+                WITH collect(p.name) AS names
+                RETURN reduce(s = '', n IN names | s + CASE WHEN s = '' THEN '' ELSE ',' END + n)
+                """
+            ),
+        )
+        assertEquals(listOf(14L), query("RETURN reduce(dot = 0, i IN range(0, size(\$v) - 1) | dot + \$v[i] * \$v[i])", mapOf("v" to listOf(1, 2, 3))))
+    }
+
+    @Test
     fun `an item that aggregates and names another variable outside its aggregates is refused, as Cypher refuses it`() {
         val failure = assertThrows<DrivineException> {
             query("MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN { person: p.name, titles: collect(m.title) }")
@@ -401,10 +437,11 @@ class CypherQueryOracleTest : CypherQueryContract() {
     override fun clear() = OracleTestDatabase.clear(manager)
 
     @Test
-    fun `keys is refused, for Oracle's JSON paths read no map's keys`() {
+    fun `reduce is refused, for Oracle's recursive queries read nothing of the row they are in`() {
         assertEquals(
-            "keys() does not run on Oracle: its JSON paths read no map's keys.",
-            assertThrows<DrivineException> { pm.query(QuerySpecification.withStatement(CypherStatement("RETURN keys({a: 1})"))) }.message,
+            "reduce() does not run on Oracle: its recursive queries read nothing of the row they are in.",
+            assertThrows<DrivineException> { pm.query(QuerySpecification.withStatement(CypherStatement("RETURN reduce(t = 0, x IN [1] | t + x)"))) }.message,
         )
     }
+
 }

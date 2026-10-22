@@ -48,6 +48,12 @@ abstract class SqlCypherCompiler(graph: String) {
     protected val edges = "${graph}_edge"
     private val logger = LoggerFactory.getLogger(SqlCypherCompiler::class.java)
 
+    /** How many values [shared] has bound, to name each subquery it binds one in. */
+    private var shares = 0
+
+    /** Whether [shared] binds a long value: not in an expression that aggregates, whose aggregate a subquery would take from its group. */
+    private var sharing = true
+
     /** The statement [cypher], with its parameters' values [parameters], as SQL. */
     fun compile(cypher: String, parameters: Map<String, Any?> = emptyMap()): CompiledCypher =
         compile(CypherReader.read(cypher), parameters)
@@ -63,6 +69,24 @@ abstract class SqlCypherCompiler(graph: String) {
         )
         val body = writer.procedure(query)
         return CompiledCypher(procedure(body), writer.parameters.values)
+    }
+
+    /**
+     * [body] over [values], each read by name where one is long: bound once in a subquery, so a body that reads
+     * a value more than once (to test its kind, then to read it) does not write it out again, and operations
+     * nested in one another do not grow the statement exponentially. Short values are written where they are
+     * read. A query cannot group by a value so bound, for Oracle groups by no subquery: only a long one is.
+     */
+    protected fun shared(vararg values: String, body: (List<String>) -> String): String {
+        if (!sharing || values.all { it.length <= SHARED_ABOVE }) return body(values.toList())
+        return bound(*values, body = body)
+    }
+
+    /** [body] over [values], each bound in a subquery and read by name whatever its length: see [shared]. */
+    protected fun bound(vararg values: String, body: (List<String>) -> String): String {
+        val alias = "sh${++shares}"
+        val columns = values.withIndex().joinToString(", ") { (i, value) -> "$value AS v${i + 1}" }
+        return "(SELECT ${body(values.indices.map { "$alias.v${it + 1}" })} FROM (SELECT $columns) $alias)"
     }
 
     // ----- A store's SQL -----
@@ -129,6 +153,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** Whether the labels [labels], a JSON list, hold [label]. */
     protected abstract fun hasLabel(labels: String, label: String): String
+
+    /** Whether the labels [labels], a JSON list, hold each of [all]. */
+    protected open fun hasLabels(labels: String, all: List<String>): String = all.joinToString(" AND ") { hasLabel(labels, it) }
 
     /**
      * A test an index answers, to stand beside the comparison of the [property], read as [propertyOf]
@@ -222,6 +249,21 @@ abstract class SqlCypherCompiler(graph: String) {
      * reached after the pattern's earlier node, [nids], both in the pattern's order.
      */
     protected class Walked(val source: String, val condition: String, val eids: String, val nids: String)
+
+    /**
+     * `reduce`: the JSON list [list] folded from [initial], the JSON each step gives of the value so far and
+     * the item, as [step] writes it, as JSON; null where the list is. [name] names what the fold reads from.
+     */
+    protected abstract fun reduce(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String
+
+    /** `randomUUID()`: a new UUID, as SQL text in its usual form. */
+    protected abstract fun uuid(): String
+
+    /** `right`: the last [count] characters of the SQL text [text], or all of it where it has fewer. */
+    protected abstract fun rightText(text: String, count: String): String
+
+    /** `range`: the whole numbers from [from] to [to], [step] apart, SQL numbers each, as a JSON list. */
+    protected abstract fun range(from: String, to: String, step: String): String
 
     /** `datetime().epochMillis` and `timestamp()`: the moment the statement runs, in milliseconds since 1970, as JSON. */
     protected abstract fun epochMillisNow(): String
@@ -363,7 +405,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     }
                     else -> throw DrivineException("${node.variable} is not a node, and is used as one in a pattern.")
                 }
-                node.labels.forEach { select.where += hasLabel(value.labels, it) }
+                if (node.labels.isNotEmpty()) select.where += hasLabels(value.labels, node.labels)
                 node.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }
                 value
             }
@@ -419,7 +461,8 @@ abstract class SqlCypherCompiler(graph: String) {
             val properties = node.properties?.takeIf { !contains(it) { e -> e is Expression.Variable || e is Expression.Property } }
             if (node.labels.isEmpty() && properties == null) return null
             return { row ->
-                (node.labels.map { hasLabel("$row.labels", it) } + listOfNotNull(properties?.let { propertiesMatch("$row.props", it, before) })).joinToString(" AND ")
+                (listOfNotNull(node.labels.takeIf { it.isNotEmpty() }?.let { hasLabels("$row.labels", it) }) +
+                    listOfNotNull(properties?.let { propertiesMatch("$row.props", it, before) })).joinToString(" AND ")
             }
         }
 
@@ -504,7 +547,7 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The statements of the procedure [query] is: its reads, a loop over its rows for each write, and what it returns. */
         fun procedure(query: Query): List<String> {
             var select = Select(emptyMap())
-            for (clause in query.clauses) {
+            for (clause in creates(query.clauses)) {
                 when (clause) {
                     is Clause.Match -> match(select, clause)
                     is Clause.Unwind -> unwind(select, clause)
@@ -518,6 +561,13 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             return body
+        }
+
+        /** [clauses] with each run of `CREATE`s one `CREATE` of all their patterns, which makes the same, in one loop over the rows. */
+        private fun creates(clauses: List<Clause>): List<Clause> = clauses.fold(mutableListOf()) { merged, clause ->
+            val last = merged.lastOrNull()
+            if (clause is Clause.Create && last is Clause.Create) merged[merged.lastIndex] = Clause.Create(last.patterns + clause.patterns) else merged += clause
+            merged
         }
 
         private fun emit(statement: String) {
@@ -566,12 +616,15 @@ abstract class SqlCypherCompiler(graph: String) {
             return select
         }
 
-        /** The row in [ROW] alone, as a statement of a write reads it. */
-        private fun row(): Select = Select(emptyMap()).also { bindRow(it, ROW) }
+        /**
+         * The row in [ROW] alone, as a statement of a write reads it, with the variables [needed] bound: a row
+         * may hold many, and each node or relationship bound is a join.
+         */
+        private fun row(needed: Set<String>): Select = Select(emptyMap()).also { bindRow(it, ROW, needed) }
 
-        /** Binds into [select] each variable the row [row] holds: a node or a relationship is read from its table, as it is now. */
-        private fun bindRow(select: Select, row: String) {
-            kinds.forEach { (variable, kind) ->
+        /** Binds into [select] each variable the row [row] holds, of [needed] where given: a node or a relationship is read from its table, as it is now. */
+        private fun bindRow(select: Select, row: String, needed: Set<String>? = null) {
+            kinds.filterKeys { needed == null || it in needed }.forEach { (variable, kind) ->
                 val key = key(variable)
                 when (kind) {
                     Kind.NODE -> {
@@ -589,9 +642,9 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        /** [value], worked out over the row in [ROW], into [variable]. */
-        private fun evaluate(variable: String, value: (Map<String, Value>) -> String) {
-            val select = row()
+        /** [value], worked out over the row in [ROW], into [variable]: [expressions] are what it reads. */
+        private fun evaluate(variable: String, vararg expressions: Expression?, value: (Map<String, Value>) -> String) {
+            val select = row(expressions.filterNotNull().flatMap(::variablesIn).toSet())
             emit((listOf("SELECT ${value(select.scope)} INTO $variable") + from(select)).joinToString("\n") + ";")
         }
 
@@ -658,9 +711,17 @@ abstract class SqlCypherCompiler(graph: String) {
                         idOf(ROW, key(node.variable!!))
                     }
                     null -> {
-                        evaluate(VALUE) { scope -> written(node.properties, scope) }
+                        // The stamp is a column of the node, as a read takes it.
+                        val stamp = (node.properties as? Expression.MapLiteral)?.entries?.firstOrNull { it.first == Stamps.PROPERTY }?.second
+                        val properties = if (stamp == null) node.properties else Expression.MapLiteral((node.properties as Expression.MapLiteral).entries.filter { it.first != Stamps.PROPERTY })
+                        evaluate(VALUE, properties) { scope -> written(properties, scope) }
                         emit("INSERT INTO $nodes (labels, props) VALUES (${literalJson(node.labels)}, ${stripNulls(VALUE)}) RETURNING nid INTO $ID;")
-                        made(node.variable, Kind.NODE)
+                        val id = made(node.variable, Kind.NODE)
+                        stamp?.let {
+                            evaluate(VALUE, it) { scope -> comparable(json(expression(it, scope))) }
+                            emit("UPDATE $nodes SET stamp = ${text(VALUE)} WHERE nid = $id;")
+                        }
+                        id
                     }
                     else -> throw DrivineException("${node.variable} is not a node, and is used as one in a pattern.")
                 }
@@ -675,7 +736,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     RelationshipPattern.Direction.EITHER ->
                         if (merging) ids[i] to ids[i + 1] else throw DrivineException("A relationship that CREATE makes has a direction.")
                 }
-                evaluate(VALUE) { scope -> written(relationship.properties, scope) }
+                evaluate(VALUE, relationship.properties) { scope -> written(relationship.properties, scope) }
                 emit("INSERT INTO $edges (src, dst, type, props) VALUES ($src, $dst, ${literal(type)}, ${stripNulls(VALUE)}) RETURNING eid INTO $ID;")
                 made(relationship.variable, Kind.RELATIONSHIP)
             }
@@ -699,7 +760,7 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun merge(merge: Clause.Merge) {
             if (merge.pattern.variable != null) unsupported("A path variable in CREATE or MERGE")
-            val select = row()
+            val select = row(variablesIn(merge.pattern))
             patterns(select, listOf(merge.pattern))
             val found = select.bound.filterKeys { it !in kinds }
             val before = LinkedHashMap(kinds)
@@ -738,17 +799,18 @@ abstract class SqlCypherCompiler(graph: String) {
             when (item) {
                 is SetItem.Property -> {
                     val (table, id, row) = target(item.variable, "SET")
-                    evaluate(VALUE) { scope -> comparable(json(expression(item.value, scope))) }
-                    emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to VALUE)))} WHERE $id = $row;")
+                    evaluate(VALUE, item.value) { scope -> comparable(json(expression(item.value, scope))) }
+                    if (table == nodes && item.key == Stamps.PROPERTY) emit("UPDATE $nodes SET stamp = ${text(VALUE)} WHERE nid = $row;")
+                    else emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to VALUE)))} WHERE $id = $row;")
                 }
                 is SetItem.Replace -> {
                     val (table, id, row) = target(item.variable, "SET")
-                    evaluate(VALUE) { scope -> properties(expression(item.value, scope)) }
+                    evaluate(VALUE, item.value) { scope -> properties(expression(item.value, scope)) }
                     emit("UPDATE $table SET props = ${stripNulls(orEmpty(VALUE))} WHERE $id = $row;")
                 }
                 is SetItem.Add -> {
                     val (table, id, row) = target(item.variable, "SET")
-                    evaluate(VALUE) { scope -> properties(expression(item.value, scope)) }
+                    evaluate(VALUE, item.value) { scope -> properties(expression(item.value, scope)) }
                     emit("UPDATE $table SET props = ${merged("props", orEmpty(VALUE))} WHERE $id = $row;")
                 }
                 is SetItem.Labels -> {
@@ -765,7 +827,8 @@ abstract class SqlCypherCompiler(graph: String) {
             when (item) {
                 is RemoveItem.Property -> {
                     val (table, id, row) = target(item.variable, "REMOVE")
-                    emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to literalJson(null))))} WHERE $id = $row;")
+                    if (table == nodes && item.key == Stamps.PROPERTY) emit("UPDATE $nodes SET stamp = NULL WHERE nid = $row;")
+                    else emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to literalJson(null))))} WHERE $id = $row;")
                 }
                 is RemoveItem.Labels -> {
                     val (table, id, row) = target(item.variable, "REMOVE")
@@ -825,7 +888,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 )
             }
             requireExplicitGrouping(items)
-            val compiled = items.map { item -> item.name to expression(item.expression, select.scope) }
+            val compiled = items.map { item -> item.name to aggregating(item.expression) { expression(item.expression, select.scope) } }
             val aggregating = items.any { contains(it.expression, ::isAggregate) }
             // Where rows are compared (DISTINCT, GROUP BY), JSON is compared as what compares.
             val compared = projection.distinct || aggregating
@@ -837,7 +900,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val name = "s${i + 1}"
                 // An order term that is an item, as written, is that item: so it may be ordered by where rows are compared.
                 val value = items.indexOfFirst { it.expression == sort.expression }.takeIf { it >= 0 }?.let { compiled[it].second }
-                    ?: expression(sort.expression, sortScope)
+                    ?: aggregating(sort.expression) { expression(sort.expression, sortScope) }
                 selectList += "${sortable(value)} AS $name"
                 name to sort.descending
             }.ifEmpty {
@@ -881,6 +944,18 @@ abstract class SqlCypherCompiler(graph: String) {
             return Projected(outer, scope, sorts)
         }
 
+        /** [work], with no value bound in a subquery where [expression] aggregates: see [sharing]. */
+        private fun <T> aggregating(expression: Expression, work: () -> T): T {
+            if (!contains(expression, ::isAggregate)) return work()
+            val was = sharing
+            sharing = false
+            try {
+                return work()
+            } finally {
+                sharing = was
+            }
+        }
+
         /**
          * Refuses what Cypher refuses: an item that aggregates and names a variable outside its aggregates, where
          * that variable is not an item of its own, which a graph engine would have to group by without being told.
@@ -922,7 +997,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             is Expression.HasLabels -> when (val subject = expression(expression.subject, scope)) {
-                is Value.Node -> Value.Bool(expression.labels.joinToString(" AND ") { hasLabel(subject.labels, it) })
+                is Value.Node -> Value.Bool(hasLabels(subject.labels, expression.labels))
                 else -> throw DrivineException("A label is tested of a node.")
             }
             is Expression.ListLiteral -> Value.Json(jsonArray(expression.items.map { json(expression(it, scope)).sql }), ordered = true)
@@ -945,10 +1020,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 when (known) {
                     is String -> property(expression(expression.subject, scope), known)
                     is Number -> Value.Json(element(subject(), at))
-                    else -> {
-                        val keyed = keyed(subject(), at) ?: unsupported("A map's key named by an expression (map[key])")
-                        Value.Json("CASE ${typeOf(at)} WHEN 'number' THEN ${element(subject(), at)} WHEN 'string' THEN $keyed END")
-                    }
+                    else -> Value.Json(
+                        shared(subject(), at) { (map, key) ->
+                            val keyed = keyed(map, key) ?: unsupported("A map's key named by an expression (map[key])")
+                            "CASE ${typeOf(key)} WHEN 'number' THEN ${element(map, key)} WHEN 'string' THEN $keyed END"
+                        }
+                    )
                 }
             }
             is Expression.Slice -> unsupported("A slice of a list (list[from..to])")
@@ -962,6 +1039,16 @@ abstract class SqlCypherCompiler(graph: String) {
                 val projection = expression.projection?.let { json(expression(it, inner)).sql } ?: "$name.item"
                 val filter = expression.where?.let { " WHERE ${bool(expression(it, inner))}" }.orEmpty()
                 Value.Json("(SELECT ${aggregateList(projection, "$name.item_no")} FROM ${elements(list, name)}$filter)", ordered = true)
+            }
+            is Expression.Reduce -> {
+                val initial = comparable(json(expression(expression.initial, scope)))
+                val list = comparable(json(expression(expression.list, scope)))
+                Value.Json(
+                    reduce(alias("f"), initial, list) { accumulator, item ->
+                        val inner = scope + mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item))
+                        comparable(json(expression(expression.expression, inner)))
+                    }
+                )
             }
             is Expression.PatternComprehension -> {
                 val inner = Select(scope)
@@ -1044,14 +1131,14 @@ abstract class SqlCypherCompiler(graph: String) {
                     val operator = mapOf(
                         Operator.LESS_THAN to "<", Operator.GREATER_THAN to ">", Operator.LESS_THAN_OR_EQUAL to "<=", Operator.GREATER_THAN_OR_EQUAL to ">=",
                     ).getValue(binary.operator)
-                    Value.Bool("CASE WHEN ${typeOf(a)} = ${typeOf(b)} AND ${typeOf(a)} IN ('number', 'string', 'boolean') THEN $a $operator $b END")
+                    Value.Bool(shared(a, b) { (x, y) -> "CASE WHEN ${typeOf(x)} = ${typeOf(y)} AND ${typeOf(x)} IN ('number', 'string', 'boolean') THEN $x $operator $y END" })
                 }
-                Operator.ADD -> Value.Json(add(a, b))
-                Operator.SUBTRACT -> Value.Json(arithmetic(a, b, "-"))
-                Operator.MULTIPLY -> Value.Json(arithmetic(a, b, "*"))
+                Operator.ADD -> Value.Json(shared(a, b) { (x, y) -> add(x, y) })
+                Operator.SUBTRACT -> Value.Json(shared(a, b) { (x, y) -> arithmetic(x, y, "-") })
+                Operator.MULTIPLY -> Value.Json(shared(a, b) { (x, y) -> arithmetic(x, y, "*") })
                 // A whole number divided by one is a whole number, as in Cypher.
                 Operator.DIVIDE -> Value.Json(
-                    "CASE WHEN ${integral(a)} AND ${integral(b)} THEN ${scalar("trunc(${number(a)} / ${number(b)})")} ELSE ${arithmetic(a, b, "/")} END"
+                    shared(a, b) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar("trunc(${number(x)} / ${number(y)})")} ELSE ${arithmetic(x, y, "/")} END" }
                 )
                 Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
@@ -1059,8 +1146,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     val i = alias("i")
                     Value.Bool("EXISTS (SELECT 1 FROM ${elements(b, i)} WHERE $i.item = $a)")
                 }
-                Operator.STARTS_WITH -> Value.Bool(startsWith(text(a), text(b)))
-                Operator.ENDS_WITH -> Value.Bool(endsWith(text(a), text(b)))
+                Operator.STARTS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> startsWith(x, y) })
+                Operator.ENDS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> endsWith(x, y) })
                 Operator.CONTAINS -> Value.Bool(containsText(text(a), text(b)))
                 else -> error("logical operators are handled above")
             }
@@ -1135,12 +1222,43 @@ abstract class SqlCypherCompiler(graph: String) {
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
                 "min", "max" -> Value.Json(extreme(comparable(json(one())), min = name == "min"))
+                "range" -> {
+                    if (arguments.size !in 2..3) throw DrivineException("range() takes a start, an end and a step.")
+                    val (from, to) = arguments.map { number(comparable(json(it))) }
+                    Value.Json(range(from, to, arguments.getOrNull(2)?.let { number(comparable(json(it))) } ?: "1"))
+                }
+                "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
+                // A position is counted from 0, as Cypher counts it, and SQL from 1.
+                "substring" -> {
+                    if (arguments.size !in 2..3) throw DrivineException("substring() takes a text, a start and a length.")
+                    val (text, start) = textAndCount(arguments)
+                    Value.Json(scalar("SUBSTR($text, $start + 1${arguments.getOrNull(2)?.let { ", ${whole(it)}" }.orEmpty()})"))
+                }
+                "left", "right" -> {
+                    if (arguments.size != 2) throw DrivineException("${function.name}() takes a text and a length.")
+                    val (text, count) = textAndCount(arguments)
+                    Value.Json(scalar(if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)))
+                }
+                "replace" -> {
+                    if (arguments.size != 3) throw DrivineException("replace() takes a text, what to replace, and what with.")
+                    val (text, search, replacement) = arguments.map { text(comparable(json(it))) }
+                    Value.Json(scalar("REPLACE($text, $search, $replacement)"))
+                }
                 "timestamp" -> if (arguments.isEmpty()) Value.Json(epochMillisNow()) else throw DrivineException("timestamp() takes no argument.")
                 // A moment is its ISO text, as a store keeps it; one given is taken as it is.
                 "datetime" -> if (arguments.isEmpty()) Value.Json(isoNow()) else one()
-                else -> function(name, comparable(json(one())))?.let { Value.Json(it) } ?: unsupported("The function ${function.name}()")
+                else -> {
+                    val argument = comparable(json(one()))
+                    function(name, argument)?.let { Value.Json(shared(argument) { (x) -> function(name, x)!! }) } ?: unsupported("The function ${function.name}()")
+                }
             }
         }
+
+        /** A function's text, its first argument, and a whole number, its second. */
+        private fun textAndCount(arguments: List<Value>): Pair<String, String> = text(comparable(json(arguments[0]))) to whole(arguments[1])
+
+        /** A value as a SQL whole number. */
+        private fun whole(value: Value): String = "CAST(${number(comparable(json(value)))} AS INTEGER)"
 
         /** What `count` counts of a value: a node by its row, anything else by its value, nulls not counted. */
         private fun countable(value: Value): String = when (value) {
@@ -1270,6 +1388,9 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The record of a `MERGE`'s loop over what it found: its `item` is a row. */
         const val MATCHED = "cy_matched"
 
+        /** How long a value [shared] binds may be written where it is read, in characters. */
+        const val SHARED_ABOVE = 200
+
         val AGGREGATES = setOf("count", "collect", "sum", "avg", "min", "max")
 
         fun isAggregate(expression: Expression): Boolean =
@@ -1289,6 +1410,29 @@ abstract class SqlCypherCompiler(graph: String) {
             else -> children(expression).flatMap(::variablesOutsideAggregates).toSet()
         }
 
+        /**
+         * Every variable [expression] names, its nested queries' and comprehensions' among them: a name a
+         * comprehension binds of its own may be among them too, which costs no more than a variable read
+         * that is not needed.
+         */
+        fun variablesIn(expression: Expression): Set<String> = when (expression) {
+            is Expression.Variable -> setOf(expression.name)
+            is Expression.MapProjection -> setOf(expression.variable) +
+                expression.elements.filterIsInstance<Expression.MapProjection.Element.Variable>().map { it.name } + children(expression).flatMap(::variablesIn)
+            is Expression.ListComprehension -> listOfNotNull(expression.list, expression.where, expression.projection).flatMap(::variablesIn).toSet()
+            is Expression.Quantifier -> listOfNotNull(expression.list, expression.where).flatMap(::variablesIn).toSet()
+            is Expression.Reduce -> listOf(expression.initial, expression.list, expression.expression).flatMap(::variablesIn).toSet()
+            is Expression.PatternComprehension -> variablesIn(expression.pattern) + listOfNotNull(expression.where, expression.projection).flatMap(::variablesIn)
+            is Expression.PatternPredicate -> variablesIn(expression.pattern)
+            is Expression.Exists -> expression.patterns.flatMap(::variablesIn).toSet() + (expression.where?.let(::variablesIn) ?: emptySet())
+            else -> children(expression).flatMap(::variablesIn).toSet()
+        }
+
+        /** Every variable [pattern] names, of its parts or in their properties. */
+        fun variablesIn(pattern: Pattern): Set<String> =
+            pattern.nodes.flatMap { listOfNotNull(it.variable) + (it.properties?.let(::variablesIn) ?: emptySet()) }.toSet() +
+                pattern.relationships.flatMap { listOfNotNull(it.variable) + (it.properties?.let(::variablesIn) ?: emptySet()) }
+
         fun children(expression: Expression): List<Expression> = when (expression) {
             is Expression.Property -> listOf(expression.subject)
             is Expression.HasLabels -> listOf(expression.subject)
@@ -1302,6 +1446,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Function -> expression.arguments
             is Expression.Case -> listOfNotNull(expression.subject, expression.otherwise) + expression.alternatives.flatMap { listOf(it.first, it.second) }
             is Expression.ListComprehension -> listOf(expression.list)
+            is Expression.Reduce -> listOf(expression.initial, expression.list)
             is Expression.Quantifier -> listOf(expression.list)
             else -> emptyList()
         }

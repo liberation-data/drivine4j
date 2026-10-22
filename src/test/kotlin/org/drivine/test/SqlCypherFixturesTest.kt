@@ -1,126 +1,104 @@
 package org.drivine.test
 
+import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
+import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
+import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.Test
+import java.lang.reflect.Proxy
+import java.util.Optional
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
-import kotlin.test.assertTrue
+import kotlin.test.assertSame
 
-/**
- * Which statements [SqlCypherFixtures] works out as a fixture and which it hands to the store as
- * they are, over an in-memory store.
- */
+/** Which statements [SqlCypherFixtures] sends to a SQL store as Cypher, which as they are, and what a clear is. */
 class SqlCypherFixturesTest {
 
-    private val fake = FakeGraphStore()
+    /** Each statement that reached the store, in its language, in order. */
+    private val sent = mutableListOf<Pair<QueryLanguage, String>>()
 
-    /** What reached the store's own `execute` and `query` untouched, in order. */
-    private val handedOn = mutableListOf<String>()
+    private val store = store("g")
 
-    /** The fake store, which also takes the two statements a clear is made of, and answers any other SQL with one row. */
-    private val store: PersistenceManager = object : PersistenceManager by fake {
-        override fun execute(spec: QuerySpecification<*>) {
-            val text = spec.statement!!.text
-            when {
-                text == "DELETE FROM g_edge" -> fake.edges.clear().also { handedOn += text }
-                text == "DELETE FROM g_node" -> fake.nodes.clear().also { handedOn += text }
-                MiniCypher.reads(text) -> throw AssertionError("Cypher reached the store: $text")
-                text.startsWith("DECLARE") || text.startsWith("UPDATE g_") || text.startsWith("INSERT INTO g_") || text.startsWith("DELETE FROM g_") -> fake.execute(spec)
-                else -> handedOn += text
+    private fun store(graph: String?): PersistenceManager =
+        Proxy.newProxyInstance(javaClass.classLoader, arrayOf(PersistenceManager::class.java)) { _, method, arguments ->
+            fun record(spec: Any?) = (spec as QuerySpecification<*>).statement!!.let { sent += it.language to it.text }
+            when (method.name) {
+                "getGraphName" -> graph
+                "getType" -> DatabaseType.POSTGRES
+                "execute" -> record(arguments[0]).let { null }
+                "query" -> record(arguments[0]).let { listOf("row") }
+                "getOne" -> record(arguments[0]).let { "row" }
+                "maybeGetOne" -> record(arguments[0]).let { "row" }
+                "optionalGetOne" -> record(arguments[0]).let { Optional.of("row") }
+                "executeBatch" -> (arguments[0] as List<*>).forEach(::record).let { null }
+                "queryBatch" -> (arguments[0] as List<*>).onEach(::record).map { listOf("row") }
+                else -> throw UnsupportedOperationException(method.name)
             }
-        }
-
-        @Suppress("UNCHECKED_CAST")
-        override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
-            val text = spec.statement!!.text
-            if (MiniCypher.reads(text)) throw AssertionError("Cypher reached the store: $text")
-            if (text.startsWith("SELECT JSON_OBJECT(") || text.startsWith("DECLARE")) return fake.query(spec)
-            handedOn += text
-            return listOf("from the store") as List<T>
-        }
-    }
+        } as PersistenceManager
 
     private val fixtures = SqlCypherFixtures.over(store)
 
-    private fun statement(text: String, vararg parameters: Pair<String, Any?>) = QuerySpecification.withStatement(text).bind(mapOf(*parameters))
+    private fun statement(text: String) = QuerySpecification.withStatement(text)
 
     @Test
-    fun `a Cypher statement that is executed is worked out over the graph, and never reaches the store as Cypher`() {
-        fixtures.execute(statement("CREATE (a:Human {id: \$id, name: 'Ada'})-[:KNOWS]->(:Human {id: 'bob'})", "id" to "ada"))
+    fun `a statement of no language that is Cypher goes to the store as Cypher, however it is run`() {
+        fixtures.execute(statement("CREATE (:Human {id: 'ada'})"))
+        fixtures.query(statement("MATCH (h:Human) RETURN h.id"))
+        fixtures.getOne(statement("  // the one\n  OPTIONAL MATCH (h:Human) RETURN h"))
+        fixtures.maybeGetOne(statement("merge (h:Human {id: 'bob'}) RETURN h"))
+        fixtures.optionalGetOne(statement("UNWIND [1, 2] AS x RETURN x"))
+        fixtures.executeBatch(listOf(statement("RETURN 1")))
+        fixtures.queryBatch(listOf(statement("MATCH (h) RETURN h")))
 
-        assertEquals(setOf("ada", "bob"), fake.nodes("Human").map { it.props["id"] }.toSet())
-        assertEquals("KNOWS", fake.edges.values.single().type)
-        assertTrue(handedOn.isEmpty())
+        assertEquals(List(7) { QueryLanguage.CYPHER }, sent.map { it.first })
     }
 
     @Test
-    fun `a Cypher statement that is queried gives one value a row, mapped as a row of the store would be`() {
-        fixtures.execute(statement("CREATE (:Human {id: 'ada', name: 'Ada'}), (:Human {id: 'bob', name: 'Bob'})"))
-
-        val names = fixtures.query(statement("MATCH (h:Human) RETURN h.name ORDER BY h.name").transform(String::class.java))
-        val count = fixtures.getOne(statement("MATCH (h:Human) RETURN count(h)").transform(Long::class.java))
-
-        assertEquals(listOf("Ada", "Bob"), names)
-        assertEquals(2L, count)
-    }
-
-    @Test
-    fun `one row or none is asked of the fixture too, and more than one is refused as the store would refuse it`() {
-        fixtures.execute(statement("CREATE (:Human {id: 'ada'}), (:Human {id: 'bob'})"))
-
-        assertEquals("ada", fixtures.maybeGetOne(statement("MATCH (h:Human {id: 'ada'}) RETURN h.id").transform(String::class.java)))
-        assertNull(fixtures.maybeGetOne(statement("MATCH (h:Human {id: 'nobody'}) RETURN h.id").transform(String::class.java)))
-        assertFailsWith<NoSuchElementException> { fixtures.getOne(statement("MATCH (h:Human {id: 'nobody'}) RETURN h.id").transform(String::class.java)) }
-        assertFailsWith<IllegalArgumentException> { fixtures.getOne(statement("MATCH (h:Human) RETURN h.id").transform(String::class.java)) }
-    }
-
-    @Test
-    fun `a statement in the store's own language is handed to the store as it is`() {
+    fun `a statement in the store's own language goes as it is, and one given a language keeps it`() {
         val sql = listOf(
             "SELECT COUNT(*) FROM g_node",
             "CREATE INDEX g_ix ON g_node (nid)",
             "WITH roots AS (SELECT nid FROM g_node) SELECT COUNT(*) FROM roots",
             "BEGIN NULL; END;",
         )
+        sql.forEach { fixtures.execute(statement(it)) }
+        fixtures.query(QuerySpecification.withStatement(sqlStatement("MATCH (h) RETURN h")))
 
-        assertEquals(listOf("from the store"), fixtures.query(statement(sql[0]).transform(String::class.java)))
-        sql.drop(1).forEach { fixtures.execute(statement(it)) }
+        assertEquals(sql.map { QueryLanguage.PLATFORM_DEFAULT to it } + (QueryLanguage.SQL to "MATCH (h) RETURN h"), sent)
+    }
 
-        assertEquals(sql, handedOn)
+    @Test
+    fun `what the store gives back is given back`() {
+        assertEquals(listOf("row"), fixtures.query(statement("MATCH (h) RETURN h")))
+        assertSame("row", fixtures.getOne(statement("MATCH (h) RETURN h")))
     }
 
     @Test
     fun `the statement that empties a graph on the graph engines empties the two tables, the relationships first`() {
-        fixtures.execute(statement("CREATE (:Human {id: 'ada'})-[:KNOWS]->(:Human {id: 'bob'})"))
-
         fixtures.execute(statement("  MATCH (n) DETACH DELETE n  "))
 
-        assertEquals(listOf("DELETE FROM g_edge", "DELETE FROM g_node"), handedOn)
-        assertTrue(fake.nodes.isEmpty() && fake.edges.isEmpty())
+        assertEquals(listOf("DELETE FROM g_edge", "DELETE FROM g_node"), sent.map { it.second })
     }
 
     @Test
     fun `a clear needs a graph to name the tables by`() {
-        val nameless = object : PersistenceManager by fake {
-            override val graphName: String? = null
+        assertEquals("The manager names no graph.", assertFailsWith<IllegalArgumentException> { SqlCypherFixtures.clear(store(null)) }.message)
+    }
+
+    @Test
+    fun `a fixture run on its own is Cypher, whatever space it is written in`() {
+        assertEquals(listOf<Any?>("row"), SqlCypherFixtures.run(store, "\n  MATCH (h:Human) RETURN h.id  \n"))
+
+        assertEquals(listOf(QueryLanguage.CYPHER to "MATCH (h:Human) RETURN h.id"), sent)
+    }
+
+    @Test
+    fun `a store that speaks Cypher is given its statements as they are`() {
+        val neo4j = object : PersistenceManager by store {
+            override val type = DatabaseType.NEO4J
         }
 
-        assertEquals("The manager names no graph.", assertFailsWith<IllegalArgumentException> { SqlCypherFixtures.clear(nameless) }.message)
-    }
-
-    @Test
-    fun `a fixture run on its own gives the rows it returns, whatever space it is written in`() {
-        SqlCypherFixtures.run(fake, "\n  CREATE (:Human {id: \$id})\n", mapOf("id" to "ada"))
-
-        assertEquals(listOf<Any?>("ada"), SqlCypherFixtures.run(fake, "  MATCH (h:Human) RETURN h.id  "))
-        assertEquals(emptyList(), SqlCypherFixtures.run(fake, "MATCH (h:Human {id: 'nobody'}) RETURN h.id"))
-    }
-
-    @Test
-    fun `what a fixture does not read is refused, and not handed to the store to fail there`() {
-        assertFailsWith<IllegalArgumentException> { fixtures.query(statement("MATCH (h:Human) RETURN h.id LIMIT 1").transform(String::class.java)) }
-        assertTrue(handedOn.isEmpty())
+        assertSame(neo4j, SqlCypherFixtures.forStore(neo4j))
     }
 }

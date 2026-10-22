@@ -346,6 +346,15 @@ object CypherReader {
                 filter.oC_Where()?.let { expression(it.oC_Expression()) },
             )
         }
+        context.oC_Reduce() != null -> context.oC_Reduce().let { reduce ->
+            Expression.Reduce(
+                name(reduce.oC_Variable()),
+                expression(reduce.oC_Expression(0)),
+                name(reduce.oC_IdInColl().oC_Variable()),
+                expression(reduce.oC_IdInColl().oC_Expression()),
+                expression(reduce.oC_Expression(1)),
+            )
+        }
         context.oC_PatternPredicate() != null -> Expression.PatternPredicate(pattern(context.oC_PatternPredicate().oC_RelationshipsPattern(), null))
         context.oC_ParenthesizedExpression() != null -> expression(context.oC_ParenthesizedExpression().oC_Expression())
         context.oC_FunctionInvocation() != null -> context.oC_FunctionInvocation().let { function ->

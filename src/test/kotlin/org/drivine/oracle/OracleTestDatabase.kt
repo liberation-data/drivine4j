@@ -10,7 +10,6 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
-import org.drivine.test.MiniCypher
 import org.drivine.test.SqlCypherFixtures
 import org.drivine.test.OracleTestContainer
 
@@ -62,23 +61,15 @@ object OracleTestDatabase {
     fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = SqlCypherFixtures.over(pm)
 
     /**
-     * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own.
-     * A Cypher read on one is a fixture's first read, made to open a snapshot on the connection, and is
-     * answered by a count of the graph's nodes on that connection: the rows are not what the Cypher
-     * asked for, and a test must not read them as such.
+     * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own:
+     * a statement of no language that is Cypher is sent as Cypher, as [SqlCypherFixtures.over] sends it.
      */
     fun connections(pm: NonTransactionalPersistenceManager): ConnectionProvider {
         val provider = JdbcConnectionProvider(pm.database, DatabaseType.ORACLE, OracleTestDatabase.provider.nativeDriver, graphName = requireNotNull(pm.graphName))
         return object : ConnectionProvider by provider {
             override fun connect(): Connection = provider.connect().let { connection ->
                 object : Connection by connection {
-                    @Suppress("UNCHECKED_CAST")
-                    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> =
-                        if (MiniCypher.reads(spec.statement!!.text)) {
-                            connection.query(QuerySpecification.withStatement("SELECT COUNT(*) FROM ${pm.graphName}_node")) as List<T>
-                        } else {
-                            connection.query(spec)
-                        }
+                    override fun <T : Any> query(spec: QuerySpecification<T>): List<T> = connection.query(SqlCypherFixtures.asCypher(spec))
                 }
             }
         }
