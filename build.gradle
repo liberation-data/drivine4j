@@ -9,6 +9,7 @@ plugins {
 	id 'org.jetbrains.dokka' version '1.9.20'
 	id 'com.gradleup.nmcp' version '0.0.8'
 	id 'jacoco'
+	id 'antlr'
 }
 
 group = 'org.drivine'
@@ -48,6 +49,11 @@ dependencies {
 	implementation 'org.springframework.boot:spring-boot-starter'
 	implementation 'org.springframework.boot:spring-boot-starter-aop'
 	implementation 'org.aspectj:aspectjweaver:1.9.7'
+
+	// The Cypher compiler's parser, generated from openCypher's grammar (src/main/antlr): the tool at
+	// build time, and only its runtime with the library.
+	antlr 'org.antlr:antlr4:4.13.2'
+	implementation 'org.antlr:antlr4-runtime:4.13.2'
 
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
@@ -249,3 +255,18 @@ nmcp {
 		publicationType = "AUTOMATIC"
 	}
 }
+
+// The ANTLR plugin puts the whole tool on the library's classpath: only its runtime belongs there.
+configurations {
+	api {
+		setExtendsFrom(extendsFrom.findAll { it != configurations.antlr })
+	}
+}
+
+generateGrammarSource {
+	arguments += ['-visitor', '-no-listener', '-package', 'org.drivine.cypher.grammar']
+}
+
+compileKotlin.dependsOn generateGrammarSource
+compileTestKotlin.dependsOn generateTestGrammarSource
+sourcesJar.dependsOn generateGrammarSource
