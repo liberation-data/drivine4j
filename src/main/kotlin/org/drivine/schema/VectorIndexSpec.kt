@@ -31,7 +31,7 @@ package org.drivine.schema
  *   null leaves it to the engine
  * @param engineOptions engine-specific options, at most one entry per engine
  */
-data class VectorIndexSpec(
+data class VectorIndexSpec @JvmOverloads constructor(
     override val label: String,
     val property: String,
     val dimensions: Int,

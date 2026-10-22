@@ -13,7 +13,7 @@ package org.drivine.schema
  * @param analyzer engine analyzer/tokenizer name. Only Neo4j both accepts and reports one back, so
  *   it is only ever emitted and drift-checked there — see the fulltext handoff doc.
  */
-data class FullTextIndexSpec(
+data class FullTextIndexSpec @JvmOverloads constructor(
     override val label: String,
     override val properties: List<String>,
     override val name: String? = null,
@@ -21,6 +21,7 @@ data class FullTextIndexSpec(
 ) : IndexSpec {
 
     /** Single-property convenience constructor. */
+    @JvmOverloads
     constructor(label: String, property: String, name: String? = null, analyzer: String? = null) :
         this(label, listOf(property), name, analyzer)
 
