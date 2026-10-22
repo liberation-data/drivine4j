@@ -4,13 +4,18 @@ import org.drivine.annotation.Direction
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.Root
+import org.drivine.backend.oracle.OracleBackend
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.MIXED_SEED
 import org.drivine.query.ORDERED_SEED
+import org.drivine.query.QuerySpecification
 import org.drivine.query.assertMixedOrderedPaths
 import org.drivine.query.assertOrderedPaths
+import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.dsl.GraphQuerySpec
+import org.drivine.query.dsl.WhereCondition.PropertyCondition
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import sample.fulltext.ArticleNode
@@ -68,6 +73,19 @@ class OracleReadSmokeTest {
         assertEquals(listOf("c2"), manager.loadAll(Claim::class.java, "JSON_VALUE(n_ . props, '$.note') = 'unverified'").map { it.id })
         assertEquals(2, manager.count(Claim::class.java, "N_.PROPS IS NOT NULL"))
         assertEquals(1, manager.count(ClaimView::class.java, "JSON_VALUE(CLAIM_.PROPS, '$.id') = 'c1'"))
+    }
+
+    @Test
+    fun `matches holds the whole value to the expression, whose groups are numbered as it writes them`() {
+        val backend = OracleBackend(pm, Neo4jObjectMapper.instance)
+        fun matching(pattern: String): Set<String> {
+            val query = GraphQuerySpec(Any()).apply { conditions += PropertyCondition("n.text", ComparisonOperator.MATCHES, pattern) }
+            val statement = backend.loadAll(Claim::class.java, query).statement
+            return pm.query(QuerySpecification.withStatement(statement.statement).bind(statement.bindings).transform(Map::class.java)).map { it["id"] as String }.toSet()
+        }
+        assertEquals(emptySet(), matching("Bob|Ada"), "an alternation is of the whole value, not of its start or its end")
+        // A backreference names the group the expression numbers it by, as Cypher's `=~` reads it.
+        assertEquals(setOf("c1"), matching("(A).*\\1.*"))
     }
 
     @Test
