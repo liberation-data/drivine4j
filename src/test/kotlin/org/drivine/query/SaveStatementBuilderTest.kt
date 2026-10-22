@@ -7,6 +7,7 @@ import kotlin.test.assertNotEquals
 import org.drivine.manager.NullPolicy
 import org.drivine.manager.RemovedTargets
 import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.mapper.toMap
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Test
 import sample.stateless.Citation
@@ -17,6 +18,10 @@ import sample.stateless.Company
 import sample.stateless.Human
 import sample.stateless.HumanClaims
 import sample.stateless.Memo
+import sample.stateless.Shade
+import sample.stateless.Sticker
+import sample.stateless.Swatch
+import sample.stateless.Tagged
 
 /** The text of a save statement: an engine plans a statement once for each text it is given. */
 class SaveStatementBuilderTest {
@@ -171,5 +176,46 @@ class SaveStatementBuilderTest {
             assertFalse("_loaded" in saved.statement, "$dialect: ${saved.statement}")
             assertFalse(saved.bindings.keys.any { "_loaded" in it }, "$dialect: ${saved.bindings}")
         }
+    }
+
+    /** The check of the save of a change to [loaded], on Neo4j: the root's `WHERE`, and what it binds. */
+    private fun <T : Any> checkOfChange(loaded: T, changed: T): Pair<String, Map<String, Any?>> {
+        val mapper = Neo4jObjectMapper.instance
+        val digests = org.drivine.session.SnapshotDigest(mapper)
+        val request = SaveRequest.changed(changed, digests.of(loaded), digests.of(changed), null, mapper.toMap(loaded))
+        val saved = SaveStatementBuilder(mapper, CypherDialect.NEO4J_5.grammar(), null).build(request)
+        return saved.statement.lines().first { it.startsWith("WHERE ") } to saved.bindings
+    }
+
+    @Test
+    fun `the save of a change holds a prefixed bag to the keys and values it was loaded with`() {
+        val loaded = Tagged("t1", "one", meta = mapOf("owner" to "ada"), stamp = "0123456789abcdef:fedcba9876543210")
+        val (check, bindings) = checkOfChange(loaded, loaded.copy(text = "two"))
+
+        assertTrue("size([k IN keys(n) WHERE k STARTS WITH \$p0__loadedBag0Prefix AND size(k) > size(\$p0__loadedBag0Prefix)]) = size(keys(\$p0__loadedBag0))" in check, check)
+        assertTrue("all(k IN keys(\$p0__loadedBag0) WHERE n[k] IS NOT NULL AND NOT coalesce(n[k] <> \$p0__loadedBag0[k], false))" in check, check)
+        assertEquals(mapOf("meta.owner" to "ada"), bindings["p0__loadedBag0"], "keyed as the node stores them")
+        assertEquals("meta.", bindings["p0__loadedBag0Prefix"])
+    }
+
+    @Test
+    fun `the save of a change holds a flat bag and an open set of labels to what they were loaded with`() {
+        val loaded = Sticker("s1", labels = setOf("Sticker", "Shiny"), extras = mapOf("size" to 1L), stamp = "0123456789abcdef:fedcba9876543210")
+        val (check, bindings) = checkOfChange(loaded, loaded.copy(extras = mapOf("size" to 2L)))
+
+        assertTrue("NOT k IN \$p0__loadedBag0Reserved AND none(p IN \$p0__loadedBag0ReservedPrefixes WHERE k STARTS WITH p)" in check, check)
+        assertTrue("stamp" in (bindings["p0__loadedBag0Reserved"] as List<*>), "the stamp field's name is no key of the bag: ${bindings["p0__loadedBag0Reserved"]}")
+        assertTrue("size(labels(n)) = size(\$p0__loadedLabels) AND all(l IN \$p0__loadedLabels WHERE l IN labels(n))" in check, check)
+        assertEquals(setOf("Sticker", "Shiny"), (bindings["p0__loadedLabels"] as List<*>).toSet())
+    }
+
+    @Test
+    fun `the save of a change holds a closed set of labels to its own members alone`() {
+        val loaded = Swatch("w1", shades = setOf(Shade.Blue), stamp = "0123456789abcdef:fedcba9876543210")
+        val (check, bindings) = checkOfChange(loaded, loaded.copy(shades = setOf(Shade.Red)))
+
+        assertTrue("size([l IN labels(n) WHERE l IN \$p0__loadedLabelsClosed]) = size(\$p0__loadedLabels)" in check, check)
+        assertEquals(setOf("Red", "Green", "Blue"), (bindings["p0__loadedLabelsClosed"] as List<*>).toSet())
+        assertEquals(listOf("Blue"), bindings["p0__loadedLabels"])
     }
 }

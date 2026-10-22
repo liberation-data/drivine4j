@@ -10,6 +10,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
+import kotlin.test.assertTrue
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
 import org.drivine.backend.GraphBackends
@@ -40,6 +41,8 @@ import sample.flatexpand.SeqExpandView
 import sample.stateless.Claim
 import sample.stateless.Sticker
 import sample.stateless.Finding
+import sample.stateless.Swatch
+import sample.stateless.Shade
 import org.drivine.session.SessionManager
 import sample.stateless.Citation
 import sample.stateless.ClaimCircle
@@ -267,6 +270,80 @@ abstract class StatelessSaveSoundnessContract {
         }
 
         assertEquals("other", property("c1", "text"), "the other writer's change stands")
+    }
+
+    /**
+     * Runs an update of [id] whose first load is overtaken by [unmarked], Cypher that changes the node
+     * and leaves its stamp alone: the node as a load sees it when it is handed another writer's stamp
+     * with the data from before that writer's write. Gives how many times the change was applied.
+     */
+    private inline fun <reified T : Any> appliedAfterUnmarked(id: String, unmarked: String, crossinline change: (T) -> T): Int {
+        var applied = 0
+        assertNotNull(stateless.update<T>(id) { loaded -> if (applied++ == 0) run(unmarked); change(loaded) })
+        return applied
+    }
+
+    /** Neo4j reads without a snapshot: there an update compares the root's fields as loaded, not only the stamp. */
+    private fun assumeReadsWithoutSnapshot() = assumeTrue(pm.type == DatabaseType.NEO4J, "only Neo4j reads without a snapshot")
+
+    @Test
+    fun `update loads again when a declared field differs from what it loaded under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        stateless.save(Finding("f1", listOf("first")))
+
+        val applied = appliedAfterUnmarked<Finding>("f1", "MATCH (n:Finding {id: 'f1'}) SET n.sources = n.sources + 'theirs'") {
+            it.merge(Finding("f1", listOf("mine")))
+        }
+
+        assertEquals(2, applied, "the save of the first load was refused")
+        assertEquals(setOf("first", "theirs", "mine"), stateless.load<Finding>("f1")?.sources?.toSet())
+    }
+
+    @Test
+    fun `update loads again when a bag entry differs from what it loaded under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        stateless.save(Tagged("t1", "one", meta = mapOf("owner" to "first")))
+
+        val applied = appliedAfterUnmarked<Tagged>("t1", "MATCH (n:Tagged {id: 't1'}) SET n.`meta.owner` = 'theirs'") {
+            it.copy(meta = it.meta + ("mine" to "yes"))
+        }
+
+        assertEquals(2, applied, "the save of the first load was refused")
+        assertEquals(mapOf("owner" to "theirs", "mine" to "yes"), stateless.load<Tagged>("t1")?.meta)
+    }
+
+    @Test
+    fun `update loads again when a bag gained an entry under the same stamp, and not for a property outside it`() {
+        assumeReadsWithoutSnapshot()
+        stateless.save(Tagged("t1", "one", meta = mapOf("owner" to "first")))
+
+        assertEquals(2, appliedAfterUnmarked<Tagged>("t1", "MATCH (n:Tagged {id: 't1'}) SET n.`meta.extra` = 'theirs'") { it.copy(text = "two") })
+        assertEquals(1, appliedAfterUnmarked<Tagged>("t1", "MATCH (n:Tagged {id: 't1'}) SET n.unrelated = 'theirs'") { it.copy(text = "three") })
+        assertEquals(mapOf("owner" to "first", "extra" to "theirs"), stateless.load<Tagged>("t1")?.meta)
+    }
+
+    @Test
+    fun `update loads again when a flat bag or an open set of labels differs under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        stateless.save(Sticker("s1", labels = setOf("Shiny"), extras = mapOf("size" to 1L)))
+
+        assertEquals(2, appliedAfterUnmarked<Sticker>("s1", "MATCH (n:Sticker {id: 's1'}) SET n.colour = 'red'") { it.copy(extras = it.extras + ("size" to 2L)) })
+        assertEquals(2, appliedAfterUnmarked<Sticker>("s1", "MATCH (n:Sticker {id: 's1'}) SET n:Sneaked") { it.copy(extras = it.extras + ("size" to 3L)) })
+
+        val sticker = assertNotNull(stateless.load<Sticker>("s1"))
+        assertEquals(mapOf("size" to 3L, "colour" to "red"), sticker.extras)
+        assertTrue("Sneaked" in sticker.labels, sticker.labels.toString())
+    }
+
+    @Test
+    fun `update loads again when a closed set of labels differs under the same stamp, and not for a label outside it`() {
+        assumeReadsWithoutSnapshot()
+        stateless.save(Swatch("w1", shades = setOf(Shade.Blue)))
+
+        assertEquals(2, appliedAfterUnmarked<Swatch>("w1", "MATCH (n:Swatch {id: 'w1'}) SET n:Red") { it.copy(shades = it.shades + Shade.Green) })
+        assertEquals(1, appliedAfterUnmarked<Swatch>("w1", "MATCH (n:Swatch {id: 'w1'}) SET n:Unrelated") { it.copy(shades = it.shades - Shade.Blue) })
+
+        assertEquals(setOf(Shade.Red, Shade.Green), stateless.load<Swatch>("w1")?.shades, "the label another writer added is kept")
     }
 
     @Test
