@@ -38,7 +38,10 @@ data class DrivineSchemaProperties(
     /** Destructively recreate all declared items on every enforcement. */
     var recreateOnStartup: Boolean = false,
 
-    /** How many conflicting rows to sample when a constraint violation is detected (0 disables). */
+    /**
+     * How many conflicting rows to sample when a constraint violation is detected (0 leaves the sample
+     * empty; the data is still read, to confirm the violation).
+     */
     var violationSampleSize: Int = 10,
 ) {
 

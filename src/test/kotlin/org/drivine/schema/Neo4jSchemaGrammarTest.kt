@@ -338,6 +338,16 @@ class Neo4jSchemaGrammarTest {
     }
 
     @Test
+    fun `an index entry conflict beneath the refusal is a violation too`() {
+        val refusal = error(
+            "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):",
+            error("22N80", "N/A", "Index entry conflict: Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'."),
+        )
+
+        assertTrue(grammar.isConstraintViolation(DrivineException(refusal.message!!, refusal)))
+    }
+
+    @Test
     fun `a refusal to make a constraint whose GQL status names another cause is not a violation`() {
         val refusal = error(
             "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( type='NODE KEY', schema=(:U {e}) ):",
