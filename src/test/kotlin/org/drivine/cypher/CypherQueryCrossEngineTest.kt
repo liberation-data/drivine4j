@@ -6,6 +6,8 @@ import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
@@ -203,6 +205,40 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `lists, conversions, text tests and aggregates give a graph engine's values`() {
+        assertEquals(
+            listOf(
+                mapOf(
+                    "whole" to 2.0, "last" to 3L, "byParam" to 2L, "head" to 1L, "joined" to listOf(1L, 2L, 3L, 4L), "appended" to listOf(1L, 2L, 3L),
+                    "float" to 2.5, "integer" to 7L, "string" to "7", "in" to true, "starts" to true, "ends" to true, "holds" to true,
+                    "coalesced" to "x", "case" to "big",
+                )
+            ),
+            query(
+                """
+                WITH [1, 2, 3] AS xs
+                RETURN {
+                    whole: 2.0, last: xs[-1], byParam: xs[${'$'}i], head: head(xs), joined: xs + [4], appended: [1, 2] + 3,
+                    float: toFloat('2.5'), integer: toInteger('7.9'), string: toString(7), in: 2 IN xs,
+                    starts: 'Keanu' STARTS WITH 'Ke', ends: 'Keanu' ENDS WITH 'nu', holds: 'Keanu' CONTAINS 'an',
+                    coalesced: coalesce(null, 'x'), case: CASE WHEN size(xs) > 2 THEN 'big' ELSE 'small' END
+                }
+                """,
+                mapOf("i" to 1),
+            ),
+        )
+        assertEquals<List<Any?>>(
+            listOf(mapOf("avg" to 1997.0, "latest" to 2003L, "distinct" to listOf("Neo", "Trinity"))),
+            query(
+                """
+                MATCH (:Person)-[r:ACTED_IN]->(m:Movie) WHERE m.title STARTS WITH 'The Matrix' AND r.role <> 'Morpheus'
+                RETURN { avg: avg(m.released) - 4, latest: max(m.released), distinct: collect(DISTINCT r.role) }
+                """
+            ).map { row -> (row as Map<*, *>).mapValues { (key, value) -> if (key == "distinct") (value as List<*>).map { it as String }.sorted() else value } },
+        )
+    }
+
+    @Test
     fun `an item that aggregates and names another variable outside its aggregates is refused, as Cypher refuses it`() {
         val failure = assertThrows<DrivineException> {
             query("MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN { person: p.name, titles: collect(m.title) }")
@@ -350,4 +386,25 @@ class CypherQueryPostgresTest : CypherQueryContract() {
     override fun seed(cypher: String) = PostgresTestDatabase.seed(manager, cypher)
 
     override fun clear() = PostgresTestDatabase.clear(manager)
+}
+
+@OracleTests
+class CypherQueryOracleTest : CypherQueryContract() {
+    private val manager = OracleTestDatabase.graphManager("cypher")
+
+    override val pm: PersistenceManager get() = manager
+
+    override val compiles = true
+
+    override fun seed(cypher: String) = OracleTestDatabase.seed(manager, cypher)
+
+    override fun clear() = OracleTestDatabase.clear(manager)
+
+    @Test
+    fun `keys is refused, for Oracle's JSON paths read no map's keys`() {
+        assertEquals(
+            "keys() does not run on Oracle: its JSON paths read no map's keys.",
+            assertThrows<DrivineException> { pm.query(QuerySpecification.withStatement(CypherStatement("RETURN keys({a: 1})"))) }.message,
+        )
+    }
 }

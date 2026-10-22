@@ -35,11 +35,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun text(json: String) = "CASE WHEN jsonb_typeof($json) = 'string' THEN $json #>> '{}' END"
 
-    override fun scalarText(json: String) = "($json #>> '{}')"
-
     override fun boolOf(json: String) = "CASE WHEN jsonb_typeof($json) = 'boolean' THEN CAST($json AS boolean) END"
 
-    override fun float(sql: String) = "CAST($sql AS double precision)"
+    /** A `numeric` with a fraction, so a whole one is written `2.0`, as a graph engine writes a float, and stays one in arithmetic. */
+    override fun float(sql: String) = "(CAST($sql AS numeric) + 0.0)"
 
     override fun jsonArray(items: List<String>) = "json_build_array(${items.joinToString(", ")})"
 
@@ -96,7 +95,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "trim" -> "to_jsonb(btrim(${text(json)}))"
         "tostring" -> "to_jsonb($json #>> '{}')"
         "tointeger" -> "to_jsonb(trunc(CAST(NULLIF($json #>> '{}', '') AS numeric)))"
-        "tofloat" -> "to_jsonb(CAST(NULLIF($json #>> '{}', '') AS double precision))"
+        "tofloat" -> "to_jsonb(${float("NULLIF($json #>> '{}', '')")})"
         "head" -> "($json -> 0)"
         "last" -> "($json -> -1)"
         "abs" -> "to_jsonb(abs(${number(json)}))"

@@ -35,6 +35,9 @@ class Parameters(
         return asCount("\$$key")
     }
 
+    /** The value bound to the parameter [name], as the caller gave it. */
+    fun value(name: String): Any? = given(name)
+
     private fun given(name: String): Any? {
         if (!given.containsKey(name)) throw DrivineException("The statement has a parameter \$$name, and no value is bound to it.")
         return given[name]

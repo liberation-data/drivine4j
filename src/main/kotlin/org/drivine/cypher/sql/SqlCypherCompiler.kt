@@ -84,9 +84,6 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The JSON [json] as text, where it is a string. */
     protected abstract fun text(json: String): String
 
-    /** The JSON [json] as text, where it is a string or a number. */
-    protected abstract fun scalarText(json: String): String
-
     /** The JSON [json] as a condition, where it is `true` or `false`. */
     protected abstract fun boolOf(json: String): String
 
@@ -108,8 +105,8 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
-    /** The value of the JSON map [json] at the key the JSON [key] names. */
-    protected abstract fun keyed(json: String, key: String): String
+    /** The value of the JSON map [json] at the key the JSON [key] names; null where the store reads no key an expression names. */
+    protected abstract fun keyed(json: String, key: String): String?
 
     /** Whether the JSON map [props] holds every entry of the JSON map [map]. */
     protected abstract fun containsAll(props: String, map: String): String
@@ -137,6 +134,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** `a + b` of the JSON values [a] and [b]: numbers added, lists joined, texts put together. */
     protected abstract fun add(a: String, b: String): String
+
+    /** `a op b` of the JSON numbers [a] and [b], as JSON: [operator] is `+`, `-`, `*` or `/`. */
+    protected open fun arithmetic(a: String, b: String, operator: String): String = scalar("(${number(a)} $operator ${number(b)})")
 
     /** The remainder of the SQL numbers [a] and [b]. */
     protected abstract fun modulo(a: String, b: String): String
@@ -535,13 +535,23 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Unary -> unary(expression, scope)
             is Expression.Index -> {
                 val index = expression.index
-                // A key written as text is the property of that name.
-                if (index is Expression.Literal && index.value is String) {
-                    property(expression(expression.subject, scope), index.value)
-                } else {
-                    val subject = comparable(json(expression(expression.subject, scope)))
-                    val at = comparable(json(expression(index, scope)))
-                    Value.Json("CASE ${typeOf(at)} WHEN 'number' THEN ${element(subject, at)} WHEN 'string' THEN ${keyed(subject, at)} END")
+                val subject = { comparable(json(expression(expression.subject, scope))) }
+                val at = comparable(json(expression(index, scope)))
+                // An index written, or bound to a parameter, is known: a text is the property of that name, a number an item.
+                val known = when (index) {
+                    is Expression.Literal -> index.value
+                    is Expression.Parameter -> parameters.value(index.name)
+                    // `-1` is a negated number.
+                    is Expression.Unary -> (index.operand as? Expression.Literal)?.value?.takeIf { index.operator == Expression.Unary.Operator.NEGATE && it is Number }
+                    else -> null
+                }
+                when (known) {
+                    is String -> property(expression(expression.subject, scope), known)
+                    is Number -> Value.Json(element(subject(), at))
+                    else -> {
+                        val keyed = keyed(subject(), at) ?: unsupported("A map's key named by an expression (map[key])")
+                        Value.Json("CASE ${typeOf(at)} WHEN 'number' THEN ${element(subject(), at)} WHEN 'string' THEN $keyed END")
+                    }
                 }
             }
             is Expression.Slice -> unsupported("A slice of a list (list[from..to])")
@@ -640,11 +650,11 @@ abstract class SqlCypherCompiler(graph: String) {
                     Value.Bool("CASE WHEN ${typeOf(a)} = ${typeOf(b)} AND ${typeOf(a)} IN ('number', 'string', 'boolean') THEN $a $operator $b END")
                 }
                 Operator.ADD -> Value.Json(add(a, b))
-                Operator.SUBTRACT -> Value.Json(scalar("(${number(a)} - ${number(b)})"))
-                Operator.MULTIPLY -> Value.Json(scalar("(${number(a)} * ${number(b)})"))
+                Operator.SUBTRACT -> Value.Json(arithmetic(a, b, "-"))
+                Operator.MULTIPLY -> Value.Json(arithmetic(a, b, "*"))
                 // A whole number divided by one is a whole number, as in Cypher.
                 Operator.DIVIDE -> Value.Json(
-                    "CASE WHEN ${integral(a)} AND ${integral(b)} THEN ${scalar("trunc(${number(a)} / ${number(b)})")} ELSE ${scalar("(${number(a)} / ${number(b)})")} END"
+                    "CASE WHEN ${integral(a)} AND ${integral(b)} THEN ${scalar("trunc(${number(a)} / ${number(b)})")} ELSE ${arithmetic(a, b, "/")} END"
                 )
                 Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))

@@ -129,10 +129,9 @@ class OracleConnectionIntegrationTest {
     }
 
     @Test
-    fun `a Cypher statement is refused before it reaches the database`() {
-        val failure = assertFailsWith<DrivineException> { pm.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
-        // Cypher compiles to SQL on Postgres; the Oracle dialect is still to come.
-        assertEquals("A Cypher statement does not run on ORACLE yet.", failure.message)
+    fun `a Cypher statement is compiled to SQL and runs`() {
+        // CypherQueryContract tests what Cypher compiles to; here, that a connection compiles it at all.
+        assertEquals(listOf<Any?>(2L), pm.query(QuerySpecification.withStatement(cypherStatement("RETURN 1 + 1"))))
     }
 
     @Test

@@ -1,6 +1,7 @@
 package org.drivine.connection
 
 import org.drivine.DrivineException
+import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.JdbcResultMapper
@@ -90,6 +91,7 @@ class JdbcConnection(
         if (spec.statement!!.language != QueryLanguage.CYPHER) return spec
         val compiled = when (type) {
             DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
+            DatabaseType.ORACLE -> OracleCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
             else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
         }
         return spec.withSql(compiled.sql, compiled.parameters)

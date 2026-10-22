@@ -7,6 +7,7 @@ import org.drivine.query.cypherStatement
 import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.ArgumentMatchers.eq
@@ -184,9 +185,12 @@ class JdbcConnectionTest {
     }
 
     @Test
-    fun `a statement that is Cypher is refused, and one of no language is taken as SQL`() {
-        assertFailsWith<DrivineException> { connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
-        verify(jdbc, never()).prepareStatement(anyString())
+    fun `a statement that is Cypher is compiled to SQL, and one of no language is taken as SQL`() {
+        connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc).prepareStatement(prepared.capture())
+        // What reaches the database is the compiled SQL over the graph's tables, not the Cypher.
+        assertTrue(prepared.value.startsWith("SELECT ") && "_node" in prepared.value, prepared.value)
 
         connection.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
         verify(jdbc).prepareStatement("SELECT 1 FROM dual")
