@@ -148,7 +148,7 @@ class ConstraintManagerTest {
      * A store with [indexes], that refuses the constraint for an index in the way of it until DROP INDEX has run,
      * and answers the query for repeated keys with [conflicts].
      */
-    private fun blockedStore(vararg indexes: Map<String, Any>, conflicts: List<Any?> = emptyList()): RecordingStore {
+    private fun blockedStore(vararg indexes: Map<String, Any>, conflicts: Any? = emptyList<Any?>()): RecordingStore {
         var dropped = false
         return RecordingStore(DatabaseType.NEO4J) { ran ->
             when {
@@ -218,6 +218,18 @@ class ConstraintManagerTest {
         val store = blockedStore(rangeIndex("person_name", "name"))
 
         assertSame(inTheWay, assertFailsWith<Neo4jException> { store.constraints.ensure(spec, replaceBlockingIndex = true) })
+        assertTrue(store.schema.none { it.startsWith("DROP INDEX") })
+    }
+
+    @Test
+    fun `an index in the way is kept, and the refusal thrown, when the data cannot be read`() {
+        val unread = DrivineException("connection lost")
+        val store = blockedStore(rangeIndex("person_email", "email"), conflicts = unread)
+
+        val thrown = assertFailsWith<Neo4jException> { store.constraints.ensure(spec, replaceBlockingIndex = true) }
+
+        assertSame(inTheWay, thrown)
+        assertSame(unread, thrown.suppressed.single())
         assertTrue(store.schema.none { it.startsWith("DROP INDEX") })
     }
 }

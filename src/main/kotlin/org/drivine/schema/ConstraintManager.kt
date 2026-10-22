@@ -13,7 +13,8 @@ import java.time.Duration
  *
  * Constraints differ from indexes in lifecycle: creation can fail because existing data violates
  * the constraint, which surfaces as [EnsureResult.Violation] (with a bounded sample of the
- * conflicting values) rather than an exception, once the data confirms it. Engine divergence — including FalkorDB's
+ * conflicting values) rather than an exception, once the data confirms it. On Neo4j it can also fail
+ * because a plain index is in the way of it, which surfaces as [EnsureResult.BlockedByIndex]. Engine divergence — including FalkorDB's
  * native-command constraints, required backing indexes, and asynchronous creation — lives in the
  * [SchemaGrammar].
  *
@@ -109,8 +110,10 @@ class ConstraintManager internal constructor(
                     return EnsureResult.BlockedByIndex(spec, index)
                 }
                 // Neo4j refuses for the index before it reads the data, so a key that repeats would
-                // refuse the constraint after the index is gone: look first, and keep the index.
-                confirmedViolation(spec, violationSampleSize, null)?.let { return it }
+                // refuse the constraint after the index is gone: look first, and keep the index, as
+                // when the data cannot be read.
+                val repeated = repeatedKeys(spec, violationSampleSize, e) ?: throw e
+                if (repeated.isNotEmpty()) return violation(spec, repeated, violationSampleSize)
                 run(grammar.dropIndex(index))
                 logger.info("Dropped index {} on {}{}, in the way of a constraint that replaces it", index.name, spec.label, spec.properties)
                 return ensure(spec, violationSampleSize, replaceBlockingIndex = false)
@@ -223,19 +226,26 @@ class ConstraintManager internal constructor(
      * cause is not blamed on the data: the caller then throws it. [failure], when there is one, keeps
      * why the data could not be read.
      */
-    private fun confirmedViolation(spec: ConstraintSpec, limit: Int, failure: Throwable?): EnsureResult.Violation? {
-        val conflicts = try {
-            executor.query(grammar.sampleConflictsQuery(spec, maxOf(limit, 1)))
-                .filterIsInstance<Map<*, *>>()
-                .map { row -> row.entries.associate { (key, value) -> key.toString() to value } }
-        } catch (e: Exception) {
-            logger.debug("Could not read the keys that repeat for {}{}: {}", spec.label, spec.properties, e.message)
-            failure?.addSuppressed(e)
-            return null
-        }
-        if (conflicts.isEmpty()) return null
+    private fun confirmedViolation(spec: ConstraintSpec, limit: Int, failure: Throwable?): EnsureResult.Violation? =
+        repeatedKeys(spec, limit, failure)?.takeIf { it.isNotEmpty() }?.let { violation(spec, it, limit) }
+
+    /**
+     * The key values of [spec] that repeat in the data, [limit] of them at most and at least one;
+     * null when the data cannot be read, which [failure], when there is one, keeps.
+     */
+    private fun repeatedKeys(spec: ConstraintSpec, limit: Int, failure: Throwable?): List<Map<String, Any?>>? = try {
+        executor.query(grammar.sampleConflictsQuery(spec, maxOf(limit, 1)))
+            .filterIsInstance<Map<*, *>>()
+            .map { row -> row.entries.associate { (key, value) -> key.toString() to value } }
+    } catch (e: Exception) {
+        logger.debug("Could not read the keys that repeat for {}{}: {}", spec.label, spec.properties, e.message)
+        failure?.addSuppressed(e)
+        null
+    }
+
+    private fun violation(spec: ConstraintSpec, repeated: List<Map<String, Any?>>, limit: Int): EnsureResult.Violation {
         logger.warn("Could not create constraint on {}{}: existing data violates it", spec.label, spec.properties)
-        return EnsureResult.Violation(spec, conflicts.take(limit.coerceAtLeast(0)))
+        return EnsureResult.Violation(spec, repeated.take(limit.coerceAtLeast(0)))
     }
 
     /**
