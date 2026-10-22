@@ -7,6 +7,7 @@ import kotlin.test.assertNotEquals
 import org.drivine.manager.NullPolicy
 import org.drivine.manager.RemovedTargets
 import org.drivine.mapper.Neo4jObjectMapper
+import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Test
 import sample.stateless.Citation
 import sample.stateless.Claim
@@ -137,5 +138,38 @@ class SaveStatementBuilderTest {
 
         assertTrue("ON CREATE SET n.`__drivine.made` = true\nWITH n WHERE n.`__drivine.made` IS NOT NULL" in memo, memo)
         assertTrue("REMOVE n.`__drivine.made`" in memo, memo)
+    }
+
+    /** The save of a change to a claim loaded with [loaded] as its text and no note, built for [dialect]. */
+    private fun changeSaved(dialect: CypherDialect, loaded: String = "one"): SaveStatement {
+        val digests = org.drivine.session.SnapshotDigest(Neo4jObjectMapper.instance)
+        val before = Claim("c1", loaded, stamp = "0123456789abcdef:fedcba9876543210")
+        val after = before.copy(text = "two")
+        val request = SaveRequest.changed(after, digests.of(before), digests.of(after), setOf("text"), mapOf("id" to "c1", "text" to loaded, "note" to null))
+        return SaveStatementBuilder(Neo4jObjectMapper.instance, dialect.grammar(), null).build(request)
+    }
+
+    @Test
+    fun `where a read takes no snapshot, the save of a change matches the node only while each field is as it was loaded`() {
+        val saved = changeSaved(CypherDialect.NEO4J_5)
+        val check = saved.statement.lines().first { it.startsWith("WHERE ") }
+
+        val text = saved.bindings.entries.single { "_loaded" in it.key }
+        assertEquals("one", text.value, "the text as loaded, and not as changed")
+        assertTrue("left(n.`__drivine.stamp`, 16) = \$p0__expectedStamp" in check, check)
+        assertTrue("n.text IS NOT NULL AND NOT coalesce(n.text <> \$${text.key}, false)" in check, check)
+        assertTrue("n.note IS NULL" in check, "a field loaded as null must still be null: $check")
+        assertFalse("stamp` <>" in check, "the stamp is compared as the stamp: $check")
+        assertEquals(changeSaved(CypherDialect.NEO4J_5, loaded = "a longer text").statement, saved.statement, "the values are bound, not written into the text")
+        assertTrue("n.note IS NULL" in changeSaved(CypherDialect.NEO4J_4).statement, "Neo4j 4 reads without a snapshot too")
+    }
+
+    @Test
+    fun `where a read takes a snapshot, the save of a change compares the stamp alone`() {
+        listOf(CypherDialect.MEMGRAPH, CypherDialect.FALKORDB, CypherDialect.NEPTUNE).forEach { dialect ->
+            val saved = changeSaved(dialect)
+            assertFalse("_loaded" in saved.statement, "$dialect: ${saved.statement}")
+            assertFalse(saved.bindings.keys.any { "_loaded" in it }, "$dialect: ${saved.bindings}")
+        }
     }
 }

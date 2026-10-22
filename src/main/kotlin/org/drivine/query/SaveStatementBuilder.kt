@@ -93,7 +93,9 @@ internal class SaveStatementBuilder(
 
     /** The statement that saves what [request] asks. */
     fun build(request: SaveRequest): SaveStatement = with(request) {
-        Composition(checked, nullPolicy, rootWriteFields, replaced, rootMode).compose(obj, before, after)
+        // The fields as loaded are compared only where a load may have been handed a stamp newer than its data.
+        val asLoaded = loaded?.takeIf { grammar?.readsWithoutSnapshot == true }
+        Composition(checked, nullPolicy, rootWriteFields, replaced, rootMode, asLoaded).compose(obj, before, after)
     }
 
     /** The related fragments of one field that one `UNWIND` part saves: one class, joined or not. */
@@ -106,6 +108,7 @@ internal class SaveStatementBuilder(
         private val rootWriteFields: Set<String>?,
         replaced: (RelationshipModel) -> RemovedTargets?,
         private val rootMode: RootMode,
+        private val asLoaded: Map<String, Any?>?,
     ) : SaveTraversal<Unit>(objectMapper, replaced) {
         private val text = StringBuilder()
         private val mark = Stamps.fresh()
@@ -201,7 +204,7 @@ internal class SaveStatementBuilder(
                 val prefix = prefix()
                 val stamping = Stamping(checked, relationships = replaces, root = rootMode, handsBack = true)
                 val statement = FragmentMergeBuilder(model, objectMapper, grammar, storedKeys, stamping, parameterPrefix = prefix)
-                    .buildMergeStatement(fragment, null, before, nullPolicy, rootWriteFields)
+                    .buildMergeStatement(fragment, null, before, nullPolicy, rootWriteFields, asLoaded)
                 add(statement)
                 root = requireNotNull(statement.stamp)
                 rootOffered = statement.bindings[prefix + Stamps.NEW_PARAM] as? String

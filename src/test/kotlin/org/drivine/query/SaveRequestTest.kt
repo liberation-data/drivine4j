@@ -42,11 +42,20 @@ class SaveRequestTest {
     }
 
     @Test
+    fun `fields as loaded on a save that is not checked are refused`() {
+        val refused = assertFailsWith<IllegalArgumentException> {
+            SaveRequest(claim, checked = false, NullPolicy.IGNORE, loaded = mapOf("text" to "one"))
+        }
+        assertContains(refused.message!!, "Only a checked save")
+    }
+
+    @Test
     fun `the save of a change is checked, clears what was set to null, writes the dirty root fields and makes no node`() {
         val changed = claim.copy(text = "two")
         val before = digests.of(claim)
         val after = digests.of(changed)
-        val request = SaveRequest.changed(changed, before, after, dirty = setOf("text"))
+        val loaded = mapOf<String, Any?>("id" to claim.id, "text" to claim.text)
+        val request = SaveRequest.changed(changed, before, after, dirty = setOf("text"), loaded)
 
         assertSame(changed, request.obj)
         assertTrue(request.checked)
@@ -55,7 +64,8 @@ class SaveRequestTest {
         assertSame(before, request.before)
         assertSame(after, request.after)
         assertEquals(RootMode.FOUND, request.rootMode)
-        assertNull(SaveRequest.changed(changed, before, after, dirty = null).rootWriteFields, "no dirty set is every field")
+        assertSame(loaded, request.loaded, "the fields as loaded, which the save compares where a read takes no snapshot")
+        assertNull(SaveRequest.changed(changed, before, after, dirty = null, loaded).rootWriteFields, "no dirty set is every field")
     }
 
     @Test

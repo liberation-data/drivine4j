@@ -89,6 +89,17 @@ interface CypherGrammar {
         get() = false
 
     /**
+     * Whether a read takes no snapshot, so one query can find a node's properties as different
+     * commits left them. Neo4j reads under read committed without a lock: a load that runs while
+     * another writer commits can be handed that writer's stamp with the data from before its write,
+     * however the query orders its reads. A checked save of an object that was loaded then compares
+     * the fields as loaded too, under the node's lock. Memgraph and Neptune read from a snapshot,
+     * and FalkorDB runs no read beside a write.
+     */
+    val readsWithoutSnapshot: Boolean
+        get() = false
+
+    /**
      * Whether the node a `@GraphPath` field ends at is tested for its labels once the path is matched,
      * and not in the pattern that matches it.
      *
@@ -273,6 +284,8 @@ class Neo4j5Grammar(
 
     override fun epochSeconds(moment: String): TemporalOrderSupport = neo4jEpochSeconds(moment)
 
+    override val readsWithoutSnapshot: Boolean = true
+
     override val supportsVectorSearch: Boolean = true
 
     /**
@@ -338,6 +351,8 @@ class Neo4j4Grammar(
     override fun epochSeconds(moment: String): TemporalOrderSupport = neo4jEpochSeconds(moment)
 
     override val predicatesOnlyInWhere: Boolean = true
+
+    override val readsWithoutSnapshot: Boolean = true
 }
 
 /**
