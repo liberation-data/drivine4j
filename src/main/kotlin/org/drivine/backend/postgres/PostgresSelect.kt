@@ -15,6 +15,7 @@ import org.drivine.backend.sql.Derived
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.RowSource
 import org.drivine.backend.sql.SqlKind
+import org.drivine.backend.sql.SqlSelect
 import org.drivine.backend.sql.StatementScope
 import org.drivine.backend.sql.Step
 import org.drivine.backend.sql.Table
@@ -62,14 +63,14 @@ internal class PostgresSelect(
     private val graphClass: Class<*>,
     private val collectionSorts: List<CollectionSortSpec> = emptyList(),
     private val depthOverrides: Map<String, Int> = emptyMap(),
-) {
+) : SqlSelect {
     private val viewModel: GraphViewModel? =
         if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
 
     private val rootModel: FragmentModel = FragmentModel.from(viewModel?.rootFragment?.fragmentType ?: graphClass)
 
     /** The fragment the statement's roots are: the class itself, or a view's root. */
-    val rootFragment: Class<*> = viewModel?.rootFragment?.fragmentType ?: graphClass
+    override val rootFragment: Class<*> = viewModel?.rootFragment?.fragmentType ?: graphClass
 
     /** What a predicate calls the root: `n` for a fragment, the root field's name for a view. */
     val rootAlias: String = viewModel?.rootFragment?.fieldName ?: FRAGMENT_ALIAS
@@ -77,7 +78,7 @@ internal class PostgresSelect(
     private val scope = StatementScope(MAX_NAME)
 
     /** The root's row in the statement. Not the field's name itself: a field may be called `user` or `order`, which SQL keeps for its own. */
-    val root: String = scope.row(rootAlias)
+    override val root: String = scope.row(rootAlias)
 
     private val rows = PostgresRowSources(graph, scope)
     private val predicates = PostgresPredicates(scope, rows, rootAlias, root, rootModel, viewModel)
@@ -97,7 +98,7 @@ internal class PostgresSelect(
      * @param orders the orders on the root, in turn
      * @param skip and [limit] the page to return, bound as parameters so the text is the same for every page
      */
-    fun load(predicates: List<String>, orders: List<OrderTerm> = emptyList(), skip: Int? = null, limit: Int? = null): GraphStatement {
+    override fun load(predicates: List<String>, orders: List<OrderTerm>, skip: Int?, limit: Int?): GraphStatement {
         val result = "${projection()} AS result"
         val page = listOfNotNull(
             orders.takeIf { it.isNotEmpty() }?.let { "ORDER BY " + it.joinToString(", ", transform = this.predicates::orderTerms) },
@@ -108,7 +109,7 @@ internal class PostgresSelect(
     }
 
     /** The count of the roots [predicates] select, and that have the relationships the view requires. */
-    fun count(predicates: List<String>): GraphStatement =
+    override fun count(predicates: List<String>): GraphStatement =
         GraphStatement(Query("COUNT(*)", roots(), selected(predicates)).text(), bindings())
 
     /**
@@ -124,7 +125,7 @@ internal class PostgresSelect(
      * root's row, and each root's row is joined to its pairs again where a key, an aggregate or a
      * predicate reads it.
      */
-    fun groups(query: GroupQuery): GraphStatement {
+    override fun groups(query: GroupQuery): GraphStatement {
         val spec = query.spec
         val paths = spec.keys.filter { it.source is KeySource.Path }
         val nodes = paths.associateWith { scope.row(it.column) }
@@ -261,24 +262,24 @@ internal class PostgresSelect(
      * as [root]: those with the labels that [predicates] select. A delete selects them so, as the
      * Cypher delete does; a load and a count also ask for the relationships the view requires.
      */
-    fun selecting(predicates: List<String>): String =
+    override fun selecting(predicates: List<String>): String =
         (listOfNotNull(PostgresSql.hasLabels(root, rootLabels())) + predicates).joinToString("\n  AND ")
 
     /** The values the statement's parameters take, as written so far. */
-    fun bindings(): Map<String, Any?> = scope.bindings()
+    override fun bindings(): Map<String, Any?> = scope.bindings()
 
     /**
      * A predicate the caller wrote, with each property of the root written as Cypher writes it read as
      * that property: see [CypherShorthand]. In parentheses, since it may hold an `OR`, and is joined to
      * the statement's own predicates by `AND`.
      */
-    fun written(predicate: String): String = "(${shorthand.rewrite(predicate)})"
+    override fun written(predicate: String): String = "(${shorthand.rewrite(predicate)})"
 
     /**
      * The root whose id is bound as [parameter]. A property is read as text, so the id is compared as
      * its text: a number bound as one is not compared with a text.
      */
-    fun hasId(parameter: String): String {
+    override fun hasId(parameter: String): String {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         return "${property(root, idProperty)} = CAST(\$$parameter AS text)"
     }
@@ -290,7 +291,7 @@ internal class PostgresSelect(
      * and locked it, and runs the query where its values cannot be bound: they are written into it as
      * literals (see [PostgresSql.inline]).
      */
-    fun meeting(conditions: List<WhereCondition>): String? {
+    override fun meeting(conditions: List<WhereCondition>): String? {
         val predicate = predicate(conditions) ?: return null
         val query = "SELECT COUNT(*)\nFROM ${graph.nodes} $root\nWHERE $root.nid = \$1\n  AND ${selecting(listOf(predicate))}"
         val values = bindings()
@@ -298,11 +299,14 @@ internal class PostgresSelect(
         return SqlParameters.positional(query) { PostgresSql.inline(values.getValue(names[it])) }.statement
     }
 
-    /** The predicate [conditions] of the query DSL make on the root; null when there are none. */
-    fun predicate(conditions: List<WhereCondition>): String? = predicates.predicate(conditions)
+    /**
+     * The predicate [conditions] of the query DSL make on the root; null when there are none. Whether it is
+     * [indexed] changes nothing: a partial index over the nodes of a label is the planner's to choose.
+     */
+    override fun predicate(conditions: List<WhereCondition>, indexed: Boolean): String? = predicates.predicate(conditions)
 
     /** The predicate that selects the rows after a keyset cursor. See [PostgresPredicates.after]. */
-    fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String = predicates.after(orders, values, collectionSortCount)
+    override fun after(orders: List<OrderSpec>, values: List<SeekValueSpec>, collectionSortCount: Int): String = predicates.after(orders, values, collectionSortCount)
 
     // ----- Projection -----
 
@@ -518,7 +522,7 @@ internal class PostgresSelect(
      * relationships are applied to the candidates, not before them: a search finds its nearest and then
      * filters, as an index of the graph engines does.
      */
-    fun scored(candidates: String, predicates: List<String>, threshold: Double?, limit: Int?): GraphStatement {
+    override fun scored(candidates: String, predicates: List<String>, threshold: Double?, limit: Int?): GraphStatement {
         val result = "${PostgresSql.jsonObject(listOf("value" to projection(), "score" to "$root.score"))} AS result"
         val filters = requiredRelationships() + listOfNotNull(threshold?.let { "$root.score >= ${scope.bound(it)}" }) + predicates
         val best = listOfNotNull("ORDER BY $root.score DESC, $root.nid", limit?.let { "LIMIT ${scope.bound(it)}" })
@@ -600,7 +604,7 @@ internal class PostgresSelect(
      * nested in it. A field that holds views of its own class is followed to its depth, and every level
      * of it holds what the root does. Null when the view has no such field.
      */
-    fun cascaded(predicates: List<String>): String? {
+    override fun cascaded(predicates: List<String>): String? {
         val model = viewModel ?: return null
         val paths = Cascade.of(model).paths
         if (paths.isEmpty()) return null
@@ -613,7 +617,7 @@ internal class PostgresSelect(
      * below its depth that it does not reach within it, nor starts from. Such a node is related to one
      * the delete takes, and would be left behind with all it holds.
      */
-    fun cascadeDepthChecks(predicates: List<String>): List<Pair<CascadeRecursion, String>> {
+    override fun cascadeDepthChecks(predicates: List<String>): List<Pair<CascadeRecursion, String>> {
         val model = viewModel ?: return emptyList()
         return Cascade.of(model).recursions.map { recursion ->
             val step = recursion.step
@@ -630,7 +634,7 @@ internal class PostgresSelect(
     }
 
     /** Each step of the paths a cascade follows, once for each type and direction: a node one such step below another is held by it. */
-    fun cascadeSteps(): List<Step> =
+    override fun cascadeSteps(): List<Step> =
         viewModel?.let { model -> Cascade.of(model).steps }.orEmpty()
 
     /** The roots that meet [predicates], as a query of their ids. */
@@ -648,7 +652,7 @@ internal class PostgresSelect(
      * Whether the root is a node that the node of [labels] whose id is bound as [parameter] is related
      * to by a relationship of [type] in [direction].
      */
-    fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
+    override fun relatedTo(labels: List<String>, key: String, parameter: String, type: String, direction: Direction): String {
         val from = scope.row("from")
         val row = scope.row("related")
         val found = Query("$from.nid", Table(graph.nodes, from), listOfNotNull("${property(from, key)} = CAST(\$$parameter AS text)", PostgresSql.hasLabels(from, labels)))
