@@ -5,6 +5,7 @@ import org.drivine.annotation.NodeId
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -54,6 +55,8 @@ class StatelessTemporalE2ETest @Autowired constructor(
 
     @Test
     fun `each temporal type is stored as a native (non-string) value`() {
+        // A SQL store keeps a node's properties as JSON, where a moment is its ISO text: there is no native value to ask for.
+        Assumptions.assumeTrue(pm.type.speaksCypher, "a SQL store keeps a moment as JSON text, and has no valueType()")
         gom.save(node.copy(id = "vt"))
         listOf("instant", "zoned", "date", "dateTime").forEach { prop ->
             val vt = pm.getOne(

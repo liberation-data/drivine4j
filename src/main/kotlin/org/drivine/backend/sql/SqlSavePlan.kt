@@ -1,4 +1,4 @@
-package org.drivine.backend.oracle
+package org.drivine.backend.sql
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
@@ -18,14 +18,17 @@ import org.drivine.query.SaveTraversal
 import org.drivine.query.StampWrite
 
 /**
- * Plans a whole save for Oracle: the root, the relationships it drops, each related node and the
+ * Plans a whole save for a SQL store: the root, the relationships it drops, each related node and the
  * relationship to it. It decides what `SaveStatementBuilder` decides for the graph engines, from the
- * same model, and writes it as steps for the write block where that writes Cypher.
+ * same model, and writes it as steps for the store's write block where that writes Cypher.
  *
  * Every related node is a step of its own. The block's text does not grow with a list, so nothing is
  * gained by saving the nodes of a field together.
+ *
+ * @param blocks how the store carries out a plan
+ * @param key an id as the text the store reads its property back as, which a step finds a node by
  */
-internal class OracleSavePlan(private val graph: OracleGraph, private val objectMapper: ObjectMapper) {
+internal class SqlSavePlan(private val blocks: WriteBlocks, private val objectMapper: ObjectMapper, private val key: (Any) -> String) {
 
     /** The statement that saves what [request] asks. */
     fun build(request: SaveRequest): SaveStatement = with(request) {
@@ -44,7 +47,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
     ): Pair<String, Map<String, Any?>> {
         val composition = Composition(checked = false, nullPolicy, rootWriteFields = null, replaced = { null }, RootMode.EITHER)
         fragments.forEach { (index, fragment) -> composition.fragment(fragment, index, writeFields(fragment.javaClass)) }
-        return composition.plan.text(OracleWriteBlock.Returns.EACH_STAMP) to composition.plan.bindings()
+        return composition.plan.text(WriteReturns.EACH_STAMP) to composition.plan.bindings()
     }
 
     /** One save's plan as it is put together: the steps, and what the statement is handed back with them. */
@@ -56,7 +59,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         private val rootMode: RootMode,
     ) : SaveTraversal<Int>(objectMapper, replaced) {
         /** The steps, in the order the walk decides them. */
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
 
         /** The object's root as the statement names it, known once its step has been planned. */
         private lateinit var root: StampWrite
@@ -70,7 +73,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
                 rootNode(obj, FragmentModel.from(obj.javaClass), replaces = false, before)
             }
             return SaveStatement(
-                plan.text(OracleWriteBlock.Returns.STAMPS), plan.bindings(), root, stamped, carried, keys, repeats, plan.offered.toList(), rootMode,
+                plan.text(WriteReturns.STAMPS), plan.bindings(), root, stamped, carried, keys, repeats, plan.offered.toList(), rootMode,
             )
         }
 
@@ -84,11 +87,11 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
         override fun viewRoot(fragment: Any, model: FragmentModel, depth: Int, replaces: Boolean, before: JsonNode?, after: JsonNode?): Int =
             if (depth == 0) rootNode(fragment, model, replaces, before) else relatedNode(fragment, model, before, after)
 
-        /** The ids are compared as keys: a number with the text Oracle reads a JSON number back as. */
+        /** The ids are compared as keys: a number with the text the store reads a JSON number back as. */
         override fun removal(field: Field, root: Int, depth: Int, ids: List<Any>, keep: Boolean, removedTargets: RemovedTargets, heldIds: List<Any>) {
             plan.unlink(
                 root, field.relationship.type, field.relationship.direction, plan.shape(field.target.model.labels, field.target.idProperty),
-                ids.map(OracleSql::key), keep, delete = removedTargets == RemovedTargets.DELETE_UNREFERENCED, held = heldIds.map(OracleSql::key),
+                ids.map(key), keep, delete = removedTargets == RemovedTargets.DELETE_UNREFERENCED, held = heldIds.map(key),
             )
         }
 
@@ -175,7 +178,7 @@ internal class OracleSavePlan(private val graph: OracleGraph, private val object
                 set = writing.set, unset = writing.unset, bags = writing.bags,
                 addLabels = labels.add, dropLabels = labels.drop, owned = labels.owned,
             )
-            return plan.node(plan.shape(model.labels, key), key, id, OracleSql.key(id), model.labels, writes, index, root)
+            return plan.node(plan.shape(model.labels, key), key, id, this@SqlSavePlan.key(id), model.labels, writes, index, root)
         }
 
         /**

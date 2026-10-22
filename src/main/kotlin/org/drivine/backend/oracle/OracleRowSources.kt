@@ -1,14 +1,9 @@
 package org.drivine.backend.oracle
 
-import org.drivine.annotation.Direction
+import org.drivine.backend.sql.Query
+import org.drivine.backend.sql.Step
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.model.RelationshipModel
-
-/**
- * One step from a node to the nodes it is related to: the relationship's type and direction, and the
- * labels the far node carries. A step with a depth is taken [minDepth] to [maxDepth] times.
- */
-internal class Step(val type: String, val direction: Direction, val labels: List<String>, val maxDepth: Int = 1, val minDepth: Int = 1)
 
 /**
  * The row sources a statement over an [OracleGraph] reads from: the nodes of some labels, and the
@@ -61,19 +56,9 @@ internal class OracleRowSources(private val graph: OracleGraph, private val scop
     /** The name [reached] gives the node step [i] of [steps] reaches: [alias] for the last, `m1`, `m2`… before it. */
     fun stepNode(steps: List<Step>, i: Int, alias: String): String = if (i == steps.lastIndex) alias else "m${i + 1}"
 
-    /**
-     * The steps that reach the nodes of [relationship]: for a path, one for each hop, the far node of
-     * each but the last carrying the hop's intermediate label; otherwise one step to [maxDepth], with
-     * [targetLabels] on the node it ends at.
-     */
+    /** The steps that reach the nodes of [relationship]: see [Step.reaching]. */
     fun steps(relationship: RelationshipModel, targetLabels: List<String>, maxDepth: Int = 1): List<Step> =
-        if (relationship.isPath) {
-            relationship.hops.mapIndexed { i, hop ->
-                Step(hop.type, hop.direction, if (i == relationship.hops.lastIndex) targetLabels else listOfNotNull(hop.intermediateLabel))
-            }
-        } else {
-            listOf(Step(relationship.type, relationship.direction, targetLabels, maxDepth))
-        }
+        Step.reaching(relationship, targetLabels, maxDepth)
 
     /**
      * The rows named [row] reached from the row [parent] by [steps]: the query a relationship field or

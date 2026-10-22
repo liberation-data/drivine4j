@@ -1,5 +1,8 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.NodeShape
+import org.drivine.backend.sql.StepKind
+import org.drivine.backend.sql.WritePlan
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.model.Stamps
@@ -851,10 +854,10 @@ END;
 
     companion object {
         /** The parameter the plan is bound as: the steps, a JSON array. */
-        const val PLAN = "_plan"
+        const val PLAN = WritePlan.PLAN
 
         /** The parameter that carries the stamp the steps take a new relationship token from: see [WritePlan.mark]. */
-        const val MARK = "_mark"
+        const val MARK = WritePlan.MARK
 
         /** What `save_node` records as the stamp it found on a node that was there without one. */
         private const val NEVER_STAMPED = Stamps.NEVER_STAMPED

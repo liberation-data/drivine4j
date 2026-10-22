@@ -19,6 +19,8 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.UniquenessConstraintSpec
@@ -375,4 +377,11 @@ class StatelessCreateOracleTest : StatelessCreateContract() {
     private val store = OracleTestDatabase.graphManager("contracts")
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(store)
     override val connections: ConnectionProvider = OracleTestDatabase.connections(store)
+}
+
+@PostgresTests
+class StatelessCreatePostgresTest : StatelessCreateContract() {
+    private val store = PostgresTestDatabase.graphManager("contracts")
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(store)
+    override val connections: ConnectionProvider = PostgresTestDatabase.connections(store)
 }

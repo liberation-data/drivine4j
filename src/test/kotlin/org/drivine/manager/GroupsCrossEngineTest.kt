@@ -14,6 +14,8 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.Aggregate
 import org.drivine.query.dsl.ComparisonOperator
@@ -1069,6 +1071,11 @@ class GroupsMemgraphTest : GroupsContract() {
 @OracleTests
 class GroupsOracleTest : GroupsContract() {
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+}
+
+@PostgresTests
+class GroupsPostgresTest : GroupsContract() {
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
 }
 
 /** Counts the statements a manager sends. */

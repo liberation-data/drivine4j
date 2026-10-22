@@ -43,6 +43,8 @@ import sample.stateless.HumanClaims
 import sample.stateless.Memo
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * The stamp, the choice of fields, `update` and `unrelate` on [StatelessGraphObjectManager],
@@ -145,7 +147,7 @@ abstract class StatelessSaveContract {
 
     @Test
     fun `a save through GraphObjectManager is noticed by a stateless save`() {
-        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
+        assumeTrue(pm.type.speaksCypher, "GraphObjectManager's own save is written in Cypher alone")
         val mapper = Neo4jObjectMapper.instance
         val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
         val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
@@ -289,7 +291,7 @@ abstract class StatelessSaveContract {
 
     @Test
     fun `GraphObjectManager keeps the stamp of a node it did not change`() {
-        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
+        assumeTrue(pm.type.speaksCypher, "GraphObjectManager's own save is written in Cypher alone")
         val mapper = Neo4jObjectMapper.instance
         val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
         val loaded = stateless.save(Claim("c1", "Ada founded Acme"))
@@ -315,7 +317,7 @@ abstract class StatelessSaveContract {
 
     @Test
     fun `GraphObjectManager removes an incoming relationship dropped from a loaded view`() {
-        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
+        assumeTrue(pm.type.speaksCypher, "GraphObjectManager's own save is written in Cypher alone")
         val mapper = Neo4jObjectMapper.instance
         val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
         run("CREATE (:Human {id: 'ada', name: 'Ada'}), (:Claim {id: 'c1', text: 'one'}), (:Claim {id: 'c2', text: 'two'})")
@@ -329,7 +331,7 @@ abstract class StatelessSaveContract {
 
     @Test
     fun `GraphObjectManager reconciles an incoming relationship field under DELETE_ORPHAN`() {
-        assumeTrue(pm.type != DatabaseType.ORACLE, "GraphObjectManager's own save is written in Cypher alone")
+        assumeTrue(pm.type.speaksCypher, "GraphObjectManager's own save is written in Cypher alone")
         assumeTrue(pm.type != DatabaseType.MEMGRAPH, "Memgraph has no DELETE_ORPHAN")
         val mapper = Neo4jObjectMapper.instance
         val gom = GraphObjectManager(pm, SessionManager(mapper), mapper, SubtypeRegistry())
@@ -621,4 +623,9 @@ class StatelessSaveMemgraphTest : StatelessSaveContract() {
 @OracleTests
 class StatelessSaveOracleTest : StatelessSaveContract() {
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+}
+
+@PostgresTests
+class StatelessSavePostgresTest : StatelessSaveContract() {
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
 }

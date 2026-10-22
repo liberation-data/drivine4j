@@ -31,6 +31,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -259,4 +261,20 @@ class StatelessFilteredVectorSearchOracleTest {
 
     @Test
     fun `filtered vector search on Oracle`() = verify(buildGom(pm, registry))
+}
+
+@PostgresTests
+class StatelessFilteredVectorSearchPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+    private val fixtures = PostgresTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun seed() {
+        pm.indexes.ensure(VectorIndexSpec("Proposition", "embedding", 4))
+        seed(fixtures) { it }
+    }
+
+    @Test
+    fun `filtered vector search on Postgres`() = verify(buildGom(pm, registry))
 }

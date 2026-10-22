@@ -1,4 +1,4 @@
-package org.drivine.backend.oracle
+package org.drivine.backend.sql
 
 import org.junit.jupiter.api.Test
 import kotlin.test.assertEquals
@@ -32,6 +32,13 @@ class TextQueryTest {
         val query = TextQuery.parse("\"graph data\" data* name:Ada")
 
         assertEquals(listOf("(^|[^[:alnum:]_])graph[^[:alnum:]_]+data($|[^[:alnum:]_])", "(^|[^[:alnum:]_])data", word("ada")), query.scored)
+    }
+
+    @Test
+    fun `each scoring term gives the words a node that matches it holds, and no term that only excludes does`() {
+        val query = TextQuery.parse("\"Graph data\" +snake_case data* -python NOT rust")
+
+        assertEquals(listOf(listOf("graph", "data"), listOf("snake_case"), listOf("data")), query.scoredWords)
     }
 
     @Test

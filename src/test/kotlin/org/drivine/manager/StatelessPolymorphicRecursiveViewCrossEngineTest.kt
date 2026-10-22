@@ -32,6 +32,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * A **polymorphic root fragment inside a recursive `@GraphView`** loads a mixed-label tree with each
@@ -206,4 +208,14 @@ class StatelessPolymorphicRecursiveViewOracleTest {
     @BeforeEach fun clean() = OracleTestDatabase.clear(pm)
 
     @Test fun `polymorphic recursive view on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm), registry)
+}
+
+@PostgresTests
+class StatelessPolymorphicRecursiveViewPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach fun clean() = PostgresTestDatabase.clear(pm)
+
+    @Test fun `polymorphic recursive view on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm), registry)
 }

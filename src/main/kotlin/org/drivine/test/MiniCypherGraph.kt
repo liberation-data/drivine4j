@@ -1,5 +1,6 @@
 package org.drivine.test
 
+import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
@@ -10,7 +11,7 @@ import org.drivine.query.QuerySpecification
  * writes only what was made, changed or deleted. A test's graph is a handful of nodes.
  *
  * Nothing reaches the store before [store], so a statement that is refused half way has written
- * nothing.
+ * nothing. The store is Oracle or Postgres, which keep a graph in the same tables (see `SqlGraph`).
  */
 internal class MiniCypherGraph(private val pm: PersistenceManager) {
 
@@ -63,6 +64,17 @@ internal class MiniCypherGraph(private val pm: PersistenceManager) {
     }
 
     private val graph = requireNotNull(pm.graphName)
+
+    /** Whether the store is Postgres; Oracle when it is not. Only a row's JSON and an insert that returns its key are written differently. */
+    private val postgres = pm.type == DatabaseType.POSTGRES
+
+    /** A JSON object of the columns [columns] of a row, as the store writes one. */
+    private fun row(vararg columns: String): String =
+        if (postgres) {
+            columns.joinToString(", ", "jsonb_build_object(", ")") { "'$it', $it" }
+        } else {
+            columns.joinToString(", ", "JSON_OBJECT(", " RETURNING JSON)") { "'$it' VALUE $it" }
+        }
     private val live = mutableListOf<Node>()
     private val related = mutableListOf<Edge>()
     private val deleted = linkedSetOf<Node>()
@@ -100,14 +112,14 @@ internal class MiniCypherGraph(private val pm: PersistenceManager) {
     @Suppress("UNCHECKED_CAST")
     fun load() {
         val byId = mutableMapOf<Long, Node>()
-        pm.query(sql("SELECT JSON_OBJECT('nid' VALUE nid, 'labels' VALUE labels, 'props' VALUE props, 'stamp' VALUE stamp RETURNING JSON) FROM ${graph}_node ORDER BY nid"))
+        pm.query(sql("SELECT ${row("nid", "labels", "props", "stamp")} FROM ${graph}_node ORDER BY nid"))
             .forEach { row ->
                 row as Map<String, Any?>
                 val node = Node((row["nid"] as Number).toLong(), (row["labels"] as List<String>).toMutableList(), (row["props"] as Map<String, Any?>).toMutableMap(), row["stamp"] as String?)
                 live += node
                 byId[node.nid!!] = node
             }
-        pm.query(sql("SELECT JSON_OBJECT('eid' VALUE eid, 'src' VALUE src, 'dst' VALUE dst, 'type' VALUE type, 'props' VALUE props RETURNING JSON) FROM ${graph}_edge ORDER BY eid"))
+        pm.query(sql("SELECT ${row("eid", "src", "dst", "type", "props")} FROM ${graph}_edge ORDER BY eid"))
             .forEach { row ->
                 row as Map<String, Any?>
                 related += Edge(
@@ -129,16 +141,20 @@ internal class MiniCypherGraph(private val pm: PersistenceManager) {
             if (node.nid == null) {
                 node.nid = pm.query(
                     sql(
-                        """
-                        DECLARE
-                            v_nid NUMBER;
-                            v_rows SYS_REFCURSOR;
-                        BEGIN
-                            INSERT INTO ${graph}_node (labels, props, stamp) VALUES (${'$'}labels, ${'$'}props, ${'$'}stamp) RETURNING nid INTO v_nid;
-                            OPEN v_rows FOR SELECT v_nid FROM dual;
-                            DBMS_SQL.RETURN_RESULT(v_rows);
-                        END;
-                        """,
+                        if (postgres) {
+                            "INSERT INTO ${graph}_node (labels, props, stamp) VALUES (\$labels, \$props, \$stamp) RETURNING nid"
+                        } else {
+                            """
+                            DECLARE
+                                v_nid NUMBER;
+                                v_rows SYS_REFCURSOR;
+                            BEGIN
+                                INSERT INTO ${graph}_node (labels, props, stamp) VALUES (${'$'}labels, ${'$'}props, ${'$'}stamp) RETURNING nid INTO v_nid;
+                                OPEN v_rows FOR SELECT v_nid FROM dual;
+                                DBMS_SQL.RETURN_RESULT(v_rows);
+                            END;
+                            """
+                        },
                         "labels" to node.labels.sorted(), "props" to node.properties, "stamp" to node.stamp,
                     )
                 ).single().let { (it as Number).toLong() }

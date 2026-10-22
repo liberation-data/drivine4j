@@ -8,6 +8,7 @@ import org.drivine.manager.GraphObjectManagerFactory
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.manager.StatelessGraphObjectManager
+import org.drivine.test.SqlCypherFixtures
 import org.springframework.context.annotation.*
 
 @Configuration
@@ -17,12 +18,16 @@ import org.springframework.context.annotation.*
 @EnableAspectJAutoProxy(proxyTargetClass = true)
 class TestAppContext {
 
+    /**
+     * The manager the tests seed and read back through, in Cypher. On Oracle or Postgres the Cypher is
+     * worked out over the graph's tables (see [SqlCypherFixtures]), so the tests run on every store.
+     */
     @Bean
     fun persistenceManager(
         factory: PersistenceManagerFactory,
         @Value("\${drivine.default-datasource:#{null}}") datasource: String?
     ): PersistenceManager {
-        return factory.get(datasource ?: "default")
+        return SqlCypherFixtures.forStore(factory.get(datasource ?: "default"))
     }
 
     @Bean

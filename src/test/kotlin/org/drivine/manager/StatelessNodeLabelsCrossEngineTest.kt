@@ -35,6 +35,8 @@ import sample.nodelabels.ThingView
 import sample.nodelabels.TrespassingNode
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * `@NodeLabels` and the flat `@PropertyBag`, verified on Neo4j, FalkorDB and Memgraph.
@@ -301,4 +303,17 @@ class StatelessNodeLabelsOracleTest {
     @Test
     fun `node labels and a flat bag round-trip on Oracle`() =
         verify(buildGom(pm, SubtypeRegistry()), OracleTestDatabase.fixtures(pm)) { buildGom(pm, SubtypeRegistry()) }
+}
+
+@PostgresTests
+class StatelessNodeLabelsPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = PostgresTestDatabase.clear(pm)
+
+    @Test
+    fun `node labels and a flat bag round-trip on Postgres`() =
+        verify(buildGom(pm, SubtypeRegistry()), PostgresTestDatabase.fixtures(pm)) { buildGom(pm, SubtypeRegistry()) }
 }

@@ -7,6 +7,8 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedFalkorDb
@@ -430,4 +432,25 @@ class RecursiveCascadeDeleteOracleTest {
     @Test fun `DELETE_ORPHAN keeps what a kept node holds on Oracle`() = verifyDeleteOrphanKeepsWhatAKeptNodeHolds(gom, pm)
     @Test fun `DELETE_ORPHAN keeps a kept sub-session whole on Oracle`() = verifyDeleteOrphanKeepsAKeptSubSessionWhole(gom, pm)
     @Test fun `DELETE_ORPHAN keeps a chain longer than the view below a kept node on Oracle`() = verifyDeleteOrphanKeepsAChainLongerThanTheView(gom, pm)
+}
+
+@PostgresTests
+class RecursiveCascadeDeletePostgresTest {
+    private val registry = SubtypeRegistry()
+    private val store = PostgresTestDatabase.graphManager("contracts", registry)
+    private val pm = PostgresTestDatabase.fixtures(store)
+    private val gom = buildGom(store, registry)
+
+    @BeforeEach fun clean() = PostgresTestDatabase.clear(store)
+
+    @Test fun `DELETE_ALL removes what load reads at every level on Postgres`() = verifyDeleteAllMatchesLoad(gom, pm)
+    @Test fun `DELETE_ALL reaches nested views at every level on Postgres`() = verifyDeleteAllThroughNestedViewsMatchesLoad(gom, pm)
+    @Test fun `DELETE_ALL reaches a recursive view one view in on Postgres`() = verifyDeleteAllFromAShelfMatchesLoad(gom, pm)
+    @Test fun `a tree of exactly maxDepth, and a ring, are deleted on Postgres`() = verifyFullDepthAndCycleAreDeleted(gom, pm)
+    @Test fun `a tree deeper than maxDepth is refused on Postgres`() = verifyTooDeepIsRefused(gom, pm, orphans = true)
+    @Test fun `DELETE_ORPHAN keeps a nested node referred to from outside on Postgres`() = verifyDeleteOrphanPerNode(gom, pm)
+    @Test fun `DELETE_ORPHAN deletes a ring back to its root once on Postgres`() = verifyDeleteOrphanThroughARing(gom, pm)
+    @Test fun `DELETE_ORPHAN keeps what a kept node holds on Postgres`() = verifyDeleteOrphanKeepsWhatAKeptNodeHolds(gom, pm)
+    @Test fun `DELETE_ORPHAN keeps a kept sub-session whole on Postgres`() = verifyDeleteOrphanKeepsAKeptSubSessionWhole(gom, pm)
+    @Test fun `DELETE_ORPHAN keeps a chain longer than the view below a kept node on Postgres`() = verifyDeleteOrphanKeepsAChainLongerThanTheView(gom, pm)
 }

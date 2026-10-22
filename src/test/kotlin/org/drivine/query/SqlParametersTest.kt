@@ -105,4 +105,22 @@ class SqlParametersTest {
     fun `a parameter right after a literal and an operator is a parameter`() {
         assertEquals("SELECT 'x'||? FROM dual" to listOf("a"), positional("SELECT 'x'||\$a FROM dual"))
     }
+
+    @Test
+    fun `a dollar-quoted body is left as it is, whatever its tag`() {
+        val body = "CREATE FUNCTION f(p text) RETURNS text AS \$fn\$ BEGIN RETURN \$x || p; END; \$fn\$ LANGUAGE plpgsql"
+        assertEquals(body to emptyList(), positional(body))
+        val plain = "DO \$\$ BEGIN PERFORM \$x; END \$\$; SELECT \$y"
+        assertEquals(plain.replace("SELECT \$y", "SELECT ?") to listOf("y"), positional(plain))
+    }
+
+    @Test
+    fun `a dollar quote that is never closed is no quote`() {
+        assertEquals("SELECT ?\$x FROM t WHERE a = ?" to listOf("t", "a"), positional("SELECT \$t\$x FROM t WHERE a = \$a"))
+    }
+
+    @Test
+    fun `two inquiry directives are not a dollar quote between them`() {
+        assertEquals("BEGIN x := \$\$PLSQL_UNIT || ?; y := \$\$PLSQL_LINE; END;" to listOf("z"), positional("BEGIN x := \$\$PLSQL_UNIT || \$z; y := \$\$PLSQL_LINE; END;"))
+    }
 }

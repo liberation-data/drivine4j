@@ -24,6 +24,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * Cross-engine temporal consistency: every temporal type saved via `save()` must round-trip, be
@@ -128,4 +130,15 @@ class StatelessTemporalOracleTest {
     fun clean() = OracleTestDatabase.clear(pm)
 
     @Test fun `temporal round-trip and range on Oracle`() = verifyTemporal(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
+}
+
+@PostgresTests
+class StatelessTemporalPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = PostgresTestDatabase.clear(pm)
+
+    @Test fun `temporal round-trip and range on Postgres`() = verifyTemporal(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
 }

@@ -31,6 +31,8 @@ import kotlin.test.assertEquals
 import org.drivine.oracle.OracleTestDatabase
 import org.junit.jupiter.api.BeforeEach
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * Feature 1 end-to-end — `any{}` / `none{}` quantified predicates over the to-many `HAS_MENTION`
@@ -233,4 +235,22 @@ class StatelessQuantifiedRelationshipOracleTest {
 
     @Test
     fun `a delete of all by a predicate on a to-many relationship on Oracle`() = verifyDelete(buildGom(pm, registry))
+}
+
+@PostgresTests
+class StatelessQuantifiedRelationshipPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun seed() {
+        PostgresTestDatabase.clear(pm)
+        PostgresTestDatabase.seed(pm, SEED)
+    }
+
+    @Test
+    fun `any and none over a to-many relationship on Postgres`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `a delete of all by a predicate on a to-many relationship on Postgres`() = verifyDelete(buildGom(pm, registry))
 }

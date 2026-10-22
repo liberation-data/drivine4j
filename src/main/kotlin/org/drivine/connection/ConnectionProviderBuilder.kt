@@ -7,9 +7,9 @@ import org.slf4j.LoggerFactory
 
 /**
  * Builds the [ConnectionProvider] of one datasource from its connection properties and registers it:
- * a Bolt driver for Neo4j, Neptune and Memgraph, a FalkorDB client, or for Oracle a JDBC connection
- * pool. What a property means is the engine's: on Oracle the database name is the service to connect
- * to and the default graph path the name of the graph.
+ * a Bolt driver for Neo4j, Neptune and Memgraph, a FalkorDB client, or for Oracle and Postgres a JDBC
+ * connection pool. What a property means is the engine's: on Oracle the database name is the service
+ * to connect to, on Postgres the database, and on both the default graph path is the name of the graph.
  *
  * An engine with no wire to describe ([DatabaseType.buildableFromProperties] false) is not built
  * here; the application registers a provider for it.
@@ -90,6 +90,7 @@ class ConnectionProviderBuilder(
             DatabaseType.FALKORDB -> buildFalkorDbProvider(name)
             DatabaseType.MEMGRAPH -> buildMemgraphProvider(name)
             DatabaseType.ORACLE -> buildOracleProvider(name)
+            DatabaseType.POSTGRES -> buildPostgresProvider(name)
             else -> throw DrivineException("Type $type is not supported by ConnectionProviderBuilder")
         }
 
@@ -197,6 +198,32 @@ class ConnectionProviderBuilder(
             name = name,
             type = type!!,
             jdbcUrl = url,
+            user = userName,
+            password = password,
+            poolMax = poolMax,
+            connectionTimeoutMillis = connectionTimeout,
+            idleTimeoutMillis = idleTimeout,
+            subtypeRegistry = subtypeRegistry,
+            graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
+        )
+    }
+
+    /**
+     * Postgres: the database name is the database to connect to, and the default graph path names the
+     * graph's tables (see [JdbcConnectionProvider.graphName]). As on Oracle, a Cypher dialect or a
+     * protocol has no meaning here and is warned about, and a database that cannot be reached fails
+     * the registration.
+     */
+    private fun buildPostgresProvider(name: String): ConnectionProvider {
+        requireNotNull(userName) { "Postgres requires a username" }
+        val database = requireNotNull(this.name) { "Postgres requires a databaseName: the database to connect to" }
+        cypherDialect?.let { logger.warn("Postgres does not speak Cypher; the dialect $it set for datasource '$name' is ignored") }
+        protocol?.let { logger.warn("Postgres is reached over JDBC; the protocol '$it' set for datasource '$name' is ignored") }
+        val resolvedPort = port ?: 5432
+        return JdbcConnectionProvider.pooled(
+            name = name,
+            type = type!!,
+            jdbcUrl = JdbcConnectionProvider.postgresUrl(host!!, resolvedPort, database),
             user = userName,
             password = password,
             poolMax = poolMax,

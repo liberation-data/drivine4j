@@ -363,3 +363,107 @@ jobs:
             build/test-results/test/
             build/reports/tests/test/
           retention-days: 30
+
+  # The Postgres tests are left out of a plain `./gradlew test` too, enabled by POSTGRES_TESTS. This
+  # job runs them, then the sample app's and the root module's stateless Spring tests on a Postgres
+  # datasource: neither a graph engine's job nor Oracle's proves anything of the SQL Drivine writes for
+  # Postgres.
+  test-postgres:
+    runs-on: ubuntu-latest
+    name: test (Postgres)
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+
+      # Pulled here and not by the first test that asks for it, so the time the image takes is not
+      # counted against the container's start. The image is the one PostgresTestContainer names.
+      - name: Pull the Postgres image
+        run: docker pull pgvector/pgvector:pg17
+
+      - name: Build with Gradle
+        run: ./gradlew build -x test --no-daemon
+
+      - name: Run the Postgres tests
+        run: ./gradlew :test --no-daemon --tests '*Postgres*'
+        env:
+          POSTGRES_TESTS: true
+
+      # The sample app's stateless tests, on a Postgres datasource. Its tests seed in Cypher, which the
+      # sample's context works out over the graph's tables (SqlCypherFixtures.forStore). The tests of
+      # the deprecated GraphObjectManager are left out: its save is Cypher alone.
+      - name: Run the sample app's stateless tests on Postgres
+        run: |
+          ./gradlew :drivine4j-sample:test --no-daemon \
+            --tests '*Stateless*' \
+            --tests 'org.drivine.sample.StampFilterDslTest' \
+            --tests 'org.drivine.sample.OddStoredNameDslTest'
+        env:
+          DATABASE_DATASOURCES_GRAPH_TYPE: POSTGRES
+
+      # The root module's Spring tests read the datasource 'neo', which the environment points at
+      # Postgres, as the FalkorDB and Memgraph jobs point it at theirs. The classes are those Memgraph
+      # runs: the stateless manager's Spring tests.
+      - name: Run the root module's stateless Spring tests on Postgres
+        run: |
+          # This run replaces the root module's results: keep those of the run above for the report.
+          mkdir -p build/test-results-default && cp -r build/test-results/test/. build/test-results-default/
+          ./gradlew :test --no-daemon \
+            --tests 'org.drivine.annotation.StatelessSortedByTests' \
+            --tests 'org.drivine.manager.StatelessCountTests' \
+            --tests 'org.drivine.manager.StatelessDefaultAnnotationE2ETest' \
+            --tests 'org.drivine.manager.StatelessDeleteTests' \
+            --tests 'org.drivine.manager.StatelessFragmentLoadingTests' \
+            --tests 'org.drivine.manager.StatelessFragmentSaveTests' \
+            --tests 'org.drivine.manager.StatelessGraphObjectManagerSubtypeTests' \
+            --tests 'org.drivine.manager.StatelessGraphViewSaveTests' \
+            --tests 'org.drivine.manager.StatelessTemporalE2ETest' \
+            --tests 'org.drivine.manager.StatelessTransactionTests' \
+            --tests 'org.drivine.manager.UndeclaredReadOnlyFieldSaveTest' \
+            --tests 'org.drivine.model.StatelessGraphRelationshipFragmentEndToEndTests' \
+            --tests 'org.drivine.model.StatelessInterfaceNodeFragmentTests' \
+            --tests 'org.drivine.query.StatelessGraphPathE2ETest' \
+            --tests 'org.drivine.query.StatelessRecursiveGraphViewEndToEndTests' \
+            --tests 'sample.JavaStatelessSaveTests' \
+            --tests 'sample.StatelessJavaGraphObjectManagerSubtypeTests'
+        env:
+          DATABASE_DATASOURCES_NEO_TYPE: POSTGRES
+
+      - name: Publish Test Report
+        uses: mikepenz/action-junit-report@v4
+        if: success() || failure()
+        with:
+          report_paths: |
+            **/build/test-results/test/*.xml
+            build/test-results-default/*.xml
+          detailed_summary: true
+          include_passed: true
+          check_name: Test Results (Postgres)
+          require_tests: true
+          annotate_only: false
+          fail_on_failure: false
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results-POSTGRES
+          path: |
+            **/build/test-results/test/
+            build/test-results-default/
+            **/build/reports/tests/test/
+          retention-days: 30

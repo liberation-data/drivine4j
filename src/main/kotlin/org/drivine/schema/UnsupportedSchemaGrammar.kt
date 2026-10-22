@@ -16,7 +16,7 @@ class UnsupportedSchemaGrammar(private val dialectName: String) : SchemaGrammar 
 
     private fun unsupported(): Nothing = throw DrivineException(
         "Schema management (indexes/constraints) is not supported for $dialectName. " +
-            "Supported engines: Neo4j, Memgraph, FalkorDB."
+            "Supported engines: Neo4j, Memgraph, FalkorDB, Oracle, Postgres."
     )
 
     override fun createIndex(spec: IndexSpec, existing: SchemaItemInfo?): List<SchemaStatement> = unsupported()

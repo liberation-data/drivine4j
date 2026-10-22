@@ -11,7 +11,7 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.drivine.test.MiniCypher
-import org.drivine.test.OracleCypherFixtures
+import org.drivine.test.SqlCypherFixtures
 import org.drivine.test.OracleTestContainer
 
 /**
@@ -51,15 +51,15 @@ object OracleTestDatabase {
         ).also { OracleGraph(graph).ensure(it) }
 
     /** Removes every node and relationship of the graph [pm] speaks to. */
-    fun clear(pm: NonTransactionalPersistenceManager) = OracleCypherFixtures.clear(pm)
+    fun clear(pm: NonTransactionalPersistenceManager) = SqlCypherFixtures.clear(pm)
 
     /** Writes the nodes and relationships a Cypher `CREATE` fixture describes to the graph [pm] speaks to. */
     fun seed(pm: PersistenceManager, cypher: String) {
-        OracleCypherFixtures.run(pm, cypher)
+        SqlCypherFixtures.run(pm, cypher)
     }
 
-    /** [pm] as the cross-engine tests use a manager: see [OracleCypherFixtures.over]. */
-    fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = OracleCypherFixtures.over(pm)
+    /** [pm] as the cross-engine tests use a manager: see [SqlCypherFixtures.over]. */
+    fun fixtures(pm: NonTransactionalPersistenceManager): PersistenceManager = SqlCypherFixtures.over(pm)
 
     /**
      * The provider of [pm]'s connections, for a test that runs a statement on a connection of its own.

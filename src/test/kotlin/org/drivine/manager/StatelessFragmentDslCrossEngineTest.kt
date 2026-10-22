@@ -32,6 +32,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * The generated bare-`@NodeFragment` query DSL behaviour, verified cross-engine (Neo4j / FalkorDB /
@@ -184,4 +186,14 @@ class StatelessFragmentDslOracleTest {
     @BeforeEach fun clean() = OracleTestDatabase.clear(pm)
 
     @Test fun `bare fragment DSL on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
+}
+
+@PostgresTests
+class StatelessFragmentDslPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach fun clean() = PostgresTestDatabase.clear(pm)
+
+    @Test fun `bare fragment DSL on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
 }

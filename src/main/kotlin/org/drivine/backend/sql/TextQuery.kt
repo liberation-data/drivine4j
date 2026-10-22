@@ -1,9 +1,10 @@
-package org.drivine.backend.oracle
+package org.drivine.backend.sql
 
 /**
- * A full-text query as Oracle is asked it. Without a text index it is the terms that score a node,
- * those it must hold and those it must not, each a regular expression that matches the term as a
- * whole word in lower-cased text. Through an Oracle Text index it is [oracleText].
+ * A full-text query as a SQL store is asked it: the terms that score a node, those it must hold and
+ * those it must not, each a regular expression that matches the term as a whole word in lower-cased
+ * text, which Oracle without a text index and Postgres both count. Through an Oracle Text index it is
+ * [oracleText].
  *
  * It reads the plain core of the Lucene syntax the graph engines take: words, a `"quoted phrase"`,
  * `+must`, `-not` and `NOT not`, a `prefix*`, and `field:word` as the word. `AND` makes the word
@@ -22,6 +23,11 @@ internal class TextQuery private constructor(
     val scored: List<String>,
     val required: List<String>,
     val excluded: List<String>,
+    /**
+     * The words of each term of [scored], in turn: a node whose text matches the term holds each of them,
+     * so a store may narrow what it counts to the nodes that hold them all, by an index of their text.
+     */
+    val scoredWords: List<List<String>>,
     /**
      * The same query for an Oracle Text index: the scoring terms accumulated, each required one
      * conjoined and each excluded one taken away. A word is in braces, so it is a word and never one
@@ -46,6 +52,7 @@ internal class TextQuery private constructor(
          */
         fun parse(query: String): TextQuery {
             val scored = mutableListOf<String>()
+            val scoredWords = mutableListOf<List<String>>()
             val required = mutableListOf<String>()
             val excluded = mutableListOf<String>()
             val scoredText = mutableListOf<String>()
@@ -63,8 +70,10 @@ internal class TextQuery private constructor(
                 if (term != null) {
                     when {
                         token.sign == '-' || not -> { excluded += term.pattern; excludedText += term.oracleText }
-                        token.sign == '+' || must -> { required += term.pattern; scored += term.pattern; requiredText += term.oracleText; scoredText += term.oracleText }
-                        else -> { scored += term.pattern; scoredText += term.oracleText }
+                        token.sign == '+' || must -> {
+                            required += term.pattern; scored += term.pattern; scoredWords += term.words; requiredText += term.oracleText; scoredText += term.oracleText
+                        }
+                        else -> { scored += term.pattern; scoredWords += term.words; scoredText += term.oracleText }
                     }
                 }
                 // An operator applies to the token after it and to no other, whether or not that token holds a word.
@@ -74,7 +83,7 @@ internal class TextQuery private constructor(
             require(scored.isNotEmpty()) { "A full-text query needs a word to look for: '$query' has none." }
             val text = (listOf("(" + scoredText.joinToString(" ACCUM ") + ")") + requiredText).joinToString(" AND ") +
                 excludedText.joinToString("") { " NOT $it" }
-            return TextQuery(scored, required, excluded, text)
+            return TextQuery(scored, required, excluded, scoredWords, text)
         }
     }
 
@@ -176,7 +185,7 @@ internal class TextQuery private constructor(
     }
 
     /** One term of a query: its [words] in turn, the last of them the start of a word when [prefix]. */
-    private class Term(words: List<String>, prefix: Boolean) {
+    private class Term(val words: List<String>, prefix: Boolean) {
 
         /** The term for Oracle Text: its words as a phrase, or when [prefix] the last as the start of a word. */
         val oracleText: String = if (prefix) {

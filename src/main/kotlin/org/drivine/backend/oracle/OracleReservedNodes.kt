@@ -1,5 +1,6 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.SqlKind
 import org.drivine.schema.StoreStampStatements
 import org.drivine.schema.VersionMarkerStatements
 

@@ -29,6 +29,8 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -227,4 +229,21 @@ class StatelessSaveThenVectorSearchOracleTest {
     @Test fun `save then loadNearest on Oracle`() = verifySingleSave(fixtures, registry)
 
     @Test fun `saveAll then loadNearest on Oracle`() = verifyBatchSave(fixtures, registry)
+}
+
+@PostgresTests
+class StatelessSaveThenVectorSearchPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+    private val fixtures = PostgresTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun clean() {
+        PostgresTestDatabase.clear(pm)
+        pm.indexes.ensure(DOC_VECTOR_INDEX)
+    }
+
+    @Test fun `save then loadNearest on Postgres`() = verifySingleSave(fixtures, registry)
+
+    @Test fun `saveAll then loadNearest on Postgres`() = verifyBatchSave(fixtures, registry)
 }

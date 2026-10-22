@@ -1,54 +1,28 @@
 package org.drivine.backend.oracle
 
 import org.drivine.annotation.Direction
+import org.drivine.backend.sql.SqlKind
 import org.drivine.model.Stamps
 import org.drivine.query.SqlParameters
 import org.drivine.schema.SimilarityFunction
 import java.math.BigDecimal
-import java.time.Instant
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.OffsetDateTime
-import java.time.ZonedDateTime
-import java.util.Date
 
-/** The SQL type a property is read as, so it compares and orders as its values do. */
-internal enum class SqlKind(private val returning: String) {
-    TEXT(""),
-    NUMBER(" RETURNING NUMBER"),
-    INSTANT(" RETURNING TIMESTAMP WITH TIME ZONE"),
-    LOCAL_DATE_TIME(" RETURNING TIMESTAMP"),
-    LOCAL_DATE(" RETURNING DATE");
-
-    /** The column type of this kind in a `JSON_TABLE`, which must give a width: text is `VARCHAR2(4000)`, the most a JSON value is read as by default. */
-    val column: String
-        get() = if (this == TEXT) "VARCHAR2(4000)" else returning.removePrefix(" RETURNING ")
-
-    /** The value at [path] in the JSON column [json], read as this kind. */
-    fun read(json: String, path: String): String = "JSON_VALUE($json, $path$returning)"
-
-    companion object {
-        /** The kind a property is read as to compare it with [value]. A boolean is compared as its JSON text. */
-        fun ofValue(value: Any?): SqlKind = when (value) {
-            is Number -> NUMBER
-            is Instant, is ZonedDateTime, is OffsetDateTime, is Date -> INSTANT
-            is LocalDateTime -> LOCAL_DATE_TIME
-            is LocalDate -> LOCAL_DATE
-            is Collection<*> -> ofValue(value.firstOrNull { it != null })
-            else -> TEXT
-        }
-
-        /** The kind a field of [type] is ordered as. */
-        fun ofType(type: Class<*>?): SqlKind = when {
-            type == null -> TEXT
-            Number::class.java.isAssignableFrom(type) || type.isPrimitive && type != Boolean::class.javaPrimitiveType && type != Char::class.javaPrimitiveType -> NUMBER
-            type == Instant::class.java || type == ZonedDateTime::class.java || type == OffsetDateTime::class.java || Date::class.java.isAssignableFrom(type) -> INSTANT
-            type == LocalDateTime::class.java -> LOCAL_DATE_TIME
-            type == LocalDate::class.java -> LOCAL_DATE
-            else -> TEXT
-        }
+/** What `JSON_VALUE` is told to return to read a property as this kind: nothing for text, which it returns by default. */
+private val SqlKind.returning: String
+    get() = when (this) {
+        SqlKind.TEXT -> ""
+        SqlKind.NUMBER -> " RETURNING NUMBER"
+        SqlKind.INSTANT -> " RETURNING TIMESTAMP WITH TIME ZONE"
+        SqlKind.LOCAL_DATE_TIME -> " RETURNING TIMESTAMP"
+        SqlKind.LOCAL_DATE -> " RETURNING DATE"
     }
-}
+
+/** The column type of this kind in a `JSON_TABLE`, which must give a width: text is `VARCHAR2(4000)`, the most a JSON value is read as by default. */
+internal val SqlKind.column: String
+    get() = if (this == SqlKind.TEXT) "VARCHAR2(4000)" else returning.removePrefix(" RETURNING ")
+
+/** The value at [path] in the JSON column [json], read as this kind. */
+internal fun SqlKind.read(json: String, path: String): String = "JSON_VALUE($json, $path$returning)"
 
 /** The pieces of SQL every statement over an [OracleGraph] is made of. */
 internal object OracleSql {

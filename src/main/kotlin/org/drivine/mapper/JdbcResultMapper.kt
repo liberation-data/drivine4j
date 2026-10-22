@@ -16,7 +16,8 @@ class JdbcRow(val keys: List<String>, val values: List<Any?>)
  *
  * A column of the database's JSON type is a document: it is parsed, so a query that returns one JSON
  * column gives the nested map a `@GraphView` is hydrated from, as a Cypher query that returns one map
- * does. JSON held in a character column is text, and stays text.
+ * does. JSON held in a character column is text, and stays text. Postgres's `json` and `jsonb` are
+ * such a type, an array is a list, and a pgvector `vector` is a list of doubles, as Oracle's is.
  */
 class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMapper(subtypeRegistry) {
 
@@ -35,6 +36,9 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
         private const val ORACLE_BINARY_DOUBLE = 101
         private const val ORACLE_VECTOR = -105
 
+        /** Postgres's own types, told by name: the driver reports them as `OTHER`, or a time zone as none. */
+        private const val POSTGRES_VECTOR = -10_105
+
         /** Whole numbers are read as `Long`, as the graph drivers give them. */
         private val json = ObjectMapper().enable(DeserializationFeature.USE_LONG_FOR_INTS)
 
@@ -44,10 +48,13 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             val columns = 1..meta.columnCount
             val keys = columns.map { meta.getColumnLabel(it) }
             // Oracle's JSON and VECTOR are told by name: their codes are the driver's own, and have moved.
+            // Postgres's are told by name too: `jsonb` and `vector` are OTHER to its driver, and `timestamptz` a TIMESTAMP.
             val types = columns.map { column ->
                 when (meta.getColumnTypeName(column)?.uppercase()) {
-                    "JSON" -> ORACLE_JSON
-                    "VECTOR" -> ORACLE_VECTOR
+                    "JSON", "JSONB" -> ORACLE_JSON
+                    // Postgres names a type as its catalog does, in lower case, and its driver reads pgvector's as text.
+                    "VECTOR" -> if (meta.getColumnTypeName(column) == "vector") POSTGRES_VECTOR else ORACLE_VECTOR
+                    "TIMESTAMPTZ" -> Types.TIMESTAMP_WITH_TIMEZONE
                     // The driver reports a DATE as a TIMESTAMP by default (`mapDateToTimestamp`); a date is read as a date.
                     "DATE" -> Types.DATE
                     else -> meta.getColumnType(column)
@@ -75,10 +82,15 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
                 results.getObject(column, OffsetDateTime::class.java)?.toZonedDateTime()
             Types.TIMESTAMP -> results.getTimestamp(column)?.toLocalDateTime()
             Types.DATE -> results.getDate(column)?.toLocalDate()
+            // Whole numbers come back as `Long`, as the graph drivers give them, whatever the column's width.
+            Types.TINYINT, Types.SMALLINT, Types.INTEGER, Types.BIGINT -> results.getLong(column).takeUnless { results.wasNull() }
             Types.BOOLEAN, Types.BIT -> results.getBoolean(column).takeUnless { results.wasNull() }
             // Read whole, so a locator does not outlive the statement that owns it.
             Types.BLOB, Types.BINARY, Types.VARBINARY, Types.LONGVARBINARY -> results.getBytes(column)
             ORACLE_VECTOR -> results.getObject(column, FloatArray::class.java)?.map { it.toDouble() }
+            // pgvector's text is a JSON array of numbers.
+            POSTGRES_VECTOR -> results.getString(column)?.let { json.readValue(it, List::class.java).map { n -> (n as Number).toDouble() } }
+            Types.ARRAY -> results.getArray(column)?.let { array -> try { (array.array as Array<*>).toList() } finally { array.free() } }
             else -> results.getObject(column)
         }
 

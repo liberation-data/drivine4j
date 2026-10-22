@@ -16,6 +16,8 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedFalkorDb
@@ -489,4 +491,9 @@ class StatelessSaveAllFieldsMemgraphTest : StatelessSaveAllFieldsContract() {
 @OracleTests
 class StatelessSaveAllFieldsOracleTest : StatelessSaveAllFieldsContract() {
     override val pm: PersistenceManager = OracleTestDatabase.fixtures(OracleTestDatabase.graphManager("contracts"))
+}
+
+@PostgresTests
+class StatelessSaveAllFieldsPostgresTest : StatelessSaveAllFieldsContract() {
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
 }

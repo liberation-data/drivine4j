@@ -6,7 +6,8 @@ package org.drivine.query
  *
  * A parameter is a `$` that does not continue an identifier, followed by a name: Oracle allows `$`
  * inside an identifier (`v$session`), never at its start. Text inside a string literal (`'…'`,
- * `n'…'`, `q'[…]'` or `nq'[…]'`), a quoted identifier or a comment is left as it is, so a JSON path
+ * `n'…'`, `q'[…]'` or `nq'[…]'`, or Postgres's dollar-quoted `$$…$$` and `$tag$…$tag$`), a quoted
+ * identifier or a comment is left as it is, so a JSON path
  * such as `'$.name'` or `'$[*]?(@ == $l)'` is not read as a parameter. Nor is a PL/SQL
  * conditional-compilation directive (`$IF`, `$THEN`, `$ELSE`, `$ELSIF`, `$END`, `$ERROR`), which a
  * parameter therefore cannot be named after.
@@ -30,6 +31,7 @@ internal object SqlParameters {
             val end = when {
                 c == '\'' || c == '"' -> endOfQuoted(sql, i, c)
                 literalPrefix(sql, i) != null -> endOfPrefixedLiteral(sql, i, literalPrefix(sql, i)!!)
+                dollarTag(sql, i) != null -> endOfDollarQuoted(sql, i, dollarTag(sql, i)!!)
                 sql.startsWith("--", i) -> sql.indexOf('\n', i).let { if (it < 0) sql.length else it }
                 sql.startsWith("/*", i) -> sql.indexOf("*/", i + 2).let { if (it < 0) sql.length else it + 2 }
                 else -> -1
@@ -78,6 +80,28 @@ internal object SqlParameters {
     /** Whether the character before [index] is part of an identifier, which the one at [index] would then continue. */
     private fun continuesIdentifier(sql: String, index: Int): Boolean =
         index > 0 && sql[index - 1].let { it.isLetterOrDigit() || it == '_' || it == '$' || it == '#' }
+
+    /**
+     * The tag of a Postgres dollar quote that opens at [start], `$$` or `$tag$`, the dollars and all;
+     * null when none does. A tag is a name, as a parameter's is, but closed by a second dollar, and a
+     * quote is one only where the tag comes again to close it: so `$a$b` is still the parameter `a`
+     * and the text `$b`, as Oracle reads it. `$$` before a name is a PL/SQL inquiry directive
+     * (`$$PLSQL_UNIT`), not a quote.
+     */
+    private fun dollarTag(sql: String, start: Int): String? {
+        if (sql[start] != '$' || continuesIdentifier(sql, start)) return null
+        var j = start + 1
+        if (j < sql.length && startsName(sql[j])) {
+            while (j < sql.length && (sql[j].isLetterOrDigit() || sql[j] == '_')) j++
+        }
+        if (j >= sql.length || sql[j] != '$') return null
+        if (j == start + 1 && j + 1 < sql.length && startsName(sql[j + 1])) return null
+        val tag = sql.substring(start, j + 1)
+        return tag.takeIf { sql.indexOf(it, j + 1) >= 0 }
+    }
+
+    /** The index after the dollar-quoted text that opens at [start] with [tag], which closes it again. */
+    private fun endOfDollarQuoted(sql: String, start: Int, tag: String): Int = sql.indexOf(tag, start + tag.length) + tag.length
 
     /** The index after the literal or quoted identifier that opens at [start]; a doubled quote is part of it. */
     private fun endOfQuoted(sql: String, start: Int, quote: Char): Int {

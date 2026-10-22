@@ -1,5 +1,11 @@
 package org.drivine.backend.oracle
 
+import org.drivine.backend.sql.BagClearing
+import org.drivine.backend.sql.NodeWrites
+import org.drivine.backend.sql.OwnedLabels
+import org.drivine.backend.sql.RootStep
+import org.drivine.backend.sql.WritePlan
+import org.drivine.backend.sql.code
 import org.drivine.annotation.Direction
 import org.drivine.query.RootMode
 import org.junit.jupiter.api.Test
@@ -12,6 +18,7 @@ import kotlin.test.assertTrue
 class WritePlanTest {
 
     private val graph = OracleGraph("g")
+    private val blocks = OracleWriteBlocks(graph)
 
     @Suppress("UNCHECKED_CAST")
     private fun steps(plan: WritePlan): List<Map<String, Any?>> = plan.bindings()[OracleWriteBlock.PLAN] as List<Map<String, Any?>>
@@ -28,8 +35,8 @@ class WritePlanTest {
 
     @Test
     fun `a root that is checked whole and may be made says so, and one checked by its node token alone does not say whole`() {
-        val whole = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n:l", whole = true, mode = RootMode.EITHER))
-        val token = root(WritePlan(graph), RootStep(carried = "n:l", expect = "n", whole = false, mode = RootMode.EITHER))
+        val whole = root(WritePlan(blocks), RootStep(carried = "n:l", expect = "n:l", whole = true, mode = RootMode.EITHER))
+        val token = root(WritePlan(blocks), RootStep(carried = "n:l", expect = "n", whole = false, mode = RootMode.EITHER))
 
         assertEquals(mapOf<String, Any?>("root" to true, "carried" to "n:l", "expect" to "n:l", "whole" to true), whole)
         assertEquals(mapOf<String, Any?>("root" to true, "carried" to "n:l", "expect" to "n"), token)
@@ -37,7 +44,7 @@ class WritePlanTest {
 
     @Test
     fun `an update says the root is not made, which is the one thing a root says by a false`() {
-        val update = root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.FOUND))
+        val update = root(WritePlan(blocks), RootStep(carried = null, expect = null, whole = false, mode = RootMode.FOUND))
 
         // The block reads an absent `create` as null and makes the node: only a false keeps a node that is gone, gone.
         assertEquals(mapOf<String, Any?>("root" to true, "create" to false), update)
@@ -45,22 +52,22 @@ class WritePlanTest {
 
     @Test
     fun `a create says the root is not written when it is there, by a true`() {
-        val create = root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.ABSENT))
+        val create = root(WritePlan(blocks), RootStep(carried = null, expect = null, whole = false, mode = RootMode.ABSENT))
 
         assertEquals(mapOf<String, Any?>("root" to true, "absent" to true), create)
     }
 
     @Test
     fun `a root that carries no stamp and expects none says only that it is the root, and any other node says nothing of it`() {
-        assertEquals(mapOf<String, Any?>("root" to true), root(WritePlan(graph), RootStep(carried = null, expect = null, whole = false, mode = RootMode.EITHER)))
-        assertEquals(emptyMap(), root(WritePlan(graph), null))
+        assertEquals(mapOf<String, Any?>("root" to true), root(WritePlan(blocks), RootStep(carried = null, expect = null, whole = false, mode = RootMode.EITHER)))
+        assertEquals(emptyMap(), root(WritePlan(blocks), null))
     }
 
     // ----- What a node step writes -----
 
     @Test
     fun `a node's labels are written sorted, as the store keeps them, whatever order the model gives them in`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.node(plan.shape(listOf("Zebra", "Animal"), "id"), "id", "z", "z", listOf("Zebra", "Animal", "Mammal"), NodeWrites())
 
         assertEquals(listOf("Animal", "Mammal", "Zebra"), steps(plan).single()["labels"])
@@ -68,7 +75,7 @@ class WritePlanTest {
 
     @Test
     fun `a property set to null is set, and is not left out as an empty map is`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Claim"), "id")
         plan.node(shape, "id", "c1", "c1", listOf("Claim"), NodeWrites(set = mapOf("note" to null)))
         plan.node(shape, "id", "c2", "c2", listOf("Claim"), NodeWrites(set = emptyMap()))
@@ -80,7 +87,7 @@ class WritePlanTest {
 
     @Test
     fun `the bags a root clears are laid out one map each, a bag with no prefix keeping its null`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         plan.node(
             plan.shape(listOf("Claim"), "id"), "id", "c1", "c1", listOf("Claim"),
             NodeWrites(
@@ -112,7 +119,7 @@ class WritePlanTest {
 
     @Test
     fun `an unlink that removes the relationships to the nodes it names says nothing more`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val claims = plan.shape(listOf("Claim"), "id")
         val humans = plan.shape(listOf("Human"), "id")
         val from = plan.ref(claims, "c1")
@@ -123,7 +130,7 @@ class WritePlanTest {
 
     @Test
     fun `an unlink that keeps none still names its empty list, for with keep that is every relationship of the field`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val from = plan.ref(plan.shape(listOf("Claim"), "id"), "c1")
         val humans = plan.shape(listOf("Human"), "id")
         plan.unlink(from, "MENTIONS", Direction.INCOMING, humans, emptyList(), keep = true, delete = true, held = listOf("h9"))
@@ -138,7 +145,7 @@ class WritePlanTest {
 
     @Test
     fun `the steps are bound in the order they were added, each node numbered as it comes, a ref among them`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
         val shape = plan.shape(listOf("Human"), "id")
         val a = plan.node(shape, "id", "a", "a", listOf("Human"), NodeWrites())
         val b = plan.ref(shape, "b")
@@ -153,11 +160,11 @@ class WritePlanTest {
 
     @Test
     fun `the plan is bound with its mark, which is its own and not another plan's`() {
-        val plan = WritePlan(graph)
+        val plan = WritePlan(blocks)
 
         assertEquals(setOf(OracleWriteBlock.PLAN, OracleWriteBlock.MARK), plan.bindings().keys)
         assertEquals(plan.mark, plan.bindings()[OracleWriteBlock.MARK])
-        assertNotEquals(plan.mark, WritePlan(graph).mark)
+        assertNotEquals(plan.mark, WritePlan(blocks).mark)
         assertTrue(steps(plan).isEmpty())
     }
 

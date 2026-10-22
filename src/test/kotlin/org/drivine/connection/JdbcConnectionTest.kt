@@ -43,15 +43,15 @@ class JdbcConnectionTest {
     }
 
     /** Stubs the statement to answer, as a query does, with a result of [values]. */
-    private fun answers(values: List<Int>) {
+    private fun answers(values: List<Long>) {
         // The result set is built first: Mockito takes a stubbing begun inside another's `thenReturn` as unfinished.
         val results = resultSet(values)
         `when`(statement.execute()).thenReturn(true)
         `when`(statement.resultSet).thenReturn(results)
     }
 
-    /** A result of one column `V`, an integer, with a row for each of [values]. */
-    private fun resultSet(values: List<Int>): ResultSet {
+    /** A result of one column `V`, an integer, with a row for each of [values]. An integer is read as a `Long`. */
+    private fun resultSet(values: List<Long>): ResultSet {
         val meta = Mockito.mock(ResultSetMetaData::class.java)
         `when`(meta.columnCount).thenReturn(1)
         `when`(meta.getColumnLabel(1)).thenReturn("V")
@@ -63,7 +63,7 @@ class JdbcConnectionTest {
             `when`(results.next()).thenReturn(false)
         } else {
             `when`(results.next()).thenReturn(true, *Array(values.size) { it + 1 < values.size })
-            `when`(results.getObject(1)).thenReturn(values.first(), *values.drop(1).toTypedArray())
+            `when`(results.getLong(1)).thenReturn(values.first(), *values.drop(1).toTypedArray())
         }
         return results
     }
@@ -123,6 +123,15 @@ class JdbcConnectionTest {
     }
 
     @Test
+    fun `a long string goes to Postgres as a string, since a CLOB there would be taken for a large object`() {
+        val postgres = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+        val long = "€".repeat(12_000)
+        postgres.query(QuerySpecification.withStatement(sqlStatement("SELECT \$s")).bind(mapOf("s" to long)))
+        verify(statement).setString(1, long)
+        verify(statement, never()).setClob(eq(1), any(Reader::class.java))
+    }
+
+    @Test
     fun `a collection or a map is bound as JSON text, and a zoned date time as its offset form`() {
         val moment = ZonedDateTime.parse("2026-03-01T10:15:30+01:00[Europe/Paris]")
         query(
@@ -149,20 +158,20 @@ class JdbcConnectionTest {
 
     @Test
     fun `a query answers with its result set`() {
-        answers(listOf(7, 8))
+        answers(listOf(7L, 8L))
 
-        assertEquals(listOf<Any>(7, 8), query("SELECT v FROM t", emptyMap()))
+        assertEquals(listOf<Any>(7L, 8L), query("SELECT v FROM t", emptyMap()))
         verify(statement).close()
     }
 
     @Test
     fun `a block that hands back a result set is asked for it`() {
-        val results = resultSet(listOf(42))
+        val results = resultSet(listOf(42L))
         `when`(statement.execute()).thenReturn(false)
         `when`(statement.moreResults).thenReturn(true)
         `when`(statement.resultSet).thenReturn(results)
 
-        assertEquals(listOf<Any>(42), query("BEGIN NULL; END;", emptyMap()))
+        assertEquals(listOf<Any>(42L), query("BEGIN NULL; END;", emptyMap()))
     }
 
     @Test

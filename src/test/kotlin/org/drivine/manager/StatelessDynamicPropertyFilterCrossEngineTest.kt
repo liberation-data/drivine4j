@@ -40,6 +40,8 @@ import sample.dynamicfilter.RecordNodeQueryDsl
 import kotlin.test.assertEquals
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 
 /**
  * The dynamic-predicate escape hatch ([property] / [predicate]) verified cross-engine (Neo4j /
@@ -274,4 +276,12 @@ class StatelessDynamicPropertyFilterOracleTest {
     private val pm = OracleTestDatabase.graphManager("contracts", registry)
 
     @Test fun `dynamic property filters resolve on Oracle`() = verify(buildGom(pm, registry), OracleTestDatabase.fixtures(pm))
+}
+
+@PostgresTests
+class StatelessDynamicPropertyFilterPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @Test fun `dynamic property filters resolve on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
 }

@@ -2,8 +2,9 @@ package org.drivine.test
 
 /**
  * Cuts a fixture's text into the tokens [MiniCypherParser] reads: words, names in backticks, string
- * literals with their escapes read, numbers and symbols. Space between tokens is dropped, and each
- * token keeps where it stood, so a refusal can say where.
+ * literals with their escapes read, numbers and symbols. Space between tokens is dropped, and so is a
+ * comment, `//` to the end of its line, as Cypher reads one; each token keeps where it stood, so a
+ * refusal can say where.
  *
  * It knows no grammar. A word is a word whether the parser will take it for a keyword, a variable
  * or a function, and a character it has no other use for is a symbol the parser refuses where it
@@ -39,8 +40,8 @@ internal class MiniCypherLexer(private val text: String) {
     /** One piece of a fixture: its [kind], its [text], and the [position] of its first character in the fixture. */
     data class Token(val kind: Kind, val text: String, val position: Int) {
 
-        /** Whether this is the word [word], as a keyword is written; a name in backticks is never one. */
-        fun isWord(word: String): Boolean = kind == Kind.WORD && text == word
+        /** Whether this is the keyword [word] in any case, as Cypher reads a keyword; a name in backticks is never one. */
+        fun isKeyword(word: String): Boolean = kind == Kind.WORD && text.equals(word, ignoreCase = true)
 
         fun isSymbol(symbol: String): Boolean = kind == Kind.SYMBOL && text == symbol
 
@@ -53,7 +54,7 @@ internal class MiniCypherLexer(private val text: String) {
     /** The tokens of the text in order, closed by one of [Kind.END]. */
     fun tokens(): List<Token> = buildList {
         while (true) {
-            while (at < text.length && text[at].isWhitespace()) at++
+            skipSpaceAndComments()
             val start = at
             val c = text.getOrNull(at) ?: break
             add(
@@ -67,6 +68,15 @@ internal class MiniCypherLexer(private val text: String) {
             )
         }
         add(Token(Kind.END, "", text.length))
+    }
+
+    /** Moves past space and `//` comments, each to the end of its line. */
+    private fun skipSpaceAndComments() {
+        while (true) {
+            while (at < text.length && text[at].isWhitespace()) at++
+            if (!text.startsWith("//", at)) return
+            at = text.indexOf('\n', at).let { if (it < 0) text.length else it }
+        }
     }
 
     /** A string literal, its escapes read as Cypher reads them. */

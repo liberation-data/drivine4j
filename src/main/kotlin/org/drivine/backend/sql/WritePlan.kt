@@ -1,8 +1,41 @@
-package org.drivine.backend.oracle
+package org.drivine.backend.sql
 
 import org.drivine.annotation.Direction
 import org.drivine.model.Stamps
 import org.drivine.query.RootMode
+
+/** What a statement that carries out a plan gives back: see [WriteBlocks]. */
+internal enum class WriteReturns {
+    /**
+     * One row: the stamps a save hands back, the root's first, then `index/found=stamp` for each node
+     * whose stamp is handed back. No row when a checked root is stale.
+     */
+    STAMPS,
+
+    /** A row for each node whose stamp is handed back, `index/found=stamp`: what a batch of fragments returns. */
+    EACH_STAMP,
+
+    /** One row: the number of relationships the steps counted. */
+    COUNT,
+}
+
+/**
+ * How a store carries out a [WritePlan]: Oracle by a PL/SQL block written for the plan's shapes,
+ * Postgres by a function the store keeps. Each reads the plan, a JSON array of steps bound as
+ * [WritePlan.PLAN], and the mark bound as [WritePlan.MARK], and does what each step says.
+ */
+internal interface WriteBlocks {
+
+    /**
+     * The statement that carries out a plan whose steps name [shapes] by their number, and gives back
+     * what [returns] says. With [patchedIf], its `patch` steps write only to a node that meets a
+     * predicate: the query counts the node whose `nid` it is given, if the node meets it.
+     */
+    fun statement(shapes: List<NodeShape>, returns: WriteReturns, patchedIf: String?): String
+
+    /** The values of the statement's parameters beyond the plan and the mark. */
+    fun bindings(shapes: List<NodeShape>, patchedIf: String?): Map<String, Any?> = emptyMap()
+}
 
 /** How a block finds a node: the labels it carries and the property its id is stored under. */
 internal data class NodeShape(val labels: List<String>, val key: String)
@@ -24,7 +57,7 @@ internal class NodeWrites(
     val owned: OwnedLabels? = null,
 )
 
-/** A property bag whose stored keys the block clears when the object no longer holds them: see `OracleWriteBlock`'s `owns`. */
+/** A property bag whose stored keys the block clears when the object no longer holds them: see the store's `owns`. */
 internal class BagClearing(val prefix: String?, val flat: Boolean, val keep: List<String>, val reservedKeys: List<String>, val reservedPrefixes: List<String>) {
     /** The bag as a `node` step names it, under the names `owns` reads. */
     fun toMap(): Map<String, Any?> = mapOf("prefix" to prefix, "flat" to flat, "keep" to keep, "reservedKeys" to reservedKeys, "reservedPrefixes" to reservedPrefixes)
@@ -67,10 +100,10 @@ internal enum class StepKind(val op: String, val procedure: String) {
 /**
  * The steps a write block carries out, gathered as they are decided. A node a step saves or finds is
  * known to later steps by the number it is given here. Each kind of step is a method, and the names
- * the block reads a step's fields by are spelt in this file and, where the block reads them, in
- * `OracleWriteBlock`: nowhere else.
+ * the block reads a step's fields by are spelt in this file and, where a store reads them, in its
+ * block: `OracleWriteBlock`, `PostgresWriteFunctions`.
  */
-internal class WritePlan(private val graph: OracleGraph) {
+internal class WritePlan(private val blocks: WriteBlocks) {
     /** The steps in the order they were added, which is the order the block carries them out in. */
     private val steps = mutableListOf<Map<String, Any?>>()
 
@@ -158,14 +191,15 @@ internal class WritePlan(private val graph: OracleGraph) {
         )
 
     /**
-     * The block that carries the steps out and gives back what [returns] says. With [patchedIf], its
-     * `patch` steps write only to a node that meets a predicate: see [OracleWriteBlock].
+     * The statement that carries the steps out and gives back what [returns] says. With [patchedIf], its
+     * `patch` steps write only to a node that meets a predicate: see [WriteBlocks.statement].
      */
-    fun text(returns: OracleWriteBlock.Returns, patchedIf: String? = null): String =
-        OracleWriteBlock(graph, shapes.keys.toList(), returns, patchedIf).text()
+    fun text(returns: WriteReturns, patchedIf: String? = null): String =
+        blocks.statement(shapes.keys.toList(), returns, patchedIf)
 
-    /** The values of the block's parameters: the steps as JSON, and the mark. */
-    fun bindings(): Map<String, Any?> = mapOf(OracleWriteBlock.PLAN to steps, OracleWriteBlock.MARK to mark)
+    /** The values of the statement's parameters: the steps as JSON, the mark, and what the store adds for [patchedIf]. */
+    fun bindings(patchedIf: String? = null): Map<String, Any?> =
+        mapOf(PLAN to steps, MARK to mark) + blocks.bindings(shapes.keys.toList(), patchedIf)
 
     /** A stamp for a node step, which is offered to its node. */
     private fun fresh(): String = Stamps.fresh().also { stamps += it }
@@ -177,6 +211,14 @@ internal class WritePlan(private val graph: OracleGraph) {
      */
     private fun add(kind: StepKind, vararg fields: Pair<String, Any?>) {
         steps += (listOf("op" to kind.op) + fields.filter { it.second != null }).toMap()
+    }
+
+    companion object {
+        /** The parameter the plan is bound as: the steps, a JSON array. */
+        const val PLAN = "_plan"
+
+        /** The parameter that carries the stamp the steps take a new relationship token from: see [mark]. */
+        const val MARK = "_mark"
     }
 }
 
