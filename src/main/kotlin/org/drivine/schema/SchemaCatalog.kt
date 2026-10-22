@@ -256,6 +256,10 @@ class SchemaCatalog private constructor(
          * the annotation, while engine options can only be expressed in a hand-written catalog spec.
          * The two are not rivals, so the spec carrying engine options wins whole — no field-by-field
          * merging. Two specs that *both* pin engine options and disagree are a genuine conflict.
+         *
+         * A constraint's [ConstraintSpec.nodeIdProperty] may differ too, being no part of the item: a
+         * constraint read from a fragment and the same one declared by hand are one, and the fragment's,
+         * which knows the property its nodes are identified by, wins.
          */
         private fun deduplicate(specs: List<SchemaItemSpec>): List<SchemaItemSpec> {
             val byKey = specs.groupBy { Triple(it.kind, it.label, it.properties.toSet()) }

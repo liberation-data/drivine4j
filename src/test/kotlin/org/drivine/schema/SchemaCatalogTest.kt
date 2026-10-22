@@ -340,5 +340,10 @@ class SchemaCatalogTest {
             SchemaCatalog.of(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence")))
 
         assertEquals(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence"), nodeIdProperty = "id"), merged.constraints.single())
+
+        // The fragment's wins though the one declared by hand comes first.
+        val handFirst = SchemaCatalog.of(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence"))) +
+            SchemaCatalog.fromFragments(MessageFixture::class)
+        assertEquals("id", handFirst.constraints.single().nodeIdProperty)
     }
 }
