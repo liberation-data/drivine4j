@@ -416,6 +416,10 @@ class Neo4jSchemaGrammarTest {
 
         val byKey = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "email"), 3)
         assertTrue(byKey.contains("collect({elementId: elementId(n)}) AS _nodes"), byKey)
+
+        // A flattened property-bag key is one name, quoted as key and as property alike.
+        val byBagKey = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "ref.id"), 3)
+        assertTrue(byBagKey.contains("collect({elementId: elementId(n), `ref.id`: n.`ref.id`}) AS _nodes"), byBagKey)
     }
 
     @Test
