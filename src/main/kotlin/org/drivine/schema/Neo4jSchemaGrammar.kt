@@ -183,6 +183,13 @@ class Neo4jSchemaGrammar : SchemaGrammar {
         return errors.all { it.gqlStatus() == GENERAL_STATUS } && errors.any { it.code() == CREATION_FAILED }
     }
 
+    /**
+     * "There already exists an index (:Label {prop}). A constraint cannot be created until the index
+     * has been dropped." By its code, which Neo4j 4.4 to 2026 all give.
+     */
+    override fun isBlockedByIndex(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().any { it.code() == INDEX_ALREADY_EXISTS }
+
     // ----- Helpers -----
 
     /**
@@ -247,5 +254,8 @@ class Neo4jSchemaGrammar : SchemaGrammar {
 
         /** A constraint not made, for whatever reason. */
         const val CREATION_FAILED = "Neo.DatabaseError.Schema.ConstraintCreationFailed"
+
+        /** An index over the schema a constraint would make its own index over. */
+        const val INDEX_ALREADY_EXISTS = "Neo.ClientError.Schema.IndexAlreadyExists"
     }
 }

@@ -373,6 +373,17 @@ class Neo4jSchemaGrammarTest {
     }
 
     @Test
+    fun `an index in the way of a constraint is known by its code`() {
+        assertTrue(
+            grammar.isBlockedByIndex(
+                DrivineException("wrapped", Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}). A constraint cannot be created until the index has been dropped."))
+            )
+        )
+        assertFalse(grammar.isBlockedByIndex(Neo4jException("Neo.ClientError.Schema.IndexWithNameAlreadyExists", "There already exists an index called 'person_email'.")))
+        assertFalse(grammar.isBlockedByIndex(RuntimeException("There already exists an index (:Person {email}).")))
+    }
+
+    @Test
     fun `an error without a driver's code is not a violation, whatever it says`() {
         assertFalse(grammar.isConstraintViolation(RuntimeException("Unable to create Constraint: both nodes have the same value")))
         assertFalse(grammar.isConstraintViolation(RuntimeException("Connection refused")))

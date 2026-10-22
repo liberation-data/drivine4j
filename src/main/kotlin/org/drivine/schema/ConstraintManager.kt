@@ -52,9 +52,10 @@ class ConstraintManager internal constructor(
     /**
      * Ensures a constraint matching [spec] exists. Idempotent — safe to call on every startup.
      *
-     * Never destructive: existing mismatched constraints surface as [EnsureResult.Drift];
-     * existing violating data surfaces as [EnsureResult.Violation]. In both cases nothing is
-     * changed and the caller decides what to do.
+     * Never destructive unless asked: existing mismatched constraints surface as [EnsureResult.Drift];
+     * existing violating data surfaces as [EnsureResult.Violation]; a plain index in the way of the
+     * constraint surfaces as [EnsureResult.BlockedByIndex]. In each case nothing is changed and the
+     * caller decides what to do.
      *
      * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
      * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
@@ -62,9 +63,17 @@ class ConstraintManager internal constructor(
      *
      * @param violationSampleSize how many conflicting property combinations to sample when a
      *   violation is detected (0 leaves the sample empty; the data is still read, to confirm it)
+     * @param replaceBlockingIndex drop a plain index in the way of the constraint and make the
+     *   constraint, whose own index takes its place, instead of returning [EnsureResult.BlockedByIndex].
+     *   Only an engine whose constraint brings its own index reports one in the way (Neo4j; see
+     *   [SchemaGrammar.isBlockedByIndex]), so on the others this changes nothing.
      */
     @JvmOverloads
-    fun ensure(spec: ConstraintSpec, violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE): EnsureResult {
+    fun ensure(
+        spec: ConstraintSpec,
+        violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
+        replaceBlockingIndex: Boolean = false,
+    ): EnsureResult {
         val existing = find(spec)
         if (existing != null) {
             return if (grammar.matchesShape(existing, spec)) {
@@ -89,6 +98,19 @@ class ConstraintManager internal constructor(
         } catch (e: Exception) {
             if (grammar.isConstraintViolation(e)) {
                 confirmedViolation(spec, violationSampleSize, e)?.let { return it }
+            }
+            if (grammar.isBlockedByIndex(e)) {
+                val index = blockingIndex(spec) ?: throw e
+                if (!replaceBlockingIndex) {
+                    logger.warn(
+                        "Could not create constraint on {}{}: index {} is in the way of it",
+                        spec.label, spec.properties, index.name
+                    )
+                    return EnsureResult.BlockedByIndex(spec, index)
+                }
+                run(grammar.dropIndex(index))
+                logger.info("Dropped index {} on {}{}, in the way of a constraint that replaces it", index.name, spec.label, spec.properties)
+                return ensure(spec, violationSampleSize, replaceBlockingIndex = false)
             }
             throw e
         }
@@ -132,15 +154,20 @@ class ConstraintManager internal constructor(
      * Drops (if present) and recreates the constraint described by [spec].
      *
      * Returns [EnsureResult.Recreated] on success, or [EnsureResult.Violation] if existing data
-     * prevents recreation (in which case the previous constraint has already been dropped).
+     * prevents recreation (in which case the previous constraint has already been dropped), or
+     * [EnsureResult.BlockedByIndex] as [ensure] does.
      */
     @JvmOverloads
-    fun recreate(spec: ConstraintSpec, violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE): EnsureResult {
+    fun recreate(
+        spec: ConstraintSpec,
+        violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
+        replaceBlockingIndex: Boolean = false,
+    ): EnsureResult {
         val existing = find(spec)
         if (existing != null) {
             run(grammar.dropConstraint(existing))
         }
-        return when (val result = ensure(spec, violationSampleSize)) {
+        return when (val result = ensure(spec, violationSampleSize, replaceBlockingIndex)) {
             is EnsureResult.Created -> EnsureResult.Recreated(existing, result.info)
             else -> result
         }
@@ -207,6 +234,15 @@ class ConstraintManager internal constructor(
         logger.warn("Could not create constraint on {}{}: existing data violates it", spec.label, spec.properties)
         return EnsureResult.Violation(spec, conflicts.take(limit.coerceAtLeast(0)))
     }
+
+    /**
+     * The plain range index over [spec]'s label and properties, in its order, that the engine said
+     * is in the way of it; null when there is none, and the failure is then not the one it seemed.
+     */
+    private fun blockingIndex(spec: ConstraintSpec): SchemaItemInfo? =
+        indexManager.list().firstOrNull {
+            it.kind == SchemaItemKind.RANGE_INDEX && it.label == spec.label && it.properties == spec.properties
+        }
 
     /**
      * Runs an introspection query, treating failures as "nothing exists yet". The query string is

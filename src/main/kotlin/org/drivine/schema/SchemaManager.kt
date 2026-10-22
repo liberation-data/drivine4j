@@ -38,7 +38,7 @@ import org.slf4j.LoggerFactory
  * another owner's version from being recorded. Any failures are aggregated and rethrown after every
  * owner has been attempted.
  *
- * Outcomes needing attention (drift, violations) are handled per [SchemaPolicy].
+ * Outcomes needing attention (drift, violations, an index in the way of a constraint) are handled per [SchemaPolicy].
  *
  * **Vector fields.** Before anything is applied, a [VectorIndexSpec] whose label and property a
  * fragment class maps to a field without `@VectorIndex` is refused, naming the class, the field and
@@ -494,11 +494,11 @@ class SchemaManager(
 
     private fun applyConstraint(manager: PersistenceManager, spec: ConstraintSpec, recreate: Boolean): EnsureResult {
         if (recreate) {
-            return manager.constraints.recreate(spec, policy.violationSampleSize)
+            return manager.constraints.recreate(spec, policy.violationSampleSize, policy.replaceBlockingIndex)
         }
-        val result = manager.constraints.ensure(spec, policy.violationSampleSize)
+        val result = manager.constraints.ensure(spec, policy.violationSampleSize, policy.replaceBlockingIndex)
         return if (result is EnsureResult.Drift && policy.recreateOnDrift) {
-            manager.constraints.recreate(spec, policy.violationSampleSize)
+            manager.constraints.recreate(spec, policy.violationSampleSize, policy.replaceBlockingIndex)
         } else {
             result
         }
@@ -519,7 +519,9 @@ class SchemaManager(
         val created = outcomes.count { it.second is EnsureResult.Created }
         val matching = outcomes.count { it.second is EnsureResult.AlreadyMatching }
         val recreated = outcomes.count { it.second is EnsureResult.Recreated }
-        val problems = outcomes.filter { it.second is EnsureResult.Drift || it.second is EnsureResult.Violation }
+        val problems = outcomes.filter {
+            it.second is EnsureResult.Drift || it.second is EnsureResult.Violation || it.second is EnsureResult.BlockedByIndex
+        }
 
         logger.info(
             "Schema for owner '{}' on '{}': {} created, {} already matching, {} recreated, {} needing attention",
@@ -531,6 +533,7 @@ class SchemaManager(
                 "Schema application for owner '$ownerLabel' on database '$database' found problems:\n" +
                     problems.joinToString("\n") { (spec, result) -> describe(spec, result) } + "\n" +
                     "Resolve them, set drivine.schema.recreate-on-drift=true (destructive), " +
+                    "drivine.schema.replace-blocking-index=true for an index in the way of a constraint, " +
                     "or set drivine.schema.mode=WARN to continue with warnings."
             )
         }
@@ -548,6 +551,10 @@ class SchemaManager(
         is EnsureResult.Violation ->
             "  - VIOLATION: ${spec.kind} on ${spec.label}${spec.properties} cannot be created — " +
                 "existing data violates it. Conflicting sample: ${result.conflictingSample}"
+
+        is EnsureResult.BlockedByIndex ->
+            "  - BLOCKED: ${spec.kind} on ${spec.label}${spec.properties} cannot be created while " +
+                "index ${result.index.name} is in the way of it. Drop the index, or replace it with the constraint"
 
         else -> ""
     }

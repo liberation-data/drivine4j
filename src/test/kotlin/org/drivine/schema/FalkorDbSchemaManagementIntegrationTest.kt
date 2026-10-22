@@ -353,4 +353,18 @@ class FalkorDbSchemaManagementIntegrationTest {
         store.record("model-v2")
         assertEquals("model-v2", store.storedVersion())
     }
+
+    // ----- The index a constraint needs -----
+
+    @Test
+    @Order(20)
+    fun `the index a uniqueness constraint needs is kept when replacing an index in the way is asked`() {
+        manager.indexes.ensure(RangeIndexSpec("Account", "accountId"))
+        val spec = UniquenessConstraintSpec("Account", "accountId")
+
+        val created = manager.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertNotNull(manager.indexes.find(RangeIndexSpec("Account", "accountId")))
+    }
 }

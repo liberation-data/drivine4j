@@ -10,6 +10,7 @@ package org.drivine.schema
  * - if an item exists with a different shape nothing changes → [Drift]; the caller decides
  *   whether to call `recreate`
  * - constraint creation can fail because existing data violates it → [Violation]
+ * - or because a plain index is in the way of it → [BlockedByIndex]
  */
 sealed interface EnsureResult {
 
@@ -47,5 +48,19 @@ sealed interface EnsureResult {
     data class Violation(
         val requested: ConstraintSpec,
         val conflictingSample: List<Map<String, Any?>> = emptyList(),
+    ) : EnsureResult
+
+    /**
+     * Constraint-only outcome: a plain range index over the constraint's label and properties is in
+     * the way of it, on an engine whose constraint brings its own index (Neo4j). Nothing was changed.
+     * Drop [index], or ensure with `replaceBlockingIndex` (`drivine.schema.replace-blocking-index`),
+     * which drops it and makes the constraint, whose own index then serves the same lookups.
+     *
+     * @param requested the constraint that could not be created
+     * @param index the index in the way of it, named
+     */
+    data class BlockedByIndex(
+        val requested: ConstraintSpec,
+        val index: SchemaItemInfo,
     ) : EnsureResult
 }

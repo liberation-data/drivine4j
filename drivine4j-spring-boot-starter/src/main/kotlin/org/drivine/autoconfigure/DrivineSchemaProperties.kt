@@ -15,6 +15,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties
  *     recreate-on-drift: false   # destructive: rebuild items whose shape changed
  *     recreate-on-startup: false # destructive: rebuild all declared items every startup
  *     violation-sample-size: 10
+ *     replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
  * ```
  *
  * [enabled] gates only the startup run; the [org.drivine.schema.SchemaManager] bean is always
@@ -43,6 +44,12 @@ data class DrivineSchemaProperties(
      * empty; the data is still read, to confirm the violation).
      */
     var violationSampleSize: Int = 10,
+
+    /**
+     * Drop a plain index in the way of a uniqueness constraint and make the constraint, whose own
+     * index takes its place. Only Neo4j reports one in the way.
+     */
+    var replaceBlockingIndex: Boolean = false,
 ) {
 
     /** The engine-agnostic policy these properties express. */
@@ -51,5 +58,6 @@ data class DrivineSchemaProperties(
         recreateOnDrift = recreateOnDrift,
         recreateOnStartup = recreateOnStartup,
         violationSampleSize = violationSampleSize,
+        replaceBlockingIndex = replaceBlockingIndex,
     )
 }

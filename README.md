@@ -3318,6 +3318,7 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `AlreadyMatching` | A matching item exists; nothing changed |
 | `Drift` | An item exists with a **different shape** (e.g. vector dimensions changed). Nothing changed — call `recreate(spec)` to replace it (destructive) |
 | `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
+| `BlockedByIndex` | Constraint only: a plain range index over the same label and properties is in the way of it, and is named. Neo4j alone refuses a constraint for one, since its constraint brings its own index. Nothing changed — drop the index, or ensure with `replaceBlockingIndex = true` (`drivine.schema.replace-blocking-index=true`), which drops it and makes the constraint |
 | `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
 
 ### Declarative: SchemaCatalog bean
@@ -3458,6 +3459,7 @@ drivine:
     recreate-on-drift: false   # destructive: rebuild items whose shape changed
     recreate-on-startup: false # destructive: rebuild everything every startup
     violation-sample-size: 10  # conflicting rows sampled on constraint violations
+    replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
 ```
 
 ### Per-engine notes

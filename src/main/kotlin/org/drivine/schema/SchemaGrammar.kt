@@ -207,6 +207,15 @@ interface SchemaGrammar {
     fun isConstraintViolation(e: Throwable): Boolean
 
     /**
+     * Whether [e], thrown making a uniqueness constraint, says a plain range index over the same
+     * label and properties is in the way of it. Only on an engine whose constraint brings its own
+     * index, so that the plain one is redundant once the constraint is made and may be dropped for
+     * it (Neo4j). Never where the constraint needs the plain index ([constraintsRequireBackingIndex],
+     * FalkorDB) or makes one beside it (Memgraph, Oracle, Postgres).
+     */
+    fun isBlockedByIndex(e: Throwable): Boolean = false
+
+    /**
      * The statement that samples the key values [spec] would refuse: each row a map of the
      * `properties` that repeat and the `count` of nodes that hold them, [limit] rows at most.
      */
