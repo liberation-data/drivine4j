@@ -194,6 +194,16 @@ class ConstraintManagerTest {
     }
 
     @Test
+    fun `recreate replaces an index in the way of the constraint, when asked`() {
+        val store = blockedStore(rangeIndex("person_email", "email"))
+
+        val result = store.constraints.recreate(spec, replaceBlockingIndex = true)
+
+        assertTrue(result is EnsureResult.Recreated, "expected Recreated, got $result")
+        assertTrue("DROP INDEX `person_email` IF EXISTS" in store.schema, "expected the index dropped: ${store.schema}")
+    }
+
+    @Test
     fun `the index in the way is the one over the constraint's properties in their order`() {
         val composite = UniquenessConstraintSpec("Person", listOf("tenant", "email"))
         val store = blockedStore(rangeIndex("email_tenant", "email", "tenant"), rangeIndex("tenant_email", "tenant", "email"))
