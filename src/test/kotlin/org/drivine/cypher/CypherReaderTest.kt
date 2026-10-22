@@ -1,0 +1,139 @@
+package org.drivine.cypher
+
+import org.drivine.DrivineException
+import org.drivine.cypher.ast.Clause
+import org.drivine.cypher.ast.Expression
+import org.drivine.cypher.ast.Expression.Binary.Operator
+import org.drivine.cypher.ast.NodePattern
+import org.drivine.cypher.ast.Pattern
+import org.drivine.cypher.ast.RelationshipPattern
+import org.drivine.cypher.ast.RelationshipPattern.Direction
+import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+class CypherReaderTest {
+
+    private fun returned(cypher: String): Expression =
+        (CypherReader.read(cypher).clauses.last() as Clause.Return).projection.items.single().expression
+
+    @Test
+    fun `the drivine style reads as a match, a with of a pattern comprehension, and one returned map`() {
+        val query = CypherReader.read(
+            """
+            MATCH (actor:Person {name: ${'$'}name})
+            WITH actor, [(actor)-[:ACTED_IN]-(movie:Movie) | movie {.title, .released}] AS movies
+            RETURN { actor: actor, movies: movies }
+            """.trimIndent()
+        )
+        val (match, with, ret) = query.clauses
+        assertEquals(
+            Clause.Match(
+                false,
+                listOf(Pattern(null, listOf(NodePattern("actor", listOf("Person"), Expression.MapLiteral(listOf("name" to Expression.Parameter("name"))))), emptyList())),
+                null,
+            ),
+            match,
+        )
+        val movies = (with as Clause.With).projection.items[1]
+        assertEquals("movies", movies.name)
+        assertEquals(
+            Expression.PatternComprehension(
+                Pattern(
+                    null,
+                    listOf(NodePattern("actor", emptyList(), null), NodePattern("movie", listOf("Movie"), null)),
+                    listOf(RelationshipPattern(null, listOf("ACTED_IN"), Direction.EITHER, null, null)),
+                ),
+                null,
+                Expression.MapProjection(
+                    "movie",
+                    listOf(Expression.MapProjection.Element.Selected("title"), Expression.MapProjection.Element.Selected("released")),
+                ),
+            ),
+            movies.expression,
+        )
+        assertEquals(
+            Expression.MapLiteral(listOf("actor" to Expression.Variable("actor"), "movies" to Expression.Variable("movies"))),
+            (ret as Clause.Return).projection.items.single().expression,
+        )
+    }
+
+    @Test
+    fun `a relationship reads its direction, alternatives and range`() {
+        val match = CypherReader.read("MATCH (a)<-[r:KNOWS|LIKES*1..3]-(b)-[*2]->(c)-[*..4]-(d)-[*]-(e) RETURN a").clauses.first() as Clause.Match
+        val (first, second, third, fourth) = match.patterns.single().relationships
+        assertEquals(RelationshipPattern("r", listOf("KNOWS", "LIKES"), Direction.INCOMING, RelationshipPattern.Range(1, 3), null), first)
+        assertEquals(RelationshipPattern.Range(2, 2), second.range)
+        assertEquals(Direction.OUTGOING, second.direction)
+        assertEquals(RelationshipPattern.Range(null, 4), third.range)
+        assertEquals(RelationshipPattern.Range(null, null), fourth.range)
+    }
+
+    @Test
+    fun `a chain of comparisons reads as their conjunction, and precedence is the grammar's`() {
+        assertEquals(
+            Expression.Binary(
+                Operator.AND,
+                Expression.Binary(Operator.LESS_THAN, Expression.Literal(1L), Expression.Variable("x")),
+                Expression.Binary(Operator.LESS_THAN_OR_EQUAL, Expression.Variable("x"), Expression.Literal(5L)),
+            ),
+            returned("RETURN 1 < x <= 5"),
+        )
+        assertEquals(
+            Expression.Binary(Operator.ADD, Expression.Literal(1L), Expression.Binary(Operator.MULTIPLY, Expression.Literal(2L), Expression.Literal(3L))),
+            returned("RETURN 1 + 2 * 3"),
+        )
+    }
+
+    @Test
+    fun `strings, names in backticks, parameters and numbers read as their values`() {
+        assertEquals(Expression.Literal("it's \"quoted\"\n"), returned("""RETURN 'it\'s "quoted"\n'"""))
+        assertEquals(Expression.Property(Expression.Variable("my var"), "odd`key"), returned("RETURN `my var`.`odd``key`"))
+        assertEquals(Expression.Parameter("1"), returned("RETURN $1"))
+        assertEquals(Expression.Literal(255L), returned("RETURN 0xff"))
+        assertEquals(Expression.Literal(1.5e3), returned("RETURN 1.5e3"))
+    }
+
+    @Test
+    fun `string, list and null predicates, labels, lists and functions read`() {
+        assertEquals(
+            Expression.Binary(Operator.STARTS_WITH, Expression.Property(Expression.Variable("n"), "name"), Expression.Parameter("p")),
+            returned("RETURN n.name STARTS WITH \$p"),
+        )
+        assertEquals(Expression.Unary(Expression.Unary.Operator.IS_NOT_NULL, Expression.Property(Expression.Variable("n"), "x")), returned("RETURN n.x IS NOT NULL"))
+        assertEquals(Expression.HasLabels(Expression.Variable("n"), listOf("A", "B")), returned("RETURN n:A:B"))
+        assertEquals(Expression.Slice(Expression.Variable("xs"), null, Expression.Literal(2L)), returned("RETURN xs[..2]"))
+        assertEquals(Expression.Function("apoc.text.join", false, listOf(Expression.Variable("xs"), Expression.Literal(","))), returned("RETURN apoc.text.join(xs, ',')"))
+        assertEquals(Expression.Function("count", true, listOf(Expression.Variable("n"))), returned("RETURN count(DISTINCT n)"))
+        assertEquals(Expression.CountStar, returned("RETURN count(*)"))
+    }
+
+    @Test
+    fun `a projection reads its names, distinct, order, skip and limit`() {
+        val ret = (CypherReader.read("MATCH (n) RETURN DISTINCT n.name AS name, n.age ORDER BY name DESC, n.age SKIP 2 LIMIT \$n").clauses.last() as Clause.Return).projection
+        assertTrue(ret.distinct)
+        assertEquals(listOf("name", "n.age"), ret.items.map { it.name })
+        assertEquals(listOf(true, false), ret.orderBy.map { it.descending })
+        assertEquals(Expression.Literal(2L), ret.skip)
+        assertEquals(Expression.Parameter("n"), ret.limit)
+    }
+
+    @Test
+    fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
+        assertEquals(
+            "A write (CREATE) is Cypher, and does not run on Oracle or Postgres yet.",
+            assertThrows<DrivineException> { CypherReader.read("CREATE (n:Person) RETURN n") }.message,
+        )
+        assertEquals(
+            "UNION is Cypher, and does not run on Oracle or Postgres yet.",
+            assertThrows<DrivineException> { CypherReader.read("RETURN 1 UNION RETURN 2") }.message,
+        )
+        assertEquals(
+            "A procedure call (CALL) is Cypher, and does not run on Oracle or Postgres yet.",
+            assertThrows<DrivineException> { CypherReader.read("CALL db.labels()") }.message,
+        )
+        val syntax = assertThrows<DrivineException> { CypherReader.read("MATCH (n RETURN n") }.message!!
+        assertTrue(syntax.startsWith("The statement is not Cypher, at line 1, column "), syntax)
+    }
+}
