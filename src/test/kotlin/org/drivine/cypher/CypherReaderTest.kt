@@ -8,12 +8,18 @@ import org.drivine.cypher.ast.NodePattern
 import org.drivine.cypher.ast.Pattern
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.cypher.ast.RelationshipPattern.Direction
+import org.drivine.cypher.ast.RemoveItem
+import org.drivine.cypher.ast.SetItem
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class CypherReaderTest {
+
+    private operator fun <T> List<T>.component6() = this[5]
+
+    private operator fun <T> List<T>.component7() = this[6]
 
     private fun returned(cypher: String): Expression =
         (CypherReader.read(cypher).clauses.last() as Clause.Return).projection.items.single().expression
@@ -122,11 +128,52 @@ class CypherReaderTest {
     }
 
     @Test
-    fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
-        assertEquals(
-            "A write (CREATE) is Cypher, and does not run on Oracle or Postgres yet.",
-            assertThrows<DrivineException> { CypherReader.read("CREATE (n:Person) RETURN n") }.message,
+    fun `the writes read as their clauses, in order, with or without a return`() {
+        val query = CypherReader.read(
+            """
+            MATCH (a:Person {id: ${'$'}id})
+            CREATE (a)-[:WROTE]->(p:Paper {title: 'x'})
+            MERGE (t:Topic {name: 'y'}) ON CREATE SET t.made = true ON MATCH SET t += ${'$'}seen
+            SET p = ${'$'}props, p:Draft, a.count = a.count + 1
+            REMOVE p:Draft, p.title
+            WITH a, t
+            DETACH DELETE t
+            """.trimIndent()
         )
+        val (_, create, merge, set, remove, _, delete) = query.clauses
+        assertEquals(
+            Clause.Create(
+                listOf(
+                    Pattern(
+                        null,
+                        listOf(NodePattern("a", emptyList(), null), NodePattern("p", listOf("Paper"), Expression.MapLiteral(listOf("title" to Expression.Literal("x"))))),
+                        listOf(RelationshipPattern(null, listOf("WROTE"), Direction.OUTGOING, null, null)),
+                    )
+                )
+            ),
+            create,
+        )
+        merge as Clause.Merge
+        assertEquals(listOf(SetItem.Property("t", "made", Expression.Literal(true))), merge.onCreate)
+        assertEquals(listOf(SetItem.Add("t", Expression.Parameter("seen"))), merge.onMatch)
+        assertEquals(
+            listOf(
+                SetItem.Replace("p", Expression.Parameter("props")),
+                SetItem.Labels("p", listOf("Draft")),
+                SetItem.Property("a", "count", Expression.Binary(Operator.ADD, Expression.Property(Expression.Variable("a"), "count"), Expression.Literal(1L))),
+            ),
+            (set as Clause.Set).items,
+        )
+        assertEquals(listOf(RemoveItem.Labels("p", listOf("Draft")), RemoveItem.Property("p", "title")), (remove as Clause.Remove).items)
+        assertEquals(Clause.Delete(true, listOf(Expression.Variable("t"))), delete)
+        assertEquals(
+            "A write to a property of anything but a variable is Cypher, and does not run on Oracle or Postgres yet.",
+            assertThrows<DrivineException> { CypherReader.read("MATCH (n) SET n.a.b = 1") }.message,
+        )
+    }
+
+    @Test
+    fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
         assertEquals(
             "UNION is Cypher, and does not run on Oracle or Postgres yet.",
             assertThrows<DrivineException> { CypherReader.read("RETURN 1 UNION RETURN 2") }.message,

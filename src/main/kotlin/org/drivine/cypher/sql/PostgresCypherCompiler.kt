@@ -3,13 +3,15 @@ package org.drivine.cypher.sql
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
+import java.security.MessageDigest
 
 /**
  * Compiles a Cypher statement to SQL over a graph's tables on Postgres: see [SqlCypherCompiler].
  *
  * A value is `jsonb`, which compares, groups and orders as JSON. A map or a list the statement builds is
  * `json`, which keeps its keys in the order written, and is cast to `jsonb` where it is compared. A list
- * of ids is an array of `bigint`.
+ * of ids is an array of `bigint`. A statement that writes carries its rows as `jsonb`, so a map carried
+ * past a write has its keys in `jsonb`'s order.
  */
 class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
@@ -146,4 +148,51 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun nodeJson(node: Value.Node) =
         "CASE WHEN ${node.nid} IS NOT NULL THEN ${node.props} || jsonb_strip_nulls(jsonb_build_object(${literal(Stamps.PROPERTY)}, ${node.stamp})) END"
+
+    override fun epochMillisNow() = "to_jsonb(CAST(trunc(extract(epoch FROM statement_timestamp()) * 1000) AS bigint))"
+
+    override fun isoNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))"
+
+    /**
+     * A function of the session's own, `pg_temp`, made for the procedure and called: Postgres runs a block
+     * that returns rows or takes parameters no other way. It is named for its text, so a statement run
+     * again replaces it with itself.
+     */
+    override fun procedure(body: List<String>): String {
+        val text = listOf(
+            "#variable_conflict use_column",
+            "DECLARE",
+            "    $ROWS jsonb;",
+            "    $OUT jsonb;",
+            "    $ROW jsonb;",
+            "    $VALUE jsonb;",
+            "    $ID bigint;",
+            "    $COUNT bigint;",
+            "    $FOUND boolean;",
+            "    $DOOMED jsonb;",
+            "    $RECORD record;",
+            "    $MATCHED record;",
+            "BEGIN",
+            indent(body.joinToString("\n")),
+            "END",
+        ).joinToString("\n")
+        val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
+        val function = "pg_temp.drivine_cypher_${digest.take(24)}"
+        return "CREATE OR REPLACE FUNCTION $function($PARAMS jsonb) RETURNS SETOF json LANGUAGE plpgsql AS \$cy\$\n$text\n\$cy\$;\n" +
+            "SELECT cy.result FROM $function(CAST(\$${Parameters.OBJECT} AS jsonb)) AS cy (result)"
+    }
+
+    override fun returnRows(query: String) = listOf("RETURN QUERY SELECT CAST(cy_q.result AS json) FROM (\n${indent(query)}\n) cy_q;")
+
+    override fun raise(message: String) = "RAISE EXCEPTION USING MESSAGE = ${literal(message)};"
+
+    override fun idOf(json: String, key: String?) = if (key != null) "CAST($json ->> ${literal(key)} AS bigint)" else "CAST($json #>> '{}' AS bigint)"
+
+    override fun appended(list: String, item: String) = "($list || jsonb_build_array($item))"
+
+    override fun stripNulls(json: String) = "jsonb_strip_nulls(CAST($json AS jsonb))"
+
+    override fun merged(props: String, map: String) = "jsonb_strip_nulls($props || CAST($map AS jsonb))"
+
+    override fun withoutLabel(labels: String, label: String) = "($labels - ${literal(label)})"
 }

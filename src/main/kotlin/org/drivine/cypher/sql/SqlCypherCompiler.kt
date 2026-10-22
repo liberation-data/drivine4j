@@ -10,6 +10,8 @@ import org.drivine.cypher.ast.Pattern
 import org.drivine.cypher.ast.Projection
 import org.drivine.cypher.ast.Query
 import org.drivine.cypher.ast.RelationshipPattern
+import org.drivine.cypher.ast.RemoveItem
+import org.drivine.cypher.ast.SetItem
 import org.drivine.model.Stamps
 import org.slf4j.LoggerFactory
 
@@ -33,6 +35,12 @@ import org.slf4j.LoggerFactory
  * - The statement returns one value a row, as drivine's statements are written to: the one item a
  *   `RETURN` has, or a list of its items when it has more, as drivine gives a row of several columns.
  *   A node is its properties, as drivine gives a node.
+ *
+ * A statement that writes (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) is a procedure, the store's
+ * own, which runs as one statement and so is applied whole or not at all. Its rows are carried from
+ * clause to clause as a JSON list, a node or a relationship in a row as its id, and each write is made
+ * for one row after another, as Cypher makes it: a `MERGE` finds what an earlier row made. A read after
+ * a write sees what it wrote. Its parameters are bound as one object, [Parameters.OBJECT].
  */
 abstract class SqlCypherCompiler(graph: String) {
 
@@ -45,8 +53,16 @@ abstract class SqlCypherCompiler(graph: String) {
         compile(CypherReader.read(cypher), parameters)
 
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
-        val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount))
-        return CompiledCypher(writer.query(query), writer.parameters.values)
+        if (query.clauses.none(::writes)) {
+            val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount))
+            return CompiledCypher(writer.query(query), writer.parameters.values)
+        }
+        // A procedure takes its parameters as one object, and reads each from it.
+        val writer = Writer(
+            Parameters(parameters, { nullIfJsonNull(propertyOf(PARAMS, it)) }, { number(propertyOf(PARAMS, it)) }, inObject = true)
+        )
+        val body = writer.procedure(query)
+        return CompiledCypher(procedure(body), writer.parameters.values)
     }
 
     // ----- A store's SQL -----
@@ -207,6 +223,42 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected class Walked(val source: String, val condition: String, val eids: String, val nids: String)
 
+    /** `datetime().epochMillis` and `timestamp()`: the moment the statement runs, in milliseconds since 1970, as JSON. */
+    protected abstract fun epochMillisNow(): String
+
+    /** `datetime()`: the moment the statement runs, as JSON's text in ISO 8601, in UTC. */
+    protected abstract fun isoNow(): String
+
+    // ----- A store's procedure, for a statement that writes -----
+
+    /**
+     * The statement that runs the procedure whose statements are [body], each ending in `;`, and gives
+     * the rows it returns, of one column, [returnRows]. The procedure declares the variables the companion
+     * names ([PARAMS], [ROWS] …) and sets [PARAMS] from the object bound at [Parameters.OBJECT].
+     */
+    protected abstract fun procedure(body: List<String>): String
+
+    /** The statements that return the rows of the query [query], whose one column is `result`. */
+    protected abstract fun returnRows(query: String): List<String>
+
+    /** The statement that fails the procedure with [message]. */
+    protected abstract fun raise(message: String): String
+
+    /** The id at [key] of the JSON map [json], or with no key the id [json] is, as the store's id. */
+    protected abstract fun idOf(json: String, key: String?): String
+
+    /** The JSON list [list] with the JSON [item] after its items. */
+    protected abstract fun appended(list: String, item: String): String
+
+    /** The JSON map [json] without the entries whose values are null. */
+    protected abstract fun stripNulls(json: String): String
+
+    /** The JSON map [props] with the entries of [map] set over it, an entry whose value is null removing its key. */
+    protected abstract fun merged(props: String, map: String): String
+
+    /** The labels [labels], a JSON list, without [label]. */
+    protected abstract fun withoutLabel(labels: String, label: String): String
+
     /** One statement's compilation: its parameters, and the names it gives its rows and columns. */
     private inner class Writer(val parameters: Parameters) {
         private var counter = 0
@@ -219,21 +271,27 @@ abstract class SqlCypherCompiler(graph: String) {
                 when (clause) {
                     is Clause.Match -> match(select, clause)
                     is Clause.Unwind -> unwind(select, clause)
-                    is Clause.With -> {
-                        val (sql, scope) = project(select, clause.projection, final = false)
-                        val name = alias("w")
-                        select = Select(emptyMap())
-                        select.source("(\n${indent(sql)}\n) $name")
-                        scope.forEach { (variable, value) -> select.bind(variable, value.columnsOf(name)) }
-                        clause.where?.let { select.where += bool(expression(it, select.scope)) }
-                    }
-                    is Clause.Return -> return project(select, clause.projection, final = true).first
+                    is Clause.With -> select = with(select, clause)
+                    is Clause.Return -> return project(select, clause.projection, final = true).sql
+                    else -> error("a statement that writes is a procedure")
                 }
             }
             throw DrivineException("A Cypher statement ends with RETURN.")
         }
 
         // ----- Clauses -----
+
+        /** A `WITH`: a query of its own, which the rest of the statement reads from. */
+        private fun with(select: Select, with: Clause.With): Select {
+            val projected = project(select, with.projection, final = false)
+            val name = alias("w")
+            val next = Select(emptyMap())
+            next.source("(\n${indent(projected.sql)}\n) $name")
+            projected.scope.forEach { (variable, value) -> next.bind(variable, value.columnsOf(name)) }
+            projected.order.forEach { (column, descending) -> next.order += "$name.$column" to descending }
+            with.where?.let { next.where += bool(expression(it, next.scope)) }
+            return next
+        }
 
         private fun match(select: Select, match: Clause.Match) {
             if (!match.optional) {
@@ -261,6 +319,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val name = alias("u")
             select.source(elements(comparable(json(list)), name))
             select.bind(unwind.variable, Value.Json("$name.item"))
+            select.order += "$name.item_no" to false
         }
 
         /**
@@ -425,14 +484,337 @@ abstract class SqlCypherCompiler(graph: String) {
             else -> containsAll(props, comparable(json(expression(properties, scope))))
         }
 
+        // ----- A statement that writes -----
+
+        /** The procedure's statements, in order. */
+        private val body = mutableListOf<String>()
+
+        /** How deep in loops and conditions the next statement is, for its indent. */
+        private var depth = 0
+
+        /** The variables a row holds, and what each is: what [ROWS] and [ROW] carry from clause to clause. */
+        private val kinds = linkedMapOf<String, Kind>()
+
+        /** The key each variable is held at in a row: a name of the compiler's, so any variable's name will do. */
+        private val keys = hashMapOf<String, String>()
+
+        /** The rows the last write left, as read from [ROWS], and how much was read of them then: nothing more is there to carry. */
+        private var unread: Pair<Select, Int>? = null
+
+        /** The statements of the procedure [query] is: its reads, a loop over its rows for each write, and what it returns. */
+        fun procedure(query: Query): List<String> {
+            var select = Select(emptyMap())
+            for (clause in query.clauses) {
+                when (clause) {
+                    is Clause.Match -> match(select, clause)
+                    is Clause.Unwind -> unwind(select, clause)
+                    is Clause.With -> select = with(select, clause)
+                    is Clause.Return -> returnRows(project(select, clause.projection, final = true).sql).forEach(::emit)
+                    else -> {
+                        carry(select)
+                        write(clause)
+                        select = rows()
+                    }
+                }
+            }
+            return body
+        }
+
+        private fun emit(statement: String) {
+            body += statement.prependIndent("    ".repeat(depth))
+        }
+
+        private fun assign(variable: String, sql: String) = emit("SELECT $sql INTO $variable;")
+
+        private fun key(variable: String) = keys.getOrPut(variable) { "v${keys.size + 1}" }
+
+        /** The rows [select] reads, each a JSON map of the variables it binds, into [ROWS]. */
+        private fun carry(select: Select) {
+            if (unread?.let { (rows, size) -> rows === select && size == select.size() } == true) return
+            kinds.clear()
+            val entries = select.scope.map { (variable, value) ->
+                kinds[variable] = when (value) {
+                    is Value.Node -> Kind.NODE
+                    is Value.Relationship -> Kind.RELATIONSHIP
+                    is Value.Json, is Value.Bool -> Kind.VALUE
+                    is Value.Path -> unsupported("A path carried past a write")
+                }
+                key(variable) to held(value)
+            }
+            val order = select.order.joinToString(", ") { (term, descending) -> if (descending) "$term DESC" else term }.ifEmpty { null }
+            val list = comparable(Value.Json(aggregateList(jsonObject(entries), order), ordered = true))
+            emit((listOf("SELECT $list INTO $ROWS") + from(select) + listOfNotNull(select.whereClause())).joinToString("\n") + ";")
+        }
+
+        /** A value as a row holds it: a node or a relationship as its id, anything else as JSON. */
+        private fun held(value: Value): String = when (value) {
+            is Value.Node -> scalar(value.nid)
+            is Value.Relationship -> scalar(value.eid)
+            else -> comparable(json(value))
+        }
+
+        private fun from(select: Select): List<String> = select.from().ifEmpty { listOf("FROM (SELECT 1) one") }
+
+        /** The rows in [ROWS], as a query reads them. */
+        private fun rows(): Select {
+            val select = Select(emptyMap())
+            val r = alias("r")
+            select.source(elements(ROWS, r))
+            select.order += "$r.item_no" to false
+            bindRow(select, "$r.item")
+            unread = select to select.size()
+            return select
+        }
+
+        /** The row in [ROW] alone, as a statement of a write reads it. */
+        private fun row(): Select = Select(emptyMap()).also { bindRow(it, ROW) }
+
+        /** Binds into [select] each variable the row [row] holds: a node or a relationship is read from its table, as it is now. */
+        private fun bindRow(select: Select, row: String) {
+            kinds.forEach { (variable, kind) ->
+                val key = key(variable)
+                when (kind) {
+                    Kind.NODE -> {
+                        val n = alias("n")
+                        select.join("LEFT JOIN $nodes $n ON $n.nid = ${idOf(row, key)}")
+                        select.bind(variable, Value.Node("$n.nid", "$n.labels", "$n.props", "$n.stamp"))
+                    }
+                    Kind.RELATIONSHIP -> {
+                        val e = alias("e")
+                        select.join("LEFT JOIN $edges $e ON $e.eid = ${idOf(row, key)}")
+                        select.bind(variable, Value.Relationship("$e.eid", "$e.src", "$e.dst", "$e.type", "$e.props"))
+                    }
+                    Kind.VALUE -> select.bind(variable, Value.Json(propertyOf(row, key)))
+                }
+            }
+        }
+
+        /** [value], worked out over the row in [ROW], into [variable]. */
+        private fun evaluate(variable: String, value: (Map<String, Value>) -> String) {
+            val select = row()
+            emit((listOf("SELECT ${value(select.scope)} INTO $variable") + from(select)).joinToString("\n") + ";")
+        }
+
+        /** One write: made for each row of [ROWS] in turn, and the rows it leaves put back there. */
+        private fun write(clause: Clause) {
+            assign(OUT, literalJson(emptyList<Any>()))
+            val deleting = clause is Clause.Delete && !clause.detach
+            if (deleting) assign(DOOMED, literalJson(emptyList<Any>()))
+            val r = alias("r")
+            emit("FOR $RECORD IN (SELECT $r.item FROM ${elements(ROWS, r)} ORDER BY $r.item_no) LOOP")
+            depth++
+            emit("$ROW := $RECORD.item;")
+            when (clause) {
+                is Clause.Create -> {
+                    clause.patterns.forEach { create(it, merging = false) }
+                    keep()
+                }
+                is Clause.Merge -> merge(clause)
+                is Clause.Set -> {
+                    clause.items.forEach(::set)
+                    keep()
+                }
+                is Clause.Remove -> {
+                    clause.items.forEach(::remove)
+                    keep()
+                }
+                is Clause.Delete -> {
+                    delete(clause)
+                    keep()
+                }
+                else -> error("${clause::class.simpleName} reads")
+            }
+            depth--
+            emit("END LOOP;")
+            emit("$ROWS := $OUT;")
+            if (deleting) {
+                // A node is deleted when the clause has deleted the relationships it deletes: one it does not delete must not be there.
+                val d = alias("d")
+                val doomed = "SELECT ${idOf("$d.item", null)} FROM ${elements(DOOMED, d)}"
+                emit("SELECT count(*) INTO $COUNT FROM $edges WHERE src IN ($doomed) OR dst IN ($doomed);")
+                emit("IF $COUNT > 0 THEN")
+                emit("    ${raise("A node is deleted that still has relationships: delete them first, or DETACH DELETE it.")}")
+                emit("END IF;")
+                emit("DELETE FROM $nodes WHERE nid IN ($doomed);")
+            }
+        }
+
+        /** The row in [ROW] kept, as a row of what the write leaves. */
+        private fun keep() = assign(OUT, appended(OUT, ROW))
+
+        /**
+         * Makes [pattern] for the row in [ROW]: each node not bound before it, and each relationship, with the
+         * row given the ids of those it names. With [merging], an undirected relationship is made from the
+         * pattern's earlier node, as a `MERGE` makes it.
+         */
+        private fun create(pattern: Pattern, merging: Boolean) {
+            if (pattern.variable != null) unsupported("A path variable in CREATE or MERGE")
+            val ids = pattern.nodes.map { node ->
+                when (node.variable?.let { kinds[it] }) {
+                    Kind.NODE -> {
+                        if (node.labels.isNotEmpty() || node.properties != null) {
+                            throw DrivineException("${node.variable} is bound already, so a CREATE or MERGE makes no node of it with labels or properties.")
+                        }
+                        idOf(ROW, key(node.variable!!))
+                    }
+                    null -> {
+                        evaluate(VALUE) { scope -> written(node.properties, scope) }
+                        emit("INSERT INTO $nodes (labels, props) VALUES (${literalJson(node.labels)}, ${stripNulls(VALUE)}) RETURNING nid INTO $ID;")
+                        made(node.variable, Kind.NODE)
+                    }
+                    else -> throw DrivineException("${node.variable} is not a node, and is used as one in a pattern.")
+                }
+            }
+            pattern.relationships.forEachIndexed { i, relationship ->
+                if (relationship.range != null) unsupported("A variable-length relationship in CREATE or MERGE")
+                val type = relationship.types.singleOrNull() ?: throw DrivineException("A relationship that CREATE or MERGE makes has one type.")
+                if (relationship.variable != null && relationship.variable in kinds) unsupported("A relationship variable bound before its pattern")
+                val (src, dst) = when (relationship.direction) {
+                    RelationshipPattern.Direction.OUTGOING -> ids[i] to ids[i + 1]
+                    RelationshipPattern.Direction.INCOMING -> ids[i + 1] to ids[i]
+                    RelationshipPattern.Direction.EITHER ->
+                        if (merging) ids[i] to ids[i + 1] else throw DrivineException("A relationship that CREATE makes has a direction.")
+                }
+                evaluate(VALUE) { scope -> written(relationship.properties, scope) }
+                emit("INSERT INTO $edges (src, dst, type, props) VALUES ($src, $dst, ${literal(type)}, ${stripNulls(VALUE)}) RETURNING eid INTO $ID;")
+                made(relationship.variable, Kind.RELATIONSHIP)
+            }
+        }
+
+        /** The properties a pattern writes, as JSON: none where it gives none. */
+        private fun written(properties: Expression?, scope: Map<String, Value>): String =
+            properties?.let { comparable(json(expression(it, scope))) } ?: literalJson(emptyMap<String, Any>())
+
+        /** The id in [ID] of what was made, held in the row at [variable]'s key, or at a key of its own for one of no variable. */
+        private fun made(variable: String?, kind: Kind): String {
+            val key = variable?.let(::key) ?: "a${++counter}"
+            assign(ROW, withEntries(ROW, listOf(key to scalar(ID))))
+            variable?.let { kinds[it] = kind }
+            return idOf(ROW, key)
+        }
+
+        /**
+         * A `MERGE` for the row in [ROW]: a row for each way its pattern is found, with `ON MATCH SET`
+         * written to it, or where it is not found, the pattern made, with `ON CREATE SET`.
+         */
+        private fun merge(merge: Clause.Merge) {
+            if (merge.pattern.variable != null) unsupported("A path variable in CREATE or MERGE")
+            val select = row()
+            patterns(select, listOf(merge.pattern))
+            val found = select.bound.filterKeys { it !in kinds }
+            val before = LinkedHashMap(kinds)
+            val match = listOf("SELECT ${withEntries(ROW, found.map { (variable, value) -> key(variable) to held(value) })} AS item") +
+                from(select) + listOfNotNull(select.whereClause())
+            emit("$FOUND := FALSE;")
+            emit("FOR $MATCHED IN (\n${indent(match.joinToString("\n"))}\n) LOOP")
+            depth++
+            emit("$FOUND := TRUE;")
+            emit("$ROW := $MATCHED.item;")
+            found.forEach { (variable, value) -> kinds[variable] = if (value is Value.Node) Kind.NODE else Kind.RELATIONSHIP }
+            merge.onMatch.forEach(::set)
+            keep()
+            depth--
+            emit("END LOOP;")
+            kinds.clear()
+            kinds.putAll(before)
+            emit("IF NOT $FOUND THEN")
+            depth++
+            create(merge.pattern, merging = true)
+            merge.onCreate.forEach(::set)
+            keep()
+            depth--
+            emit("END IF;")
+        }
+
+        /** The table [variable]'s node or relationship is a row of, its key column, and its id in [ROW]. */
+        private fun target(variable: String, writing: String): Triple<String, String, String> = when (kinds[variable]) {
+            Kind.NODE -> Triple(nodes, "nid", idOf(ROW, key(variable)))
+            Kind.RELATIONSHIP -> Triple(edges, "eid", idOf(ROW, key(variable)))
+            Kind.VALUE -> throw DrivineException("$variable is not a node or a relationship, and $writing writes to one.")
+            null -> throw DrivineException("$variable is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
+        }
+
+        private fun set(item: SetItem) {
+            when (item) {
+                is SetItem.Property -> {
+                    val (table, id, row) = target(item.variable, "SET")
+                    evaluate(VALUE) { scope -> comparable(json(expression(item.value, scope))) }
+                    emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to VALUE)))} WHERE $id = $row;")
+                }
+                is SetItem.Replace -> {
+                    val (table, id, row) = target(item.variable, "SET")
+                    evaluate(VALUE) { scope -> properties(expression(item.value, scope)) }
+                    emit("UPDATE $table SET props = ${stripNulls(orEmpty(VALUE))} WHERE $id = $row;")
+                }
+                is SetItem.Add -> {
+                    val (table, id, row) = target(item.variable, "SET")
+                    evaluate(VALUE) { scope -> properties(expression(item.value, scope)) }
+                    emit("UPDATE $table SET props = ${merged("props", orEmpty(VALUE))} WHERE $id = $row;")
+                }
+                is SetItem.Labels -> {
+                    val (table, id, row) = target(item.variable, "SET")
+                    if (table != nodes) throw DrivineException("${item.variable} is not a node, and a label is set on one.")
+                    item.labels.forEach { label ->
+                        emit("UPDATE $nodes SET labels = ${appended("labels", literalJson(label))} WHERE $id = $row AND NOT ${hasLabel("labels", label)};")
+                    }
+                }
+            }
+        }
+
+        private fun remove(item: RemoveItem) {
+            when (item) {
+                is RemoveItem.Property -> {
+                    val (table, id, row) = target(item.variable, "REMOVE")
+                    emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to literalJson(null))))} WHERE $id = $row;")
+                }
+                is RemoveItem.Labels -> {
+                    val (table, id, row) = target(item.variable, "REMOVE")
+                    if (table != nodes) throw DrivineException("${item.variable} is not a node, and a label is removed from one.")
+                    item.labels.forEach { label -> emit("UPDATE $nodes SET labels = ${withoutLabel("labels", label)} WHERE $id = $row;") }
+                }
+            }
+        }
+
+        /** What `SET n = …` and `SET n += …` write: a node's or a relationship's properties, or a map. */
+        private fun properties(value: Value): String = when (value) {
+            is Value.Node -> value.props
+            is Value.Relationship -> value.props
+            else -> comparable(json(value))
+        }
+
+        /** The JSON [json], or an empty map where it is null. */
+        private fun orEmpty(json: String) = "COALESCE(${nullIfJsonNull(json)}, ${literalJson(emptyMap<String, Any>())})"
+
+        /**
+         * A `DELETE` for the row in [ROW]: its relationships first, then its nodes, each with its relationships
+         * where it is `DETACH`; without, a node is gathered in [DOOMED] and deleted once the rows are done.
+         */
+        private fun delete(delete: Clause.Delete) {
+            val targets = delete.expressions.map { expression ->
+                val variable = (expression as? Expression.Variable)?.name ?: unsupported("A DELETE of anything but a variable")
+                variable to target(variable, "DELETE")
+            }
+            targets.filter { it.second.first == edges }.forEach { (_, target) -> emit("DELETE FROM $edges WHERE eid = ${target.third};") }
+            targets.filter { it.second.first == nodes }.forEach { (_, target) ->
+                if (delete.detach) emit("DELETE FROM $nodes WHERE nid = ${target.third};")
+                else assign(DOOMED, appended(DOOMED, scalar(target.third)))
+            }
+        }
+
         // ----- Projection -----
 
         /**
-         * The query a `WITH` or a `RETURN` makes of [select]: its items as columns, grouped where it
-         * aggregates, then ordered, skipped and limited. Gives the query, and for a `WITH` what each
-         * item's name is bound to among its columns.
+         * What a `WITH` or a `RETURN` makes of the rows it reads: the [sql] of its query, what each item's name is
+         * bound to among its columns, and the order of its rows, each term a column of the query and whether it descends.
          */
-        fun project(select: Select, projection: Projection, final: Boolean): Pair<String, Map<String, Value>> {
+        inner class Projected(val sql: String, val scope: Map<String, Value>, val order: List<Pair<String, Boolean>>)
+
+        /**
+         * The query a `WITH` or a `RETURN` makes of [select]: its items as columns, grouped where it
+         * aggregates, then ordered, skipped and limited. Rows it does not order, group or keep distinct
+         * stay in the order [select] reads them, as a graph engine keeps them.
+         */
+        fun project(select: Select, projection: Projection, final: Boolean): Projected {
             val items = (if (projection.star) select.bound.keys.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
             if (items.isEmpty()) throw DrivineException("A projection has at least one item.")
             if (final && items.size > 1) {
@@ -457,7 +839,13 @@ abstract class SqlCypherCompiler(graph: String) {
                 val value = items.indexOfFirst { it.expression == sort.expression }.takeIf { it >= 0 }?.let { compiled[it].second }
                     ?: expression(sort.expression, sortScope)
                 selectList += "${sortable(value)} AS $name"
-                "$name${if (sort.descending) " DESC" else ""}"
+                name to sort.descending
+            }.ifEmpty {
+                if (compared) emptyList() else select.order.mapIndexed { i, (term, descending) ->
+                    val name = "o${i + 1}"
+                    selectList += "$term AS $name"
+                    name to descending
+                }
             }
             val groupBy = if (!aggregating) emptyList() else {
                 val keys = mutableListOf<String>()
@@ -479,17 +867,18 @@ abstract class SqlCypherCompiler(graph: String) {
                 val result = if (values.size == 1) values.single().sql else jsonArray(values.map { it.sql })
                 "$result AS result"
             } else {
-                columns.flatMap { (column, value) -> value.columns(column).map { it.substringAfterLast(" AS ") } }.joinToString(", ") { "$name.$it" }
+                (columns.flatMap { (column, value) -> value.columns(column).map { it.substringAfterLast(" AS ") } } + sorts.map { it.first })
+                    .joinToString(", ") { "$name.$it" }
             }
             val outer = buildList {
                 add("SELECT $outerColumns")
                 add("FROM (\n${indent(inner)}\n) $name")
-                if (sorts.isNotEmpty()) add("ORDER BY ${sorts.joinToString(", ") { "$name.$it" }}")
+                if (sorts.isNotEmpty()) add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> "$name.$column${if (descending) " DESC" else ""}" }}")
                 addAll(page(projection.skip?.let(::count), projection.limit?.let(::count)))
             }.joinToString("\n")
             // What each item is bound to in the query that reads this one: its columns, which that query names.
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
-            return outer to scope
+            return Projected(outer, scope, sorts)
         }
 
         /**
@@ -523,7 +912,15 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Literal -> Value.Json(literalJson(expression.value))
             is Expression.Parameter -> Value.Json(parameters.json(expression.name))
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
-            is Expression.Property -> property(expression(expression.subject, scope), expression.key)
+            is Expression.Property -> {
+                val subject = expression.subject
+                // `datetime().epochMillis`: the moment, as Cypher's statements stamp a write with it.
+                if (subject is Expression.Function && subject.name.lowercase() == "datetime" && subject.arguments.isEmpty() && expression.key == "epochMillis") {
+                    Value.Json(epochMillisNow())
+                } else {
+                    property(expression(subject, scope), expression.key)
+                }
+            }
             is Expression.HasLabels -> when (val subject = expression(expression.subject, scope)) {
                 is Value.Node -> Value.Bool(expression.labels.joinToString(" AND ") { hasLabel(subject.labels, it) })
                 else -> throw DrivineException("A label is tested of a node.")
@@ -738,6 +1135,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
                 "min", "max" -> Value.Json(extreme(comparable(json(one())), min = name == "min"))
+                "timestamp" -> if (arguments.isEmpty()) Value.Json(epochMillisNow()) else throw DrivineException("timestamp() takes no argument.")
+                // A moment is its ISO text, as a store keeps it; one given is taken as it is.
+                "datetime" -> if (arguments.isEmpty()) Value.Json(isoNow()) else one()
                 else -> function(name, comparable(json(one())))?.let { Value.Json(it) } ?: unsupported("The function ${function.name}()")
             }
         }
@@ -791,6 +1191,9 @@ abstract class SqlCypherCompiler(graph: String) {
         val where = mutableListOf<String>()
         val bound = linkedMapOf<String, Value>()
 
+        /** The order its rows are read in, where it has one: each term, and whether it descends. */
+        val order = mutableListOf<Pair<String, Boolean>>()
+
         /** What an expression of this part sees: the variables bound around it, then its own. */
         val scope: Map<String, Value> get() = outer + bound
 
@@ -810,7 +1213,13 @@ abstract class SqlCypherCompiler(graph: String) {
         fun from(): List<String> = sources
 
         fun whereClause(): String? = where.takeIf { it.isNotEmpty() }?.joinToString("\n  AND ", "WHERE ")
+
+        /** How much this part reads: it reads more when a clause adds to it. */
+        fun size(): Int = sources.size + where.size + bound.size
     }
+
+    /** What a variable a row holds is. */
+    private enum class Kind { NODE, RELATIONSHIP, VALUE }
 
     protected companion object {
         /** Stands for the name of the query a `WITH` is read from, before it is named. */
@@ -821,6 +1230,45 @@ abstract class SqlCypherCompiler(graph: String) {
         fun indent(text: String) = text.prependIndent("    ")
 
         fun unsupported(construct: String): Nothing = throw DrivineException("$construct is Cypher, and does not run on Oracle or Postgres yet.")
+
+        /** Whether [clause] writes, which makes its statement a procedure. */
+        fun writes(clause: Clause): Boolean =
+            clause is Clause.Create || clause is Clause.Merge || clause is Clause.Set || clause is Clause.Remove || clause is Clause.Delete
+
+        // The variables of a procedure.
+
+        /** The parameters, a JSON map. */
+        const val PARAMS = "cy_params"
+
+        /** The rows, a JSON list of maps, each variable a row holds at its key. */
+        const val ROWS = "cy_rows"
+
+        /** The rows a write leaves, as it makes them. */
+        const val OUT = "cy_out"
+
+        /** The row a write is making, a JSON map. */
+        const val ROW = "cy_row"
+
+        /** A JSON value a write has worked out. */
+        const val VALUE = "cy_value"
+
+        /** The id of the node or the relationship a write has made. */
+        const val ID = "cy_id"
+
+        /** A count. */
+        const val COUNT = "cy_count"
+
+        /** Whether a `MERGE` found its pattern. */
+        const val FOUND = "cy_found"
+
+        /** The nodes a `DELETE` deletes once its rows are done, a JSON list of ids. */
+        const val DOOMED = "cy_doomed"
+
+        /** The record of a write's loop over the rows: its `item` is a row. */
+        const val RECORD = "cy_record"
+
+        /** The record of a `MERGE`'s loop over what it found: its `item` is a row. */
+        const val MATCHED = "cy_matched"
 
         val AGGREGATES = setOf("count", "collect", "sum", "avg", "min", "max")
 

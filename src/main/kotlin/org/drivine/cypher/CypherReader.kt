@@ -3,7 +3,6 @@ package org.drivine.cypher
 import org.antlr.v4.runtime.BaseErrorListener
 import org.antlr.v4.runtime.CharStreams
 import org.antlr.v4.runtime.CommonTokenStream
-import org.antlr.v4.runtime.ParserRuleContext
 import org.antlr.v4.runtime.RecognitionException
 import org.antlr.v4.runtime.Recognizer
 import org.antlr.v4.runtime.tree.TerminalNode
@@ -15,6 +14,8 @@ import org.drivine.cypher.ast.Pattern
 import org.drivine.cypher.ast.Projection
 import org.drivine.cypher.ast.Query
 import org.drivine.cypher.ast.RelationshipPattern
+import org.drivine.cypher.ast.RemoveItem
+import org.drivine.cypher.ast.SetItem
 import org.drivine.cypher.grammar.CypherLexer
 import org.drivine.cypher.grammar.CypherParser
 import org.drivine.cypher.grammar.CypherParser.*
@@ -23,8 +24,8 @@ import org.drivine.cypher.grammar.CypherParser.*
  * Reads a Cypher statement into a [Query]: parsed with openCypher's grammar, then walked into the
  * syntax tree the compiler works from, which says what the statement means and no more of how it was
  * written. A statement that is not Cypher is refused with where it went wrong. A statement that is
- * Cypher the compiler does not take (a `UNION`, a procedure call, a write, before they are built) is
- * refused by name.
+ * Cypher the compiler does not take (a `UNION`, a procedure call, before they are built) is refused by
+ * name.
  */
 object CypherReader {
 
@@ -50,17 +51,58 @@ object CypherReader {
             for (child in multi.children) {
                 when (child) {
                     is OC_ReadingClauseContext -> clauses += reading(child)
-                    is OC_UpdatingClauseContext -> refuse("A write (${keyword(child)})")
+                    is OC_UpdatingClauseContext -> clauses += updating(child)
                     is OC_WithContext -> clauses += Clause.With(projection(child.oC_ProjectionBody()), child.oC_Where()?.let { expression(it.oC_Expression()) })
                 }
             }
         }
         val last = single.oC_SinglePartQuery() ?: single.oC_MultiPartQuery().oC_SinglePartQuery()
-        if (last.oC_UpdatingClause().isNotEmpty()) refuse("A write (${keyword(last.oC_UpdatingClause(0))})")
         last.oC_ReadingClause().forEach { clauses += reading(it) }
-        clauses += Clause.Return(projection(last.oC_Return().oC_ProjectionBody()))
+        last.oC_UpdatingClause().forEach { clauses += updating(it) }
+        last.oC_Return()?.let { clauses += Clause.Return(projection(it.oC_ProjectionBody())) }
         return Query(clauses)
     }
+
+    private fun updating(context: OC_UpdatingClauseContext): Clause = when {
+        context.oC_Create() != null -> Clause.Create(patterns(context.oC_Create().oC_Pattern()))
+        context.oC_Merge() != null -> context.oC_Merge().let { merge ->
+            val part = merge.oC_PatternPart()
+            val actions = merge.oC_MergeAction()
+            Clause.Merge(
+                pattern(part.oC_AnonymousPatternPart().oC_PatternElement(), part.oC_Variable()?.let(::name)),
+                actions.filter { it.CREATE() != null }.flatMap { set(it.oC_Set()) },
+                actions.filter { it.MATCH() != null }.flatMap { set(it.oC_Set()) },
+            )
+        }
+        context.oC_Set() != null -> Clause.Set(set(context.oC_Set()))
+        context.oC_Remove() != null -> Clause.Remove(context.oC_Remove().oC_RemoveItem().map(::removeItem))
+        else -> context.oC_Delete().let { delete -> Clause.Delete(delete.DETACH() != null, delete.oC_Expression().map(::expression)) }
+    }
+
+    private fun set(context: OC_SetContext): List<SetItem> = context.oC_SetItem().map { item ->
+        when {
+            item.oC_PropertyExpression() != null -> property(item.oC_PropertyExpression()).let { (variable, key) ->
+                SetItem.Property(variable, key, expression(item.oC_Expression()))
+            }
+            item.oC_NodeLabels() != null -> SetItem.Labels(name(item.oC_Variable()), labels(item.oC_NodeLabels()))
+            item.children.any { it.text == "+=" } -> SetItem.Add(name(item.oC_Variable()), expression(item.oC_Expression()))
+            else -> SetItem.Replace(name(item.oC_Variable()), expression(item.oC_Expression()))
+        }
+    }
+
+    private fun removeItem(context: OC_RemoveItemContext): RemoveItem = when {
+        context.oC_NodeLabels() != null -> RemoveItem.Labels(name(context.oC_Variable()), labels(context.oC_NodeLabels()))
+        else -> property(context.oC_PropertyExpression()).let { (variable, key) -> RemoveItem.Property(variable, key) }
+    }
+
+    /** `n.key`, as a variable and a key: a property of anything else, or of a property, is not written to. */
+    private fun property(context: OC_PropertyExpressionContext): Pair<String, String> {
+        val variable = context.oC_Atom().oC_Variable()
+        if (variable == null || context.oC_PropertyLookup().size != 1) refuse("A write to a property of anything but a variable")
+        return name(variable) to name(context.oC_PropertyLookup(0).oC_PropertyKeyName().oC_SchemaName())
+    }
+
+    private fun labels(context: OC_NodeLabelsContext): List<String> = context.oC_NodeLabel().map { name(it.oC_LabelName().oC_SchemaName()) }
 
     private fun reading(context: OC_ReadingClauseContext): Clause = when {
         context.oC_Match() != null -> context.oC_Match().let { match ->
@@ -116,7 +158,7 @@ object CypherReader {
 
     private fun node(context: OC_NodePatternContext) = NodePattern(
         context.oC_Variable()?.let(::name),
-        context.oC_NodeLabels()?.oC_NodeLabel()?.map { name(it.oC_LabelName().oC_SchemaName()) }.orEmpty(),
+        context.oC_NodeLabels()?.let(::labels).orEmpty(),
         context.oC_Properties()?.let(::properties),
     )
 
@@ -263,7 +305,7 @@ object CypherReader {
                         Expression.Slice(result, from, to)
                     }
                 }
-                is OC_NodeLabelsContext -> Expression.HasLabels(result, child.oC_NodeLabel().map { name(it.oC_LabelName().oC_SchemaName()) })
+                is OC_NodeLabelsContext -> Expression.HasLabels(result, labels(child))
                 else -> result
             }
         }
@@ -419,8 +461,6 @@ object CypherReader {
         }
         return out.toString()
     }
-
-    private fun keyword(context: ParserRuleContext): String = context.start.text.uppercase()
 
     /** Cypher the compiler does not take: refused by name, so the caller is told what, and not that the SQL failed. */
     private fun refuse(construct: String): Nothing =

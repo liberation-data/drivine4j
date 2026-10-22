@@ -182,9 +182,54 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun nodeJson(node: Value.Node) =
         "CASE WHEN ${node.nid} IS NOT NULL THEN JSON_TRANSFORM(${node.props}, SET ${OracleSql.path(Stamps.PROPERTY)} = ${node.stamp} IGNORE ON NULL) END"
 
+    override fun epochMillisNow(): String {
+        val since = "(SYS_EXTRACT_UTC(SYSTIMESTAMP) - TIMESTAMP '1970-01-01 00:00:00')"
+        return "JSON_SCALAR(TRUNC((EXTRACT(DAY FROM $since) * 86400 + EXTRACT(HOUR FROM $since) * 3600 + " +
+            "EXTRACT(MINUTE FROM $since) * 60 + EXTRACT(SECOND FROM $since)) * 1000))"
+    }
+
+    override fun isoNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'))"
+
+    /** An anonymous block, which returns its rows as an implicit result. */
+    override fun procedure(body: List<String>) = listOf(
+        "DECLARE",
+        "    $PARAMS JSON := JSON(\$${Parameters.OBJECT});",
+        "    $ROWS JSON;",
+        "    $OUT JSON;",
+        "    $ROW JSON;",
+        "    $VALUE JSON;",
+        "    $ID NUMBER;",
+        "    $COUNT NUMBER;",
+        "    $FOUND BOOLEAN;",
+        "    $DOOMED JSON;",
+        "    $CURSOR SYS_REFCURSOR;",
+        "BEGIN",
+        indent(body.joinToString("\n")),
+        "END;",
+    ).joinToString("\n")
+
+    override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
+
+    override fun raise(message: String) = "RAISE_APPLICATION_ERROR(-20000, ${literal(message)});"
+
+    override fun idOf(json: String, key: String?) = "JSON_VALUE($json, ${key?.let { OracleSql.path(it) } ?: "'$'"} RETURNING NUMBER)"
+
+    override fun appended(list: String, item: String) = "JSON_TRANSFORM($list, APPEND '\$' = $item)"
+
+    override fun stripNulls(json: String) = "JSON_MERGEPATCH(JSON('{}'), $json RETURNING JSON)"
+
+    override fun merged(props: String, map: String) = "JSON_MERGEPATCH($props, $map RETURNING JSON)"
+
+    override fun withoutLabel(labels: String, label: String) = "JSON_TRANSFORM($labels, REMOVE ${literal("\$[*]?(@ == ${quoted(label)})")})"
+
     /** The kind of the JSON [json] as Oracle names it, a floating-point number by its own name. */
     private fun kind(json: String) = "JSON_VALUE($json, '\$.type()')"
 
     /** [text] as JSON writes a string. */
     private fun quoted(text: String) = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+    private companion object {
+        /** The cursor a procedure returns its rows by. */
+        const val CURSOR = "cy_cursor"
+    }
 }
