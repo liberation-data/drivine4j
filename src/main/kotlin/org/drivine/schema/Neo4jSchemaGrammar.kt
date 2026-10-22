@@ -171,15 +171,16 @@ class Neo4jSchemaGrammar : SchemaGrammar {
     // ----- Violations -----
 
     /**
-     * By the driver's codes. A server that gives GQL statuses (Neo4j 5.26 and later) names the
-     * violation in a cause, `22N79` or `22N80`; its `ConstraintCreationFailed` covers other refusals
-     * too, as of a key constraint on Community Edition (`51N27`). An older server gives only that
-     * code, and the data decides.
+     * By the driver's codes. A write the constraint refuses (`ConstraintValidationFailed`, which
+     * [org.drivine.store.StoreIdentityResolver] retries on) is always one. A server that gives GQL
+     * statuses (Neo4j 5.26 and later) names a violation in a refused constraint's cause, `22N79` or
+     * `22N80`; its `ConstraintCreationFailed` covers other refusals too, as of a key constraint on
+     * Community Edition (`51N27`). An older server gives only that code, and the data decides.
      */
     override fun isConstraintViolation(e: Throwable): Boolean {
         val errors = generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().toList()
-        if (errors.any { it.gqlStatus() in VIOLATED }) return true
-        return errors.all { it.gqlStatus() == GENERAL_STATUS } && errors.any { it.code() in VIOLATION_CODES }
+        if (errors.any { it.code() == VALIDATION_FAILED || it.gqlStatus() in VIOLATED }) return true
+        return errors.all { it.gqlStatus() == GENERAL_STATUS } && errors.any { it.code() == CREATION_FAILED }
     }
 
     // ----- Helpers -----
@@ -241,9 +242,10 @@ class Neo4jSchemaGrammar : SchemaGrammar {
         /** The status the driver gives an error from a server that sends none. */
         const val GENERAL_STATUS = "50N42"
 
-        val VIOLATION_CODES = setOf(
-            "Neo.DatabaseError.Schema.ConstraintCreationFailed",
-            "Neo.ClientError.Schema.ConstraintValidationFailed",
-        )
+        /** A write a constraint refuses. */
+        const val VALIDATION_FAILED = "Neo.ClientError.Schema.ConstraintValidationFailed"
+
+        /** A constraint not made, for whatever reason. */
+        const val CREATION_FAILED = "Neo.DatabaseError.Schema.ConstraintCreationFailed"
     }
 }

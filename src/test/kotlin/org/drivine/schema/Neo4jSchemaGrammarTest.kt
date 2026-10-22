@@ -354,6 +354,15 @@ class Neo4jSchemaGrammarTest {
     }
 
     @Test
+    fun `a write the constraint refuses is a violation whatever GQL status it carries`() {
+        assertTrue(
+            grammar.isConstraintViolation(
+                error("22N41", "Neo.ClientError.Schema.ConstraintValidationFailed", "Node(0) already exists with label `Person` and property `email` = 'a@b.c'")
+            )
+        )
+    }
+
+    @Test
     fun `an error without a driver's code is not a violation, whatever it says`() {
         assertFalse(grammar.isConstraintViolation(RuntimeException("Unable to create Constraint: both nodes have the same value")))
         assertFalse(grammar.isConstraintViolation(RuntimeException("Connection refused")))

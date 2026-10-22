@@ -5,6 +5,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
 import org.neo4j.driver.exceptions.Neo4jException
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertSame
@@ -74,5 +75,47 @@ class ConstraintManagerTest {
 
         assertSame(refusal, assertFailsWith<Neo4jException> { store.constraints.ensure(spec) })
         assertTrue(store.schema.none { "_count > 1" in it })
+    }
+
+    /**
+     * Neo4j's grammar as an engine that builds a constraint after CREATE returns (FalkorDB's way)
+     * would use it, whose build of every constraint fails.
+     */
+    private val failingBuild = object : SchemaGrammar by Neo4jSchemaGrammar() {
+        override val constraintCreationIsAsync = true
+        override fun parseConstraintRows(rows: List<Any?>) =
+            Neo4jSchemaGrammar().parseConstraintRows(rows).map { it.copy(status = "FAILED") }
+    }
+
+    /** A store whose constraint is missing before CREATE and failed after it, answering the query for repeated keys with [conflicts]. */
+    private fun failingBuildStore(conflicts: List<Any?>): RecordingStore {
+        var created = false
+        val constraint = mapOf("name" to "Person_email", "type" to "UNIQUENESS", "entityType" to "NODE", "labelsOrTypes" to listOf("Person"), "properties" to listOf("email"))
+        return RecordingStore(DatabaseType.NEO4J, failingBuild) { ran ->
+            when {
+                ran.statement.startsWith("CREATE CONSTRAINT") -> emptyList<Any?>().also { created = true }
+                ran.statement.startsWith("SHOW CONSTRAINTS") -> if (created) listOf(constraint) else emptyList()
+                "_count > 1" in ran.statement -> conflicts
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `a constraint whose build fails is dropped, and is a violation when a key repeats`() {
+        val store = failingBuildStore(listOf(repeated))
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), store.constraints.ensure(spec))
+        assertTrue(store.schema.any { it.startsWith("DROP CONSTRAINT") })
+    }
+
+    @Test
+    fun `a constraint whose build fails is dropped, and thrown when no key repeats`() {
+        val store = failingBuildStore(emptyList())
+
+        val thrown = assertFailsWith<DrivineException> { store.constraints.ensure(spec) }
+
+        assertContains(thrown.message!!, "no key it covers repeats")
+        assertTrue(store.schema.any { it.startsWith("DROP CONSTRAINT") })
     }
 }

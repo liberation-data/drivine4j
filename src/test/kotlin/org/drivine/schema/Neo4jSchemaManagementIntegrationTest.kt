@@ -196,9 +196,11 @@ class Neo4jSchemaManagementIntegrationTest {
 
         // The constraint is real: duplicate inserts must fail
         execute("CREATE (:ChatSession {sessionId: 'session-1'})")
-        assertThrows<Exception> {
+        val refused = assertThrows<Exception> {
             execute("CREATE (:ChatSession {sessionId: 'session-1'})")
         }
+        // A write the constraint refuses is a violation too: the store identity stamp retries on one.
+        assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
     }
 
     @Test
