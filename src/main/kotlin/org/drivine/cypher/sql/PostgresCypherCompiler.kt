@@ -19,6 +19,8 @@ import org.slf4j.LoggerFactory
  *
  * - A `MATCH` is a join of node and relationship rows, its patterns' labels, types, directions and
  *   properties its conditions. Two relationships of one `MATCH` are two relationships, as in Cypher.
+ * - A variable-length relationship, `*min..max`, is a recursive walk from the end of it that is pinned
+ *   down, which takes no relationship twice.
  * - An `OPTIONAL MATCH` is a lateral join that keeps the row with nulls where nothing is found.
  * - A `WITH` is a query of its own, which the rest of the statement reads from.
  * - A projection that aggregates is grouped by what it holds outside its aggregates, as Cypher groups it.
@@ -100,20 +102,35 @@ class PostgresCypherCompiler(graph: String) {
             select.bind(unwind.variable, Value.Json("$name.value"))
         }
 
-        /** Binds the patterns of one `MATCH` into [select]: their relationships are distinct from one another. */
-        private fun patterns(select: Select, patterns: List<Pattern>) {
-            val relationships = mutableListOf<Pair<Value.Relationship, List<String>>>()
-            patterns.forEach { pattern(select, it, relationships) }
-            for (i in relationships.indices) for (j in i + 1 until relationships.size) {
-                val (a, aTypes) = relationships[i]
-                val (b, bTypes) = relationships[j]
-                // Relationships of types no relationship has both of cannot be one.
-                if (aTypes.isEmpty() || bTypes.isEmpty() || aTypes.intersect(bTypes.toSet()).isNotEmpty()) select.where += "${a.eid} <> ${b.eid}"
+        /**
+         * The relationships one part of a pattern matched: one, its id [eids], or with [many] those a
+         * variable-length relationship walked, an array of ids. Of the [types] it may have.
+         */
+        private inner class Hop(val eids: String, val many: Boolean, val types: List<String>) {
+            /** That no relationship of this hop is one of [other]'s. */
+            fun distinctFrom(other: Hop): String = when {
+                !many && !other.many -> "$eids <> ${other.eids}"
+                !many -> "$eids <> ALL (${other.eids})"
+                !other.many -> "${other.eids} <> ALL ($eids)"
+                else -> "NOT ($eids && ${other.eids})"
             }
         }
 
-        private fun pattern(select: Select, pattern: Pattern, relationships: MutableList<Pair<Value.Relationship, List<String>>>) {
+        /** Binds the patterns of one `MATCH` into [select]: their relationships are distinct from one another. */
+        private fun patterns(select: Select, patterns: List<Pattern>) {
+            val hops = mutableListOf<Hop>()
+            patterns.forEach { pattern(select, it, hops) }
+            for (i in hops.indices) for (j in i + 1 until hops.size) {
+                val (a, b) = hops[i] to hops[j]
+                // Relationships of types no relationship has both of cannot be one.
+                if (a.types.isEmpty() || b.types.isEmpty() || a.types.intersect(b.types.toSet()).isNotEmpty()) select.where += a.distinctFrom(b)
+            }
+        }
+
+        private fun pattern(select: Select, pattern: Pattern, hops: MutableList<Hop>) {
             if (pattern.variable != null) unsupported("A path variable (${pattern.variable} = …)")
+            // A node bound before the pattern, or given properties, is where a walk starts best.
+            val pinned = pattern.nodes.map { node -> node.properties != null || node.variable?.let { select.scope[it] } != null }
             val bound = pattern.nodes.map { node ->
                 val existing = node.variable?.let { select.scope[it] }
                 val value = when (existing) {
@@ -130,7 +147,12 @@ class PostgresCypherCompiler(graph: String) {
                 value
             }
             pattern.relationships.forEachIndexed { i, relationship ->
-                if (relationship.range != null) unsupported("A variable-length relationship (*)")
+                if (relationship.range != null) {
+                    // Walked from its far node when only that one is pinned: the same relationships, read backwards.
+                    hops += if (pinned[i + 1] && !pinned[i]) walk(select, relationship.reversed(), bound[i + 1].nid, bound[i].nid)
+                    else walk(select, relationship, bound[i].nid, bound[i + 1].nid)
+                    return@forEachIndexed
+                }
                 if (relationship.variable != null && select.scope[relationship.variable] != null) unsupported("A relationship variable bound before its pattern")
                 val name = alias("e")
                 select.source("$edges $name")
@@ -149,9 +171,61 @@ class PostgresCypherCompiler(graph: String) {
                     else "${value.type} IN (${relationship.types.joinToString(", ") { literal(it) }})"
                 }
                 relationship.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }
-                relationships += value to relationship.types
+                hops += Hop(value.eid, false, relationship.types)
             }
         }
+
+        /**
+         * A variable-length relationship, `-[:T*min..max]->`, from the node [from] to the node [to]: a walk
+         * from [from] that takes a relationship no more than once, as Cypher takes it, to a depth from
+         * `min` (1 if left out) to `max` (any if left out), its rows each way it reaches [to].
+         */
+        private fun walk(select: Select, relationship: RelationshipPattern, from: String, to: String): Hop {
+            relationship.variable?.let { unsupported("A variable on a variable-length relationship ($it*)") }
+            val range = relationship.range!!
+            val min = range.min ?: 1
+            val max = range.max
+            val name = alias("p")
+            val w = alias("w")
+            val e = alias("e")
+            val (join, far) = when (relationship.direction) {
+                RelationshipPattern.Direction.OUTGOING -> "$e.src = $w.nid" to "$e.dst"
+                RelationshipPattern.Direction.INCOMING -> "$e.dst = $w.nid" to "$e.src"
+                // Either way, and a relationship from a node to itself once.
+                RelationshipPattern.Direction.EITHER -> "($e.src = $w.nid OR $e.dst = $w.nid)" to "CASE WHEN $e.src = $w.nid THEN $e.dst ELSE $e.src END"
+            }
+            val conditions = listOfNotNull(
+                "$e.eid <> ALL ($w.eids)",
+                max?.let { "$w.depth < $it" },
+                when (relationship.types.size) {
+                    0 -> null
+                    1 -> "$e.type = ${literal(relationship.types.single())}"
+                    else -> "$e.type IN (${relationship.types.joinToString(", ") { literal(it) }})"
+                },
+                relationship.properties?.let { propertiesMatch("$e.props", it, select.scope) },
+            )
+            val text = listOf(
+                "WITH RECURSIVE $w (nid, depth, eids) AS (",
+                "    SELECT $from, 0, CAST(ARRAY[] AS bigint[])",
+                "    UNION ALL",
+                "    SELECT $far, $w.depth + 1, $w.eids || $e.eid",
+                "    FROM $w JOIN $edges $e ON $join",
+                "    WHERE ${conditions.joinToString(" AND ")}",
+                ")",
+                "SELECT nid, eids FROM $w WHERE depth >= $min",
+            ).joinToString("\n")
+            select.source("LATERAL (\n${indent(text)}\n) $name")
+            select.where += "$name.nid = $to"
+            return Hop("$name.eids", true, relationship.types)
+        }
+
+        private fun RelationshipPattern.reversed() = copy(
+            direction = when (direction) {
+                RelationshipPattern.Direction.OUTGOING -> RelationshipPattern.Direction.INCOMING
+                RelationshipPattern.Direction.INCOMING -> RelationshipPattern.Direction.OUTGOING
+                RelationshipPattern.Direction.EITHER -> RelationshipPattern.Direction.EITHER
+            }
+        )
 
         /** A pattern's properties: each key equal to its value, or every key of a parameter's map. */
         private fun propertiesMatch(props: String, properties: Expression, scope: Map<String, Value>): String = when (properties) {

@@ -218,11 +218,58 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a variable-length relationship reads each length of its range`() {
+        val from = "MATCH (:Person {name: 'Laurence'})"
+        assertEquals(listOf("Carrie", "Keanu"), query("$from-[:KNOWS*]->(b) RETURN b.name ORDER BY b.name"))
+        assertEquals(listOf("Carrie"), query("$from-[:KNOWS*2]->(b) RETURN b.name"))
+        assertEquals(listOf("Keanu"), query("$from-[:KNOWS*..1]->(b) RETURN b.name"))
+        assertEquals(listOf("Carrie"), query("$from-[:KNOWS*2..]->(b) RETURN b.name"))
+        assertEquals(listOf("Keanu", "Laurence"), query("$from-[:KNOWS*0..1]->(b) RETURN b.name ORDER BY b.name"))
+        assertEquals(listOf<Any?>(), query("$from-[:KNOWS*3..]->(b) RETURN b.name"))
+    }
+
+    @Test
+    fun `a variable-length relationship reads its direction, types and properties, and conditions on its end`() {
+        // Pinned at its far end: walked from there.
+        assertEquals(listOf("Keanu", "Laurence"), query("MATCH (a)-[:KNOWS*]->(:Person {name: 'Carrie'}) RETURN a.name ORDER BY a.name"))
+        // Either way, and not back along the relationship it came by.
+        assertEquals(listOf("Laurence"), query("MATCH (:Person {name: 'Carrie'})-[:KNOWS*2]-(b) RETURN b.name"))
+        assertEquals(
+            listOf("Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"),
+            query("MATCH (:Person {name: 'Laurence'})-[:KNOWS|ACTED_IN*2]->(m:Movie) RETURN DISTINCT m.title ORDER BY m.title"),
+        )
+        assertEquals(
+            listOf("The Matrix", "The Matrix Reloaded"),
+            query("MATCH (:Person {name: 'Keanu'})-[:ACTED_IN*1 {role: 'Neo'}]->(m) RETURN m.title ORDER BY m.title"),
+        )
+        assertEquals(listOf("Carrie"), query("MATCH (:Person {name: 'Laurence'})-[:KNOWS*]->(b) WHERE b.born > 1965 RETURN b.name"))
+        assertEquals(listOf("Laurence"), query("MATCH (p:Person) WHERE (p)-[:KNOWS*2]->() RETURN p.name"))
+    }
+
+    @Test
+    fun `a variable-length relationship does not take a relationship its match took already`() {
+        assertEquals(
+            query("MATCH (:Person {name: 'Keanu'})-[:ACTED_IN]->(m)<-[:ACTED_IN]-(other) RETURN other.name ORDER BY other.name"),
+            query("MATCH (:Person {name: 'Keanu'})-[:ACTED_IN]->(m)<-[:ACTED_IN*1]-(other) RETURN other.name ORDER BY other.name"),
+        )
+        // Two walks of one match share no relationship: Laurence to Keanu is taken by one of them only.
+        assertEquals(
+            listOf(listOf("Laurence", "Carrie")),
+            query("MATCH (a)-[:KNOWS*1]->(:Person {name: 'Keanu'})-[:KNOWS*1]->(c) RETURN [a.name, c.name]"),
+        )
+        assertEquals(listOf<Any?>(), query("MATCH (:Person {name: 'Laurence'})-[:KNOWS*1]->(k)<-[:KNOWS*1]-(:Person {name: 'Laurence'}) RETURN k.name"))
+    }
+
+    @Test
     fun `cypher that is not compiled yet is refused by name`() {
         if (!compiles) return
         assertEquals(
-            "A variable-length relationship (*) is Cypher, and does not run on Oracle or Postgres yet.",
-            assertThrows<DrivineException> { query("MATCH (a:Person)-[:KNOWS*1..2]->(b) RETURN b.name") }.message,
+            "A path variable (p = …) is Cypher, and does not run on Oracle or Postgres yet.",
+            assertThrows<DrivineException> { query("MATCH p = (a:Person)-[:KNOWS*1..2]->(b) RETURN b.name") }.message,
+        )
+        assertEquals(
+            "A variable on a variable-length relationship (r*) is Cypher, and does not run on Oracle or Postgres yet.",
+            assertThrows<DrivineException> { query("MATCH (a:Person)-[r:KNOWS*1..2]->(b) RETURN b.name") }.message,
         )
     }
 }
