@@ -40,8 +40,9 @@ data class DrivineSchemaProperties(
     var recreateOnStartup: Boolean = false,
 
     /**
-     * How many conflicting rows to sample when a constraint violation is detected (0 leaves the sample
-     * empty; the data is still read, to confirm the violation).
+     * How many conflicting rows to sample when a constraint violation is detected, and how many of the
+     * nodes that hold each one to name (0 leaves the sample empty; the data is still read, to confirm
+     * the violation).
      */
     var violationSampleSize: Int = 10,
 

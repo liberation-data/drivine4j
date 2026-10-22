@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.RangeIndex
@@ -37,6 +38,22 @@ data class MessageFixture(
     val sessionId: String,
     val createdAt: Long,
     val sequence: Int,
+)
+
+@NodeFragment(labels = ["Badge"])
+data class BadgeFixture(
+    @Unique
+    val code: String,
+)
+
+@NodeFragment(labels = ["Ticket"])
+data class TicketFixture(
+    @NodeId
+    @GraphProperty("ticket_id")
+    val id: String,
+
+    @Unique
+    val serial: String,
 )
 
 data class NotAFragment(val id: String)
@@ -267,6 +284,20 @@ class SchemaCatalogTest {
         }
     }
 
+    @Test
+    fun `a fragment without a @NodeId names its conflicting nodes by the engine's id alone`() {
+        val constraint = SchemaCatalog.fromFragments(BadgeFixture::class).constraints.single()
+
+        assertNull(constraint.nodeIdProperty)
+    }
+
+    @Test
+    fun `a @NodeId renamed by @GraphProperty names conflicting nodes by the property it is stored under`() {
+        val constraint = SchemaCatalog.fromFragments(TicketFixture::class).constraints.single()
+
+        assertEquals("ticket_id", constraint.nodeIdProperty)
+    }
+
     // ----- fromFragments: Java -----
 
     @Test
@@ -284,6 +315,10 @@ class SchemaCatalogTest {
         assertEquals(listOf("tenantId", "userId"), composite.properties)
         val single = catalog.constraints.first { it.properties.size == 1 }
         assertEquals(listOf("id"), single.properties)
+
+        // The @NodeId names the sampled nodes of both, though it is the key of the one on id itself.
+        assertEquals(listOf("id", "id"), listOf(composite, single).map { it.nodeIdProperty })
+        assertNull(SchemaGrammar.sampledNodeId(single), "a key every conflicting node holds alike names none of them")
     }
 
     // ----- fragment + explicit spec merge -----

@@ -3458,7 +3458,7 @@ drivine:
     mode: FAIL_FAST            # FAIL_FAST (default) or WARN on drift/violations
     recreate-on-drift: false   # destructive: rebuild items whose shape changed
     recreate-on-startup: false # destructive: rebuild everything every startup
-    violation-sample-size: 10  # conflicting rows sampled on constraint violations
+    violation-sample-size: 10  # conflicting rows sampled on constraint violations, and nodes named per row
     replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
 ```
 

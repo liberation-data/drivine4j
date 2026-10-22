@@ -335,6 +335,22 @@ class OracleSchemaGrammarTest {
     }
 
     @Test
+    fun `a conflicting node is named by the fragment's id too, unless that is a key`() {
+        val byUuid = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "uuid"), 3)
+        byUuid.inOrder(
+            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid, 'uuid' VALUE i) ORDER BY nid)",
+            "FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, JSON_VALUE(n.props, '$.uuid') AS i, COUNT(*) OVER",
+        )
+        assertEquals(emptyList(), SqlParameters.positional(byUuid).names)
+
+        val byKey = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "email"), 3)
+        byKey.inOrder(
+            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid)",
+            "FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, COUNT(*) OVER",
+        )
+    }
+
+    @Test
     fun `the properties of an index are recorded as a JSON array, with quotes and backslashes escaped`() {
         assertEquals("[]", OracleSchemaGrammar.json(emptyList()))
         assertEquals("[\"a\\\"b\",\"c\\\\d\"]", OracleSchemaGrammar.json(listOf("a\"b", "c\\d")))
