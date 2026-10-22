@@ -40,8 +40,10 @@ sealed interface EnsureResult {
      * Constraint-only outcome: creation failed because existing data violates the constraint.
      *
      * @param requested the constraint that could not be created
-     * @param conflictingSample a bounded sample of conflicting property combinations
-     *   (each entry holds the duplicated property values and a count), for debugging.
+     * @param conflictingSample a bounded sample of conflicting property combinations, for debugging:
+     *   each entry holds the duplicated `properties`, the `count` of nodes that hold them, and
+     *   `nodes`, as many of those nodes as the sample size at most, each its `elementId` (the
+     *   engine's own id) and, for a spec read from a fragment, its `@NodeId` property.
      *   Empty only when a sample size of 0 was asked for: when the data cannot be read, the
      *   refusal is thrown rather than reported as a violation with no sample.
      */

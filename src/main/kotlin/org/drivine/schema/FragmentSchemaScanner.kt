@@ -32,10 +32,19 @@ internal object FragmentSchemaScanner {
         // A field's index/constraint must target its on-disk property name (@GraphProperty), since
         // that is what is stored and queried. Identity when there is no override.
         val onDisk = onDiskNameResolver(fragmentClass)
+        val nodeId = nodeIdProperty(fragmentClass)
         val specs = mutableListOf<SchemaItemSpec>()
         specs += classLevelSpecs(fragmentClass, label, onDisk)
         specs += propertyLevelSpecs(fragmentClass, label, dimensionProvider, onDisk)
-        return specs
+        // A violation's sample names each conflicting node by the fragment's @NodeId too.
+        return specs.map { if (it is UniquenessConstraintSpec) it.copy(nodeIdProperty = nodeId) else it }
+    }
+
+    /** The on-disk property of the fragment's `@NodeId`, or null when it has none. */
+    private fun nodeIdProperty(fragmentClass: Class<*>): String? = try {
+        FragmentModel.from(fragmentClass).nodeIdProperty
+    } catch (e: Exception) {
+        null
     }
 
     /** Maps a fragment field name to its on-disk property name (`@GraphProperty`), identity otherwise. */

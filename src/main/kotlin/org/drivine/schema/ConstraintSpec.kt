@@ -8,4 +8,13 @@ package org.drivine.schema
  *
  * @see UniquenessConstraintSpec
  */
-sealed interface ConstraintSpec : SchemaItemSpec
+sealed interface ConstraintSpec : SchemaItemSpec {
+
+    /**
+     * The property a node is identified by, the `@NodeId` of the fragment the spec was read from;
+     * null for a spec declared by hand. Not part of what is made: a violation's sample names each
+     * conflicting node by it, beside the engine's own id, and two declarations that differ only in
+     * it are one.
+     */
+    val nodeIdProperty: String?
+}

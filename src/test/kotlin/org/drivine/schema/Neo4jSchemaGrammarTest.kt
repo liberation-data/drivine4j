@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
@@ -392,19 +393,35 @@ class Neo4jSchemaGrammarTest {
     // ----- Conflict sampling -----
 
     @Test
-    fun `conflict sampling groups the labelled nodes that hold every key, and returns the keys that repeat as a map with their count`() {
+    fun `conflict sampling groups the labelled nodes that hold every key, and returns the keys that repeat as a map with their count and nodes`() {
         val query = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", listOf("email", "tenant")), 5)
 
         assertEquals(
             """
             MATCH (n:Person)
             WHERE n.email IS NOT NULL AND n.tenant IS NOT NULL
-            WITH n.email AS _k0, n.tenant AS _k1, count(*) AS _count
+            WITH n.email AS _k0, n.tenant AS _k1, count(*) AS _count, collect({elementId: elementId(n)}) AS _nodes
             WHERE _count > 1
-            RETURN {properties: {email: _k0, tenant: _k1}, count: _count}
+            RETURN {properties: {email: _k0, tenant: _k1}, count: _count, nodes: _nodes[0..5]}
             LIMIT 5
             """.trimIndent(),
             query,
         )
+    }
+
+    @Test
+    fun `a conflicting node is named by the fragment's id too, unless that is a key`() {
+        val byUuid = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "uuid"), 3)
+        assertTrue(byUuid.contains("collect({elementId: elementId(n), uuid: n.uuid}) AS _nodes"), byUuid)
+
+        val byKey = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "email"), 3)
+        assertTrue(byKey.contains("collect({elementId: elementId(n)}) AS _nodes"), byKey)
+    }
+
+    @Test
+    fun `Neo4j 4 names a node by id, having no elementId`() {
+        val query = CypherDialect.NEO4J_4.schemaGrammar().sampleConflictsQuery(UniquenessConstraintSpec("Person", "email"), 3)
+
+        assertTrue(query.contains("collect({elementId: id(n)}) AS _nodes"), query)
     }
 }

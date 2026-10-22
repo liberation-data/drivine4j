@@ -221,11 +221,16 @@ class Neo4jSchemaManagementIntegrationTest {
         execute("CREATE (:Person {email: 'dup@example.com', name: 'A'})")
         execute("CREATE (:Person {email: 'dup@example.com', name: 'B'})")
 
-        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email"))
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "name"))
 
         assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
         val violation = result as EnsureResult.Violation
         assertTrue(violation.conflictingSample.isNotEmpty(), "expected a conflicting-row sample")
+
+        // Each conflicting node is named, by the engine's id and by the property it is identified by.
+        val nodes = (violation.conflictingSample.single()["nodes"] as List<*>).map { it as Map<*, *> }
+        assertEquals(setOf("A", "B"), nodes.map { it["name"] }.toSet())
+        assertEquals(2, nodes.mapNotNull { it["elementId"] }.toSet().size)
 
         // Nothing was created
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "email")))

@@ -217,21 +217,30 @@ interface SchemaGrammar {
 
     /**
      * The statement that samples the key values [spec] would refuse: each row a map of the
-     * `properties` that repeat and the `count` of nodes that hold them, [limit] rows at most.
+     * `properties` that repeat, the `count` of nodes that hold them, and `nodes`, [limit] of those
+     * nodes at most, each named by its `elementId` (see [elementId]) and, when the spec knows it, its
+     * [ConstraintSpec.nodeIdProperty]; [limit] rows at most.
      */
     fun sampleConflictsQuery(spec: ConstraintSpec, limit: Int): String {
         val notNull = spec.properties.joinToString(" AND ") { "n.$it IS NOT NULL" }
         val keyAliases = spec.properties.mapIndexed { i, p -> "n.$p AS _k$i" }.joinToString(", ")
         val keyMap = spec.properties.mapIndexed { i, p -> "$p: _k$i" }.joinToString(", ")
+        val node = listOfNotNull(
+            "elementId: ${elementId("n")}",
+            sampledNodeId(spec)?.let { "${identifier(it)}: n.${identifier(it)}" },
+        ).joinToString(", ")
         return """
             MATCH (n:${spec.label})
             WHERE $notNull
-            WITH $keyAliases, count(*) AS _count
+            WITH $keyAliases, count(*) AS _count, collect({$node}) AS _nodes
             WHERE _count > 1
-            RETURN {properties: {$keyMap}, count: _count}
+            RETURN {properties: {$keyMap}, count: _count, nodes: _nodes[0..$limit]}
             LIMIT $limit
         """.trimIndent()
     }
+
+    /** The engine's own id of the node [variable] is bound to, in Cypher: `id(n)` unless the engine has another. */
+    fun elementId(variable: String): String = "id($variable)"
 
     companion object {
 
@@ -256,6 +265,13 @@ interface SchemaGrammar {
 
         /** The Unicode escape of a backtick, with as many `u` as an escape may have. */
         private val ESCAPED_BACKTICK = Regex("\\\\u+0060")
+
+        /**
+         * The property a violation's sample names a node by, beside its element id: [spec]'s
+         * [ConstraintSpec.nodeIdProperty], unless it is one of the keys, which every node of a
+         * conflict holds alike.
+         */
+        fun sampledNodeId(spec: ConstraintSpec): String? = spec.nodeIdProperty?.takeIf { it !in spec.properties }
 
         /** Flattens an exception chain's messages for engine-specific violation sniffing. */
         fun messagesOf(e: Throwable): String =

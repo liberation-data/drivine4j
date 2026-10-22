@@ -3317,7 +3317,7 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `Created` | Nothing existed and the item was created, or it existed without part of what the engine makes for it (on Oracle, a range index without its index over the label's nodes) and that part was made |
 | `AlreadyMatching` | A matching item exists; nothing changed |
 | `Drift` | An item exists with a **different shape** (e.g. vector dimensions changed). Nothing changed — call `recreate(spec)` to replace it (destructive) |
-| `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
+| `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values, each with the nodes that hold it: their engine id (`elementId`), and their `@NodeId` when the constraint is declared on a fragment, as many nodes per value as `violationSampleSize`. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
 | `BlockedByIndex` | Constraint only: a plain range index over the same label and properties is in the way of it, and is named. Neo4j alone refuses a constraint for one, since its constraint brings its own index. Nothing changed — drop the index, or ensure with `replaceBlockingIndex = true` (`drivine.schema.replace-blocking-index=true`), which drops it and makes the constraint |
 | `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
 

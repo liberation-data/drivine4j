@@ -320,11 +320,15 @@ class OracleSchemaGrammarTest {
     fun `the conflicts of a constraint are the labelled nodes that share values of its properties`() {
         val query = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", listOf("email", "tenant")), 5)
         query.inOrder(
-            "SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('email' VALUE JSON_VALUE(n.props, '$.email'), 'tenant' VALUE JSON_VALUE(n.props, '$.tenant')), 'count' VALUE COUNT(*) RETURNING JSON)",
+            "SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('email' VALUE k0, 'tenant' VALUE k1), 'count' VALUE MAX(c),",
+            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid) RETURNING JSON)",
+            "FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, JSON_VALUE(n.props, '$.tenant') AS k1, " +
+                "COUNT(*) OVER (PARTITION BY JSON_VALUE(n.props, '$.email'), JSON_VALUE(n.props, '$.tenant')) AS c, " +
+                "ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(n.props, '$.email'), JSON_VALUE(n.props, '$.tenant') ORDER BY n.nid) AS r",
             "FROM g_node n",
-            "WHERE JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_VALUE(n.props, '$.email') IS NOT NULL AND JSON_VALUE(n.props, '$.tenant') IS NOT NULL",
-            "GROUP BY JSON_VALUE(n.props, '$.email'), JSON_VALUE(n.props, '$.tenant')",
-            "HAVING COUNT(*) > 1",
+            "WHERE JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")') AND JSON_VALUE(n.props, '$.email') IS NOT NULL AND JSON_VALUE(n.props, '$.tenant') IS NOT NULL)",
+            "WHERE c > 1 AND r <= 5",
+            "GROUP BY k0, k1",
             "FETCH FIRST 5 ROWS ONLY",
         )
         assertEquals(emptyList(), SqlParameters.positional(query).names)

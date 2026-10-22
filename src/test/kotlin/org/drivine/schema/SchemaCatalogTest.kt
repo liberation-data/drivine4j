@@ -249,6 +249,7 @@ class SchemaCatalogTest {
 
         val uniqueComposite = catalog.constraints.single() as UniquenessConstraintSpec
         assertEquals(listOf("sessionId", "sequence"), uniqueComposite.properties)
+        assertEquals("id", uniqueComposite.nodeIdProperty, "a violation's sample names a node by the fragment's @NodeId")
     }
 
     @Test
@@ -296,5 +297,13 @@ class SchemaCatalogTest {
 
         assertEquals(2, merged.indexes.size)
         assertEquals(1, merged.constraints.size)
+    }
+
+    @Test
+    fun `a constraint read from a fragment and one declared by hand are one, which names nodes by the fragment's id`() {
+        val merged = SchemaCatalog.fromFragments(MessageFixture::class) +
+            SchemaCatalog.of(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence")))
+
+        assertEquals(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence"), nodeIdProperty = "id"), merged.constraints.single())
     }
 }

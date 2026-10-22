@@ -127,12 +127,17 @@ class PostgresSchemaManagementIntegrationTest {
     fun `constraint on violating data returns Violation with a sample of what repeats`() {
         execute("CREATE (:Person {email: 'dup@example.com', name: 'A'}), (:Person {email: 'dup@example.com', name: 'B'})")
 
-        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email"))
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "name"))
 
         assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
         val sample = (result as EnsureResult.Violation).conflictingSample.single()
         assertEquals(mapOf("email" to "dup@example.com"), sample["properties"])
         assertEquals(2L, (sample["count"] as Number).toLong())
+
+        // Each conflicting node is named, by the engine's id and by the property it is identified by.
+        val nodes = (result.conflictingSample.single()["nodes"] as List<*>).map { it as Map<*, *> }
+        assertEquals(setOf("A", "B"), nodes.map { it["name"] }.toSet())
+        assertEquals(2, nodes.mapNotNull { it["elementId"] }.toSet().size)
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "email")))
     }
 

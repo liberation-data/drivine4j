@@ -12,8 +12,11 @@ import org.neo4j.driver.exceptions.Neo4jException
  * - Introspection via `SHOW INDEXES` / `SHOW CONSTRAINTS` with `YIELD … RETURN {…}`.
  * - Vector index config uses backtick-quoted dotted keys (`vector.dimensions`,
  *   `vector.similarity_function`).
+ *
+ * @param elementIdFunction the function that gives a node's own id: `elementId` from Neo4j 5, `id`
+ *   on Neo4j 4, which has no `elementId`
  */
-class Neo4jSchemaGrammar : SchemaGrammar {
+class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : SchemaGrammar {
 
     override val engine = "Neo4j"
     override val supportsIfNotExists = true
@@ -189,6 +192,8 @@ class Neo4jSchemaGrammar : SchemaGrammar {
      */
     override fun isBlockedByIndex(e: Throwable): Boolean =
         generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().any { it.code() == INDEX_ALREADY_EXISTS }
+
+    override fun elementId(variable: String): String = "$elementIdFunction($variable)"
 
     // ----- Helpers -----
 
