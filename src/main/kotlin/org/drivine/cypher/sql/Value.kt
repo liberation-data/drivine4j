@@ -19,4 +19,7 @@ sealed interface Value {
 
     /** A relationship: the columns of its row. */
     data class Relationship(val eid: String, val src: String, val dst: String, val type: String, val props: String) : Value
+
+    /** A path: the ids of its nodes, and of its relationships, in the order the pattern names them. */
+    data class Path(val nids: String, val eids: String) : Value
 }

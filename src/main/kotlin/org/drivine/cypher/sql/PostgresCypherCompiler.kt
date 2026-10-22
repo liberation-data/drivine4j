@@ -20,7 +20,9 @@ import org.slf4j.LoggerFactory
  * - A `MATCH` is a join of node and relationship rows, its patterns' labels, types, directions and
  *   properties its conditions. Two relationships of one `MATCH` are two relationships, as in Cypher.
  * - A variable-length relationship, `*min..max`, is a recursive walk from the end of it that is pinned
- *   down, which takes no relationship twice.
+ *   down, which takes no relationship twice. A variable on one is the list of its relationships.
+ * - A path, `p = (…)`, is the ids of its nodes and relationships, read by `nodes`, `relationships` and
+ *   `length`. It is not returned whole: each graph engine's driver gives a path as a value of its own.
  * - An `OPTIONAL MATCH` is a lateral join that keeps the row with nulls where nothing is found.
  * - A `WITH` is a query of its own, which the rest of the statement reads from.
  * - A projection that aggregates is grouped by what it holds outside its aggregates, as Cypher groups it.
@@ -104,9 +106,10 @@ class PostgresCypherCompiler(graph: String) {
 
         /**
          * The relationships one part of a pattern matched: one, its id [eids], or with [many] those a
-         * variable-length relationship walked, an array of ids. Of the [types] it may have.
+         * variable-length relationship walked, an array of ids. Of the [types] it may have; [nodes] is the
+         * array of the ids of the nodes it reaches after the one it starts from.
          */
-        private inner class Hop(val eids: String, val many: Boolean, val types: List<String>) {
+        private inner class Hop(val eids: String, val many: Boolean, val types: List<String>, val nodes: String) {
             /** That no relationship of this hop is one of [other]'s. */
             fun distinctFrom(other: Hop): String = when {
                 !many && !other.many -> "$eids <> ${other.eids}"
@@ -128,7 +131,6 @@ class PostgresCypherCompiler(graph: String) {
         }
 
         private fun pattern(select: Select, pattern: Pattern, hops: MutableList<Hop>) {
-            if (pattern.variable != null) unsupported("A path variable (${pattern.variable} = …)")
             // A node bound before the pattern, or given properties, is where a walk starts best.
             val pinned = pattern.nodes.map { node -> node.properties != null || node.variable?.let { select.scope[it] } != null }
             val bound = pattern.nodes.map { node ->
@@ -149,8 +151,8 @@ class PostgresCypherCompiler(graph: String) {
             pattern.relationships.forEachIndexed { i, relationship ->
                 if (relationship.range != null) {
                     // Walked from its far node when only that one is pinned: the same relationships, read backwards.
-                    hops += if (pinned[i + 1] && !pinned[i]) walk(select, relationship.reversed(), bound[i + 1].nid, bound[i].nid)
-                    else walk(select, relationship, bound[i].nid, bound[i + 1].nid)
+                    hops += if (pinned[i + 1] && !pinned[i]) walk(select, relationship.reversed(), bound[i + 1].nid, bound[i].nid, backwards = true)
+                    else walk(select, relationship, bound[i].nid, bound[i + 1].nid, backwards = false)
                     return@forEachIndexed
                 }
                 if (relationship.variable != null && select.scope[relationship.variable] != null) unsupported("A relationship variable bound before its pattern")
@@ -171,17 +173,23 @@ class PostgresCypherCompiler(graph: String) {
                     else "${value.type} IN (${relationship.types.joinToString(", ") { literal(it) }})"
                 }
                 relationship.properties?.let { select.where += propertiesMatch(value.props, it, select.scope) }
-                hops += Hop(value.eid, false, relationship.types)
+                hops += Hop(value.eid, false, relationship.types, "ARRAY[$to]")
+            }
+            pattern.variable?.let { variable ->
+                val mine = hops.takeLast(pattern.relationships.size)
+                val nids = (listOf("ARRAY[${bound.first().nid}]") + mine.map { it.nodes }).joinToString(" || ")
+                val eids = mine.map { if (it.many) it.eids else "ARRAY[${it.eids}]" }.ifEmpty { listOf("CAST(ARRAY[] AS bigint[])") }.joinToString(" || ")
+                select.bind(variable, Value.Path("($nids)", "($eids)"))
             }
         }
 
         /**
          * A variable-length relationship, `-[:T*min..max]->`, from the node [from] to the node [to]: a walk
          * from [from] that takes a relationship no more than once, as Cypher takes it, to a depth from
-         * `min` (1 if left out) to `max` (any if left out), its rows each way it reaches [to].
+         * `min` (1 if left out) to `max` (any if left out), its rows each way it reaches [to]. Walked
+         * [backwards], from the pattern's later node, it keeps its nodes and relationships in the pattern's order.
          */
-        private fun walk(select: Select, relationship: RelationshipPattern, from: String, to: String): Hop {
-            relationship.variable?.let { unsupported("A variable on a variable-length relationship ($it*)") }
+        private fun walk(select: Select, relationship: RelationshipPattern, from: String, to: String, backwards: Boolean): Hop {
             val range = relationship.range!!
             val min = range.min ?: 1
             val max = range.max
@@ -205,18 +213,43 @@ class PostgresCypherCompiler(graph: String) {
                 relationship.properties?.let { propertiesMatch("$e.props", it, select.scope) },
             )
             val text = listOf(
-                "WITH RECURSIVE $w (nid, depth, eids) AS (",
-                "    SELECT $from, 0, CAST(ARRAY[] AS bigint[])",
+                "WITH RECURSIVE $w (nid, depth, nids, eids) AS (",
+                "    SELECT $from, 0, ARRAY[$from], CAST(ARRAY[] AS bigint[])",
                 "    UNION ALL",
-                "    SELECT $far, $w.depth + 1, $w.eids || $e.eid",
+                if (backwards) "    SELECT $far, $w.depth + 1, $far || $w.nids, $e.eid || $w.eids"
+                else "    SELECT $far, $w.depth + 1, $w.nids || $far, $w.eids || $e.eid",
                 "    FROM $w JOIN $edges $e ON $join",
                 "    WHERE ${conditions.joinToString(" AND ")}",
                 ")",
-                "SELECT nid, eids FROM $w WHERE depth >= $min",
+                "SELECT nid, nids, eids FROM $w WHERE depth >= $min",
             ).joinToString("\n")
             select.source("LATERAL (\n${indent(text)}\n) $name")
             select.where += "$name.nid = $to"
-            return Hop("$name.eids", true, relationship.types)
+            // A variable on it is the list of its relationships.
+            relationship.variable?.let { select.bind(it, relationshipList("$name.eids")) }
+            // The nodes it reaches after the pattern's earlier one, which the path has already.
+            return Hop("$name.eids", true, relationship.types, "$name.nids[2:]")
+        }
+
+        /** The nodes whose ids are the array [nids], as a list in its order: null where the array is. */
+        private fun nodeList(nids: String): Value.Json {
+            val n = alias("n")
+            val node = json(Value.Node("$n.nid", "$n.labels", "$n.props", "$n.stamp")).sql
+            return Value.Json(
+                "CASE WHEN $nids IS NOT NULL THEN (SELECT COALESCE(json_agg($node ORDER BY u.o), '[]'::json) " +
+                    "FROM unnest($nids) WITH ORDINALITY u (nid, o) JOIN $nodes $n ON $n.nid = u.nid) END",
+                ordered = true,
+            )
+        }
+
+        /** The relationships whose ids are the array [eids], as a list in its order: null where the array is. */
+        private fun relationshipList(eids: String): Value.Json {
+            val e = alias("e")
+            return Value.Json(
+                "CASE WHEN $eids IS NOT NULL THEN (SELECT COALESCE(json_agg(CAST($e.props AS json) ORDER BY u.o), '[]'::json) " +
+                    "FROM unnest($eids) WITH ORDINALITY u (eid, o) JOIN $edges $e ON $e.eid = u.eid) END",
+                ordered = true,
+            )
         }
 
         private fun RelationshipPattern.reversed() = copy(
@@ -404,6 +437,7 @@ class PostgresCypherCompiler(graph: String) {
             is Value.Relationship -> Value.Json("(${subject.props} -> ${literal(key)})")
             is Value.Json -> Value.Json("(${jsonb(subject)} -> ${literal(key)})")
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
+            is Value.Path -> throw DrivineException("A path has no properties.")
         }
 
         private fun mapProjection(projection: Expression.MapProjection, scope: Map<String, Value>): Value {
@@ -506,6 +540,7 @@ class PostgresCypherCompiler(graph: String) {
             is Value.Node -> "${value.nid} IS NULL"
             is Value.Relationship -> "${value.eid} IS NULL"
             is Value.Bool -> "${value.sql} IS NULL"
+            is Value.Path -> "${value.nids} IS NULL"
             // A property stored as JSON's null is no property, as on a graph engine.
             is Value.Json -> "COALESCE(jsonb_typeof(${jsonb(value)}), 'null') = 'null'"
         }
@@ -537,6 +572,9 @@ class PostgresCypherCompiler(graph: String) {
                     is Value.Relationship -> Value.Json("to_jsonb(${subject.eid})")
                     else -> throw DrivineException("${function.name}() takes a node or a relationship.")
                 }
+                "length" -> (one() as? Value.Path)?.let { Value.Json("to_jsonb(cardinality(${it.eids}))") } ?: throw DrivineException("length() takes a path.")
+                "nodes" -> (one() as? Value.Path)?.let { nodeList(it.nids) } ?: throw DrivineException("nodes() takes a path.")
+                "relationships" -> (one() as? Value.Path)?.let { relationshipList(it.eids) } ?: throw DrivineException("relationships() takes a path.")
                 "keys" -> Value.Json("(SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb) FROM jsonb_object_keys(${jsonb(json(one()))}) k)")
                 "size" -> {
                     val a = jsonbOf(0)
@@ -570,6 +608,7 @@ class PostgresCypherCompiler(graph: String) {
         private fun countable(value: Value): String = when (value) {
             is Value.Node -> value.nid
             is Value.Relationship -> value.eid
+            is Value.Path -> value.nids
             else -> "NULLIF(${jsonb(json(value))}, 'null'::jsonb)"
         }
 
@@ -589,6 +628,8 @@ class PostgresCypherCompiler(graph: String) {
                 "CASE WHEN ${value.nid} IS NOT NULL THEN ${value.props} || jsonb_strip_nulls(jsonb_build_object(${literal(Stamps.PROPERTY)}, ${value.stamp})) END"
             )
             is Value.Relationship -> Value.Json("CASE WHEN ${value.eid} IS NOT NULL THEN ${value.props} END")
+            // Each graph engine's driver gives a path as a value of its own, so a path is given by its parts.
+            is Value.Path -> throw DrivineException("A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p).")
         }
 
         /** A JSON value as `jsonb`: a `json` one is cast. */
@@ -598,7 +639,7 @@ class PostgresCypherCompiler(graph: String) {
         fun bool(value: Value): String = when (value) {
             is Value.Bool -> value.sql
             is Value.Json -> "CASE WHEN jsonb_typeof(${jsonb(value)}) = 'boolean' THEN CAST(${jsonb(value)} AS boolean) END"
-            else -> throw DrivineException("A node or a relationship is not a condition.")
+            else -> throw DrivineException("A node, a relationship or a path is not a condition.")
         }
 
         /** What an order sorts a value by: JSON's order for a value, a node by its properties. */
@@ -698,6 +739,7 @@ class PostgresCypherCompiler(graph: String) {
         is Value.Bool -> listOf("$sql AS $name")
         is Value.Node -> listOf("$nid AS ${name}_nid", "$labels AS ${name}_labels", "$props AS ${name}_props", "$stamp AS ${name}_stamp")
         is Value.Relationship -> listOf("$eid AS ${name}_eid", "$src AS ${name}_src", "$dst AS ${name}_dst", "$type AS ${name}_type", "$props AS ${name}_props")
+        is Value.Path -> listOf("$nids AS ${name}_nids", "$eids AS ${name}_eids")
     }
 
     /**
@@ -713,6 +755,7 @@ class PostgresCypherCompiler(graph: String) {
             is Value.Bool -> Value.Bool("$prefix$base")
             is Value.Node -> Value.Node("$prefix${base}_nid", "$prefix${base}_labels", "$prefix${base}_props", "$prefix${base}_stamp")
             is Value.Relationship -> Value.Relationship("$prefix${base}_eid", "$prefix${base}_src", "$prefix${base}_dst", "$prefix${base}_type", "$prefix${base}_props")
+            is Value.Path -> Value.Path("$prefix${base}_nids", "$prefix${base}_eids")
         }
     }
 
@@ -724,6 +767,7 @@ class PostgresCypherCompiler(graph: String) {
         is Value.Relationship -> Value.Relationship(
             eid.replace(PENDING, alias), src.replace(PENDING, alias), dst.replace(PENDING, alias), type.replace(PENDING, alias), props.replace(PENDING, alias),
         )
+        is Value.Path -> Value.Path(nids.replace(PENDING, alias), eids.replace(PENDING, alias))
     }
 
     /** What a projection that aggregates is grouped by, to keep this value: a node by its columns. */
@@ -732,5 +776,6 @@ class PostgresCypherCompiler(graph: String) {
         is Value.Bool -> listOf(sql)
         is Value.Node -> listOf(nid, labels, props, stamp)
         is Value.Relationship -> listOf(eid, src, dst, type, props)
+        is Value.Path -> listOf(nids, eids)
     }
 }

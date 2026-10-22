@@ -261,15 +261,49 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a path gives its nodes and relationships in order, and its length`() {
+        assertEquals(
+            listOf(listOf(listOf("Laurence", "Keanu", "Carrie"), 2L, 2L)),
+            query("MATCH p = (:Person {name: 'Laurence'})-[:KNOWS*2]->(:Person) RETURN [[n IN nodes(p) | n.name], size(relationships(p)), length(p)]"),
+        )
+        // A path of fixed and variable-length parts, walked from its pinned far end, in the pattern's order.
+        assertEquals(
+            listOf(listOf("Laurence", "Keanu", "Carrie", "The Matrix")),
+            query("MATCH p = (a)-[:KNOWS*]->(:Person {name: 'Carrie'})-[:ACTED_IN]->(m {title: 'The Matrix'}) WHERE a.name = 'Laurence' RETURN [n IN nodes(p) | coalesce(n.name, n.title)]"),
+        )
+        assertEquals(
+            listOf(listOf("Neo", "Trinity")),
+            query("MATCH p = (:Person {name: 'Keanu'})-[:ACTED_IN]->(:Movie {title: 'The Matrix'})<-[:ACTED_IN]-(:Person {name: 'Carrie'}) RETURN [r IN relationships(p) | r.role]"),
+        )
+        assertEquals(listOf(0L), query("MATCH p = (:Person {name: 'Hugo'}) RETURN length(p)"))
+        // A path is kept by a WITH, and is null where an optional match finds none.
+        assertEquals(
+            listOf(listOf("Hugo", null), listOf("Keanu", 1L)),
+            query(
+                """
+                MATCH (a:Person) WHERE a.name IN ['Hugo', 'Keanu']
+                OPTIONAL MATCH p = (a)-[:KNOWS]->(:Person)
+                WITH a, p
+                RETURN [a.name, length(p)] ORDER BY a.name
+                """
+            ),
+        )
+    }
+
+    @Test
+    fun `a variable on a variable-length relationship is the list of its relationships`() {
+        assertEquals(
+            listOf(listOf("Neo", "Trinity")),
+            query("MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN*2]-(:Person {name: 'Carrie'}) WHERE r[0].role = 'Neo' AND r[1].role = 'Trinity' RETURN [x IN r | x.role]").distinct(),
+        )
+    }
+
+    @Test
     fun `cypher that is not compiled yet is refused by name`() {
         if (!compiles) return
         assertEquals(
-            "A path variable (p = …) is Cypher, and does not run on Oracle or Postgres yet.",
-            assertThrows<DrivineException> { query("MATCH p = (a:Person)-[:KNOWS*1..2]->(b) RETURN b.name") }.message,
-        )
-        assertEquals(
-            "A variable on a variable-length relationship (r*) is Cypher, and does not run on Oracle or Postgres yet.",
-            assertThrows<DrivineException> { query("MATCH (a:Person)-[r:KNOWS*1..2]->(b) RETURN b.name") }.message,
+            "A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p).",
+            assertThrows<DrivineException> { query("MATCH p = (a:Person)-[:KNOWS*1..2]->(b) RETURN p") }.message,
         )
     }
 }
