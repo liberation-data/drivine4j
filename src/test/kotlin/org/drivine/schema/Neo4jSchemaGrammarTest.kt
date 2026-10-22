@@ -19,6 +19,7 @@ class Neo4jSchemaGrammarTest {
         assertTrue(grammar.supportsNamedItems)
         assertFalse(grammar.constraintsRequireBackingIndex)
         assertFalse(grammar.constraintCreationIsAsync)
+        assertTrue(grammar.supportsTextIndex)
     }
 
     // ----- DDL: vector index -----
@@ -139,6 +140,36 @@ class Neo4jSchemaGrammarTest {
         assertTrue(statement.statement.contains("`fulltext.analyzer`: 'english'"))
     }
 
+    // ----- DDL: text index -----
+
+    @Test
+    fun `text index DDL is CREATE TEXT INDEX on the one property`() {
+        val statement = grammar.createIndex(TextIndexSpec("Chunk", "title")).single() as SchemaStatement.Cypher
+
+        assertEquals(
+            "CREATE TEXT INDEX `Chunk_title_text` IF NOT EXISTS FOR (n:`Chunk`) ON (n.`title`)",
+            statement.statement,
+        )
+    }
+
+    @Test
+    fun `text index DDL respects an explicit name`() {
+        val statement = grammar.createIndex(TextIndexSpec("Chunk", "title", "chunk_title")).single() as SchemaStatement.Cypher
+
+        assertTrue(statement.statement.startsWith("CREATE TEXT INDEX `chunk_title` IF NOT EXISTS"))
+    }
+
+    @Test
+    fun `a text index is not the fulltext index on the same property`() {
+        val text = TextIndexSpec("Chunk", "title")
+        val existingFullText = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title"), name = "Chunk_title_fulltext")
+        val existingText = SchemaItemInfo(SchemaItemKind.TEXT_INDEX, "Chunk", listOf("title"), name = "Chunk_title_text")
+
+        assertFalse(grammar.matchesIdentity(existingFullText, text))
+        assertTrue(grammar.matchesIdentity(existingText, text))
+        assertTrue(grammar.matchesShape(existingText, text))
+    }
+
     @Test
     fun `analyzer drifts only when both the spec and the engine report one`() {
         val spec = FullTextIndexSpec("Chunk", listOf("title"), analyzer = "english")
@@ -202,7 +233,7 @@ class Neo4jSchemaGrammarTest {
     // ----- Introspection parsing -----
 
     @Test
-    fun `parses vector, range and fulltext rows, skipping unmanaged index types`() {
+    fun `parses vector, range, fulltext and text rows, skipping unmanaged index types`() {
         val rows = listOf(
             mapOf(
                 "name" to "prop_embedding_vector", "type" to "VECTOR", "entityType" to "NODE",
@@ -225,6 +256,11 @@ class Neo4jSchemaGrammarTest {
                 "labelsOrTypes" to listOf("Doc"), "properties" to listOf("title", "body"),
                 "options" to mapOf("indexConfig" to mapOf("fulltext.analyzer" to "english")),
             ),
+            mapOf(
+                "name" to "chunk_title_text", "type" to "TEXT", "entityType" to "NODE",
+                "labelsOrTypes" to listOf("Chunk"), "properties" to listOf("title"),
+                "options" to mapOf("indexProvider" to "text-2.0", "indexConfig" to emptyMap<String, Any>()),
+            ),
             // not managed — must be skipped
             mapOf(
                 "name" to "token_lookup", "type" to "LOOKUP", "entityType" to "NODE",
@@ -238,7 +274,7 @@ class Neo4jSchemaGrammarTest {
 
         val items = grammar.parseIndexRows(rows)
 
-        assertEquals(3, items.size)
+        assertEquals(4, items.size)
         val vector = items.first { it.kind == SchemaItemKind.VECTOR_INDEX }
         assertEquals("Proposition", vector.label)
         assertEquals(listOf("embedding"), vector.properties)
@@ -254,6 +290,11 @@ class Neo4jSchemaGrammarTest {
         assertEquals(listOf("title", "body"), fulltext.properties)
         assertEquals("doc_text_fulltext", fulltext.name)
         assertEquals("english", fulltext.analyzer)
+
+        val text = items.first { it.kind == SchemaItemKind.TEXT_INDEX }
+        assertEquals("Chunk", text.label)
+        assertEquals(listOf("title"), text.properties)
+        assertEquals("chunk_title_text", text.name)
     }
 
     @Test

@@ -10,6 +10,7 @@ import org.neo4j.driver.exceptions.Neo4jException
  * - DDL supports `IF NOT EXISTS` / `IF EXISTS` guards.
  * - Indexes and constraints are named; drops are by name.
  * - Introspection via `SHOW INDEXES` / `SHOW CONSTRAINTS` with `YIELD … RETURN {…}`.
+ * - A TEXT index ([TextIndexSpec]) is its own kind, distinct from a FULLTEXT one.
  * - Vector index config uses backtick-quoted dotted keys (`vector.dimensions`,
  *   `vector.similarity_function`).
  *
@@ -21,6 +22,7 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
     override val engine = "Neo4j"
     override val supportsIfNotExists = true
     override val supportsNamedItems = true
+    override val supportsTextIndex = true
 
     /** Neo4j expresses the portable HNSW parameters and its own options class, so nothing is dropped. */
     override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
@@ -60,6 +62,13 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
                 "CREATE FULLTEXT INDEX ${id(spec.effectiveName)} IF NOT EXISTS " +
                     "FOR (n:${id(spec.label)}) ON EACH ${eachPropertyList(spec.properties)} " +
                     "OPTIONS {indexConfig: {${analyzerConfig(spec.analyzer)}}}"
+            )
+        )
+
+        is TextIndexSpec -> listOf(
+            SchemaStatement.Cypher(
+                "CREATE TEXT INDEX `${spec.effectiveName}` IF NOT EXISTS " +
+                    "FOR (n:`${spec.label}`) ON (n.`${spec.property}`)"
             )
         )
     }
@@ -107,7 +116,8 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
             "VECTOR" -> SchemaItemKind.VECTOR_INDEX
             "RANGE", "BTREE" -> SchemaItemKind.RANGE_INDEX
             "FULLTEXT" -> SchemaItemKind.FULLTEXT_INDEX
-            else -> return null // LOOKUP, TEXT, POINT — not managed by Drivine
+            "TEXT" -> SchemaItemKind.TEXT_INDEX
+            else -> return null // LOOKUP, POINT — not managed by Drivine
         }
         val label = (map["labelsOrTypes"] as? List<*>)?.firstOrNull() as? String ?: return null
         val properties = (map["properties"] as? List<*>)?.filterIsInstance<String>() ?: return null

@@ -48,6 +48,9 @@ class MemgraphSchemaGrammar(
                     "ON :${id(spec.label)}(${ids(spec.properties)})"
             )
         )
+
+        // Memgraph's TEXT INDEX is full-text, made above from a FullTextIndexSpec; Neo4j's has no equivalent here.
+        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
     }
 
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = when (item.kind) {

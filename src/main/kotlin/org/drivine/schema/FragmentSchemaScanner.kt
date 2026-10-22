@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.annotation.FullTextIndex
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.RangeIndex
+import org.drivine.annotation.TextIndex
 import org.drivine.annotation.Unique
 import org.drivine.annotation.VectorIndex
 import org.drivine.model.FragmentModel
@@ -12,8 +13,8 @@ import kotlin.reflect.full.memberProperties
 import kotlin.reflect.jvm.javaField
 
 /**
- * Reads schema annotations ([VectorIndex], [RangeIndex], [Unique]) off a [NodeFragment] class
- * into [SchemaItemSpec]s.
+ * Reads schema annotations ([VectorIndex], [RangeIndex], [FullTextIndex], [TextIndex], [Unique])
+ * off a [NodeFragment] class into [SchemaItemSpec]s.
  *
  * Works for both Kotlin and Java fragments: Kotlin reflection is tried first (constructor-property
  * annotations land on the property, not the backing field), with Java field reflection as the
@@ -148,6 +149,8 @@ internal object FragmentSchemaScanner {
                         )
                     }
 
+                    is TextIndex -> TextIndexSpec(label, property, annotation.name.ifEmpty { null })
+
                     is Unique -> {
                         requireNoProperties(annotation.properties, "@Unique", fragmentClass, fieldName)
                         UniquenessConstraintSpec(label, property, annotation.name.ifEmpty { null })
@@ -218,5 +221,5 @@ internal object FragmentSchemaScanner {
 
     private fun isSchemaAnnotation(annotation: Annotation): Boolean =
         annotation is VectorIndex || annotation is RangeIndex ||
-            annotation is FullTextIndex || annotation is Unique
+            annotation is FullTextIndex || annotation is TextIndex || annotation is Unique
 }

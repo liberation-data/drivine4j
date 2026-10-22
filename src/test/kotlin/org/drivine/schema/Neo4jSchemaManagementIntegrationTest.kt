@@ -183,6 +183,39 @@ class Neo4jSchemaManagementIntegrationTest {
         assertNull(manager.indexes.find(FullTextIndexSpec("Article", listOf("title", "body"))))
     }
 
+    @Test
+    @Order(2)
+    fun `text index - create, idempotent, apart from a fulltext index on the same property, listed, drop`() {
+        val spec = TextIndexSpec("Article", "slug")
+
+        val created = manager.indexes.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        val info = (created as EnsureResult.Created).info
+        assertEquals(SchemaItemKind.TEXT_INDEX, info.kind)
+        assertEquals("Article_slug_text", info.name)
+        assertEquals(listOf("slug"), info.properties)
+
+        val again = manager.indexes.ensure(spec)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+
+        // A fulltext index on the same property is another index, made beside it
+        val fulltext = FullTextIndexSpec("Article", "slug")
+        val fulltextCreated = manager.indexes.ensure(fulltext)
+        assertTrue(fulltextCreated is EnsureResult.Created, "expected Created, got $fulltextCreated")
+        assertEquals(
+            setOf(SchemaItemKind.TEXT_INDEX, SchemaItemKind.FULLTEXT_INDEX),
+            manager.indexes.list().filter { it.label == "Article" && it.properties == listOf("slug") }.map { it.kind }.toSet(),
+        )
+
+        val recreated = manager.indexes.recreate(spec)
+        assertEquals("Article_slug_text", recreated.current.name)
+
+        assertTrue(manager.indexes.drop(spec))
+        assertNull(manager.indexes.find(spec))
+        assertNotNull(manager.indexes.find(fulltext))
+        assertTrue(manager.indexes.drop(fulltext))
+    }
+
     // ----- Uniqueness constraint lifecycle -----
 
     @Test

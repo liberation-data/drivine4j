@@ -3290,7 +3290,7 @@ Each engine uses a Cypher dialect that controls query generation. The dialect is
 
 ## Schema Management (Indexes & Constraints)
 
-Drivine manages vector indexes, full-text indexes, range indexes, and uniqueness constraints across Neo4j, Memgraph, FalkorDB and Oracle — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
+Drivine manages vector indexes, full-text indexes, range indexes, Neo4j's TEXT indexes, and uniqueness constraints across Neo4j, Memgraph, FalkorDB, Oracle and Postgres — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
 
 ### Imperative API
 
@@ -3305,6 +3305,7 @@ persistenceManager.indexes.ensure(RangeIndexSpec("Proposition", "contextId"))
 persistenceManager.indexes.ensure(RangeIndexSpec("Message", listOf("sessionId", "createdAt")))  // composite
 persistenceManager.indexes.ensure(FullTextIndexSpec("Chunk", "text"))                            // full-text (single property)
 persistenceManager.indexes.ensure(FullTextIndexSpec("Entity", listOf("name", "description")))    // full-text (multi-property)
+persistenceManager.indexes.ensure(TextIndexSpec("Chunk", "title"))                               // Neo4j TEXT index
 
 persistenceManager.constraints.ensure(UniquenessConstraintSpec("ChatSession", "sessionId"))
 persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", listOf("tenantId", "userId")))
@@ -3320,6 +3321,8 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values, each with the nodes that hold it: their engine id (`elementId`), and their `@NodeId` when the constraint is declared on a fragment, as many nodes per value as `violationSampleSize`. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
 | `BlockedByIndex` | Constraint only: a plain range index over the same label and properties is in the way of it, and is named. Neo4j alone refuses a constraint for one, since its constraint brings its own index. Nothing changed — drop the index, or ensure with `replaceBlockingIndex = true` (`drivine.schema.replace-blocking-index=true`), which drops it and makes the constraint |
 | `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
+
+**A TEXT index is Neo4j's.** `TextIndexSpec` (or `@TextIndex` on a property) makes `CREATE TEXT INDEX … FOR (n:Label) ON (n.prop)`. That index is over one string property and serves `CONTAINS`, `STARTS WITH` and `ENDS WITH` on it. It is not a full-text index, and Neo4j lists, drift-checks and drops it as a kind of its own (`SchemaItemKind.TEXT_INDEX`), so the two can stand on the same property. No other engine has one. There, `ensure`, `recreate`, `find` and `drop` throw a `DrivineException` before anything runs, rather than make another index in its place, and applying a catalog that declares one fails for its owner. Mind the names: what Memgraph calls a `TEXT INDEX` is a full-text index, declared with `FullTextIndexSpec` / `@FullTextIndex`.
 
 ### Declarative: SchemaCatalog bean
 
@@ -3369,6 +3372,9 @@ data class PropositionNode(
 
     @FullTextIndex                       // full-text index on this property (also drives loadMatching)
     val body: String,
+
+    @TextIndex                           // Neo4j TEXT index, for CONTAINS / STARTS WITH / ENDS WITH
+    val title: String,
 )
 
 // Composite declarations go on the class
@@ -3469,6 +3475,7 @@ drivine:
 | Vector indexes | `CREATE VECTOR INDEX … IF NOT EXISTS` | `WITH CONFIG {…}`, uSearch metrics | `OPTIONS {…}`, unnamed |
 | Full-text indexes | `CREATE FULLTEXT INDEX … ON EACH […]` (+ analyzer) | `CREATE TEXT INDEX … ON :L(props)` | `CREATE FULLTEXT INDEX FOR (n:L) ON (n.prop)`, per-property, unnamed |
 | Range indexes | Named, composite supported | Label-property style | Per-label coverage; extended incrementally |
+| TEXT indexes | `CREATE TEXT INDEX … IF NOT EXISTS FOR (n:L) ON (n.prop)`, from Neo4j 4.4 | Refused: its `TEXT INDEX` is full-text, above | Refused |
 | Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build |
 | Item names | Yes | Vector only | No |
 
@@ -3479,6 +3486,7 @@ drivine:
 | Vector indexes | A table of embeddings (`VECTOR(n, FLOAT32)`) beside the nodes, kept in step by a trigger and filled from the nodes there are, with `CREATE VECTOR INDEX … ORGANIZATION NEIGHBOR PARTITIONS` over it. An embedding of another dimension leaves its node out of the index |
 | Full-text indexes | A table of the indexed text beside the nodes, kept in step by a trigger, with an Oracle Text search index over it. Without Oracle Text the index is recorded and nothing is made |
 | Range indexes | Two indexes. `CREATE INDEX … (JSON_VALUE(props, '$.p'))`, the property read as text, over the property whatever the label, so two labels that index a property of one name share it: a save and a load by id find a node by it. And `CREATE INDEX … (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == "Label")') THEN JSON_VALUE(n.props, '$.p') END)`, over the property of the label's nodes alone, which a filter on the label's nodes reads. Composite supported |
+| TEXT indexes | Refused: Neo4j's alone |
 | Uniqueness | A unique index over the property for the nodes that carry the label, with the range index a node is found by. A node that lacks one of the properties is not constrained. Over one property, the unique index stands for the range index's index over the label's nodes, and none is made beside it |
 | Item names | Recorded; the Oracle object's name is derived from the graph, label and properties, and recorded with it. A drop drops the object the record names |
 
@@ -3491,6 +3499,7 @@ The store's identity (`DrivineStore`) and the schema marker are nodes of the gra
 | Vector indexes | `CREATE INDEX … USING hnsw ((CAST(CAST(props -> 'p' AS text) AS vector(n))) vector_cosine_ops) WHERE labels @> '["Label"]' AND …`, over the embeddings of the label's nodes that are of its size (`vector_l2_ops` for Euclidean). Needs pgvector, which the index makes where it may |
 | Full-text indexes | `CREATE INDEX … USING gin ((lower(…)) gin_trgm_ops) WHERE labels @> '["Label"]'`, over the text a search reads, with `pg_trgm`, which the index makes where it may |
 | Range indexes | `CREATE INDEX … ((props ->> 'p')) WHERE labels @> '["Label"]'`, one per label. Composite supported |
+| TEXT indexes | Refused: Neo4j's alone |
 | Uniqueness | The same index made `UNIQUE`, which also finds a node, so no range index is made beside it. A node that lacks one of the properties is not constrained |
 | Item names | Recorded; the index's name is derived from the graph, label and properties, and Postgres keeps it in lower case. A drop drops the index the record names |
 
