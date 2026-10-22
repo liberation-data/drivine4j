@@ -144,14 +144,18 @@ class ConstraintManagerTest {
     private fun rangeIndex(name: String, vararg properties: String) =
         mapOf("name" to name, "type" to "RANGE", "entityType" to "NODE", "labelsOrTypes" to listOf("Person"), "properties" to properties.toList())
 
-    /** A store with [indexes], that refuses the constraint for an index in the way of it until DROP INDEX has run. */
-    private fun blockedStore(vararg indexes: Map<String, Any>): RecordingStore {
+    /**
+     * A store with [indexes], that refuses the constraint for an index in the way of it until DROP INDEX has run,
+     * and answers the query for repeated keys with [conflicts].
+     */
+    private fun blockedStore(vararg indexes: Map<String, Any>, conflicts: List<Any?> = emptyList()): RecordingStore {
         var dropped = false
         return RecordingStore(DatabaseType.NEO4J) { ran ->
             when {
                 ran.statement.startsWith("DROP INDEX") -> emptyList<Any?>().also { dropped = true }
                 ran.statement.startsWith("CREATE CONSTRAINT") -> if (dropped) emptyList<Any?>() else inTheWay
                 ran.statement.startsWith("SHOW INDEXES") -> if (dropped) emptyList() else indexes.toList()
+                "_count > 1" in ran.statement -> conflicts
                 else -> emptyList<Any?>()
             }
         }
@@ -177,6 +181,16 @@ class ConstraintManagerTest {
         val dropped = store.schema.indexOf("DROP INDEX `person_email` IF EXISTS")
         assertTrue(dropped >= 0, "expected the index dropped: ${store.schema}")
         assertTrue(store.schema.drop(dropped).any { it.startsWith("CREATE CONSTRAINT") }, "expected the constraint made after it: ${store.schema}")
+    }
+
+    @Test
+    fun `an index in the way is kept, and the violation reported, when a key repeats`() {
+        val store = blockedStore(rangeIndex("person_email", "email"), conflicts = listOf(repeated))
+
+        val result = store.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), result)
+        assertTrue(store.schema.none { it.startsWith("DROP INDEX") }, "expected the index kept: ${store.schema}")
     }
 
     @Test

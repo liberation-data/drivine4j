@@ -108,6 +108,9 @@ class ConstraintManager internal constructor(
                     )
                     return EnsureResult.BlockedByIndex(spec, index)
                 }
+                // Neo4j refuses for the index before it reads the data, so a key that repeats would
+                // refuse the constraint after the index is gone: look first, and keep the index.
+                confirmedViolation(spec, violationSampleSize, null)?.let { return it }
                 run(grammar.dropIndex(index))
                 logger.info("Dropped index {} on {}{}, in the way of a constraint that replaces it", index.name, spec.label, spec.properties)
                 return ensure(spec, violationSampleSize, replaceBlockingIndex = false)
