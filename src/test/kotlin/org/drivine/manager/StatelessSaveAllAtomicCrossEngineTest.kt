@@ -9,6 +9,8 @@ import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.UniquenessConstraintSpec
@@ -47,6 +49,12 @@ import kotlin.test.assertTrue
 abstract class StatelessSaveAllAtomicContract {
 
     abstract val pm: PersistenceManager
+
+    /**
+     * Whether the store writes a batch as Cypher's `UNWIND`, which a fragment of some classes cannot be
+     * written by, so that it is saved by a statement of its own. A SQL store's write function writes any.
+     */
+    protected open val unwinds: Boolean = true
 
     protected val stateless: StatelessGraphObjectManager
         get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
@@ -201,7 +209,7 @@ abstract class StatelessSaveAllAtomicContract {
             it.saveAll(listOf(ChunkHash("h1", "one"), Tagged("t1", mapOf("colour" to "red")), Ledger("l1", 1), Bookmark("b1", "c-1")))
         }
 
-        assertEquals(listOf(2), sizes)
+        assertEquals(listOf(if (unwinds) 2 else 1), sizes)
         assertEquals(mapOf("colour" to "red"), stateless.load("t1", Tagged::class.java)?.tags)
         listOf("ChunkHash" to "h1", "Ledger" to "l1", "Bookmark" to "b1").forEach { (label, id) -> assertEquals(setOf(id), ids(label)) }
     }
@@ -425,4 +433,16 @@ class StatelessSaveAllAtomicMemgraphTest : StatelessSaveAllAtomicContract() {
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+}
+
+/**
+ * Postgres writes a batch through its write function, which makes the new nodes of a shape together
+ * before its steps run: over nodes that are there and new ones, two fragments of one node, and a batch
+ * that fails, which writes nothing.
+ */
+@PostgresTests
+class StatelessSaveAllAtomicPostgresTest : StatelessSaveAllAtomicContract() {
+    override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
+
+    override val unwinds = false
 }

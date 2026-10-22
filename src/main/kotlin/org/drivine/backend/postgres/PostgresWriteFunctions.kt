@@ -115,7 +115,6 @@ DECLARE
     v_result    text;
     v_each      text[] := '{}';
     v_stale     boolean := false;
-    v_i         int;
     -- A node step's.
     v_row       $nodes;
     v_nid       bigint;
@@ -137,6 +136,11 @@ DECLARE
     v_now       jsonb;
     v_same      boolean;
     v_met       bigint;
+    v_premade   jsonb := '{}';
+    v_after     jsonb;
+    v_pre       bigint;
+    v_s         int;
+    v_premade_as text;
     -- A relationship step's.
     v_from      bigint;
     v_to        bigint;
@@ -160,6 +164,51 @@ DECLARE
     v_removed   bigint;
 BEGIN
     BEGIN
+        -- The nodes the plan makes, made together. A `node` step that does no more than write properties,
+        -- with no stamp to check, no property bag to clear and no labels to own, makes its node by an
+        -- insert alone when the node is not there; so for each shape the nodes of such steps that are not
+        -- there are found by one lookup and inserted by one statement, the first step for each id only. A
+        -- node a uniqueness constraint refuses, made by another writer at this moment, is not inserted
+        -- here: its step finds it, or is refused, as it would be on its own. What each made gets is in
+        -- `v_premade`, by shape and id, for its step to take below.
+        -- Only where a shape has several such steps: for one node, the lookup and insert of its step are as cheap.
+        FOR v_s IN
+            SELECT (op ->> 's')::int FROM jsonb_array_elements(p_plan) op
+            WHERE op ->> 'op' = 'node' AND ${PLAIN_NODE.replace("STEP", "op")}
+            GROUP BY 1 HAVING count(*) > 1
+        LOOP
+            v_shape := p_shapes -> v_s;
+            -- Prepared once a session for the shape, as a lookup is, and run by name after: planned afresh,
+            -- it costs more than it saves a save of a few nodes. The name holds the store's version too, so
+            -- a session that outlives an upgrade does not run what an earlier version prepared.
+            v_premade_as := 'drivine_made_' || md5('${PostgresGraph.VERSION} ${graph.name}' || ' ' || (v_shape ->> 'key') || ' ' || (v_shape -> 'labels')::text);
+            IF NOT EXISTS (SELECT 1 FROM pg_prepared_statements WHERE name = v_premade_as) THEN
+                EXECUTE format('PREPARE %I (jsonb, int) AS ', v_premade_as) || format(${'$'}made${'$'}
+                    WITH steps AS (
+                        SELECT DISTINCT ON (op ->> 'k') ord, op FROM jsonb_array_elements(${'$'}1) WITH ORDINALITY AS t (op, ord)
+                        WHERE op ->> 'op' = 'node' AND (op ->> 's')::int = ${'$'}2 AND ${PLAIN_NODE.replace("STEP", "op")}
+                        ORDER BY op ->> 'k', ord),
+                    absent AS (
+                        SELECT s.ord, s.op FROM steps s
+                        WHERE NOT EXISTS (SELECT 1 FROM $nodes n WHERE (n.props ->> %L) = s.op ->> 'k'%s)),
+                    made AS (
+                        INSERT INTO $nodes (labels, props, stamp)
+                        SELECT op -> 'labels',
+                               (jsonb_build_object(op ->> 'key', op -> 'id') || COALESCE(op -> 'set', '{}'::jsonb))
+                                   - ARRAY(SELECT jsonb_array_elements_text(COALESCE(op -> 'unset', '[]'::jsonb))),
+                               op ->> 'fresh'
+                        FROM absent ORDER BY ord
+                        ON CONFLICT DO NOTHING
+                        RETURNING nid, props ->> %L AS k)
+                    SELECT COALESCE(jsonb_object_agg(k, nid), '{}'::jsonb) FROM made
+                ${'$'}made${'$'}, v_shape ->> 'key',
+                    COALESCE((SELECT string_agg(format(' AND n.labels @> %L::jsonb', jsonb_build_array(l)), '') FROM jsonb_array_elements_text(v_shape -> 'labels') l), ''),
+                    v_shape ->> 'key');
+            END IF;
+            EXECUTE format('EXECUTE %I(%L, %s)', v_premade_as, p_plan, v_s) INTO v_after;
+            v_premade := v_premade || jsonb_build_object(v_s::text, v_after);
+        END LOOP;
+
         FOR v_op IN SELECT value FROM jsonb_array_elements(p_plan) LOOP
             CASE v_op ->> 'op'
             WHEN 'node' THEN
@@ -169,7 +218,15 @@ BEGIN
                 v_expect := v_op ->> 'expect';
                 v_fresh := v_op ->> 'fresh';
                 v_tries := 0;
-                LOOP
+                -- A node made with the others above is this step's, once: a later step for the same id finds it.
+                v_pre := (v_premade -> (v_op ->> 's') ->> (v_op ->> 'k'))::bigint;
+                IF v_pre IS NOT NULL THEN
+                    v_premade := v_premade #- ARRAY[v_op ->> 's', v_op ->> 'k'];
+                    v_nid := v_pre;
+                    v_made := true;
+                    v_found := NULL;
+                END IF;
+                WHILE v_pre IS NULL LOOP
                     v_row := $find(v_shape -> 'labels', v_shape ->> 'key', v_op ->> 'k');
                     v_made := v_row.nid IS NULL;
                     IF v_made THEN
@@ -488,16 +545,14 @@ BEGIN
                     CASE WHEN NULLIF(substr(v_was, 18), '') = NULLIF(substr(v_carried, 18), '') OR (v_root_made AND NULLIF(substr(v_carried, 18), '') IS NULL)
                          THEN substr(v_stamp, 18) ELSE substr(v_carried, 18) END;
             END IF;
-            v_result := v_stamp;
-            FOR v_i IN 1 .. cardinality(v_h_node) LOOP
-                SELECT stamp INTO v_stamp FROM $nodes WHERE nid = v_h_node[v_i];
-                v_result := v_result || ',' || v_h_index[v_i] || '/' || COALESCE(v_h_found[v_i], '') || '=' || COALESCE(v_stamp, '');
-            END LOOP;
+            -- Every handed-back stamp is read by one query, in the order the steps came.
+            SELECT v_stamp || COALESCE(string_agg(',' || h.i || '/' || COALESCE(h.found, '') || '=' || COALESCE(n.stamp, ''), '' ORDER BY h.ord), '')
+            INTO v_result
+            FROM unnest(v_h_node, v_h_index, v_h_found) WITH ORDINALITY AS h (nid, i, found, ord) LEFT JOIN $nodes n ON n.nid = h.nid;
         ELSIF p_returns = 'EACH_STAMP' THEN
-            FOR v_i IN 1 .. cardinality(v_h_node) LOOP
-                SELECT stamp INTO v_stamp FROM $nodes WHERE nid = v_h_node[v_i];
-                v_each := array_append(v_each, v_h_index[v_i] || '/' || COALESCE(v_h_found[v_i], '') || '=' || COALESCE(v_stamp, ''));
-            END LOOP;
+            SELECT COALESCE(array_agg(h.i || '/' || COALESCE(h.found, '') || '=' || COALESCE(n.stamp, '') ORDER BY h.ord), '{}')
+            INTO v_each
+            FROM unnest(v_h_node, v_h_index, v_h_found) WITH ORDINALITY AS h (nid, i, found, ord) LEFT JOIN $nodes n ON n.nid = h.nid;
         END IF;
     EXCEPTION
         WHEN SQLSTATE '$STALE' THEN v_stale := true; -- rolled back: nothing was written
@@ -529,5 +584,13 @@ ${'$'}fn${'$'} LANGUAGE plpgsql
         const val ABSENT = "P0D02"
 
         private const val NEVER_STAMPED = Stamps.NEVER_STAMPED
+
+        /**
+         * Whether the `node` step STEP makes its node by an insert alone when the node is not there: it
+         * may make one, checks no stamp, and clears no property bag and owns no labels, which read what
+         * the node holds.
+         */
+        private const val PLAIN_NODE = "STEP -> 'expect' IS NULL AND COALESCE((STEP ->> 'create')::boolean, true) " +
+            "AND STEP -> 'bags' IS NULL AND STEP -> 'owned' IS NULL AND STEP -> 'add' IS NULL AND STEP -> 'drop' IS NULL"
     }
 }
