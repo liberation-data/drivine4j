@@ -15,7 +15,7 @@ import org.drivine.manager.PersistenceManager
  * MATCH (a)-[r]->(b) WHERE type(r) = $type RETURN toString(a.id) + '->' + b.id
  * ```
  *
- * What it reads, with keywords in upper case as the fixtures write them:
+ * What it reads, with keywords in upper case as the fixtures mostly write them, though any case is read:
  *
  * - the clauses `MATCH` (with a `WHERE`), `CREATE`, `MERGE` of one pattern, `SET` of properties and
  *   labels, `REMOVE` of a property, `DETACH DELETE` of a node, `UNWIND … AS`, `WITH` of variables
@@ -45,8 +45,8 @@ import org.drivine.manager.PersistenceManager
  * refused later: a `MERGE` that has to make something that cannot be made, a `DETACH DELETE` of
  * what is no node, and a property read of a value that has none.
  *
- * Keywords are read in upper case. A fixture opens with a pattern or `UNWIND`; one that opens with
- * `WITH` is taken for SQL. A temporal constructor gives its argument, so a moment is stored as its
+ * Keywords are read in any case, as Cypher reads them. A fixture opens with a pattern or `UNWIND`,
+ * after any `//` comments; one that opens with `WITH` is taken for SQL. A temporal constructor gives its argument, so a moment is stored as its
  * ISO text, and compares with another by `<` and `>` and in `ORDER BY`, not by `=`. The stamp is a
  * column of the node, and `keys(n)` and `properties(n)` list it as the graph engines would.
  *
@@ -68,9 +68,10 @@ internal class MiniCypher(private val pm: PersistenceManager, private val text: 
         fun reads(statement: String): Boolean = FIXTURE.containsMatchIn(statement)
 
         /**
-         * A statement that opens with a pattern, or with `UNWIND`: `CREATE INDEX` is the store's own,
-         * and so is one that opens with `WITH`, which SQL names a common table expression by.
+         * A statement that opens with a pattern, or with `UNWIND`, after any `//` comments: `CREATE INDEX`
+         * is the store's own, and so is one that opens with `WITH`, which SQL names a common table
+         * expression by. SQL has no `//` comment, so a statement that opens with one is Cypher.
          */
-        private val FIXTURE = Regex("^\\s*(?:(?:MATCH|CREATE|MERGE)\\s*\\(|UNWIND\\s)")
+        private val FIXTURE = Regex("^(?:\\s|//[^\\n]*)*(?:(?:MATCH|CREATE|MERGE)\\s*\\(|UNWIND\\s)", RegexOption.IGNORE_CASE)
     }
 }

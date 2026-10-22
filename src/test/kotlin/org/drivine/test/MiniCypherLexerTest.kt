@@ -42,6 +42,15 @@ class MiniCypherLexerTest {
     }
 
     @Test
+    fun `a comment runs to the end of its line and is dropped, but not inside a string`() {
+        assertEquals(
+            listOf(Kind.WORD to "CREATE", Kind.SYMBOL to "(", Kind.WORD to "n", Kind.SYMBOL to ")", Kind.STRING to "a // b"),
+            cut("// the guide\nCREATE // one node\n(n) // and that is all\n'a // b'"),
+        )
+        assertEquals(listOf(Token(Kind.END, "", 9)), tokens("// only a"))
+    }
+
+    @Test
     fun `a word is letters, digits and underscores, and a keyword is a word like any other`() {
         assertEquals(listOf(Kind.WORD to "WHERE", Kind.WORD to "_a1", Kind.WORD to "été", Kind.WORD to "toString"), cut("WHERE _a1 été toString"))
     }

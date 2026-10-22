@@ -48,6 +48,14 @@ object SqlCypherFixtures {
         override fun <T : Any> maybeGetOne(spec: QuerySpecification<T>): T? = query(spec).singleOrNull()
     }
 
+    /**
+     * [pm] as a test that seeds and reads back in Cypher wants it, whatever store it speaks to: [over]
+     * it where the store speaks SQL, and [pm] itself where it speaks Cypher. So one test, or one bean of
+     * a test's context, serves the graph engines, Oracle and Postgres alike.
+     */
+    @JvmStatic
+    fun forStore(pm: PersistenceManager): PersistenceManager = if (pm.type.speaksCypher) pm else over(pm)
+
     /** Works [cypher] out over the graph [pm] speaks to, and gives the rows it returns. */
     @JvmStatic
     @JvmOverloads

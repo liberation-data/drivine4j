@@ -646,6 +646,13 @@ class MiniCypherTest {
         assertContains(refused("UNWIND [1] AS r RETURN r.id"), "Expected a node, a relationship or a map to read id of")
     }
 
+    @Test
+    fun `a keyword is read in any case, as Cypher reads one`() {
+        run("create (:T {id: 'a', ok: TRUE})")
+        assertEquals(listOf<Any?>(mapOf("labels" to listOf("T"))), run("match (t:T) where t.ok = true return {labels: labels(t)} as result"))
+        assertTrue(MiniCypher.reads("merge (n:T {id: 'b'})"))
+    }
+
     // ----- reads -----
 
     @Test
@@ -655,6 +662,9 @@ class MiniCypherTest {
         assertTrue(MiniCypher.reads("MERGE (n:T {id: 'x'})"))
         assertTrue(MiniCypher.reads("CREATE (n:T)"))
         assertFalse(MiniCypher.reads("WITH x AS (SELECT 1 FROM dual) SELECT * FROM x"))
+        // SQL has no `//` comment: a statement that opens with comments and then a pattern is Cypher.
+        assertTrue(MiniCypher.reads("// the guide\n  // and its user\nCREATE (n:T)"))
+        assertFalse(MiniCypher.reads("// a comment\nSELECT 1"))
         assertFalse(MiniCypher.reads("SELECT 1 FROM dual"))
         val unwind = "UNWIND \$rows AS r CREATE (:X {id: r.id})"
         assertTrue(MiniCypher.reads(unwind))

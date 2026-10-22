@@ -278,6 +278,11 @@ class MiniCypherParserTest {
     // ----- Refusals, each where it stands -----
 
     @Test
+    fun `a keyword in any case is the keyword, as Cypher reads it`() {
+        assertEquals(clauses("MATCH (n:T) WHERE n.a = 1 RETURN n.a AS a ORDER BY a DESC"), clauses("match (n:T) where n.a = 1 return n.a as a order by a desc"))
+    }
+
+    @Test
     fun `what is no clause is refused where it stands`() {
         assertRefusedAt("MATCH (n:T) RETURN n.id LIMIT 1", "LIMIT", "Expected a clause")
         assertRefusedAt("MATCH (n:T) RETURN n.id SKIP 1", "SKIP", "Expected a clause")
@@ -286,7 +291,6 @@ class MiniCypherParserTest {
         assertRefusedAt("MATCH (n:T) WHERE n.a = 1 OR n.b = 2 RETURN n.a", "OR", "Expected a clause")
         assertRefusedAt("MATCH (n)-[r]->(m) DELETE r", "DELETE", "Expected a clause")
         assertRefusedAt("OPTIONAL MATCH (n) RETURN n", "OPTIONAL", "Expected a clause")
-        assertRefusedAt("match (n) return n", "match", "Expected a clause")
         assertRefusedAt("MATCH (n) RETURN n.id ORDER BY n.id, n.v", ", n.v", "Expected a clause")
         assertRefusedAt("MATCH (n) RETURN count(n) + 1", "+", "Expected a clause")
         assertRefusedAt("MATCH (n) RETURN n.a - 1", "- 1", "Expected a clause")

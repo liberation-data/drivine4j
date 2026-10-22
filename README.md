@@ -2872,13 +2872,17 @@ SqlCypherFixtures.clear(persistenceManager)                                     
   bound properties, `WHERE` (comparisons joined by `AND`), `SET`, `REMOVE`, `DETACH DELETE`, `UNWIND`,
   `WITH`, and a `RETURN` of one expression or a `count`, with `ORDER BY`. Anything else is refused:
   `OR`, `ON CREATE SET`, `SKIP`, `LIMIT`, a `RETURN` of several columns.
-- Keywords are upper case. A statement is taken for a fixture when it opens with `MATCH (`, `CREATE (`,
-  `MERGE (` or `UNWIND`; any other, one that opens with `WITH` included, goes to Oracle as SQL.
+- Keywords are read in any case, and a `//` comment is skipped. A statement is taken for a fixture
+  when it opens with `MATCH (`, `CREATE (`, `MERGE (` or `UNWIND`, after any comments; any other, one
+  that opens with `WITH` included, goes to the store as SQL.
 - Each statement reads the whole graph into memory and writes back what it changed, a row at a time. It
   is for a test's handful of nodes and nothing else.
 - The manager must name its graph (`graphName`), as one over a `JdbcConnectionProvider` does.
 - `TestCleanup.beforeEach(persistenceManager, "my-test")` deletes the nodes whose `createdBy` is the tag,
   in SQL on Oracle, as it does in Cypher elsewhere.
+- `SqlCypherFixtures.forStore(persistenceManager)` is the manager itself on a graph engine and the
+  fixture interpreter over it on Oracle or Postgres, so one test, or one `PersistenceManager` bean of a
+  test's Spring context, serves every store. Drivine's sample app and its own Spring tests use it so.
 
 Drivine's own Oracle tests are left out of a plain `./gradlew test`: the image is large and the
 database wants two gigabytes. Run them with
@@ -3037,7 +3041,9 @@ Drivine's own Postgres tests run with
 POSTGRES_TESTS=true ./gradlew :test --tests '*Postgres*'
 ```
 
-CI runs the same command, in a job of its own (`test (Postgres)`).
+CI runs the same command, in a job of its own (`test (Postgres)`), and then the sample app's stateless
+tests and the root module's stateless Spring tests on a Postgres datasource
+(`DATABASE_DATASOURCES_GRAPH_TYPE=POSTGRES`, `DATABASE_DATASOURCES_NEO_TYPE=POSTGRES`).
 
 ### @JsonPacked Annotation
 

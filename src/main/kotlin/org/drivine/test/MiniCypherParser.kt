@@ -53,8 +53,8 @@ import org.drivine.test.MiniCypherLexer.Token
  *            | variable [ "." name | "[" expression "]" ]
  * ```
  *
- * A keyword is a word in upper case, and only where the grammar looks for one: nothing is
- * reserved, so a variable may be called `type`. A name is a word, or anything in
+ * A keyword is a word in any case, as Cypher reads one, and only where the grammar looks for one:
+ * nothing is reserved, so a variable may be called `type`. A name is a word, or anything in
  * backticks. There are no brackets around an expression, and a comparison is of two expressions
  * and no more.
  *
@@ -117,7 +117,7 @@ internal class MiniCypherParser(private val text: String, private val parameters
     private fun where(): Expression? = if (word("WHERE")) condition() else null
 
     private fun returned(): Clause {
-        if (token.isWord("count") && tokens[index + 1].isSymbol("(")) {
+        if (token.isKeyword("count") && tokens[index + 1].isSymbol("(")) {
             index += 2
             val counted = condition()
             expect(")")
@@ -300,9 +300,9 @@ internal class MiniCypherParser(private val text: String, private val parameters
             }
             symbol(".") -> (name() ?: expected("a property name")).let { key -> Expression.Property(variable(name, start), key) }
             symbol("[") -> expression().also { expect("]") }.let { key -> Expression.Lookup(variable(name, start), key) }
-            start.isWord("true") -> Expression.Literal(true)
-            start.isWord("false") -> Expression.Literal(false)
-            start.isWord("null") -> Expression.Literal(null)
+            start.isKeyword("true") -> Expression.Literal(true)
+            start.isKeyword("false") -> Expression.Literal(false)
+            start.isKeyword("null") -> Expression.Literal(null)
             else -> Expression.Variable(variable(name, start))
         }
     }
@@ -348,7 +348,7 @@ internal class MiniCypherParser(private val text: String, private val parameters
         return entries
     }
 
-    private fun word(keyword: String): Boolean = token.isWord(keyword).also { if (it) index++ }
+    private fun word(keyword: String): Boolean = token.isKeyword(keyword).also { if (it) index++ }
 
     private fun symbol(symbol: String): Boolean = token.isSymbol(symbol).also { if (it) index++ }
 

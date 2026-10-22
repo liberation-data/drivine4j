@@ -5,6 +5,7 @@ import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.query.QuerySpecification
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assumptions
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
@@ -202,6 +203,8 @@ class StatelessGraphObjectManagerSubtypeTests @Autowired constructor(
 
     @Test
     fun `Manual subtype registration via PersistenceManager`() {
+        // The read below is Cypher written by hand, which a SQL store does not run.
+        Assumptions.assumeTrue(persistenceManager.type.speaksCypher, "the read is Cypher written by hand")
         // Manually register subtypes (useful for non-sealed classes)
         persistenceManager.registerSubtype(
             ManualVehicle::class.java,

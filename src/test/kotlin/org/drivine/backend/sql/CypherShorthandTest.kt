@@ -73,4 +73,13 @@ class CypherShorthandTest {
         assertEquals("1 = 1", shorthand.rewrite("1 = 1"))
         assertEquals("", shorthand.rewrite(""))
     }
+
+    @Test
+    fun `a property compared with a boolean is compared with the text a JSON boolean is read as`() {
+        assertEquals("JSON_VALUE(n_.props, '$.locked') = 'true'", shorthand.rewrite("n.locked = true"))
+        assertEquals("JSON_VALUE(n_.props, '$.locked') <> 'false' AND n_.stamp IS NOT NULL", shorthand.rewrite("n.locked <> FALSE AND n.stamp IS NOT NULL"))
+        // A word that only begins as a boolean is not one, and nor is a boolean compared otherwise.
+        assertEquals("JSON_VALUE(n_.props, '$.state') = truest", shorthand.rewrite("n.state = truest"))
+        assertEquals("true = JSON_VALUE(n_.props, '$.locked')", shorthand.rewrite("true = n.locked"))
+    }
 }
