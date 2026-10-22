@@ -38,6 +38,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.flatexpand.SeqExpandView
 import sample.stateless.Claim
+import sample.stateless.Finding
 import org.drivine.session.SessionManager
 import sample.stateless.Citation
 import sample.stateless.ClaimCircle
@@ -483,6 +484,34 @@ abstract class StatelessSaveSoundnessContract {
                 )
             }
         }
+    }
+
+    @Test
+    fun `updates of one node by many writers at once keep every writer's change`() {
+        // A load that runs while another writer commits can be handed that writer's stamp with the
+        // data from before its write, on an engine that reads without a snapshot. An update of what
+        // it loaded then passes the stamp's check and writes over the other writer's change.
+        val writers = 8
+        val each = 50
+        stateless.save(Finding("f1", emptyList()))
+        val pool = Executors.newFixedThreadPool(writers)
+        try {
+            val go = CountDownLatch(1)
+            val done = (1..writers).map { writer ->
+                pool.submit {
+                    go.await()
+                    repeat(each) { k -> stateless.update<Finding>("f1", attempts = 500) { it.merge(Finding("f1", listOf("w$writer-$k"))) } }
+                }
+            }
+            go.countDown()
+            done.forEach { it.get(5, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdownNow()
+        }
+
+        val kept = assertNotNull(stateless.load<Finding>("f1")).sources.toSet()
+        val lost = (1..writers).flatMap { writer -> (0 until each).map { "w$writer-$it" } } - kept
+        assertEquals(emptyList(), lost, "every writer's source is kept")
     }
 
     // ----- Inside a transaction -----

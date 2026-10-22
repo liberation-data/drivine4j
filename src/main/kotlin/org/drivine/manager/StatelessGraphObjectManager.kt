@@ -590,7 +590,10 @@ class StatelessGraphObjectManager private constructor(
      *
      * If the node changed between the load and the save, the object is loaded again and [change] is
      * applied to the fresh one: [attempts] tries in all, and the last failure is thrown. That needs a
-     * `@NodeStamp` field: without one a change by another writer is not noticed.
+     * `@NodeStamp` field: without one a change by another writer is not noticed. On an engine whose
+     * reads take no snapshot (Neo4j), a load can be handed another writer's stamp with the data from
+     * before its write, so the save compares each declared field of the root as it was loaded too:
+     * not a `@PropertyBag` or `@NodeLabels` field, which the stamp alone speaks for.
      *
      * An update writes to the node it loaded and never makes one. If the node is deleted between the
      * load and the save, nothing is written and null is returned, as when it was not there to load.
@@ -610,10 +613,12 @@ class StatelessGraphObjectManager private constructor(
             val loadedClass = loaded.javaClass
             val before = digests.digestOf(loaded)
             val loadedStamp = stamps.stampOf(loaded)
+            // The root's fields as the save writes them, which a checked save compares with the node.
+            val asLoaded = objectMapper.toMap(requireNotNull(stamps.rootOf(loaded)))
             // Outside the try: a stale save the change makes itself is not this update's to try again.
             val changed = change(loaded)
             try {
-                return saveChanged(loadedClass, before, loadedStamp, changed)
+                return saveChanged(loadedClass, before, asLoaded, loadedStamp, changed)
             } catch (stale: StaleObjectException) {
                 // A stamped node that was deleted is found stale, not gone: there is no node to try again on.
                 if (stale.deleted) {
@@ -636,10 +641,10 @@ class StatelessGraphObjectManager private constructor(
         update(id.toString(), graphClass, attempts, change)
 
     /**
-     * Saves what differs between an object as it was loaded, digested as [before] and carrying
-     * [loadedStamp], and as the change returned it.
+     * Saves what differs between an object as it was loaded, digested as [before], its root's fields
+     * [asLoaded], and carrying [loadedStamp], and as the change returned it.
      */
-    private fun <T : Any> saveChanged(loadedClass: Class<*>, before: JsonNode, loadedStamp: String?, returned: T): T {
+    private fun <T : Any> saveChanged(loadedClass: Class<*>, before: JsonNode, asLoaded: Map<String, Any?>, loadedStamp: String?, returned: T): T {
         require(loadedClass == returned.javaClass) {
             "The change returned a ${returned.javaClass.simpleName} for a ${loadedClass.simpleName}."
         }
@@ -665,7 +670,7 @@ class StatelessGraphObjectManager private constructor(
         val dirty = digests.computeDirtyFields(rootAfter, rootBefore)
 
         // The node was loaded, so it is written only if it is still there: an update makes no node.
-        val statement = backend.save(SaveRequest.changed(changed, before, digests.digestOf(changed), dirty))
+        val statement = backend.save(SaveRequest.changed(changed, before, digests.digestOf(changed), dirty, asLoaded))
         requireStampable(changed, statement)
         return stamped(changed, statement, executor.save(statement))
     }

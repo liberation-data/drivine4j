@@ -61,6 +61,9 @@ internal class FragmentMergeBuilder(
      *   embeddings included — see [NullPolicy].
      * @param writeFields The only fields this save may touch, by field name: a field outside the set is
      *   neither written nor cleared, whatever [nullPolicy] says. Null means every field.
+     * @param asLoaded The fields as the object was loaded, by field name, as a save writes them. A
+     *   checked save then matches the node only while each declared field still holds what was
+     *   loaded, as well as the stamp. Null compares the stamp alone.
      * @return A MergeStatement containing the query and bindings
      */
     fun <T : Any> buildMergeStatement(
@@ -69,6 +72,7 @@ internal class FragmentMergeBuilder(
         previousObject: Any? = null,
         nullPolicy: NullPolicy = NullPolicy.IGNORE,
         writeFields: Set<String>? = null,
+        asLoaded: Map<String, Any?>? = null,
     ): MergeStatement {
         val nodeIdField = fragmentModel.nodeIdField
             ?: throw IllegalArgumentException("Cannot build MERGE for fragment without @GraphNodeId field: ${fragmentModel.className}")
@@ -88,11 +92,27 @@ internal class FragmentMergeBuilder(
         // relationships too, when the save replaces a relationship list.
         // A stamp with no node token of its own, which no save leaves, is compared whole too.
         val wholeStamp = stamping?.relationships == true || expected?.let { !Stamps.hasNodeToken(it) } == true
-        val stillAsLoaded = if (wholeStamp) {
+        val stampAsLoaded = if (wholeStamp) {
             "n.${Stamps.QUOTED} = ${'$'}${parameter(Stamps.EXPECTED_PARAM)}"
         } else {
             "${Stamps.nodeTokenOf("n")} = ${'$'}${parameter(Stamps.EXPECTED_PARAM)}"
         }
+        // A load that ran while another writer committed can hold that writer's stamp with the data
+        // from before its write. Each declared field is compared as it was loaded too, under the lock,
+        // so the save of such an object is refused, as a stale one is. A comparison that cannot tell
+        // (a list holding a null) is not a difference: the stamp still speaks for the field.
+        val loadedBindings = mutableMapOf<String, Any?>()
+        val fieldsAsLoaded = if (expected == null || asLoaded == null) emptyList() else {
+            fragmentModel.fields.filterNot { it.stamp || it.name == nodeIdField }.mapIndexed { index, field ->
+                val stored = "n.${field.propertyName}"
+                val value = asLoaded[field.name] ?: return@mapIndexed "$stored IS NULL"
+                val param = parameter("$LOADED_PARAM$index")
+                loadedBindings[param] = value
+                val loaded = if (field.name in fragmentModel.vectorFieldNames) grammar?.vectorPropertyLiteral(param) ?: "\$$param" else "\$$param"
+                "$stored IS NOT NULL AND NOT coalesce($stored <> $loaded, false)"
+            }
+        }
+        val stillAsLoaded = (listOf(stampAsLoaded) + fieldsAsLoaded).joinToString(" AND ")
         // A node the statement makes is told from one it finds, when the stamp is handed back: an
         // object that carried no stamp is handed the whole stamp only of a node its save made.
         // A statement that only makes the node goes on from one it made, and from no other: what tells
@@ -119,6 +139,7 @@ internal class FragmentMergeBuilder(
         val bindings = mutableMapOf<String, Any?>(parameter(nodeIdField) to idValue)
         val setClauses = mutableListOf<String>()
         expected?.let { bindings[parameter(Stamps.EXPECTED_PARAM)] = if (wholeStamp) it else Stamps.nodeToken(it) }
+        bindings.putAll(loadedBindings)
         // The node gets a new stamp only if this statement changes it. Each write adds the test that
         // says whether it does; the tests are evaluated before anything is set. A test that cannot
         // tell (a comparison that gives null) counts as a change.
@@ -283,6 +304,9 @@ internal class FragmentMergeBuilder(
     private companion object {
         /** Bind-parameter name for the labels an open `@NodeLabels` field records as its own. */
         const val OWNED_LABELS_PARAM = "_ownedLabels"
+
+        /** Bind-parameter name, before the field's index, for a field's value as the object was loaded. */
+        const val LOADED_PARAM = "_loaded"
 
         /** The variable a stamping statement holds its answer in: whether it changes the node. */
         const val CHANGED = "_changed"

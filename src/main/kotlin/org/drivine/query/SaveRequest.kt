@@ -21,6 +21,10 @@ import org.drivine.model.RelationshipModel
  *   clearing one set to null
  * @param rootMode whether a root that is not there is made, and one that is there written. A save
  *   that only makes its root ([RootMode.ABSENT]) is of a whole object, unchecked
+ * @param loaded the root's fields as the object was loaded, by field name, as a save writes them.
+ *   Where the engine [reads without a snapshot][org.drivine.query.grammar.CypherGrammar.readsWithoutSnapshot],
+ *   a checked save compares them with the node under its lock, as well as the stamp: the stamp a
+ *   load was handed may be newer than the data it read
  */
 internal class SaveRequest(
     val obj: Any,
@@ -31,21 +35,24 @@ internal class SaveRequest(
     val before: JsonNode? = null,
     val after: JsonNode? = null,
     val rootMode: RootMode = RootMode.EITHER,
+    val loaded: Map<String, Any?>? = null,
 ) {
     init {
         require((before == null) == (after == null)) { "A save of what a change altered needs the object's digest as loaded and its digest now." }
         // A root made by the save has no stamp to compare and nothing loaded to differ from.
         require(rootMode != RootMode.ABSENT || (!checked && before == null)) { "A save that only makes its root is of a whole object, unchecked." }
+        require(loaded == null || checked) { "Only a checked save compares the fields as loaded." }
     }
 
     companion object {
         /**
          * The save of what a change altered in an object that was loaded: [dirty] of its root's fields,
-         * and what differs between [before] and [after] of the rest. It is checked, it clears what the
-         * change set to null, and it makes no node: one that was loaded and is gone stays gone.
+         * and what differs between [before] and [after] of the rest. It is checked, against [loaded]
+         * too, it clears what the change set to null, and it makes no node: one that was loaded and is
+         * gone stays gone.
          */
-        fun changed(obj: Any, before: JsonNode, after: JsonNode, dirty: Set<String>?): SaveRequest =
-            SaveRequest(obj, checked = true, NullPolicy.CLEAR, dirty, before = before, after = after, rootMode = RootMode.FOUND)
+        fun changed(obj: Any, before: JsonNode, after: JsonNode, dirty: Set<String>?, loaded: Map<String, Any?>): SaveRequest =
+            SaveRequest(obj, checked = true, NullPolicy.CLEAR, dirty, before = before, after = after, rootMode = RootMode.FOUND, loaded = loaded)
 
         /**
          * The save that makes [obj] only if its root is not there: of the whole object, unchecked, a
