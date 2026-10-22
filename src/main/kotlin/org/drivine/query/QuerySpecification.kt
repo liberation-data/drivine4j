@@ -325,6 +325,23 @@ class QuerySpecification<T> private constructor(
         )
     }
 
+    /**
+     * This specification with its statement replaced by [sql] and its parameters by [parameters]: a Cypher
+     * statement compiled to a SQL store's SQL. Paging and post-processing are kept.
+     */
+    fun withSql(sql: String, parameters: Map<String, Any?>): QuerySpecification<T> {
+        return QuerySpecification<T>(
+            statement = SqlStatement(sql),
+            parameters = parameters,
+            renderParameters = this.renderParameters,
+            parameterCoercers = this.parameterCoercers.toMutableList(),
+            postProcessors = this.postProcessors.toMutableList(),
+            _skip = this._skip,
+            _limit = this._limit,
+            originalSpec = this.originalSpec
+        )
+    }
+
     override fun toString(): String {
         val sb = StringBuilder("QuerySpecification(\n")
         sb.append("  ${statement?.text ?: "null"}\n----\n")

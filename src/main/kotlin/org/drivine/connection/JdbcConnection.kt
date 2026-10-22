@@ -1,6 +1,7 @@
 package org.drivine.connection
 
 import org.drivine.DrivineException
+import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.ResultMapper
@@ -37,6 +38,8 @@ class JdbcConnection(
     private val resultMapper: ResultMapper,
     /** The database spoken to: Oracle binds a long string as a CLOB, which Postgres would take for a large object. */
     private val type: DatabaseType = DatabaseType.ORACLE,
+    /** The graph a Cypher statement is compiled against: its tables are `<graph>_node` and `<graph>_edge`. */
+    private val graphName: String = JdbcConnectionProvider.DEFAULT_GRAPH,
 ) : Connection {
 
     private val logger = LoggerFactory.getLogger(JdbcConnection::class.java)
@@ -47,7 +50,7 @@ class JdbcConnection(
     override fun parameterCoercers(): List<ParameterCoercer> = listOf(JdbcParameterCoercer)
 
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
-        val finalizedSpec = spec.finalizedCopy(QueryLanguage.SQL)
+        val finalizedSpec = cypherCompiled(spec.finalizedCopy(QueryLanguage.SQL))
         if (finalizedSpec.statement!!.language != QueryLanguage.SQL) {
             throw DrivineException("This database speaks SQL, and was given a ${finalizedSpec.statement!!.language} statement.", spec = spec)
         }
@@ -77,6 +80,19 @@ class JdbcConnection(
             statementLogger.log(spec, startTime, e)
             throw e
         }
+    }
+
+    /**
+     * A Cypher statement compiled to the store's SQL over the graph's tables, so a statement written for a
+     * graph engine runs here and gives the same rows; anything else as it is.
+     */
+    private fun <T : Any> cypherCompiled(spec: QuerySpecification<T>): QuerySpecification<T> {
+        if (spec.statement!!.language != QueryLanguage.CYPHER) return spec
+        val compiled = when (type) {
+            DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
+            else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
+        }
+        return spec.withSql(compiled.sql, compiled.parameters)
     }
 
     /** Binds [value] to the marker at [index], counted from one. */

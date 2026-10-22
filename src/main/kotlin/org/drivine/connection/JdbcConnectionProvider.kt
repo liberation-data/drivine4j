@@ -43,7 +43,7 @@ class JdbcConnectionProvider(
     override val nativeDriver: DataSource
         get() = dataSource
 
-    override fun connect(): Connection = JdbcConnection(dataSource.connection, JdbcResultMapper(subtypeRegistry), type)
+    override fun connect(): Connection = JdbcConnection(dataSource.connection, JdbcResultMapper(subtypeRegistry), type, graphName)
 
     override fun end() {
         if (ownsDataSource) (dataSource as? AutoCloseable)?.close()

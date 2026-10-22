@@ -91,6 +91,8 @@ class CypherReaderTest {
         assertEquals(Expression.Literal("it's \"quoted\"\n"), returned("""RETURN 'it\'s "quoted"\n'"""))
         assertEquals(Expression.Property(Expression.Variable("my var"), "odd`key"), returned("RETURN `my var`.`odd``key`"))
         assertEquals(Expression.Parameter("1"), returned("RETURN $1"))
+        // Strict openCypher: a parameter is not named with a reserved word.
+        assertThrows<DrivineException> { CypherReader.read("RETURN \$skip") }
         assertEquals(Expression.Literal(255L), returned("RETURN 0xff"))
         assertEquals(Expression.Literal(1.5e3), returned("RETURN 1.5e3"))
     }

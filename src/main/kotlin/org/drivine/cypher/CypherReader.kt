@@ -363,7 +363,8 @@ object CypherReader {
         context.oC_PropertyKeyName().zip(context.oC_Expression()).map { (key, value) -> name(key.oC_SchemaName()) to expression(value) }
     )
 
-    private fun parameter(context: OC_ParameterContext) = Expression.Parameter(context.oC_SymbolicName()?.let(::symbolic) ?: context.DecimalInteger().text)
+    private fun parameter(context: OC_ParameterContext) =
+        Expression.Parameter(context.oC_SymbolicName()?.let(::symbolic) ?: context.DecimalInteger().text)
 
     // ----- Names and literals -----
 

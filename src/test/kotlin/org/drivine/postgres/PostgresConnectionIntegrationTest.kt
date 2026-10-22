@@ -141,9 +141,9 @@ class PostgresConnectionIntegrationTest {
     }
 
     @Test
-    fun `a Cypher statement is refused before it reaches the database`() {
-        val failure = assertFailsWith<DrivineException> { pm.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
-        assertTrue("SQL" in failure.message.orEmpty(), failure.message)
+    fun `a Cypher statement is compiled to SQL and runs`() {
+        // CypherQueryContract tests what Cypher compiles to; here, that a connection compiles it at all.
+        assertEquals(listOf<Any?>(2L), pm.query(QuerySpecification.withStatement(cypherStatement("RETURN 1 + 1"))))
     }
 
     @Test
