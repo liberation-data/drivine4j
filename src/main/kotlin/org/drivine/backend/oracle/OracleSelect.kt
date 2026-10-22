@@ -2,20 +2,17 @@ package org.drivine.backend.oracle
 
 import org.drivine.backend.sql.Cascade
 import org.drivine.backend.sql.CascadeRecursion
-import org.drivine.backend.sql.RelationshipConditions
 import org.drivine.backend.sql.TextQuery
 import org.drivine.backend.sql.CypherShorthand
 import org.drivine.backend.sql.Derived
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.RowSource
 import org.drivine.backend.sql.SqlKind
-import org.drivine.backend.sql.SqlSelect
+import org.drivine.backend.sql.SqlViewSelect
 import org.drivine.backend.sql.Step
 import org.drivine.backend.sql.Table
 import org.drivine.backend.sql.under
-import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Direction
-import org.drivine.annotation.GraphView
 import org.drivine.backend.GraphStatement
 import org.drivine.backend.oracle.OracleSql.EMPTY_ARRAY
 import org.drivine.backend.oracle.OracleSql.document
@@ -23,13 +20,9 @@ import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.literal
 import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.backend.oracle.OracleSql.property
-import org.drivine.model.AggregateFieldModel
-import org.drivine.model.FragmentModel
-import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
 import org.drivine.query.dsl.OrderDirection
-import org.drivine.query.GraphTypeLabels
 import org.drivine.query.GroupQuery
 import org.drivine.query.dsl.Aggregate
 import org.drivine.query.dsl.CollectionSortSpec
@@ -68,43 +61,17 @@ import org.drivine.schema.SimilarityFunction
  */
 internal class OracleSelect(
     private val graph: OracleGraph,
-    private val graphClass: Class<*>,
-    private val collectionSorts: List<CollectionSortSpec> = emptyList(),
-    private val depthOverrides: Map<String, Int> = emptyMap(),
+    graphClass: Class<*>,
+    collectionSorts: List<CollectionSortSpec> = emptyList(),
+    depthOverrides: Map<String, Int> = emptyMap(),
     labelled: LabelledIndexes = LabelledIndexes.NONE,
-) : SqlSelect {
-    private val viewModel: GraphViewModel? =
-        if (graphClass.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(graphClass) else null
-
-    private val rootModel: FragmentModel = FragmentModel.from(viewModel?.rootFragment?.fragmentType ?: graphClass)
-
-    /** The fragment the statement's roots are: the class itself, or a view's root. */
-    override val rootFragment: Class<*> = viewModel?.rootFragment?.fragmentType ?: graphClass
-
-    /** What a predicate calls the root: `n` for a fragment, the root field's name for a view. */
-    val rootAlias: String = viewModel?.rootFragment?.fieldName ?: FRAGMENT_ALIAS
-
-    private val scope = OracleStatementScope()
-
-    /**
-     * The root's row in the statement, and its node in the `MATCH` that finds it. Not the name itself:
-     * a field may be called `user` or `order`, which SQL keeps for its own, and no name SQL keeps ends
-     * in an underscore.
-     */
-    override val root: String = scope.row(rootAlias)
-
+) : SqlViewSelect<OracleStatementScope>(graphClass, collectionSorts, depthOverrides, OracleStatementScope()) {
     /** The names of the root's relationship fields; empty for a fragment. */
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
     private val rows = OracleRowSources(graph, scope)
     private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
-
-    private fun rootLabels(): List<String> {
-        val labels = if (viewModel != null) GraphTypeLabels.fragmentLabels(viewModel.rootFragment.fragmentType) else rootModel.labels
-        require(labels.isNotEmpty()) { "No labels defined for fragment ${rootModel.className}. @NodeFragment must specify at least one label." }
-        return labels
-    }
 
     // ----- Statements -----
 
@@ -324,9 +291,6 @@ internal class OracleSelect(
      */
     private fun roots(): RowSource = rows.nodes(rootLabels(), root).let { if (handWritten) it.entire() else it }
 
-    /** What a load returns for a root: a fragment's map, or a view's object. */
-    private fun projection(): String = if (viewModel != null) view(root, viewModel, mapOf(viewModel.className to 1), null) else document(root)
-
     /**
      * The predicate that selects the roots of this statement from the node table, when it is aliased
      * as [root]: those with the labels that [predicates] select. A delete selects them so, as the
@@ -334,9 +298,6 @@ internal class OracleSelect(
      */
     override fun selecting(predicates: List<String>): String =
         (listOfNotNull(scope.rootHasLabels(root, rootLabels())) + predicates).joinToString("\n  AND ")
-
-    /** The values the statement's parameters take, as written so far. */
-    override fun bindings(): Map<String, Any?> = scope.bindings()
 
     /**
      * A predicate the caller wrote, with each property of the root written as Cypher writes it read as
@@ -381,75 +342,22 @@ internal class OracleSelect(
 
     // ----- Projection -----
 
-    /** The view [model] rooted at the row [alias], as one JSON object. [field] is the relationship field it was reached through. */
-    private fun view(alias: String, model: GraphViewModel, visits: Map<String, Int>, field: String?): String {
-        val entries = mutableListOf(model.rootFragment.fieldName to document(alias))
-        model.relationships.forEach { entries += it.fieldName to relationship(alias, it, visits, field) }
-        model.aggregateFields.forEach { entries += it.fieldName to aggregate(alias, it) }
-        return jsonObject(entries)
-    }
+    override val emptyArray: String = EMPTY_ARRAY
 
-    /** A JSON object of [entries], each a key and the expression for its value. */
-    private fun jsonObject(entries: List<Pair<String, String>>): String =
+    override fun document(row: String): String = OracleSql.document(row)
+
+    override fun jsonObject(entries: List<Pair<String, String>>): String =
         entries.joinToString(",\n    ", "JSON_OBJECT(\n    ", "\n    RETURNING JSON)") { (key, value) -> "${literal(key)} VALUE ${value.under()}" }
 
-    /**
-     * The value of a relationship field of the row [parent]: a subquery that gives an array, or one
-     * object or null.
-     *
-     * A view that would be entered again past its depth is cut off, as an empty list or null, so a
-     * cycle of views ends.
-     */
-    private fun relationship(parent: String, relationship: RelationshipModel, visits: Map<String, Int>, parentField: String?): String {
-        val depth = depthOverrides[relationship.fieldName] ?: relationship.maxDepth
-        val nothing = if (relationship.isCollection) EMPTY_ARRAY else "NULL"
-        val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
-        val labels = GraphTypeLabels.labelsForType(targetType)
-        require(labels.isNotEmpty()) {
-            "No labels defined for relationship target ${targetType.name}. @NodeFragment or @GraphView must specify at least one label."
-        }
-        val targetIsView = targetType.isAnnotationPresent(GraphView::class.java)
-        val sort = sortOf(relationship, parentField)
+    override fun arrayOf(value: String, order: String): String = "JSON_ARRAYAGG($value ORDER BY $order RETURNING JSON)"
 
-        if (relationship.isPath) return distinct(parent, relationship, rows.steps(relationship, labels), targetType, visits)
-        if (relationship.isRecursive) {
-            return if (depth == 0) nothing else recursive(parent, relationship, labels, visits, 1, depth, sort)
-        }
-        if (targetIsView && (visits[targetType.name] ?: 0) >= depth && targetType.name in visits) return nothing
-        if (relationship.isCollection && !targetIsView && !relationship.isRelationshipFragment && depth > 1) {
-            return distinct(parent, relationship, rows.steps(relationship, labels, depth), targetType, visits)
-        }
+    override fun withTarget(row: String, field: String, target: String): String = "JSON_TRANSFORM($row.eprops, SET ${path(field)} = $target)"
 
-        val row = scope.row(relationship.fieldName)
-        val target = element(row, targetType, visits, relationship.fieldName)
-        val value = if (relationship.isRelationshipFragment) {
-            // The relationship's own properties, with the node it leads to under the target field.
-            "JSON_TRANSFORM($row.eprops, SET ${path(relationship.targetFieldName!!)} = $target)"
-        } else {
-            target
-        }
-        return gathered(parent, rows.steps(relationship, labels), row, value, relationship.isCollection, sort?.let { sorted(row, targetType, it) })
-    }
+    override fun property(row: String, key: String, kind: SqlKind): String = OracleSql.property(row, key, kind)
 
-    /** The node [row] as an element of a relationship field: a fragment's map, or a nested view. */
-    private fun element(row: String, type: Class<*>, visits: Map<String, Int>, field: String): String =
-        if (type.isAnnotationPresent(GraphView::class.java)) {
-            view(row, GraphViewModel.from(type), visits + (type.name to (visits[type.name] ?: 0) + 1), field)
-        } else {
-            document(row)
-        }
+    override fun related(select: String, parent: String, steps: List<Step>, row: String, tail: List<String>): Query = rows.related(select, parent, steps, row, tail)
 
-    /** [value] for each node, a row named [row], reached from [parent] by [steps]: all of them as an array, or the first. */
-    private fun gathered(parent: String, steps: List<Step>, row: String, value: String, collection: Boolean, order: String?): String =
-        if (collection) {
-            val array = "JSON_ARRAYAGG($value ORDER BY ${order ?: "$row.eid"} RETURNING JSON)"
-            "COALESCE(${rows.related(array, parent, steps, row).nested()}, $EMPTY_ARRAY)"
-        } else {
-            rows.related(value, parent, steps, row, tail = listOf(first("$row.eid"))).nested()
-        }
-
-    /** The clause that keeps the first row by [order]. */
-    private fun first(order: String): String = "ORDER BY $order FETCH FIRST 1 ROWS ONLY"
+    override fun exists(parent: String, steps: List<Step>, row: String): String = rows.exists(parent, steps, row)
 
     /**
      * A field that holds each node reached once, however many ways lead to it: a path of several
@@ -459,7 +367,7 @@ internal class OracleSelect(
      * The nodes are read where the path ends and not on their own, as those whose id the path
      * reaches: Oracle answers that by reading every node of the graph and asking the path of each.
      */
-    private fun distinct(parent: String, relationship: RelationshipModel, steps: List<Step>, targetType: Class<*>, visits: Map<String, Int>): String {
+    override fun distinct(parent: String, relationship: RelationshipModel, steps: List<Step>, targetType: Class<*>, visits: Map<String, Int>): String {
         val row = scope.row(relationship.fieldName)
         val path = scope.row("reached")
         val value = element(row, targetType, visits, relationship.fieldName)
@@ -475,7 +383,7 @@ internal class OracleSelect(
         val reached = listOf("$row.src = $parent.nid")
         val sort = order?.by(row) ?: "$row.nid"
         return if (relationship.isCollection) {
-            "COALESCE(${Query("JSON_ARRAYAGG($value ORDER BY $sort RETURNING JSON)", once, reached).nested()}, $EMPTY_ARRAY)"
+            "COALESCE(${Query(arrayOf(value, sort), once, reached).nested()}, $emptyArray)"
         } else {
             Query(value, once, reached, listOf(first(sort))).nested()
         }
@@ -545,65 +453,6 @@ internal class OracleSelect(
             "$row.nid",
         ).joinToString(", ")
     }
-
-    /**
-     * A field of a view that holds views of the same class: each level holds the next, down to
-     * [max] levels, where the field is empty. A sort on the field sorts every level, so the tree is
-     * in one order.
-     */
-    private fun recursive(
-        parent: String, relationship: RelationshipModel, labels: List<String>, visits: Map<String, Int>,
-        depth: Int, max: Int, sort: CollectionSortSpec?,
-    ): String {
-        val nested = GraphViewModel.from(relationship.elementType)
-        val row = scope.row(relationship.fieldName)
-        val entries = mutableListOf(nested.rootFragment.fieldName to document(row))
-        nested.relationships
-            .filter { !it.isRecursive && it.fieldName != relationship.fieldName }
-            .forEach { entries += it.fieldName to relationship(row, it, visits, relationship.fieldName) }
-        entries += relationship.fieldName to
-            if (depth >= max) (if (relationship.isCollection) EMPTY_ARRAY else "NULL") else recursive(row, relationship, labels, visits, depth + 1, max, sort)
-        return gathered(
-            parent, rows.steps(relationship, labels), row, jsonObject(entries), relationship.isCollection,
-            sort?.let { sorted(row, relationship.elementType, it) },
-        )
-    }
-
-    /**
-     * An aggregate field: `COUNT` counts the relationships, as Cypher's `size(…)` of the pattern does,
-     * and any other function reads the named property of each related node as a number.
-     */
-    private fun aggregate(parent: String, aggregate: AggregateFieldModel): String {
-        val row = scope.row(aggregate.fieldName)
-        val value = if (aggregate.function == AggregateFunction.COUNT) {
-            "COUNT(*)"
-        } else {
-            val key = requireNotNull(aggregate.property) { "@Aggregate(${aggregate.function}) on '${aggregate.fieldName}' requires a property" }
-            "${aggregate.function.name}(${property(row, key, SqlKind.NUMBER)})"
-        }
-        return rows.related(value, parent, listOf(Step(aggregate.type, aggregate.direction, emptyList())), row).nested()
-    }
-
-    /** The sort the query gave for [relationship]: see [RelationshipConditions.sortOf]. */
-    private fun sortOf(relationship: RelationshipModel, parentField: String?): CollectionSortSpec? =
-        RelationshipConditions.sortOf(collectionSorts, relationship, parentField)
-
-    /**
-     * The order of a relationship collection by [sort]: the property read as the type of the field
-     * that declares it, with the relationship's id to break a tie, so the order is the same each time.
-     */
-    private fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String {
-        val fragment = if (targetType.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(targetType).rootFragment.fragmentType else targetType
-        val kind = SqlKind.ofType(runCatching { FragmentModel.from(fragment) }.getOrNull()?.fields?.firstOrNull { it.propertyName == sort.propertyName }?.type)
-        return "${property(row, sort.propertyName, kind)} ${if (sort.ascending) "ASC" else "DESC"}, $row.eid"
-    }
-
-    /** A relationship field that is one object and may not be null leaves out the roots that have none. */
-    private fun requiredRelationships(): List<String> =
-        viewModel?.relationships.orEmpty().filter { !it.isNullable && !it.isCollection }.map { relationship ->
-            val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
-            rows.exists(root, rows.steps(relationship, GraphTypeLabels.labelsForType(targetType)), scope.row(relationship.fieldName))
-        }
 
     // ----- Scored search -----
 
@@ -763,9 +612,6 @@ internal class OracleSelect(
     }
 
     companion object {
-        /** What a predicate calls a fragment loaded on its own, as the Cypher statements do. */
-        const val FRAGMENT_ALIAS = "n"
-
         /** The parameter of [meeting] for the `nid` of the node it counts: no value is bound to it, the block gives its own. */
         const val NID = "_nid"
     }
