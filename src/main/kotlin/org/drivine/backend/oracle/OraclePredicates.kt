@@ -257,11 +257,52 @@ internal class OraclePredicates(
      * A regular expression that must match the whole value, as Cypher's `=~` does. A leading `(?i)`
      * ignores case. The expression itself is Oracle's, in the POSIX dialect: what Java adds to it,
      * such as `(?:…)`, a look-around or `\b`, is not read, and a flag anywhere but the start is not either.
+     *
+     * The expression is anchored in a group of its own, which POSIX can only write as one that
+     * captures: so each group the caller wrote is one further on, and a backreference to it is
+     * renumbered to match (see [renumbered]).
      */
     private fun matches(text: String, pattern: String): String {
         val ignoreCase = pattern.startsWith("(?i)")
-        val body = pattern.removePrefix("(?i)")
+        val body = renumbered(pattern.removePrefix("(?i)"))
         return "REGEXP_LIKE($text, ${scope.bound("^($body)$")}${if (ignoreCase) ", 'i'" else ""})"
+    }
+
+    /**
+     * [body] with each backreference, `\1` to `\8`, one higher, for the group that anchors it is the
+     * first. An escaped backslash is no backreference, nor is a backslash inside a bracket expression,
+     * where POSIX reads it as itself. `\9` would need a tenth group, which POSIX does not have, and is
+     * refused.
+     */
+    private fun renumbered(body: String): String {
+        val out = StringBuilder(body.length)
+        var i = 0
+        while (i < body.length) {
+            val c = body[i]
+            when {
+                c == '[' -> {
+                    // A bracket expression is copied whole: `[`, a `^`, a `]` first among its characters, and on to the `]` that ends it.
+                    var end = i + 1
+                    if (end < body.length && body[end] == '^') end++
+                    if (end < body.length && body[end] == ']') end++
+                    end = body.indexOf(']', end).let { if (it < 0) body.length else it + 1 }
+                    out.append(body, i, end)
+                    i = end
+                }
+                c == '\\' && i + 1 < body.length -> {
+                    when (val next = body[i + 1]) {
+                        in '1'..'8' -> out.append('\\').append(next + 1)
+                        '9' -> throw IllegalArgumentException(
+                            "matches on Oracle reads at most eight groups by reference: '$body' refers to the ninth, and Oracle's expressions have no tenth to anchor it beside."
+                        )
+                        else -> out.append(c).append(next)
+                    }
+                    i += 2
+                }
+                else -> { out.append(c); i++ }
+            }
+        }
+        return out.toString()
     }
 
     /**
