@@ -40,9 +40,6 @@ internal class MiniCypherLexer(private val text: String) {
     /** One piece of a fixture: its [kind], its [text], and the [position] of its first character in the fixture. */
     data class Token(val kind: Kind, val text: String, val position: Int) {
 
-        /** Whether this is the word [word], as a keyword is written; a name in backticks is never one. */
-        fun isWord(word: String): Boolean = kind == Kind.WORD && text == word
-
         /** Whether this is the keyword [word] in any case, as Cypher reads a keyword; a name in backticks is never one. */
         fun isKeyword(word: String): Boolean = kind == Kind.WORD && text.equals(word, ignoreCase = true)
 

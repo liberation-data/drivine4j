@@ -35,6 +35,13 @@ class TextQueryTest {
     }
 
     @Test
+    fun `each scoring term gives the words a node that matches it holds, and no term that only excludes does`() {
+        val query = TextQuery.parse("\"Graph data\" +snake_case data* -python NOT rust")
+
+        assertEquals(listOf(listOf("graph", "data"), listOf("snake_case"), listOf("data")), query.scoredWords)
+    }
+
+    @Test
     fun `what is not a word is not looked for, so it cannot be read as an expression`() {
         assertEquals(listOf(word("c")), TextQuery.parse("c++ (.*)").scored)
         assertFalse(TextQuery.parse("a.b").scored.single().contains("."), "a dot between words is a gap, not any character")

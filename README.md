@@ -2861,7 +2861,7 @@ fixtures stay as they are (it was `OracleCypherFixtures`, which still works, bef
 graph the same way):
 
 ```kotlin
-val fixtures = SqlCypherFixtures.over(persistenceManager)   // Cypher fixtures here, everything else to Oracle
+val fixtures = SqlCypherFixtures.over(persistenceManager)   // Cypher fixtures here, everything else to the store
 fixtures.execute(QuerySpecification.withStatement("CREATE (:Person {id: 'ada'})-[:KNOWS]->(:Person {id: 'bob'})"))
 
 SqlCypherFixtures.run(persistenceManager, "MATCH (p:Person) RETURN p.id ORDER BY p.id")   // ["ada", "bob"]
@@ -2920,8 +2920,10 @@ letters, digits and underscores, begins with a letter, and is at most 49 charact
 it to lower case, so `Contracts` and `contracts` are one graph. The pool is as on Oracle (HikariCP,
 `pool-max`, `connection-timeout`, `idle-timeout`), and sends a string without a type, so a statement
 casts it as it needs (`stringtype=unspecified`). To use a `DataSource` the application already has:
-`registry.register(JdbcConnectionProvider("graph", DatabaseType.POSTGRES, dataSource, graphName = "drivine"))`,
-or for a pool of Drivine's own without the YAML:
+`registry.register(JdbcConnectionProvider("graph", DatabaseType.POSTGRES, dataSource, graphName = "drivine"))`.
+Drivine does not configure a `DataSource` it is given: set `stringtype=unspecified` on it yourself, as
+statements written by hand and the test kit's fixtures bind JSON text where a column is `jsonb`. For a
+pool of Drivine's own without the YAML:
 
 ```kotlin
 val provider = JdbcConnectionProvider.pooled(

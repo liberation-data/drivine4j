@@ -31,6 +31,12 @@ class PostgresSqlTest {
     }
 
     @Test
+    fun `a property of the table itself, as an index reads it, names the bare column whatever kind it is read as`() {
+        assertEquals("(props ->> 'name')", PostgresSql.property("", "name"))
+        assertEquals("CASE WHEN jsonb_typeof((props -> 'age')) = 'number' THEN (props ->> 'age')::numeric END", PostgresSql.property("", "age", SqlKind.NUMBER))
+    }
+
+    @Test
     fun `whether a property is there is asked without a question mark, which JDBC would take for a parameter`() {
         assertEquals("(n.props -> 'note') IS NOT NULL", PostgresSql.hasProperty("n", "note"))
         assertFalse('?' in PostgresSql.hasProperty("n", "note") + PostgresSql.hasLabels("n", listOf("A", "B")) + PostgresSql.values("\$p", SqlKind.TEXT))

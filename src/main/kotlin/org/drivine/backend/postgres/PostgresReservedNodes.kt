@@ -39,7 +39,7 @@ internal class PostgresVersionMarker(private val graph: PostgresGraph, private v
             FROM found WHERE n.nid = found.nid
             RETURNING n.nid)
         INSERT INTO ${graph.nodes} (labels, props)
-        SELECT ${PostgresSql.literal("[\"${label.replace("\\", "\\\\").replace("\"", "\\\"")}\"]")},
+        SELECT ${PostgresSql.labelArray(label)},
                jsonb_strip_nulls(jsonb_build_object(${PostgresSql.literal(scopeProperty)}, CAST(${'$'}scope AS text), 'version', CAST(${'$'}version AS text), 'items', CAST(${'$'}items AS text), 'appliedAt', CAST(${'$'}now AS bigint)))
         WHERE NOT EXISTS (SELECT 1 FROM found)
     """.trimIndent()
@@ -66,7 +66,7 @@ internal class PostgresStoreStamp(private val graph: PostgresGraph, label: Strin
 
     override val assignIfAbsent: String = """
         INSERT INTO ${graph.nodes} (labels, props)
-        SELECT ${PostgresSql.literal("[\"${label.replace("\\", "\\\\").replace("\"", "\\\"")}\"]")},
+        SELECT ${PostgresSql.labelArray(label)},
                jsonb_build_object(${PostgresSql.literal(key)}, CAST(${'$'}key AS text), 'storeId', CAST(${'$'}storeId AS text), 'assignedAt', CAST(${'$'}assignedAt AS text), 'engine', CAST(${'$'}engine AS text))
         WHERE NOT EXISTS (SELECT 1 FROM ${graph.nodes} n WHERE $stored AND ${PostgresSql.property("n", key)} = CAST(${'$'}key AS text))
     """.trimIndent()

@@ -41,7 +41,10 @@ internal object PostgresSql {
      * of a partial index over the label's nodes (see [PostgresSchemaGrammar]). A label is data, so it is
      * written into the literal.
      */
-    fun hasLabel(alias: String, label: String): String = "${column(alias, "labels")} @> ${literal("[${quoted(label)}]")}"
+    fun hasLabel(alias: String, label: String): String = "${column(alias, "labels")} @> ${labelArray(label)}"
+
+    /** The labels of a node that carries [label] alone, as a literal of the JSON array they are stored as. */
+    fun labelArray(label: String): String = literal("[${quoted(label)}]")
 
     /**
      * Whether the node [alias] carries every one of [labels]; null when there are none to carry. Each
@@ -76,7 +79,7 @@ internal object PostgresSql {
 
     /** The property [key] of [alias] as a number where one is stored, and null for anything else. */
     fun number(alias: String, key: String): String =
-        "CASE WHEN jsonb_typeof(${value(alias, key)}) = 'number' THEN ($alias.props ->> ${keyOf(key)})::numeric END"
+        "CASE WHEN jsonb_typeof(${value(alias, key)}) = 'number' THEN (${column(alias, "props")} ->> ${keyOf(key)})::numeric END"
 
     /** Whether the node or relationship [alias] has the property [key] at all, null or not. */
     fun hasProperty(alias: String, key: String): String =

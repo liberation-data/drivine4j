@@ -220,9 +220,9 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
     /**
      * A serialization failure (`40001`) or a deadlock (`40P01`): another writer held a row this statement
      * wanted. A lock that waits does not time out unless the session says so, so a wait is not among them.
+     * The failure itself is asked, as on Oracle: the save's executor walks its causes.
      */
-    override fun contended(failure: Throwable): Boolean =
-        generateSequence(failure) { it.cause }.any { it is SQLException && it.sqlState in CONTENTION }
+    override fun contended(failure: Throwable): Boolean = failure is SQLException && failure.sqlState in CONTENTION
 
     // ----- Relationships on their own -----
 
@@ -347,9 +347,6 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         }.joinToString("\n")
         return GraphStatement(text, select.bindings())
     }
-
-    private fun notYet(what: String): Nothing =
-        throw UnsupportedOperationException("Postgres's object manager does not yet support $what: it reads, groups, writes and deletes, and searching is being built (see docs/postgres-sql-backend-plan.md).")
 
     private companion object {
         /** The parameter [related] binds the id of the node it starts from as. */

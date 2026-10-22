@@ -123,6 +123,15 @@ class JdbcConnectionTest {
     }
 
     @Test
+    fun `a long string goes to Postgres as a string, since a CLOB there would be taken for a large object`() {
+        val postgres = JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES)
+        val long = "€".repeat(12_000)
+        postgres.query(QuerySpecification.withStatement(sqlStatement("SELECT \$s")).bind(mapOf("s" to long)))
+        verify(statement).setString(1, long)
+        verify(statement, never()).setClob(eq(1), any(Reader::class.java))
+    }
+
+    @Test
     fun `a collection or a map is bound as JSON text, and a zoned date time as its offset form`() {
         val moment = ZonedDateTime.parse("2026-03-01T10:15:30+01:00[Europe/Paris]")
         query(

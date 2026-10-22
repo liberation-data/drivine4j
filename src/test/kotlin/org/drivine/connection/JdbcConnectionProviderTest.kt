@@ -150,6 +150,16 @@ class JdbcConnectionProviderTest {
     }
 
     @Test
+    fun `Postgres is not built without a user and the database to connect to, each asked for by name`() {
+        val postgres = { ConnectionProviderBuilder(DatabaseRegistry(DataSourceMap())).withType(DatabaseType.POSTGRES).host("localhost") }
+        val noUser = assertFailsWith<IllegalArgumentException> { postgres().databaseName("drivine").register() }
+        val noDatabase = assertFailsWith<IllegalArgumentException> { postgres().userName("u").register() }
+
+        assertEquals("Postgres requires a username", noUser.message)
+        assertEquals("Postgres requires a databaseName: the database to connect to", noDatabase.message)
+    }
+
+    @Test
     fun `a provider that is registered already is the one handed back, and nothing is built or asked for`() {
         val registry = DatabaseRegistry(DataSourceMap())
         val registered = JdbcConnectionProvider("ora", DatabaseType.ORACLE, dataSource)

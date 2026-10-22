@@ -166,12 +166,14 @@ internal class PostgresPredicates(
 
     /**
      * A regular expression that must match the whole value, as Cypher's `=~` does. A leading `(?i)`
-     * ignores case. The expression itself is Postgres's, which reads most of what Java's does.
+     * ignores case. The expression itself is Postgres's, which reads most of what Java's does. It is
+     * held to the whole value by a group that takes no number, so its own groups keep theirs and a
+     * backreference names the group it was written for.
      */
     private fun matches(text: String, pattern: String): String {
         val ignoreCase = pattern.startsWith("(?i)")
         val body = pattern.removePrefix("(?i)")
-        return "$text ${if (ignoreCase) "~*" else "~"} ${PostgresSql.text(scope.bound("^($body)$"))}"
+        return "$text ${if (ignoreCase) "~*" else "~"} ${PostgresSql.text(scope.bound("^(?:$body)$"))}"
     }
 
     /** Whether the list property [key] of [row] holds [value]: the stored array contains the one-element array of it. */

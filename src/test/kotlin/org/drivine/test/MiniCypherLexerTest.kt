@@ -59,7 +59,7 @@ class MiniCypherLexerTest {
     fun `a name in backticks holds any character, and is no word`() {
         assertEquals(listOf(Kind.QUOTED_NAME to "a b.c", Kind.QUOTED_NAME to "MATCH"), cut("`a b.c` `MATCH`"))
         val quoted = tokens("`MATCH`")[0]
-        assertFalse(quoted.isWord("MATCH"), "a quoted name is never a keyword")
+        assertFalse(quoted.isKeyword("MATCH"), "a quoted name is never a keyword")
         assertTrue(quoted.isName)
     }
 

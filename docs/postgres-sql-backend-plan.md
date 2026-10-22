@@ -55,6 +55,10 @@ implementing them:
 | `SqlSchemaGrammar` (from `OracleSchemaGrammar`) | the catalog, `recorded`/`forgotten`, listing and parsing | JSON expression indexes, Oracle Text, vector side tables | partial btree indexes, `tsvector` GIN indexes, pgvector HNSW |
 | `SqlBackend` (from `OracleBackend`) | almost all of `GraphBackend` | contention codes, cascading delete in PL/SQL | contention codes (`40001`, `40P01`), cascading delete in a CTE |
 
+As built, fewer seams were drawn than this table plans: there is no `SqlDialect`, `SqlSelect`,
+`SqlPredicates`, `SqlSchemaGrammar` or `SqlBackend`, and each backend keeps its own select,
+predicates, grammar and backend over what `backend/sql` shares (see "More shared code" below).
+
 **Each seam is pulled out when Postgres first needs it, not ahead of it.** A step is a refactor
 commit, which leaves Oracle's behaviour and statements as they were (its tests are the proof), then
 a commit that adds the Postgres side. A seam drawn with both sides in view is a better seam than
@@ -65,11 +69,12 @@ one guessed at with only Oracle's.
 A save on Oracle is a plan, a JSON array of steps (`node`, `ref`, `link`, `unlink`, `cut`, `patch`),
 carried out by one PL/SQL block whose text depends only on the node shapes it names. The plan is not
 Oracle's and is kept (`WritePlan`, `SqlSavePlan`, with their tests). On Postgres the interpreter
-is a PL/pgSQL function, `<graph>_write(plan jsonb, mark text, patched_if text)` returning the rows a
-block returns, installed by `ensure` beside the tables. A `DO` block cannot return rows, so a function
-it is. The `patch` step's predicate, which is SQL and cannot be data, is passed as text the function
-runs with `EXECUTE … USING`, with its values in the plan. Drivine writes that text itself, from the
-query DSL, so no caller's text reaches it.
+is a PL/pgSQL function, `<graph>_write(plan jsonb, shapes jsonb, mark text, returns text, patched_if text)`
+returning the rows a block returns, installed by `ensure` beside the tables; the node shapes the plan
+names are data beside it, so the function's text is the same for every plan. A `DO` block cannot
+return rows, so a function it is. The `patch` step's predicate, which is SQL and cannot be data, is
+passed as text the function runs with `EXECUTE … USING` the node it found, with its values written into
+it as literals. Drivine writes that text itself, from the query DSL, so no caller's text reaches it.
 
 ### Kept in view: an openCypher layer
 
