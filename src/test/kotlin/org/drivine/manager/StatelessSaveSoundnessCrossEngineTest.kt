@@ -38,6 +38,7 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.flatexpand.SeqExpandView
 import sample.stateless.Claim
+import sample.stateless.Sticker
 import sample.stateless.Finding
 import org.drivine.session.SessionManager
 import sample.stateless.Citation
@@ -175,6 +176,31 @@ abstract class StatelessSaveSoundnessContract {
 
         assertContains(failure.message.orEmpty(), "Replace names no field")
         assertEquals(emptyList(), ids("Claim"), "nothing was written")
+    }
+
+    // ----- A flat bag beside fields -----
+
+    @Test
+    fun `a flat bag leaves the stamp and a field stored under another name to their fields`() {
+        val saved = stateless.save(Sticker("s1", name = "Star", extras = mapOf("size" to 1L)))
+
+        val loaded = assertNotNull(stateless.load<Sticker>("s1"))
+
+        assertEquals(saved.stamp, loaded.stamp, "the stamp is the stamp field's, not an entry of the bag")
+        assertEquals("Star", loaded.name)
+        assertEquals(mapOf("size" to 1L), loaded.extras)
+    }
+
+    @Test
+    fun `the save of an object with a flat bag is checked against its stamp`() {
+        stateless.save(Sticker("s1", extras = mapOf("size" to 1L)))
+        val loaded = assertNotNull(stateless.load<Sticker>("s1"))
+        run("MATCH (n:Sticker {id: 's1'}) SET n.`size` = 9, ${Stamps.setClause("n")}")
+
+        assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(extras = mapOf("size" to 2L))) }
+
+        assertEquals("9", property("s1", "size"), "the other writer's change stands")
+        assertNull(property("s1", "stamp"), "the stamp is stored as a stamp, not as a property of the bag")
     }
 
     // ----- An id stored under another name -----

@@ -131,9 +131,11 @@ data class FragmentModel(
                     fieldName = field.name,
                     storedPrefix = "",
                     flat = true,
-                    // Declared properties, the row's label keys, and the names the other bags and the labels
-                    // field are reassembled under on load — none of them is an open property.
-                    reservedKeys = declared.map { it.propertyName }.toSet() + RESERVED_RESULT_KEYS +
+                    // Declared properties, and the names of the declared fields too: a load hands the stamp, and
+                    // a field stored under another name, to the field's name before the bag takes what is left.
+                    // The row's label keys, and the names the other bags and the labels field are reassembled
+                    // under on load — none of them is an open property.
+                    reservedKeys = declared.flatMap { listOf(it.propertyName, it.name) }.toSet() + RESERVED_RESULT_KEYS +
                         allFields.filter { it.name != field.name && (it.propertyBag != null || it.nodeLabels != null) }.map { it.name },
                     reservedPrefixes = prefixedBags.map { it.storedPrefix } + NodeLabelsModel.RESERVED_PREFIX,
                 )
