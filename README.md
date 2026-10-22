@@ -2964,6 +2964,9 @@ relationships with it.
 - A delete is one statement, and can cascade with `DELETE_ALL` and `DELETE_ORPHAN`.
 - A number is compared and ordered as a number only where one is stored: the text `'7'` is not `7`,
   as on the graph engines. Postgres keeps an empty string apart from null, so `""` is a value.
+- Text is ordered by the database's collation, so a page of mixed-case text may not be in the order
+  Neo4j gives (`a, b, B` rather than `B, a, b`). The range indexes are made in that collation, so an
+  order and a seek are read through them.
 - Index the id of each node type you save, `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`,
   or with a range index: without one a save reads the label's nodes to find the one it writes.
 - `matches` takes a regular expression in Postgres's dialect, matched against the whole value. A
