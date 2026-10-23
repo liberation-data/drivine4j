@@ -32,6 +32,40 @@ cases:
       - cypher: "MATCH (n) RETURN length(n)"
         error: "length() takes a path."
 
+  - name: "Temporal text that is no such value"
+    description: "A temporal value written as text that isn't one, or of a kind there's no function for, is refused."
+    steps:
+      - cypher: "RETURN date('hello')"
+        error: "'hello' is no date."
+      - cypher: "RETURN datetime('2024-03-15T10:30:00[Europe/Paris]')"
+        error: "'2024-03-15T10:30:00[Europe/Paris]' is no datetime."
+      - cypher: "RETURN duration('1 day')"
+        error: "'1 day' is no duration."
+
+  - name: "Temporal map not compiled yet"
+    description: "A temporal value made from a map of fields the compiler doesn't handle yet is refused, naming what it is."
+    steps:
+      - cypher: "RETURN date({year: 2024, week: 10, dayOfWeek: 3})"
+        error: "date() of a map with week is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN duration({day: 1})"
+        error: "duration() of a map with day is Cypher, and is not compiled to SQL yet."
+
+  - name: "Temporal function given the wrong arguments"
+    description: "A temporal function given arguments it doesn't take is refused."
+    steps:
+      - cypher: "RETURN duration()"
+        error: "duration() takes a text or a map of its fields."
+      - cypher: "RETURN date('2024-03-15', 'x')"
+        error: "date() takes a text or a map of its fields."
+      - cypher: "RETURN date.truncate('month')"
+        error: "date.truncate() takes a unit and a value."
+      - cypher: "RETURN date.truncate('decade', date('2024-03-15'))"
+        error: "date.truncate() truncates to year, quarter, month, week, day, hour, minute, second or millisecond, not decade."
+      - cypher: "WITH 'month' AS u RETURN date.truncate(u, date('2024-03-15'))"
+        error: "A truncation to a unit an expression gives is Cypher, and is not compiled to SQL yet."
+      - cypher: "RETURN duration.between(date('2024-03-15'))"
+        error: "duration.between() takes two temporal values."
+
   - name: "Wrong number of arguments"
     description: "A function given the wrong number of arguments is refused."
     steps:

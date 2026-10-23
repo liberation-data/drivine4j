@@ -274,6 +274,20 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST($count, 1)) r WHERE r.n <= $count)"
     }
 
+    override val temporalSql = OracleTemporalSql(sharedList)
+
+    /**
+     * Oracle merges a view of no table into the subquery that reads it, and where that subquery is bound in
+     * another and the row reads another property, the merged query reads the value as null: each is kept apart.
+     */
+    override fun boundSelect(columns: String) = "SELECT /*+ NO_MERGE */ $columns"
+
+    /**
+     * Oracle merges a `CALL { … }` query into the row's query that joins it, and a value bound in that row from what
+     * the query returns is then read as null (`CALL { WITH n RETURN n.day AS d } RETURN d + duration('P1D')`).
+     */
+    override fun called(query: String) = "SELECT /*+ NO_MERGE */ * FROM (\n${indent(query)}\n)"
+
     /** Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. */
     override fun matches(text: String, pattern: String) = shared(pattern) { (p) ->
         val flags = "REGEXP_SUBSTR($p, '^\\(\\?([a-z]+)\\)', 1, 1, NULL, 1)"
@@ -301,18 +315,6 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** SUBSTR from the end gives null where it is asked for more than there is. */
     override fun rightText(text: String, count: String) =
         shared(text, count) { (t, n) -> "CASE WHEN $n >= LENGTH($t) THEN $t WHEN $n > 0 THEN SUBSTR($t, -$n) END" }
-
-    override fun epochMillisNow(): String {
-        val since = "(SYS_EXTRACT_UTC(SYSTIMESTAMP) - TIMESTAMP '1970-01-01 00:00:00')"
-        return "JSON_SCALAR(TRUNC((EXTRACT(DAY FROM $since) * 86400 + EXTRACT(HOUR FROM $since) * 3600 + " +
-            "EXTRACT(MINUTE FROM $since) * 60 + EXTRACT(SECOND FROM $since)) * 1000))"
-    }
-
-    override fun dateNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD'))"
-
-    override fun localNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3'))"
-
-    override fun isoNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'))"
 
     /** An anonymous block, which returns its rows as an implicit result. */
     override fun procedure(body: List<String>) = (listOf(

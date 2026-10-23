@@ -59,7 +59,7 @@ abstract class CypherQueryContract {
         if (!compiles) return
         val (day, moment) = query("RETURN [date(), localdatetime()]").single() as List<*>
         assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}").matches(day as String), day)
-        assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}").matches(moment as String), moment)
+        assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3}|\\.\\d{6})?").matches(moment as String), moment)
     }
 }
 

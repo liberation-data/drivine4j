@@ -402,6 +402,8 @@ cases:
             sqrt: 3.0
             sign: -1
             trimmed: ["a ", " b"]
+      - cypher: "UNWIND tail([1, 2, 3]) AS x RETURN x"
+        rows: [2, 3]
       - cypher: "RETURN split('a', null)"
         rows: [null]
       - note: "An empty separator cuts at each character. Oracle's empty text is null."

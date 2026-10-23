@@ -186,6 +186,15 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override val rowNumber = "ROW_NUMBER() OVER ()"
 
     /**
+     * Postgres pulls a subquery of no table up into the query that reads it, and writes each of its values out
+     * again where it is read: values bound in one another so grow exponentially as it plans, and a duration added
+     * to a date read from the store took the server's memory. `OFFSET 0` keeps the subquery apart.
+     */
+    override fun boundSelect(columns: String) = "SELECT $columns OFFSET 0"
+
+    override val temporalSql = PostgresTemporalSql(sharedList)
+
+    /**
      * Flags the pattern opens with, `(?i)`, are put before the anchors, where Postgres reads them, after `p`: a dot
      * matches no line break, as Java's does, unless the pattern says `(?s)`.
      */
@@ -204,14 +213,6 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun uuid() = "CAST(gen_random_uuid() AS text)"
 
     override fun rightText(text: String, count: String) = "right($text, $count)"
-
-    override fun epochMillisNow() = "to_jsonb(CAST(trunc(extract(epoch FROM statement_timestamp()) * 1000) AS bigint))"
-
-    override fun dateNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))"
-
-    override fun localNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS'))"
-
-    override fun isoNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))"
 
     /**
      * A function of the session's own, `pg_temp`, made for the procedure and called: Postgres runs a block
