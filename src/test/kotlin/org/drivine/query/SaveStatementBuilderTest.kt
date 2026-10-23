@@ -14,6 +14,9 @@ import sample.stateless.Citation
 import sample.stateless.Claim
 import sample.stateless.ClaimCitations
 import sample.stateless.ClaimView
+import sample.stateless.ClaimWithOptionalStatus
+import sample.stateless.ClaimWithRoles
+import sample.stateless.ClaimWithStatus
 import sample.stateless.Company
 import sample.stateless.Human
 import sample.stateless.HumanClaims
@@ -167,6 +170,38 @@ class SaveStatementBuilderTest {
         assertFalse("stamp` <>" in check, "the stamp is compared as the stamp: $check")
         assertEquals(changeSaved(CypherDialect.NEO4J_5, loaded = "a longer text").statement, saved.statement, "the values are bound, not written into the text")
         assertTrue("n.note IS NULL" in changeSaved(CypherDialect.NEO4J_4).statement, "Neo4j 4 reads without a snapshot too")
+    }
+
+    @Test
+    fun `where a read takes no snapshot, a field loaded as a node without it loads lets the node be without it`() {
+        val stamp = "0123456789abcdef:fedcba9876543210"
+        val defaulted = ClaimWithStatus("c1", "one", stamp)
+        val empty = ClaimWithRoles("c1", "one", stamp, roles = emptyList())
+
+        val status = checkOfChange(defaulted, defaulted.copy(text = "two")).first
+        val roles = checkOfChange(empty, empty.copy(text = "two")).first
+
+        assertTrue("NOT coalesce(n.status <> " in status, status)
+        assertFalse("n.status IS NOT NULL" in status, "a status loaded as its @Default may have been loaded from none: $status")
+        assertTrue("NOT coalesce(n.roles <> " in roles, roles)
+        assertFalse("n.roles IS NOT NULL" in roles, "roles loaded empty by @EmptyWhenAbsent may have been loaded from none: $roles")
+        assertTrue("n.text IS NOT NULL AND NOT coalesce(n.text <> " in status, "a field no load fills in must be there: $status")
+
+        val closed = defaulted.copy(status = "closed")
+        val admin = empty.copy(roles = listOf("admin"))
+        assertTrue("n.status IS NOT NULL AND NOT coalesce(n.status <> " in checkOfChange(closed, closed.copy(text = "two")).first, "not the value a load gives a node without it")
+        assertTrue("n.roles IS NOT NULL AND NOT coalesce(n.roles <> " in checkOfChange(admin, admin.copy(text = "two")).first)
+    }
+
+    @Test
+    fun `where a read names each field, a constructor default is not what a node without the property loads`() {
+        val loaded = ClaimWithOptionalStatus("c1", "one", "0123456789abcdef:fedcba9876543210")
+        // The read names the field, so a node without it hands the mapper a null, not the default.
+        assertEquals(null, Neo4jObjectMapper.instance.convertValue(mapOf("id" to "c1", "text" to "one", "status" to null), ClaimWithOptionalStatus::class.java).status)
+
+        val check = checkOfChange(loaded, loaded.copy(text = "two")).first
+
+        assertTrue("n.status IS NOT NULL AND NOT coalesce(n.status <> " in check, "a node without a status loads none: $check")
     }
 
     @Test

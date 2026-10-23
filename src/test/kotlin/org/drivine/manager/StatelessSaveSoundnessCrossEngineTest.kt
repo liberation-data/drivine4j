@@ -39,6 +39,9 @@ import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
 import sample.flatexpand.SeqExpandView
 import sample.stateless.Claim
+import sample.stateless.ClaimWithBagAndStatus
+import sample.stateless.ClaimWithRoles
+import sample.stateless.ClaimWithStatus
 import sample.stateless.Sticker
 import sample.stateless.Finding
 import sample.stateless.Swatch
@@ -710,6 +713,53 @@ abstract class StatelessSaveSoundnessContract {
         val kept = assertNotNull(stateless.load<Finding>("f1")).sources.toSet()
         val lost = (1..writers).flatMap { writer -> (0 until each).map { "w$writer-$it" } } - kept
         assertEquals(emptyList(), lost, "every writer's source is kept")
+    }
+
+    // ----- A field added after the node was saved -----
+
+    /** A claim saved, stamped, before its class had the field a load now fills in. */
+    private fun savedBeforeTheField() = stateless.save(Claim("c1", "one"))
+
+    @Test
+    fun `an update of a node saved before an EmptyWhenAbsent field was added is written`() {
+        savedBeforeTheField()
+
+        val updated = assertNotNull(stateless.update<ClaimWithRoles>("c1") { it.copy(text = "two") })
+
+        assertEquals(emptyList(), updated.roles)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `an update of a node saved before a Default field was added is written`() {
+        savedBeforeTheField()
+
+        val updated = assertNotNull(stateless.update<ClaimWithStatus>("c1") { it.copy(text = "two") })
+
+        assertEquals("open", updated.status)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `an update of a node saved before a field with a constructor default was added, loaded with every property, is written`() {
+        savedBeforeTheField()
+
+        val updated = assertNotNull(stateless.update<ClaimWithBagAndStatus>("c1") { it.copy(text = "two") })
+
+        assertEquals("open", updated.status)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `an update of a node saved before a Default field was added loads again when the field is given another value under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        savedBeforeTheField()
+
+        val applied = appliedAfterUnmarked<ClaimWithStatus>("c1", "MATCH (c:Claim {id: 'c1'}) SET c.status = 'closed'") { it.copy(text = "two") }
+
+        assertEquals(2, applied, "the first save is refused: the node holds a status, and not the one loaded")
+        assertEquals("closed", property("c1", "status"))
+        assertEquals("two", property("c1", "text"))
     }
 
     // ----- Inside a transaction -----
