@@ -36,11 +36,11 @@ jobs:
 
       # Compiles and assembles every module. The tests run once, in the step that follows.
       - name: Build with Gradle
-        run: ./gradlew build -x test -x springFreeTest --no-daemon
+        run: ./gradlew build -x test -x standaloneTest --no-daemon
 
-      # springFreeTest runs the core library with no Spring on the classpath, and checks it has none.
+      # standaloneTest runs the core on its own runtime classpath, as a plain main or a Ktor server has it.
       - name: Run tests
-        run: ./gradlew test springFreeTest --no-daemon
+        run: ./gradlew test standaloneTest --no-daemon
         env:
           DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY: ${{ matrix.collection-sort-strategy }}
 
@@ -60,7 +60,7 @@ jobs:
         with:
           report_paths: |
             **/build/test-results/test/*.xml
-            build/test-results/springFreeTest/*.xml
+            build/test-results/standaloneTest/*.xml
           detailed_summary: true
           include_passed: true
           check_name: Test Results (${{ matrix.collection-sort-strategy }})
@@ -150,7 +150,7 @@ jobs:
 
       # Compiles and assembles every module. The tests run once, in the step that follows.
       - name: Build with Gradle
-        run: ./gradlew build -x test -x springFreeTest --no-daemon
+        run: ./gradlew build -x test -x standaloneTest --no-daemon
 
       - name: Run all tests
         run: ./gradlew test --no-daemon
@@ -242,7 +242,7 @@ jobs:
 
       # Compiles and assembles every module. The tests run once, in the step that follows.
       - name: Build with Gradle
-        run: ./gradlew build -x test -x springFreeTest --no-daemon
+        run: ./gradlew build -x test -x standaloneTest --no-daemon
 
       - name: Run all tests
         run: ./gradlew test --no-daemon
@@ -336,7 +336,7 @@ jobs:
         run: docker pull gvenzl/oracle-free:23-faststart
 
       - name: Build with Gradle
-        run: ./gradlew build -x test -x springFreeTest --no-daemon
+        run: ./gradlew build -x test -x standaloneTest --no-daemon
 
       - name: Run the Oracle tests
         run: ./gradlew :test --no-daemon --tests '*Oracle*'
@@ -398,7 +398,7 @@ jobs:
         run: docker pull pgvector/pgvector:pg17
 
       - name: Build with Gradle
-        run: ./gradlew build -x test -x springFreeTest --no-daemon
+        run: ./gradlew build -x test -x standaloneTest --no-daemon
 
       - name: Run the Postgres tests
         run: ./gradlew :test --no-daemon --tests '*Postgres*'

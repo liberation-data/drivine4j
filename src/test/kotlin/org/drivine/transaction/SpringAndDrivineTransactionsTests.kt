@@ -74,6 +74,8 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
     private val template = TransactionTemplate(transactionManager)
     private val newTemplate = TransactionTemplate(transactionManager)
         .apply { propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW }
+    private val notSupportedTemplate = TransactionTemplate(transactionManager)
+        .apply { propagationBehavior = TransactionDefinition.PROPAGATION_NOT_SUPPORTED }
     private val run = "nest-" + UUID.randomUUID().toString().take(8)
 
     /** FalkorDB has no transactions, so nothing there is rolled back. */
@@ -145,6 +147,23 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
             }
         }
         assertEquals(listOf("new"), committed())
+    }
+
+    @Test
+    fun `a NOT_SUPPORTED template inside a block writes outside it, and the block's transaction comes back`() {
+        assertFailsWith<IllegalStateException> {
+            transactions.transaction {
+                val block = transactions.current
+                notSupportedTemplate.executeWithoutResult {
+                    assertNull(transactions.current)
+                    writer.mark(run, "aside")
+                }
+                assertSame(block, transactions.current)
+                writer.mark(run, "block")
+                error("the block fails")
+            }
+        }
+        assertEquals(listOf("aside"), committed())
     }
 
     // Spring's transaction, with a block of Drivine's inside it
@@ -226,6 +245,23 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
             }
         }
         assertEquals(listOf("new"), committed())
+    }
+
+    @Test
+    fun `a REQUIRES_NEW template that throws inside a @Transactional one rolls back by itself`() {
+        template.executeWithoutResult {
+            val outer = transactions.current
+            writer.mark(run, "outer")
+            assertFailsWith<IllegalStateException> {
+                newTemplate.executeWithoutResult {
+                    assertTrue(transactions.current !== outer, "REQUIRES_NEW runs in a transaction of its own")
+                    writer.mark(run, "new")
+                    error("the new transaction fails")
+                }
+            }
+            assertSame(outer, transactions.current)
+        }
+        assertEquals(listOf("outer"), committed())
     }
 
     @Test

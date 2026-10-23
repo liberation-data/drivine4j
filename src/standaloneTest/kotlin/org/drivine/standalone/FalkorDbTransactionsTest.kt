@@ -1,4 +1,4 @@
-package org.drivine.springfree
+package org.drivine.standalone
 
 import org.drivine.Drivine
 import org.drivine.connection.ConnectionProperties
@@ -38,7 +38,7 @@ class FalkorDbTransactionsTest {
                     type = DatabaseType.FALKORDB,
                     host = container.host,
                     port = container.getMappedPort(6379),
-                    databaseName = "springfree",
+                    databaseName = "standalone",
                     falkorDbTransactionMode = mode,
                 )
             )

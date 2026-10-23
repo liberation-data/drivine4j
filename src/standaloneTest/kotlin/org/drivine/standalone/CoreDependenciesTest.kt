@@ -1,4 +1,4 @@
-package org.drivine.springfree
+package org.drivine.standalone
 
 import org.drivine.Drivine
 import org.drivine.transaction.Transactions
@@ -6,13 +6,13 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertFailsWith
 
 /**
- * These tests run on the library's own runtime classpath, which the build checks has no Spring on it.
- * This says so from inside: a class from each Spring jar the library once brought is not to be found.
+ * These tests run on the core's own runtime classpath. Its Spring support is in drivine4j-spring and the
+ * starter, so a class from each Spring jar the core once brought along is not on it.
  */
-class NoSpringTest {
+class CoreDependenciesTest {
 
     @Test
-    fun `no Spring class is on the classpath`() {
+    fun `the core brings no Spring module of its own`() {
         listOf(
             "org.springframework.core.SpringVersion",
             "org.springframework.context.ApplicationContext",
@@ -26,7 +26,7 @@ class NoSpringTest {
     }
 
     @Test
-    fun `the library's classes load without it`() {
+    fun `the core's classes load on its own classpath`() {
         Class.forName(Drivine::class.java.name)
         Class.forName(Transactions::class.java.name)
         Class.forName("org.drivine.manager.PersistenceManagerFactory")

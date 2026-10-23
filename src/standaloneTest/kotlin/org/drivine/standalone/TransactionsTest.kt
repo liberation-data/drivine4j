@@ -1,4 +1,4 @@
-package org.drivine.springfree
+package org.drivine.standalone
 
 import org.drivine.Drivine
 import org.drivine.annotation.NodeFragment
@@ -28,8 +28,8 @@ import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
-@NodeFragment(labels = ["SpringFreePerson"])
-data class SpringFreePerson(@NodeId val id: String, val name: String)
+@NodeFragment(labels = ["StandalonePerson"])
+data class StandalonePerson(@NodeId val id: String, val name: String)
 
 /** Drivine's own transactions on Neo4j, made as an application with no framework makes them: with [Drivine]. */
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
@@ -179,6 +179,23 @@ class TransactionsTest {
     }
 
     @Test
+    fun `a REQUIRES_NEW block that throws rolls back by itself, and the transaction it set aside carries on`() {
+        drivine.transaction {
+            val outer = drivine.transactions.current
+            create("outer")
+            assertFailsWith<IllegalStateException> {
+                drivine.transaction(Propagation.REQUIRES_NEW) {
+                    create("new")
+                    error("the new block fails")
+                }
+            }
+            assertSame(outer, drivine.transactions.current)
+        }
+
+        assertEquals(listOf("outer"), committed())
+    }
+
+    @Test
     fun `SUPPORTS joins a transaction, and without one each statement commits as it runs`() {
         assertFailsWith<IllegalStateException> {
             drivine.transaction(Propagation.SUPPORTS) {
@@ -275,21 +292,21 @@ class TransactionsTest {
         try {
             assertFailsWith<IllegalStateException> {
                 drivine.transaction {
-                    gom.save(SpringFreePerson(id, "Ada"))
-                    assertEquals("Ada", gom.load<SpringFreePerson>(id)?.name)
+                    gom.save(StandalonePerson(id, "Ada"))
+                    assertEquals("Ada", gom.load<StandalonePerson>(id)?.name)
                     error("rolled back")
                 }
             }
-            assertNull(gom.load<SpringFreePerson>(id))
+            assertNull(gom.load<StandalonePerson>(id))
 
-            drivine.transaction { gom.save(SpringFreePerson(id, "Ada")) }
-            assertEquals("Ada", gom.load<SpringFreePerson>(id)?.name)
+            drivine.transaction { gom.save(StandalonePerson(id, "Ada")) }
+            assertEquals("Ada", gom.load<StandalonePerson>(id)?.name)
         } finally {
-            pm.execute(QuerySpecification.withStatement("MATCH (p:SpringFreePerson {id: \$id}) DELETE p").bind(mapOf("id" to id)))
+            pm.execute(QuerySpecification.withStatement("MATCH (p:StandalonePerson {id: \$id}) DELETE p").bind(mapOf("id" to id)))
         }
     }
 
     private companion object {
-        const val PASSWORD = "springfreetest"
+        const val PASSWORD = "standalonetest"
     }
 }

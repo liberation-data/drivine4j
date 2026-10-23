@@ -40,8 +40,10 @@ dependencies {
     implementation 'org.springframework:spring-context'
     implementation 'org.springframework:spring-tx'
 
-    // What the core library brought before it shed Spring, so an application on the starter has the
-    // same classpath as before: Spring Boot, and AOP with AspectJ for @Aspect beans.
+    // Spring Boot, and AOP with AspectJ for @Aspect beans: the core library used to bring them, and now
+    // depends only on what it uses, so the starter brings them and an application on it has the same
+    // classpath as before. All but spring-test, which an application's tests bring with
+    // spring-boot-starter-test.
     implementation 'org.springframework.boot:spring-boot-starter'
     implementation 'org.springframework.boot:spring-boot-starter-aop'
 

@@ -16,8 +16,9 @@ import org.drivine.transaction.Transactions
 import java.util.concurrent.Callable
 
 /**
- * Drivine without a framework: the registry, factories and transactions a Spring application gets as
- * beans, made once, for a `main`, a Ktor or Micronaut server, a batch job or a test.
+ * The registry, factories and transactions that a Spring application gets as beans from the starter,
+ * made once, for an application with another framework or none: a `main`, a Ktor or Micronaut
+ * server, a batch job or a test.
  *
  * ```kotlin
  * val drivine = Drivine(DataSourceMap(mapOf("neo" to ConnectionProperties(type = DatabaseType.NEO4J, ...))))
@@ -77,8 +78,19 @@ class Drivine @JvmOverloads constructor(
         block: Runnable,
     ) = transactions.transactionWithoutResult(propagation, rollback, block)
 
-    /** Closes every database's connections: their pools and drivers. */
+    /**
+     * Closes every database's connections: their pools and drivers. One that fails to close doesn't
+     * keep the others open: the first failure is thrown once all have been tried.
+     */
     override fun close() {
-        databaseRegistry.databaseNames.forEach { databaseRegistry.connectionProvider(it)?.end() }
+        var failure: Exception? = null
+        databaseRegistry.databaseNames.forEach { name ->
+            try {
+                databaseRegistry.connectionProvider(name)?.end()
+            } catch (ex: Exception) {
+                failure?.addSuppressed(ex) ?: run { failure = ex }
+            }
+        }
+        failure?.let { throw it }
     }
 }

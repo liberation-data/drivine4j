@@ -1,7 +1,7 @@
 plugins {
 	id 'org.jetbrains.kotlin.jvm' version '2.2.20'
 	// Opens the Spring-annotated classes of the tests, which run in Spring contexts. It is a compiler
-	// plugin: the library itself has no Spring annotation, and no Spring dependency.
+	// plugin, and adds nothing to what the library depends on.
 	id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20'
 
 	id 'maven-publish'
@@ -34,17 +34,18 @@ configurations {
 	neo4jPlugins
 }
 
-// Tests of the library with no Spring on the classpath at all: the main classes and their runtime
-// dependencies, and JUnit. The ordinary tests run in Spring contexts, so they can't show this.
+// Tests of the core on its own runtime classpath: the main classes, their runtime dependencies and
+// JUnit. The ordinary tests run in Spring contexts, through the starter; these show the core also runs
+// where there is no framework, in a plain main or a Ktor server.
 sourceSets {
-	springFreeTest {
+	standaloneTest {
 		compileClasspath += sourceSets.main.output
 		runtimeClasspath += sourceSets.main.output
 	}
 }
 configurations {
-	springFreeTestImplementation.extendsFrom implementation, api
-	springFreeTestRuntimeOnly.extendsFrom runtimeOnly
+	standaloneTestImplementation.extendsFrom implementation, api
+	standaloneTestRuntimeOnly.extendsFrom runtimeOnly
 }
 
 dependencies {
@@ -53,9 +54,9 @@ dependencies {
 	neo4jPlugins 'org.neo4j.procedure:apoc-extended:5.26.0'
 	implementation 'org.neo4j.driver:neo4j-java-driver:5.28.9'
 
-	// No Spring here: the Spring adapter is drivine4j-spring, and the Boot auto-configuration
-	// drivine4j-spring-boot-starter. The versions are the ones Spring Boot 3.5.7 manages, which the
-	// library was built with when it depended on Boot.
+	// The core depends on what it uses: the drivers, Jackson, HikariCP and SLF4J. Spring support is in
+	// drivine4j-spring (the transaction manager) and drivine4j-spring-boot-starter (the auto-configuration).
+	// The versions are the ones Spring Boot 3.5.7 manages, as before.
 	implementation 'org.slf4j:slf4j-api:2.0.17'
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
 	implementation platform('com.fasterxml.jackson:jackson-bom:2.19.2')
@@ -102,11 +103,11 @@ dependencies {
 	// Spring Boot Starter for tests
 	testImplementation project(':drivine4j-spring-boot-starter')
 
-	springFreeTestImplementation platform('org.junit:junit-bom:5.12.2')
-	springFreeTestImplementation 'org.junit.jupiter:junit-jupiter'
-	springFreeTestImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
-	springFreeTestImplementation 'org.testcontainers:junit-jupiter:1.21.4'
-	springFreeTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	standaloneTestImplementation platform('org.junit:junit-bom:5.12.2')
+	standaloneTestImplementation 'org.junit.jupiter:junit-jupiter'
+	standaloneTestImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+	standaloneTestImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+	standaloneTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// Fix Dokka Jackson compatibility issue
 	dokkaPlugin 'org.jetbrains.dokka:kotlin-as-java-plugin:1.9.20'
@@ -153,11 +154,11 @@ jacocoTestReport {
 	}
 }
 
-def springFreeTest = tasks.register('springFreeTest', Test) {
-	description = 'Runs the library with no Spring on the classpath.'
+def standaloneTest = tasks.register('standaloneTest', Test) {
+	description = 'Runs the core on its own runtime classpath, with no framework.'
 	group = 'verification'
-	testClassesDirs = sourceSets.springFreeTest.output.classesDirs
-	classpath = sourceSets.springFreeTest.runtimeClasspath
+	testClassesDirs = sourceSets.standaloneTest.output.classesDirs
+	classpath = sourceSets.standaloneTest.runtimeClasspath
 	useJUnitPlatform()
 	rootProject.file('gradle/test-images.txt').readLines()
 		.collect { it.trim() }.findAll { it && !it.startsWith('#') }
@@ -165,18 +166,19 @@ def springFreeTest = tasks.register('springFreeTest', Test) {
 			def (named, pinned) = line.split(/\s+/)
 			systemProperty "drivine.test.image.${named}", pinned
 		}
-	// What the library publishes has no Spring: fail before the tests if a dependency brings it back.
+	// The core's Spring support is in drivine4j-spring: fail before the tests if a Spring module
+	// comes onto the core's own classpath.
 	doFirst {
 		def spring = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts
 			.collect { it.moduleVersion.id }
 			.findAll { it.group.startsWith('org.springframework') }
 		if (spring) {
-			throw new GradleException("The library's runtime classpath has Spring on it: ${spring.join(', ')}")
+			throw new GradleException("The core's runtime classpath has ${spring.join(', ')}: Spring support belongs in drivine4j-spring")
 		}
 	}
 }
 tasks.named('check') {
-	dependsOn springFreeTest
+	dependsOn standaloneTest
 }
 
 // Task to download Neo4j plugins to Gradle cache (for DrivineTestContainer)

@@ -8,11 +8,11 @@ By default, tests start a Testcontainer for whichever backend(s) the suite targe
 ./gradlew test
 ```
 
-## Without Spring
+## The core on its own classpath
 
-The root module's tests run in Spring contexts. The core library has no Spring, and `./gradlew springFreeTest` shows
-it: the tests in `src/springFreeTest` run on the library's own runtime classpath and JUnit, with nothing of Spring,
-and the task fails first if that classpath has any `org.springframework` module on it. They start a Neo4j and a
+The root module's tests run in Spring contexts, through the starter. `./gradlew standaloneTest` runs the tests in
+`src/standaloneTest` on the core's own runtime classpath and JUnit, as a plain `main` or a Ktor server has it. Spring
+support is in `drivine4j-spring`, so the task fails first if an `org.springframework` module comes onto that classpath. They start a Neo4j and a
 FalkorDB of their own, and read no `USE_LOCAL_*` flag. `./gradlew check` (and so `build`) runs them.
 
 ## Using a Local Database Instance

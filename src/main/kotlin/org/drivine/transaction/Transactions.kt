@@ -4,10 +4,11 @@ import org.slf4j.LoggerFactory
 import java.util.concurrent.Callable
 
 /**
- * Runs a block in a transaction, with no framework: the same transactions Spring's `@Transactional`
- * runs through the `drivine4j-spring` adapter, kept in the same [TransactionContextHolder]. So a
- * block joins a `@Transactional` method's transaction, and a `@Transactional` method called from a
- * block joins the block's.
+ * Runs a block in a transaction: the same transactions Spring's `@Transactional` and
+ * `TransactionTemplate` run through `drivine4j-spring`'s `DrivineTransactionManager`, kept in the same
+ * [TransactionContextHolder]. So a block joins a `@Transactional` method's transaction, and a
+ * `@Transactional` method called from a block joins the block's. The starter makes one as a bean; an
+ * application with no framework gets one from [org.drivine.Drivine].
  *
  * ```kotlin
  * val transactions = Transactions(contextHolder)
@@ -58,7 +59,9 @@ class Transactions(
      *
      * @param rollback roll the transaction back at its end, instead of committing, though nothing
      *   failed: for a test that leaves nothing behind. Given to a block that joins a transaction, it
-     *   makes the whole transaction roll back.
+     *   makes the whole transaction roll back. Where [propagation] runs the block without a transaction
+     *   (`SUPPORTS` with none, `NOT_SUPPORTED`, `NEVER`) there is nothing to roll back: each statement
+     *   commits as it runs.
      * @throws IllegalTransactionStateException where [propagation] refuses to run.
      */
     @JvmOverloads
