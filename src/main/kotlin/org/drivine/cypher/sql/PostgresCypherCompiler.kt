@@ -173,6 +173,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun range(from: String, to: String, step: String) =
         "(SELECT COALESCE(jsonb_agg(g ORDER BY o), '[]'::jsonb) FROM generate_series(CAST($from AS bigint), CAST($to AS bigint), CAST($step AS bigint)) WITH ORDINALITY r (g, o))"
 
+    override val rowNumber = "ROW_NUMBER() OVER ()"
+
     override fun uuid() = "CAST(gen_random_uuid() AS text)"
 
     override fun rightText(text: String, count: String) = "right($text, $count)"
@@ -198,6 +200,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $COUNT bigint;",
             "    $FOUND boolean;",
             "    $DOOMED jsonb;",
+            "    $SAVED jsonb;",
             "    $RECORD record;",
             "    $MATCHED record;",
             "BEGIN",

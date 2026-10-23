@@ -425,6 +425,68 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `exists and count take a pattern, reading clauses or a whole query, read for the row they are in`() {
+        assertEquals(
+            listOf("Carrie", "Keanu"),
+            query("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:ACTED_IN]->(m:Movie) WHERE m.released > 2000 } RETURN p.name ORDER BY p.name"),
+        )
+        assertEquals(listOf("Keanu", "Laurence"), query("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(f) RETURN f } RETURN p.name ORDER BY p.name"))
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Hugo", 0L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person) RETURN p.name, COUNT { (p)-[:ACTED_IN]->() } ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(2L),
+            query("MATCH (p:Person {name: 'Keanu'}) RETURN COUNT { MATCH (p)-[:ACTED_IN]->(m) WITH m WHERE m.released < 2000 RETURN m.title }"),
+        )
+    }
+
+    @Test
+    fun `a call subquery gives rows for each row, and an optional one keeps a row it gives none for`() {
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Hugo", 0L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person) CALL { WITH p MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN count(m) AS movies } RETURN p.name, movies ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf("Keanu>Carrie", "Laurence>Keanu"),
+            query("MATCH (p:Person) CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } RETURN p.name + '>' + friend ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", null), listOf("Hugo", null), listOf("Keanu", "Carrie"), listOf("Laurence", "Keanu")),
+            query("MATCH (p:Person) OPTIONAL CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } RETURN [p.name, friend] ORDER BY p.name"),
+        )
+        assertEquals(listOf("The Matrix Reloaded"), query("CALL { MATCH (m:Movie) RETURN m ORDER BY m.released DESC LIMIT 1 } RETURN m.title"))
+    }
+
+    @Test
+    fun `a union gives each query's rows in turn, and without all each row once where it is first given`() {
+        assertEquals(listOf(3L, 1L, 2L, 3L), query("UNWIND [3, 1] AS x RETURN x AS v UNION ALL UNWIND [2, 3] AS x RETURN x AS v"))
+        assertEquals(listOf(3L, 1L, 2L), query("UNWIND [3, 1] AS x RETURN x AS v UNION UNWIND [2, 3] AS x RETURN x AS v"))
+        assertEquals(
+            listOf(mapOf("name" to "Keanu", "kind" to "person"), mapOf("name" to "The Matrix", "kind" to "movie")),
+            query(
+                """
+                MATCH (p:Person {name: ${'$'}name}) RETURN {name: p.name, kind: 'person'} AS row
+                UNION
+                MATCH (m:Movie {title: 'The Matrix'}) RETURN {name: m.title, kind: 'movie'} AS row
+                UNION
+                MATCH (p:Person {name: ${'$'}name}) RETURN {name: p.name, kind: 'person'} AS row
+                """,
+                mapOf("name" to "Keanu"),
+            ),
+        )
+        if (!compiles) return
+        assertEquals(
+            "UNION and UNION ALL are not mixed in one statement, as in Cypher.",
+            assertThrows<DrivineException> { query("RETURN 1 AS v UNION RETURN 2 AS v UNION ALL RETURN 3 AS v") }.message,
+        )
+        assertEquals(
+            "Each query of a UNION returns the same names, as in Cypher: (v) and (w).",
+            assertThrows<DrivineException> { query("RETURN 1 AS v UNION RETURN 2 AS w") }.message,
+        )
+    }
+
+    @Test
     fun `range gives whole numbers, and reduce folds a list from its first item`() {
         assertEquals(listOf(listOf(listOf(0L, 1L, 2L, 3L), listOf(10L, 7L, 4L), emptyList<Long>())), query("RETURN [range(0, 3), range(10, 4, -3), range(1, 0)]"))
         if (pm.type == DatabaseType.ORACLE) return

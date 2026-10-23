@@ -30,6 +30,15 @@ sealed interface Clause {
     /** `DELETE` of nodes and relationships, or with [detach] a node with its relationships. */
     data class Delete(val detach: Boolean, val expressions: List<Expression>) : Clause
 
+    /**
+     * `CALL { … }`: for each row, the rows [query] gives, read from the variables around it, with what it returns
+     * bound for the clauses after; with [optional], a row it gives none for is kept, with nulls.
+     */
+    data class Call(val optional: Boolean, val query: Query) : Clause
+
+    /** `FOREACH (x IN list | …)`: [clauses] written for each item of [list], bound to [variable]; the rows are left as they were. */
+    data class Foreach(val variable: String, val list: Expression, val clauses: List<Clause>) : Clause
+
     /** `RETURN`: what the query gives back. */
     data class Return(val projection: Projection) : Clause
 }

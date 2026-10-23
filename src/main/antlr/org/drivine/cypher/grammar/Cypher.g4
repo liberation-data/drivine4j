@@ -69,13 +69,26 @@ oC_UpdatingClause
                   | oC_Delete
                   | oC_Set
                   | oC_Remove
+                  | oC_Foreach
                   ;
+
+// drivine4j: `FOREACH (x IN list | …)`, of Neo4j's Cypher, which openCypher's grammar does not have.
+oC_Foreach
+       :  FOREACH SP? '(' SP? oC_Variable SP IN SP oC_Expression SP? '|' ( SP? oC_UpdatingClause )+ SP? ')' ;
+
+FOREACH : ( 'F' | 'f' ) ( 'O' | 'o' ) ( 'R' | 'r' ) ( 'E' | 'e' ) ( 'A' | 'a' ) ( 'C' | 'c' ) ( 'H' | 'h' ) ;
 
 oC_ReadingClause
              :  oC_Match
                  | oC_Unwind
+                 | oC_SubqueryCall
                  | oC_InQueryCall
                  ;
+
+// drivine4j: a subquery, `CALL { … }`, of Neo4j's Cypher and of GQL, which openCypher's grammar does not
+// have: optional, and with the variables it imports named in brackets, `CALL (a, b) { … }`, or by its first WITH.
+oC_SubqueryCall
+            :  ( OPTIONAL SP )? CALL SP? ( '(' SP? ( '*' | ( oC_Variable ( SP? ',' SP? oC_Variable )* ) )? SP? ')' SP? )? '{' SP? oC_RegularQuery SP? '}' ;
 
 oC_Match
      :  ( OPTIONAL SP )? MATCH SP? oC_Pattern ( SP? oC_Where )? ;
@@ -362,6 +375,7 @@ oC_Atom
     :  oC_Literal
         | oC_Parameter
         | oC_CaseExpression
+        | oC_CountSubquery
         | ( COUNT SP? '(' SP? '*' SP? ')' )
         | oC_ListComprehension
         | oC_PatternComprehension
@@ -452,7 +466,17 @@ oC_FunctionName
             :  oC_Namespace oC_SymbolicName ;
 
 oC_ExistentialSubquery
-                   :  EXISTS SP? '{' SP? ( oC_RegularQuery | ( oC_Pattern ( SP? oC_Where )? ) ) SP? '}' ;
+                   :  EXISTS SP? '{' SP? ( oC_RegularQuery | oC_SubqueryReadings | ( oC_Pattern ( SP? oC_Where )? ) ) SP? '}' ;
+
+// drivine4j: `COUNT { … }`, of openCypher's current specification and Neo4j's Cypher, which this release of
+// the grammar (M23) predates: how many rows a query, reading clauses or a pattern give.
+oC_CountSubquery
+             :  COUNT SP? '{' SP? ( oC_RegularQuery | oC_SubqueryReadings | ( oC_Pattern ( SP? oC_Where )? ) ) SP? '}' ;
+
+// drivine4j: the body of an `EXISTS { … }` or a `COUNT { … }` that reads and returns nothing, `MATCH … WHERE …`,
+// as Neo4j's Cypher takes it.
+oC_SubqueryReadings
+                :  oC_ReadingClause ( SP? oC_ReadingClause )* ;
 
 EXISTS : ( 'E' | 'e' ) ( 'X' | 'x' ) ( 'I' | 'i' ) ( 'S' | 's' ) ( 'T' | 't' ) ( 'S' | 's' ) ;
 

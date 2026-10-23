@@ -16,6 +16,7 @@ import org.drivine.cypher.ast.Query
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.cypher.ast.RemoveItem
 import org.drivine.cypher.ast.SetItem
+import org.drivine.cypher.ast.Union
 import org.drivine.cypher.grammar.CypherLexer
 import org.drivine.cypher.grammar.CypherParser
 import org.drivine.cypher.grammar.CypherParser.*
@@ -24,8 +25,7 @@ import org.drivine.cypher.grammar.CypherParser.*
  * Reads a Cypher statement into a [Query]: parsed with openCypher's grammar, then walked into the
  * syntax tree the compiler works from, which says what the statement means and no more of how it was
  * written. A statement that is not Cypher is refused with where it went wrong. A statement that is
- * Cypher the compiler does not take (a `UNION`, a procedure call, before they are built) is refused by
- * name.
+ * Cypher the compiler does not take (a procedure call) is refused by name.
  */
 object CypherReader {
 
@@ -41,10 +41,12 @@ object CypherReader {
         return query(parser.oC_Cypher().oC_Statement().oC_Query())
     }
 
-    private fun query(context: OC_QueryContext): Query {
-        val regular = context.oC_RegularQuery() ?: refuse("A procedure call (CALL)")
-        if (regular.oC_Union().isNotEmpty()) refuse("UNION")
-        val single = regular.oC_SingleQuery()
+    private fun query(context: OC_QueryContext): Query = regular(context.oC_RegularQuery() ?: refuse("A procedure call (CALL)"))
+
+    private fun regular(regular: OC_RegularQueryContext): Query =
+        Query(single(regular.oC_SingleQuery()), regular.oC_Union().map { Union(it.ALL() != null, single(it.oC_SingleQuery())) })
+
+    private fun single(single: OC_SingleQueryContext): List<Clause> {
         val clauses = mutableListOf<Clause>()
         single.oC_MultiPartQuery()?.let { multi ->
             // Its children in order: the reading clauses and updates of each part, then the part's WITH.
@@ -60,7 +62,7 @@ object CypherReader {
         last.oC_ReadingClause().forEach { clauses += reading(it) }
         last.oC_UpdatingClause().forEach { clauses += updating(it) }
         last.oC_Return()?.let { clauses += Clause.Return(projection(it.oC_ProjectionBody())) }
-        return Query(clauses)
+        return clauses
     }
 
     private fun updating(context: OC_UpdatingClauseContext): Clause = when {
@@ -76,6 +78,9 @@ object CypherReader {
         }
         context.oC_Set() != null -> Clause.Set(set(context.oC_Set()))
         context.oC_Remove() != null -> Clause.Remove(context.oC_Remove().oC_RemoveItem().map(::removeItem))
+        context.oC_Foreach() != null -> context.oC_Foreach().let { foreach ->
+            Clause.Foreach(name(foreach.oC_Variable()), expression(foreach.oC_Expression()), foreach.oC_UpdatingClause().map(::updating))
+        }
         else -> context.oC_Delete().let { delete -> Clause.Delete(delete.DETACH() != null, delete.oC_Expression().map(::expression)) }
     }
 
@@ -105,12 +110,18 @@ object CypherReader {
     private fun labels(context: OC_NodeLabelsContext): List<String> = context.oC_NodeLabel().map { name(it.oC_LabelName().oC_SchemaName()) }
 
     private fun reading(context: OC_ReadingClauseContext): Clause = when {
+        context.oC_SubqueryCall() != null -> context.oC_SubqueryCall().let { call ->
+            Clause.Call(call.OPTIONAL() != null, regular(call.oC_RegularQuery()))
+        }
         context.oC_Match() != null -> context.oC_Match().let { match ->
             Clause.Match(match.OPTIONAL() != null, patterns(match.oC_Pattern()), match.oC_Where()?.let { expression(it.oC_Expression()) })
         }
         context.oC_Unwind() != null -> context.oC_Unwind().let { Clause.Unwind(expression(it.oC_Expression()), name(it.oC_Variable())) }
         else -> refuse("A procedure call (CALL)")
     }
+
+    /** Reading clauses that return nothing, the body of an `EXISTS { … }` or a `COUNT { … }`. */
+    private fun readings(context: OC_SubqueryReadingsContext): Query = Query(context.oC_ReadingClause().map(::reading))
 
     private fun projection(context: OC_ProjectionBodyContext): Projection {
         val items = context.oC_ProjectionItems()
@@ -366,8 +377,19 @@ object CypherReader {
             )
         }
         context.oC_ExistentialSubquery() != null -> context.oC_ExistentialSubquery().let { exists ->
-            if (exists.oC_RegularQuery() != null) refuse("EXISTS { … } over a whole query")
-            Expression.Exists(patterns(exists.oC_Pattern()), exists.oC_Where()?.let { expression(it.oC_Expression()) })
+            when {
+                exists.oC_RegularQuery() != null -> Expression.Subquery(Expression.Subquery.Kind.EXISTS, regular(exists.oC_RegularQuery()))
+                exists.oC_SubqueryReadings() != null -> Expression.Subquery(Expression.Subquery.Kind.EXISTS, readings(exists.oC_SubqueryReadings()))
+                else -> Expression.Exists(patterns(exists.oC_Pattern()), exists.oC_Where()?.let { expression(it.oC_Expression()) })
+            }
+        }
+        context.oC_CountSubquery() != null -> context.oC_CountSubquery().let { count ->
+            val query = when {
+                count.oC_RegularQuery() != null -> regular(count.oC_RegularQuery())
+                count.oC_SubqueryReadings() != null -> readings(count.oC_SubqueryReadings())
+                else -> Query(listOf(Clause.Match(false, patterns(count.oC_Pattern()), count.oC_Where()?.let { expression(it.oC_Expression()) })))
+            }
+            Expression.Subquery(Expression.Subquery.Kind.COUNT, query)
         }
         context.oC_MapProjection() != null -> context.oC_MapProjection().let { projection ->
             Expression.MapProjection(

@@ -328,6 +328,26 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `foreach writes its clauses for each item, and leaves the rows as they were`() {
+        query("CREATE (:CyWrite {id: 'root'}), (:CyWrite {id: 'other'})")
+        assertEquals(
+            listOf("root"),
+            query("MATCH (r:CyWrite {id: 'root'}) FOREACH (name IN ['a', 'b'] | CREATE (r)-[:HAS]->(:CyWrite {id: name})) RETURN r.id"),
+        )
+        assertEquals(listOf("a", "b"), query("MATCH (:CyWrite {id: 'root'})-[:HAS]->(c) RETURN c.id ORDER BY c.id"))
+        // Merged once for each item, whichever row writes it first.
+        assertEquals(
+            listOf(2L),
+            query("MATCH (n:CyWrite) WHERE n.id IN ['root', 'other'] FOREACH (x IN [1, 2] | MERGE (:CyWrite {id: 'm' + toString(x)})) RETURN count(*)"),
+        )
+        assertEquals(listOf("m1", "m2"), query("MATCH (n:CyWrite) WHERE n.id STARTS WITH 'm' RETURN n.id ORDER BY n.id"))
+        // A condition written as a list of one item or none, and a list that is null.
+        query("MATCH (n:CyWrite) WHERE n.id IN ['root', 'other'] FOREACH (x IN CASE WHEN n.id = 'root' THEN [1] ELSE [] END | SET n.flag = true)")
+        query("MATCH (n:CyWrite {id: 'other'}) FOREACH (x IN null | SET n.flag = false)")
+        assertEquals(listOf(listOf("other", null), listOf("root", true)), query("MATCH (n:CyWrite) WHERE n.id IN ['root', 'other'] RETURN [n.id, n.flag] ORDER BY n.id"))
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>

@@ -60,6 +60,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** The statement [query], read already, with its parameters' values [parameters], as SQL: a query, or a procedure where it writes. */
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
+        if (query.unions.isNotEmpty()) return union(query, parameters)
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount))
             return CompiledCypher(writer.query(query), writer.parameters.values)
@@ -88,6 +89,32 @@ abstract class SqlCypherCompiler(graph: String) {
         val alias = "sh${++shares}"
         val columns = values.withIndex().joinToString(", ") { (i, value) -> "$value AS v${i + 1}" }
         return "(SELECT ${body(values.indices.map { "$alias.v${it + 1}" })} FROM (SELECT $columns) $alias)"
+    }
+
+    /**
+     * A `UNION`: each query's rows, in the order of the queries and each query's own order, as a graph engine
+     * gives them; without `ALL`, each row once, where it is first given.
+     */
+    private fun union(query: Query, parameters: Map<String, Any?>): CompiledCypher {
+        val parts = listOf(query.clauses) + query.unions.map { it.clauses }
+        if (parts.any { part -> part.any(::writes) }) unsupported("A write in a UNION")
+        if (query.unions.map { it.all }.distinct().size > 1) throw DrivineException("UNION and UNION ALL are not mixed in one statement, as in Cypher.")
+        val names = parts.map { part -> (part.last() as Clause.Return).projection.items.map { it.name } }
+        if (names.distinct().size > 1) {
+            throw DrivineException("Each query of a UNION returns the same names, as in Cypher: ${names.joinToString(" and ") { it.joinToString(prefix = "(", postfix = ")") }}.")
+        }
+        val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount))
+        val rows = parts.mapIndexed { i, clauses ->
+            "SELECT ${i + 1} AS part, $rowNumber AS n, q.result FROM (\n${indent(writer.query(Query(clauses)))}\n) q"
+        }.joinToString("\nUNION ALL\n")
+        val sql = if (query.unions.first().all) {
+            "SELECT u.result FROM (\n${indent(rows)}\n) u\nORDER BY u.part, u.n"
+        } else {
+            // A row is given once, where it is first given: its rows are compared as JSON compares them.
+            val key = comparable(Value.Json("u.result", ordered = true))
+            "SELECT d.result FROM (\n${indent("SELECT $key AS result, MIN(u.part * 1000000000.0 + u.n) AS k FROM (\n${indent(rows)}\n) u\nGROUP BY $key")}\n) d\nORDER BY d.k"
+        }
+        return CompiledCypher(sql, writer.parameters.values)
     }
 
     // ----- A store's SQL -----
@@ -268,6 +295,9 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected abstract fun reduce(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String
 
+    /** The number of a row of a query, counted from 1 in the order the query gives its rows. */
+    protected abstract val rowNumber: String
+
     /** `randomUUID()`: a new UUID, as SQL text in its usual form. */
     protected abstract fun uuid(): String
 
@@ -322,24 +352,31 @@ abstract class SqlCypherCompiler(graph: String) {
         fun query(query: Query): String {
             var select = Select(emptyMap())
             for (clause in query.clauses) {
-                when (clause) {
-                    is Clause.Match -> match(select, clause)
-                    is Clause.Unwind -> unwind(select, clause)
-                    is Clause.With -> select = with(select, clause)
-                    is Clause.Return -> return project(select, clause.projection, final = true).sql
-                    else -> error("a statement that writes is a procedure")
-                }
+                if (clause is Clause.Return) return project(select, clause.projection, final = true).sql
+                select = read(select, clause)
             }
             throw DrivineException("A Cypher statement ends with RETURN.")
         }
 
         // ----- Clauses -----
 
-        /** A `WITH`: a query of its own, which the rest of the statement reads from. */
-        private fun with(select: Select, with: Clause.With): Select {
+        /**
+         * A reading clause over the rows [select] reads, and the rows the clauses after it read: a `WITH` is a query
+         * of its own. [outer] is what a subquery reads from the row it is in.
+         */
+        private fun read(select: Select, clause: Clause, outer: Map<String, Value> = emptyMap()): Select = when (clause) {
+            is Clause.Match -> select.also { match(it, clause) }
+            is Clause.Unwind -> select.also { unwind(it, clause) }
+            is Clause.With -> with(select, clause, outer)
+            is Clause.Call -> select.also { call(it, clause) }
+            else -> error("${clause::class.simpleName} reads nothing")
+        }
+
+        /** A `WITH`: a query of its own, which the rest of the statement reads from, as it reads [outer]. */
+        private fun with(select: Select, with: Clause.With, outer: Map<String, Value> = emptyMap()): Select {
             val projected = project(select, with.projection, final = false)
             val name = alias("w")
-            val next = Select(emptyMap())
+            val next = Select(outer)
             next.source("(\n${indent(projected.sql)}\n) $name")
             projected.scope.forEach { (variable, value) -> next.bind(variable, value.columnsOf(name)) }
             projected.order.forEach { (column, descending) -> next.order += "$name.$column" to descending }
@@ -366,6 +403,44 @@ abstract class SqlCypherCompiler(graph: String) {
             val text = listOf("SELECT ${columns.joinToString(", ")}") + inner.from() + listOfNotNull(inner.whereClause())
             select.join("LEFT JOIN LATERAL (\n${indent(text.joinToString("\n"))}\n) $name ON TRUE")
             named.forEach { (variable, value, column) -> select.bind(variable, value.columnsOf(name, column)) }
+        }
+
+        /**
+         * The query a subquery is, for the row it is in, whose variables [scope] holds: its rows, or with no `RETURN`,
+         * a row for each way its reading clauses are met.
+         */
+        private fun correlated(query: Query, scope: Map<String, Value>, what: String): String {
+            if (query.unions.isNotEmpty()) unsupported("A UNION in $what")
+            if (query.clauses.any(::writes)) unsupported("A write in $what")
+            val order = rowOrder
+            try {
+                var select = Select(scope)
+                for (clause in query.clauses) {
+                    if (clause is Clause.Return) return project(select, clause.projection, final = false).sql
+                    select = read(select, clause, scope)
+                }
+                return (listOf("SELECT 1") + from(select) + listOfNotNull(select.whereClause())).joinToString("\n")
+            } finally {
+                rowOrder = order
+            }
+        }
+
+        /** `CALL { … }`: a lateral query for each row, what it returns bound as variables of the row. */
+        private fun call(select: Select, call: Clause.Call) {
+            if (call.query.clauses.last() !is Clause.Return) unsupported("A CALL { … } that returns nothing")
+            val ret = call.query.clauses.last() as Clause.Return
+            if (call.query.unions.isNotEmpty()) unsupported("A UNION in CALL { … }")
+            if (call.query.clauses.any(::writes)) unsupported("A write in CALL { … }")
+            val order = rowOrder
+            var inner = Select(select.scope)
+            call.query.clauses.dropLast(1).forEach { inner = read(inner, it, select.scope) }
+            val projected = project(inner, ret.projection, final = false)
+            rowOrder = order
+            val name = alias("c")
+            val text = "(\n${indent(projected.sql)}\n) $name"
+            select.join(if (call.optional) "LEFT JOIN LATERAL $text ON TRUE" else "CROSS JOIN LATERAL $text")
+            projected.scope.forEach { (variable, value) -> select.bind(variable, value.columnsOf(name)) }
+            projected.order.forEach { (column, descending) -> select.order += "$name.$column" to descending }
         }
 
         private fun unwind(select: Select, unwind: Clause.Unwind) {
@@ -564,16 +639,19 @@ abstract class SqlCypherCompiler(graph: String) {
         fun procedure(query: Query): List<String> {
             var select = Select(emptyMap())
             for (clause in creates(query.clauses)) {
-                when (clause) {
-                    is Clause.Match -> match(select, clause)
-                    is Clause.Unwind -> unwind(select, clause)
-                    is Clause.With -> select = with(select, clause)
-                    is Clause.Return -> returnRows(project(select, clause.projection, final = true).sql).forEach(::emit)
-                    else -> {
+                when {
+                    clause is Clause.Return -> returnRows(project(select, clause.projection, final = true).sql).forEach(::emit)
+                    clause is Clause.Foreach -> {
+                        carry(select)
+                        foreach(clause)
+                        select = rows()
+                    }
+                    writes(clause) -> {
                         carry(select)
                         write(clause)
                         select = rows()
                     }
+                    else -> select = read(select, clause)
                 }
             }
             return body
@@ -709,6 +787,33 @@ abstract class SqlCypherCompiler(graph: String) {
                 emit("END IF;")
                 emit("DELETE FROM $nodes WHERE nid IN ($doomed);")
             }
+        }
+
+        /** Whether a `FOREACH` is being written: one is not written in another. */
+        private var foreaching = false
+
+        /**
+         * A `FOREACH` over the rows in [ROWS]: its list unwound over them, each of its clauses written for each row
+         * and item in turn, then the rows put back as they were, for a `FOREACH` leaves them as it found them.
+         */
+        private fun foreach(foreach: Clause.Foreach) {
+            if (foreaching) unsupported("A FOREACH in a FOREACH")
+            foreaching = true
+            val before = LinkedHashMap(kinds)
+            emit("$SAVED := $ROWS;")
+            var select = rows()
+            unwind(select, Clause.Unwind(foreach.list, foreach.variable))
+            for (clause in creates(foreach.clauses)) {
+                carry(select)
+                if (clause is Clause.Foreach) unsupported("A FOREACH in a FOREACH")
+                write(clause)
+                select = rows()
+            }
+            emit("$ROWS := $SAVED;")
+            kinds.clear()
+            kinds.putAll(before)
+            unread = null
+            foreaching = false
         }
 
         /** The row in [ROW] kept, as a row of what the write leaves. */
@@ -1135,6 +1240,11 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             is Expression.PatternPredicate -> exists(listOf(expression.pattern), null, scope)
             is Expression.Exists -> exists(expression.patterns, expression.where, scope)
+            is Expression.Subquery -> when (expression.kind) {
+                Expression.Subquery.Kind.EXISTS -> Value.Bool("EXISTS (\n${indent(correlated(expression.query, scope, "EXISTS { … }"))}\n)")
+                Expression.Subquery.Kind.COUNT ->
+                    Value.Json(scalar("(SELECT count(*) FROM (\n${indent(correlated(expression.query, scope, "COUNT { … }"))}\n) ${alias("q")})"))
+            }
             is Expression.Quantifier -> {
                 val list = comparable(json(expression(expression.list, scope)))
                 val name = alias("q")
@@ -1452,7 +1562,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether [clause] writes, which makes its statement a procedure. */
         fun writes(clause: Clause): Boolean =
-            clause is Clause.Create || clause is Clause.Merge || clause is Clause.Set || clause is Clause.Remove || clause is Clause.Delete
+            clause is Clause.Create || clause is Clause.Merge || clause is Clause.Set || clause is Clause.Remove || clause is Clause.Delete ||
+                clause is Clause.Foreach
 
         // The variables of a procedure.
 
@@ -1479,6 +1590,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether a `MERGE` found its pattern. */
         const val FOUND = "cy_found"
+
+        /** The rows a `FOREACH` puts back once its clauses are written. */
+        const val SAVED = "cy_saved"
 
         /** The nodes a `DELETE` deletes once its rows are done, a JSON list of ids. */
         const val DOOMED = "cy_doomed"

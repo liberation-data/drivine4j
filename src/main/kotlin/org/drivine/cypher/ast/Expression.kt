@@ -86,6 +86,14 @@ sealed interface Expression {
     /** `EXISTS { pattern WHERE … }`. */
     data class Exists(val patterns: List<Pattern>, val where: Expression?) : Expression
 
+    /**
+     * `EXISTS { … }` or `COUNT { … }` of a query: whether it gives a row, or how many it gives, for the row
+     * it is in. Its [query] reads from the variables around it, and need not end in a `RETURN`.
+     */
+    data class Subquery(val kind: Kind, val query: Query) : Expression {
+        enum class Kind { EXISTS, COUNT }
+    }
+
     /** `all`, `any`, `none` or `single` of a list: `any(x IN list WHERE condition)`. */
     data class Quantifier(val kind: Kind, val variable: String, val list: Expression, val where: Expression?) : Expression {
         enum class Kind { ALL, ANY, NONE, SINGLE }

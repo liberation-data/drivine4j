@@ -173,11 +173,14 @@ class CypherReaderTest {
     }
 
     @Test
+    fun `a union reads each query, and whether it keeps every row`() {
+        val query = CypherReader.read("RETURN 1 AS v UNION ALL RETURN 2 AS v UNION ALL RETURN 3 AS v")
+        assertEquals(listOf(true, true), query.unions.map { it.all })
+        assertEquals(Expression.Literal(3L), (query.unions.last().clauses.single() as Clause.Return).projection.items.single().expression)
+    }
+
+    @Test
     fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
-        assertEquals(
-            "UNION is Cypher, and does not run on Oracle or Postgres yet.",
-            assertThrows<DrivineException> { CypherReader.read("RETURN 1 UNION RETURN 2") }.message,
-        )
         assertEquals(
             "A procedure call (CALL) is Cypher, and does not run on Oracle or Postgres yet.",
             assertThrows<DrivineException> { CypherReader.read("CALL db.labels()") }.message,

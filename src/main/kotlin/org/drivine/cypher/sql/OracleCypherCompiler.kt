@@ -227,6 +227,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     }
 
     /** Oracle's GUID, in a UUID's form: unique, though not random as a version 4 UUID is. */
+    /** `ROW_NUMBER()` takes an order of its own; `ROWNUM` counts the rows as the query gives them. */
+    override val rowNumber = "ROWNUM"
+
     override fun uuid() = "LOWER(REGEXP_REPLACE(RAWTOHEX(SYS_GUID()), '(.{8})(.{4})(.{4})(.{4})(.{12})', '\\1-\\2-\\3-\\4-\\5'))"
 
     /** SUBSTR from the end gives null where it is asked for more than there is. */
@@ -253,6 +256,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "    $COUNT NUMBER;",
         "    $FOUND BOOLEAN;",
         "    $DOOMED JSON;",
+        "    $SAVED JSON;",
         "    $CURSOR SYS_REFCURSOR;",
         "BEGIN",
         indent(body.joinToString("\n")),
