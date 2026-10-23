@@ -40,6 +40,11 @@ import org.slf4j.LoggerFactory
  *
  * Outcomes needing attention (drift, violations) are handled per [SchemaPolicy].
  *
+ * **Vector fields.** Before anything is applied, a [VectorIndexSpec] whose label and property a
+ * fragment class maps to a field without `@VectorIndex` is refused, naming the class, the field and
+ * the spec; a fragment class built later is checked against the specs applied here. See
+ * [org.drivine.annotation.VectorIndex].
+ *
  * All DDL runs in auto-commit mode (the non-transactional manager) — schema operations cannot run
  * inside an open data transaction.
  */
@@ -100,6 +105,7 @@ class SchemaManager(
         if (catalogs.none { !it.isEmpty() }) {
             return
         }
+        VectorAnnotationCheck.register(catalogs)
         val resolution = SchemaTargets.resolve(catalogs, databaseRegistry)
         if (resolution.skipped.isNotEmpty()) {
             logger.warn(

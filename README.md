@@ -610,7 +610,10 @@ several. `@VectorIndex` is the query-side declaration of "this embedding is sear
 independent of how the index is *created*: it works whether you create the index from the annotation
 (`SchemaCatalog.fromFragments(...)`) or from an explicit spec (`SchemaCatalog.of(VectorIndexSpec(...))`);
 in the latter case, add the annotation to the fragment as well — it carries no creation side effects
-on its own.
+on its own. Drivine refuses a catalog spec over a fragment field that has no `@VectorIndex`, naming the
+class, the field and the spec: without the annotation FalkorDB writes the field as a plain list and
+`loadNearest` finds no index. The check runs when `SchemaManager` applies the catalog and when the
+fragment class is first used. A spec for a label no fragment maps is not checked.
 
 ```kotlin
 @NodeFragment(labels = ["Proposition"])
