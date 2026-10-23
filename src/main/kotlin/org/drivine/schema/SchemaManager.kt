@@ -361,7 +361,7 @@ class SchemaManager(
         // identity under another key (a rename), which makes the recorded one an orphan.
         val recorded = versionStore.storedRecord()
         val declaredKeys = specs.map { it.inventoryKey }.toSet()
-        val identities = specs.map { "${it.kind}:${it.label}:${it.properties.joinToString(",")}:" }
+        val identities = specs.map { it.inventoryKey.removeSuffix(it.effectiveName) }
         val carried = recorded?.runtime.orEmpty().filter { key -> key !in declaredKeys && identities.none { key.startsWith(it) } }
         val stale = recorded?.stale.orEmpty()
 
@@ -399,9 +399,9 @@ class SchemaManager(
         finish(database, ownerLabel, outcomes) {
             // A carried item misses a recreate of its owner, having no spec here: mark it, so that it
             // is recreated when next ensured. A version change spares one another owner declares, as
-            // it spares a co-owned item. An item given but not applied keeps its mark.
+            // it spares a co-owned item. A runtime item not applied this time keeps its mark.
             val applied = toApply.map { it.inventoryKey }.toSet()
-            val staleAfter = stale.filter { it in declaredKeys && it !in applied } +
+            val staleAfter = stale.filter { it in runtimeOnlyKeys && it !in applied } +
                 carried.filter { it in stale || forceRecreate || (recreateOwner && it !in declaredByOthers) }
             versionStore.record(
                 if (ensuring) storedVersion else effectiveVersion,

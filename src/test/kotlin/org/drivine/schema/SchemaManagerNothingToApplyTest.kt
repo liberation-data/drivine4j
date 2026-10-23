@@ -83,4 +83,13 @@ class SchemaManagerNothingToApplyTest {
         assertEquals(3, appender.list.size)
         appender.list.forEach { assertContains(it.formattedMessage, "all empty: 'dice'") }
     }
+
+    @Test
+    fun `ensuring no items says so, and speaks to no database`() {
+        schemaManager(emptyList()).ensure("dice")
+
+        val line = onlyLine()
+        assertEquals(Level.INFO, line.level)
+        assertEquals("Nothing to ensure for owner 'dice': no items given", line.formattedMessage)
+    }
 }

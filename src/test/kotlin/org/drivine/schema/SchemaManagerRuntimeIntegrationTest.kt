@@ -44,11 +44,12 @@ class SchemaManagerRuntimeIntegrationTest {
         private lateinit var registry: DatabaseRegistry
         private lateinit var factory: PersistenceManagerFactory
         private lateinit var manager: PersistenceManager
+        private lateinit var props: ConnectionProperties
 
         @JvmStatic
         @BeforeAll
         fun setup() {
-            val props = ConnectionProperties(
+            props = ConnectionProperties(
                 type = DatabaseType.NEO4J,
                 host = container.host,
                 port = container.getMappedPort(7687),
@@ -158,6 +159,19 @@ class SchemaManagerRuntimeIntegrationTest {
     }
 
     @Test
+    fun `a manager with no catalog applies what it was ensured, under the anonymous owner too`() {
+        val schema = schemaManager(emptyList())
+        schema.ensure(null, RangeIndexSpec("Anon", "slug"))
+        manager.indexes.drop(RangeIndexSpec("Anon", "slug"))
+
+        schema.enforce()
+
+        assertNotNull(manager.indexes.find(RangeIndexSpec("Anon", "slug")), "enforce applies the runtime item")
+        assertTrue(appender.list.none { "nothing to apply" in it.formattedMessage }, "not said to have nothing to apply")
+        assertEquals(setOf(RangeIndexSpec("Anon", "slug").inventoryKey), record(SchemaVersionStore.DEFAULT_SCOPE)!!.runtime)
+    }
+
+    @Test
     fun `a version change marks a runtime item it has no spec for, and the next ensure recreates it`() {
         schemaManager(listOf(diceAtStartup.withVersion("model-a")), warn).apply { enforce(); ensure("dice", propositionVector(768)) }
 
@@ -173,6 +187,64 @@ class SchemaManagerRuntimeIntegrationTest {
         assertEquals(1536, vectorDims("Proposition", "embedding"), "recreated, not left as drift")
         assertEquals(emptySet(), record("dice")!!.stale)
         assertEquals("Schema for owner 'dice' on 'neo': 0 created, 0 already matching, 1 recreated, 0 needing attention", summaries().last())
+    }
+
+    @Test
+    fun `ensure neither acts on a version change nor recreates on startup`() {
+        schemaManager(listOf(diceAtStartup.withVersion("d-1"))).apply { enforce(); ensure("dice", propositionVector(768)) }
+
+        schemaManager(listOf(diceAtStartup.withVersion("d-2"))).ensure("dice", propositionVector(768))
+        assertEquals("Schema for owner 'dice' on 'neo': 0 created, 1 already matching, 0 recreated, 0 needing attention", summaries().last())
+        assertEquals("d-1", SchemaVersionStore(manager, "dice").storedVersion(), "the version change is left to enforce")
+
+        schemaManager(listOf(diceAtStartup.withVersion("d-1")), SchemaPolicy(recreateOnStartup = true)).ensure("dice", propositionVector(768))
+        assertEquals("Schema for owner 'dice' on 'neo': 0 created, 1 already matching, 0 recreated, 0 needing attention", summaries().last())
+    }
+
+    @Test
+    fun `a version change spares a runtime item it has no spec for when another owner declares it`() {
+        val shared = RangeIndexSpec("Shared", "slug")
+        schemaManager(listOf(diceAtStartup.withVersion("model-a"))).apply { enforce(); ensure("dice", shared) }
+
+        val app = SchemaCatalog.of(shared).forDatabase("neo").named("app")
+        schemaManager(listOf(diceAtStartup.withVersion("model-b"), app)).enforce()
+
+        assertEquals(setOf(shared.inventoryKey), record("dice")!!.runtime)
+        assertEquals(emptySet(), record("dice")!!.stale, "spared, as a co-owned item is")
+    }
+
+    @Test
+    fun `a recreateAll by a manager built later marks a runtime item, and a later enforce keeps the mark`() {
+        schemaManager(listOf(diceAtStartup)).apply { enforce(); ensure("dice", propositionVector(768)) }
+
+        val next = schemaManager(listOf(diceAtStartup))
+        next.recreateAll("dice")
+        val vector = propositionVector(768).inventoryKey
+        assertEquals(setOf(vector), record("dice")!!.stale)
+
+        next.enforce()
+        assertEquals(setOf(vector), record("dice")!!.stale, "still waiting for its spec")
+        assertTrue(orphanWarnings().isEmpty(), "no orphans: ${orphanWarnings().map { it.formattedMessage }}")
+    }
+
+    @Test
+    fun `a runtime item marked while its manager holds it keeps the mark until that manager applies it`() {
+        val tag = RangeIndexSpec("Tag", "name")
+        val schema = schemaManager(listOf(diceAtStartup))
+        schema.enforce()
+        schema.ensure("dice", propositionVector(768))
+
+        // Another process recreates the owner without the vector's spec.
+        schemaManager(listOf(diceAtStartup)).recreateAll("dice")
+        val vector = propositionVector(768).inventoryKey
+        assertEquals(setOf(vector), record("dice")!!.stale)
+
+        schema.ensure("dice", tag)
+        assertEquals(setOf(vector), record("dice")!!.stale, "not applied by this ensure, so still waiting")
+
+        schema.enforce()
+        assertEquals(emptySet(), record("dice")!!.stale)
+        assertEquals("Schema for owner 'dice' on 'neo': 0 created, 2 already matching, 1 recreated, 0 needing attention", summaries().last())
     }
 
     @Test
@@ -242,6 +314,22 @@ class SchemaManagerRuntimeIntegrationTest {
 
         schema.enforce()
         assertEquals(768, vectorDims("Proposition", "embedding"))
+    }
+
+    @Test
+    fun `a runtime item that conflicts on one database applies nothing on any other`() {
+        // Two names for the one Neo4j: the conflict is on the second only, which is planned after the first.
+        val twoNames = DatabaseRegistry(DataSourceMap(mapOf("neo" to props, "neo2" to props)))
+        val app = SchemaCatalog.of(VectorIndexSpec("Doc", "embedding", 768)).forDatabase("neo2").named("app")
+        val schema = SchemaManager(PersistenceManagerFactory(twoNames, TransactionContextHolder(twoNames)), twoNames, listOf(app))
+
+        val e = assertThrows<DrivineException> {
+            schema.ensure("rag", RangeIndexSpec("Fresh", "slug"), VectorIndexSpec("Doc", "embedding", 1536))
+        }
+
+        assertContains(e.message!!, "Conflicting schema declarations")
+        assertNull(manager.indexes.find(RangeIndexSpec("Fresh", "slug")), "nothing applied on 'neo' before the conflict on 'neo2' was found")
+        assertNull(record("rag"))
     }
 
     @Test
