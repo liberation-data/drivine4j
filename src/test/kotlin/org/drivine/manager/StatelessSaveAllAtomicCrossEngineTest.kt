@@ -36,6 +36,7 @@ import sample.atomic.LedgerNote
 import sample.atomic.StampedTagged
 import sample.atomic.Tagged
 import sample.atomic.Watermark
+import kotlin.concurrent.thread
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -253,6 +254,37 @@ abstract class StatelessSaveAllAtomicContract {
         stateless.saveAllFields(listOf(Keyed("k1", "unwritten"), LedgerNote("l1", "unwritten")), except = setOf("note"))
 
         assertEquals(listOf("kept", "kept"), listOf(stateless.load("k1", Keyed::class.java)?.note, stateless.load("l1", LedgerNote::class.java)?.note))
+    }
+
+    // ----- Contention -----
+
+    @Test
+    fun `two batches over the same nodes, given in opposite orders, both finish, each handing its objects back in its own order`() {
+        val ids = (1..300).map { "b%03d".format(it) }
+        stateless.saveAll(ids.map { Bookmark(it, "start") })
+        val failures = mutableListOf<Throwable>()
+        val handedBack = mutableMapOf<String, List<Bookmark>>()
+
+        val writers = listOf(ids to "up", ids.reversed() to "down").map { (order, cursor) ->
+            thread {
+                try {
+                    repeat(5) { round ->
+                        val saved = stateless.saveAll(order.map { Bookmark(it, "$cursor $round") })
+                        synchronized(handedBack) { handedBack[cursor] = saved }
+                    }
+                } catch (failure: Throwable) {
+                    synchronized(failures) { failures += failure }
+                }
+            }
+        }
+        writers.forEach { it.join(120_000) }
+
+        assertEquals(emptyList(), failures)
+        assertTrue(writers.none { it.isAlive })
+        assertEquals(300, stateless.loadAll(Bookmark::class.java).count { it.cursor in setOf("up 4", "down 4") })
+        assertEquals(ids, handedBack.getValue("up").map { it.id })
+        assertEquals(ids.reversed(), handedBack.getValue("down").map { it.id })
+        assertTrue(handedBack.values.flatten().all { it.stamp != null })
     }
 }
 

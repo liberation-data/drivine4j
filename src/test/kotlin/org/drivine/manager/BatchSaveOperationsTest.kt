@@ -61,9 +61,9 @@ class BatchSaveOperationsTest {
     }
 
     @Test
-    fun `the rows go in chunks, the last one short, and in the order the objects were given`() {
+    fun `the rows go in chunks, the last one short, and in the order of their ids whatever order the objects were given in`() {
         val humans = (1..5).map { Human("h$it", "n$it") }
-        val specs = operations(chunkSize = 2).buildBatchSpecs(humans, CascadeType.NONE)
+        val specs = operations(chunkSize = 2).buildBatchSpecs(humans.reversed(), CascadeType.NONE)
 
         assertEquals(listOf(2, 2, 1), specs.map { it.rows.size })
         assertEquals(humans.map { it.id }, specs.flatMap { it.rows }.map { it["id"] })
@@ -240,6 +240,16 @@ class BatchSaveOperationsTest {
         assertEquals(listOf(listOf("0", "2"), listOf("3"), listOf("1")), specs.map { spec -> spec.rows.map { it["i"] } })
         assertContains(specs[2].text, "MERGE (n:Human {id: row.id})")
         assertEquals(listOf("0", "1", "2", "3"), specs.flatMap { spec -> spec.rows.map { it["i"] as String } }.sorted())
+    }
+
+    @Test
+    fun `stamped fragments go class by class in the order of their names, and each class's rows in the order of their ids, chunk after chunk`() {
+        val items = listOf(Human("h2", "Grace"), Claim("c3", "c"), Human("h1", "Ada"), Claim("c1", "a"), Claim("c2", "b")).withIndex().toList()
+
+        val specs = operations(chunkSize = 2, stamping = Stamping(checked = false, handsBack = true)).buildStampedSpecs(items, NullPolicy.IGNORE)
+
+        assertEquals(listOf(listOf("c1", "c2"), listOf("c3"), listOf("h1", "h2")), specs.map { spec -> spec.rows.map { it["id"] } })
+        assertEquals(listOf(listOf("3", "4"), listOf("1"), listOf("2", "0")), specs.map { spec -> spec.rows.map { it["i"] } })
     }
 
     @Test

@@ -155,7 +155,8 @@ internal interface GraphBackend {
     /**
      * How [fragments] are saved several at a time, unchecked, each under its index: which go together
      * and by what statements is the backend's to say, as it is what its store can write so. See
-     * [FragmentBatch].
+     * [FragmentBatch]. The caller gives [fragments] in the order to take their locks in, and the
+     * statements write them in that order: see [org.drivine.manager.inLockOrder].
      *
      * @param writeFields the only fields to write of a fragment of the class it is asked of, by field
      *   name; null for all of them
