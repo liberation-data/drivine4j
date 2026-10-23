@@ -15,7 +15,7 @@ import kotlin.test.fail
  * gives. The three Drivine libraries run the same files; README.md there describes them.
  */
 data class CypherSpec(
-    /** The label every node the spec writes carries, so a graph engine's are cleared by it. */
+    /** The label every node the spec writes carries. */
     val label: String? = null,
     /** The Cypher that writes the graph each case starts from. */
     val graph: String? = null,
