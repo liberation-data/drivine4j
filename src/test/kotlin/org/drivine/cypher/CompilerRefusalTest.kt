@@ -61,11 +61,6 @@ class CompilerRefusalTest {
             "A relationship variable bound before its pattern is Cypher, and does not run on Oracle or Postgres yet.",
             "MATCH (a)-[r]->(b) MATCH (b)-[r]->(c) RETURN c",
         )
-        // Oracle's JSON path names a key as it is written.
-        assertEquals(
-            "A map's key named by an expression (map[key]) is Cypher, and does not run on Oracle or Postgres yet.",
-            assertThrows<DrivineException> { OracleCypherCompiler("g").compile("WITH {a: 1} AS m, 'a' AS k RETURN m[k]") }.message,
-        )
     }
 
     @Test

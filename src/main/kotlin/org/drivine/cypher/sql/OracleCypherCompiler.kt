@@ -12,7 +12,8 @@ import org.drivine.model.Stamps
  * A value is Oracle's `JSON`, which compares, groups and orders as JSON and keeps a map's keys in the
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
  * number the statement writes is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
- * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` does not run.
+ * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` is a function the query
+ * declares, and does not run in a statement that writes.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
  * takes no `JSON` that changes from row to row. A recursive query reads no row outside it, so a walk
@@ -71,7 +72,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "JSON_QUERY($list, '\$[\$i]' PASSING CASE WHEN $at < 0 THEN JSON_VALUE($list, '\$.size()' RETURNING NUMBER) + $at ELSE $at END AS \"i\" RETURNING JSON)"
     }
 
-    /** A JSON path names a key as it is written, so a key an expression gives is not read. */
+    /** A JSON path names a key as it is written, so a key an expression gives is not read: `map[key]` is null, where `list[i]` reads its item. */
     override fun keyed(json: String, key: String): String? = null
 
     /** A merge of [map] over [props] that changes nothing: each of its entries is there, with an equal value. */
@@ -221,8 +222,38 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun nodeJson(node: Value.Node) =
         "CASE WHEN ${node.nid} IS NOT NULL THEN JSON_TRANSFORM(${node.props}, SET ${OracleSql.path(Stamps.PROPERTY)} = ${node.stamp} IGNORE ON NULL) END"
 
-    override fun reduce(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String =
-        throw DrivineException("reduce() does not run on Oracle: its recursive queries read nothing of the row they are in.")
+    /**
+     * A function the query declares, `WITH FUNCTION`, that folds the list: Oracle's recursive queries read nothing
+     * of the row they are in. The step reads what it reads of the row from the map it is given. A procedure's
+     * queries call no function it declares, so a statement that writes takes no `reduce`.
+     */
+    override fun reduce(
+        name: String,
+        initial: String,
+        list: String,
+        step: (accumulator: String, item: String) -> String,
+        context: String,
+        contextStep: (accumulator: String, item: String, context: String) -> String,
+    ): String {
+        if (procedural) throw DrivineException("reduce() does not run on Oracle in a statement that writes: its block calls no function of its own from SQL.")
+        val function = "cy_$name"
+        declare(
+            listOf(
+                "FUNCTION $function(cy_initial JSON, cy_list JSON, cy_context JSON) RETURN JSON IS",
+                "    cy_value JSON := cy_initial;",
+                "    cy_kind VARCHAR2(20);",
+                "BEGIN",
+                "    SELECT JSON_VALUE(cy_list, '\$.type()') INTO cy_kind FROM DUAL;",
+                "    IF cy_kind IS NULL OR cy_kind <> 'array' THEN RETURN NULL; END IF;",
+                "    FOR cy_step IN (SELECT s.item FROM JSON_TABLE(cy_list, '\$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '\$')) s ORDER BY s.item_no) LOOP",
+                indent("    SELECT ${contextStep("cy_value", "cy_step.item", "cy_context")} INTO cy_value FROM DUAL;"),
+                "    END LOOP;",
+                "    RETURN cy_value;",
+                "END;",
+            ).joinToString("\n")
+        )
+        return "$function($initial, $list, $context)"
+    }
 
     /** As many rows as the range has numbers, from a hierarchical query of one row. */
     override fun range(from: String, to: String, step: String) = shared(from, to, step) { (first, last, by) ->

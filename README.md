@@ -2728,7 +2728,9 @@ made: see [Schema Management](#schema-management-indexes--constraints).
 - A `CypherStatement` is compiled to SQL over the graph's tables and gives the rows a graph engine
   gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
-  each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null; `reduce` does not run.
+  each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
+  query declares, and does not run in a statement that writes. `list[i]` reads an item where an expression gives
+  the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
   What is not compiled yet (a slice, a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
   place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,

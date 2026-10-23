@@ -513,9 +513,11 @@ abstract class CypherQueryContract {
     @Test
     fun `range gives whole numbers, and reduce folds a list from its first item`() {
         assertEquals(listOf(listOf(listOf(0L, 1L, 2L, 3L), listOf(10L, 7L, 4L), emptyList<Long>())), query("RETURN [range(0, 3), range(10, 4, -3), range(1, 0)]"))
-        if (pm.type == DatabaseType.ORACLE) return
         assertEquals(listOf(6L), query("RETURN reduce(total = 0, x IN [1, 2, 3] | total + x)"))
         assertEquals(listOf(null), query("RETURN reduce(total = 0, x IN null | total + x)"))
+        assertEquals(listOf(14L), query("RETURN reduce(dot = 0, i IN range(0, size(\$v) - 1) | dot + \$v[i] * \$v[i])", mapOf("v" to listOf(1, 2, 3))))
+        // A text built up from the empty text: Oracle's empty text is null.
+        if (pm.type == DatabaseType.ORACLE) return
         assertEquals(
             listOf("Carrie,Hugo,Keanu,Laurence"),
             query(
@@ -526,7 +528,6 @@ abstract class CypherQueryContract {
                 """
             ),
         )
-        assertEquals(listOf(14L), query("RETURN reduce(dot = 0, i IN range(0, size(\$v) - 1) | dot + \$v[i] * \$v[i])", mapOf("v" to listOf(1, 2, 3))))
     }
 
     @Test
@@ -727,10 +728,19 @@ class CypherQueryOracleTest : CypherQueryContract() {
     override fun clear() = OracleTestDatabase.clear(manager)
 
     @Test
-    fun `reduce is refused, for Oracle's recursive queries read nothing of the row they are in`() {
+    fun `an index an expression gives reads a list's item, and a map's key as null, for Oracle's paths read no key so`() {
+        assertEquals(listOf(listOf(null, 6L)), pm.query(QuerySpecification.withStatement(CypherStatement("WITH {a: 1} AS m, 'a' AS k, [5, 6] AS xs, 1 AS i RETURN [m[k], xs[i]]"))))
+    }
+
+    @Test
+    fun `reduce reads the row it is in and the parameters, and is refused in a statement that writes`() {
         assertEquals(
-            "reduce() does not run on Oracle: its recursive queries read nothing of the row they are in.",
-            assertThrows<DrivineException> { pm.query(QuerySpecification.withStatement(CypherStatement("RETURN reduce(t = 0, x IN [1] | t + x)"))) }.message,
+            listOf(listOf("Keanu", 1964L + 7L)),
+            pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (p:Person {name: 'Keanu'}) RETURN [p.name, reduce(t = p.born, x IN [3, 4] | t + x * \$k)]")).bind(mapOf("k" to 1))),
+        )
+        assertEquals(
+            "reduce() does not run on Oracle in a statement that writes: its block calls no function of its own from SQL.",
+            assertThrows<DrivineException> { pm.query(QuerySpecification.withStatement(CypherStatement("CREATE (n:CyTest) RETURN reduce(t = 0, x IN [1] | t + x)"))) }.message,
         )
     }
 

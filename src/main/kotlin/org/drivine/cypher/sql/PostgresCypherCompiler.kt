@@ -159,8 +159,14 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "CASE WHEN ${node.nid} IS NOT NULL THEN ${node.props} || jsonb_strip_nulls(jsonb_build_object(${literal(Stamps.PROPERTY)}, ${node.stamp})) END"
 
     /** A recursive query, a row for each item taken, that reads the row it is in, as Postgres's may. */
-    override fun reduce(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String =
-        shared(list) { (items) -> fold(name, initial, items, step) }
+    override fun reduce(
+        name: String,
+        initial: String,
+        list: String,
+        step: (accumulator: String, item: String) -> String,
+        context: String,
+        contextStep: (accumulator: String, item: String, context: String) -> String,
+    ): String = shared(list) { (items) -> fold(name, initial, items, step) }
 
     private fun fold(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String {
         val text = listOf(

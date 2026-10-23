@@ -48,6 +48,21 @@ abstract class SqlCypherCompiler(graph: String) {
     protected val edges = "${graph}_edge"
     private val logger = LoggerFactory.getLogger(SqlCypherCompiler::class.java)
 
+    /** Whether the statement is a procedure, which declares no function of its own a query of it may call. */
+    protected var procedural = false
+
+    /** The functions a query of the statement calls, which it declares before it: see [declare]. */
+    private val functions = mutableListOf<String>()
+
+    /** Declares [function], a function's whole text, for the statement to call: a query's own, before it. */
+    protected fun declare(function: String) {
+        functions += function
+    }
+
+    /** [compiled] with the functions it calls declared before it. */
+    private fun withFunctions(compiled: CompiledCypher): CompiledCypher =
+        if (functions.isEmpty()) compiled else compiled.copy(sql = "WITH\n${functions.joinToString("\n")}\n${compiled.sql}")
+
     /** How many values [shared] has bound, to name each subquery it binds one in. */
     private var shares = 0
 
@@ -60,11 +75,12 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** The statement [query], read already, with its parameters' values [parameters], as SQL: a query, or a procedure where it writes. */
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
-        if (query.unions.isNotEmpty()) return union(query, parameters)
+        if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount))
-            return CompiledCypher(writer.query(query), writer.parameters.values)
+            return withFunctions(CompiledCypher(writer.query(query), writer.parameters.values))
         }
+        procedural = true
         // A procedure takes its parameters as one object, and reads each from it.
         val writer = Writer(
             Parameters(parameters, { nullIfJsonNull(propertyOf(PARAMS, it)) }, { number(propertyOf(PARAMS, it)) }, inObject = true)
@@ -173,7 +189,10 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
-    /** The value of the JSON map [json] at the key the JSON [key] names; null where the store reads no key an expression names. */
+    /**
+     * The value of the JSON map [json] at the key the JSON [key] names; null where the store reads no key an
+     * expression names, where such a key reads as null.
+     */
     protected abstract fun keyed(json: String, key: String): String?
 
     /** Whether the JSON map [props] holds every entry of the JSON map [map]. */
@@ -304,8 +323,17 @@ abstract class SqlCypherCompiler(graph: String) {
     /**
      * `reduce`: the JSON list [list] folded from [initial], the JSON each step gives of the value so far and
      * the item, as [step] writes it, as JSON; null where the list is. [name] names what the fold reads from.
+     * Where the step is worked out where it cannot read the row, it is [contextStep], which reads what the step
+     * reads of the row, and the statement's parameters, from the JSON map [context] is given as.
      */
-    protected abstract fun reduce(name: String, initial: String, list: String, step: (accumulator: String, item: String) -> String): String
+    protected abstract fun reduce(
+        name: String,
+        initial: String,
+        list: String,
+        step: (accumulator: String, item: String) -> String,
+        context: String,
+        contextStep: (accumulator: String, item: String, context: String) -> String,
+    ): String
 
     /** The number of a row of a query, counted from 1 in the order the query gives its rows. */
     protected abstract val rowNumber: String
@@ -887,6 +915,9 @@ abstract class SqlCypherCompiler(graph: String) {
             return if (importing) clauses.drop(1) else clauses
         }
 
+        /** The parameters an expression reads from a map it is given, where it reads none bound: see [Expression.Reduce]. */
+        private var givenParameters: Map<String, Value>? = null
+
         /** Whether a `FOREACH` is being written: one is not written in another. */
         private var foreaching = false
 
@@ -1257,7 +1288,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
         fun expression(expression: Expression, scope: Map<String, Value>): Value = when (expression) {
             is Expression.Literal -> Value.Json(literalJson(expression.value))
-            is Expression.Parameter -> Value.Json(parameters.json(expression.name))
+            is Expression.Parameter -> givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name))
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
             is Expression.Property -> {
                 val subject = expression.subject
@@ -1303,8 +1334,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     is Number -> Value.Json(element(subject(), at))
                     else -> Value.Json(
                         shared(subject(), at) { (map, key) ->
-                            val keyed = keyed(map, key) ?: unsupported("A map's key named by an expression (map[key])")
-                            "CASE ${typeOf(key)} WHEN 'number' THEN ${element(map, key)} WHEN 'string' THEN $keyed END"
+                            // A store that reads no key an expression gives reads a list's item alone.
+                            val keyed = keyed(map, key)?.let { " WHEN 'string' THEN $it" }.orEmpty()
+                            "CASE ${typeOf(key)} WHEN 'number' THEN ${element(map, key)}$keyed END"
                         }
                     )
                 }
@@ -1330,11 +1362,31 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Reduce -> {
                 val initial = comparable(json(expression(expression.initial, scope)))
                 val list = comparable(json(expression(expression.list, scope)))
+                val own = setOf(expression.accumulator, expression.variable)
+                // What the step reads of the row and of the parameters, for a store that works it out where it reads neither.
+                val read = (variablesIn(expression.expression) - own).filter { it in scope }
+                val given = parametersIn(expression.expression)
+                val context = comparable(Value.Json(jsonObject(read.map { it to json(scope.getValue(it)).sql } + given.map { "$$it" to parameters.json(it) }), ordered = true))
                 Value.Json(
-                    reduce(alias("f"), initial, list) { accumulator, item ->
-                        val inner = scope + mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item))
-                        comparable(json(expression(expression.expression, inner)))
-                    }
+                    reduce(
+                        alias("f"), initial, list,
+                        step = { accumulator, item ->
+                            val inner = scope + mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item))
+                            comparable(json(expression(expression.expression, inner)))
+                        },
+                        context = context,
+                        contextStep = { accumulator, item, map ->
+                            val inner = read.associateWith { Value.Json(propertyOf(map, it)) } +
+                                mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item))
+                            val was = givenParameters
+                            givenParameters = given.associateWith { Value.Json(propertyOf(map, "$$it")) }
+                            try {
+                                comparable(json(expression(expression.expression, inner)))
+                            } finally {
+                                givenParameters = was
+                            }
+                        },
+                    )
                 )
             }
             is Expression.PatternComprehension -> {
@@ -1794,6 +1846,16 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.PatternPredicate -> variablesIn(expression.pattern)
             is Expression.Exists -> expression.patterns.flatMap(::variablesIn).toSet() + (expression.where?.let(::variablesIn) ?: emptySet())
             else -> children(expression).flatMap(::variablesIn).toSet()
+        }
+
+        /** Every parameter [expression] names, in any expression it holds. */
+        fun parametersIn(expression: Expression): Set<String> = when (expression) {
+            is Expression.Parameter -> setOf(expression.name)
+            is Expression.ListComprehension -> listOfNotNull(expression.list, expression.where, expression.projection).flatMap(::parametersIn).toSet()
+            is Expression.Quantifier -> listOfNotNull(expression.list, expression.where).flatMap(::parametersIn).toSet()
+            is Expression.Reduce -> listOf(expression.initial, expression.list, expression.expression).flatMap(::parametersIn).toSet()
+            is Expression.PatternComprehension -> listOfNotNull(expression.where, expression.projection).flatMap(::parametersIn).toSet()
+            else -> children(expression).flatMap(::parametersIn).toSet()
         }
 
         /** Every variable [pattern] names, of its parts or in their properties. */
