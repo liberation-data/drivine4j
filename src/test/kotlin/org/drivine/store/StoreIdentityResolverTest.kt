@@ -8,6 +8,7 @@ import org.drivine.schema.CypherStoreStamp
 import org.drivine.store.StoreIdentityResolver.Stamp
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
+import org.neo4j.driver.exceptions.Neo4jException
 import java.time.Instant
 import java.util.UUID
 import kotlin.test.assertContains
@@ -102,6 +103,27 @@ class StoreIdentityResolverTest {
         assertContains(created, "DrivineStore")
         assertContains(created, "key")
         assertEquals(1, store.executed.size)
+    }
+
+    @Test
+    fun `a plain index on the key in the way of the constraint is replaced by it, for the label is Drivine's`() {
+        val index = mapOf("name" to "store_key", "type" to "RANGE", "entityType" to "NODE", "labelsOrTypes" to listOf("DrivineStore"), "properties" to listOf("key"))
+        var dropped = false
+        val store = RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement == cypherStamp.readStamps -> listOf(Stamp("store-6", "2026-01-01T00:00:00Z"))
+                ran.statement.startsWith("DROP INDEX") -> emptyList<Any?>().also { dropped = true }
+                ran.statement.startsWith("CREATE CONSTRAINT") ->
+                    if (dropped) emptyList<Any?>() else Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:DrivineStore {key}).")
+                ran.statement.startsWith("SHOW INDEXES") -> if (dropped) emptyList() else listOf(index)
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertEquals("store-6", StoreIdentityResolver(store).resolve().id)
+        val dropAt = store.schema.indexOf("DROP INDEX `store_key` IF EXISTS")
+        assertTrue(dropAt >= 0, "expected the index dropped: ${store.schema}")
+        assertTrue(store.schema.drop(dropAt).any { it.startsWith("CREATE CONSTRAINT") }, "expected the constraint made after it: ${store.schema}")
     }
 
     @Test

@@ -13,7 +13,8 @@ import java.time.Duration
  *
  * Constraints differ from indexes in lifecycle: creation can fail because existing data violates
  * the constraint, which surfaces as [EnsureResult.Violation] (with a bounded sample of the
- * conflicting values) rather than an exception, once the data confirms it. Engine divergence — including FalkorDB's
+ * conflicting values) rather than an exception, once the data confirms it. On Neo4j it can also fail
+ * because a plain index is in the way of it, which surfaces as [EnsureResult.BlockedByIndex]. Engine divergence — including FalkorDB's
  * native-command constraints, required backing indexes, and asynchronous creation — lives in the
  * [SchemaGrammar].
  *
@@ -52,9 +53,10 @@ class ConstraintManager internal constructor(
     /**
      * Ensures a constraint matching [spec] exists. Idempotent — safe to call on every startup.
      *
-     * Never destructive: existing mismatched constraints surface as [EnsureResult.Drift];
-     * existing violating data surfaces as [EnsureResult.Violation]. In both cases nothing is
-     * changed and the caller decides what to do.
+     * Never destructive unless asked: existing mismatched constraints surface as [EnsureResult.Drift];
+     * existing violating data surfaces as [EnsureResult.Violation]; a plain index in the way of the
+     * constraint surfaces as [EnsureResult.BlockedByIndex]. In each case nothing is changed and the
+     * caller decides what to do.
      *
      * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
      * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
@@ -62,9 +64,17 @@ class ConstraintManager internal constructor(
      *
      * @param violationSampleSize how many conflicting property combinations to sample when a
      *   violation is detected (0 leaves the sample empty; the data is still read, to confirm it)
+     * @param replaceBlockingIndex drop a plain index in the way of the constraint and make the
+     *   constraint, whose own index takes its place, instead of returning [EnsureResult.BlockedByIndex].
+     *   Only an engine whose constraint brings its own index reports one in the way (Neo4j; see
+     *   [SchemaGrammar.isBlockedByIndex]), so on the others this changes nothing.
      */
     @JvmOverloads
-    fun ensure(spec: ConstraintSpec, violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE): EnsureResult {
+    fun ensure(
+        spec: ConstraintSpec,
+        violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
+        replaceBlockingIndex: Boolean = false,
+    ): EnsureResult {
         val existing = find(spec)
         if (existing != null) {
             return if (grammar.matchesShape(existing, spec)) {
@@ -89,6 +99,24 @@ class ConstraintManager internal constructor(
         } catch (e: Exception) {
             if (grammar.isConstraintViolation(e)) {
                 confirmedViolation(spec, violationSampleSize, e)?.let { return it }
+            }
+            if (grammar.isBlockedByIndex(e)) {
+                val index = blockingIndex(spec) ?: throw e
+                if (!replaceBlockingIndex) {
+                    logger.warn(
+                        "Could not create constraint on {}{}: index {} is in the way of it",
+                        spec.label, spec.properties, index.name
+                    )
+                    return EnsureResult.BlockedByIndex(spec, index)
+                }
+                // Neo4j refuses for the index before it reads the data, so a key that repeats would
+                // refuse the constraint after the index is gone: look first, and keep the index, as
+                // when the data cannot be read.
+                val repeated = repeatedKeys(spec, violationSampleSize, e) ?: throw e
+                if (repeated.isNotEmpty()) return violation(spec, repeated, violationSampleSize)
+                run(grammar.dropIndex(index))
+                logger.info("Dropped index {} on {}{}, in the way of a constraint that replaces it", index.name, spec.label, spec.properties)
+                return ensure(spec, violationSampleSize, replaceBlockingIndex = false)
             }
             throw e
         }
@@ -132,15 +160,20 @@ class ConstraintManager internal constructor(
      * Drops (if present) and recreates the constraint described by [spec].
      *
      * Returns [EnsureResult.Recreated] on success, or [EnsureResult.Violation] if existing data
-     * prevents recreation (in which case the previous constraint has already been dropped).
+     * prevents recreation (in which case the previous constraint has already been dropped), or
+     * [EnsureResult.BlockedByIndex] as [ensure] does.
      */
     @JvmOverloads
-    fun recreate(spec: ConstraintSpec, violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE): EnsureResult {
+    fun recreate(
+        spec: ConstraintSpec,
+        violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
+        replaceBlockingIndex: Boolean = false,
+    ): EnsureResult {
         val existing = find(spec)
         if (existing != null) {
             run(grammar.dropConstraint(existing))
         }
-        return when (val result = ensure(spec, violationSampleSize)) {
+        return when (val result = ensure(spec, violationSampleSize, replaceBlockingIndex)) {
             is EnsureResult.Created -> EnsureResult.Recreated(existing, result.info)
             else -> result
         }
@@ -193,20 +226,36 @@ class ConstraintManager internal constructor(
      * cause is not blamed on the data: the caller then throws it. [failure], when there is one, keeps
      * why the data could not be read.
      */
-    private fun confirmedViolation(spec: ConstraintSpec, limit: Int, failure: Throwable?): EnsureResult.Violation? {
-        val conflicts = try {
-            executor.query(grammar.sampleConflictsQuery(spec, maxOf(limit, 1)))
-                .filterIsInstance<Map<*, *>>()
-                .map { row -> row.entries.associate { (key, value) -> key.toString() to value } }
-        } catch (e: Exception) {
-            logger.debug("Could not read the keys that repeat for {}{}: {}", spec.label, spec.properties, e.message)
-            failure?.addSuppressed(e)
-            return null
-        }
-        if (conflicts.isEmpty()) return null
-        logger.warn("Could not create constraint on {}{}: existing data violates it", spec.label, spec.properties)
-        return EnsureResult.Violation(spec, conflicts.take(limit.coerceAtLeast(0)))
+    private fun confirmedViolation(spec: ConstraintSpec, limit: Int, failure: Throwable?): EnsureResult.Violation? =
+        repeatedKeys(spec, limit, failure)?.takeIf { it.isNotEmpty() }?.let { violation(spec, it, limit) }
+
+    /**
+     * The key values of [spec] that repeat in the data, [limit] of them at most and at least one;
+     * null when the data cannot be read, which [failure], when there is one, keeps.
+     */
+    private fun repeatedKeys(spec: ConstraintSpec, limit: Int, failure: Throwable?): List<Map<String, Any?>>? = try {
+        executor.query(grammar.sampleConflictsQuery(spec, maxOf(limit, 1)))
+            .filterIsInstance<Map<*, *>>()
+            .map { row -> row.entries.associate { (key, value) -> key.toString() to value } }
+    } catch (e: Exception) {
+        logger.debug("Could not read the keys that repeat for {}{}: {}", spec.label, spec.properties, e.message)
+        failure?.addSuppressed(e)
+        null
     }
+
+    private fun violation(spec: ConstraintSpec, repeated: List<Map<String, Any?>>, limit: Int): EnsureResult.Violation {
+        logger.warn("Could not create constraint on {}{}: existing data violates it", spec.label, spec.properties)
+        return EnsureResult.Violation(spec, repeated.take(limit.coerceAtLeast(0)))
+    }
+
+    /**
+     * The plain range index over [spec]'s label and properties, in its order, that the engine said
+     * is in the way of it; null when there is none, and the failure is then not the one it seemed.
+     */
+    private fun blockingIndex(spec: ConstraintSpec): SchemaItemInfo? =
+        indexManager.list().firstOrNull {
+            it.kind == SchemaItemKind.RANGE_INDEX && it.label == spec.label && it.properties == spec.properties
+        }
 
     /**
      * Runs an introspection query, treating failures as "nothing exists yet". The query string is

@@ -104,6 +104,17 @@ class PostgresSchemaManagementIntegrationTest {
     }
 
     @Test
+    fun `a range index made first is not in the way of a uniqueness constraint, and is kept when replacing is asked`() {
+        assertTrue(manager.indexes.ensure(RangeIndexSpec("Account", "accountId")) is EnsureResult.Created)
+        val spec = UniquenessConstraintSpec("Account", "accountId")
+
+        val created = manager.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertNotNull(manager.indexes.find(RangeIndexSpec("Account", "accountId")))
+    }
+
+    @Test
     fun `composite uniqueness constraint`() {
         val spec = UniquenessConstraintSpec("Membership", listOf("tenantId", "userId"))
         assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)

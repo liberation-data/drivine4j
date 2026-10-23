@@ -257,4 +257,18 @@ class MemgraphSchemaManagementIntegrationTest {
         store.record("model-v2")
         assertEquals("model-v2", store.storedVersion())
     }
+
+    // ----- A plain index beside a constraint -----
+
+    @Test
+    @Order(20)
+    fun `a plain index is not in the way of a uniqueness constraint, and is kept when replacing is asked`() {
+        manager.indexes.ensure(RangeIndexSpec("Account", "accountId"))
+        val spec = UniquenessConstraintSpec("Account", "accountId")
+
+        val created = manager.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertNotNull(manager.indexes.find(RangeIndexSpec("Account", "accountId")))
+    }
 }

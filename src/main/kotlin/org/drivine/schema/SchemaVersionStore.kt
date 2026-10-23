@@ -148,20 +148,10 @@ class SchemaVersionStore(
                 .withStatement(statements.deleteAllButNewest)
                 .bind(mapOf("scope" to scope))
         )
-        val constraint = UniquenessConstraintSpec(LABEL, SCOPE_PROPERTY)
-        try {
-            manager.constraints.ensure(constraint)
-        } catch (e: Exception) {
-            // Neo4j refuses to create a constraint while an equivalent plain index exists — e.g. a
-            // hand-created emergency fix on the marker key. The label is reserved to Drivine, so
-            // reclaim it: replace the index with the constraint. Anything else rethrows.
-            if (manager.constraints.find(constraint) != null ||
-                !manager.indexes.drop(RangeIndexSpec(LABEL, SCOPE_PROPERTY))
-            ) {
-                throw e
-            }
-            manager.constraints.ensure(constraint)
-        }
+        // Neo4j refuses to create a constraint while an equivalent plain index exists — e.g. a
+        // hand-created emergency fix on the marker key. The label is reserved to Drivine, so
+        // reclaim it: replace the index with the constraint.
+        manager.constraints.ensure(UniquenessConstraintSpec(LABEL, SCOPE_PROPERTY), replaceBlockingIndex = true)
     }
 
     private fun merge(version: String?, inventory: List<String>) {

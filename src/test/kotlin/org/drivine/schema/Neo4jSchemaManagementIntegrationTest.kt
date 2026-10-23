@@ -259,4 +259,25 @@ class Neo4jSchemaManagementIntegrationTest {
         assertTrue(indexes.any { it.kind == SchemaItemKind.RANGE_INDEX && it.label == "Message" })
         assertTrue(constraints.any { it.label == "Membership" })
     }
+
+    // ----- An index in the way -----
+
+    @Test
+    @Order(20)
+    fun `a plain index in the way of a uniqueness constraint is reported by name, and replaced when asked`() {
+        manager.indexes.ensure(RangeIndexSpec("Account", "accountId", "account_lookup"))
+        val spec = UniquenessConstraintSpec("Account", "accountId")
+
+        val blocked = manager.constraints.ensure(spec)
+
+        assertTrue(blocked is EnsureResult.BlockedByIndex, "expected BlockedByIndex, got $blocked")
+        assertEquals("account_lookup", (blocked as EnsureResult.BlockedByIndex).index.name)
+        assertNull(manager.constraints.find(spec))
+
+        val replaced = manager.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(replaced is EnsureResult.Created, "expected Created, got $replaced")
+        assertNotNull(manager.constraints.find(spec))
+        assertTrue(manager.indexes.list().none { it.name == "account_lookup" })
+    }
 }

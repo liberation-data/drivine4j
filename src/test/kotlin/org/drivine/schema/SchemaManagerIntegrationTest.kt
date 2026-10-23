@@ -1,5 +1,6 @@
 package org.drivine.schema
 
+import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
@@ -16,7 +17,9 @@ import org.testcontainers.containers.Neo4jContainer
 import org.testcontainers.junit.jupiter.Container
 import org.testcontainers.junit.jupiter.Testcontainers
 import org.testcontainers.utility.DockerImageName
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -284,5 +287,42 @@ class SchemaManagerIntegrationTest {
         } finally {
             manager.constraints.drop(UniquenessConstraintSpec(SchemaVersionStore.LABEL, "version"))
         }
+    }
+
+    // ----- An index in the way of a constraint -----
+
+    private val ledgerKey = UniquenessConstraintSpec("Ledger", "ref")
+
+    private val ledgerCatalog = SchemaCatalog.of(ledgerKey).forDatabase("neo")
+
+    @Test
+    @Order(12)
+    fun `an index in the way of a declared constraint fails enforce under FAIL_FAST, naming it`() {
+        manager.indexes.ensure(RangeIndexSpec("Ledger", "ref", "ledger_ref"))
+
+        val thrown = assertFailsWith<DrivineException> { schemaManager(listOf(ledgerCatalog)).enforce() }
+
+        assertContains(thrown.message!!, "BLOCKED")
+        assertContains(thrown.message!!, "ledger_ref")
+        assertNull(manager.constraints.find(ledgerKey))
+    }
+
+    @Test
+    @Order(13)
+    fun `an index in the way of a declared constraint is left under WARN`() {
+        schemaManager(listOf(ledgerCatalog), SchemaPolicy(mode = SchemaMode.WARN)).enforce()
+
+        assertNull(manager.constraints.find(ledgerKey))
+        assertTrue(manager.indexes.list().any { it.name == "ledger_ref" })
+    }
+
+    @Test
+    @Order(14)
+    fun `an index in the way of a declared constraint is replaced by it when the policy asks`() {
+        schemaManager(listOf(ledgerCatalog), SchemaPolicy(replaceBlockingIndex = true)).enforce()
+
+        assertNotNull(manager.constraints.find(ledgerKey))
+        assertTrue(manager.indexes.list().none { it.name == "ledger_ref" })
+        manager.constraints.drop(ledgerKey)
     }
 }

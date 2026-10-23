@@ -136,4 +136,100 @@ class ConstraintManagerTest {
         assertSame(unread, thrown.suppressed.single())
         assertTrue(store.schema.any { it.startsWith("DROP CONSTRAINT") })
     }
+
+    // ----- An index in the way -----
+
+    private val inTheWay = Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}). A constraint cannot be created until the index has been dropped.")
+
+    private fun rangeIndex(name: String, vararg properties: String) =
+        mapOf("name" to name, "type" to "RANGE", "entityType" to "NODE", "labelsOrTypes" to listOf("Person"), "properties" to properties.toList())
+
+    /**
+     * A store with [indexes], that refuses the constraint for an index in the way of it until DROP INDEX has run,
+     * and answers the query for repeated keys with [conflicts].
+     */
+    private fun blockedStore(vararg indexes: Map<String, Any>, conflicts: Any? = emptyList<Any?>()): RecordingStore {
+        var dropped = false
+        return RecordingStore(DatabaseType.NEO4J) { ran ->
+            when {
+                ran.statement.startsWith("DROP INDEX") -> emptyList<Any?>().also { dropped = true }
+                ran.statement.startsWith("CREATE CONSTRAINT") -> if (dropped) emptyList<Any?>() else inTheWay
+                ran.statement.startsWith("SHOW INDEXES") -> if (dropped) emptyList() else indexes.toList()
+                "_count > 1" in ran.statement -> conflicts
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `an index in the way of the constraint is reported by name, and left`() {
+        val store = blockedStore(rangeIndex("person_email", "email"))
+
+        val result = store.constraints.ensure(spec)
+
+        assertEquals(EnsureResult.BlockedByIndex(spec, SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Person", listOf("email"), "person_email")), result)
+        assertTrue(store.schema.none { it.startsWith("DROP INDEX") })
+    }
+
+    @Test
+    fun `an index in the way of the constraint is dropped and the constraint made, when asked`() {
+        val store = blockedStore(rangeIndex("person_email", "email"))
+
+        val result = store.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(result is EnsureResult.Created, "expected Created, got $result")
+        val dropped = store.schema.indexOf("DROP INDEX `person_email` IF EXISTS")
+        assertTrue(dropped >= 0, "expected the index dropped: ${store.schema}")
+        assertTrue(store.schema.drop(dropped).any { it.startsWith("CREATE CONSTRAINT") }, "expected the constraint made after it: ${store.schema}")
+    }
+
+    @Test
+    fun `an index in the way is kept, and the violation reported, when a key repeats`() {
+        val store = blockedStore(rangeIndex("person_email", "email"), conflicts = listOf(repeated))
+
+        val result = store.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), result)
+        assertTrue(store.schema.none { it.startsWith("DROP INDEX") }, "expected the index kept: ${store.schema}")
+    }
+
+    @Test
+    fun `recreate replaces an index in the way of the constraint, when asked`() {
+        val store = blockedStore(rangeIndex("person_email", "email"))
+
+        val result = store.constraints.recreate(spec, replaceBlockingIndex = true)
+
+        assertTrue(result is EnsureResult.Recreated, "expected Recreated, got $result")
+        assertTrue("DROP INDEX `person_email` IF EXISTS" in store.schema, "expected the index dropped: ${store.schema}")
+    }
+
+    @Test
+    fun `the index in the way is the one over the constraint's properties in their order`() {
+        val composite = UniquenessConstraintSpec("Person", listOf("tenant", "email"))
+        val store = blockedStore(rangeIndex("email_tenant", "email", "tenant"), rangeIndex("tenant_email", "tenant", "email"))
+
+        val result = store.constraints.ensure(composite) as EnsureResult.BlockedByIndex
+
+        assertEquals("tenant_email", result.index.name)
+    }
+
+    @Test
+    fun `a refusal for an index in the way is thrown when there is no such index`() {
+        val store = blockedStore(rangeIndex("person_name", "name"))
+
+        assertSame(inTheWay, assertFailsWith<Neo4jException> { store.constraints.ensure(spec, replaceBlockingIndex = true) })
+        assertTrue(store.schema.none { it.startsWith("DROP INDEX") })
+    }
+
+    @Test
+    fun `an index in the way is kept, and the refusal thrown, when the data cannot be read`() {
+        val unread = DrivineException("connection lost")
+        val store = blockedStore(rangeIndex("person_email", "email"), conflicts = unread)
+
+        val thrown = assertFailsWith<Neo4jException> { store.constraints.ensure(spec, replaceBlockingIndex = true) }
+
+        assertSame(inTheWay, thrown)
+        assertSame(unread, thrown.suppressed.single())
+        assertTrue(store.schema.none { it.startsWith("DROP INDEX") })
+    }
 }
