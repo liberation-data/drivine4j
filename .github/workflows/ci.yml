@@ -353,7 +353,7 @@ jobs:
         if: success() || failure()
         with:
           report_paths: |
-            build/test-results/test/*.xml
+            **/build/test-results/test/*.xml
           detailed_summary: true
           include_passed: true
           check_name: Test Results (Oracle)
@@ -367,8 +367,8 @@ jobs:
         with:
           name: test-results-ORACLE
           path: |
-            build/test-results/test/
-            build/reports/tests/test/
+            **/build/test-results/test/
+            **/build/reports/tests/test/
           retention-days: 30
 
   # The Postgres tests are left out of a plain `./gradlew test` too, enabled by POSTGRES_TESTS. This

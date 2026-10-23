@@ -35,7 +35,8 @@ class DrivineTransactionObject @JvmOverloads constructor(val refusal: String? = 
 
     /**
      * Roll back at the end instead of committing, though nothing failed: for a test that leaves
-     * nothing behind. [Transactions.transaction] sets it when called with `rollback = true`.
+     * nothing behind. [runToEnd] and [runJoined] set it when given `rollback = true`, as
+     * [Transactions.transaction] gives it.
      */
     var rollbackOnCompletion = false
 

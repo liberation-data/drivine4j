@@ -41,7 +41,9 @@ import kotlin.coroutines.CoroutineContext
  *   the transaction, is refused with [IllegalTransactionStateException]. Run that work in the block
  *   itself, one step after another, or give each coroutine a transaction of its own with
  *   `transactionSuspending(Propagation.REQUIRES_NEW) { }`. A coroutine launched in the block that never
- *   reaches Drivine runs as it would anywhere.
+ *   reaches Drivine runs as it would anywhere. A coroutine handed the block's whole context,
+ *   `launch(coroutineContext) { }`, is the exception: kotlinx merges the element as `withContext` does,
+ *   and nothing tells the two apart, so that coroutine shares the transaction.
  * - Two coroutines that both find the thread's transaction, launched by `runBlocking` in a
  *   `@Transactional` method say, can't both run a suspend block in it at once: the second is refused.
  *

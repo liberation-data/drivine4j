@@ -185,6 +185,24 @@ abstract class SuspendingTransactionsContract {
     }
 
     @Test
+    fun `MANDATORY in a block joins its transaction`() = runBlocking {
+        assertFailsWith<IllegalStateException> {
+            drivine.transactionSuspending {
+                val outer = drivine.transactions.current
+                drivine.transactionSuspending(Propagation.MANDATORY) {
+                    withContext(Dispatchers.IO) {
+                        assertSame(outer, drivine.transactions.current)
+                        create("mandatory")
+                    }
+                }
+                error("the outer block fails")
+            }
+        }
+
+        assertEquals(emptyList(), committed())
+    }
+
+    @Test
     fun `the propagations that refuse, refuse`() = runBlocking {
         assertFailsWith<IllegalTransactionStateException> { drivine.transactionSuspending(Propagation.MANDATORY) { create("a") } }
         assertFailsWith<IllegalTransactionStateException> { drivine.transactionSuspending(Propagation.NESTED) { create("a") } }

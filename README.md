@@ -2660,7 +2660,8 @@ fun main() {
   `IllegalTransactionStateException`. Run that work in the block itself, one step after another, or give each
   coroutine a transaction of its own with `transactionSuspending(Propagation.REQUIRES_NEW) { }` (or
   `@Transactional(propagation = REQUIRES_NEW)`). A launched coroutine that doesn't reach Drivine runs as it would
-  anywhere.
+  anywhere. The one way round this is to hand `launch` the block's whole context, as in `launch(coroutineContext) { }`:
+  kotlinx then treats it like `withContext`, and the coroutine shares the transaction. Don't.
 - Likewise two coroutines that both find a transaction on the thread, launched by `runBlocking` in a `@Transactional`
   method say, can't run blocks in it at once: the second is refused.
 - On FalkorDB, `falkorDbTransactionMode` says what a block does, as for `transaction { }`.
