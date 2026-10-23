@@ -198,8 +198,11 @@ interface SchemaGrammar {
     }
 
     /**
-     * Whether the given exception thrown during constraint creation indicates that existing data
-     * violates the constraint (as opposed to a syntax error or connectivity problem).
+     * Whether the given exception thrown during constraint creation says that existing data
+     * violates the constraint (as opposed to a syntax error, a connectivity problem, or a constraint
+     * the engine will not make). By the driver's error code where it gives one that is specific,
+     * by the message where it does not. A suspicion only: [ConstraintManager] reports a violation
+     * when [sampleConflictsQuery] finds a key that repeats, and throws [e] when it finds none.
      */
     fun isConstraintViolation(e: Throwable): Boolean
 

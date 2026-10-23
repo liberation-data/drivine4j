@@ -41,7 +41,8 @@ sealed interface EnsureResult {
      * @param requested the constraint that could not be created
      * @param conflictingSample a bounded sample of conflicting property combinations
      *   (each entry holds the duplicated property values and a count), for debugging.
-     *   May be empty if sampling failed or was disabled.
+     *   Empty only when a sample size of 0 was asked for: when the data cannot be read, the
+     *   refusal is thrown rather than reported as a violation with no sample.
      */
     data class Violation(
         val requested: ConstraintSpec,

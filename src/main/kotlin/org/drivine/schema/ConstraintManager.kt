@@ -13,7 +13,7 @@ import java.time.Duration
  *
  * Constraints differ from indexes in lifecycle: creation can fail because existing data violates
  * the constraint, which surfaces as [EnsureResult.Violation] (with a bounded sample of the
- * conflicting values) rather than an exception. Engine divergence — including FalkorDB's
+ * conflicting values) rather than an exception, once the data confirms it. Engine divergence — including FalkorDB's
  * native-command constraints, required backing indexes, and asynchronous creation — lives in the
  * [SchemaGrammar].
  *
@@ -56,8 +56,12 @@ class ConstraintManager internal constructor(
      * existing violating data surfaces as [EnsureResult.Violation]. In both cases nothing is
      * changed and the caller decides what to do.
      *
+     * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
+     * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
+     * including one the grammar suspects that no repeated key bears out, is thrown.
+     *
      * @param violationSampleSize how many conflicting property combinations to sample when a
-     *   violation is detected (0 disables sampling)
+     *   violation is detected (0 leaves the sample empty; the data is still read, to confirm it)
      */
     @JvmOverloads
     fun ensure(spec: ConstraintSpec, violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE): EnsureResult {
@@ -84,11 +88,7 @@ class ConstraintManager internal constructor(
             run(grammar.createConstraint(spec))
         } catch (e: Exception) {
             if (grammar.isConstraintViolation(e)) {
-                logger.warn(
-                    "Could not create constraint on {}{}: existing data violates it",
-                    spec.label, spec.properties
-                )
-                return EnsureResult.Violation(spec, sampleConflicts(spec, violationSampleSize))
+                confirmedViolation(spec, violationSampleSize, e)?.let { return it }
             }
             throw e
         }
@@ -151,8 +151,8 @@ class ConstraintManager internal constructor(
     /**
      * Engines with asynchronous constraint creation (FalkorDB) return immediately from CREATE;
      * the constraint then transitions UNDER CONSTRUCTION → OPERATIONAL or FAILED. A FAILED
-     * constraint means existing data violates it: it must be dropped (FalkorDB does not allow
-     * retrying a failed constraint) and the outcome reported as a violation.
+     * constraint must be dropped (FalkorDB does not allow retrying a failed constraint); it is
+     * reported as a violation when the data confirms one, and thrown when it does not.
      */
     private fun awaitAsyncCreation(spec: ConstraintSpec, violationSampleSize: Int): EnsureResult {
         val deadline = System.currentTimeMillis() + asyncCreationTimeout.toMillis()
@@ -169,11 +169,11 @@ class ConstraintManager internal constructor(
 
                 status.contains("FAILED") -> {
                     run(grammar.dropConstraint(info))
-                    logger.warn(
-                        "Constraint on {}{} failed to build: existing data violates it",
-                        spec.label, spec.properties
+                    val failed = DrivineException(
+                        "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
+                            "but no key it covers repeats in the data"
                     )
-                    return EnsureResult.Violation(spec, sampleConflicts(spec, violationSampleSize))
+                    return confirmedViolation(spec, violationSampleSize, failed) ?: throw failed
                 }
 
                 // UNDER CONSTRUCTION → keep polling
@@ -187,20 +187,25 @@ class ConstraintManager internal constructor(
     }
 
     /**
-     * Samples property-value combinations that occur more than once — the rows that would prevent
-     * a uniqueness constraint from being created. Plain Cypher that works across engines; failures
-     * here degrade to an empty sample rather than masking the violation outcome.
+     * The violation a failure to make [spec] is suspected of, confirmed against the data: the key
+     * values that repeat, at most [limit] of them (none when [limit] is 0 or less, though the data is still
+     * read). Null when no key repeats, or the data cannot be read, so that a failure with another
+     * cause is not blamed on the data: the caller then throws it. [failure], when there is one, keeps
+     * why the data could not be read.
      */
-    private fun sampleConflicts(spec: ConstraintSpec, limit: Int): List<Map<String, Any?>> {
-        if (limit <= 0) return emptyList()
-        return try {
-            executor.query(grammar.sampleConflictsQuery(spec, limit))
+    private fun confirmedViolation(spec: ConstraintSpec, limit: Int, failure: Throwable?): EnsureResult.Violation? {
+        val conflicts = try {
+            executor.query(grammar.sampleConflictsQuery(spec, maxOf(limit, 1)))
                 .filterIsInstance<Map<*, *>>()
                 .map { row -> row.entries.associate { (key, value) -> key.toString() to value } }
         } catch (e: Exception) {
-            logger.debug("Could not sample conflicting rows for {}{}: {}", spec.label, spec.properties, e.message)
-            emptyList()
+            logger.debug("Could not read the keys that repeat for {}{}: {}", spec.label, spec.properties, e.message)
+            failure?.addSuppressed(e)
+            return null
         }
+        if (conflicts.isEmpty()) return null
+        logger.warn("Could not create constraint on {}{}: existing data violates it", spec.label, spec.properties)
+        return EnsureResult.Violation(spec, conflicts.take(limit.coerceAtLeast(0)))
     }
 
     /**
