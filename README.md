@@ -2642,7 +2642,7 @@ fun main() {
                 withContext(Dispatchers.IO) {        // off the event loop: the saves and the commit block
                     drivine.transactionSuspending {
                         gom.save(person)
-                        delay(10)                    // resumes on another thread, still in the transaction
+                        delay(10)                    // may resume on another thread, still in the transaction
                         gom.save(Hire("hire-${person.id}", person.id, LocalDate.now()))
                     }                                // both commit, or neither
                 }
@@ -2657,7 +2657,8 @@ fun main() {
   calls are blocking calls, and so are the commit and the rollback, which run where `transactionSuspending` was
   called: call it on a dispatcher for blocking work, such as `Dispatchers.IO`, as above. The block can switch
   dispatcher with `withContext`, and stays in the transaction.
-- A coroutine that runs on a thread the block has left finds no transaction there.
+- A coroutine that runs on a thread the block has left doesn't find the block's transaction there: it finds what the
+  thread was in before the block, usually none.
 - **Coroutines launched in the block (`launch`, `async`, and what is built on them, such as `flowOn`) don't share its
   transaction**: two of them using one transaction's connection at once isn't safe on every driver. A statement such a
   coroutine runs, or a block it runs that would join the transaction, is refused with

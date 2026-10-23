@@ -14,7 +14,8 @@ import kotlin.coroutines.CoroutineContext
  * [Transactions.transaction] for coroutines. The transaction follows the coroutine: it is kept in the
  * coroutine's context, and put on whichever thread the coroutine resumes on, so a block can suspend,
  * or switch dispatcher with `withContext`, and still be in it. Another coroutine that runs on a thread
- * the block left finds no transaction there.
+ * the block left doesn't find the block's transaction there: it finds what the thread was in before
+ * the block, usually none.
  *
  * ```kotlin
  * suspend fun onboard(person: Person, hire: Hire) = withContext(Dispatchers.IO) {

@@ -5,6 +5,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.supervisorScope
@@ -241,6 +244,32 @@ abstract class SuspendingTransactionsContract {
         }
 
         assertEquals(emptyList(), committed())
+    }
+
+    @Test
+    fun `a flow's producer moved by flowOn is refused the transaction`() = runBlocking {
+        val refused = assertFailsWith<IllegalTransactionStateException> {
+            drivine.transactionSuspending {
+                flow { emit(create("in flowOn's producer")) }.flowOn(Dispatchers.IO).first()
+            }
+        }
+
+        assertContains(refused.message!!, "launched inside transaction")
+        assertEquals(emptyList(), committed())
+    }
+
+    @Test
+    fun `a coroutine handed the block's whole context shares its transaction`() = runBlocking {
+        drivine.transactionSuspending {
+            val transaction = drivine.transactions.current
+            launch(coroutineContext + Dispatchers.IO) {
+                assertSame(transaction, drivine.transactions.current)
+                create("shared")
+            }.join()
+            assertEquals(emptyList(), committed(), "the launched coroutine's write is the block's")
+        }
+
+        assertEquals(listOf("shared"), committed())
     }
 
     @Test
