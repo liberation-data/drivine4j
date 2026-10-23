@@ -22,6 +22,7 @@ import org.springframework.boot.context.annotation.ImportCandidates
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
 import org.springframework.core.env.StandardEnvironment
 import org.springframework.core.env.SystemEnvironmentPropertySource
+import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.transaction.PlatformTransactionManager
@@ -32,7 +33,18 @@ import org.springframework.transaction.support.TransactionTemplate
 
 class DrivineAutoConfigurationTest {
 
-    private val runner = ApplicationContextRunner()
+    /**
+     * A runner whose environment leaves out the process's environment variables. The condition reads
+     * `DATABASE_DATASOURCES_*` variables too, and CI sets some, so a test that means "no datasource"
+     * must not see them.
+     */
+    private fun isolatedRunner() = ApplicationContextRunner {
+        AnnotationConfigApplicationContext().apply {
+            environment.propertySources.remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME)
+        }
+    }
+
+    private val runner = isolatedRunner()
         .withConfiguration(AutoConfigurations.of(DrivineAutoConfiguration::class.java))
 
     /** A datasource Drivine can build without reaching it: the Neo4j driver connects on first use. */
@@ -174,7 +186,7 @@ class DrivineAutoConfigurationTest {
 
     @Test
     fun `Spring Boot's transaction auto-configuration uses Drivine's transaction manager`() {
-        ApplicationContextRunner()
+        isolatedRunner()
             .withConfiguration(AutoConfigurations.of(TransactionAutoConfiguration::class.java, DrivineAutoConfiguration::class.java))
             .withPropertyValues(*datasourceProperties)
             .run { context ->
@@ -197,7 +209,7 @@ class DrivineAutoConfigurationTest {
 
     @Test
     fun `excluding the auto-configuration leaves an EnableDrivine application as it was`() {
-        ApplicationContextRunner()
+        isolatedRunner()
             .withUserConfiguration(EnableDrivineApp::class.java)
             .withPropertyValues(*datasourceProperties)
             .run { context ->
@@ -218,7 +230,7 @@ class DrivineAutoConfigurationTest {
 
     @Test
     fun `spring autoconfigure exclude turns the starter off`() {
-        ApplicationContextRunner()
+        isolatedRunner()
             .withUserConfiguration(AutoConfiguredApp::class.java)
             .withPropertyValues(*datasourceProperties, "spring.autoconfigure.exclude=org.drivine.autoconfigure.DrivineAutoConfiguration")
             .run { context ->
@@ -230,7 +242,7 @@ class DrivineAutoConfigurationTest {
 
     @Test
     fun `Spring Boot's auto-configuration finds the starter`() {
-        ApplicationContextRunner()
+        isolatedRunner()
             .withUserConfiguration(AutoConfiguredApp::class.java)
             .withPropertyValues(*datasourceProperties)
             .run { context ->
