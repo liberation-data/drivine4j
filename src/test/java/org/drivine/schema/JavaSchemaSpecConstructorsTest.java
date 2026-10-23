@@ -48,6 +48,13 @@ class JavaSchemaSpecConstructorsTest {
     }
 
     @Test
+    void textIndexSpecAtEveryArity() {
+        TextIndexSpec full = new TextIndexSpec("Doc", "title", null);
+
+        assertEquals(full, new TextIndexSpec("Doc", "title"));
+    }
+
+    @Test
     void uniquenessConstraintSpecAtEveryArity() {
         UniquenessConstraintSpec full = new UniquenessConstraintSpec("Doc", TITLE, null, null);
 

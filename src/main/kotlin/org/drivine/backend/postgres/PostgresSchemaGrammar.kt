@@ -13,9 +13,11 @@ import org.drivine.schema.SchemaItemSpec
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
+import org.drivine.schema.TextIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
+import org.drivine.schema.unsupportedTextIndex
 import java.sql.SQLException
 
 /**
@@ -132,6 +134,7 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
                 recorded(spec, name, details),
             )
         }
+        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
     }
 
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))

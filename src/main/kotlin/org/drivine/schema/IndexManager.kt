@@ -58,6 +58,7 @@ class IndexManager internal constructor(
      * and changes nothing; call [recreate] to replace it.
      */
     fun ensure(spec: IndexSpec): EnsureResult {
+        requireSupported(spec)
         val items = introspectIndexes(spec.kind)
         val existing = items.firstOrNull { grammar.matchesIdentity(it, spec) }
         if (existing == null) {
@@ -112,15 +113,18 @@ class IndexManager internal constructor(
         ensure(RangeIndexSpec(label, properties.toList()))
 
     /** Finds the existing index that [spec] refers to, or null if none exists. */
-    fun find(spec: IndexSpec): SchemaItemInfo? =
-        introspectIndexes(spec.kind).firstOrNull { grammar.matchesIdentity(it, spec) }
+    fun find(spec: IndexSpec): SchemaItemInfo? {
+        requireSupported(spec)
+        return introspectIndexes(spec.kind).firstOrNull { grammar.matchesIdentity(it, spec) }
+    }
 
-    /** Lists all managed indexes (vector, range, and fulltext) on the database. */
+    /** Lists all managed indexes (vector, range, fulltext, and on Neo4j text) on the database. */
     fun list(): List<SchemaItemInfo> {
-        val queries = listOf(
+        val queries = listOfNotNull(
             SchemaItemKind.VECTOR_INDEX,
             SchemaItemKind.RANGE_INDEX,
             SchemaItemKind.FULLTEXT_INDEX,
+            SchemaItemKind.TEXT_INDEX.takeIf { grammar.supportsTextIndex },
         )
             .map { grammar.listIndexesQuery(it) }
             .distinct()
@@ -145,6 +149,7 @@ class IndexManager internal constructor(
      * indexed data may need re-processing (e.g. re-embedding after a vector dimension change).
      */
     fun recreate(spec: IndexSpec): EnsureResult.Recreated {
+        requireSupported(spec)
         val existing = find(spec)
         if (existing != null) {
             dropExisting(existing, spec)
@@ -163,6 +168,14 @@ class IndexManager internal constructor(
             grammar.engine, spec.kind, spec.label, spec.properties
         )
         return EnsureResult.Recreated(existing, created)
+    }
+
+    /**
+     * Refuses a spec this engine has no index for, before anything is read or made: an index of
+     * another kind in its place would look like the declaration took effect.
+     */
+    private fun requireSupported(spec: IndexSpec) {
+        if (spec is TextIndexSpec && !grammar.supportsTextIndex) throw unsupportedTextIndex(spec, grammar.engine)
     }
 
     /**

@@ -14,9 +14,11 @@ import org.drivine.schema.SchemaItemSpec
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
+import org.drivine.schema.TextIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
+import org.drivine.schema.unsupportedTextIndex
 import java.sql.SQLException
 
 /**
@@ -149,6 +151,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         is RangeIndexSpec -> statements(*rangeIndex(spec).toTypedArray())
         is VectorIndexSpec -> vectorIndex(spec)
         is FullTextIndexSpec -> statements(textIndex(spec))
+        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
     }
 
     /** The index over the property of every node, whatever the label: what a save and a load by id find a node by. */

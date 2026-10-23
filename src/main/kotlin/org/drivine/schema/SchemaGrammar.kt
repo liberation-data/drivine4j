@@ -1,5 +1,7 @@
 package org.drivine.schema
 
+import org.drivine.DrivineException
+
 /**
  * Encapsulates engine-specific schema DDL and introspection.
  *
@@ -51,6 +53,14 @@ interface SchemaGrammar {
      * index that has just been dropped (FalkorDB).
      */
     val indexOperationsAreAsync: Boolean
+        get() = false
+
+    /**
+     * Whether the engine has Neo4j's TEXT index ([TextIndexSpec]). Only Neo4j does; elsewhere
+     * [IndexManager] refuses the spec ([unsupportedTextIndex]) rather than make another index in
+     * its place. Memgraph's `TEXT INDEX` is a full-text index, made from a [FullTextIndexSpec].
+     */
+    val supportsTextIndex: Boolean
         get() = false
 
     // ----- Drivine's own nodes -----
@@ -288,3 +298,14 @@ interface SchemaGrammar {
  */
 private fun <T> pinnedMatches(pinned: T?, observed: T?): Boolean =
     pinned == null || observed == null || pinned == observed
+
+/**
+ * The refusal of a [TextIndexSpec] on an [engine] without Neo4j's TEXT index, which [IndexManager]
+ * throws before it touches the database, and a grammar's [SchemaGrammar.createIndex] throws if it is
+ * reached all the same.
+ */
+internal fun unsupportedTextIndex(spec: TextIndexSpec, engine: String): DrivineException = DrivineException(
+    "TEXT index ${spec.effectiveName} on ${spec.label}${spec.properties} cannot be made on $engine: " +
+        "a TEXT index is Neo4j's, and $engine has none. For tokenized search declare a FullTextIndexSpec " +
+        "(@FullTextIndex), which is also what Memgraph calls a TEXT INDEX; for exact lookups, a RangeIndexSpec."
+)

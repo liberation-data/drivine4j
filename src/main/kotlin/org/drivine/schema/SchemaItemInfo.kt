@@ -84,7 +84,7 @@ data class SchemaItemInfo(
                 analyzer = spec.analyzer,
             )
 
-            is RangeIndexSpec, is UniquenessConstraintSpec -> SchemaItemInfo(
+            is RangeIndexSpec, is TextIndexSpec, is UniquenessConstraintSpec -> SchemaItemInfo(
                 kind = spec.kind,
                 label = spec.label,
                 properties = spec.properties,

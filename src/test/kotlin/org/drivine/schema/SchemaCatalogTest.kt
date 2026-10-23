@@ -1,10 +1,12 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.annotation.FullTextIndex
 import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.RangeIndex
+import org.drivine.annotation.TextIndex
 import org.drivine.annotation.Unique
 import org.drivine.annotation.VectorIndex
 import org.junit.jupiter.api.Assertions.*
@@ -54,6 +56,20 @@ data class TicketFixture(
 
     @Unique
     val serial: String,
+)
+
+@NodeFragment(labels = ["Chunk"])
+data class ChunkFixture(
+    @NodeId
+    val id: String,
+
+    @TextIndex
+    @FullTextIndex
+    val title: String,
+
+    @TextIndex(name = "chunk_heading_text")
+    @GraphProperty("heading_text")
+    val heading: String,
 )
 
 data class NotAFragment(val id: String)
@@ -253,6 +269,17 @@ class SchemaCatalogTest {
 
         val unique = catalog.constraints.single() as UniquenessConstraintSpec
         assertEquals(listOf("id"), unique.properties)
+    }
+
+    @Test
+    fun `scans @TextIndex as a TEXT index, apart from a @FullTextIndex on the same property`() {
+        val catalog = SchemaCatalog.fromFragments(ChunkFixture::class)
+
+        assertEquals(
+            setOf(TextIndexSpec("Chunk", "title"), TextIndexSpec("Chunk", "heading_text", "chunk_heading_text")),
+            catalog.indexes.filterIsInstance<TextIndexSpec>().toSet(),
+        )
+        assertEquals(listOf(FullTextIndexSpec("Chunk", "title")), catalog.indexes.filterIsInstance<FullTextIndexSpec>())
     }
 
     @Test
