@@ -321,7 +321,7 @@ class OracleSchemaGrammarTest {
         val query = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", listOf("email", "tenant")), 5)
         query.inOrder(
             "SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT('email' VALUE k0, 'tenant' VALUE k1), 'count' VALUE MAX(c),",
-            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid) RETURNING JSON)",
+            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid RETURNING JSON) RETURNING JSON)",
             "FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, JSON_VALUE(n.props, '$.tenant') AS k1, " +
                 "COUNT(*) OVER (PARTITION BY JSON_VALUE(n.props, '$.email'), JSON_VALUE(n.props, '$.tenant')) AS c, " +
                 "ROW_NUMBER() OVER (PARTITION BY JSON_VALUE(n.props, '$.email'), JSON_VALUE(n.props, '$.tenant') ORDER BY n.nid) AS r",
@@ -338,14 +338,14 @@ class OracleSchemaGrammarTest {
     fun `a conflicting node is named by the fragment's id too, unless that is a key`() {
         val byUuid = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "uuid"), 3)
         byUuid.inOrder(
-            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid, 'uuid' VALUE i) ORDER BY nid)",
+            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid, 'uuid' VALUE i) ORDER BY nid RETURNING JSON)",
             "FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, JSON_VALUE(n.props, '$.uuid') AS i, COUNT(*) OVER",
         )
         assertEquals(emptyList(), SqlParameters.positional(byUuid).names)
 
         val byKey = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "email"), 3)
         byKey.inOrder(
-            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid)",
+            "'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT('elementId' VALUE nid) ORDER BY nid RETURNING JSON)",
             "FROM (SELECT n.nid, JSON_VALUE(n.props, '$.email') AS k0, COUNT(*) OVER",
         )
     }
