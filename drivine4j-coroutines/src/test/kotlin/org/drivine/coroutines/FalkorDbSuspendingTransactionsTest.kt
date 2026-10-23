@@ -21,7 +21,9 @@ import java.time.Duration
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
+import kotlin.test.assertNotSame
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 
 /**
  * A suspend transaction block on FalkorDB, which commits each statement as it runs: what a block does
@@ -99,6 +101,28 @@ class FalkorDbSuspendingTransactionsTest {
         }
 
         assertEquals(emptyList(), names())
+        assertNull(strict.transactions.current)
+    }
+
+    @Test
+    fun `two Drivines' blocks, one nested in the other, each carry their own transaction`() = runBlocking {
+        warn.transactionSuspending {
+            val outer = assertNotNull(warn.transactions.current)
+            strict.transactionSuspending {
+                val inner = assertNotNull(strict.transactions.current)
+                assertNotSame(outer, inner)
+                withContext(Dispatchers.IO) {
+                    assertSame(outer, warn.transactions.current)
+                    assertSame(inner, strict.transactions.current)
+                }
+            }
+            withContext(Dispatchers.IO) {
+                assertSame(outer, warn.transactions.current, "the nested block of another Drivine left this one's in place")
+                assertNull(strict.transactions.current)
+            }
+        }
+
+        assertNull(warn.transactions.current)
         assertNull(strict.transactions.current)
     }
 }
