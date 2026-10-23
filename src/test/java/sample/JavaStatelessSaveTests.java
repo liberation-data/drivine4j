@@ -59,6 +59,19 @@ public class JavaStatelessSaveTests {
     }
 
     @Test
+    public void savesFromTheObjectAsLoaded() {
+        stateless.save(new Claim(id, "Ada founded Acme", null, null));
+        Claim loaded = stateless.load(id, Claim.class);
+
+        // Built anew from what was loaded, without its stamp: checked as what it was loaded from.
+        Claim saved = stateless.save(new Claim(id, "Ada founded Acme in 1999", null, null), loaded);
+
+        assertEquals("Ada founded Acme in 1999", stateless.load(id, Claim.class).getText());
+        assertNotEquals(loaded.getStamp(), saved.getStamp());
+        assertThrows(StaleObjectException.class, () -> stateless.save(new Claim(id, "late", null, null), loaded));
+    }
+
+    @Test
     public void replacesANamedRelationshipField() {
         Human ada = new Human(id + "-ada", "Ada");
         Human bob = new Human(id + "-bob", "Bob");

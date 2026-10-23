@@ -346,6 +346,98 @@ abstract class StatelessSaveSoundnessContract {
         assertEquals(setOf(Shade.Red, Shade.Green), stateless.load<Swatch>("w1")?.shades, "the label another writer added is kept")
     }
 
+    // ----- A save checked against the object as loaded -----
+
+    @Test
+    fun `a save from the object as loaded is refused when a field changed under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        stateless.save(Finding("f1", listOf("first")))
+        val loaded = assertNotNull(stateless.load<Finding>("f1"))
+        // As a load sees the node when it is handed another writer's stamp with the data from before its write.
+        run("MATCH (n:Finding {id: 'f1'}) SET n.sources = n.sources + 'theirs'")
+
+        assertFailsWith<StaleObjectException> { stateless.save(loaded.merge(Finding("f1", listOf("mine"))), from = loaded) }
+
+        assertEquals(setOf("first", "theirs"), stateless.load<Finding>("f1")?.sources?.toSet(), "the other writer's change stands")
+    }
+
+    @Test
+    fun `a save from the object as loaded is applied when the node is as loaded, and hands back the new stamp`() {
+        stateless.save(Finding("f1", listOf("first")))
+        val loaded = assertNotNull(stateless.load<Finding>("f1"))
+
+        val saved = stateless.save(loaded.merge(Finding("f1", listOf("mine"))), from = loaded)
+
+        assertEquals(setOf("first", "mine"), stateless.load<Finding>("f1")?.sources?.toSet())
+        assertNotEquals(loaded.stamp, saved.stamp, "the save changed the node")
+        assertEquals(saved.stamp, stateless.load<Finding>("f1")?.stamp)
+    }
+
+    @Test
+    fun `a save from the object as loaded is checked against the stamp it was loaded with, whatever the copy carries`() {
+        stateless.save(Finding("f1", listOf("first")))
+        val loaded = assertNotNull(stateless.load<Finding>("f1"))
+        run("MATCH (n:Finding {id: 'f1'}) SET n.sources = ['theirs'], ${Stamps.setClause("n")}")
+
+        // Built anew, without the stamp: it is checked as what it was loaded from.
+        assertFailsWith<StaleObjectException> { stateless.save(Finding("f1", listOf("mine")), loaded) }
+
+        assertEquals(listOf("theirs"), stateless.load<Finding>("f1")?.sources)
+    }
+
+    @Test
+    fun `a save from another object than the one loaded is refused before anything is written`() {
+        stateless.save(Finding("f1", listOf("first")))
+        stateless.save(Finding("f2", listOf("second")))
+        val loaded = assertNotNull(stateless.load<Finding>("f1"))
+
+        val otherId = assertFailsWith<IllegalArgumentException> { stateless.save(loaded.copy(sources = listOf("mine")), from = assertNotNull(stateless.load<Finding>("f2"))) }
+        assertContains(otherId.message.orEmpty(), "from is the Finding 'f2', and the object saved 'f1'")
+
+        val noStamp = assertFailsWith<IllegalArgumentException> { stateless.save(loaded.copy(sources = listOf("mine")), from = loaded.copy(stamp = null)) }
+        assertContains(noStamp.message.orEmpty(), "carries no stamp")
+
+        val otherClass = assertFailsWith<IllegalArgumentException> { stateless.save<Any>(loaded, from = Claim("f1", "one")) }
+        assertContains(otherClass.message.orEmpty(), "from is a Claim, and the object saved a Finding")
+
+        assertEquals(listOf("first"), stateless.load<Finding>("f1")?.sources, "nothing was written")
+    }
+
+    @Test
+    fun `saves from the objects as loaded, by many writers at once, keep every writer's change`() {
+        val writers = 8
+        val each = 25
+        stateless.save(Finding("f1", emptyList()))
+        val pool = Executors.newFixedThreadPool(writers)
+        try {
+            val go = CountDownLatch(1)
+            val done = (1..writers).map { writer ->
+                pool.submit {
+                    go.await()
+                    repeat(each) { k ->
+                        // Load, change and save from what was loaded; again when another writer got there first.
+                        while (true) {
+                            val loaded = assertNotNull(stateless.load<Finding>("f1"))
+                            try {
+                                stateless.save(loaded.merge(Finding("f1", listOf("w$writer-$k"))), from = loaded)
+                                break
+                            } catch (_: StaleObjectException) {
+                            }
+                        }
+                    }
+                }
+            }
+            go.countDown()
+            done.forEach { it.get(5, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdownNow()
+        }
+
+        val kept = assertNotNull(stateless.load<Finding>("f1")).sources.toSet()
+        val lost = (1..writers).flatMap { writer -> (0 until each).map { "w$writer-$it" } } - kept
+        assertEquals(emptyList(), lost, "every writer's source is kept")
+    }
+
     @Test
     fun `update refuses a change that gives the object another id`() {
         stateless.save(Claim("c1", "one"))

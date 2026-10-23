@@ -1487,6 +1487,7 @@ graphObjectManager.save(view, Replace(IssueView::assignedTo))              // th
 graphObjectManager.save(view, Replace.all())                               // every relationship field's list is the whole list
 graphObjectManager.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
 graphObjectManager.save(person, only = setOf(Person::name))                // write just these
+graphObjectManager.save(edited, from = loaded)                             // checked against the object as it was loaded
 graphObjectManager.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
 graphObjectManager.create(person)                                          // make it only if it is not there; null when it is
 graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
@@ -1495,6 +1496,14 @@ graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGN
 A save is one Cypher statement: the root, the relationships it drops, each related node and the relationship to it. It is applied whole or not at all, with or without a transaction, on Neo4j, FalkorDB and Memgraph. Under `NullPolicy.CLEAR`, a root with a `@PropertyBag` or an open `@NodeLabels` field is read first, for the keys and labels it holds: one more statement, which writes nothing.
 
 `only` and `except` name fields of the object, and for a view fields of its root. A view's relationships are written whatever they name. Give one or the other: both together are refused, and so is a property of a class other than the one saved.
+
+`from` is the object as you loaded it, when what you save is a changed copy of it. The save is then checked against the stamp `from` carries, whatever stamp the copy carries, as `update` checks against what it loaded. On Neo4j it is also checked against each field of `from`'s root: see [when a save is refused](#when-a-save-is-refused). It is refused before anything is written if `from` is of another class, has another id, or carries no stamp. From Java, `save(edited, loaded)`.
+
+```kotlin
+val loaded = graphObjectManager.load<Person>(id)!!
+// ... later, from what the user changed:
+graphObjectManager.save(loaded.copy(email = form.email), from = loaded)
+```
 
 #### What `save` returns
 
@@ -1786,7 +1795,7 @@ Two cases are decided by the object, not by another writer:
 - The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
 - In a view, the root is checked. A node reached through a relationship is written unchecked.
 - `update` is checked against the stamp it loaded, whatever the change does with the object's.
-- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each field of the root as it loaded it too, under the node's lock, and loads again if one differs: a declared field's value, a `@PropertyBag`'s keys and their values, the labels a `@NodeLabels` field reads. A `save` of an object you loaded yourself has only the stamp to go on, and in that moment it can write over the other writer's change: where every writer's change must be kept, change the node with `update`. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
+- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each field of the root as it loaded it too, under the node's lock, and loads again if one differs: a declared field's value, a `@PropertyBag`'s keys and their values, the labels a `@NodeLabels` field reads. A `save` checks the same when you give it the object as loaded, as [`from`](#saving-data). Without `from` it has only the stamp to go on, and in that moment it can write over the other writer's change: hold on to what you loaded and pass it, or change the node with `update`. Where only the stamp makes the round trip, as through a web form, the stamp is all there is. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
 
 Handling a refusal:
 
