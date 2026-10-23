@@ -12,7 +12,9 @@ import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.transaction.PlatformTransactionManager
+import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.annotation.EnableTransactionManagement
+import org.springframework.transaction.annotation.Propagation as SpringPropagation
 import org.springframework.transaction.annotation.Transactional
 import org.springframework.transaction.support.TransactionTemplate
 import sample.simple.TestAppContext
@@ -39,6 +41,9 @@ open class MarkerWriter(private val persistenceManager: PersistenceManager, priv
         mark(run, name)
         error("the @Transactional method fails")
     }
+
+    @Transactional(propagation = SpringPropagation.REQUIRES_NEW)
+    open fun writeInNew(run: String, name: String) = mark(run, name)
 
     open fun mark(run: String, name: String) = persistenceManager.execute(
         QuerySpecification.withStatement("CREATE (:Marker {run: \$run, name: \$name})").bind(mapOf("run" to run, "name" to name))
@@ -67,6 +72,8 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
 ) {
 
     private val template = TransactionTemplate(transactionManager)
+    private val newTemplate = TransactionTemplate(transactionManager)
+        .apply { propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW }
     private val run = "nest-" + UUID.randomUUID().toString().take(8)
 
     /** FalkorDB has no transactions, so nothing there is rolled back. */
@@ -123,6 +130,21 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
             assertTrue(transactions.current!!.rollbackOnly)
         }
         assertEquals(listOf("block", "method"), committed())
+    }
+
+    @Test
+    fun `a REQUIRES_NEW method inside a block commits by itself`() {
+        assertFailsWith<IllegalStateException> {
+            transactions.transaction {
+                val block = transactions.current
+                writer.mark(run, "block")
+                writer.writeInNew(run, "new")
+                assertEquals(listOf("new"), committed())
+                assertSame(block, transactions.current)
+                error("the block fails")
+            }
+        }
+        assertEquals(listOf("new"), committed())
     }
 
     // Spring's transaction, with a block of Drivine's inside it
@@ -187,5 +209,36 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
             transactions.transaction(rollback = true) { writer.mark(run, "block") }
         }
         assertEquals(emptyList(), committed())
+    }
+
+    // Spring alone
+
+    @Test
+    fun `a REQUIRES_NEW method inside a @Transactional one commits by itself`() {
+        assertFailsWith<IllegalStateException> {
+            template.executeWithoutResult {
+                val outer = transactions.current
+                writer.mark(run, "outer")
+                writer.writeInNew(run, "new")
+                assertEquals(listOf("new"), committed(), "the new transaction commits the outer one's write too")
+                assertSame(outer, transactions.current)
+                error("the outer transaction fails")
+            }
+        }
+        assertEquals(listOf("new"), committed())
+    }
+
+    @Test
+    fun `three deep, each way round, is one transaction`() {
+        transactions.transaction {
+            template.executeWithoutResult {
+                transactions.transaction { writer.write(run, "deep") }
+            }
+            newTemplate.executeWithoutResult {
+                transactions.transaction { writer.mark(run, "new") }
+            }
+            assertEquals(listOf("new"), committed())
+        }
+        assertEquals(listOf("deep", "new"), committed())
     }
 }
