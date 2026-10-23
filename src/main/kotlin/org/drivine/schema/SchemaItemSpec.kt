@@ -93,3 +93,29 @@ internal fun requireNameNotWhitespace(name: String?, specType: String) {
             "Use null or \"\" to derive a name from the label and properties."
     }
 }
+
+/**
+ * The item as it is made: one that ignores case is made over the lowercased copies of its properties
+ * (see [org.drivine.model.LowerCopies]), under its own name; any other as it is declared.
+ */
+internal fun SchemaItemSpec.made(): SchemaItemSpec = when (this) {
+    is RangeIndexSpec -> made()
+    is TextIndexSpec -> made()
+    is UniquenessConstraintSpec -> made()
+    else -> this
+}
+
+/** [made], for an index. */
+internal fun IndexSpec.made(): IndexSpec = (this as SchemaItemSpec).made() as IndexSpec
+
+/** [made], for a constraint. */
+internal fun ConstraintSpec.made(): ConstraintSpec = (this as SchemaItemSpec).made() as ConstraintSpec
+
+/** The properties whose lowercased copies the item is made over; none for one that does not ignore case. */
+internal val SchemaItemSpec.lowercased: List<String>
+    get() = when (this) {
+        is RangeIndexSpec -> properties.takeIf { ignoreCase }
+        is TextIndexSpec -> properties.takeIf { ignoreCase }
+        is UniquenessConstraintSpec -> properties.takeIf { ignoreCase }
+        else -> null
+    }.orEmpty()

@@ -1,11 +1,11 @@
 package org.drivine.backend.oracle
 
 import org.drivine.manager.PersistenceManager
+import org.drivine.schema.CatalogReads
 import org.drivine.schema.SchemaItemKind
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executor
-import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -54,9 +54,8 @@ internal class LabelledIndexes(indexes: List<LabelledIndex>) {
  * read again once this process has made or dropped an index or a constraint of the graph since, and
  * at least every [maxAge] milliseconds, for one another process made.
  *
- * A read never waits for them. They are read on [refresh], by default a thread of its own, on a
- * schema connection of their own: not in the caller's transaction, not among the statements of the
- * read, and not by a reader that may hold the pool's last connection. One read at a time: meanwhile,
+ * A read never waits for them. They are read on [refresh], by default a thread of its own (see
+ * [CatalogReads]), on a schema connection of their own. One read at a time: meanwhile,
  * and until the first is done, statements are written with what was read last, or with none.
  *
  * What is kept only decides how a statement is written, never what it means: a statement written for
@@ -68,7 +67,7 @@ internal class LabelledIndexCatalog(
     private val graph: OracleGraph,
     private val maxAge: Long = 60_000,
     private val clock: () -> Long = System::currentTimeMillis,
-    private val refresh: Executor = BACKGROUND,
+    private val refresh: Executor = CatalogReads.BACKGROUND,
 ) {
     private class Read(val indexes: LabelledIndexes, val at: Long, val changes: Long)
 
@@ -125,20 +124,6 @@ internal class LabelledIndexCatalog(
 
     companion object {
         private val logger = LoggerFactory.getLogger(LabelledIndexCatalog::class.java)
-
-        private val threads = AtomicLong()
-
-        /**
-         * Threads that read catalogs, made as needed and ended when idle; none keeps the process alive,
-         * and none holds the class loader of the code that happened to start it, which a redeployed
-         * application would otherwise keep until the thread ends.
-         */
-        private val BACKGROUND: Executor = Executors.newCachedThreadPool { runnable ->
-            Thread(runnable, "drivine-oracle-catalog-${threads.incrementAndGet()}").apply {
-                isDaemon = true
-                contextClassLoader = null
-            }
-        }
 
         /** The labelled indexes recorded for [graph] that are there: see [OracleSchemaGrammar.labelledIndexesQuery]. */
         fun query(graph: OracleGraph): String = OracleSchemaGrammar(graph).labelledIndexesQuery()

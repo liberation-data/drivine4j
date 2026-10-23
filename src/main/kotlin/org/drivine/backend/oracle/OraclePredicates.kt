@@ -67,7 +67,7 @@ internal class OraclePredicates(
     /**
      * The property [condition] compares and the label of the root whose labelled index answers it,
      * for a condition every root meets; null when none does. An index answers a comparison with a text of the property it begins with: `=`, `<`,
-     * `<=`, `>`, `>=`. Not `IN`, which Oracle answers by reading every node, and not a negation, a
+     * `<=`, `>`, `>=`, and `=` with a lowercased copy. Not `IN`, which Oracle answers by reading every node, and not a negation, a
      * test for no value or a test of part of the text, which no index answers.
      */
     private fun answeredBy(condition: WhereCondition): Pair<String, String>? {
@@ -245,6 +245,9 @@ internal class OraclePredicates(
             ComparisonOperator.ENDS_WITH -> if (empty) anyText else scope.bound(value?.toString()).let { "SUBSTR($text, -LENGTH($it)) = $it" }
             ComparisonOperator.CONTAINS_IGNORE_CASE -> if (empty) anyText else "INSTR(LOWER($text), ${scope.bound(value?.toString()?.lowercase())}) > 0"
             ComparisonOperator.EQUALS_IGNORE_CASE -> if (empty) storedEmpty(row, key) else "LOWER($text) = ${scope.bound(value?.toString()?.lowercase())}"
+            // A lowercased copy, compared with the value as Oracle lowercases it. A copy is never empty: see LowerCopies.
+            ComparisonOperator.EQUALS_LOWERED -> "$text = LOWER(${scope.bound(value?.toString())})"
+            ComparisonOperator.CONTAINS_LOWERED -> "INSTR($text, LOWER(${scope.bound(value?.toString())})) > 0"
             ComparisonOperator.MATCHES -> matches(text, value?.toString().orEmpty())
         }
     }
@@ -442,10 +445,10 @@ internal class OraclePredicates(
         KeysetPredicate.after(orders, values, collectionSortCount, scope.inferredKinds, ::declaredKind, { scope.bound(scalar(it)) }, ::ordered)
 
     private companion object {
-        /** The comparisons an index answers. */
+        /** The comparisons an index answers: an equality with a lowercased copy among them. */
         val RANGE = setOf(
             ComparisonOperator.EQUALS, ComparisonOperator.GREATER_THAN, ComparisonOperator.GREATER_THAN_OR_EQUAL,
-            ComparisonOperator.LESS_THAN, ComparisonOperator.LESS_THAN_OR_EQUAL,
+            ComparisonOperator.LESS_THAN, ComparisonOperator.LESS_THAN_OR_EQUAL, ComparisonOperator.EQUALS_LOWERED,
         )
     }
 }

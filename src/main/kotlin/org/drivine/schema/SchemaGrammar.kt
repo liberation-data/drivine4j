@@ -77,6 +77,13 @@ interface SchemaGrammar {
      */
     fun storeStamp(label: String, keyProperty: String): StoreStampStatements = CypherStoreStamp(label, keyProperty)
 
+    /**
+     * The statements that fill in the lowercased copies of a property and record that every node of a
+     * label has them: see [LowerCopyStatements]. Cypher, on the store's node, unless the engine speaks
+     * otherwise.
+     */
+    fun lowerCopies(): LowerCopyStatements = CypherLowerCopies()
+
     // ----- DDL emission -----
 
     /**
@@ -96,6 +103,12 @@ interface SchemaGrammar {
     fun dropIndex(item: SchemaItemInfo): List<SchemaStatement>
 
     fun createConstraint(spec: ConstraintSpec): List<SchemaStatement>
+
+    /**
+     * Throws a [DrivineException] for a constraint this engine cannot make, [spec] being as it is made
+     * (see [made]), before anything is filled in or made for it. Nothing, where the engine can make any.
+     */
+    fun requireConstrainable(spec: ConstraintSpec) {}
 
     fun dropConstraint(item: SchemaItemInfo): List<SchemaStatement>
 
@@ -232,9 +245,10 @@ interface SchemaGrammar {
      * [ConstraintSpec.nodeIdProperty]; [limit] rows at most.
      */
     fun sampleConflictsQuery(spec: ConstraintSpec, limit: Int): String {
-        val notNull = spec.properties.joinToString(" AND ") { "n.$it IS NOT NULL" }
-        val keyAliases = spec.properties.mapIndexed { i, p -> "n.$p AS _k$i" }.joinToString(", ")
-        val keyMap = spec.properties.mapIndexed { i, p -> "$p: _k$i" }.joinToString(", ")
+        // A name that is not a plain identifier, a bag's key or a lowercased copy, is quoted, as DDL quotes it.
+        val notNull = spec.properties.joinToString(" AND ") { "n.${identifier(it)} IS NOT NULL" }
+        val keyAliases = spec.properties.mapIndexed { i, p -> "n.${identifier(p)} AS _k$i" }.joinToString(", ")
+        val keyMap = spec.properties.mapIndexed { i, p -> "${identifier(p)}: _k$i" }.joinToString(", ")
         val node = listOfNotNull(
             "elementId: ${elementId("n")}",
             sampledNodeId(spec)?.let { "${identifier(it)}: n.${identifier(it)}" },

@@ -176,7 +176,7 @@ internal class SqlSavePlan(private val blocks: WriteBlocks, private val objectMa
             val labels = writing.labels()
             val writes = NodeWrites(
                 set = writing.set, unset = writing.unset, bags = writing.bags,
-                addLabels = labels.add, dropLabels = labels.drop, owned = labels.owned,
+                addLabels = labels.add, dropLabels = labels.drop, owned = labels.owned, lower = model.lowerCopied,
             )
             return plan.node(plan.shape(model.labels, key), key, id, this@SqlSavePlan.key(id), model.labels, writes, index, root)
         }

@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import org.drivine.model.FragmentModel
+import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.schema.SchemaGrammar
@@ -69,9 +70,10 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
             "WITH n, row, (${written.joinToString(" OR ") { "(${it.differs})" }}) AS $CHANGED",
             // A node whose values are already as given is not written to, so no index is fed what it holds.
             "FOREACH (_ IN CASE WHEN $CHANGED THEN [1] ELSE [] END | SET ${written.joinToString(", ") { it.set }})",
+            copied(model, "n"),
             "SET ${Stamps.restamp("n", CHANGED, "row.stamp")}",
             "RETURN row.i + '/' + CASE WHEN $CHANGED THEN '${PatchOutcomes.CHANGED}' ELSE '${PatchOutcomes.UNCHANGED}' END + '=' + n.${Stamps.QUOTED}",
-        ).joinToString("\n")
+        ).filterNotNull().joinToString("\n")
     }
 
     /**
@@ -131,10 +133,20 @@ internal class PatchStatementBuilder(private val grammar: CypherGrammar) {
             "WITH $alias, $MET, $MET AND (${assigned.joinToString(" OR ") { "(${it.differs})" }}) AS $CHANGED",
             // A node that is not changed is not written to, beyond the lock and a stamp if it had none.
             "FOREACH (_ IN CASE WHEN $CHANGED THEN [1] ELSE [] END | SET ${assigned.joinToString(", ") { it.set }})",
+            copied(model, alias),
             "SET ${Stamps.restamp(alias, CHANGED, "\$${Stamps.NEW_PARAM}")}",
             "RETURN '0/' + CASE WHEN $CHANGED THEN '${PatchOutcomes.CHANGED}' WHEN $MET THEN '${PatchOutcomes.UNCHANGED}' ELSE '${PatchOutcomes.UNMET}' END + '=' + $alias.${Stamps.QUOTED}",
-        )).joinToString("\n")
+        )).filterNotNull().joinToString("\n")
     }
+
+    /**
+     * The lowercased copies of [model]'s `@CaseInsensitive` fields on the node [alias], from what the
+     * patch wrote, for a node it changed (see [org.drivine.model.LowerCopies]); null for a fragment
+     * with none. After the write, in a clause of its own: one `SET` may read every value before it
+     * writes any.
+     */
+    private fun copied(model: FragmentModel, alias: String): String? =
+        LowerCopies.clause(alias, model.lowerCopied)?.let { "FOREACH (_ IN CASE WHEN $CHANGED THEN [1] ELSE [] END | $it)" }
 
     /** One property as a patch of one node writes it: the item that sets or removes it, and the test of whether that changes the node. */
     private class Assigned(val set: String, val differs: String)

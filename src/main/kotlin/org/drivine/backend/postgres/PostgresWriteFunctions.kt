@@ -1,5 +1,6 @@
 package org.drivine.backend.postgres
 
+import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
 import org.drivine.query.PatchOutcomes
 
@@ -20,6 +21,8 @@ import org.drivine.query.PatchOutcomes
  *   label and property, which the partial index of a range index or a uniqueness constraint answers;
  *   it is prepared once a session for each shape, and not planned again for each node.
  * - `<graph>_owns(bag, key)` says whether a property bag owns a stored key.
+ * - `<graph>_lowered(props, keys)` gives the properties with the lowercased copy of each of `keys`:
+ *   see [LowerCopies].
  * - `<graph>_write(plan, shapes, mark, returns, patched_if)` carries out the plan. `shapes` are the
  *   shapes its steps name by number, each `{labels, key}`; `mark` is the stamp new relationship tokens
  *   are taken from; `returns` is what to give back (`STAMPS`, `EACH_STAMP` or `COUNT`); `patched_if`,
@@ -36,12 +39,13 @@ internal class PostgresWriteFunctions(private val graph: PostgresGraph) {
     private val edges = graph.edges
     private val find = "${graph.name}_find"
     private val owns = "${graph.name}_owns"
+    private val lowered = "${graph.name}_lowered"
 
     /** The function that carries out a plan. */
     val write = "${graph.name}_write"
 
     /** The statements that make the functions, each safe to run again. */
-    val ddl: List<String> get() = listOf(finding(), owning(), writing())
+    val ddl: List<String> get() = listOf(finding(), owning(), lowering(), writing())
 
     private fun finding(): String = """
 CREATE OR REPLACE FUNCTION $find(p_labels jsonb, p_key text, p_id text) RETURNS $nodes AS ${'$'}fn${'$'}
@@ -96,6 +100,29 @@ END
 ${'$'}fn${'$'} LANGUAGE plpgsql IMMUTABLE
 """.trim()
 
+    /**
+     * `<graph>_lowered(props, keys)`: [props] with the lowercased copy of each property [keys] names,
+     * and without the copy of one that has no value. Postgres lowercases it, as it lowercases what a
+     * lookup compares the copy with. See [LowerCopies].
+     */
+    private fun lowering(): String = """
+CREATE OR REPLACE FUNCTION $lowered(p_props jsonb, p_keys jsonb) RETURNS jsonb AS ${'$'}fn${'$'}
+DECLARE
+    v_props jsonb := p_props;
+    v_key   text;
+BEGIN
+    FOR v_key IN SELECT jsonb_array_elements_text(COALESCE(p_keys, '[]'::jsonb)) LOOP
+        IF v_props ->> v_key IS NULL THEN
+            v_props := v_props - ('${LowerCopies.PREFIX}' || v_key);
+        ELSE
+            v_props := v_props || jsonb_build_object('${LowerCopies.PREFIX}' || v_key, lower(v_props ->> v_key));
+        END IF;
+    END LOOP;
+    RETURN v_props;
+END
+${'$'}fn${'$'} LANGUAGE plpgsql STABLE
+""".trim()
+
     private fun writing(): String = """
 CREATE OR REPLACE FUNCTION $write(p_plan jsonb, p_shapes jsonb, p_mark text, p_returns text, p_patched_if text) RETURNS SETOF text AS ${'$'}fn${'$'}
 DECLARE
@@ -135,6 +162,7 @@ DECLARE
     v_recorded  jsonb;
     v_now       jsonb;
     v_same      boolean;
+    v_copied    jsonb;
     v_met       bigint;
     v_premade   jsonb := '{}';
     v_after     jsonb;
@@ -194,8 +222,8 @@ BEGIN
                     made AS (
                         INSERT INTO $nodes (labels, props, stamp)
                         SELECT op -> 'labels',
-                               (jsonb_build_object(op ->> 'key', op -> 'id') || COALESCE(op -> 'set', '{}'::jsonb))
-                                   - ARRAY(SELECT jsonb_array_elements_text(COALESCE(op -> 'unset', '[]'::jsonb))),
+                               $lowered((jsonb_build_object(op ->> 'key', op -> 'id') || COALESCE(op -> 'set', '{}'::jsonb))
+                                   - ARRAY(SELECT jsonb_array_elements_text(COALESCE(op -> 'unset', '[]'::jsonb))), op -> 'lower'),
                                op ->> 'fresh'
                         FROM absent ORDER BY ord
                         ON CONFLICT DO NOTHING
@@ -304,19 +332,21 @@ BEGIN
                         END IF;
                     END IF;
 
+                    -- The copies are written from what the step leaves, and are no part of whether it changed the node.
+                    v_copied := $lowered(v_o, v_op -> 'lower');
                     IF v_made THEN
                         -- A node that is made is written once, whole, with a stamp of its own. A uniqueness
                         -- constraint may refuse it: once, it may be that another writer made the node at this
                         -- moment, and the node is looked for again. Found again or not, the constraint is on
                         -- something other than this node's key, and refuses this save.
                         v_stamp := v_fresh;
-                        INSERT INTO $nodes (labels, props, stamp) VALUES (v_labels, v_o, v_stamp) ON CONFLICT DO NOTHING RETURNING nid INTO v_nid;
+                        INSERT INTO $nodes (labels, props, stamp) VALUES (v_labels, v_copied, v_stamp) ON CONFLICT DO NOTHING RETURNING nid INTO v_nid;
                         IF v_nid IS NOT NULL THEN
                             EXIT;
                         END IF;
                         v_tries := v_tries + 1;
                         IF v_tries > 1 THEN
-                            INSERT INTO $nodes (labels, props, stamp) VALUES (v_labels, v_o, v_stamp);
+                            INSERT INTO $nodes (labels, props, stamp) VALUES (v_labels, v_copied, v_stamp);
                         END IF;
                     ELSE
                         v_nid := v_row.nid;
@@ -328,11 +358,14 @@ BEGIN
                             IF v_relabel THEN
                                 UPDATE $nodes SET labels = v_labels WHERE nid = v_nid;
                             END IF;
-                            IF NOT v_same THEN
-                                UPDATE $nodes SET props = v_o, stamp = v_stamp WHERE nid = v_nid;
+                            IF v_copied <> v_row.props THEN
+                                UPDATE $nodes SET props = v_copied, stamp = v_stamp WHERE nid = v_nid;
                             ELSE
                                 UPDATE $nodes SET stamp = v_stamp WHERE nid = v_nid;
                             END IF;
+                        ELSIF v_copied <> v_row.props THEN
+                            -- Only a copy was out of step with its property: the node keeps its stamp.
+                            UPDATE $nodes SET props = v_copied WHERE nid = v_nid;
                         END IF;
                         EXIT;
                     END IF;
@@ -505,6 +538,10 @@ BEGIN
                         v_o := (v_o || COALESCE(v_op -> 'set', '{}'::jsonb)) - ARRAY(SELECT jsonb_array_elements_text(COALESCE(v_op -> 'unset', '[]'::jsonb)));
                     END IF;
                     v_same := v_o = v_row.props;
+                    -- A node the step changes has its copies written from what it now holds.
+                    IF NOT v_same THEN
+                        v_o := $lowered(v_o, v_op -> 'lower');
+                    END IF;
                     v_two := ${twoTokens("v_row.stamp")};
                     IF v_two IS NULL OR NOT v_same THEN
                         v_stamp := substr(v_fresh, 1, 16) || COALESCE(substr(v_two, 17), substr(v_fresh, 17));

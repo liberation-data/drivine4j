@@ -76,6 +76,15 @@ class ConstraintManager internal constructor(
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
     ): EnsureResult {
+        grammar.requireConstrainable(spec.made())
+        // A constraint that ignores case is made over copies that every node of its label has, so a
+        // node saved before there were copies is held to it too.
+        indexManager.fillIn(spec)
+        return ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)
+    }
+
+    /** [ensure], of [spec] as it is made. */
+    private fun ensureMade(spec: ConstraintSpec, violationSampleSize: Int, replaceBlockingIndex: Boolean): EnsureResult {
         val existing = find(spec)
         if (existing != null) {
             return if (grammar.matchesShape(existing, spec)) {
@@ -117,7 +126,7 @@ class ConstraintManager internal constructor(
                 if (repeated.isNotEmpty()) return violation(spec, repeated, violationSampleSize)
                 run(grammar.dropIndex(index))
                 logger.info("Dropped index {} on {}{}, in the way of a constraint that replaces it", index.name, spec.label, spec.properties)
-                return ensure(spec, violationSampleSize, replaceBlockingIndex = false)
+                return ensureMade(spec, violationSampleSize, replaceBlockingIndex = false)
             }
             throw e
         }
@@ -138,7 +147,8 @@ class ConstraintManager internal constructor(
     /** Finds the existing constraint that [spec] refers to, or null if none exists. */
     fun find(spec: ConstraintSpec): SchemaItemInfo? {
         val rows = introspect(grammar.listConstraintsQuery()) ?: return null
-        return grammar.parseConstraintRows(rows).firstOrNull { grammar.matchesIdentity(it, spec) }
+        val made = spec.made()
+        return grammar.parseConstraintRows(rows).firstOrNull { grammar.matchesIdentity(it, made) }
     }
 
     /** Lists all managed constraints on the database. */
@@ -170,11 +180,14 @@ class ConstraintManager internal constructor(
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
     ): EnsureResult {
+        grammar.requireConstrainable(spec.made())
         val existing = find(spec)
         if (existing != null) {
             run(grammar.dropConstraint(existing))
         }
-        return when (val result = ensure(spec, violationSampleSize, replaceBlockingIndex)) {
+        // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
+        indexManager.fillIn(spec, again = true)
+        return when (val result = ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)) {
             is EnsureResult.Created -> EnsureResult.Recreated(existing, result.info)
             else -> result
         }

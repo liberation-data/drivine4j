@@ -614,6 +614,14 @@ enum class ComparisonOperator(val cypherOperator: String) {
     CONTAINS_IGNORE_CASE("CONTAINS"),
     /** Case-insensitive equals — `toLower(lhs) = $p` (the bound value is lower-cased). */
     EQUALS_IGNORE_CASE("="),
+    /**
+     * Equals the bound value as the database lowercases it — `lhs = toLower($p)`: what [EQUALS_IGNORE_CASE]
+     * on a `@CaseInsensitive` property becomes once every node has its lowercased copy, `lhs` being
+     * the copy (see [org.drivine.model.LowerCopies]). An index over the copy serves it. Drivine writes it.
+     */
+    EQUALS_LOWERED("="),
+    /** Contains the bound value as the database lowercases it — `lhs CONTAINS toLower($p)`: [CONTAINS_IGNORE_CASE] on a copy, as [EQUALS_LOWERED]. */
+    CONTAINS_LOWERED("CONTAINS"),
     IS_NULL("IS NULL"),
     IS_NOT_NULL("IS NOT NULL")
 }

@@ -197,7 +197,7 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         private const val MERGE_BACKOFF_MILLIS = 50L
 
         /** The MERGE key. Fixed, so a second boot matches the node the first one wrote. */
-        private const val SINGLETON_KEY = "singleton"
+        internal const val SINGLETON_KEY = "singleton"
 
         /** Makes the MERGE key unique, so concurrent first boots cannot leave two stamps. */
         internal val KEY_CONSTRAINT = UniquenessConstraintSpec("DrivineStore", "key")
