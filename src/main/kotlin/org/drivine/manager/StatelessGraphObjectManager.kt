@@ -284,9 +284,11 @@ class StatelessGraphObjectManager private constructor(
      * saved by a statement of its own. An object the batch
      * holds more than once is handed the stamp its node is left with each time.
      *
-     * The fragments are written class by class in the order of the classes' names, and those of each
-     * class in the order of their ids, so that two batches over the same nodes take their locks in the
-     * same order whatever order they were given in. Fragments of one id keep the order they were given
+     * The fragments are written class by class in an order the classes alone fix (by their names; on
+     * a Cypher store those without a stamp first, and of those the ones saved by statements of their
+     * own first, while a stamped one saved so goes last, after the views), and those of each class in
+     * the order of their ids, so that two batches over the same nodes take their locks in the same
+     * order whatever order they were given in. Fragments of one id keep the order they were given
      * in, so the last of them is still the one written last. The views are written in the order given.
      * The objects come back in the order given.
      *

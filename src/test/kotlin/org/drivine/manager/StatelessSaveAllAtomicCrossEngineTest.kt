@@ -18,6 +18,7 @@ import org.drivine.test.SharedFalkorDb
 import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -56,6 +57,13 @@ abstract class StatelessSaveAllAtomicContract {
      * written by, so that it is saved by a statement of its own. A SQL store's write function writes any.
      */
     protected open val unwinds: Boolean = true
+
+    /**
+     * Whether two writers over the same nodes wait on each other's locks, so that taking them in one
+     * order keeps either from deadlocking the other. Memgraph turns a conflicting write away instead,
+     * whatever the order.
+     */
+    protected open val waitsOnLocks: Boolean = true
 
     protected val stateless: StatelessGraphObjectManager
         get() = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
@@ -260,16 +268,21 @@ abstract class StatelessSaveAllAtomicContract {
 
     @Test
     fun `two batches over the same nodes, given in opposite orders, both finish, each handing its objects back in its own order`() {
-        val ids = (1..300).map { "b%03d".format(it) }
+        assumeTrue(waitsOnLocks, "the store turns a conflicting write away, in whatever order it takes its nodes")
+        // More than one statement's rows, so that a Cypher store writes them by statements of each class.
+        val ids = (0..BatchSaveOperations.UNWIND_CHUNK_SIZE).map { "b%04d".format(it) }
         stateless.saveAll(ids.map { Bookmark(it, "start") })
         val failures = mutableListOf<Throwable>()
         val handedBack = mutableMapOf<String, List<Bookmark>>()
+        val runs = mutableMapOf<String, BatchSizes>()
 
         val writers = listOf(ids to "up", ids.reversed() to "down").map { (order, cursor) ->
+            val counting = BatchSizes(pm).also { synchronized(runs) { runs[cursor] = it } }
+            val writer = StatelessGraphObjectManager(counting, Neo4jObjectMapper.instance, SubtypeRegistry())
             thread {
                 try {
-                    repeat(5) { round ->
-                        val saved = stateless.saveAll(order.map { Bookmark(it, "$cursor $round") })
+                    repeat(ROUNDS) { round ->
+                        val saved = writer.saveAll(order.map { Bookmark(it, "$cursor $round") })
                         synchronized(handedBack) { handedBack[cursor] = saved }
                     }
                 } catch (failure: Throwable) {
@@ -279,12 +292,22 @@ abstract class StatelessSaveAllAtomicContract {
         }
         writers.forEach { it.join(120_000) }
 
-        assertEquals(emptyList(), failures)
         assertTrue(writers.none { it.isAlive })
-        assertEquals(300, stateless.loadAll(Bookmark::class.java).count { it.cursor in setOf("up 4", "down 4") })
+        assertEquals(emptyList(), failures)
+        // Where each batch is applied whole, the one that ran last left every node.
+        val left = stateless.loadAll(Bookmark::class.java).map { it.cursor }.toSet()
+        val last = setOf("up ${ROUNDS - 1}", "down ${ROUNDS - 1}")
+        assertTrue(if (pm.atomicBatches) left.size == 1 && left.single() in last else left.isNotEmpty() && last.containsAll(left), "$left")
         assertEquals(ids, handedBack.getValue("up").map { it.id })
         assertEquals(ids.reversed(), handedBack.getValue("down").map { it.id })
         assertTrue(handedBack.values.flatten().all { it.stamp != null })
+        // Taking the locks in one order, neither batch deadlocks the other, so none is run again.
+        assertEquals(mapOf("up" to ROUNDS, "down" to ROUNDS), runs.mapValues { it.value.batches.size })
+    }
+
+    private companion object {
+        /** The batches each writer of a contention test runs. */
+        const val ROUNDS = 3
     }
 }
 
@@ -465,6 +488,8 @@ class StatelessSaveAllAtomicMemgraphTest : StatelessSaveAllAtomicContract() {
     }
 
     override val pm: NonTransactionalPersistenceManager get() = manager
+
+    override val waitsOnLocks = false
 }
 
 /**

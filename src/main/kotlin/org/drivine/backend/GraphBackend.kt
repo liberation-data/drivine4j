@@ -155,8 +155,10 @@ internal interface GraphBackend {
     /**
      * How [fragments] are saved several at a time, unchecked, each under its index: which go together
      * and by what statements is the backend's to say, as it is what its store can write so. See
-     * [FragmentBatch]. The caller gives [fragments] in the order to take their locks in, and the
-     * statements write them in that order: see [org.drivine.manager.inLockOrder].
+     * [FragmentBatch]. The caller gives [fragments] in the order to take their locks in (see
+     * [org.drivine.manager.inLockOrder]), and the fragments of each class are written in that order,
+     * [FragmentBatch.alone] among them. The classes may go in another, so long as the classes alone
+     * fix it: a Cypher store writes first the unstamped ones an `UNWIND` cannot write.
      *
      * @param writeFields the only fields to write of a fragment of the class it is asked of, by field
      *   name; null for all of them

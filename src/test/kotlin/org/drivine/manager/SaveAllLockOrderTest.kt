@@ -13,6 +13,8 @@ import org.junit.jupiter.api.Test
 import sample.atomic.Bookmark
 import sample.atomic.ChunkHash
 import sample.atomic.Ledger
+import sample.atomic.StampedTagged
+import sample.atomic.Tagged
 import kotlin.test.assertEquals
 
 /**
@@ -81,6 +83,49 @@ class SaveAllLockOrderTest {
     }
 
     @Test
+    fun `classes an UNWIND cannot write take their locks first whether the rest fit in one statement or not`() {
+        /** The labels of the nodes the statements merge, each run of one label as one. */
+        fun RecordingStore.labels(): List<String> = queried
+            .flatMap { ran -> Regex("""MERGE \(\w+:(\w+)""").findAll(ran.statement).map { it.groupValues[1] }.toList() }
+            .fold(emptyList()) { runs, label -> if (runs.lastOrNull() == label) runs else runs + label }
+
+        val few = neo4j()
+        managerOver(few).saveAll(listOf(Ledger("l1", 1), ChunkHash("h1", "c"), Tagged("t1")))
+        val many = neo4j()
+        managerOver(many).saveAll(listOf(Ledger("l1", 1), Tagged("t1")) + (0..chunk).map { ChunkHash("h%04d".format(it), "c") })
+
+        assertEquals(listOf("Tagged", "ChunkHash", "Ledger"), few.labels())
+        assertEquals(few.labels(), many.labels())
+    }
+
+    @Test
+    fun `fragments an UNWIND cannot write go in the order of their ids, the unstamped first and the stamped last`() {
+        val store = neo4j()
+        // The store hands no stamp back for a fragment saved alone, so the call fails once all is sent.
+        runCatching {
+            managerOver(store).saveAll(listOf(StampedTagged("s2"), Tagged("t2"), Ledger("l1", 1), StampedTagged("s1"), Tagged("t1"), Bookmark("b1", "c-1")))
+        }
+
+        val written = store.queried.map { ran ->
+            val labels = Regex("""MERGE \(\w+:(\w+)""").findAll(ran.statement).map { it.groupValues[1] }.joinToString("+")
+            labels to (ran.parameters["id"] ?: ran.parameters["p0_id"])
+        }
+        assertEquals(
+            listOf("Tagged" to "t1", "Tagged" to "t2", "Ledger+Bookmark" to null, "StampedTagged" to "s1", "StampedTagged" to "s2"),
+            written,
+        )
+    }
+
+    @Test
+    fun `only and except leave the lock order as it is`() {
+        val store = neo4j()
+        managerOver(store).saveAllFields(listOf(Ledger("l2", 2), Ledger("l1", 1)), only = setOf("total"))
+        managerOver(store).saveAllFields(listOf(Ledger("l2", 2), Ledger("l1", 1)), except = setOf("total"))
+
+        assertEquals(listOf(listOf("l1", "l2"), listOf("l1", "l2")), store.queried.map { ran -> ran.rows().map { it["id"] } })
+    }
+
+    @Test
     fun `rows of one id keep the order they were given in, so the last is still written last`() {
         val store = neo4j()
         managerOver(store).saveAll(listOf(Ledger("l2", 1), Ledger("l1", 1), Ledger("l1", 2)))
@@ -127,6 +172,19 @@ class SaveAllLockOrderTest {
             managerOver(store).saveAll(listOf(Ledger("l2", 2), Bookmark("b2", "c-2"), Ledger("l1", 1), Bookmark("b1", "c-1")))
 
             assertEquals(listOf("Bookmark" to "b1", "Bookmark" to "b2", "Ledger" to "l1", "Ledger" to "l2"), store.queried.single().steps(), "${store.type}")
+        }
+    }
+
+    @Test
+    fun `on Oracle and Postgres fragments an UNWIND could not write and stamped ones are steps in the same order as the rest`() {
+        listOf(oracle(), postgres()).forEach { store ->
+            managerOver(store).saveAll(listOf(StampedTagged("s2"), Tagged("t2"), Ledger("l1", 1), StampedTagged("s1"), Tagged("t1"), Bookmark("b1", "c-1")))
+
+            assertEquals(
+                listOf("Bookmark" to "b1", "Ledger" to "l1", "StampedTagged" to "s1", "StampedTagged" to "s2", "Tagged" to "t1", "Tagged" to "t2"),
+                store.queried.single().steps(),
+                "${store.type}",
+            )
         }
     }
 
