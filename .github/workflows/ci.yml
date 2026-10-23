@@ -343,6 +343,11 @@ jobs:
         env:
           ORACLE_TESTS: true
 
+      - name: Run the coroutines module's Oracle tests
+        run: ./gradlew :drivine4j-coroutines:test --no-daemon --tests '*Oracle*'
+        env:
+          ORACLE_TESTS: true
+
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v4
         if: success() || failure()
@@ -402,6 +407,11 @@ jobs:
 
       - name: Run the Postgres tests
         run: ./gradlew :test --no-daemon --tests '*Postgres*'
+        env:
+          POSTGRES_TESTS: true
+
+      - name: Run the coroutines module's Postgres tests
+        run: ./gradlew :drivine4j-coroutines:test --no-daemon --tests '*Postgres*'
         env:
           POSTGRES_TESTS: true
 
