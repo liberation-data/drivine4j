@@ -103,7 +103,26 @@ class SchemaVersionStoreTest {
         assertEquals(listOf("a", "b"), inventory("a\nb"))
     }
 
+    @Test
+    fun `an item ensured at runtime is read back as one, and marked when it waits to be recreated`() {
+        val stored = "RANGE_INDEX:Doc:slug:a\nruntime:VECTOR_INDEX:Doc:embedding:b\nruntime-stale:RANGE_INDEX:Tag:name:c"
+        val record = SchemaVersionStore(cypher { listOf(stored) }).storedRecord()!!
+
+        assertEquals(listOf("RANGE_INDEX:Doc:slug:a", "VECTOR_INDEX:Doc:embedding:b", "RANGE_INDEX:Tag:name:c"), record.keys)
+        assertEquals(setOf("VECTOR_INDEX:Doc:embedding:b", "RANGE_INDEX:Tag:name:c"), record.runtime)
+        assertEquals(setOf("RANGE_INDEX:Tag:name:c"), record.stale)
+        assertEquals(record.keys, SchemaVersionStore(cypher { listOf(stored) }).storedInventory(), "the inventory is every key, unmarked")
+    }
+
     // ----- Writing -----
+
+    @Test
+    fun `a record marks the items ensured at runtime, and those to be recreated`() {
+        val store = cypher()
+        SchemaVersionStore(store, "dice").record("v1", listOf("a", "b", "c"), runtime = setOf("b", "c"), stale = setOf("c"))
+
+        assertEquals("a\nruntime:b\nruntime-stale:c", store.executed.single().parameters["items"])
+    }
 
     @Test
     fun `a record merges the version and the inventory as one string, a key to a line`() {

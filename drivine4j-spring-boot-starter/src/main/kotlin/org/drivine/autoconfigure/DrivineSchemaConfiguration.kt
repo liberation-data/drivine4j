@@ -22,7 +22,8 @@ import org.springframework.context.annotation.Configuration
  *
  * The catalogs are read **once**, here, when the manager bean is made: a [SchemaCatalog] bean made
  * after that (a lazy bean, one in another context) is never seen by the manager, and a later
- * `enforce()` applies the same list.
+ * `enforce()` applies the same list. Schema known only later is given to `SchemaManager.ensure`, under
+ * its owner.
  */
 @Configuration
 class DrivineSchemaConfiguration {

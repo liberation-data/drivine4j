@@ -312,6 +312,12 @@ class FalkorDbSchemaManagementIntegrationTest {
         assertNull(store.storedVersion())
         store.record("model-v1")
         assertEquals("model-v1", store.storedVersion())
+
+        store.record("model-v1", listOf("a", "b", "c"), runtime = setOf("b", "c"), stale = setOf("c"))
+        val record = store.storedRecord()!!
+        assertEquals(listOf("a", "b", "c"), record.keys, "an item ensured at runtime is kept in the inventory")
+        assertEquals(setOf("b", "c"), record.runtime)
+        assertEquals(setOf("c"), record.stale)
         store.clear()
         assertNull(store.storedVersion())
     }
