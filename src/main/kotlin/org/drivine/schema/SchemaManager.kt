@@ -45,6 +45,14 @@ import org.slf4j.LoggerFactory
  * made later is never seen, and calling [enforce] again applies the same catalogs. When there is
  * nothing to apply (no catalog, or only empty ones) the manager says so at INFO, naming the empty ones.
  *
+ * **Runtime schema.** Schema known only later — a vector index whose dimensions arrive with the
+ * embedding model, an index per label a tenant declares — is given to [ensure], under an owner. Its
+ * items join what that owner declared at startup, for the life of this manager: they are applied under
+ * the same policy, recorded in the owner's inventory, checked against other owners, recreated with the
+ * owner, and a later [enforce] keeps them. The marker records them as ensured at runtime, so a manager
+ * built later (the next process) keeps them in the inventory, without reporting them as orphans, until
+ * they are ensured again.
+ *
  * All DDL runs in auto-commit mode (the non-transactional manager) — schema operations cannot run
  * inside an open data transaction.
  */
@@ -56,6 +64,15 @@ class SchemaManager(
 ) {
 
     private val logger = LoggerFactory.getLogger(SchemaManager::class.java)
+
+    /**
+     * What [ensure] was given, by owner and target, each item by its identity (kind, label,
+     * properties): an item ensured again with the same identity replaces the one before.
+     */
+    private val runtime = linkedMapOf<Pair<String?, DatabaseTarget>, LinkedHashMap<Identity, SchemaItemSpec>>()
+
+    /** Serializes [enforce], [recreateAll] and [ensure], which read and write the [runtime] items and the owners' markers. */
+    private val lock = Any()
 
     /**
      * Idempotent, version-aware application of **every** owner. Safe to call on every startup and at
@@ -89,6 +106,70 @@ class SchemaManager(
      */
     fun recreateAll(name: String?) = apply(forceRecreate = true, ownerFilter = OneOwner(name))
 
+    /**
+     * Ensures schema known only at runtime under [owner] (see [SchemaCatalog.named]; `null` is the
+     * anonymous owner), on every schema-capable database. See the overload taking a catalog.
+     */
+    fun ensure(owner: String?, specs: List<SchemaItemSpec>) = ensure(SchemaCatalog.of(specs).named(owner))
+
+    /** Ensures schema known only at runtime under [owner]. See the overload taking a catalog. */
+    fun ensure(owner: String?, vararg specs: SchemaItemSpec) = ensure(owner, specs.toList())
+
+    /**
+     * Ensures schema known only at runtime — a vector index whose dimensions arrive with the embedding
+     * model, an index per label a tenant declares — under the catalog's owner ([SchemaCatalog.named])
+     * and on its databases ([SchemaCatalog.forDatabase]).
+     *
+     * The items are **added** to what the owner declared at startup, for the life of this manager, and
+     * applied as [enforce] applies the owner's: under the [SchemaPolicy] (a drift or violation fails
+     * under `FAIL_FAST`, is logged under `WARN`, and `recreateOnDrift` recreates a drifted item), with
+     * the same summary line, and recorded in the owner's marker. Only the items given are applied; the
+     * owner's other items are left as they are. Ensuring an item again with the same identity (kind,
+     * label, properties) but a different shape replaces it — a drift, handled per the policy.
+     *
+     * From then on the owner's [enforce] and [recreateAll] apply these items with the rest, and they
+     * count as the owner's for co-ownership. A declaration that conflicts with another owner's, or with
+     * the owner's own, fails here, naming both, and nothing is added or applied.
+     *
+     * The marker records the items as ensured at runtime, so an [enforce] by a manager built later,
+     * before they are ensured again, keeps them in the inventory and does not report them as orphans;
+     * when that enforce recreates the owner (its version changed, or [recreateAll]), they are marked, and
+     * recreated the next time they are ensured. An item replaced by one of the same identity under
+     * another name is an orphan of the owner, reported as such.
+     *
+     * `ensure` neither adopts nor acts on a change of the owner's version, which is [enforce]'s, and
+     * `recreateOnStartup` does not apply to it. The catalog must not carry a version.
+     */
+    fun ensure(catalog: SchemaCatalog) {
+        if (catalog.version != null) {
+            throw DrivineException(
+                "Schema ensured at runtime cannot carry a version (${catalog.version}): an owner's version " +
+                    "is declared by its startup catalogs, with SchemaCatalog.withVersion."
+            )
+        }
+        if (catalog.isEmpty()) {
+            logger.info("Nothing to ensure for owner '{}': no items given", catalog.name ?: "schema")
+            return
+        }
+        synchronized(lock) {
+            val candidate = withRuntime(catalog)
+            val runtimeCatalogs = runtimeCatalogs(candidate)
+            val resolution = SchemaTargets.resolve(listOf(catalog), databaseRegistry)
+            warnSkipped(resolution)
+            val ownerFilter = OneOwner(catalog.name)
+            // Plan every database before anything is kept or applied, so a conflict leaves both as they were.
+            val plans = resolution.databases.sorted().mapNotNull { database ->
+                plan(database, runtimeCatalogs, ownerFilter)?.let { database to it }
+            }
+            runtime.clear()
+            runtime.putAll(candidate)
+            val given = catalog.items.map { it.inventoryKey }.toSet()
+            plans.forEach { (database, plan) ->
+                applyToDatabase(database, plan, forceRecreate = false, ownerFilter = ownerFilter, only = given)
+            }
+        }
+    }
+
     private sealed interface OwnerFilter {
         fun includes(name: String?): Boolean
     }
@@ -101,20 +182,45 @@ class SchemaManager(
         override fun includes(name: String?) = name == this.name
     }
 
+    /** What makes two declarations the same item: kind, label and property set. */
+    private data class Identity(val kind: SchemaItemKind, val label: String, val properties: Set<String>)
+
+    private fun identityOf(spec: SchemaItemSpec) = Identity(spec.kind, spec.label, spec.properties.toSet())
+
+    /** The [runtime] items with [catalog]'s added, each replacing an item of its identity, owner and target. */
+    private fun withRuntime(catalog: SchemaCatalog): Map<Pair<String?, DatabaseTarget>, LinkedHashMap<Identity, SchemaItemSpec>> {
+        val copy = runtime.mapValuesTo(linkedMapOf()) { (_, specs) -> LinkedHashMap(specs) }
+        val specs = copy.getOrPut(catalog.name to catalog.target) { linkedMapOf() }
+        catalog.items.forEach { specs[identityOf(it)] = it }
+        return copy
+    }
+
+    private fun runtimeCatalogs(items: Map<Pair<String?, DatabaseTarget>, Map<Identity, SchemaItemSpec>>): List<SchemaCatalog> =
+        items.map { (key, specs) -> SchemaCatalog.of(specs.values.toList()).named(key.first).withTarget(key.second) }
+
     private fun apply(forceRecreate: Boolean, ownerFilter: OwnerFilter) {
-        if (catalogs.none { !it.isEmpty() }) {
-            logNothingToApply()
-            return
+        synchronized(lock) {
+            val runtimeCatalogs = runtimeCatalogs(runtime)
+            val all = catalogs + runtimeCatalogs
+            if (all.none { !it.isEmpty() }) {
+                logNothingToApply()
+                return
+            }
+            val resolution = SchemaTargets.resolve(all, databaseRegistry)
+            warnSkipped(resolution)
+            resolution.databases.sorted().forEach { database ->
+                val plan = plan(database, runtimeCatalogs, ownerFilter) ?: return@forEach
+                applyToDatabase(database, plan, forceRecreate, ownerFilter, only = null)
+            }
         }
-        val resolution = SchemaTargets.resolve(catalogs, databaseRegistry)
+    }
+
+    private fun warnSkipped(resolution: SchemaTargets.Resolution) {
         if (resolution.skipped.isNotEmpty()) {
             logger.warn(
                 "Skipping schema management for databases whose engine has no DDL support: {}",
                 resolution.skipped
             )
-        }
-        resolution.databases.sorted().forEach { database ->
-            applyToDatabase(database, forceRecreate, ownerFilter)
         }
     }
 
@@ -127,7 +233,7 @@ class SchemaManager(
         if (catalogs.isEmpty()) {
             logger.info(
                 "Schema management found no SchemaCatalog; nothing to apply. " +
-                    "Catalogs are read once, when the SchemaManager is built."
+                    "Catalogs are read once, when the SchemaManager is built; schema known later is given to SchemaManager.ensure."
             )
             return
         }
@@ -137,15 +243,30 @@ class SchemaManager(
             .map { (owner, count) -> if (count == 1) owner else "$owner ($count)" }
         logger.info(
             "Schema management found {} SchemaCatalog(s), all empty: {}; nothing to apply. " +
-                "Catalogs are read once, when the SchemaManager is built.",
+                "Catalogs are read once, when the SchemaManager is built; schema known later is given to SchemaManager.ensure.",
             catalogs.size, owners.joinToString(", ")
         )
     }
 
-    private fun applyToDatabase(database: String, forceRecreate: Boolean, ownerFilter: OwnerFilter) {
-        val contributing = catalogs.filter { it.target.includes(database) && !it.isEmpty() }
+    /** What one database is to be given: its catalogs, each owner's merged items, and which are co-owned or runtime-only. */
+    private class Plan(
+        val contributing: List<SchemaCatalog>,
+        val ownerSpecs: Map<String?, List<SchemaItemSpec>>,
+        val coOwnedKeys: Set<String>,
+        /** Per owner, the keys of the items only [ensure] gave it, not one of its startup catalogs. */
+        val runtimeOnlyKeys: Map<String?, Set<String>>,
+    )
+
+    /**
+     * Merges what each owner declares on [database], startup and runtime alike, and fails on a
+     * conflict; null when nothing applies there.
+     */
+    private fun plan(database: String, runtimeCatalogs: List<SchemaCatalog>, ownerFilter: OwnerFilter): Plan? {
+        val declared = catalogs.filter { it.target.includes(database) && !it.isEmpty() }
+        val ensured = runtimeCatalogs.filter { it.target.includes(database) && !it.isEmpty() }
+        val contributing = declared + ensured
         if (contributing.isEmpty()) {
-            return
+            return null
         }
 
         // Group by owner. Each owner is deduplicated, versioned, and recorded independently. This is
@@ -156,7 +277,17 @@ class SchemaManager(
             .mapValues { (_, cats) -> SchemaCatalog.of(cats.flatMap { it.items }).items }
 
         detectCrossOwnerConflicts(database, ownerSpecs, ownerFilter)
-        val coOwnedKeys = coOwnedKeys(ownerSpecs)
+
+        val runtimeOnlyKeys = ensured.groupBy { it.name }.mapValues { (owner, cats) ->
+            val atStartup = declared.filter { it.name == owner }.flatMap { it.items }.map { it.inventoryKey }.toSet()
+            cats.flatMap { it.items }.map { it.inventoryKey }.toSet() - atStartup
+        }
+        return Plan(contributing, ownerSpecs, coOwnedKeys(ownerSpecs), runtimeOnlyKeys)
+    }
+
+    /** Applies [plan] to [database] for the owners [ownerFilter] takes; [only] the items of those keys, when given. */
+    private fun applyToDatabase(database: String, plan: Plan, forceRecreate: Boolean, ownerFilter: OwnerFilter, only: Set<String>?) {
+        val ownerSpecs = plan.ownerSpecs
 
         // Schema DDL must run in auto-commit mode.
         val manager = persistenceManagerFactory.get(database, PersistenceManagerType.NON_TRANSACTIONAL)
@@ -166,9 +297,13 @@ class SchemaManager(
             .filter { ownerFilter.includes(it) }
             .sortedBy { it ?: "" }
             .forEach { owner ->
-                val cats = contributing.filter { it.name == owner }
+                val cats = plan.contributing.filter { it.name == owner }
+                val declaredByOthers = ownerSpecs.filterKeys { it != owner }.values.flatten().map { it.inventoryKey }.toSet()
                 try {
-                    applyOwner(database, manager, owner, ownerSpecs.getValue(owner), cats, coOwnedKeys, forceRecreate)
+                    applyOwner(
+                        database, manager, owner, ownerSpecs.getValue(owner), cats, plan.coOwnedKeys,
+                        plan.runtimeOnlyKeys[owner].orEmpty(), declaredByOthers, forceRecreate, only,
+                    )
                 } catch (e: DrivineException) {
                     // Isolate per owner: record the failure but keep applying other owners so a
                     // library's schema still converges (and records its version) when the app's fails.
@@ -185,6 +320,11 @@ class SchemaManager(
         }
     }
 
+    /**
+     * Applies one owner's items on one database and records them in its marker. [only], when given,
+     * is the keys of the items [ensure] was given: just those are applied, the version stays as it was
+     * recorded, and `recreateOnStartup` does not apply.
+     */
     private fun applyOwner(
         database: String,
         manager: PersistenceManager,
@@ -192,47 +332,84 @@ class SchemaManager(
         specs: List<SchemaItemSpec>,
         cats: List<SchemaCatalog>,
         coOwnedKeys: Set<String>,
+        runtimeOnlyKeys: Set<String>,
+        declaredByOthers: Set<String>,
         forceRecreate: Boolean,
+        only: Set<String>?,
     ) {
         val ownerLabel = owner ?: "schema"
+        val ensuring = only != null
         val effectiveVersion = SchemaCatalog.combineVersions(cats)
 
         val versionStore = SchemaVersionStore(manager, SchemaVersionStore.scopeFor(owner))
-        val storedVersion = effectiveVersion?.let {
+        if (effectiveVersion != null) {
             // Guard the marker's singleton invariant (dedupe + uniqueness constraint on the MERGE
             // key) before reading or writing it — concurrent enforcing processes could otherwise
             // each create a marker.
             versionStore.ensureSingleton()
-            versionStore.storedVersion()
         }
+        // ensure() records the version it finds, so a change it does not act on is left to enforce.
+        val storedVersion = if (effectiveVersion != null || ensuring) versionStore.storedVersion() else null
         // A version *change* (a prior value existed and now differs) forces a rebuild of this owner's
         // items. A first-ever value is adopted without recreating, so enabling versioning never nukes
         // a healthy schema.
-        val versionChanged = effectiveVersion != null && storedVersion != null && storedVersion != effectiveVersion
+        val versionChanged = !ensuring && effectiveVersion != null && storedVersion != null && storedVersion != effectiveVersion
+        val recreateOwner = versionChanged || (!ensuring && policy.recreateOnStartup)
+
+        // Items an earlier manager ensured at runtime that this one has not been given: kept in the
+        // inventory, not orphans, since they arrive later — unless an item declared now has the same
+        // identity under another key (a rename), which makes the recorded one an orphan.
+        val recorded = versionStore.storedRecord()
+        val declaredKeys = specs.map { it.inventoryKey }.toSet()
+        val identities = specs.map { it.inventoryKey.removeSuffix(it.effectiveName) }
+        val carried = recorded?.runtime.orEmpty().filter { key -> key !in declaredKeys && identities.none { key.startsWith(it) } }
+        val stale = recorded?.stale.orEmpty()
 
         // Report an owner's items that the marker recorded but that are no longer declared (orphans),
         // excluding any still co-owned by another live owner. Detection only; cleanup is manual or via
         // a deliberate recreateAll (see the docs) — auto-drop is a documented follow-up.
-        reportOrphans(database, ownerLabel, versionStore, specs, coOwnedKeys)
+        reportOrphans(database, ownerLabel, recorded?.keys, declaredKeys + carried, coOwnedKeys)
 
-        logger.info(
-            "Applying schema for owner '{}' on '{}': {} items (forceRecreate={}, versionChanged={}, version={})",
-            ownerLabel, database, specs.size, forceRecreate, versionChanged, effectiveVersion
-        )
+        val toApply = if (only == null) specs else specs.filter { it.inventoryKey in only }
+        if (ensuring) {
+            logger.info(
+                "Ensuring schema for owner '{}' on '{}': {} runtime items, {} declared in all",
+                ownerLabel, database, toApply.size, specs.size
+            )
+        } else {
+            logger.info(
+                "Applying schema for owner '{}' on '{}': {} items (forceRecreate={}, versionChanged={}, version={})",
+                ownerLabel, database, specs.size, forceRecreate, versionChanged, effectiveVersion
+            )
+        }
 
         val outcomes = mutableListOf<Pair<SchemaItemSpec, EnsureResult>>()
-        specs.forEach { spec ->
+        toApply.forEach { spec ->
             // A co-owned item is never dropped by a single owner's version bump — ensure it instead.
-            // Only an explicit recreateAll (forceRecreate) rebuilds a co-owned item.
+            // Only an explicit recreateAll (forceRecreate) rebuilds a co-owned item. A runtime item
+            // marked stale missed its owner's recreate, and is recreated now.
             val coOwned = spec.inventoryKey in coOwnedKeys
-            val recreate = forceRecreate || ((policy.recreateOnStartup || versionChanged) && !coOwned)
+            val recreate = forceRecreate || ((recreateOwner || spec.inventoryKey in stale) && !coOwned)
             outcomes += spec to when (spec) {
                 is IndexSpec -> applyIndex(manager, spec, recreate)
                 is ConstraintSpec -> applyConstraint(manager, spec, recreate)
             }
         }
 
-        finish(database, ownerLabel, outcomes, effectiveVersion, specs, versionStore)
+        finish(database, ownerLabel, outcomes) {
+            // A carried item misses a recreate of its owner, having no spec here: mark it, so that it
+            // is recreated when next ensured. A version change spares one another owner declares, as
+            // it spares a co-owned item. A runtime item not applied this time keeps its mark.
+            val applied = toApply.map { it.inventoryKey }.toSet()
+            val staleAfter = stale.filter { it in runtimeOnlyKeys && it !in applied } +
+                carried.filter { it in stale || forceRecreate || (recreateOwner && it !in declaredByOthers) }
+            versionStore.record(
+                if (ensuring) storedVersion else effectiveVersion,
+                specs.map { it.inventoryKey } + carried,
+                runtimeOnlyKeys + carried,
+                staleAfter.toSet(),
+            )
+        }
     }
 
     /**
@@ -281,13 +458,12 @@ class SchemaManager(
     private fun reportOrphans(
         database: String,
         ownerLabel: String,
-        versionStore: SchemaVersionStore,
-        specs: List<SchemaItemSpec>,
+        stored: List<String>?,
+        kept: Set<String>,
         coOwnedKeys: Set<String>,
     ) {
-        val stored = versionStore.storedInventory() ?: return // legacy marker: no known prior inventory
-        val declared = specs.map { it.inventoryKey }.toSet()
-        val orphans = stored.filter { it !in declared && it !in coOwnedKeys }
+        if (stored == null) return // legacy marker: no known prior inventory
+        val orphans = stored.filter { it !in kept && it !in coOwnedKeys }
         if (orphans.isNotEmpty()) {
             logger.warn(
                 "Owner '{}' on '{}' previously applied {} item(s) it no longer declares (orphans): {}. " +
@@ -322,18 +498,16 @@ class SchemaManager(
     }
 
     /**
-     * Reports outcomes and records the owner's version and inventory. The marker is written only on
-     * success — if FAIL_FAST throws on a problem, the marker is left untouched so the next enforce
-     * retries. The inventory is recorded even when this owner has no version token, so orphan
+     * Reports outcomes and records the owner's version and inventory ([record]). The marker is written
+     * only on success — if FAIL_FAST throws on a problem, the marker is left untouched so the next
+     * enforce retries. The inventory is recorded even when this owner has no version token, so orphan
      * detection works for un-versioned owners too.
      */
     private fun finish(
         database: String,
         ownerLabel: String,
         outcomes: List<Pair<SchemaItemSpec, EnsureResult>>,
-        effectiveVersion: String?,
-        specs: List<SchemaItemSpec>,
-        versionStore: SchemaVersionStore,
+        record: () -> Unit,
     ) {
         val created = outcomes.count { it.second is EnsureResult.Created }
         val matching = outcomes.count { it.second is EnsureResult.AlreadyMatching }
@@ -355,7 +529,7 @@ class SchemaManager(
         }
 
         // Record what this owner applied, versioned or not, so its inventory ties to the marker.
-        versionStore.record(effectiveVersion, specs.map { it.inventoryKey })
+        record()
 
         problems.forEach { (spec, result) -> logger.warn(describe(spec, result)) }
     }

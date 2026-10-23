@@ -3345,7 +3345,29 @@ class Reindexer(private val schema: SchemaManager) {
 
 `enforce()` is safe to call repeatedly; `recreateAll()` is the destructive hammer. (`drivine.schema.enabled=false` disables only the startup run — the bean is still there for runtime calls.)
 
-The manager reads the catalog beans **once**, when it is built: a `SchemaCatalog` bean made later is not seen, and a later `enforce()` applies the same catalogs. With nothing to apply it says so at INFO — `Schema management found no SchemaCatalog` when none was registered, or `found 2 SchemaCatalog(s), all empty: 'dice', unnamed` when every one registered nothing — so that a missing index can be traced to a catalog that never arrived.
+The manager reads the catalog beans **once**, when it is built: a `SchemaCatalog` bean made later is not seen, and a later `enforce()` applies the same catalogs. With nothing to apply it says so at INFO — `Schema management found no SchemaCatalog` when none was registered, or `found 2 SchemaCatalog(s), all empty: 'dice', unnamed` when every one registered nothing — so that a missing index can be traced to a catalog that never arrived. Schema known only later is given to `ensure`, below.
+
+### Schema known only at runtime (`SchemaManager.ensure`)
+
+Some schema cannot be in a catalog because it is not known when the catalogs are read: a vector index whose dimensions arrive with an embedding model configured after startup, an index for each label a tenant declares. Give it to `ensure`, under the owner it belongs to:
+
+```kotlin
+@Component
+class PropositionIndex(private val schema: SchemaManager) {
+    fun modelArrived(dimensions: Int) {
+        schema.ensure("dice", VectorIndexSpec("Proposition", "embedding", dimensions))
+    }
+}
+```
+
+The items are added to what that owner's catalogs declared, for the life of the manager, and applied as `enforce` applies the owner's:
+
+- **Under the same policy.** `drivine.schema.mode`, `recreate-on-drift` and `violation-sample-size` apply: a drift or a violation fails under `FAIL_FAST` and is logged under `WARN`, and the same summary line is logged. Only the items given are applied; the owner's others are left as they are. `ensure` neither adopts nor acts on a change of the owner's version, which is `enforce`'s, and `recreate-on-startup` does not apply to it.
+- **In the owner's inventory.** They are recorded in the owner's `_DrivineSchema` marker, marked as ensured at runtime. A later `enforce()` or `enforce("dice")` applies them with the rest, and `recreateAll` recreates them. An `enforce` by a manager built later — the next process, before the item is ensured again — keeps them in the inventory and does not report them as orphans.
+- **Recreated with the owner.** When that later `enforce` recreates the owner's items (its version changed, or `recreateAll`), it cannot recreate a runtime item whose spec it has not been given, so it marks it, and the next `ensure` of the item recreates it.
+- **Checked against other owners.** A declaration that conflicts with another owner's, or with the owner's own, fails naming both, and nothing is added. One identical to another owner's is co-owned, as between catalogs.
+
+Ensuring an item again with the same kind, label and properties replaces it: of another shape it is drift, handled per the policy. One given under a new name leaves the old name an orphan of the owner, reported by the next apply. To target databases, give a catalog: `schema.ensure(SchemaCatalog.of(spec).named("dice").forDatabase("users"))`. A runtime catalog cannot carry a version, since the owner's version is its startup catalogs'.
 
 ### Version-triggered rebuild
 
