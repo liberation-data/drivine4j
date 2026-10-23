@@ -209,6 +209,12 @@ class OracleSchemaManagementIntegrationTest {
         assertEquals("model-v1", store.storedVersion())
         assertEquals(listOf("a", "b"), store.storedInventory())
 
+        store.record("model-v1", listOf("a", "b", "c"), runtime = setOf("b", "c"), stale = setOf("c"))
+        val record = store.storedRecord()!!
+        assertEquals(listOf("a", "b", "c"), record.keys, "an item ensured at runtime is kept in the inventory")
+        assertEquals(setOf("b", "c"), record.runtime)
+        assertEquals(setOf("c"), record.stale)
+
         store.record("model-v2")
         assertEquals("model-v2", store.storedVersion())
         assertEquals(emptyList(), store.storedInventory(), "an empty inventory is one, and not an absent one")

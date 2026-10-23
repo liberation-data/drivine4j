@@ -133,6 +133,9 @@ class SchemaCatalog private constructor(
      */
     fun forAllDatabases(): SchemaCatalog = SchemaCatalog(indexes, constraints, DatabaseTarget.All, version, name)
 
+    /** A copy of this catalog applying to [target]. */
+    internal fun withTarget(target: DatabaseTarget): SchemaCatalog = SchemaCatalog(indexes, constraints, target, version, name)
+
     /** Merges another catalog into this one. Both must share the same [target] and [name]. */
     operator fun plus(other: SchemaCatalog): SchemaCatalog = merge(listOf(this, other))
 

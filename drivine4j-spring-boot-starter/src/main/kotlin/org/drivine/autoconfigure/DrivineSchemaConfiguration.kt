@@ -17,7 +17,13 @@ import org.springframework.context.annotation.Configuration
  * Wires the [SchemaManager] from all [SchemaCatalog] beans the consumer registers, plus a startup
  * runner that calls [SchemaManager.enforce]. The manager bean is always available (so an application
  * can call `enforce()` / `recreateAll()` at runtime); only the startup run is gated by
- * `drivine.schema.enabled`. Consumers without catalog beans pay nothing — the manager no-ops.
+ * `drivine.schema.enabled`. Consumers without catalog beans pay nothing — the manager no-ops, and
+ * says so at INFO.
+ *
+ * The catalogs are read **once**, here, when the manager bean is made: a [SchemaCatalog] bean made
+ * after that (a lazy bean, one in another context) is never seen by the manager, and a later
+ * `enforce()` applies the same list. Schema known only later is given to `SchemaManager.ensure`, under
+ * its owner.
  */
 @Configuration
 class DrivineSchemaConfiguration {

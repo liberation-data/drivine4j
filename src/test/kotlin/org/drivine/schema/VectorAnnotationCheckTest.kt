@@ -20,6 +20,9 @@ import org.junit.jupiter.api.assertThrows
 @NodeFragment(labels = ["CheckMessageLater"])
 data class CheckMessageLater(@NodeId val id: String, val embedding: List<Float>?)
 
+@NodeFragment(labels = ["CheckEnsured"])
+data class CheckEnsured(@NodeId val id: String, val embedding: List<Float>?)
+
 @NodeFragment(labels = ["CheckMessageFirst"])
 data class CheckMessageFirst(@NodeId val id: String, val embedding: List<Float>?)
 
@@ -67,6 +70,17 @@ class VectorAnnotationCheckTest {
         val error = assertThrows<DrivineException> { enforce(VectorIndexSpec("CheckMessageLater", "embedding", 4)) }
 
         assertEquals(message("CheckMessageLater.embedding", "CheckMessageLater.embedding"), error.message)
+    }
+
+    @Test
+    fun `ensuring a spec at runtime refuses it over a known fragment's unannotated field`() {
+        FragmentModel.from(CheckEnsured::class)
+        val registry = DatabaseRegistry(DataSourceMap(emptyMap()))
+        val manager = SchemaManager(PersistenceManagerFactory(registry, TransactionContextHolder(registry)), registry, emptyList())
+
+        val error = assertThrows<DrivineException> { manager.ensure("rag", VectorIndexSpec("CheckEnsured", "embedding", 4)) }
+
+        assertEquals(message("CheckEnsured.embedding", "CheckEnsured.embedding"), error.message)
     }
 
     @Test
