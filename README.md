@@ -2600,14 +2600,14 @@ class Onboarding(
     private val gom: StatelessGraphObjectManager,
     private val audit: AuditService,                 // its methods are @Transactional
 ) {
-    suspend fun onboard(person: Person, hire: Hire) = transactions.transactionSuspending {
-        withContext(Dispatchers.IO) {
+    suspend fun onboard(person: Person, hire: Hire) = withContext(Dispatchers.IO) {
+        transactions.transactionSuspending {
             gom.save(person)
             audit.record(hire)                       // @Transactional: joins the block's transaction
-        }
-        notifyPayroll(hire)                          // a suspend call: the block carries on, on any thread
-        withContext(Dispatchers.IO) { gom.save(hire) }
-    } // all of it commits here; a throw out of the block rolls it all back
+            notifyPayroll(hire)                      // a suspend call: the block resumes on any thread, still in it
+            gom.save(hire)
+        } // all of it commits here; a throw out of the block rolls it all back
+    }
 
     @Transactional
     fun rehire(person: Person, hire: Hire) = runBlocking {
@@ -2635,11 +2635,13 @@ fun main() {
         routing {
             post("/people") {
                 val person = call.receive<Person>()
-                drivine.transactionSuspending {
-                    withContext(Dispatchers.IO) { gom.save(person) }
-                    val hire = Hire("hire-${person.id}", person.id, LocalDate.now())
-                    withContext(Dispatchers.IO) { gom.save(hire) }
-                }                                    // both commit, or neither
+                withContext(Dispatchers.IO) {        // off the event loop: the saves and the commit block
+                    drivine.transactionSuspending {
+                        gom.save(person)
+                        delay(10)                    // resumes on another thread, still in the transaction
+                        gom.save(Hire("hire-${person.id}", person.id, LocalDate.now()))
+                    }                                // both commit, or neither
+                }
                 call.respond(HttpStatusCode.Created)
             }
         }
@@ -2648,7 +2650,9 @@ fun main() {
 ```
 
 - It takes the propagations and `rollback` that `transaction { }` does, and commits and rolls back as it does. Drivine's
-  calls are blocking calls, so make them on a dispatcher for blocking work, such as `Dispatchers.IO`.
+  calls are blocking calls, and so are the commit and the rollback, which run where `transactionSuspending` was
+  called: call it on a dispatcher for blocking work, such as `Dispatchers.IO`, as above. The block can switch
+  dispatcher with `withContext`, and stays in the transaction.
 - A coroutine that runs on a thread the block has left finds no transaction there.
 - **Coroutines launched in the block (`launch`, `async`, and what is built on them, such as `flowOn`) don't share its
   transaction**: two of them using one transaction's connection at once isn't safe on every driver. A statement such a

@@ -21,6 +21,8 @@ import java.util.concurrent.Callable
  * for a block that returns nothing.
  *
  * The transaction is the calling thread's, as Spring's is: a block's work on another thread is not in it.
+ * For a block that suspends, and whose transaction follows the coroutine from thread to thread,
+ * `drivine4j-coroutines` adds `transactionSuspending { }`.
  *
  * - The outermost block's transaction commits when the block returns, and rolls back when anything
  *   is thrown out of it, a checked exception too.
@@ -42,7 +44,10 @@ class Transactions(
     val contextHolder: TransactionContextHolder,
 ) {
 
-    /** The transaction the calling thread is in, begun by a block or by Spring, or null. */
+    /**
+     * The transaction the calling thread is in, begun by a block or by Spring, or null. In a coroutine
+     * launched in a suspend block, a stand-in that refuses to be used: see [DrivineTransactionObject.refusal].
+     */
     val current: DrivineTransactionObject?
         get() = contextHolder.currentTransaction
 

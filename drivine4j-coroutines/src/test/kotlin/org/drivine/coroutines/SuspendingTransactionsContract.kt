@@ -291,6 +291,82 @@ abstract class SuspendingTransactionsContract {
     }
 
     @Test
+    fun `a block run through runBlocking inside a block joins it, where the outer block found the thread's transaction`() {
+        val template = TransactionTemplate(DrivineTransactionManager(drivine.transactionContextHolder))
+
+        template.executeWithoutResult {
+            runBlocking {
+                drivine.transactionSuspending {
+                    val outer = drivine.transactions.current
+                    withContext(Dispatchers.IO) {
+                        // Blocking code the block calls, which runs suspend code of its own: nested, not at once.
+                        runBlocking {
+                            drivine.transactionSuspending {
+                                assertSame(outer, drivine.transactions.current)
+                                create("nested")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        assertEquals(listOf("nested"), committed())
+    }
+
+    @Test
+    fun `rollback leaves nothing a block wrote, though it returned`() = runBlocking {
+        val result = drivine.transactionSuspending(rollback = true) {
+            create("a")
+            withContext(Dispatchers.IO) { create("b") }
+            "done"
+        }
+
+        assertEquals("done", result)
+        assertEquals(emptyList(), committed())
+    }
+
+    @Test
+    fun `a coroutine launched in a block with no transaction runs as it would anywhere`() = runBlocking {
+        assertFailsWith<IllegalStateException> {
+            drivine.transactionSuspending {
+                drivine.transactionSuspending(Propagation.NOT_SUPPORTED) {
+                    launch(Dispatchers.IO) {
+                        assertNull(drivine.transactions.current)
+                        create("launched, no transaction")
+                    }.join()
+                }
+                drivine.transactionSuspending(Propagation.SUPPORTS) {
+                    assertNotNull(drivine.transactions.current)
+                    create("supports, joined")
+                }
+                error("the outer block fails")
+            }
+        }
+        drivine.transactionSuspending(Propagation.SUPPORTS) {
+            assertNull(drivine.transactions.current)
+            create("supports, alone")
+        }
+
+        assertEquals(listOf("launched, no transaction", "supports, alone"), committed())
+    }
+
+    @Test
+    fun `a coroutine launched in the block can't join it through Spring`() = runBlocking {
+        val template = TransactionTemplate(DrivineTransactionManager(drivine.transactionContextHolder))
+
+        drivine.transactionSuspending {
+            supervisorScope {
+                assertFailsWith<IllegalTransactionStateException> {
+                    async(Dispatchers.IO) { template.executeWithoutResult { create("joined through Spring") } }.await()
+                }
+            }
+        }
+
+        assertEquals(emptyList(), committed())
+    }
+
+    @Test
     fun `two coroutines that find the thread's transaction can't run blocks in it at once`() {
         val template = TransactionTemplate(DrivineTransactionManager(drivine.transactionContextHolder))
         val first = CompletableDeferred<Unit>()

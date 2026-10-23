@@ -17,16 +17,19 @@ import kotlin.coroutines.CoroutineContext
  * the block left finds no transaction there.
  *
  * ```kotlin
- * suspend fun onboard(person: Person, hire: Hire) = transactions.transactionSuspending {
- *     gom.save(person)
- *     withContext(Dispatchers.IO) { audit.record(hire) }
- *     gom.save(hire)
- * } // all three commit here; a throw out of the block rolls them back
+ * suspend fun onboard(person: Person, hire: Hire) = withContext(Dispatchers.IO) {
+ *     transactions.transactionSuspending {
+ *         gom.save(person)
+ *         notifyPayroll(hire)    // suspends, and resumes on any thread, still in the transaction
+ *         gom.save(hire)
+ *     } // both commit here; a throw out of the block rolls both back
+ * }
  * ```
  *
  * The propagations, [rollback], and when the transaction commits or rolls back, are as for
  * [Transactions.transaction]. Drivine's calls in the block are blocking calls, as they are anywhere,
- * so run the block on a dispatcher for blocking work, such as `Dispatchers.IO`.
+ * and so are the commit and the rollback, which run in the caller's context once the block ends: call
+ * it on a dispatcher for blocking work, such as `Dispatchers.IO`.
  *
  * - **Nesting.** A suspend block, a [Transactions.transaction] block, a `@Transactional` method or a
  *   `TransactionTemplate` run in the block joins its transaction, as `REQUIRED` says. A suspend block
@@ -55,7 +58,13 @@ suspend fun <T> Transactions.transactionSuspending(
     // A coroutine no suspend block has put in a transaction is in the thread's, if it is in any.
     val current = if (carried != null) carried.transaction else holder.currentTransaction
     val joins = propagation == Propagation.REQUIRED || propagation == Propagation.SUPPORTS || propagation == Propagation.MANDATORY
-    val claimed = if (carried == null && current != null && joins) ThreadTransactionUsers.claim(current) else null
+    // A block run through runBlocking by a coroutine that carries the thread's transaction is nested in
+    // that coroutine, which waits for it, so it joins as a nested block does, with no claim of its own.
+    val claimed = if (carried == null && current != null && joins && !TransactionElement.carriedOnThread(current)) {
+        ThreadTransactionUsers.claim(current)
+    } else {
+        null
+    }
     try {
         return propagate(propagation, rollback, current) { transaction ->
             withContext(TransactionElement(holder, transaction), block)
@@ -92,11 +101,13 @@ internal class TransactionElement(
     override fun updateThreadContext(context: CoroutineContext): DrivineTransactionObject? {
         val previous = holder.currentTransaction
         holder.currentTransaction = transaction
+        carried.set(Carried(transaction, carried.get()))
         return previous
     }
 
     override fun restoreThreadContext(context: CoroutineContext, oldState: DrivineTransactionObject?) {
         holder.currentTransaction = oldState
+        carried.set(carried.get()?.below)
     }
 
     /**
@@ -120,6 +131,17 @@ internal class TransactionElement(
 
     /** One key for each [TransactionContextHolder], so that two [Drivine]s' transactions are carried apart. */
     data class Key(val holder: TransactionContextHolder) : CoroutineContext.Key<TransactionElement>
+
+    /** A transaction an element has put on the thread, over those put there before it and not yet taken off. */
+    private class Carried(val transaction: DrivineTransactionObject?, val below: Carried?)
+
+    companion object {
+        private val carried = ThreadLocal<Carried?>()
+
+        /** Whether [transaction] is on the thread because a coroutine running here carries it, not because the thread began it. */
+        fun carriedOnThread(transaction: DrivineTransactionObject): Boolean =
+            generateSequence(carried.get()) { it.below }.any { it.transaction === transaction }
+    }
 
     private fun launchedInBlock(transaction: DrivineTransactionObject) =
         "A coroutine launched inside transaction ${transaction.id}'s block can't use the transaction: " +
