@@ -1339,8 +1339,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 // A moment is its ISO text, as a store keeps it; one given is taken as it is.
                 "datetime" -> if (arguments.isEmpty()) Value.Json(isoNow()) else one()
                 else -> {
+                    // A function the store has no SQL for is named before its arguments are counted.
+                    if (function(name, "NULL") == null) unsupported("The function ${function.name}()")
                     val argument = comparable(json(one()))
-                    function(name, argument)?.let { Value.Json(shared(argument) { (x) -> function(name, x)!! }) } ?: unsupported("The function ${function.name}()")
+                    Value.Json(shared(argument) { (x) -> function(name, x)!! })
                 }
             }
         }

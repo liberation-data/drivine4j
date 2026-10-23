@@ -117,6 +117,59 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `rows of a parameter are merged, related, read back as a view reads them, and detach deleted, as drivine's users write them`() {
+        val rows = listOf(
+            mapOf("id" to "a", "props" to mapOf("id" to "a", "name" to "O'Brien \"q\" ünï 😀", "score" to 1.5, "tags" to listOf("x", "y"), "ok" to true)),
+            mapOf("id" to "b", "props" to mapOf("id" to "b", "name" to "Bea", "score" to 2L, "tags" to emptyList<String>(), "ok" to false)),
+        )
+        assertEquals(
+            listOf("a", "b"),
+            query("UNWIND \$rows AS row MERGE (n:CyWrite {id: row.id}) SET n += row.props RETURN n.id ORDER BY n.id", mapOf("rows" to rows)),
+        )
+        assertEquals(
+            listOf(rows[0]["props"]),
+            query("MATCH (n:CyWrite {id: \$id}) RETURN properties(n)", mapOf("id" to "a")),
+        )
+        assertEquals(
+            listOf(mapOf("id" to "c", "name" to "C")),
+            query("CREATE (p:CyWrite) SET p = \$props RETURN properties(p)", mapOf("props" to mapOf("id" to "c", "name" to "C", "gone" to null))),
+        )
+        assertEquals(
+            listOf(1L),
+            query("MATCH (a:CyWrite {id: \$a}), (b:CyWrite {id: \$b}) MERGE (a)-[r:CyKNOWS]->(b) ON CREATE SET r.since = \$s RETURN count(r)", mapOf("a" to "a", "b" to "b", "s" to 2020)),
+        )
+        query("MATCH (a:CyWrite {id: \$a}), (b:CyWrite {id: \$b}) MERGE (a)-[r:CyKNOWS]->(b) ON MATCH SET r.again = true", mapOf("a" to "a", "b" to "b"))
+        assertEquals(
+            listOf(mapOf("person" to mapOf("id" to "a", "name" to "O'Brien \"q\" ünï 😀", "score" to 1.5, "tags" to listOf("x", "y"), "ok" to true),
+                "friends" to listOf(mapOf("id" to "b", "name" to "Bea", "since" to 2020L, "again" to true)), "labels" to listOf("CyWrite"))),
+            query(
+                """
+                MATCH (person:CyWrite {id: ${'$'}id})
+                WITH person, [(person)-[r:CyKNOWS]->(f:CyWrite) | f {.id, .name, since: r.since, again: r.again}] AS friends
+                RETURN { person: properties(person), friends: friends, labels: labels(person) }
+                """,
+                mapOf("id" to "a"),
+            ),
+        )
+        assertEquals(listOf("a"), query("MATCH (n:CyWrite) WHERE 'x' IN n.tags AND toLower(n.name) CONTAINS toLower(\$q) RETURN n.id", mapOf("q" to "o'b")))
+        assertEquals(listOf(null), query("OPTIONAL MATCH (n:CyWrite {id: 'zz'}) RETURN n"))
+        assertEquals(listOf(mapOf("total" to 3L, "best" to 2L)), query("MATCH (n:CyWrite) RETURN {total: count(n), best: max(n.score)}"))
+        assertEquals(listOf("b"), query("MATCH (n:CyWrite) RETURN n.id ORDER BY n.id SKIP \$s LIMIT \$l", mapOf("s" to 1, "l" to 1)))
+        assertEquals(listOf(mapOf("n" to "Bea", "c" to "none")), query("MATCH (n:CyWrite {id: 'b'}) RETURN {n: coalesce(n.missing, n.name), c: CASE WHEN size(n.tags) = 0 THEN 'none' ELSE 'some' END}"))
+        assertEquals(listOf("a"), query("MATCH (n:CyWrite) WHERE EXISTS { (n)-[:CyKNOWS]->(:CyWrite) } RETURN n.id"))
+        assertEquals(listOf(listOf("O'Brien \"q\" ünï 😀", "Bea")), query("MATCH (n:CyWrite) WITH n ORDER BY n.id LIMIT 2 RETURN collect(n.name)"))
+        query("UNWIND \$rels AS rel MATCH (a:CyWrite {id: rel.from}), (b:CyWrite {id: rel.to}) MERGE (a)-[:CyLIKES {w: rel.w}]->(b)", mapOf("rels" to listOf(mapOf("from" to "b", "to" to "c", "w" to 1), mapOf("from" to "c", "to" to "a", "w" to 2))))
+        assertEquals(listOf(listOf("b", "c", 1L), listOf("c", "a", 2L)), query("MATCH (a)-[r:CyLIKES]->(b) RETURN [a.id, b.id, r.w] ORDER BY r.w"))
+        query("MATCH (n:CyWrite) WHERE n.id IN \$ids DETACH DELETE n", mapOf("ids" to listOf("a", "b")))
+        assertEquals(listOf("c"), query("MATCH (n:CyWrite) RETURN n.id"))
+        assertEquals(listOf(0L), query("MATCH ()-[r:CyKNOWS]->() RETURN count(r)"))
+        val big = mapOf("id" to "big", "n" to 9007199254740993L, "f" to 0.1, "neg" to -42L, "s" to "1e3", "long" to "x".repeat(3000), "e" to "")
+        assertEquals(listOf(big), query("CREATE (n:CyWrite) SET n = \$p RETURN properties(n)", mapOf("p" to big)))
+        assertEquals(listOf(9007199254740994L), query("MATCH (n:CyWrite {id: 'big'}) RETURN n.n + 1"))
+        assertEquals(listOf("big"), query("MATCH (n:CyWrite) WHERE n.n = \$n RETURN n.id", mapOf("n" to 9007199254740993L)))
+    }
+
+    @Test
     fun `set writes a property, replaces or adds a map, a null removing its key, and a label, and remove takes them away`() {
         query("CREATE (:CyWrite {id: 1, a: 'a', b: 'b'})")
         assertEquals(

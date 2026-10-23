@@ -54,6 +54,9 @@ class CompilerRefusalTest {
         assertRefused("A slice of a list (list[from..to]) is Cypher, and does not run on Oracle or Postgres yet.", "RETURN [1, 2][0..1]")
         assertRefused("SKIP or LIMIT of an expression is Cypher, and does not run on Oracle or Postgres yet.", "MATCH (n) RETURN n LIMIT 1 + 1")
         assertRefused("The function nope() is Cypher, and does not run on Oracle or Postgres yet.", "RETURN nope(1)")
+        // One not compiled is named whatever it is given, not taken for one of a single argument.
+        assertRefused("The function split() is Cypher, and does not run on Oracle or Postgres yet.", "RETURN split('a,b', ',')")
+        assertRefused("The function rand() is Cypher, and does not run on Oracle or Postgres yet.", "RETURN rand()")
         assertRefused(
             "A relationship variable bound before its pattern is Cypher, and does not run on Oracle or Postgres yet.",
             "MATCH (a)-[r]->(b) MATCH (b)-[r]->(c) RETURN c",
