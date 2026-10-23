@@ -353,6 +353,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** `datetime()`: the moment the statement runs, as JSON's text in ISO 8601, in UTC. */
     protected abstract fun isoNow(): String
 
+    /** `date()`: the day the statement runs, in UTC, as JSON's text in ISO 8601. */
+    protected abstract fun dateNow(): String
+
+    /** `localdatetime()`: the moment the statement runs, in UTC and with no zone written, as JSON's text in ISO 8601. */
+    protected abstract fun localNow(): String
+
     // ----- A store's procedure, for a statement that writes -----
 
     /**
@@ -450,8 +456,23 @@ abstract class SqlCypherCompiler(graph: String) {
          * a row for each way its reading clauses are met.
          */
         private fun correlated(query: Query, scope: Map<String, Value>, what: String): String {
-            if (query.unions.isNotEmpty()) unsupported("A UNION in $what")
-            if (query.clauses.any(::writes)) unsupported("A write in $what")
+            if ((query.clauses + query.unions.flatMap { it.clauses }).any(::writes)) unsupported("A write in $what")
+            if (query.unions.isNotEmpty()) {
+                // Each query's rows as one value each, as a statement's are; without ALL, each once.
+                val distinct = !query.unions.first().all
+                val order = rowOrder
+                try {
+                    return (listOf(query.clauses) + query.unions.map { it.clauses }).joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { clauses ->
+                        var select = Select(scope)
+                        clauses.dropLast(1).forEach { select = read(select, it, scope) }
+                        val sql = project(select, (clauses.last() as Clause.Return).projection, final = true).sql
+                        val result = if (distinct) comparable(Value.Json("q.result", ordered = true)) else "q.result"
+                        "SELECT $result AS result FROM (\n${indent(sql)}\n) q"
+                    }
+                } finally {
+                    rowOrder = order
+                }
+            }
             val order = rowOrder
             try {
                 var select = Select(scope)
@@ -468,19 +489,42 @@ abstract class SqlCypherCompiler(graph: String) {
         /** `CALL { … }`: a lateral query for each row, what it returns bound as variables of the row. */
         private fun call(select: Select, call: Clause.Call) {
             if (call.query.clauses.last() !is Clause.Return) unsupported("A CALL { … } that returns nothing")
-            val ret = call.query.clauses.last() as Clause.Return
-            if (call.query.unions.isNotEmpty()) unsupported("A UNION in CALL { … }")
             if (call.query.clauses.any(::writes)) unsupported("A write in CALL { … }")
             val order = rowOrder
-            var inner = Select(select.scope)
-            call.query.clauses.dropLast(1).forEach { inner = read(inner, it, select.scope) }
-            val projected = project(inner, ret.projection, final = false)
+            val projected = if (call.query.unions.isEmpty()) calledPart(select, call.query.clauses, null, distinct = false) else calledUnion(select, call.query)
             rowOrder = order
             val name = alias("c")
             val text = "(\n${indent(projected.sql)}\n) $name"
             select.join(if (call.optional) "LEFT JOIN LATERAL $text ON TRUE" else "CROSS JOIN LATERAL $text")
             projected.scope.forEach { (variable, value) -> select.bind(variable, value.columnsOf(name)) }
             projected.order.forEach { (column, descending) -> select.order += "$name.$column" to descending }
+        }
+
+        /**
+         * One query of a `CALL { … }`, for the row [select] reads: its returned items in the order [names] lists
+         * them, where a `UNION` names them so, and kept distinct with [distinct].
+         */
+        private fun calledPart(select: Select, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
+            var inner = Select(select.scope)
+            clauses.dropLast(1).forEach { inner = read(inner, it, select.scope) }
+            val projection = (clauses.last() as Clause.Return).projection
+            val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
+            return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
+        private fun calledUnion(select: Select, query: Query): Projected {
+            val parts = listOf(query.clauses) + query.unions.map { it.clauses }
+            if (query.unions.map { it.all }.distinct().size > 1) throw DrivineException("UNION and UNION ALL are not mixed in one statement, as in Cypher.")
+            val returns = parts.map { it.last() as Clause.Return }
+            if (returns.any { it.projection.orderBy.isNotEmpty() }) unsupported("An ORDER BY in a query of a UNION in CALL { … }")
+            val names = returns.first().projection.items.map { it.name }
+            if (returns.any { r -> r.projection.items.map { it.name }.toSet() != names.toSet() }) throw DrivineException("Each query of a UNION returns the same names, as in Cypher.")
+            val distinct = !query.unions.first().all
+            val projected = parts.map { calledPart(select, it, names, distinct) }
+            if (projected.map { p -> p.scope.values.map { it::class } }.distinct().size > 1) unsupported("A UNION in CALL { … } whose queries return values of different kinds")
+            val sql = projected.joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { "SELECT * FROM (\n${indent(it.sql)}\n) ${alias("q")}" }
+            return Projected(sql, projected.first().scope, emptyList())
         }
 
         private fun unwind(select: Select, unwind: Clause.Unwind) {
@@ -1672,6 +1716,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     val (text, search, replacement) = arguments.map { text(comparable(json(it))) }
                     Value.Json(scalar("REPLACE($text, $search, $replacement)"))
                 }
+                "date" -> if (arguments.isEmpty()) Value.Json(dateNow()) else one()
+                "localdatetime" -> if (arguments.isEmpty()) Value.Json(localNow()) else one()
                 "timestamp" -> if (arguments.isEmpty()) Value.Json(epochMillisNow()) else throw DrivineException("timestamp() takes no argument.")
                 // A moment is its ISO text, as a store keeps it; one given is taken as it is.
                 "datetime" -> if (arguments.isEmpty()) Value.Json(isoNow()) else one()

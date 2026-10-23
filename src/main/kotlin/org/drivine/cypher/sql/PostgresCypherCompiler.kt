@@ -197,6 +197,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun epochMillisNow() = "to_jsonb(CAST(trunc(extract(epoch FROM statement_timestamp()) * 1000) AS bigint))"
 
+    override fun dateNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))"
+
+    override fun localNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS'))"
+
     override fun isoNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))"
 
     /**

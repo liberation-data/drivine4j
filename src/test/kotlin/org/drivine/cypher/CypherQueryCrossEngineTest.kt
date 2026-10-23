@@ -483,6 +483,33 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a union is taken in a call, a count and an exists, each query read for the row`() {
+        assertEquals(
+            listOf("Carrie", "Laurence"),
+            query(
+                """
+                MATCH (p:Person {name: 'Keanu'})
+                CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS other UNION MATCH (p)<-[:KNOWS]-(f) RETURN f.name AS other }
+                RETURN other ORDER BY other
+                """
+            ),
+        )
+        assertEquals(
+            listOf(5L),
+            query("MATCH (p:Person {name: 'Keanu'}) RETURN COUNT { MATCH (p)-[:KNOWS]-(f) RETURN f.name AS n UNION ALL MATCH (p)-[:ACTED_IN]->(m) RETURN m.title AS n }"),
+        )
+        assertEquals(
+            listOf("Keanu", "Laurence"),
+            query("MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(f) RETURN f UNION MATCH (p)-[:ACTED_IN]->(f) WHERE f.released < 1996 RETURN f } RETURN p.name ORDER BY p.name"),
+        )
+        if (!compiles) return
+        // A graph engine's driver gives a day and a moment as values of its own; here they are their ISO text.
+        val (day, moment) = query("RETURN [date(), localdatetime()]").single() as List<*>
+        assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}").matches(day as String), day)
+        assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}").matches(moment as String), moment)
+    }
+
+    @Test
     fun `a shortest path is the least of the pattern's, and all shortest paths every one of that length`() {
         assertEquals(
             listOf(listOf(2L, listOf("Laurence", "Keanu", "Carrie"))),

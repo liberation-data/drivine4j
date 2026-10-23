@@ -292,6 +292,10 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "EXTRACT(MINUTE FROM $since) * 60 + EXTRACT(SECOND FROM $since)) * 1000))"
     }
 
+    override fun dateNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD'))"
+
+    override fun localNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3'))"
+
     override fun isoNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'))"
 
     /** An anonymous block, which returns its rows as an implicit result. */
