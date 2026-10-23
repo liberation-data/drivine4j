@@ -189,6 +189,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * Flags the pattern opens with, `(?i)`, are put before the anchors, where Postgres reads them, after `p`: a dot
      * matches no line break, as Java's does, unless the pattern says `(?s)`.
      */
+    override val temporalSql = PostgresTemporalSql()
+
     override fun matches(text: String, pattern: String) = "($text ~ regexp_replace($pattern, '^(\\(\\?([a-z]+)\\))?(.*)\$', '(?p\\2)^(\\3)\$'))"
 
     /**
@@ -204,14 +206,6 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun uuid() = "CAST(gen_random_uuid() AS text)"
 
     override fun rightText(text: String, count: String) = "right($text, $count)"
-
-    override fun epochMillisNow() = "to_jsonb(CAST(trunc(extract(epoch FROM statement_timestamp()) * 1000) AS bigint))"
-
-    override fun dateNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD'))"
-
-    override fun localNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS'))"
-
-    override fun isoNow() = "to_jsonb(to_char(statement_timestamp() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))"
 
     /**
      * A function of the session's own, `pg_temp`, made for the procedure and called: Postgres runs a block

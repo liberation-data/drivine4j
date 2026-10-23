@@ -8,8 +8,12 @@ package org.drivine.cypher.sql
  */
 sealed interface Value {
 
-    /** A JSON value: `jsonb`, or with [ordered] `json`, whose object keys keep the order they were written in. */
-    data class Json(val sql: String, val ordered: Boolean = false) : Value
+    /**
+     * A JSON value: `jsonb`, or with [ordered] `json`, whose object keys keep the order they were written in. Where
+     * the statement makes it of a [temporal] kind (a constructor, a parameter of a `java.time` type, temporal
+     * arithmetic), it is that kind's ISO text.
+     */
+    data class Json(val sql: String, val ordered: Boolean = false, val temporal: Temporal? = null) : Value
 
     /** A truth value: SQL's boolean, with its null for Cypher's. */
     data class Bool(val sql: String) : Value

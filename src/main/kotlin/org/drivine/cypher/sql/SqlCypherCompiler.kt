@@ -348,17 +348,11 @@ abstract class SqlCypherCompiler(graph: String) {
     /** `range`: the whole numbers from [from] to [to], [step] apart, SQL numbers each, as a JSON list. */
     protected abstract fun range(from: String, to: String, step: String): String
 
-    /** `datetime().epochMillis` and `timestamp()`: the moment the statement runs, in milliseconds since 1970, as JSON. */
-    protected abstract fun epochMillisNow(): String
+    /** The store's SQL for temporal values, which [temporals] works openCypher's out of. */
+    protected abstract val temporalSql: TemporalSql
 
-    /** `datetime()`: the moment the statement runs, as JSON's text in ISO 8601, in UTC. */
-    protected abstract fun isoNow(): String
-
-    /** `date()`: the day the statement runs, in UTC, as JSON's text in ISO 8601. */
-    protected abstract fun dateNow(): String
-
-    /** `localdatetime()`: the moment the statement runs, in UTC and with no zone written, as JSON's text in ISO 8601. */
-    protected abstract fun localNow(): String
+    /** openCypher's temporal values: see [Temporals]. */
+    private val temporals by lazy { Temporals(temporalSql) { values, body -> shared(*values.toTypedArray(), body = body) } }
 
     // ----- A store's procedure, for a statement that writes -----
 
@@ -1392,17 +1386,10 @@ abstract class SqlCypherCompiler(graph: String) {
 
         fun expression(expression: Expression, scope: Map<String, Value>): Value = when (expression) {
             is Expression.Literal -> Value.Json(literalJson(expression.value))
-            is Expression.Parameter -> givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name))
+            is Expression.Parameter ->
+                givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name), temporal = Temporal.ofValue(parameters.value(expression.name)))
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
-            is Expression.Property -> {
-                val subject = expression.subject
-                // `datetime().epochMillis`: the moment, as Cypher's statements stamp a write with it.
-                if (subject is Expression.Function && subject.name.lowercase() == "datetime" && subject.arguments.isEmpty() && expression.key == "epochMillis") {
-                    Value.Json(epochMillisNow())
-                } else {
-                    property(expression(subject, scope), expression.key)
-                }
-            }
+            is Expression.Property -> property(expression(expression.subject, scope), expression.key)
             is Expression.HasLabels -> when (val subject = expression(expression.subject, scope)) {
                 is Value.Node -> Value.Bool("(${hasLabels(subject.labels, expression.labels)})")
                 else -> throw DrivineException("A label is tested of a node.")
@@ -1555,9 +1542,101 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
-            is Value.Json -> Value.Json(propertyOf(comparable(subject), key))
+            is Value.Json -> temporalField(subject, key) ?: Value.Json(propertyOf(comparable(subject), key))
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
+        }
+
+        /**
+         * A field of a temporal value, `d.year` or `dur.days`: of the kind the statement makes it, or of the kind a
+         * text's shape tells, where a map's is its entry of that name; null for a name no temporal value has.
+         */
+        private fun temporalField(subject: Value.Json, key: String): Value? {
+            if (key !in temporals.fieldNames) return null
+            subject.temporal?.let { kind ->
+                val field = temporals.field(text(comparable(subject)), kind, key) ?: return Value.Json(literalJson(null))
+                return Value.Json(scalar(field.sql))
+            }
+            return Value.Json(shared(comparable(subject)) { (x) ->
+                val kinds = Temporal.entries.filter { temporals.field("NULL", it, key) != null }
+                val read = temporals.byKind(text(x), kinds) { kind, t -> scalar(temporals.field(t, kind, key)!!.sql) }
+                "CASE WHEN ${typeOf(x)} = 'string' THEN $read ELSE ${propertyOf(x, key)} END"
+            })
+        }
+
+        /**
+         * Temporal arithmetic and comparison, where the statement makes either side of a temporal kind: a moment
+         * and a duration added or taken away, two durations added, a duration scaled, two moments compared as the
+         * moments they are. Null where neither side is of a temporal kind, or the operator is no such one.
+         */
+        private fun temporalBinary(operator: Operator, left: Value, right: Value): Value? {
+            val l = (left as? Value.Json)?.temporal
+            val r = (right as? Value.Json)?.temporal
+            if (l == null && r == null) return null
+            val a = text(comparable(json(left)))
+            val b = text(comparable(json(right)))
+            fun of(text: String, kind: Temporal?) = Value.Json(scalar(text), temporal = kind)
+            val duration = Temporal.DURATION
+            return when (operator) {
+                Operator.ADD, Operator.SUBTRACT -> {
+                    val sign = if (operator == Operator.ADD) 1 else -1
+                    when {
+                        l == duration && r == duration -> of(temporals.sum(a, b, sign), duration)
+                        l != null && l.instant && r == duration -> of(temporals.add(a, l, b, sign), l)
+                        l == duration && r != null && r.instant && sign > 0 -> of(temporals.add(b, r, a, 1), r)
+                        // A value read from the store, its kind told by its text, and a duration the statement gives.
+                        l == null && r == duration -> of(shared(a, b) { (x, y) ->
+                            "CASE WHEN ${temporals.isKind(x, duration)} THEN ${temporals.sum(x, y, sign)} ELSE ${temporals.addToAny(x, y, sign)} END"
+                        }, null)
+                        l == duration && r == null && sign > 0 -> of(shared(a, b) { (x, y) ->
+                            "CASE WHEN ${temporals.isKind(y, duration)} THEN ${temporals.sum(x, y, 1)} ELSE ${temporals.addToAny(y, x, 1)} END"
+                        }, null)
+                        else -> null
+                    }
+                }
+                Operator.MULTIPLY -> when {
+                    l == duration -> of(temporals.times(a, number(comparable(json(right)))), duration)
+                    r == duration -> of(temporals.times(b, number(comparable(json(left)))), duration)
+                    else -> null
+                }
+                Operator.DIVIDE -> if (l == duration) of(temporals.times(a, "(1.0 / ${number(comparable(json(right)))})"), duration) else null
+                Operator.EQUALS, Operator.NOT_EQUALS, Operator.LESS_THAN, Operator.GREATER_THAN, Operator.LESS_THAN_OR_EQUAL, Operator.GREATER_THAN_OR_EQUAL -> {
+                    val sql = mapOf(
+                        Operator.EQUALS to "=", Operator.NOT_EQUALS to "<>", Operator.LESS_THAN to "<", Operator.GREATER_THAN to ">",
+                        Operator.LESS_THAN_OR_EQUAL to "<=", Operator.GREATER_THAN_OR_EQUAL to ">=",
+                    ).getValue(operator)
+                    Value.Bool(temporals.compare(a, b, (l ?: r)!!, sql))
+                }
+                else -> null
+            }
+        }
+
+        /** A temporal value of [kind] made by its function of [function]'s [arguments]: the moment, a text, or a map of its fields. */
+        private fun temporal(kind: Temporal, function: Expression.Function, arguments: List<Value>, scope: Map<String, Value>): Value {
+            fun of(text: String) = Value.Json(scalar(text), temporal = kind)
+            if (arguments.isEmpty()) {
+                if (kind == Temporal.DURATION) throw DrivineException("duration() takes a text or a map of its fields.")
+                return of(temporals.now(kind))
+            }
+            if (arguments.size != 1) throw DrivineException("${function.name}() takes a text or a map of its fields.")
+            val written = function.arguments.single()
+            // A text the statement writes is worked out here, as the store would work it out.
+            if (written is Expression.Literal && written.value is String) {
+                return Value.Json(literalJson(Temporals.canonical(written.value as String, kind)), temporal = kind)
+            }
+            if (written is Expression.MapLiteral) {
+                val fields = written.entries.associate { (key, value) -> key to expression(value, scope) }
+                val numbers = fields.filterKeys { it != "timezone" }.mapValues { number(comparable(json(it.value))) }
+                if (kind == Temporal.DURATION) return of(temporals.duration(numbers))
+                return of(temporals.of(numbers, fields["timezone"]?.let { text(comparable(json(it))) }, kind))
+            }
+            val given = arguments.single() as? Value.Json ?: throw DrivineException("${function.name}() takes a text or a map of its fields.")
+            val text = text(comparable(given))
+            return when {
+                kind == Temporal.DURATION -> of(temporals.duration(text))
+                given.temporal?.instant == true -> of(temporals.convert(text, given.temporal, kind))
+                else -> of(temporals.convert(text, kind))
+            }
         }
 
         private fun mapProjection(projection: Expression.MapProjection, scope: Map<String, Value>): Value {
@@ -1592,6 +1671,7 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             val left = expression(binary.left, scope)
             val right = expression(binary.right, scope)
+            temporalBinary(binary.operator, left, right)?.let { return it }
             val a = comparable(json(left))
             val b = comparable(json(right))
             return when (binary.operator) {
@@ -1632,6 +1712,7 @@ abstract class SqlCypherCompiler(graph: String) {
          * equal where its JSON is, and a number's is not (`1` and `1.0`).
          */
         private fun equality(left: Value, right: Value, written: Expression? = null): String {
+            (temporalBinary(Operator.EQUALS, left, right) as? Value.Bool)?.let { return it.sql }
             if (left is Value.Node && right is Value.Node) return "${left.nid} = ${right.nid}"
             if (left is Value.Relationship && right is Value.Relationship) return "${left.eid} = ${right.eid}"
             val a = comparable(json(left))
@@ -1767,11 +1848,31 @@ abstract class SqlCypherCompiler(graph: String) {
                     val (text, search, replacement) = arguments.map { text(comparable(json(it))) }
                     Value.Json(scalar("REPLACE($text, $search, $replacement)"))
                 }
-                "date" -> if (arguments.isEmpty()) Value.Json(dateNow()) else one()
-                "localdatetime" -> if (arguments.isEmpty()) Value.Json(localNow()) else one()
-                "timestamp" -> if (arguments.isEmpty()) Value.Json(epochMillisNow()) else throw DrivineException("timestamp() takes no argument.")
-                // A moment is its ISO text, as a store keeps it; one given is taken as it is.
-                "datetime" -> if (arguments.isEmpty()) Value.Json(isoNow()) else one()
+                "date", "localtime", "time", "localdatetime", "datetime", "duration" -> temporal(Temporal.ofFunction(name)!!, function, arguments, scope)
+                "timestamp" -> if (arguments.isEmpty()) Value.Json(scalar(temporals.field(temporals.now(Temporal.DATE_TIME), Temporal.DATE_TIME, "epochMillis")!!.sql))
+                    else throw DrivineException("timestamp() takes no argument.")
+                // The moment the statement runs, however it is asked for: one statement is one moment here.
+                in TEMPORAL_NOW -> Value.Json(scalar(temporals.now(Temporal.ofFunction(name.substringBefore('.'))!!)), temporal = Temporal.ofFunction(name.substringBefore('.')))
+                in TEMPORAL_TRUNCATE -> {
+                    val to = Temporal.ofFunction(name.substringBefore('.'))!!
+                    if (arguments.size != 2) throw DrivineException("${function.name}() takes a unit and a value.")
+                    val unit = (function.arguments[0] as? Expression.Literal)?.value as? String ?: unsupported("A truncation to a unit an expression gives")
+                    val given = arguments[1] as? Value.Json ?: throw DrivineException("${function.name}() takes a unit and a value.")
+                    fun cut(text: String, from: Temporal) = temporals.truncate(unit, text, from, to)
+                        ?: throw DrivineException("${function.name}() truncates to year, quarter, month, week, day, hour, minute, second or millisecond, not $unit.")
+                    val text = text(comparable(given))
+                    Value.Json(scalar(given.temporal?.takeIf { it.instant }?.let { cut(text, it) } ?: temporals.byKind(text) { from, t -> cut(t, from) }), temporal = to)
+                }
+                "duration.between", "duration.inmonths", "duration.indays", "duration.inseconds" -> {
+                    if (arguments.size != 2) throw DrivineException("${function.name}() takes two temporal values.")
+                    val unit = mapOf("duration.inmonths" to "months", "duration.indays" to "days", "duration.inseconds" to "seconds")[name]
+                    val (from, to) = arguments.map { (it as? Value.Json) ?: throw DrivineException("${function.name}() takes two temporal values.") }
+                    val (a, b) = text(comparable(from)) to text(comparable(to))
+                    val kind = listOfNotNull(from.temporal, to.temporal).firstOrNull { it.instant }
+                    val between = if (kind != null) temporals.between(a, b, kind, unit)
+                    else shared(b) { (y) -> temporals.byKind(a) { k, x -> temporals.between(x, y, k, unit) } }
+                    Value.Json(scalar(between), temporal = Temporal.DURATION)
+                }
                 else -> {
                     // A function the store has no SQL for is named before its arguments are counted.
                     if (function(name, "NULL") == null) unsupported("The function ${function.name}()")
@@ -1953,6 +2054,12 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** How long a value [shared] binds may be written where it is read, in characters. */
         const val SHARED_ABOVE = 200
+
+        /** The functions of a temporal kind that give the moment the statement runs. */
+        val TEMPORAL_NOW = listOf("date", "localtime", "time", "localdatetime", "datetime").flatMap { kind -> listOf("statement", "transaction", "realtime").map { "$kind.$it" } }
+
+        /** The functions of a temporal kind that truncate a value to a unit. */
+        val TEMPORAL_TRUNCATE = listOf("date", "localtime", "time", "localdatetime", "datetime").map { "$it.truncate" }
 
         val AGGREGATES = setOf("count", "collect", "sum", "avg", "min", "max")
 

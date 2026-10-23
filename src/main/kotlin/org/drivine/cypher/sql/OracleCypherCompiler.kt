@@ -275,6 +275,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     }
 
     /** Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. */
+    override val temporalSql = OracleTemporalSql()
+
     override fun matches(text: String, pattern: String) = shared(pattern) { (p) ->
         val flags = "REGEXP_SUBSTR($p, '^\\(\\?([a-z]+)\\)', 1, 1, NULL, 1)"
         "REGEXP_LIKE($text, '^(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\$', NVL(REPLACE($flags, 's', 'n'), 'c'))"
@@ -301,18 +303,6 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** SUBSTR from the end gives null where it is asked for more than there is. */
     override fun rightText(text: String, count: String) =
         shared(text, count) { (t, n) -> "CASE WHEN $n >= LENGTH($t) THEN $t WHEN $n > 0 THEN SUBSTR($t, -$n) END" }
-
-    override fun epochMillisNow(): String {
-        val since = "(SYS_EXTRACT_UTC(SYSTIMESTAMP) - TIMESTAMP '1970-01-01 00:00:00')"
-        return "JSON_SCALAR(TRUNC((EXTRACT(DAY FROM $since) * 86400 + EXTRACT(HOUR FROM $since) * 3600 + " +
-            "EXTRACT(MINUTE FROM $since) * 60 + EXTRACT(SECOND FROM $since)) * 1000))"
-    }
-
-    override fun dateNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD'))"
-
-    override fun localNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3'))"
-
-    override fun isoNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'))"
 
     /** An anonymous block, which returns its rows as an implicit result. */
     override fun procedure(body: List<String>) = (listOf(
