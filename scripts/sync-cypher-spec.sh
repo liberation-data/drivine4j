@@ -11,6 +11,6 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 curl -fsSL "https://github.com/liberation-data/drivine-cypher-spec/archive/refs/tags/$tag.tar.gz" | tar -xz -C "$tmp" --strip-components=1
-cp "$tmp"/queries.yaml "$tmp"/writes.yaml "$tmp"/refusals.yaml "$tmp"/README.md "$dir"/
+cp "$tmp"/queries.yaml "$tmp"/writes.yaml "$tmp"/temporal.yaml "$tmp"/refusals.yaml "$tmp"/README.md "$dir"/
 echo "$tag" > "$dir/VERSION"
 echo "The Cypher spec in $dir is now $tag."

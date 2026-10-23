@@ -4,6 +4,7 @@ These files say what a statement in Drivine's flavour of Cypher gives on each st
 
 - `queries.yaml`: statements that read, run over the graph the file's `graph` writes. The graph is written again before each case.
 - `writes.yaml`: statements that write, run from an empty graph. Each case's steps run in turn, so a step reads what the steps before it wrote.
+- `temporal.yaml`: openCypher's temporal values (dates, times, moments and durations), run from an empty graph. A graph engine's driver gives a temporal value as a value of its own, and a SQL store gives its ISO text, so the cases read a value's fields.
 - `refusals.yaml`: statements each SQL store's compiler refuses, and its message. They are compiled with no store.
 
 ## A case
@@ -45,4 +46,4 @@ A step with no `rows` and no `error` is run, and what it gives is not checked.
 
 These files are a contract between the three libraries. They live in [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec), and each library copies a tagged version into its tests, unchanged, with a script of its own (`scripts/sync-cypher-spec.sh` in drivine4j). A change of what the compiler gives or refuses lands there first, in a tagged release, and each library then moves to that tag.
 
-Some tests stay in each library's own suite: values that change on every run (a UUID, the time), statements built in code (hundreds of `CREATE`s), and whatever needs a connection of its own (a rolled-back transaction).
+Some tests stay in each library's own suite: values that change on every run (a UUID, the time), parameters of a language's own temporal types, statements built in code (hundreds of `CREATE`s), and whatever needs a connection of its own (a rolled-back transaction).
