@@ -253,6 +253,9 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The lists of ids [lists], one after another. */
     protected abstract fun joinIds(lists: List<String>): String
 
+    /** The JSON list of ids [json] as the store's list of ids, in its order: null where the JSON is. */
+    protected abstract fun storeIds(json: String): String
+
     /** The list of no ids. */
     protected abstract val noIds: String
 
@@ -455,6 +458,20 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun unwind(select: Select, unwind: Clause.Unwind) {
             val list = expression(unwind.list, select.scope)
             val name = alias("u")
+            // A list of nodes or relationships unwinds to them, as they are now, so a write reaches them.
+            if (list is Value.Entities) {
+                select.source(elements(list.ids, name))
+                val row = alias(if (list.relationships) "e" else "n")
+                if (list.relationships) {
+                    select.join("JOIN $edges $row ON $row.eid = ${idOf("$name.item", null)}")
+                    select.bind(unwind.variable, Value.Relationship("$row.eid", "$row.src", "$row.dst", "$row.type", "$row.props"))
+                } else {
+                    select.join("JOIN $nodes $row ON $row.nid = ${idOf("$name.item", null)}")
+                    select.bind(unwind.variable, Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp"))
+                }
+                select.order += "$name.item_no" to false
+                return
+            }
             // A value that is no list is one row, and null no rows, as in Cypher.
             val items = shared(comparable(json(list))) { (x) ->
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
@@ -589,26 +606,29 @@ abstract class SqlCypherCompiler(graph: String) {
             return Hop(walked.eids, true, relationship.types, walked.nids)
         }
 
-        /** The nodes whose ids are the list [nids], as a JSON list in its order: null where the list is. */
-        private fun nodeList(nids: String): Value.Json {
-            val n = alias("n")
+        /** The nodes whose ids are the store's list [nids], in its order: null where the list is. */
+        private fun nodeList(nids: String): Value.Entities = Value.Entities(idList(nids), relationships = false)
+
+        /** The relationships whose ids are the store's list [eids], in its order: null where the list is. */
+        private fun relationshipList(eids: String): Value.Entities = Value.Entities(idList(eids), relationships = true)
+
+        /** The store's list of ids [list] as a JSON list of them, in its order: null where the list is. */
+        private fun idList(list: String): String {
             val u = alias("u")
-            val node = json(Value.Node("$n.nid", "$n.labels", "$n.props", "$n.stamp")).sql
-            return Value.Json(
-                "CASE WHEN $nids IS NOT NULL THEN (SELECT ${aggregateList(node, "$u.ord")} FROM ${idRows(nids, u)} JOIN $nodes $n ON $n.nid = $u.id) END",
-                ordered = true,
-            )
+            return "CASE WHEN $list IS NOT NULL THEN (SELECT ${comparable(Value.Json(aggregateList(scalar("$u.id"), "$u.ord"), ordered = true))} FROM ${idRows(list, u)}) END"
         }
 
-        /** The relationships whose ids are the list [eids], as a JSON list in its order: null where the list is. */
-        private fun relationshipList(eids: String): Value.Json {
-            val e = alias("e")
+        /** The nodes or relationships [entities] lists, as a JSON list of their properties in its order: null where the list is. */
+        private fun entitiesJson(entities: Value.Entities): String = shared(entities.ids) { (ids) ->
             val u = alias("u")
-            val relationship = json(Value.Relationship("$e.eid", "$e.src", "$e.dst", "$e.type", "$e.props")).sql
-            return Value.Json(
-                "CASE WHEN $eids IS NOT NULL THEN (SELECT ${aggregateList(relationship, "$u.ord")} FROM ${idRows(eids, u)} JOIN $edges $e ON $e.eid = $u.id) END",
-                ordered = true,
-            )
+            val row = alias(if (entities.relationships) "e" else "n")
+            val (table, value) = if (entities.relationships) {
+                edges to json(Value.Relationship("$row.eid", "$row.src", "$row.dst", "$row.type", "$row.props")).sql
+            } else {
+                nodes to json(Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp")).sql
+            }
+            val id = if (entities.relationships) "eid" else "nid"
+            "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, "$u.item_no")} FROM ${elements(ids, u)} JOIN $table $row ON $row.$id = ${idOf("$u.item", null)}) END"
         }
 
         private fun RelationshipPattern.reversed() = copy(
@@ -695,7 +715,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     is Value.Node -> Kind.NODE
                     is Value.Relationship -> Kind.RELATIONSHIP
                     is Value.Json, is Value.Bool -> Kind.VALUE
-                    is Value.Path -> unsupported("A path carried past a write")
+                    is Value.Entities -> if (value.relationships) Kind.RELATIONSHIPS else Kind.NODES
+                    is Value.Path -> Kind.PATH
                 }
                 key(variable) to held(value)
             }
@@ -707,6 +728,9 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun held(value: Value): String = when (value) {
             is Value.Node -> scalar(value.nid)
             is Value.Relationship -> scalar(value.eid)
+            is Value.Entities -> value.ids
+            // A path as the JSON lists of its nodes' and relationships' ids.
+            is Value.Path -> comparable(Value.Json(jsonObject(listOf("n" to idList(value.nids), "e" to idList(value.eids))), ordered = true))
             else -> comparable(json(value))
         }
 
@@ -749,6 +773,8 @@ abstract class SqlCypherCompiler(graph: String) {
                         select.bind(variable, Value.Relationship("$e.eid", "$e.src", "$e.dst", "$e.type", "$e.props"))
                     }
                     Kind.VALUE -> select.bind(variable, Value.Json(propertyOf(row, key)))
+                    Kind.NODES, Kind.RELATIONSHIPS -> select.bind(variable, Value.Entities(propertyOf(row, key), kind == Kind.RELATIONSHIPS))
+                    Kind.PATH -> select.bind(variable, Value.Path(storeIds(propertyOf(propertyOf(row, key), "n")), storeIds(propertyOf(propertyOf(row, key), "e"))))
                 }
             }
         }
@@ -982,7 +1008,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun target(variable: String, writing: String): Triple<String, String, String> = when (kinds[variable]) {
             Kind.NODE -> Triple(nodes, "nid", idOf(ROW, key(variable)))
             Kind.RELATIONSHIP -> Triple(edges, "eid", idOf(ROW, key(variable)))
-            Kind.VALUE -> throw DrivineException("$variable is not a node or a relationship, and $writing writes to one.")
+            Kind.VALUE, Kind.NODES, Kind.RELATIONSHIPS, Kind.PATH -> throw DrivineException("$variable is not a node or a relationship, and $writing writes to one.")
             null -> throw DrivineException("$variable is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
         }
 
@@ -1246,7 +1272,16 @@ abstract class SqlCypherCompiler(graph: String) {
                 is Value.Node -> Value.Bool("(${hasLabels(subject.labels, expression.labels)})")
                 else -> throw DrivineException("A label is tested of a node.")
             }
-            is Expression.ListLiteral -> Value.Json(jsonArray(expression.items.map { json(expression(it, scope)).sql }), ordered = true)
+            is Expression.ListLiteral -> {
+                val items = expression.items.map { expression(it, scope) }
+                when {
+                    items.isNotEmpty() && items.all { it is Value.Node } ->
+                        Value.Entities(comparable(Value.Json(jsonArray(items.map { scalar((it as Value.Node).nid) }), ordered = true)), false)
+                    items.isNotEmpty() && items.all { it is Value.Relationship } ->
+                        Value.Entities(comparable(Value.Json(jsonArray(items.map { scalar((it as Value.Relationship).eid) }), ordered = true)), true)
+                    else -> Value.Json(jsonArray(items.map { json(it).sql }), ordered = true)
+                }
+            }
             is Expression.MapLiteral -> Value.Json(jsonObject(expression.entries.map { (key, value) -> key to json(expression(value, scope)).sql }), ordered = true)
             is Expression.MapProjection -> mapProjection(expression, scope)
             is Expression.Binary -> binary(expression, scope)
@@ -1342,6 +1377,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun property(subject: Value, key: String): Value = when (subject) {
+            is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
             is Value.Json -> Value.Json(propertyOf(comparable(subject), key))
@@ -1453,6 +1489,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun isNull(value: Value): String = when (value) {
+            is Value.Entities -> "${value.ids} IS NULL"
             is Value.Node -> "${value.nid} IS NULL"
             is Value.Relationship -> "${value.eid} IS NULL"
             is Value.Bool -> "(${value.sql}) IS NULL"
@@ -1492,7 +1529,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 "relationships" -> (one() as? Value.Path)?.let { relationshipList(it.eids) } ?: throw DrivineException("relationships() takes a path.")
                 "coalesce" -> Value.Json("COALESCE(${arguments.joinToString(", ") { nullIfJsonNull(comparable(json(it))) }})")
                 "count" -> Value.Json(scalar("count($distinct${countable(one())})"))
-                "collect" -> Value.Json(collect(collectable(one(), function.distinct), function.distinct, rowOrder), ordered = true)
+                "collect" -> when (val gathered = one()) {
+                    // Nodes or relationships are gathered as their ids, so a list of them is still of them.
+                    is Value.Node -> Value.Entities(gatheredIds("CASE WHEN ${gathered.nid} IS NOT NULL THEN ${scalar(gathered.nid)} END", function.distinct), false)
+                    is Value.Relationship -> Value.Entities(gatheredIds("CASE WHEN ${gathered.eid} IS NOT NULL THEN ${scalar(gathered.eid)} END", function.distinct), true)
+                    else -> Value.Json(collect(collectable(gathered, function.distinct), function.distinct, rowOrder), ordered = true)
+                }
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
                 "min", "max" -> Value.Json(extreme(comparable(json(one())), min = name == "min"))
@@ -1566,11 +1608,15 @@ abstract class SqlCypherCompiler(graph: String) {
         /** A value as a SQL whole number. */
         private fun whole(value: Value): String = "CAST(${number(comparable(json(value)))} AS INTEGER)"
 
+        /** The ids [id] of a group, gathered as `collect` gathers them, as JSON that compares. */
+        private fun gatheredIds(id: String, distinct: Boolean) = comparable(Value.Json(collect(id, distinct, rowOrder), ordered = true))
+
         /** What `count` counts of a value: a node by its row, anything else by its value, nulls not counted. */
         private fun countable(value: Value): String = when (value) {
             is Value.Node -> value.nid
             is Value.Relationship -> value.eid
             is Value.Path -> value.nids
+            is Value.Entities -> value.ids
             else -> nullIfJsonNull(comparable(json(value)))
         }
 
@@ -1593,6 +1639,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Bool -> Value.Json(scalar(value.sql))
             is Value.Node -> Value.Json(nodeJson(value))
             is Value.Relationship -> Value.Json("CASE WHEN ${value.eid} IS NOT NULL THEN ${value.props} END")
+            is Value.Entities -> Value.Json(entitiesJson(value), ordered = true)
             // Each graph engine's driver gives a path as a value of its own, so a path is given by its parts.
             is Value.Path -> throw DrivineException("A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p).")
         }
@@ -1651,7 +1698,7 @@ abstract class SqlCypherCompiler(graph: String) {
     }
 
     /** What a variable a row holds is. */
-    private enum class Kind { NODE, RELATIONSHIP, VALUE }
+    private enum class Kind { NODE, RELATIONSHIP, VALUE, NODES, RELATIONSHIPS, PATH }
 
     protected companion object {
         /** Stands for the name of the query a `WITH` is read from, before it is named. */
@@ -1778,6 +1825,7 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The select-list entries that carry this value out of a query, under [name]. */
     private fun Value.columns(name: String): List<String> = when (this) {
         is Value.Json -> listOf("$sql AS $name")
+        is Value.Entities -> listOf("$ids AS $name")
         is Value.Bool -> listOf("$sql AS $name")
         is Value.Node -> listOf("$nid AS ${name}_nid", "$labels AS ${name}_labels", "$props AS ${name}_props", "$stamp AS ${name}_stamp")
         is Value.Relationship -> listOf("$eid AS ${name}_eid", "$src AS ${name}_src", "$dst AS ${name}_dst", "$type AS ${name}_type", "$props AS ${name}_props")
@@ -1794,6 +1842,7 @@ abstract class SqlCypherCompiler(graph: String) {
         val base = name
         return when (this) {
             is Value.Json -> Value.Json("$prefix$base", ordered)
+            is Value.Entities -> Value.Entities("$prefix$base", relationships)
             is Value.Bool -> Value.Bool("$prefix$base")
             is Value.Node -> Value.Node("$prefix${base}_nid", "$prefix${base}_labels", "$prefix${base}_props", "$prefix${base}_stamp")
             is Value.Relationship -> Value.Relationship("$prefix${base}_eid", "$prefix${base}_src", "$prefix${base}_dst", "$prefix${base}_type", "$prefix${base}_props")
@@ -1804,6 +1853,7 @@ abstract class SqlCypherCompiler(graph: String) {
     /** This value with [PENDING] read as [alias]. */
     private fun Value.withAlias(alias: String): Value = when (this) {
         is Value.Json -> copy(sql = sql.replace(PENDING, alias))
+        is Value.Entities -> copy(ids = ids.replace(PENDING, alias))
         is Value.Bool -> copy(sql = sql.replace(PENDING, alias))
         is Value.Node -> Value.Node(nid.replace(PENDING, alias), labels.replace(PENDING, alias), props.replace(PENDING, alias), stamp.replace(PENDING, alias))
         is Value.Relationship -> Value.Relationship(
@@ -1815,6 +1865,7 @@ abstract class SqlCypherCompiler(graph: String) {
     /** What a projection that aggregates is grouped by, to keep this value: a node by its columns. */
     private fun Value.groupKeys(): List<String> = when (this) {
         is Value.Json -> listOf(sql)
+        is Value.Entities -> listOf(ids)
         is Value.Bool -> listOf(sql)
         is Value.Node -> listOf(nid, labels, props, stamp)
         is Value.Relationship -> listOf(eid, src, dst, type, props)

@@ -87,7 +87,6 @@ class CompilerRefusalTest {
     fun `what a write does not compile yet is refused by name`() {
         assertRefused("A DELETE of anything but a variable is Cypher, and does not run on Oracle or Postgres yet.", "MATCH (n) DELETE n.x")
         assertRefused("A path variable in CREATE or MERGE is Cypher, and does not run on Oracle or Postgres yet.", "CREATE p = (a)-[:R]->(b)")
-        assertRefused("A path carried past a write is Cypher, and does not run on Oracle or Postgres yet.", "MATCH p = (a)-[:R]->(b) CREATE (c) RETURN c")
         assertRefused(
             "A relationship variable bound before its pattern is Cypher, and does not run on Oracle or Postgres yet.",
             "MATCH (a)-[r]->(b) CREATE (a)-[r:R]->(b)",

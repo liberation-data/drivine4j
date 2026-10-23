@@ -115,6 +115,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun joinIds(lists: List<String>) = lists.joinToString(" || ", "(", ")")
 
+    override fun storeIds(json: String) = shared(json) { (ids) ->
+        "CASE WHEN $ids IS NOT NULL THEN ARRAY(SELECT CAST(x.id AS bigint) FROM jsonb_array_elements_text($ids) WITH ORDINALITY x (id, ord) ORDER BY x.ord) END"
+    }
+
     override val noIds = "CAST(ARRAY[] AS bigint[])"
 
     override fun idIn(id: String, list: String) = "$id = ANY ($list)"

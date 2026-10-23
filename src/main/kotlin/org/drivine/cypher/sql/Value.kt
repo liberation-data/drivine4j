@@ -20,6 +20,13 @@ sealed interface Value {
     /** A relationship: the columns of its row. */
     data class Relationship(val eid: String, val src: String, val dst: String, val type: String, val props: String) : Value
 
+    /**
+     * A list of nodes, or with [relationships] of relationships: [ids], the JSON list of their ids, in order. It is
+     * given as their properties, and read as the nodes or relationships themselves where it is unwound, so a write
+     * reaches them.
+     */
+    data class Entities(val ids: String, val relationships: Boolean) : Value
+
     /** A path: the ids of its nodes, and of its relationships, in the order the pattern names them. */
     data class Path(val nids: String, val eids: String) : Value
 }

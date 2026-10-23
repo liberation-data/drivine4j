@@ -169,6 +169,11 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun joinIds(lists: List<String>) = "(${lists.first()}${lists.drop(1).joinToString("") { " || SUBSTR($it, 2)" }})"
 
+    override fun storeIds(json: String) = shared(json) { (ids) ->
+        val listed = "LISTAGG(x.id, ',') WITHIN GROUP (ORDER BY x.ord)"
+        "CASE WHEN $ids IS NOT NULL THEN (SELECT NVL2($listed, ',' || $listed || ',', ',') FROM JSON_TABLE($ids, '\$[*]' COLUMNS (ord FOR ORDINALITY, id NUMBER PATH '\$')) x) END"
+    }
+
     override val noIds = "','"
 
     override fun idIn(id: String, list: String) = "INSTR($list, ',' || $id || ',') > 0"

@@ -363,6 +363,30 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a list of nodes or relationships is of them, so a write to an item of it reaches them`() {
+        query("CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(c:CyWrite {id: 'c'})")
+        // Gathered, then unwound and written to.
+        query("MATCH (n:CyWrite) WITH collect(n) AS ns UNWIND ns AS n SET n.seen = true")
+        assertEquals(listOf(3L), query("MATCH (n:CyWrite) WHERE n.seen = true RETURN count(n)"))
+        // A path's nodes and relationships, each written to in a FOREACH.
+        query("MATCH p = (:CyWrite {id: 'a'})-[:NEXT*]->(:CyWrite {id: 'c'}) FOREACH (n IN nodes(p) | SET n.onPath = true) FOREACH (r IN relationships(p) | SET r.onPath = true)")
+        assertEquals(listOf(listOf(3L, 2L)), query("MATCH (n:CyWrite {onPath: true}) WITH count(n) AS nodes MATCH ()-[r:NEXT {onPath: true}]->() WITH nodes, count(r) AS rels RETURN [nodes, rels]"))
+        // Given back, such a list is its items' properties, as before.
+        assertEquals(
+            listOf(listOf("a", "b", "c")),
+            query("MATCH (n:CyWrite) WITH n ORDER BY n.id WITH collect(n) AS ns RETURN [x IN ns | x.id]"),
+        )
+        // Carried past a write, and written to after it.
+        query("MATCH (n:CyWrite) WITH collect(n) AS ns CREATE (:CyWrite {id: 'd'}) WITH ns UNWIND ns AS n SET n.after = true")
+        assertEquals(listOf(3L), query("MATCH (n:CyWrite {after: true}) RETURN count(n)"))
+        // A path, carried past a write, is read after it.
+        assertEquals(
+            listOf(listOf(1L, listOf("a", "b"))),
+            query("MATCH p = (:CyWrite {id: 'a'})-[:NEXT]->() CREATE (:CyWrite {id: 'z'}) RETURN [length(p), [n IN nodes(p) | n.id]]"),
+        )
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>
