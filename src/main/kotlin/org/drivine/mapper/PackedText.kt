@@ -44,11 +44,22 @@ internal object PackedText {
     fun record(fragment: Any, data: Map<*, *>, objectMapper: ObjectMapper) {
         val fields = packedFields(fragment.javaClass, objectMapper).ifEmpty { return }
         val stamp = FragmentModel.from(fragment.javaClass).stampField?.let { data[it] as? String } ?: return
-        val text = fields.associateWith { data[it] }
-        synchronized(held) {
-            expunge()
-            held[Key(fragment, gone)] = Held(stamp, text)
-        }
+        keep(fragment, stamp, fields.associateWith { data[it] })
+    }
+
+    /**
+     * Keeps, for [fragment], what an update returned carrying [stamp], what [asLoaded], the fields the
+     * update compared, says each packed property held that the update did not write ([written]): the
+     * node holds that text still, so a save from the object the update returned compares it so too.
+     */
+    fun carry(fragment: Any, stamp: String, asLoaded: Map<String, Any?>, written: Set<String>, objectMapper: ObjectMapper) {
+        val fields = (packedFields(fragment.javaClass, objectMapper) - written).ifEmpty { return }
+        keep(fragment, stamp, fields.associateWith { asLoaded[it] })
+    }
+
+    private fun keep(fragment: Any, stamp: String, text: Map<String, Any?>) = synchronized(held) {
+        expunge()
+        held[Key(fragment, gone)] = Held(stamp, text)
     }
 
     /**

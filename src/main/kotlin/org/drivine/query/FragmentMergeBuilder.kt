@@ -63,9 +63,10 @@ internal class FragmentMergeBuilder(
      * @param writeFields The only fields this save may touch, by field name: a field outside the set is
      *   neither written nor cleared, whatever [nullPolicy] says. Null means every field.
      * @param asLoaded The fields as the object was loaded, by field name, as a save writes them, but a
-     *   `@JsonPacked` field the node held text for as that text, as the load read it. A checked save then matches the node only while each field still holds what was loaded, as
-     *   well as the stamp: a declared field its value, a bag the keys it owns and their values, the
-     *   labels field the labels it reads. Null compares the stamp alone.
+     *   `@JsonPacked` field the node held text for as that text, as the load read it. A checked
+     *   save then matches the node only while each field still holds what was loaded, as well as
+     *   the stamp: a declared field its value, a bag the keys it owns and their values, the labels
+     *   field the labels it reads. Null compares the stamp alone.
      * @return A MergeStatement containing the query and bindings
      */
     fun <T : Any> buildMergeStatement(

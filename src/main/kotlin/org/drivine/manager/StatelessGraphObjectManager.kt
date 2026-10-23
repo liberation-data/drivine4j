@@ -730,7 +730,11 @@ class StatelessGraphObjectManager private constructor(
         // The node was loaded, so it is written only if it is still there: an update makes no node.
         val statement = backend.save(SaveRequest.changed(changed, before, digests.digestOf(changed), dirty, asLoaded))
         requireStampable(changed, statement)
-        return stamped(changed, statement, executor.save(statement))
+        return stamped(changed, statement, executor.save(statement)).also { saved ->
+            // A packed field the update did not write still holds the text that was loaded.
+            val root = stamps.rootOf(saved) ?: return@also
+            stamps.stampOf(saved)?.let { PackedText.carry(root, it, asLoaded, dirty, objectMapper) }
+        }
     }
 
     private fun statementFor(

@@ -851,6 +851,27 @@ abstract class StatelessSaveSoundnessContract {
     }
 
     @Test
+    fun `a save from the object an update returned compares a packed field the update left as the node holds it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val updated = assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "two") })
+
+        stateless.save(updated.copy(text = "three"), from = updated)
+
+        assertEquals("three", property("c1", "text"))
+    }
+
+    @Test
+    fun `a save from the object an update returned compares a packed field the update wrote as the update packed it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val updated = assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(tags = listOf("c")) })
+
+        stateless.save(updated.copy(text = "three"), from = updated)
+
+        assertEquals("three", property("c1", "text"))
+        assertEquals(listOf("c"), stateless.load<ClaimWithTags>("c1")?.tags)
+    }
+
+    @Test
     fun `a save from a copy of the object as loaded compares a packed field as a save packs it`() {
         assumeReadsWithoutSnapshot()
         packedAs("'[\"a\", \"b\"]'")
