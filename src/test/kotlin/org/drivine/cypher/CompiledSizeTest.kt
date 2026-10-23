@@ -41,4 +41,15 @@ class CompiledSizeTest {
             assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
         }
     }
+
+    @Test
+    fun `a quantified path pattern of twice the hops, each node read by its WHERE, compiles to about twice the statement`() {
+        fun group(hops: Int) = "MATCH (a:Claim) ((n0)" + (1..hops).joinToString("") { "-[:R]->(n$it)" } +
+            " WHERE " + (1..hops).joinToString(" AND ") { "n${it - 1}.v < n$it.v" } + "){1,3} (b) RETURN b"
+        compilers.forEach { compiler ->
+            val (short, long) = listOf(4, 8).map { compiler.compile(group(it)).sql.length }
+            assertTrue(short < 20_000, "${compiler::class.simpleName}: $short characters")
+            assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
+        }
+    }
 }

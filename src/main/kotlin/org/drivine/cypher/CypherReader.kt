@@ -154,7 +154,41 @@ object CypherReader {
     private fun pattern(context: OC_PatternElementContext, variable: String?): Pattern {
         // A pattern in parentheses is the pattern.
         context.oC_PatternElement()?.let { return pattern(it, variable) }
-        return pattern(context.oC_NodePattern(), context.oC_PatternElementChain(), variable)
+        val nodes = mutableListOf<NodePattern>()
+        val relationships = mutableListOf<RelationshipPattern>()
+        // A quantified path pattern with no node beside it is joined to a node of no label of its own.
+        var grouped = false
+        context.children.forEach { child ->
+            when (child) {
+                is OC_NodePatternContext -> {
+                    if (nodes.size > relationships.size) throw DrivineException("Two nodes of a path are side by side: a relationship or a quantified path pattern goes between them.")
+                    nodes += node(child)
+                }
+                is OC_PatternElementChainContext -> {
+                    if (nodes.size == relationships.size) nodes += NodePattern(null, emptyList(), null)
+                    relationships += chained(child)
+                    nodes += node(child.oC_NodePattern())
+                }
+                is OC_QuantifiedPathPatternContext -> {
+                    if (nodes.size == relationships.size) nodes += NodePattern(null, emptyList(), null)
+                    relationships += quantified(child)
+                }
+            }
+        }
+        if (nodes.size == relationships.size) nodes += NodePattern(null, emptyList(), null)
+        return Pattern(variable, nodes, relationships)
+    }
+
+    /** `((a)-[:R]->(b) WHERE …){1,3}`: a relationship of the pattern that repeats its own, between the nodes beside it. */
+    private fun quantified(context: OC_QuantifiedPathPatternContext): RelationshipPattern {
+        val pattern = pattern(context.oC_PatternElement(), null)
+        if (pattern.relationships.isEmpty()) throw DrivineException("A quantified path pattern holds a relationship.")
+        pattern.relationships.forEach { relationship ->
+            if (relationship.group != null) throw DrivineException("A quantified path pattern holds no quantified path pattern.")
+            if (relationship.range != null) refuse("A variable-length relationship in a quantified path pattern")
+        }
+        val group = RelationshipPattern.Group(pattern, context.oC_Where()?.let { expression(it.oC_Expression()) })
+        return RelationshipPattern(null, emptyList(), RelationshipPattern.Direction.OUTGOING, range(context.oC_PathQuantifier()), null, group)
     }
 
     private fun pattern(context: OC_RelationshipsPatternContext, variable: String?): Pattern =
@@ -164,14 +198,19 @@ object CypherReader {
         val nodes = mutableListOf(node(first))
         val relationships = mutableListOf<RelationshipPattern>()
         chains.forEach { chain ->
-            val relationship = relationship(chain.oC_RelationshipPattern())
-            relationships += chain.oC_PathQuantifier()?.let { quantifier ->
-                if (relationship.range != null) refuse("A quantified relationship that has a range of its own")
-                relationship.copy(range = range(quantifier))
-            } ?: relationship
+            relationships += chained(chain)
             nodes += node(chain.oC_NodePattern())
         }
         return Pattern(variable, nodes, relationships)
+    }
+
+    /** The relationship of a link of a path, `-[:R]->` or a quantified relationship, `-[:R]->{1,3}`. */
+    private fun chained(chain: OC_PatternElementChainContext): RelationshipPattern {
+        val relationship = relationship(chain.oC_RelationshipPattern())
+        return chain.oC_PathQuantifier()?.let { quantifier ->
+            if (relationship.range != null) refuse("A quantified relationship that has a range of its own")
+            relationship.copy(range = range(quantifier))
+        } ?: relationship
     }
 
     /** `+` is one or more, `*` any, `{n}` exactly n, and `{m,n}` from m to n, either bound left out. */

@@ -305,28 +305,74 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The ids of the list [list] as rows named [alias], with columns `id` and `ord`, in its order. */
     protected abstract fun idRows(list: String, alias: String): String
 
-    /** A walk of a variable-length relationship: see [walk]. */
+    /**
+     * Whether a walk reads the row it is in: a condition of a quantified path pattern may then read a variable bound
+     * outside it.
+     */
+    protected open val walksReadRow = true
+
+    /** A walk of a variable-length relationship or a quantified path pattern: see [walk]. */
     protected abstract fun walk(walk: Walk): Walked
 
     /**
-     * A variable-length relationship's walk, from the node whose id is [from] to the one whose is [to],
-     * as rows named [name]: by relationships named [edge] in [direction] that meet [conditions], to a depth
-     * from [min] to [max] (any, if null). With [backwards] it is walked from the pattern's later node.
-     * [seed], where there is one, is the condition the node walked from meets of its own, over a node row.
+     * A walk from the node whose id is [from] to the one whose is [to], as rows named [name], to a depth from
+     * [min] to [max] (any, if null). Each step takes the [hops] in turn, from the node the step is at, and meets
+     * [conditions]: one hop for a variable-length relationship, a hop for each relationship of a quantified path
+     * pattern's. A node the conditions read is the row [nodes] names, at its place among the hops' nodes: the
+     * node the step is at first, then the far node of each hop. With [backwards] a walk of one hop is walked from
+     * the pattern's later node. [seed], where there is one, is the condition the node walked from meets of its own,
+     * over a node row.
      */
     protected class Walk(
         val from: String,
         val to: String,
         val name: String,
         val step: String,
-        val edge: String,
-        val direction: RelationshipPattern.Direction,
+        val hops: List<Hop>,
+        val nodes: List<String?>,
         val min: Int,
         val max: Int?,
         val conditions: List<String>,
         val backwards: Boolean,
         val seed: ((String) -> String)?,
-    )
+    ) {
+        init {
+            require(nodes.size == hops.size + 1) { "A walk's step has one node more than it has hops." }
+            require(!backwards || hops.size == 1) { "A walk of more than one hop a step is walked forwards." }
+        }
+
+        /** A relationship a step takes, the row [edge], in [direction] from the node the step is at. */
+        class Hop(val edge: String, val direction: RelationshipPattern.Direction)
+    }
+
+    /**
+     * The condition that the relationship row [edge] leaves the node whose id is [at] in [direction], and the id of
+     * the node it reaches.
+     */
+    protected fun leaves(edge: String, direction: RelationshipPattern.Direction, at: String): Pair<String, String> = when (direction) {
+        RelationshipPattern.Direction.OUTGOING -> "$edge.src = $at" to "$edge.dst"
+        RelationshipPattern.Direction.INCOMING -> "$edge.dst = $at" to "$edge.src"
+        // Either way, and a relationship from a node to itself once.
+        RelationshipPattern.Direction.EITHER -> "($edge.src = $at OR $edge.dst = $at)" to "CASE WHEN $edge.src = $at THEN $edge.dst ELSE $edge.src END"
+    }
+
+    /**
+     * The joins of a walk's step from the node whose id is [at]: each hop's relationship, and each node a condition
+     * reads. Gives them, the ids of the nodes the hops reach, in turn, and that no two relationships of the step are one.
+     */
+    protected fun steps(walk: Walk, at: String): Triple<List<String>, List<String>, List<String>> {
+        val joins = mutableListOf<String>()
+        val reached = mutableListOf<String>()
+        walk.nodes.first()?.let { joins += "JOIN $nodes $it ON $it.nid = $at" }
+        walk.hops.forEachIndexed { i, hop ->
+            val (join, far) = leaves(hop.edge, hop.direction, reached.lastOrNull() ?: at)
+            joins += "JOIN $edges ${hop.edge} ON $join"
+            reached += far
+            walk.nodes[i + 1]?.let { joins += "JOIN $nodes $it ON $it.nid = $far" }
+        }
+        val distinct = walk.hops.flatMapIndexed { i, a -> walk.hops.drop(i + 1).map { b -> "${a.edge}.eid <> ${b.edge}.eid" } }
+        return Triple(joins, reached, distinct)
+    }
 
     /**
      * What a walk is: its rows' [source], the [condition] that joins them to the pattern, the list of
@@ -574,8 +620,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * The relationships one part of a pattern matched: one, its id [eids], or with [many] those a
-         * variable-length relationship walked, a list of ids. Of the [types] it may have; [nodes] is the
-         * list of the ids of the nodes it reaches after the one it starts from.
+         * variable-length relationship or a quantified path pattern walked, a list of ids. Of the [types] it
+         * may have; [nodes] is the list of the ids of the nodes it reaches after the one it starts from.
          */
         private inner class Hop(val eids: String, val many: Boolean, val types: List<String>, val nodes: String) {
             /** That no relationship of this hop is one of [other]'s. */
@@ -620,6 +666,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 value
             }
             pattern.relationships.forEachIndexed { i, relationship ->
+                if (relationship.group != null) {
+                    hops += quantified(select, relationship, bound[i].nid, bound[i + 1].nid, seed(pattern.nodes[i], before))
+                    return@forEachIndexed
+                }
                 if (relationship.range != null) {
                     // Walked from its far node when only that one is pinned: the same relationships, read backwards.
                     hops += if (pinned[i + 1] && !pinned[i]) {
@@ -662,7 +712,7 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun shortest(select: Select, pattern: Pattern, where: Expression?) {
             val relationship = pattern.relationships.singleOrNull()
-            if (relationship?.range == null) unsupported("A shortest path of anything but one variable-length relationship")
+            if (relationship?.range == null || relationship.group != null) unsupported("A shortest path of anything but one variable-length relationship")
             val inner = Select(select.scope)
             val hops = mutableListOf<Hop>()
             // Its ends named, to find the shortest between each two of them where they were not bound before it.
@@ -727,13 +777,75 @@ abstract class SqlCypherCompiler(graph: String) {
                 relationship.properties?.let { propertiesMatch("$edge.props", it, select.scope) },
             )
             val walked = walk(
-                Walk(from, to, alias("p"), alias("w"), edge, relationship.direction, range.min ?: 1, range.max, conditions, backwards, seed)
+                Walk(from, to, alias("p"), alias("w"), listOf(Walk.Hop(edge, relationship.direction)), listOf(null, null), range.min ?: 1, range.max, conditions, backwards, seed)
             )
             select.source(walked.source)
             select.where += walked.condition
             // A variable on it is the list of its relationships.
             relationship.variable?.let { select.bind(it, relationshipList(walked.eids)) }
             return Hop(walked.eids, true, relationship.types, walked.nids)
+        }
+
+        /**
+         * A quantified path pattern, `((a)-[r:R]->(b) WHERE …){min,max}`, from the node [from] to the node [to]: a walk
+         * whose each step is a repetition of the group's pattern, that takes a relationship no more than once, as a
+         * walk of a variable-length relationship does. Each variable of the group is bound to the list of what it
+         * matched in each repetition, in turn.
+         */
+        private fun quantified(select: Select, relationship: RelationshipPattern, from: String, to: String, seed: ((String) -> String)?): Hop {
+            val group = relationship.group!!
+            val inner = group.pattern
+            val rows = inner.nodes.map { alias("n") }
+            val links = inner.relationships.map { alias("e") }
+            val scope = inner.nodes.zip(rows).mapNotNull { (node, row) ->
+                node.variable?.let { it to Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp") }
+            } + inner.relationships.zip(links).mapNotNull { (relationship, edge) ->
+                relationship.variable?.let { it to Value.Relationship("$edge.eid", "$edge.src", "$edge.dst", "$edge.type", "$edge.props") }
+            }
+            scope.groupBy({ it.first }).forEach { (variable, values) ->
+                if (values.size > 1) unsupported("A variable named twice in a quantified path pattern")
+                if (select.scope[variable] != null) throw DrivineException("$variable is bound before the quantified path pattern that names it.")
+            }
+            val read = (inner.nodes.mapNotNull { it.properties } + inner.relationships.mapNotNull { it.properties } + listOfNotNull(group.where))
+                .flatMap(::variablesIn).toSet()
+            if (!walksReadRow && read.any { select.scope[it] != null }) unsupported("On Oracle, a quantified path pattern that reads a variable from outside it")
+            val within = select.scope + scope
+            val conditions = inner.nodes.zip(rows).flatMap { (node, row) ->
+                listOfNotNull(
+                    node.labels.takeIf { it.isNotEmpty() }?.let { hasLabels("$row.labels", it) },
+                    node.properties?.let { propertiesMatch("$row.props", it, within) },
+                )
+            } + inner.relationships.zip(links).flatMap { (relationship, edge) ->
+                listOfNotNull(types("$edge.type", relationship.types), relationship.properties?.let { propertiesMatch("$edge.props", it, within) })
+            } + listOfNotNull(group.where?.let { bool(expression(it, within)) })
+            // A node is joined to the step where a condition reads it.
+            val joined = inner.nodes.zip(rows).map { (node, row) ->
+                row.takeIf { node.labels.isNotEmpty() || node.properties != null || node.variable in read }
+            }
+            val range = relationship.range!!
+            val walked = walk(
+                Walk(from, to, alias("p"), alias("w"), inner.relationships.zip(links).map { (r, edge) -> Walk.Hop(edge, r.direction) }, joined, range.min ?: 1, range.max, conditions, false, seed)
+            )
+            select.source(walked.source)
+            select.where += walked.condition
+            // The step's nodes and relationships, k of each a repetition, in turn: each variable is every k-th of them.
+            val k = inner.relationships.size
+            val nids = joinIds(listOf(ids(from), walked.nids))
+            inner.nodes.forEachIndexed { i, node -> node.variable?.let { select.bind(it, Value.Entities(every(nids, i, k, k - i), relationships = false)) } }
+            inner.relationships.forEachIndexed { i, r -> r.variable?.let { select.bind(it, Value.Entities(every(walked.eids, i, k, 0), relationships = true)) } }
+            val types = inner.relationships.takeIf { rs -> rs.all { it.types.isNotEmpty() } }?.flatMap { it.types }?.distinct().orEmpty()
+            return Hop(walked.eids, true, types, walked.nids)
+        }
+
+        /**
+         * The ids of the store's list [list] from the one after the first [first], every [stride]-th, short of the last
+         * [leave], as a JSON list in its order.
+         */
+        private fun every(list: String, first: Int, stride: Int, leave: Int): String {
+            val u = alias("u")
+            val v = alias("v")
+            return "(SELECT ${comparable(Value.Json(aggregateList(scalar("$v.id"), "$v.ord"), ordered = true))} FROM (SELECT $u.id, $u.ord, COUNT(*) OVER () AS cnt FROM ${idRows(list, u)}) $v " +
+                "WHERE $v.ord > $first AND MOD($v.ord - ${first + 1}, $stride) = 0 AND $v.ord <= $v.cnt - $leave)"
         }
 
         /** The nodes whose ids are the store's list [nids], in its order: null where the list is. */
@@ -1110,6 +1222,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             pattern.relationships.forEachIndexed { i, relationship ->
+                if (relationship.group != null) unsupported("A quantified path pattern in CREATE or MERGE")
                 if (relationship.range != null) unsupported("A variable-length relationship in CREATE or MERGE")
                 val type = relationship.types.singleOrNull() ?: throw DrivineException("A relationship that CREATE or MERGE makes has one type.")
                 if (relationship.variable != null && relationship.variable in kinds) unsupported("A relationship variable bound before its pattern")
@@ -2206,7 +2319,10 @@ abstract class SqlCypherCompiler(graph: String) {
         /** Every variable [pattern] names, of its parts or in their properties. */
         fun variablesIn(pattern: Pattern): Set<String> =
             pattern.nodes.flatMap { listOfNotNull(it.variable) + (it.properties?.let(::variablesIn) ?: emptySet()) }.toSet() +
-                pattern.relationships.flatMap { listOfNotNull(it.variable) + (it.properties?.let(::variablesIn) ?: emptySet()) }
+                pattern.relationships.flatMap { relationship ->
+                    listOfNotNull(relationship.variable) + (relationship.properties?.let(::variablesIn) ?: emptySet()) +
+                        (relationship.group?.let { variablesIn(it.pattern) + (it.where?.let(::variablesIn) ?: emptySet()) } ?: emptySet())
+                }
 
         fun children(expression: Expression): List<Expression> = when (expression) {
             is Expression.Property -> listOf(expression.subject)

@@ -77,6 +77,33 @@ class CypherReaderTest {
     }
 
     @Test
+    fun `a quantified path pattern reads as a relationship of its group, and a pattern in parentheses with no quantifier as the pattern`() {
+        val match = CypherReader.read("MATCH (a) ((x:P)-[r:R]->(y) WHERE x.v < y.v){1,3} (b) RETURN a").clauses.first() as Clause.Match
+        val where = Expression.Binary(Operator.LESS_THAN, Expression.Property(Expression.Variable("x"), "v"), Expression.Property(Expression.Variable("y"), "v"))
+        val group = RelationshipPattern.Group(
+            Pattern(
+                null,
+                listOf(NodePattern("x", listOf("P"), null), NodePattern("y", emptyList(), null)),
+                listOf(RelationshipPattern("r", listOf("R"), Direction.OUTGOING, null, null)),
+            ),
+            where,
+        )
+        assertEquals(
+            Pattern(
+                null,
+                listOf(NodePattern("a", emptyList(), null), NodePattern("b", emptyList(), null)),
+                listOf(RelationshipPattern(null, emptyList(), Direction.OUTGOING, RelationshipPattern.Range(1, 3), null, group)),
+            ),
+            match.patterns.single(),
+        )
+        fun patterns(cypher: String) = (CypherReader.read(cypher).clauses.first() as Clause.Match).patterns
+        assertEquals(patterns("MATCH (a)-[:R]->(b) RETURN a"), patterns("MATCH ((a)-[:R]->(b)) RETURN a"))
+        val shortest = patterns("MATCH p = shortestPath((a)-[:R*]->(b)) RETURN p").single()
+        assertEquals(Pattern.Shortest.ONE, shortest.shortest)
+        assertEquals(RelationshipPattern(null, listOf("R"), Direction.OUTGOING, RelationshipPattern.Range(null, null), null), shortest.relationships.single())
+    }
+
+    @Test
     fun `a chain of comparisons reads as their conjunction, and precedence is the grammar's`() {
         assertEquals(
             Expression.Binary(
