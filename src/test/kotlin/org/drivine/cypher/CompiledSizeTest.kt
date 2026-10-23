@@ -24,6 +24,16 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `a duration added to a value read from the store compiles to a statement that grows with each addition, not exponentially`() {
+        fun added(times: Int) = "MATCH (c:Claim) RETURN " + "(".repeat(times) + "c.day" + (1..times).joinToString("") { " + duration('P1D'))" }
+        compilers.forEach { compiler ->
+            val (one, two, four) = listOf(1, 2, 4).map { compiler.compile(added(it)).sql.length }
+            assertTrue(one < 20_000, "${compiler::class.simpleName}: $one characters")
+            assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
+        }
+    }
+
+    @Test
     fun `a sum of twice the terms compiles to about twice the statement`() {
         fun sum(terms: Int) = "MATCH (c:Claim) RETURN " + (1..terms).joinToString(" + ") { "c.p$it" }
         compilers.forEach { compiler ->

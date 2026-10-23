@@ -34,7 +34,7 @@ enum class Temporal(val pattern: String, val zoned: Boolean = false) {
 
         /**
          * The days of a duration, from its start: its sign, then years, months, weeks and days, in groups [DURATION_PARTS]
-         * names. A duration is read in two patterns, its days and its time, for Oracle reads no group past the ninth.
+         * names, the sign aside. A duration is read in two patterns, its days and its time, for Oracle reads no group past the ninth.
          */
         const val DURATION_DAYS = "^(-?)P((-?[0-9.]+)Y)?((-?[0-9.]+)M)?((-?[0-9.]+)W)?((-?[0-9.]+)D)?"
 
@@ -43,7 +43,7 @@ enum class Temporal(val pattern: String, val zoned: Boolean = false) {
 
         /** The pattern, [DURATION_DAYS] or [DURATION_TIME], and the group of it, that holds each part of a duration. */
         val DURATION_PARTS = mapOf(
-            "sign" to (DURATION_DAYS to 1), "years" to (DURATION_DAYS to 3), "months" to (DURATION_DAYS to 5), "weeks" to (DURATION_DAYS to 7),
+            "years" to (DURATION_DAYS to 3), "months" to (DURATION_DAYS to 5), "weeks" to (DURATION_DAYS to 7),
             "days" to (DURATION_DAYS to 9), "hours" to (DURATION_TIME to 2), "minutes" to (DURATION_TIME to 4), "seconds" to (DURATION_TIME to 6),
         )
 

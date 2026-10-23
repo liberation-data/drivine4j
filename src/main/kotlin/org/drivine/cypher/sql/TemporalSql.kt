@@ -3,8 +3,9 @@ package org.drivine.cypher.sql
 /**
  * A store's SQL for temporal values, which [Temporals] works openCypher's out of. Its texts and timestamps are
  * SQL: a text is a value's ISO 8601 text, a timestamp a SQL timestamp of no zone, a number a SQL number.
+ * [shared] is the compiler's: a value it is given is written once where it is read more than once.
  */
-abstract class TemporalSql {
+abstract class TemporalSql(protected val shared: (List<String>, (List<String>) -> String) -> String) {
 
     /** The wall clock the text [text] of [kind] reads, an offset it has left out: a date at its midnight, a time of day on 1970-01-01. */
     abstract fun local(text: String, kind: Temporal): String
@@ -47,4 +48,7 @@ abstract class TemporalSql {
 
     /** The text [text] with every match of [pattern], a SQL text, replaced by [replacement]. */
     open fun replace(text: String, pattern: String, replacement: String) = "REGEXP_REPLACE($text, $pattern, $replacement)"
+
+    /** The zoned text [text] without the offset it ends with. */
+    protected fun unzoned(text: String) = replace(text, "'${Temporal.OFFSET}'", "''")
 }

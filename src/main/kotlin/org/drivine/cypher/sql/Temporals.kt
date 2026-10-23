@@ -29,10 +29,14 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
 
     // ----- Moments and times of day -----
 
-    /** The text of [kind] the wall clock [timestamp] reads, with [offset], a text, where the kind is zoned. */
+    /**
+     * The text of [kind] the wall clock [timestamp] reads, with [offset], a text, where the kind is zoned: null where
+     * [timestamp] is null, which Oracle would otherwise write out as the text's punctuation alone (`.`, `.Z`), for its
+     * null joins a text as the empty text.
+     */
     fun format(timestamp: String, kind: Temporal, offset: String? = null): String = shared(listOf(timestamp)) { (t) ->
         val time = "to_char($t, 'HH24:MI:SS') || ${fraction(t)}"
-        when (kind) {
+        val text = when (kind) {
             Temporal.DATE -> "to_char($t, 'YYYY-MM-DD')"
             Temporal.LOCAL_DATE_TIME -> "to_char($t, 'YYYY-MM-DD\"T\"') || $time"
             Temporal.DATE_TIME -> "to_char($t, 'YYYY-MM-DD\"T\"') || $time || ${offset ?: "'Z'"}"
@@ -40,6 +44,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
             Temporal.TIME -> "$time || ${offset ?: "'Z'"}"
             Temporal.DURATION -> error("a duration is no moment")
         }
+        if (kind == Temporal.DATE) text else "CASE WHEN $t IS NOT NULL THEN $text END"
     }
 
     /** A second's fraction as Java writes one: none for a whole second, else three digits or six. */
@@ -47,14 +52,21 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         "CASE WHEN $f = '000000' THEN '' WHEN SUBSTR($f, 4, 3) = '000' THEN '.' || SUBSTR($f, 1, 3) ELSE '.' || $f END"
     }
 
-    /** The offset the zoned text [text] ends with. */
-    fun offset(text: String): String = sql.group(text, literal(Temporal.OFFSET), 1)
+    /**
+     * The offset the zoned text [text] ends with, as Cypher gives it: with a colon where it is written without one,
+     * and `Z` where it is none, however written (`+00:00`, `-0000`), so a value at UTC is equal to another however
+     * each writes it.
+     */
+    fun offset(text: String): String {
+        val utc = sql.replace(sql.group(text, literal(Temporal.OFFSET), 1), "'^[+-]00:?00$'", "'Z'")
+        return sql.replace(utc, "'^([+-][0-9]{2})([0-9]{2})$'", "'\\1:\\2'")
+    }
+
+    /** The offset a value of [to] made of the text [text] of [from] has: its own, or UTC's where it has none; none where [to] is local. */
+    private fun offset(text: String, from: Temporal, to: Temporal): String? = if (to.zoned) (if (from.zoned) offset(text) else "'Z'") else null
 
     /** The text of [to] the text [text] of [from] is: a moment's date, a date's midnight, a local value's in UTC. */
-    fun convert(text: String, from: Temporal, to: Temporal): String = shared(listOf(text)) { (t) ->
-        val offset = if (to.zoned) (if (from.zoned) offset(t) else "'Z'") else null
-        format(sql.local(t, from), to, offset)
-    }
+    fun convert(text: String, from: Temporal, to: Temporal): String = shared(listOf(text)) { (t) -> format(sql.local(t, from), to, offset(t, from, to)) }
 
     /** The text of [to] the text [text] is, whatever kind its shape tells: null where it is none. */
     fun convert(text: String, to: Temporal): String = byKind(text) { from, t -> convert(t, from, to) }
@@ -128,8 +140,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         val sign = "CASE WHEN SUBSTR($o, 1, 1) = '-' THEN -1 ELSE 1 END"
         val minutes = "CASE WHEN $o = 'Z' THEN 0 ELSE $sign * (${sql.number("SUBSTR($o, 2, 2)")} * 60 + ${sql.number("SUBSTR(REPLACE($o, ':', ''), 4, 2)")}) END"
         when (name) {
-            "timezone" -> o
-            "offset" -> "CASE WHEN $o = 'Z' THEN '+00:00' ELSE $o END"
+            "timezone", "offset" -> o
             "offsetMinutes" -> minutes
             else -> "($minutes) * 60"
         }
@@ -146,10 +157,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
 
     /** The text of [kind] the duration text [duration] after the text [text] of it, or with [sign] -1 before: a zoned value keeps its offset. */
     fun add(text: String, kind: Temporal, duration: String, sign: Int): String = shared(listOf(text, duration)) { (t, d) ->
-        val s = if (sign < 0) "-" else ""
-        val parts = parts(d)
-        val moved = sql.addTime(sql.addMonths(sql.local(t, kind), "$s(${parts.months})"), "$s(${parts.days})", "$s(${parts.seconds})")
-        format(moved, kind, if (kind.zoned) offset(t) else null)
+        format(moved(sql.local(t, kind), d, sign, if (kind == Temporal.DATE) "1 = 1" else null), kind, offset(t, kind, kind))
     }
 
     /**
@@ -157,19 +165,32 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
      * added once, and written as the kind it was.
      */
     fun addToAny(text: String, duration: String, sign: Int): String = shared(listOf(text, duration)) { (t, d) ->
-        val s = if (sign < 0) "-" else ""
-        val parts = parts(d)
         val clock = "CASE ${Temporal.instants.joinToString(" ") { "WHEN ${isKind(t, it)} THEN ${sql.local(t, it)}" }} END"
-        shared(listOf(sql.addTime(sql.addMonths(clock, "$s(${parts.months})"), "$s(${parts.days})", "$s(${parts.seconds})"))) { (moved) ->
-            "CASE ${Temporal.instants.joinToString(" ") { "WHEN ${isKind(t, it)} THEN ${format(moved, it, if (it.zoned) offset(t) else null)}" }} END"
+        shared(listOf(moved(clock, d, sign, isKind(t, Temporal.DATE)))) { (moved) ->
+            "CASE ${Temporal.instants.joinToString(" ") { "WHEN ${isKind(t, it)} THEN ${format(moved, it, offset(t, it, it))}" }} END"
         }
+    }
+
+    /**
+     * The timestamp [timestamp] the duration text [duration] later, or with [sign] -1 earlier. Where [date], a SQL
+     * condition, holds, the duration's time is taken in whole days alone, as Cypher adds one to a date: a date less
+     * `PT1H` is the same date, less `PT25H` the day before.
+     */
+    private fun moved(timestamp: String, duration: String, sign: Int, date: String? = null): String {
+        val s = if (sign < 0) "-" else ""
+        val parts = parts(duration)
+        val seconds = if (date == null) parts.seconds else shared(listOf(parts.seconds)) { (sec) -> "CASE WHEN $date THEN TRUNC($sec / 86400) * 86400 ELSE $sec END" }
+        return sql.addTime(sql.addMonths(timestamp, "$s(${parts.months})"), "$s(${parts.days})", "$s($seconds)")
     }
 
     /** The text of [to] the text [text] of [from] is, cut short to [unit]: null where the store truncates to no such unit. */
     fun truncate(unit: String, text: String, from: Temporal, to: Temporal): String? {
         if (sql.truncate(unit, "NULL") == null) return null
-        return shared(listOf(text)) { (t) -> format(sql.truncate(unit, sql.local(t, from))!!, to, if (to.zoned) (if (from.zoned) offset(t) else "'Z'") else null) }
+        return shared(listOf(text)) { (t) -> format(sql.truncate(unit, sql.local(t, from))!!, to, offset(t, from, to)) }
     }
+
+    /** What the text [text] of [kind] sorts by: the moment it is, whatever its offset, as a timestamp. */
+    fun moment(text: String, kind: Temporal): String = sql.utc(text, kind)
 
     /** Whether the text [a] stands to the text [b], both of [kind], as [operator] says: null where either is no such text. */
     fun compare(a: String, b: String, kind: Temporal, operator: String): String = shared(listOf(a, b)) { (x, y) ->
@@ -192,11 +213,15 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
 
     // ----- Durations -----
 
-    /** The parts of the duration text [text], which each read it more than once: [text] is a name, written once. */
+    /**
+     * The parts of the duration text [text], which each read it more than once: [text] is a name, written once.
+     * A part it leaves out is 0, and every part of null is null, so a duration of null is added as null. A duration
+     * negated whole opens with its sign.
+     */
     private fun parts(text: String): Parts {
         fun group(name: String) = Temporal.DURATION_PARTS.getValue(name).let { (pattern, group) -> sql.group(text, literal(pattern), group) }
         fun part(name: String) = "COALESCE(${sql.number(group(name))}, 0)"
-        val sign = "CASE WHEN ${group("sign")} = '-' THEN -1 ELSE 1 END"
+        val sign = "CASE WHEN SUBSTR($text, 1, 1) = '-' THEN -1 WHEN $text IS NOT NULL THEN 1 END"
         return Parts(
             "($sign * (${part("years")} * 12 + ${part("months")}))",
             "($sign * (${part("weeks")} * 7 + ${part("days")}))",
@@ -217,7 +242,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     /**
      * The duration text of the parts [parts], as Neo4j writes one: whole years and months, days, then hours,
      * minutes and seconds, each signed, and `PT0S` for none. A fraction of a month or a day goes to the parts
-     * below it, as Cypher's does: a month as 30.436875 days.
+     * below it, as Cypher's does: a month as 30.436875 days. Null where a part is null.
      */
     private fun text(parts: Parts): String = shared(listOf(parts.months, parts.days, parts.seconds)) { (m0, d0, s0) ->
         val m = "TRUNC($m0)"
@@ -226,10 +251,10 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         shared(listOf(m, d, s)) { (months, days, seconds) ->
             val years = "TRUNC($months / 12)"
             val hours = "TRUNC($seconds / 3600)"
-            val minutes = "TRUNC(($seconds - $hours * 3600) / 60)"
-            val secs = "($seconds - $hours * 3600 - $minutes * 60)"
+            val minutes = "(TRUNC($seconds / 60) - $hours * 60)"
+            val secs = "($seconds - TRUNC($seconds / 60) * 60)"
             fun unit(value: String, letter: String) = "CASE WHEN $value <> 0 THEN ${number(value)} || '$letter' ELSE '' END"
-            "CASE WHEN $months = 0 AND $days = 0 AND $seconds = 0 THEN 'PT0S' ELSE 'P' || ${unit(years, "Y")} || ${unit("($months - $years * 12)", "M")} || " +
+            "CASE WHEN $months = 0 AND $days = 0 AND $seconds = 0 THEN 'PT0S' WHEN $seconds IS NOT NULL THEN 'P' || ${unit(years, "Y")} || ${unit("($months - $years * 12)", "M")} || " +
                 "${unit(days, "D")} || CASE WHEN $seconds <> 0 THEN 'T' || ${unit(hours, "H")} || ${unit(minutes, "M")} || ${unit(secs, "S")} ELSE '' END END"
         }
     }
@@ -279,11 +304,18 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     fun duration(text: String): String = shared(listOf(text)) { (t) -> "CASE WHEN ${isKind(t, Temporal.DURATION)} THEN ${text(parts(t))} END" }
 
     /**
-     * `duration.between`: the duration from the text [from] to the text [to], both of [kind], in whole months as a
-     * calendar counts them, then days, then seconds; with [unit] `months`, `days` or `seconds`, in that alone.
+     * `duration.between`: the duration from the text [from] of [kind] to the text [to] of [toKind], in whole months
+     * as a calendar counts them, then days, then seconds; with [unit] `months`, `days` or `seconds`, in that alone.
+     * Two zoned values are read as the moments they are; where either is local, both are read on their wall clocks.
      */
-    fun between(from: String, to: String, kind: Temporal, unit: String? = null): String = shared(listOf(sql.utc(from, kind), sql.utc(to, kind))) { (a, b) ->
-        val months = if (kind == Temporal.TIME || kind == Temporal.LOCAL_TIME) "0" else sql.monthsBetween(a, b)
+    fun between(from: String, to: String, kind: Temporal, unit: String? = null, toKind: Temporal = kind): String {
+        val zoned = kind.zoned && toKind.zoned
+        fun read(text: String, of: Temporal) = if (zoned) sql.utc(text, of) else sql.local(text, of)
+        return between(read(from, kind), read(to, toKind), kind in TIMES || toKind in TIMES, unit)
+    }
+
+    private fun between(from: String, to: String, times: Boolean, unit: String?): String = shared(listOf(from, to)) { (a, b) ->
+        val months = if (times) "0" else sql.monthsBetween(a, b)
         when (unit) {
             "months" -> text(Parts(months, "0", "0"))
             "days" -> text(Parts("0", "TRUNC(${sql.secondsBetween(a, b)} / 86400)", "0"))
@@ -307,8 +339,9 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         fun canonical(text: String, kind: Temporal): String? {
             if (kind == Temporal.DURATION) return if (Regex(Temporal.DURATION.pattern).matches(text)) canonicalDuration(text) else null
             val from = Temporal.instants.firstOrNull { Regex(it.pattern).matches(text) } ?: return null
-            val offset = if (from.zoned) Regex(Temporal.OFFSET).find(text)!!.value else null
-            val local = if (offset != null) text.removeSuffix(offset) else text
+            val written = if (from.zoned) Regex(Temporal.OFFSET).find(text)!!.value else null
+            val local = if (written != null) text.removeSuffix(written) else text
+            val offset = written?.replace(Regex("^[+-]00:?00$"), "Z")?.replace(Regex("^([+-][0-9]{2})([0-9]{2})$"), "$1:$2")
             val clock = when (from) {
                 Temporal.DATE -> java.time.LocalDate.parse(local).atStartOfDay()
                 Temporal.LOCAL_DATE_TIME, Temporal.DATE_TIME -> java.time.LocalDateTime.parse(local)
@@ -351,6 +384,9 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
             val time = if (seconds.signum() != 0) "T" + unit(hours, "H") + unit(minutes, "M") + unit(secs, "S") else ""
             return "P" + unit(years, "Y") + unit(months - years * 12.toBigDecimal(), "M") + unit(days, "D") + time
         }
+
+        /** The kinds of a time of day, which no months are between. */
+        private val TIMES = setOf(Temporal.TIME, Temporal.LOCAL_TIME)
 
         /** The fields of a moment or a time of day read off its wall clock. */
         val INSTANT_FIELDS = setOf(

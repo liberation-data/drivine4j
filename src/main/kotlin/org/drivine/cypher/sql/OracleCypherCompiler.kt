@@ -274,9 +274,21 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST($count, 1)) r WHERE r.n <= $count)"
     }
 
-    /** Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. */
-    override val temporalSql = OracleTemporalSql()
+    override val temporalSql = OracleTemporalSql(sharedList)
 
+    /**
+     * Oracle merges a view of no table into the subquery that reads it, and where that subquery is bound in
+     * another and the row reads another property, the merged query reads the value as null: each is kept apart.
+     */
+    override fun boundSelect(columns: String) = "SELECT /*+ NO_MERGE */ $columns"
+
+    /**
+     * Oracle merges a `CALL { … }` query into the row's query that joins it, and a value bound in that row from what
+     * the query returns is then read as null (`CALL { WITH n RETURN n.day AS d } RETURN d + duration('P1D')`).
+     */
+    override fun called(query: String) = "SELECT /*+ NO_MERGE */ * FROM (\n${indent(query)}\n)"
+
+    /** Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. */
     override fun matches(text: String, pattern: String) = shared(pattern) { (p) ->
         val flags = "REGEXP_SUBSTR($p, '^\\(\\?([a-z]+)\\)', 1, 1, NULL, 1)"
         "REGEXP_LIKE($text, '^(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\$', NVL(REPLACE($flags, 's', 'n'), 'c'))"

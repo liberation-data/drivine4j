@@ -3,9 +3,10 @@ package org.drivine.cypher.sql
 /**
  * Oracle's SQL for temporal values: see [TemporalSql]. Oracle reads ISO 8601 text as a JSON value's moment,
  * and has no time of day apart from a day, so a time of day is read on 1970-01-01. Its intervals keep months
- * apart from days, and a month past the end of a shorter one is its last day by `ADD_MONTHS`.
+ * apart from days. `ADD_MONTHS` and `MONTHS_BETWEEN` take the last day of a month to the last day of another,
+ * where Cypher keeps the day of the month, so months are added and counted from the first of the month.
  */
-class OracleTemporalSql : TemporalSql() {
+class OracleTemporalSql(shared: (List<String>, (List<String>) -> String) -> String) : TemporalSql(shared) {
 
     override fun local(text: String, kind: Temporal) = when (kind) {
         Temporal.DATE -> "TO_TIMESTAMP($text, 'YYYY-MM-DD')"
@@ -32,20 +33,34 @@ class OracleTemporalSql : TemporalSql() {
 
     override fun micros(timestamp: String) = "TO_CHAR($timestamp, 'FF6')"
 
-    override fun dayOfWeek(timestamp: String) = "(TRUNC(CAST($timestamp AS DATE)) - TRUNC(CAST($timestamp AS DATE), 'IW') + 1)"
+    override fun dayOfWeek(timestamp: String) =
+        shared(listOf(timestamp)) { (t) -> "(TRUNC(CAST($t AS DATE)) - TRUNC(CAST($t AS DATE), 'IW') + 1)" }
 
-    /** `ADD_MONTHS` takes a day, so the time of day and the fraction of a second are added back after. */
-    override fun addMonths(timestamp: String, months: String) =
-        "(CAST(ADD_MONTHS(CAST($timestamp AS DATE), $months) AS TIMESTAMP) + ($timestamp - CAST(CAST($timestamp AS DATE) AS TIMESTAMP)))"
+    /**
+     * The first of the month [months] later, by `ADD_MONTHS`, which takes a day; then the day of the month, or the
+     * month's last where it has fewer, and the time of day with the fraction of a second.
+     */
+    override fun addMonths(timestamp: String, months: String) = shared(listOf(timestamp, months)) { (t, m) ->
+        shared(listOf("ADD_MONTHS(TRUNC(CAST($t AS DATE), 'MM'), $m)")) { (first) ->
+            "(CAST($first AS TIMESTAMP) + NUMTODSINTERVAL(LEAST(EXTRACT(DAY FROM $t), EXTRACT(DAY FROM LAST_DAY($first))) - 1, 'DAY') + " +
+                "($t - CAST(TRUNC(CAST($t AS DATE)) AS TIMESTAMP)))"
+        }
+    }
 
     override fun addTime(timestamp: String, days: String, seconds: String) =
         "($timestamp + NUMTODSINTERVAL($days, 'DAY') + NUMTODSINTERVAL($seconds, 'SECOND'))"
 
-    override fun monthsBetween(from: String, to: String) = "TRUNC(MONTHS_BETWEEN(CAST($to AS DATE), CAST($from AS DATE)))"
+    /** The months between the calendar months, less one where [to]'s day and time of the month are short of [from]'s. */
+    override fun monthsBetween(from: String, to: String) = shared(listOf(from, to)) { (f, t) ->
+        val (since, until) = listOf(f, t).map { "TO_CHAR($it, 'DDHH24MISSFF6')" }
+        shared(listOf("((EXTRACT(YEAR FROM $t) - EXTRACT(YEAR FROM $f)) * 12 + EXTRACT(MONTH FROM $t) - EXTRACT(MONTH FROM $f))")) { (m) ->
+            "($m - CASE WHEN $m > 0 AND $until < $since THEN 1 WHEN $m < 0 AND $until > $since THEN -1 ELSE 0 END)"
+        }
+    }
 
-    override fun secondsBetween(from: String, to: String): String {
-        val interval = "($to - $from)"
-        return "(EXTRACT(DAY FROM $interval) * 86400 + EXTRACT(HOUR FROM $interval) * 3600 + EXTRACT(MINUTE FROM $interval) * 60 + EXTRACT(SECOND FROM $interval))"
+    override fun secondsBetween(from: String, to: String) = shared(listOf(from, to)) { (f, t) ->
+        val interval = "($t - $f)"
+        "(EXTRACT(DAY FROM $interval) * 86400 + EXTRACT(HOUR FROM $interval) * 3600 + EXTRACT(MINUTE FROM $interval) * 60 + EXTRACT(SECOND FROM $interval))"
     }
 
     override fun truncate(unit: String, timestamp: String): String? {
@@ -60,6 +75,4 @@ class OracleTemporalSql : TemporalSql() {
 
     /** The moment the ISO 8601 text [text] writes, as Oracle reads it out of JSON, as [type]. */
     private fun iso(text: String, type: String) = "JSON_VALUE(JSON_SCALAR($text), '\$' RETURNING $type)"
-
-    private fun unzoned(text: String) = replace(text, "'${Temporal.OFFSET}'", "''")
 }

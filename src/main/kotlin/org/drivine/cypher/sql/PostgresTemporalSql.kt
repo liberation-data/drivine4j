@@ -1,7 +1,7 @@
 package org.drivine.cypher.sql
 
 /** Postgres's SQL for temporal values: see [TemporalSql]. Its intervals keep months, days and time apart, as Cypher's durations do. */
-class PostgresTemporalSql : TemporalSql() {
+class PostgresTemporalSql(shared: (List<String>, (List<String>) -> String) -> String) : TemporalSql(shared) {
 
     override fun local(text: String, kind: Temporal) = when (kind) {
         Temporal.DATE -> "CAST(CAST($text AS date) AS timestamp)"
@@ -37,12 +37,10 @@ class PostgresTemporalSql : TemporalSql() {
 
     /** `age` counts in calendar months, then days, then time, as Cypher's `duration.between` does. */
     override fun monthsBetween(from: String, to: String) =
-        "(EXTRACT(YEAR FROM age($to, $from)) * 12 + EXTRACT(MONTH FROM age($to, $from)))"
+        shared(listOf("age($to, $from)")) { (age) -> "(EXTRACT(YEAR FROM $age) * 12 + EXTRACT(MONTH FROM $age))" }
 
     override fun secondsBetween(from: String, to: String) = "EXTRACT(EPOCH FROM ($to - $from))"
 
     override fun truncate(unit: String, timestamp: String) =
         if (unit in setOf("year", "quarter", "month", "week", "day", "hour", "minute", "second", "millisecond")) "date_trunc('$unit', $timestamp)" else null
-
-    private fun unzoned(text: String) = replace(text, "'${Temporal.OFFSET}'", "''")
 }

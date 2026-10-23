@@ -454,6 +454,7 @@ abstract class CypherQueryContract {
                 """
             ),
         )
+        assertEquals(listOf(2L, 3L), query("UNWIND tail([1, 2, 3]) AS x RETURN x"))
         assertEquals(listOf(null), query("RETURN split('a', null)"))
         // An empty separator cuts at each character. Oracle's empty text is null.
         if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(listOf("a", "b", "c"), listOf(""))), query("RETURN [split('abc', ''), split('', ',')]"))

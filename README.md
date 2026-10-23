@@ -3047,14 +3047,17 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`, `[(a)-->(m) | m]`) is given as
   their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
-  `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields, or of the
-  moment the statement runs. Their fields read (`d.year`, `t.hour`, `dur.days`), a duration is added to a
-  moment or to another duration, `duration.between` and `truncate` work them out, and two moments compare
-  as the moments they are. A zoned value keeps the offset it was written with; a named zone, such as
+  `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
+  date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
+  read (`d.year`, `t.hour`, `dur.days`), a duration is added to a moment or to another duration,
+  `duration.between` and `truncate` work them out, and two moments compare as the moments they are. A zoned
+  value the statement makes sorts as its moment (`ORDER BY datetime(n.at)`); one read as a property sorts as
+  its text. A zoned value keeps the offset it was written with; a named zone, such as
   `Europe/Paris`, is not read. A graph engine's driver gives a temporal value as one of its own, and Oracle
   and Postgres give its text. A value read from a property is of the kind its text tells, so
   `n.day + duration('P1D')` adds a day to a date stored as `2024-03-15`. Two values the statement makes
-  neither of temporal (by a constructor, or a parameter of a `java.time` type) are not added as moments.
+  neither of temporal (by a constructor, or a parameter of a `java.time` type) are not added, taken away,
+  scaled or compared as moments.
 - A statement that writes and returns rows is a PL/SQL block that hands them back with
   `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it

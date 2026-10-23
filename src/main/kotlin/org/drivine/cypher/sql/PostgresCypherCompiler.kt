@@ -186,11 +186,18 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override val rowNumber = "ROW_NUMBER() OVER ()"
 
     /**
+     * Postgres pulls a subquery of no table up into the query that reads it, and writes each of its values out
+     * again where it is read: values bound in one another so grow exponentially as it plans, and a duration added
+     * to a date read from the store took the server's memory. `OFFSET 0` keeps the subquery apart.
+     */
+    override fun boundSelect(columns: String) = "SELECT $columns OFFSET 0"
+
+    override val temporalSql = PostgresTemporalSql(sharedList)
+
+    /**
      * Flags the pattern opens with, `(?i)`, are put before the anchors, where Postgres reads them, after `p`: a dot
      * matches no line break, as Java's does, unless the pattern says `(?s)`.
      */
-    override val temporalSql = PostgresTemporalSql()
-
     override fun matches(text: String, pattern: String) = "($text ~ regexp_replace($pattern, '^(\\(\\?([a-z]+)\\))?(.*)\$', '(?p\\2)^(\\3)\$'))"
 
     /**
