@@ -343,12 +343,17 @@ jobs:
         env:
           ORACLE_TESTS: true
 
+      - name: Run the coroutines module's Oracle tests
+        run: ./gradlew :drivine4j-coroutines:test --no-daemon --tests '*Oracle*'
+        env:
+          ORACLE_TESTS: true
+
       - name: Publish Test Report
         uses: mikepenz/action-junit-report@v4
         if: success() || failure()
         with:
           report_paths: |
-            build/test-results/test/*.xml
+            **/build/test-results/test/*.xml
           detailed_summary: true
           include_passed: true
           check_name: Test Results (Oracle)
@@ -362,8 +367,8 @@ jobs:
         with:
           name: test-results-ORACLE
           path: |
-            build/test-results/test/
-            build/reports/tests/test/
+            **/build/test-results/test/
+            **/build/reports/tests/test/
           retention-days: 30
 
   # The Postgres tests are left out of a plain `./gradlew test` too, enabled by POSTGRES_TESTS. This
@@ -402,6 +407,11 @@ jobs:
 
       - name: Run the Postgres tests
         run: ./gradlew :test --no-daemon --tests '*Postgres*'
+        env:
+          POSTGRES_TESTS: true
+
+      - name: Run the coroutines module's Postgres tests
+        run: ./gradlew :drivine4j-coroutines:test --no-daemon --tests '*Postgres*'
         env:
           POSTGRES_TESTS: true
 

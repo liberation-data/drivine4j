@@ -1,6 +1,5 @@
 package org.drivine.transaction
 
-import org.slf4j.LoggerFactory
 import java.util.concurrent.Callable
 
 /**
@@ -22,6 +21,8 @@ import java.util.concurrent.Callable
  * for a block that returns nothing.
  *
  * The transaction is the calling thread's, as Spring's is: a block's work on another thread is not in it.
+ * For a block that suspends, and whose transaction follows the coroutine from thread to thread,
+ * `drivine4j-coroutines` adds `transactionSuspending { }`.
  *
  * - The outermost block's transaction commits when the block returns, and rolls back when anything
  *   is thrown out of it, a checked exception too.
@@ -36,10 +37,17 @@ import java.util.concurrent.Callable
  *   nothing, in `STRICT` the block's first statement is refused.
  */
 class Transactions(
-    private val contextHolder: TransactionContextHolder,
+    /**
+     * Where the transaction in progress is kept, for the thread. `drivine4j-coroutines` reads it to
+     * carry a coroutine's transaction to each thread the coroutine runs on.
+     */
+    val contextHolder: TransactionContextHolder,
 ) {
 
-    /** The transaction the calling thread is in, begun by a block or by Spring, or null. */
+    /**
+     * The transaction the calling thread is in, begun by a block or by Spring, or null. In a coroutine
+     * launched in a suspend block, a stand-in that refuses to be used: see [DrivineTransactionObject.refusal].
+     */
     val current: DrivineTransactionObject?
         get() = contextHolder.currentTransaction
 
@@ -70,27 +78,8 @@ class Transactions(
         propagation: Propagation = Propagation.REQUIRED,
         rollback: Boolean = false,
         block: Callable<T>,
-    ): T {
-        val current = contextHolder.currentTransaction
-        return when (propagation) {
-            Propagation.REQUIRED -> if (current != null) join(current, rollback, block) else begin(rollback, block)
-            Propagation.REQUIRES_NEW -> setAside { begin(rollback, block) }
-            Propagation.SUPPORTS -> if (current != null) join(current, rollback, block) else block.call()
-            Propagation.MANDATORY -> join(
-                current ?: throw IllegalTransactionStateException("Propagation MANDATORY needs a transaction, and there is none."),
-                rollback,
-                block,
-            )
-            Propagation.NEVER -> if (current != null) {
-                throw IllegalTransactionStateException("Propagation NEVER refuses to run in a transaction, and transaction ${current.id} is running.")
-            } else {
-                block.call()
-            }
-            Propagation.NOT_SUPPORTED -> setAside { block.call() }
-            Propagation.NESTED -> throw IllegalTransactionStateException(
-                "Propagation NESTED is not supported: Drivine has no savepoints. Use REQUIRED or REQUIRES_NEW."
-            )
-        }
+    ): T = propagate(propagation, rollback, contextHolder.currentTransaction) { transaction ->
+        runIn(transaction) { block.call() }
     }
 
     /** As [transaction], for a block that returns nothing: from Java, a lambda with no `return`. */
@@ -103,68 +92,57 @@ class Transactions(
         transaction(propagation, rollback) { block.run() }
     }
 
-    private fun <T> join(transaction: DrivineTransactionObject, rollback: Boolean, block: Callable<T>): T {
-        if (rollback) transaction.rollbackOnCompletion = true
-        try {
-            return block.call()
-        } catch (ex: Throwable) {
-            transaction.rollbackOnly = true
-            throw ex
-        }
-    }
-
     /**
-     * Begins a transaction, runs [block] in it, and ends it: the steps, and the order of them,
-     * Spring's `AbstractPlatformTransactionManager` takes through the adapter.
+     * What [transaction] does, for code that keeps the transaction in progress somewhere other than
+     * the thread: `drivine4j-coroutines` keeps it in a coroutine's context. Given the transaction in
+     * progress, [current], it works out the transaction a block runs in as [propagation] says, and
+     * calls [run] with it: [current] to join it, a transaction it begins (and ends when [run]
+     * returns or throws), or null to run without one. [run] puts that transaction in place for the
+     * block. It is inline, so [run] may suspend.
+     *
+     * @throws IllegalTransactionStateException where [propagation] refuses to run, or where
+     *   [current] is a transaction this code may not use (see [DrivineTransactionObject.refusal]).
      */
-    private fun <T> begin(rollback: Boolean, block: Callable<T>): T {
-        val transaction = DrivineTransactionObject().also { it.rollbackOnCompletion = rollback }
-        logger.debug("Beginning transaction: ${transaction.id}")
+    inline fun <T> propagate(
+        propagation: Propagation,
+        rollback: Boolean,
+        current: DrivineTransactionObject?,
+        run: (DrivineTransactionObject?) -> T,
+    ): T = when (propagation) {
+        Propagation.REQUIRED -> if (current != null) {
+            current.runJoined(rollback) { run(current) }
+        } else {
+            DrivineTransactionObject().runToEnd(rollback) { run(it) }
+        }
+        Propagation.REQUIRES_NEW -> DrivineTransactionObject().runToEnd(rollback) { run(it) }
+        Propagation.SUPPORTS -> if (current != null) current.runJoined(rollback) { run(current) } else run(null)
+        Propagation.MANDATORY -> {
+            val joined = current ?: throw IllegalTransactionStateException(
+                "Propagation MANDATORY needs a transaction, and there is none."
+            )
+            joined.runJoined(rollback) { run(joined) }
+        }
+        Propagation.NEVER -> if (current != null) {
+            throw IllegalTransactionStateException(
+                "Propagation NEVER refuses to run in a transaction, and transaction ${current.id} is running."
+            )
+        } else {
+            run(null)
+        }
+        Propagation.NOT_SUPPORTED -> run(null)
+        Propagation.NESTED -> throw IllegalTransactionStateException(
+            "Propagation NESTED is not supported: Drivine has no savepoints. Use REQUIRED or REQUIRES_NEW."
+        )
+    }
+
+    /** Makes [transaction] (or none) the thread's while [block] runs, and puts back what was there. */
+    private fun <T> runIn(transaction: DrivineTransactionObject?, block: () -> T): T {
+        val previous = contextHolder.currentTransaction
         contextHolder.currentTransaction = transaction
-        try {
-            val result = try {
-                block.call()
-            } catch (ex: Throwable) {
-                rollBackAfter(transaction, ex)
-                throw ex
-            }
-            if (transaction.rollbackOnCompletion) {
-                transaction.rollback()
-            } else {
-                try {
-                    transaction.commit()
-                } catch (ex: Exception) {
-                    rollBackAfter(transaction, ex)
-                    throw ex
-                }
-            }
-            return result
-        } finally {
-            transaction.release()
-            contextHolder.currentTransaction = null
-        }
-    }
-
-    /** Rolls back on the way out of a failure, and keeps a failure to roll back from hiding the one that caused it. */
-    private fun rollBackAfter(transaction: DrivineTransactionObject, cause: Throwable) {
-        try {
-            transaction.rollback()
-        } catch (ex: Exception) {
-            cause.addSuppressed(ex)
-        }
-    }
-
-    private fun <T> setAside(block: () -> T): T {
-        val suspended = contextHolder.currentTransaction
-        contextHolder.currentTransaction = null
         try {
             return block()
         } finally {
-            contextHolder.currentTransaction = suspended
+            contextHolder.currentTransaction = previous
         }
-    }
-
-    private companion object {
-        private val logger = LoggerFactory.getLogger(Transactions::class.java)
     }
 }
