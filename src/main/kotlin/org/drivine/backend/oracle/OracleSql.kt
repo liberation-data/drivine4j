@@ -106,10 +106,14 @@ internal object OracleSql {
 
     /**
      * Whether the node [alias] carries every one of [labels]; null when there are none to carry.
-     * [scanned] says the statement reads every node of the labels, and so may use the index over them.
+     * [scanned] says the statement reads every node of the labels, and so may use the index over them, for
+     * the first label alone: when two tests of the labels are answered by that index, Oracle (23.26) finds
+     * no node the open transaction has written and not yet committed. The rest are tested by the labels' text.
      */
     fun hasLabels(alias: String, labels: Collection<String>, scanned: Boolean = false): String? =
-        labels.takeIf { it.isNotEmpty() }?.joinToString(" AND ") { if (scanned) hasLabel(alias, it) else carriesLabel(alias, it) }
+        labels.takeIf { it.isNotEmpty() }?.withIndex()?.joinToString(" AND ") { (i, label) ->
+            if (scanned && i == 0) hasLabel(alias, label) else carriesLabel(alias, label)
+        }
 
     /** The property [key] of the node or relationship [alias], read as [kind]. The stamp is a column. */
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String =

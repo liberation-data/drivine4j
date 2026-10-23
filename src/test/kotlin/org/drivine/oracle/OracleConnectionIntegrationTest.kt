@@ -2,6 +2,7 @@ package org.drivine.oracle
 
 import com.zaxxer.hikari.HikariDataSource
 import org.drivine.DrivineException
+import org.drivine.backend.oracle.OracleSql
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
@@ -210,6 +211,22 @@ class OracleConnectionIntegrationTest {
         assertEquals(emptyList(), names())
         connection.commitTransaction()
         assertEquals(listOf("Ada"), names())
+    }
+
+    @Test
+    fun `a node of several labels a transaction has written and not committed is found by a scan of them all`() {
+        val graph = OracleTestDatabase.graphManager("labels")
+        OracleTestDatabase.clear(graph)
+        val connection = OracleTestDatabase.connections(graph).connect()
+        try {
+            connection.startTransaction()
+            connection.query(spec("INSERT INTO labels_node (labels, props) VALUES (JSON('[\"Dog\", \"Animal\"]'), JSON('{}'))"))
+            val scan = "SELECT COUNT(*) FROM labels_node n WHERE ${OracleSql.hasLabels("n", listOf("Dog", "Animal"), scanned = true)}"
+            assertEquals(listOf<Any>(1L), connection.query(spec(scan)))
+        } finally {
+            connection.rollbackTransaction()
+            connection.release()
+        }
     }
 
     @Test

@@ -63,14 +63,14 @@ class OracleSqlTest {
     }
 
     @Test
-    fun `no labels is no predicate, several are conjoined, and a scan takes the indexable form`() {
+    fun `no labels is no predicate, several are conjoined, and a scan takes the indexable form for its first`() {
         assertNull(OracleSql.hasLabels("n", emptyList()))
         assertEquals(
             "${OracleSql.carriesLabel("n", "A")} AND ${OracleSql.carriesLabel("n", "B")}",
             OracleSql.hasLabels("n", listOf("A", "B")),
         )
         assertEquals(
-            "${OracleSql.hasLabel("n", "A")} AND ${OracleSql.hasLabel("n", "B")}",
+            "${OracleSql.hasLabel("n", "A")} AND ${OracleSql.carriesLabel("n", "B")}",
             OracleSql.hasLabels("n", listOf("A", "B"), scanned = true),
         )
     }
