@@ -299,7 +299,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun isoNow() = "JSON_SCALAR(TO_CHAR(SYS_EXTRACT_UTC(SYSTIMESTAMP), 'YYYY-MM-DD\"T\"HH24:MI:SS.FF3\"Z\"'))"
 
     /** An anonymous block, which returns its rows as an implicit result. */
-    override fun procedure(body: List<String>) = listOf(
+    override fun procedure(body: List<String>) = (listOf(
         "DECLARE",
         "    $PARAMS JSON := JSON(\$${Parameters.OBJECT});",
         "    $ROWS JSON;",
@@ -310,13 +310,12 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "    $COUNT NUMBER;",
         "    $FOUND BOOLEAN;",
         "    $DOOMED JSON;",
-        "    $SAVED JSON;",
-        "    $KEPT JSON;",
         "    $CURSOR SYS_REFCURSOR;",
+    ) + (1..NESTING).map { "    $SAVED$it JSON;" } + listOf(
         "BEGIN",
         indent(body.joinToString("\n")),
         "END;",
-    ).joinToString("\n")
+    )).joinToString("\n")
 
     override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
 

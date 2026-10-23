@@ -510,6 +510,17 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a quantified relationship is a variable-length one`() {
+        assertEquals(
+            listOf("Carrie", "Keanu"),
+            query("MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{1,2}(p) RETURN p.name ORDER BY p.name"),
+        )
+        assertEquals(listOf("Carrie"), query("MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{2}(p) RETURN p.name"))
+        assertEquals(listOf("Carrie", "Keanu"), query("MATCH (:Person {name: 'Laurence'})-[:KNOWS]->+(p) RETURN p.name ORDER BY p.name"))
+        assertEquals(listOf(listOf("Laurence", 0L), listOf("Keanu", 1L), listOf("Carrie", 2L)), query("MATCH (:Person {name: 'Laurence'})-[r:KNOWS]->*(p) RETURN [p.name, size(r)] ORDER BY size(r)"))
+    }
+
+    @Test
     fun `a shortest path is the least of the pattern's, and all shortest paths every one of that length`() {
         assertEquals(
             listOf(listOf(2L, listOf("Laurence", "Keanu", "Carrie"))),

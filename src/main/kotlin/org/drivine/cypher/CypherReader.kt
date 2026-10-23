@@ -154,23 +154,36 @@ object CypherReader {
     private fun pattern(context: OC_PatternElementContext, variable: String?): Pattern {
         // A pattern in parentheses is the pattern.
         context.oC_PatternElement()?.let { return pattern(it, variable) }
-        val nodes = mutableListOf(node(context.oC_NodePattern()))
+        return pattern(context.oC_NodePattern(), context.oC_PatternElementChain(), variable)
+    }
+
+    private fun pattern(context: OC_RelationshipsPatternContext, variable: String?): Pattern =
+        pattern(context.oC_NodePattern(), context.oC_PatternElementChain(), variable)
+
+    private fun pattern(first: OC_NodePatternContext, chains: List<OC_PatternElementChainContext>, variable: String?): Pattern {
+        val nodes = mutableListOf(node(first))
         val relationships = mutableListOf<RelationshipPattern>()
-        context.oC_PatternElementChain().forEach { chain ->
-            relationships += relationship(chain.oC_RelationshipPattern())
+        chains.forEach { chain ->
+            val relationship = relationship(chain.oC_RelationshipPattern())
+            relationships += chain.oC_PathQuantifier()?.let { quantifier ->
+                if (relationship.range != null) refuse("A quantified relationship that has a range of its own")
+                relationship.copy(range = range(quantifier))
+            } ?: relationship
             nodes += node(chain.oC_NodePattern())
         }
         return Pattern(variable, nodes, relationships)
     }
 
-    private fun pattern(context: OC_RelationshipsPatternContext, variable: String?): Pattern {
-        val nodes = mutableListOf(node(context.oC_NodePattern()))
-        val relationships = mutableListOf<RelationshipPattern>()
-        context.oC_PatternElementChain().forEach { chain ->
-            relationships += relationship(chain.oC_RelationshipPattern())
-            nodes += node(chain.oC_NodePattern())
-        }
-        return Pattern(variable, nodes, relationships)
+    /** `+` is one or more, `*` any, `{n}` exactly n, and `{m,n}` from m to n, either bound left out. */
+    private fun range(context: OC_PathQuantifierContext): RelationshipPattern.Range {
+        if (context.text == "+") return RelationshipPattern.Range(1, null)
+        if (context.text == "*") return RelationshipPattern.Range(0, null)
+        val bounds = context.oC_IntegerLiteral().map { integer(it).toInt() }
+        val comma = context.children.indexOfFirst { it.text == "," }
+        if (comma < 0) return RelationshipPattern.Range(bounds.single(), bounds.single())
+        val before = context.oC_IntegerLiteral().firstOrNull { context.children.indexOf(it) < comma }?.let { integer(it).toInt() }
+        val after = context.oC_IntegerLiteral().firstOrNull { context.children.indexOf(it) > comma }?.let { integer(it).toInt() }
+        return RelationshipPattern.Range(before ?: 0, after)
     }
 
     private fun node(context: OC_NodePatternContext) = NodePattern(

@@ -209,7 +209,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * again replaces it with itself.
      */
     override fun procedure(body: List<String>): String {
-        val text = listOf(
+        val text = (listOf(
             "#variable_conflict use_column",
             "DECLARE",
             "    $ROWS jsonb;",
@@ -220,14 +220,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $COUNT bigint;",
             "    $FOUND boolean;",
             "    $DOOMED jsonb;",
-            "    $SAVED jsonb;",
-            "    $KEPT jsonb;",
             "    $RECORD record;",
             "    $MATCHED record;",
+        ) + (1..NESTING).map { "    $SAVED$it jsonb;" } + listOf(
             "BEGIN",
             indent(body.joinToString("\n")),
             "END",
-        ).joinToString("\n")
+        )).joinToString("\n")
         val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
         val function = "pg_temp.drivine_cypher_${digest.take(24)}"
         return "CREATE OR REPLACE FUNCTION $function($PARAMS jsonb) RETURNS SETOF json LANGUAGE plpgsql AS \$cy\$\n$text\n\$cy\$;\n" +

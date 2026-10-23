@@ -345,6 +345,9 @@ abstract class CypherWriteContract {
         query("MATCH (n:CyWrite) WHERE n.id IN ['root', 'other'] FOREACH (x IN CASE WHEN n.id = 'root' THEN [1] ELSE [] END | SET n.flag = true)")
         query("MATCH (n:CyWrite {id: 'other'}) FOREACH (x IN null | SET n.flag = false)")
         assertEquals(listOf(listOf("other", null), listOf("root", true)), query("MATCH (n:CyWrite) WHERE n.id IN ['root', 'other'] RETURN [n.id, n.flag] ORDER BY n.id"))
+        // A FOREACH in a FOREACH.
+        query("MATCH (r:CyWrite {id: 'root'}) FOREACH (a IN ['x', 'y'] | FOREACH (b IN [1, 2] | CREATE (r)-[:GRID]->(:CyWrite {id: a + toString(b)})))")
+        assertEquals(listOf("x1", "x2", "y1", "y2"), query("MATCH (:CyWrite {id: 'root'})-[:GRID]->(c) RETURN c.id ORDER BY c.id"))
     }
 
     @Test

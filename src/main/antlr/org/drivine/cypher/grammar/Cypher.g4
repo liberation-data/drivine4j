@@ -268,7 +268,15 @@ oC_NodePattern
            :  '(' SP? ( oC_Variable SP? )? ( oC_NodeLabels SP? )? ( oC_Properties SP? )? ')' ;
 
 oC_PatternElementChain
-                   :  oC_RelationshipPattern SP? oC_NodePattern ;
+                   :  oC_RelationshipPattern ( SP? oC_PathQuantifier )? SP? oC_NodePattern ;
+
+// drivine4j: a quantified relationship, `-[:R]->{1,3}`, `-[:R]->+` or `-[:R]->*`, the simple form of Neo4j's
+// quantified path patterns and of GQL's, which openCypher's grammar does not have: a variable-length relationship.
+oC_PathQuantifier
+              :  '+'
+                  | '*'
+                  | ( '{' SP? oC_IntegerLiteral? SP? ( ',' SP? oC_IntegerLiteral? SP? )? '}' )
+                  ;
 
 oC_RelationshipPattern
                    :  ( oC_LeftArrowHead SP? oC_Dash SP? oC_RelationshipDetail? SP? oC_Dash SP? oC_RightArrowHead )

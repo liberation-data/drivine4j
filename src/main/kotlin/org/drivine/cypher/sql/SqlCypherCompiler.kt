@@ -940,10 +940,10 @@ abstract class SqlCypherCompiler(graph: String) {
             if (call.query.unions.isNotEmpty()) unsupported("A UNION in CALL { … }")
             val ret = call.query.clauses.last() as? Clause.Return
             if (ret != null && ret.projection.items.any { contains(it.expression, ::isAggregate) }) unsupported("An aggregate in the RETURN of a CALL { … } that writes")
-            if (calling) unsupported("A CALL { … } that writes in another")
-            calling = true
+            if (nesting == NESTING) unsupported("A FOREACH or CALL { … } that writes nested more than $NESTING deep")
+            val kept = "$SAVED${++nesting}"
             val before = LinkedHashMap(kinds)
-            if (ret == null) emit("$KEPT := $ROWS;")
+            if (ret == null) emit("$kept := $ROWS;")
             var select = rows()
             for (clause in imported(call.query.clauses)) {
                 when {
@@ -957,6 +957,11 @@ abstract class SqlCypherCompiler(graph: String) {
                         foreach(clause)
                         select = rows()
                     }
+                    clause is Clause.Call && writes(clause) -> {
+                        carry(select)
+                        callWriting(clause)
+                        select = rows()
+                    }
                     writes(clause) -> {
                         carry(select)
                         write(clause)
@@ -966,18 +971,15 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             if (ret == null) {
-                emit("$ROWS := $KEPT;")
+                emit("$ROWS := $kept;")
                 kinds.clear()
                 kinds.putAll(before)
                 unread = null
             } else {
                 carry(select)
             }
-            calling = false
+            nesting--
         }
-
-        /** Whether a `CALL { … }` that writes is being written: one is not written in another. */
-        private var calling = false
 
         /** [clauses] without an importing `WITH` of variables alone that opens them: every variable of the row is seen. */
         private fun imported(clauses: List<Clause>): List<Clause> {
@@ -991,31 +993,30 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The parameters an expression reads from a map it is given, where it reads none bound: see [Expression.Reduce]. */
         private var givenParameters: Map<String, Value>? = null
 
-        /** Whether a `FOREACH` is being written: one is not written in another. */
-        private var foreaching = false
+        /** How deep in `FOREACH`es and writing `CALL`s the write being made is: each keeps the rows it puts back in a variable of its own depth. */
+        private var nesting = 0
 
         /**
          * A `FOREACH` over the rows in [ROWS]: its list unwound over them, each of its clauses written for each row
          * and item in turn, then the rows put back as they were, for a `FOREACH` leaves them as it found them.
          */
         private fun foreach(foreach: Clause.Foreach) {
-            if (foreaching) unsupported("A FOREACH in a FOREACH")
-            foreaching = true
+            if (nesting == NESTING) unsupported("A FOREACH or CALL { … } that writes nested more than $NESTING deep")
+            val saved = "$SAVED${++nesting}"
             val before = LinkedHashMap(kinds)
-            emit("$SAVED := $ROWS;")
+            emit("$saved := $ROWS;")
             var select = rows()
             unwind(select, Clause.Unwind(foreach.list, foreach.variable))
             for (clause in creates(foreach.clauses)) {
                 carry(select)
-                if (clause is Clause.Foreach) unsupported("A FOREACH in a FOREACH")
-                write(clause)
+                if (clause is Clause.Foreach) foreach(clause) else write(clause)
                 select = rows()
             }
-            emit("$ROWS := $SAVED;")
+            emit("$ROWS := $saved;")
             kinds.clear()
             kinds.putAll(before)
             unread = null
-            foreaching = false
+            nesting--
         }
 
         /** The row in [ROW] kept, as a row of what the write leaves. */
@@ -1869,11 +1870,14 @@ abstract class SqlCypherCompiler(graph: String) {
         /** Whether a `MERGE` found its pattern. */
         const val FOUND = "cy_found"
 
-        /** The rows a `CALL { … }` that writes and returns nothing puts back once its clauses are written. */
-        const val KEPT = "cy_kept"
-
-        /** The rows a `FOREACH` puts back once its clauses are written. */
+        /**
+         * The rows a `FOREACH`, or a `CALL { … }` that writes and returns nothing, puts back once its clauses are
+         * written, followed by its depth, from 1 to [NESTING].
+         */
         const val SAVED = "cy_saved"
+
+        /** How deep `FOREACH`es and writing `CALL`s nest. */
+        const val NESTING = 3
 
         /** The nodes a `DELETE` deletes once its rows are done, a JSON list of ids. */
         const val DOOMED = "cy_doomed"
