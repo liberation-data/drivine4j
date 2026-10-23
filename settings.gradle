@@ -4,6 +4,9 @@ rootProject.name = 'drivine4j'
 include 'drivine4j-codegen'        // KSP processor for Kotlin
 include 'drivine4j-codegen-java'   // APT processor for Java
 
+// Spring Framework adapter: DrivineTransactionManager (no Boot)
+include 'drivine4j-spring'
+
 // Spring Boot starter module
 include 'drivine4j-spring-boot-starter'
 

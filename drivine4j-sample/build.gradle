@@ -5,6 +5,13 @@ plugins {
     id 'io.spring.dependency-management' version '1.1.7'
 }
 
+// Versions the Boot BOM would manage down, which the root project's build used to set for this one
+// when it applied the Spring Boot plugin. Boot manages Kotlin to 1.9, and would take the Kotlin
+// compiler's own tools down with it. jfalkordb 0.13.0 is built on Jedis 8; Boot manages Jedis to 6.0.0,
+// which lacks DefaultJedisClientConfig.Builder.autoNegotiateProtocol and fails every FalkorDB connection.
+ext['kotlin.version'] = '2.2.20'
+ext['jedis.version'] = '8.0.1'
+
 dependencyManagement {
     imports {
         mavenBom 'org.springframework.boot:spring-boot-dependencies:3.5.7'

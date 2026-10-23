@@ -64,7 +64,26 @@ Composition lets us mix and match as needed.
 
 ## Installation
 
+### Spring Boot Starter
+
+Drivine4j works hand in hand with Spring. For a Spring Boot application, add the starter: it brings the core library,
+Drivine's transaction manager and the auto-configuration (see [Configuration](#1-configuration)). `@Transactional` and
+`TransactionTemplate` run Drivine's transactions, alongside your other Spring transactions.
+
+```kotlin
+dependencies {
+    implementation("org.drivine:drivine4j-spring-boot-starter:0.2.0")
+}
+```
+
+Spring without Boot takes `drivine4j-spring` instead: the core library and `DrivineTransactionManager`, Drivine's
+`PlatformTransactionManager`, for `@Transactional` and `TransactionTemplate`, with no auto-configuration. The starter
+is built on it.
+
 ### Core Library
+
+The core library depends only on what it uses: the drivers, Jackson and HikariCP. The Spring artifacts above bring it,
+and it can be used on its own too, with another framework or none (see [Other frameworks, or none](#4-other-frameworks-or-none)).
 
 #### Gradle (Kotlin DSL)
 ```kotlin
@@ -89,15 +108,11 @@ dependencies {
 </dependency>
 ```
 
-### Spring Boot Starter
-
-For a Spring application, the starter brings the core library and the Spring wiring (see [Configuration](#1-configuration)):
-
-```kotlin
-dependencies {
-    implementation("org.drivine:drivine4j-spring-boot-starter:0.2.0")
-}
-```
+| Artifact | Holds | Depends on |
+|---|---|---|
+| `drivine4j-spring-boot-starter` | the auto-configuration, `@EnableDrivine`, `@EnableDrivinePropertiesConfig`, `@EnableDrivineTestConfig` | `drivine4j-spring`, Spring Boot |
+| `drivine4j-spring` | `DrivineTransactionManager`, for `@Transactional` and `TransactionTemplate`; `FalkorDbCleanupListener` | `drivine4j`, Spring Framework (`spring-tx`) |
+| `drivine4j` | the engines, the managers, the query DSL, schema management, `Transactions` and `Drivine` | the drivers, Jackson, HikariCP |
 
 ### Code Generation (For the Type-Safe Query DSL)
 
@@ -290,6 +305,84 @@ class PersonRepository @Autowired constructor(
         )
     }
 }
+```
+
+### 4. Other frameworks, or none
+
+The core library depends only on what it uses, so it also runs outside Spring: in a plain `main`, a Ktor or Micronaut
+server, a batch job or a CLI. Make one `Drivine`, which builds what the starter builds as beans (the registry, the
+factories and the transactions), and hand its managers to your classes:
+
+```kotlin
+fun main() {
+    Drivine(
+        DataSourceMap(
+            mapOf(
+                "neo" to ConnectionProperties(
+                    type = DatabaseType.NEO4J,
+                    host = "localhost",
+                    port = 7687,
+                    userName = "neo4j",
+                    password = "password",
+                    databaseName = "neo4j"
+                )
+            )
+        )
+    ).use { drivine ->                                   // close() ends every database's connections
+        val people = PersonService(drivine.graphObjectManager("neo"), drivine)
+        people.hire(Person(id = "ada", name = "Ada"))
+        println(people.find("ada"))
+    }
+}
+
+class PersonService(private val gom: StatelessGraphObjectManager, private val drivine: Drivine) {
+
+    fun find(id: String): Person? = gom.load<Person>(id)  // outside a transaction each statement commits as it runs
+
+    fun hire(person: Person) = drivine.transaction {
+        gom.save(person)
+        gom.save(Hire("hire-${person.id}", person.id, LocalDate.now()))
+    } // both commit here; a throw out of the block rolls both back
+}
+```
+
+`drivine.transaction { }` takes the propagations `@Transactional` does: see [Transaction Management](#transaction-management).
+`drivine.persistenceManager("neo")` gives the `PersistenceManager`, and `drivine.persistenceManagerFactory`,
+`drivine.graphObjectManagerFactory` and `drivine.transactions` are there to hand on to code that wants them.
+
+With Ktor, a block is blocking work, so run it off the event loop:
+
+```kotlin
+fun main() {
+    val drivine = Drivine(DataSourceMap(mapOf("neo" to ConnectionProperties(/* … */))))
+    val people = PersonService(drivine.graphObjectManager("neo"), drivine)
+
+    embeddedServer(Netty, port = 8080) {
+        install(ContentNegotiation) { jackson() }
+        monitor.subscribe(ApplicationStopped) { drivine.close() }
+        routing {
+            get("/people/{id}") {
+                val person = withContext(Dispatchers.IO) { people.find(call.parameters["id"]!!) }
+                if (person == null) call.respond(HttpStatusCode.NotFound) else call.respond(person)
+            }
+            post("/people") {
+                val person = call.receive<Person>()
+                withContext(Dispatchers.IO) { people.hire(person) }
+                call.respond(HttpStatusCode.Created)
+            }
+        }
+    }.start(wait = true)
+}
+```
+
+Here `Person` and `Hire` are fragments:
+
+```kotlin
+@NodeFragment(labels = ["Person"])
+data class Person(@NodeId val id: String, val name: String)
+
+@NodeFragment(labels = ["Hire"])
+data class Hire(@NodeId val id: String, val personId: String, val on: LocalDate)
 ```
 
 ### Important: RETURN Clause Best Practices
@@ -1787,7 +1880,7 @@ graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), ne
 
 #### Saves and transactions
 
-- A save joins the transaction it is called in, Spring's `@Transactional` or `@DrivineTransactional`. Outside one it is its own.
+- A save joins the transaction it is called in, Spring's `@Transactional` or `@DrivineTransactional`, or a `transaction { }` block (see [Transactions in code](#transactions-in-code-transactions)). Outside one it is its own.
 - `StaleObjectException` is a `RuntimeException`, so a refusal that leaves a `@Transactional` method rolls the transaction back. It is not a `DrivineException`: a handler that catches only that does not catch it.
 - A refused save has written nothing. What the transaction wrote before it is undone only if the transaction rolls back: code that catches the exception and carries on commits it.
 - A checked save holds the node's write lock until the transaction commits, so another writer to the same node waits for it.
@@ -2419,7 +2512,65 @@ class UserService @Autowired constructor(
 }
 ```
 
+`DrivineTransactionManager` is a Spring `PlatformTransactionManager`, so everything Spring does with transactions
+works with Drivine: `@Transactional` with any propagation but `NESTED`, `TransactionTemplate`, `@Rollback` in tests,
+and other transaction managers in the same application (name Drivine's with `@Transactional("drivineTransactionManager")`
+where there are several). The starter registers it, and so does `@EnableDrivine`.
+
 Object-manager saves join these transactions: see [Saves and transactions](#saves-and-transactions) for what a refused save does to one.
+
+#### Transactions in code (`Transactions`)
+
+To run a block in a transaction without an annotated method, inject `Transactions` (the starter makes the bean; outside
+Spring, `drivine.transactions`). Its blocks and `@Transactional` methods share one transaction, either way round: a
+`@Transactional` method called from a block joins the block's transaction, and a block run in a `@Transactional`
+method joins Spring's.
+
+```kotlin
+@Component
+class Onboarding(private val transactions: Transactions, private val gom: StatelessGraphObjectManager) {
+
+    fun onboard(person: Person, hire: Hire) = transactions.transaction {
+        gom.save(person)
+        gom.save(hire)
+    } // both commit here; a throw out of the block rolls both back
+
+    fun audit(hire: Hire) = transactions.transaction(Propagation.REQUIRES_NEW) { gom.save(hire) } // commits whatever the caller does
+}
+```
+
+`transaction { }` returns what the block returns, and takes a propagation, with the meaning Spring gives it:
+
+| `propagation` | With a transaction in progress | Without one |
+|---|---|---|
+| `REQUIRED` (the default) | joins it | begins one |
+| `REQUIRES_NEW` | sets it aside, and begins one | begins one |
+| `SUPPORTS` | joins it | runs without one |
+| `MANDATORY` | joins it | refuses: `IllegalTransactionStateException` |
+| `NEVER` | refuses: `IllegalTransactionStateException` | runs without one |
+| `NOT_SUPPORTED` | sets it aside, and runs without one | runs without one |
+
+`NESTED` is refused, with a transaction or without one (`DrivineTransactionManager` refuses it in a transaction, and
+without one Spring runs it as `REQUIRED`). Without a transaction, each statement commits as it runs.
+`transaction(rollback = true) { }` rolls back though nothing failed: for a test.
+
+- The block that began the transaction commits it when it returns, and rolls it back when anything is thrown out of
+  it, a checked exception too.
+- A block that joins a transaction leaves its end to the code that began it. When the joining block throws and the
+  caller catches it and carries on, the transaction still commits, as it does for a `@Transactional` method.
+- The transaction is the thread's, as Spring's is. A block can't suspend, so in a coroutine it stays on one thread.
+- Begin the transaction with Spring where you rely on Spring's transaction callbacks (`@TransactionalEventListener`,
+  `TransactionSynchronization`): Spring doesn't see a block's commit, so a `@Transactional` method that joins a block's
+  transaction runs them when the method returns.
+- On FalkorDB, which commits each statement as it runs, the `falkorDbTransactionMode` says what a block does: in
+  `WARN` it runs and a rollback undoes nothing, in `STRICT` its first statement is refused.
+
+From Java, the block is a `Callable`, and `transactionWithoutResult` takes a `Runnable`:
+
+```java
+Person saved = transactions.transaction(() -> gom.save(person));
+transactions.transactionWithoutResult(Propagation.REQUIRES_NEW, false, () -> gom.save(hire));
+```
 
 ### Partial Updates
 
