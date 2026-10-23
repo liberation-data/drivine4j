@@ -175,6 +175,12 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override val rowNumber = "ROW_NUMBER() OVER ()"
 
+    override fun matches(text: String, pattern: String) = "($text ~ ('^(' || $pattern || ')$'))"
+
+    override fun split(text: String, separator: String) = "to_jsonb(string_to_array($text, $separator))"
+
+    override fun reverseText(text: String) = "reverse($text)"
+
     override fun uuid() = "CAST(gen_random_uuid() AS text)"
 
     override fun rightText(text: String, count: String) = "right($text, $count)"
@@ -201,6 +207,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $FOUND boolean;",
             "    $DOOMED jsonb;",
             "    $SAVED jsonb;",
+            "    $KEPT jsonb;",
             "    $RECORD record;",
             "    $MATCHED record;",
             "BEGIN",

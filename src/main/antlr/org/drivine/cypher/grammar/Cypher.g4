@@ -70,8 +70,10 @@ oC_UpdatingClause
                   | oC_Set
                   | oC_Remove
                   | oC_Foreach
+                  | oC_SubqueryCall
                   ;
 
+// drivine4j: a `CALL { … }` that writes may end a query, as an updating clause does in Neo4j's Cypher.
 // drivine4j: `FOREACH (x IN list | …)`, of Neo4j's Cypher, which openCypher's grammar does not have.
 oC_Foreach
        :  FOREACH SP? '(' SP? oC_Variable SP IN SP oC_Expression SP? '|' ( SP? oC_UpdatingClause )+ SP? ')' ;
@@ -88,7 +90,14 @@ oC_ReadingClause
 // drivine4j: a subquery, `CALL { … }`, of Neo4j's Cypher and of GQL, which openCypher's grammar does not
 // have: optional, and with the variables it imports named in brackets, `CALL (a, b) { … }`, or by its first WITH.
 oC_SubqueryCall
-            :  ( OPTIONAL SP )? CALL SP? ( '(' SP? ( '*' | ( oC_Variable ( SP? ',' SP? oC_Variable )* ) )? SP? ')' SP? )? '{' SP? oC_RegularQuery SP? '}' ;
+            :  ( OPTIONAL SP )? CALL SP? ( '(' SP? ( '*' | ( oC_Variable ( SP? ',' SP? oC_Variable )* ) )? SP? ')' SP? )? '{' SP? oC_RegularQuery SP? '}'
+               ( SP IN SP TRANSACTIONS ( SP OF SP oC_Expression SP ( ROWS | ROW ) )? )? ;
+
+TRANSACTIONS : ( 'T' | 't' ) ( 'R' | 'r' ) ( 'A' | 'a' ) ( 'N' | 'n' ) ( 'S' | 's' ) ( 'A' | 'a' ) ( 'C' | 'c' ) ( 'T' | 't' ) ( 'I' | 'i' ) ( 'O' | 'o' ) ( 'N' | 'n' ) ( 'S' | 's' ) ;
+
+ROWS : ( 'R' | 'r' ) ( 'O' | 'o' ) ( 'W' | 'w' ) ( 'S' | 's' ) ;
+
+ROW : ( 'R' | 'r' ) ( 'O' | 'o' ) ( 'W' | 'w' ) ;
 
 oC_Match
      :  ( OPTIONAL SP )? MATCH SP? oC_Pattern ( SP? oC_Where )? ;
@@ -323,8 +332,9 @@ oC_PartialComparisonExpression
 oC_StringListNullPredicateExpression
                                  :  oC_AddOrSubtractExpression ( oC_StringPredicateExpression | oC_ListPredicateExpression | oC_NullPredicateExpression )* ;
 
+// drivine4j: `=~`, a regular expression the whole text must match, of Neo4j's Cypher, which openCypher's grammar does not have.
 oC_StringPredicateExpression
-                         :  ( ( SP STARTS SP WITH ) | ( SP ENDS SP WITH ) | ( SP CONTAINS ) ) SP? oC_AddOrSubtractExpression ;
+                         :  ( ( SP STARTS SP WITH ) | ( SP ENDS SP WITH ) | ( SP CONTAINS ) | ( SP? '=~' ) ) SP? oC_AddOrSubtractExpression ;
 
 STARTS : ( 'S' | 's' ) ( 'T' | 't' ) ( 'A' | 'a' ) ( 'R' | 'r' ) ( 'T' | 't' ) ( 'S' | 's' ) ;
 
@@ -704,6 +714,10 @@ oC_SymbolicName
                 | NONE
                 | SINGLE
                 | REDUCE
+                | TRANSACTIONS
+                | OF
+                | ROWS
+                | ROW
                 ;
 
 FILTER : ( 'F' | 'f' ) ( 'I' | 'i' ) ( 'L' | 'l' ) ( 'T' | 't' ) ( 'E' | 'e' ) ( 'R' | 'r' ) ;

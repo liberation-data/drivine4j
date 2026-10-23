@@ -348,6 +348,21 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a call that writes is made for each row, leaves the rows as they were, or adds what it returns`() {
+        assertEquals(
+            listOf(2L),
+            query("UNWIND [{id: 'a', n: 1}, {id: 'b', n: 2}] AS row CALL { WITH row MERGE (x:CyWrite {id: row.id}) SET x.n = row.n } RETURN count(*)"),
+        )
+        query("UNWIND \$rows AS row CALL (row) { MERGE (x:CyWrite {id: row.id}) SET x.n = row.n + 10 }", mapOf("rows" to listOf(mapOf("id" to "a", "n" to 1), mapOf("id" to "c", "n" to 3))))
+        assertEquals(listOf(listOf("a", 11L), listOf("b", 2L), listOf("c", 13L)), query("MATCH (x:CyWrite) RETURN [x.id, x.n] ORDER BY x.id"))
+        assertEquals(listOf("d!", "e!"), query("UNWIND ['d', 'e'] AS id CALL (id) { CREATE (x:CyWrite {id: id}) RETURN x.id + '!' AS made } RETURN made ORDER BY made"))
+        if (!compiles) return
+        // On a graph engine a CALL in transactions commits as it goes, outside any transaction of the caller's; here the statement is one.
+        query("UNWIND [1, 2, 3] AS i CALL (i) { CREATE (:CyWrite {id: 'batch' + toString(i)}) } IN TRANSACTIONS OF 2 ROWS")
+        assertEquals(listOf(3L), query("MATCH (x:CyWrite) WHERE x.id STARTS WITH 'batch' RETURN count(x)"))
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>

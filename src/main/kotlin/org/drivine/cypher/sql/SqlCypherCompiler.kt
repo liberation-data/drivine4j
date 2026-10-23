@@ -229,6 +229,15 @@ abstract class SqlCypherCompiler(graph: String) {
     /** Whether the text [a] ends with the text [b]. */
     protected abstract fun endsWith(a: String, b: String): String
 
+    /** Whether the whole of the text [text] matches the regular expression [pattern], as `=~` matches it. */
+    protected abstract fun matches(text: String, pattern: String): String
+
+    /** `split`: the SQL text [text] cut at each [separator], a SQL text, as a JSON list of texts. */
+    protected abstract fun split(text: String, separator: String): String
+
+    /** The SQL text [text], its characters backwards. */
+    protected abstract fun reverseText(text: String): String
+
     /** Whether the text [a] holds the text [b]. */
     protected abstract fun containsText(a: String, b: String): String
 
@@ -646,6 +655,11 @@ abstract class SqlCypherCompiler(graph: String) {
                         foreach(clause)
                         select = rows()
                     }
+                    clause is Clause.Call && writes(clause) -> {
+                        carry(select)
+                        callWriting(clause)
+                        select = rows()
+                    }
                     writes(clause) -> {
                         carry(select)
                         write(clause)
@@ -787,6 +801,64 @@ abstract class SqlCypherCompiler(graph: String) {
                 emit("END IF;")
                 emit("DELETE FROM $nodes WHERE nid IN ($doomed);")
             }
+        }
+
+        /**
+         * A `CALL { … }` that writes, over the rows in [ROWS]: its clauses written for each row in turn, as the
+         * statement's own are. One that returns nothing leaves the rows as it found them; one that returns adds
+         * what it returns to each row it gives.
+         */
+        private fun callWriting(call: Clause.Call) {
+            if (call.optional) unsupported("An OPTIONAL CALL { … } that writes")
+            if (call.query.unions.isNotEmpty()) unsupported("A UNION in CALL { … }")
+            val ret = call.query.clauses.last() as? Clause.Return
+            if (ret != null && ret.projection.items.any { contains(it.expression, ::isAggregate) }) unsupported("An aggregate in the RETURN of a CALL { … } that writes")
+            if (calling) unsupported("A CALL { … } that writes in another")
+            calling = true
+            val before = LinkedHashMap(kinds)
+            if (ret == null) emit("$KEPT := $ROWS;")
+            var select = rows()
+            for (clause in imported(call.query.clauses)) {
+                when {
+                    clause is Clause.Return -> {
+                        // What it returns joins what the row held.
+                        val items = before.keys.map { Projection.Item(Expression.Variable(it), it) } + clause.projection.items
+                        select = with(select, Clause.With(clause.projection.copy(star = false, items = items), null))
+                    }
+                    clause is Clause.Foreach -> {
+                        carry(select)
+                        foreach(clause)
+                        select = rows()
+                    }
+                    writes(clause) -> {
+                        carry(select)
+                        write(clause)
+                        select = rows()
+                    }
+                    else -> select = read(select, clause)
+                }
+            }
+            if (ret == null) {
+                emit("$ROWS := $KEPT;")
+                kinds.clear()
+                kinds.putAll(before)
+                unread = null
+            } else {
+                carry(select)
+            }
+            calling = false
+        }
+
+        /** Whether a `CALL { … }` that writes is being written: one is not written in another. */
+        private var calling = false
+
+        /** [clauses] without an importing `WITH` of variables alone that opens them: every variable of the row is seen. */
+        private fun imported(clauses: List<Clause>): List<Clause> {
+            val first = clauses.firstOrNull() as? Clause.With ?: return clauses
+            val projection = first.projection
+            val importing = first.where == null && !projection.distinct && projection.orderBy.isEmpty() && projection.skip == null && projection.limit == null &&
+                projection.items.all { (it.expression as? Expression.Variable)?.name == it.name }
+            return if (importing) clauses.drop(1) else clauses
         }
 
         /** Whether a `FOREACH` is being written: one is not written in another. */
@@ -1335,6 +1407,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     Value.Bool("EXISTS (SELECT 1 FROM ${elements(b, i)} WHERE $i.item = $a)")
                 }
                 Operator.STARTS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> startsWith(x, y) })
+                Operator.MATCHES -> Value.Bool(matches(text(a), text(b)))
                 Operator.ENDS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> endsWith(x, y) })
                 Operator.CONTAINS -> Value.Bool(containsText(text(a), text(b)))
                 else -> error("logical operators are handled above")
@@ -1428,6 +1501,36 @@ abstract class SqlCypherCompiler(graph: String) {
                     val (from, to) = arguments.map { number(comparable(json(it))) }
                     Value.Json(range(from, to, arguments.getOrNull(2)?.let { number(comparable(json(it))) } ?: "1"))
                 }
+                "split" -> {
+                    if (arguments.size != 2) throw DrivineException("split() takes a text and a separator.")
+                    val (text, separator) = arguments.map { text(comparable(json(it))) }
+                    Value.Json(split(text, separator))
+                }
+                "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
+                    val e = alias("e")
+                    "CASE ${typeOf(x)} WHEN 'string' THEN ${scalar(reverseText(text(x)))} " +
+                        "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList("$e.item", "$e.item_no DESC"), ordered = true))} FROM ${elements(x, e)}) END"
+                })
+                "tail" -> Value.Json(shared(comparable(json(one()))) { (x) ->
+                    val e = alias("e")
+                    "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${aggregateList("$e.item", "$e.item_no")} FROM ${elements(x, e)} WHERE $e.item_no > 1) END"
+                })
+                "toboolean" -> Value.Json(shared(comparable(json(one()))) { (x) ->
+                    "CASE WHEN ${typeOf(x)} = 'boolean' THEN $x WHEN LOWER(${text(x)}) = 'true' THEN ${literalJson(true)} " +
+                        "WHEN LOWER(${text(x)}) = 'false' THEN ${literalJson(false)} END"
+                })
+                "isempty" -> Value.Json(shared(comparable(json(one()))) { (x) ->
+                    val size = function("size", x)!!
+                    scalar("CASE WHEN ${typeOf(x)} = 'object' THEN $x = ${literalJson(emptyMap<String, Any>())} WHEN ${typeOf(x)} IN ('array', 'string') THEN ${number(size)} = 0 END")
+                })
+                // A float, as Cypher gives these; round as Java rounds, half up.
+                "round" -> Value.Json(
+                    if (arguments.size == 2) scalar(float("ROUND(${number(comparable(json(arguments[0])))}, ${whole(arguments[1])})"))
+                    else scalar(float("FLOOR(${number(comparable(json(one())))} + 0.5)"))
+                )
+                "floor", "ceil", "sqrt" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))
+                "sign" -> Value.Json(scalar("SIGN(${number(comparable(json(one())))})"))
+                "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"))
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.
                 "substring" -> {
@@ -1563,7 +1666,7 @@ abstract class SqlCypherCompiler(graph: String) {
         /** Whether [clause] writes, which makes its statement a procedure. */
         fun writes(clause: Clause): Boolean =
             clause is Clause.Create || clause is Clause.Merge || clause is Clause.Set || clause is Clause.Remove || clause is Clause.Delete ||
-                clause is Clause.Foreach
+                clause is Clause.Foreach || (clause is Clause.Call && (clause.query.clauses + clause.query.unions.flatMap { it.clauses }).any(::writes))
 
         // The variables of a procedure.
 
@@ -1590,6 +1693,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether a `MERGE` found its pattern. */
         const val FOUND = "cy_found"
+
+        /** The rows a `CALL { … }` that writes and returns nothing puts back once its clauses are written. */
+        const val KEPT = "cy_kept"
 
         /** The rows a `FOREACH` puts back once its clauses are written. */
         const val SAVED = "cy_saved"

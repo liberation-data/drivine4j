@@ -227,6 +227,20 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     }
 
     /** Oracle's GUID, in a UUID's form: unique, though not random as a version 4 UUID is. */
+    override fun matches(text: String, pattern: String) = "REGEXP_LIKE($text, '^(' || $pattern || ')$')"
+
+    /** The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next. */
+    override fun split(text: String, separator: String) = shared(text, separator) { (t, s) ->
+        val written = "JSON_SERIALIZE(JSON_SCALAR($t))"
+        val separatorWritten = "SUBSTR(JSON_SERIALIZE(JSON_SCALAR($s)), 2, LENGTH(JSON_SERIALIZE(JSON_SCALAR($s))) - 2)"
+        "CASE WHEN $t IS NOT NULL AND $s IS NOT NULL THEN JSON('[' || REPLACE($written, $separatorWritten, '\",\"') || ']') END"
+    }
+
+    /** Oracle has no reverse of a text that it documents: its characters, read from the last. */
+    override fun reverseText(text: String) = shared(text) { (t) ->
+        "(SELECT LISTAGG(SUBSTR($t, LEVEL, 1)) WITHIN GROUP (ORDER BY LEVEL DESC) FROM DUAL CONNECT BY LEVEL <= LENGTH($t))"
+    }
+
     /** `ROW_NUMBER()` takes an order of its own; `ROWNUM` counts the rows as the query gives them. */
     override val rowNumber = "ROWNUM"
 
@@ -257,6 +271,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "    $FOUND BOOLEAN;",
         "    $DOOMED JSON;",
         "    $SAVED JSON;",
+        "    $KEPT JSON;",
         "    $CURSOR SYS_REFCURSOR;",
         "BEGIN",
         indent(body.joinToString("\n")),

@@ -47,7 +47,7 @@ sealed interface Expression {
             OR, XOR, AND,
             EQUALS, NOT_EQUALS, LESS_THAN, GREATER_THAN, LESS_THAN_OR_EQUAL, GREATER_THAN_OR_EQUAL,
             ADD, SUBTRACT, MULTIPLY, DIVIDE, MODULO, POWER,
-            IN, STARTS_WITH, ENDS_WITH, CONTAINS,
+            IN, STARTS_WITH, ENDS_WITH, CONTAINS, MATCHES,
         }
     }
 

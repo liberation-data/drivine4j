@@ -78,6 +78,7 @@ object CypherReader {
         }
         context.oC_Set() != null -> Clause.Set(set(context.oC_Set()))
         context.oC_Remove() != null -> Clause.Remove(context.oC_Remove().oC_RemoveItem().map(::removeItem))
+        context.oC_SubqueryCall() != null -> context.oC_SubqueryCall().let { call -> Clause.Call(call.OPTIONAL() != null, regular(call.oC_RegularQuery())) }
         context.oC_Foreach() != null -> context.oC_Foreach().let { foreach ->
             Clause.Foreach(name(foreach.oC_Variable()), expression(foreach.oC_Expression()), foreach.oC_UpdatingClause().map(::updating))
         }
@@ -255,7 +256,8 @@ object CypherReader {
                     val operator = when {
                         child.STARTS() != null -> Expression.Binary.Operator.STARTS_WITH
                         child.ENDS() != null -> Expression.Binary.Operator.ENDS_WITH
-                        else -> Expression.Binary.Operator.CONTAINS
+                        child.CONTAINS() != null -> Expression.Binary.Operator.CONTAINS
+                        else -> Expression.Binary.Operator.MATCHES
                     }
                     Expression.Binary(operator, result, additive(child.oC_AddOrSubtractExpression()))
                 }

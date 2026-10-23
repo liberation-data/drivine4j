@@ -425,6 +425,30 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a regular expression matches the whole text, and more functions give a graph engine's values`() {
+        assertEquals(listOf("Carrie", "Keanu"), query("MATCH (p:Person) WHERE p.name =~ '[CK].*' RETURN p.name ORDER BY p.name"))
+        assertEquals(listOf(listOf(false, false, null)), query("RETURN ['Keanu' =~ 'Kea', 'Keanu' =~ 'keanu', null =~ 'x']"))
+        assertEquals(
+            listOf(
+                mapOf(
+                    "split" to listOf("a", "b", "c"), "reversed" to "unaeK", "reversedList" to listOf(3L, 2L, 1L), "tail" to listOf(2L, 3L),
+                    "yes" to true, "no" to false, "notBoolean" to null, "emptyList" to true, "emptyMap" to true, "fullText" to false,
+                    "round" to 3.0, "roundTo" to 2.57, "floor" to 2.0, "ceil" to 3.0, "sqrt" to 3.0, "sign" to -1L, "trimmed" to listOf("a ", " b"),
+                )
+            ),
+            query(
+                """
+                RETURN {split: split('a,b,c', ','), reversed: reverse('Keanu'), reversedList: reverse([1, 2, 3]), tail: tail([1, 2, 3]),
+                        yes: toBoolean('TRUE'), no: toBoolean(false), notBoolean: toBoolean('maybe'),
+                        emptyList: isEmpty([]), emptyMap: isEmpty({}), fullText: isEmpty('x'),
+                        round: round(2.5), roundTo: round(2.567, 2), floor: floor(2.7), ceil: ceil(2.1), sqrt: sqrt(9), sign: sign(-4),
+                        trimmed: [ltrim('  a '), rtrim(' b  ')]}
+                """
+            ),
+        )
+    }
+
+    @Test
     fun `exists and count take a pattern, reading clauses or a whole query, read for the row they are in`() {
         assertEquals(
             listOf("Carrie", "Keanu"),

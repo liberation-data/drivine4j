@@ -2730,9 +2730,11 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
   each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null; `reduce` does not run.
   What is not compiled yet (a slice, a path returned whole, `SKIP` of an expression…) is refused by
-  name before anything is sent. What the grammar does not read (`=~`, `CALL … IN TRANSACTIONS`) is
-  refused as not Cypher, with the place in the statement it stands at. `UNION`, `CALL { … }`, `EXISTS { … }`,
-  `COUNT { … }` and `FOREACH` compile.
+  name before anything is sent. What the grammar does not read is refused as not Cypher, with the
+  place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,
+  `FOREACH` and `=~` compile. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
+  engine commits each batch as it goes. A node gathered into a list (`collect(n)`) is its properties, so a write
+  to an item of such a list is refused.
 - A statement that writes and returns rows is a PL/SQL block that hands them back with
   `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
