@@ -1,10 +1,14 @@
 package sample.caseinsensitive
 
 import org.drivine.annotation.CaseInsensitive
+import org.drivine.annotation.Direction
+import org.drivine.annotation.GraphRelationship
+import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.PropertyBag
+import org.drivine.annotation.Root
 import org.drivine.annotation.Unique
 import org.drivine.model.Stamps
 import org.drivine.query.dsl.NodeReference
@@ -24,6 +28,10 @@ data class CiAccount(
 @NodeFragment(labels = ["CiLate"])
 data class CiLate(@NodeId val id: String, @CaseInsensitive val email: String? = null)
 
+/** Recreated by a test of its own: an index another test ensures is not dropped beneath it. */
+@NodeFragment(labels = ["CiRedone"])
+data class CiRedone(@NodeId val id: String, @CaseInsensitive val email: String? = null)
+
 /** A member whose email is unique whatever its case. */
 @NodeFragment(labels = ["CiMember"])
 data class CiMember(@NodeId val id: String, @CaseInsensitive @Unique(ignoreCase = true) val email: String? = null)
@@ -31,6 +39,14 @@ data class CiMember(@NodeId val id: String, @CaseInsensitive @Unique(ignoreCase 
 /** Many of them, for a plan that reads an index. */
 @NodeFragment(labels = ["CiPlanned"])
 data class CiPlanned(@NodeId val id: String, @CaseInsensitive val email: String? = null)
+
+/** An account and those it knows, each a `@CaseInsensitive` account: a lookup on the root reads the copy, one on a friend does not. */
+@GraphView
+data class CiAccountView(
+    @Root val account: CiAccount,
+    @GraphRelationship(type = "CI_KNOWS", direction = Direction.OUTGOING)
+    val friends: List<CiAccount> = emptyList(),
+)
 
 /** Hand-written DSLs mirroring the codegen shape (the test source set does not run KSP). */
 class CiAccountQueryDsl(override val nodeAlias: String = "n") : NodeReference {
@@ -50,5 +66,14 @@ class CiEmailQueryDsl(override val nodeAlias: String = "n") : NodeReference {
 
     companion object {
         val INSTANCE = CiEmailQueryDsl()
+    }
+}
+
+class CiAccountViewQueryDsl {
+    val account = CiAccountQueryDsl("account")
+    val friends = CiAccountQueryDsl("friends")
+
+    companion object {
+        val INSTANCE = CiAccountViewQueryDsl()
     }
 }

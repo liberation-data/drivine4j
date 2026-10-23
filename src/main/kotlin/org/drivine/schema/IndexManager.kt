@@ -76,7 +76,9 @@ class IndexManager internal constructor(
      * Ensures an index matching [spec] exists. Idempotent — safe to call on every startup.
      *
      * Never destructive: if an index exists with a different shape, returns [EnsureResult.Drift]
-     * and changes nothing; call [recreate] to replace it.
+     * and changes nothing; call [recreate] to replace it. An index that ignores case (see
+     * [RangeIndexSpec.ignoreCase]) first fills in the lowercased copy on the nodes of its label that
+     * have none, and records that they all have it, whatever the result.
      */
     fun ensure(spec: IndexSpec): EnsureResult {
         requireSupported(spec)
@@ -176,6 +178,8 @@ class IndexManager internal constructor(
     /**
      * Drops (if present) and recreates the index described by [spec]. Destructive — previously
      * indexed data may need re-processing (e.g. re-embedding after a vector dimension change).
+     * An index that ignores case fills the lowercased copies in again on every node of its label,
+     * recorded or not.
      */
     fun recreate(spec: IndexSpec): EnsureResult.Recreated {
         requireSupported(spec)

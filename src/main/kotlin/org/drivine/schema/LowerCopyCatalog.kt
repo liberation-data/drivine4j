@@ -19,8 +19,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  * on the store's `DrivineStore` node, Oracle and Postgres in the graph's catalog table: see
  * [CypherLowerCopies] and the grammars of the SQL stores.
  *
- * A record names a label and a property as the JSON array `["<label>","<property>"]`, written as
- * [entry] writes it.
+ * On the graph engines a record names a label and a property as the JSON array
+ * `["<label>","<property>"]`, written as [entry] writes it; Oracle and Postgres keep the two in
+ * columns of a catalog row, and [entries] reads them back as the same pair.
  */
 interface LowerCopyStatements : ReservedNodeStatements {
 

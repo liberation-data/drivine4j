@@ -49,10 +49,13 @@ import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
 import sample.caseinsensitive.CiAccount
 import sample.caseinsensitive.CiAccountQueryDsl
+import sample.caseinsensitive.CiAccountView
+import sample.caseinsensitive.CiAccountViewQueryDsl
 import sample.caseinsensitive.CiEmailQueryDsl
 import sample.caseinsensitive.CiLate
 import sample.caseinsensitive.CiMember
 import sample.caseinsensitive.CiPlanned
+import sample.caseinsensitive.CiRedone
 
 /**
  * `@CaseInsensitive`: a save keeps a lowercased copy of the property, which loads do not see; an
@@ -126,6 +129,9 @@ abstract class CaseInsensitiveContract {
         stateless.save(account("a1").copy(email = null), nullPolicy = NullPolicy.CLEAR)
         assertNull(copy("CiAccount", "a1"))
         assertEquals(mapOf<String, Any?>("tier" to "gold"), account("a1").extra)
+
+        assertNotNull(stateless.create(CiAccount("a2", "Bea@X.com")))
+        assertEquals("bea@x.com", copy("CiAccount", "a2"))
     }
 
     @Test
@@ -162,6 +168,8 @@ abstract class CaseInsensitiveContract {
         val saved = stateless.save(loaded)
         assertEquals(loaded.stamp, saved.stamp)
         assertEquals("ann@x.com", copy("CiAccount", "a1"))
+        // Saved again as it is, beside the copy it now has.
+        assertEquals(saved.stamp, stateless.save(saved).stamp)
     }
 
     @Test
@@ -203,6 +211,48 @@ abstract class CaseInsensitiveContract {
         assertFalse(readsCopy(lookup(CiLate::class.java, "")))
         // Ensured again, the index is there and the copies are recorded: nothing is filled in.
         assertTrue(pm.indexes.ensure(RangeIndexSpec("CiLate", "email", ignoreCase = true)) is EnsureResult.AlreadyMatching)
+    }
+
+    @Test
+    fun `recreate fills the copies in again, where a write that bypassed Drivine left one out of step`() {
+        val spec = RangeIndexSpec("CiRedone", "email", ignoreCase = true)
+        stateless.save(CiRedone("l1", "Ann@X.com"))
+        pm.indexes.ensure(spec)
+        // Written by Cypher of the test's own, which keeps no copy.
+        run("MATCH (n:CiRedone {id: 'l1'}) SET n.email = 'Anne@X.com'")
+        run("CREATE (:CiRedone {id: 'l2', email: 'Bob@X.com'})")
+
+        // The copies are recorded as filled in, so ensure leaves them as they are.
+        assertTrue(pm.indexes.ensure(spec) is EnsureResult.AlreadyMatching)
+        assertEquals("ann@x.com", copy("CiRedone", "l1"))
+        assertNull(copy("CiRedone", "l2"))
+
+        pm.indexes.recreate(spec)
+        assertEquals("anne@x.com", copy("CiRedone", "l1"))
+        assertEquals("bob@x.com", copy("CiRedone", "l2"))
+    }
+
+    @Test
+    fun `a view's save keeps the copies of its root and its targets, and a lookup on its root compares with the copy`() {
+        pm.indexes.ensure(RangeIndexSpec("CiAccount", "email", ignoreCase = true))
+        stateless.save(CiAccountView(CiAccount("a1", "Ann@X.com"), friends = listOf(CiAccount("f1", "Bob@X.com"))))
+        assertEquals("ann@x.com", copy("CiAccount", "a1"))
+        assertEquals("bob@x.com", copy("CiAccount", "f1"))
+
+        val spec = GraphQuerySpec(CiAccountViewQueryDsl.INSTANCE).apply {
+            where {
+                query.account.email eqIgnoreCase "ANN@x.com"
+                query.friends.email eqIgnoreCase "bob@X.COM"
+            }
+        }
+        assertTrue(readsCopy(backend().loadAll(CiAccountView::class.java, spec).statement))
+        val found = stateless.loadAll(CiAccountView::class.java, CiAccountViewQueryDsl.INSTANCE) {
+            where {
+                query.account.email eqIgnoreCase "ANN@x.com"
+                query.friends.email eqIgnoreCase "bob@X.COM"
+            }
+        }
+        assertEquals(listOf("a1"), found.map { it.account.id })
     }
 
     @Test
@@ -270,6 +320,11 @@ abstract class CaseInsensitiveContract {
         assertEquals(setOf("m1"), stateless.loadAll(CiMember::class.java).map { it.id }.toSet())
         // One that differs in more than case is another email.
         stateless.save(CiMember("m4", "b@x.com"))
+
+        // Written by Cypher of the test's own, which keeps no copy: recreate fills it in.
+        run("CREATE (:CiMember {id: 'm5', email: 'C@x.com'})")
+        pm.constraints.recreate(spec)
+        assertEquals("c@x.com", copy("CiMember", "m5"))
     }
 
     companion object {
@@ -364,9 +419,14 @@ class CaseInsensitiveFalkorDbTest : CaseInsensitiveContract() {
     /** `GRAPH.CONSTRAINT` takes no property whose name holds a dot, as the copy's does (FalkorDB/FalkorDB#551). */
     @Test
     override fun `a uniqueness constraint that ignores case refuses an email beside another that differs only in case`() {
-        val refused = assertFailsWith<DrivineException> { pm.constraints.ensure(UniquenessConstraintSpec("CiMember", "email", ignoreCase = true)) }
+        val spec = UniquenessConstraintSpec("CiMember", "email", ignoreCase = true)
+        val refused = assertFailsWith<DrivineException> { pm.constraints.ensure(spec) }
         assertContains(refused.message!!, "FalkorDB/FalkorDB/issues/551")
+        // recreate is refused too, before anything is dropped, filled in or made.
+        val again = assertFailsWith<DrivineException> { pm.constraints.recreate(spec) }
+        assertContains(again.message!!, "FalkorDB/FalkorDB/issues/551")
         assertTrue(pm.indexes.list().none { it.label == "CiMember" })
+        assertTrue(assertNotNull(pm.indexes.lowerCopies).stored().isEmpty())
     }
 
     /** FalkorDB's plan for [statement], its values given in the `CYPHER` prefix that binds them. */
@@ -418,7 +478,7 @@ class CaseInsensitiveOracleTest : CaseInsensitiveContract() {
 
     override fun forgetCopies() {
         OracleTestDatabase.run("DELETE FROM ${graph.catalog} WHERE kind = 'LOWER_COPY'")
-        listOf("CiLate", "CiAccount", "CiPlanned").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
+        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
         pm.constraints.drop(UniquenessConstraintSpec("CiMember", "email", ignoreCase = true))
     }
 
@@ -463,7 +523,7 @@ class CaseInsensitivePostgresTest : CaseInsensitiveContract() {
 
     override fun forgetCopies() {
         PostgresTestDatabase.run("DELETE FROM contracts_schema WHERE kind = 'LOWER_COPY'")
-        listOf("CiLate", "CiAccount", "CiPlanned").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
+        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
         pm.constraints.drop(UniquenessConstraintSpec("CiMember", "email", ignoreCase = true))
     }
 

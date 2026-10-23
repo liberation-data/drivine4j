@@ -56,7 +56,9 @@ class ConstraintManager internal constructor(
      * Never destructive unless asked: existing mismatched constraints surface as [EnsureResult.Drift];
      * existing violating data surfaces as [EnsureResult.Violation]; a plain index in the way of the
      * constraint surfaces as [EnsureResult.BlockedByIndex]. In each case nothing is changed and the
-     * caller decides what to do.
+     * caller decides what to do, save that a constraint that ignores case (see
+     * [UniquenessConstraintSpec.ignoreCase]) first fills in the lowercased copies it is made over, as
+     * [IndexManager.ensure] does. FalkorDB cannot make one, and throws a [DrivineException] before that.
      *
      * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
      * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
@@ -172,7 +174,8 @@ class ConstraintManager internal constructor(
      *
      * Returns [EnsureResult.Recreated] on success, or [EnsureResult.Violation] if existing data
      * prevents recreation (in which case the previous constraint has already been dropped), or
-     * [EnsureResult.BlockedByIndex] as [ensure] does.
+     * [EnsureResult.BlockedByIndex] as [ensure] does. A constraint that ignores case fills the
+     * lowercased copies in again on every node of its label, recorded or not.
      */
     @JvmOverloads
     fun recreate(
