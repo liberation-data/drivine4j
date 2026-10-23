@@ -59,6 +59,33 @@ public class JavaStatelessSaveTests {
     }
 
     @Test
+    public void savesFromTheObjectAsLoaded() {
+        stateless.save(new Claim(id, "Ada founded Acme", null, null));
+        Claim loaded = stateless.load(id, Claim.class);
+
+        // Built anew from what was loaded, without its stamp: checked as what it was loaded from.
+        Claim saved = stateless.save(new Claim(id, "Ada founded Acme in 1999", null, null), loaded);
+
+        assertEquals("Ada founded Acme in 1999", stateless.load(id, Claim.class).getText());
+        assertNotEquals(loaded.getStamp(), saved.getStamp());
+        assertThrows(StaleObjectException.class, () -> stateless.save(new Claim(id, "late", null, null), loaded));
+        // The object saved itself no longer says what was loaded, once it is changed in place.
+        assertThrows(IllegalArgumentException.class, () -> stateless.save(saved, saved));
+    }
+
+    @Test
+    public void refusesASaveFromAClassWithNoStampField() {
+        Memo memo = new Memo(id, "one");
+
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> stateless.save(new Memo(id, "two"), memo));
+
+        assertEquals(
+            "Memo has no @NodeStamp field, so a save of a Memo has no stamp to be checked against what was loaded. Give it one, or save without from.",
+            refused.getMessage());
+        assertNull(stateless.load(id, Memo.class));
+    }
+
+    @Test
     public void replacesANamedRelationshipField() {
         Human ada = new Human(id + "-ada", "Ada");
         Human bob = new Human(id + "-bob", "Bob");

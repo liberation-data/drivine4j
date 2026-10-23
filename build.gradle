@@ -1,8 +1,8 @@
 plugins {
 	id 'org.jetbrains.kotlin.jvm' version '2.2.20'
+	// Opens the Spring-annotated classes of the tests, which run in Spring contexts. It is a compiler
+	// plugin, and adds nothing to what the library depends on.
 	id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20'
-	id 'org.springframework.boot' version '3.5.7'
-	id 'io.spring.dependency-management' version '1.1.7'
 
 	id 'maven-publish'
 	id 'signing'
@@ -18,10 +18,6 @@ version = '0.2.0'
 base {
 	archivesName = 'drivine4j'
 }
-
-// jfalkordb 0.13.0 is built on Jedis 8; the Spring Boot BOM manages Jedis to 6.0.0, which lacks
-// DefaultJedisClientConfig.Builder.autoNegotiateProtocol and fails every FalkorDB connection.
-ext['jedis.version'] = '8.0.1'
 
 java {
 	toolchain {
@@ -39,32 +35,46 @@ configurations {
 	neo4jPlugins
 }
 
+// Tests of the core on its own runtime classpath: the main classes, their runtime dependencies and
+// JUnit. The ordinary tests run in Spring contexts, through the starter; these show the core also runs
+// where there is no framework, in a plain main or a Ktor server.
+sourceSets {
+	standaloneTest {
+		compileClasspath += sourceSets.main.output
+		runtimeClasspath += sourceSets.main.output
+	}
+}
+configurations {
+	standaloneTestImplementation.extendsFrom implementation, api
+	standaloneTestRuntimeOnly.extendsFrom runtimeOnly
+}
+
 dependencies {
 	// Neo4j plugins for test containers - these are server-side plugins, not Java dependencies
 	// They get mounted into the Neo4j container's /plugins directory
 	neo4jPlugins 'org.neo4j.procedure:apoc-extended:5.26.0'
 	implementation 'org.neo4j.driver:neo4j-java-driver:5.28.9'
 
-	// Boot dependencies are useful in tests and samples; publishing will use plain JAR
-	implementation 'org.springframework.boot:spring-boot-starter'
-	implementation 'org.springframework.boot:spring-boot-starter-aop'
-	implementation 'org.aspectj:aspectjweaver:1.9.7'
+	// The core depends on what it uses: the drivers, Jackson, HikariCP and SLF4J. Spring support is in
+	// drivine4j-spring (the transaction manager) and drivine4j-spring-boot-starter (the auto-configuration).
+	// The versions are the ones Spring Boot 3.5.7 manages, as before.
+	implementation 'org.slf4j:slf4j-api:2.0.17'
 
 	// The Cypher compiler's parser, generated from openCypher's grammar (src/main/antlr): the tool at
 	// build time, and only its runtime with the library.
 	antlr 'org.antlr:antlr4:4.13.2'
 	implementation 'org.antlr:antlr4-runtime:4.13.2'
-
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
+	implementation platform('com.fasterxml.jackson:jackson-bom:2.19.2')
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
 	implementation 'com.fasterxml.jackson.core:jackson-databind'
 	implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
 
-	// Test support - needed for @Rollback and TestExecutionListener
-	implementation 'org.springframework:spring-test'
-	implementation 'org.springframework:spring-tx'
-
+	// The tests run in Spring Boot contexts, through the starter, with Boot's versions. The BOM is
+	// a test platform, so it manages nothing the library publishes.
+	testImplementation platform('org.springframework.boot:spring-boot-dependencies:3.5.7')
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-aop'
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
@@ -83,7 +93,7 @@ dependencies {
 	testImplementation 'org.postgresql:postgresql'
 
 	// Connection pool for JDBC databases (Oracle, Postgres). The JDBC driver itself is the application's to add.
-	implementation 'com.zaxxer:HikariCP'
+	implementation 'com.zaxxer:HikariCP:6.3.3'
 
 	// FalkorDB driver
 	implementation 'com.falkordb:jfalkordb:0.13.0'
@@ -98,6 +108,12 @@ dependencies {
 
 	// Spring Boot Starter for tests
 	testImplementation project(':drivine4j-spring-boot-starter')
+
+	standaloneTestImplementation platform('org.junit:junit-bom:5.12.2')
+	standaloneTestImplementation 'org.junit.jupiter:junit-jupiter'
+	standaloneTestImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+	standaloneTestImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+	standaloneTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// Fix Dokka Jackson compatibility issue
 	dokkaPlugin 'org.jetbrains.dokka:kotlin-as-java-plugin:1.9.20'
@@ -144,13 +160,31 @@ jacocoTestReport {
 	}
 }
 
-// Ensure we publish a normal library JAR, not the Spring Boot fat jar
-tasks.named('bootJar') {
-	enabled = false
+def standaloneTest = tasks.register('standaloneTest', Test) {
+	description = 'Runs the core on its own runtime classpath, with no framework.'
+	group = 'verification'
+	testClassesDirs = sourceSets.standaloneTest.output.classesDirs
+	classpath = sourceSets.standaloneTest.runtimeClasspath
+	useJUnitPlatform()
+	rootProject.file('gradle/test-images.txt').readLines()
+		.collect { it.trim() }.findAll { it && !it.startsWith('#') }
+		.each { line ->
+			def (named, pinned) = line.split(/\s+/)
+			systemProperty "drivine.test.image.${named}", pinned
+		}
+	// The core's Spring support is in drivine4j-spring: fail before the tests if a Spring module
+	// comes onto the core's own classpath.
+	doFirst {
+		def spring = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts
+			.collect { it.moduleVersion.id }
+			.findAll { it.group.startsWith('org.springframework') }
+		if (spring) {
+			throw new GradleException("The core's runtime classpath has ${spring.join(', ')}: Spring support belongs in drivine4j-spring")
+		}
+	}
 }
-tasks.named('jar') {
-	enabled = true
-	archiveClassifier.set('')  // Remove '-plain' classifier to make it the main JAR
+tasks.named('check') {
+	dependsOn standaloneTest
 }
 
 // Task to download Neo4j plugins to Gradle cache (for DrivineTestContainer)
@@ -193,7 +227,7 @@ publishing {
 
 			pom {
 				name = 'drivine4j'
-				description = 'Drivine for JVM — Neo4j/Spring-oriented utilities'
+				description = 'Drivine for JVM: a graph database client for Neo4j, FalkorDB, Neptune, Memgraph, Oracle and Postgres'
 				url = 'https://github.com/liberation-data/drivine4j'
 
 				licenses {

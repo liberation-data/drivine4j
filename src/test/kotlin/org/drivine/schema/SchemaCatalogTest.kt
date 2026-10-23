@@ -1,9 +1,12 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.annotation.FullTextIndex
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.RangeIndex
+import org.drivine.annotation.TextIndex
 import org.drivine.annotation.Unique
 import org.drivine.annotation.VectorIndex
 import org.junit.jupiter.api.Assertions.*
@@ -37,6 +40,36 @@ data class MessageFixture(
     val sessionId: String,
     val createdAt: Long,
     val sequence: Int,
+)
+
+@NodeFragment(labels = ["Badge"])
+data class BadgeFixture(
+    @Unique
+    val code: String,
+)
+
+@NodeFragment(labels = ["Ticket"])
+data class TicketFixture(
+    @NodeId
+    @GraphProperty("ticket_id")
+    val id: String,
+
+    @Unique
+    val serial: String,
+)
+
+@NodeFragment(labels = ["Chunk"])
+data class ChunkFixture(
+    @NodeId
+    val id: String,
+
+    @TextIndex
+    @FullTextIndex
+    val title: String,
+
+    @TextIndex(name = "chunk_heading_text")
+    @GraphProperty("heading_text")
+    val heading: String,
 )
 
 data class NotAFragment(val id: String)
@@ -239,6 +272,17 @@ class SchemaCatalogTest {
     }
 
     @Test
+    fun `scans @TextIndex as a TEXT index, apart from a @FullTextIndex on the same property`() {
+        val catalog = SchemaCatalog.fromFragments(ChunkFixture::class)
+
+        assertEquals(
+            setOf(TextIndexSpec("Chunk", "title"), TextIndexSpec("Chunk", "heading_text", "chunk_heading_text")),
+            catalog.indexes.filterIsInstance<TextIndexSpec>().toSet(),
+        )
+        assertEquals(listOf(FullTextIndexSpec("Chunk", "title")), catalog.indexes.filterIsInstance<FullTextIndexSpec>())
+    }
+
+    @Test
     fun `scans class-level composite annotations and uses the primary label`() {
         val catalog = SchemaCatalog.fromFragments(MessageFixture::class)
 
@@ -249,6 +293,7 @@ class SchemaCatalogTest {
 
         val uniqueComposite = catalog.constraints.single() as UniquenessConstraintSpec
         assertEquals(listOf("sessionId", "sequence"), uniqueComposite.properties)
+        assertEquals("id", uniqueComposite.nodeIdProperty, "a violation's sample names a node by the fragment's @NodeId")
     }
 
     @Test
@@ -264,6 +309,20 @@ class SchemaCatalogTest {
         assertThrows<DrivineException> {
             SchemaCatalog.fromFragments(NotAFragment::class)
         }
+    }
+
+    @Test
+    fun `a fragment without a @NodeId names its conflicting nodes by the engine's id alone`() {
+        val constraint = SchemaCatalog.fromFragments(BadgeFixture::class).constraints.single()
+
+        assertNull(constraint.nodeIdProperty)
+    }
+
+    @Test
+    fun `a @NodeId renamed by @GraphProperty names conflicting nodes by the property it is stored under`() {
+        val constraint = SchemaCatalog.fromFragments(TicketFixture::class).constraints.single()
+
+        assertEquals("ticket_id", constraint.nodeIdProperty)
     }
 
     // ----- fromFragments: Java -----
@@ -283,6 +342,10 @@ class SchemaCatalogTest {
         assertEquals(listOf("tenantId", "userId"), composite.properties)
         val single = catalog.constraints.first { it.properties.size == 1 }
         assertEquals(listOf("id"), single.properties)
+
+        // The @NodeId names the sampled nodes of both, though it is the key of the one on id itself.
+        assertEquals(listOf("id", "id"), listOf(composite, single).map { it.nodeIdProperty })
+        assertNull(SchemaGrammar.sampledNodeId(single), "a key every conflicting node holds alike names none of them")
     }
 
     // ----- fragment + explicit spec merge -----
@@ -296,5 +359,18 @@ class SchemaCatalogTest {
 
         assertEquals(2, merged.indexes.size)
         assertEquals(1, merged.constraints.size)
+    }
+
+    @Test
+    fun `a constraint read from a fragment and one declared by hand are one, which names nodes by the fragment's id`() {
+        val merged = SchemaCatalog.fromFragments(MessageFixture::class) +
+            SchemaCatalog.of(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence")))
+
+        assertEquals(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence"), nodeIdProperty = "id"), merged.constraints.single())
+
+        // The fragment's wins though the one declared by hand comes first.
+        val handFirst = SchemaCatalog.of(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence"))) +
+            SchemaCatalog.fromFragments(MessageFixture::class)
+        assertEquals("id", handFirst.constraints.single().nodeIdProperty)
     }
 }

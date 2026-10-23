@@ -64,7 +64,26 @@ Composition lets us mix and match as needed.
 
 ## Installation
 
+### Spring Boot Starter
+
+Drivine4j works hand in hand with Spring. For a Spring Boot application, add the starter: it brings the core library,
+Drivine's transaction manager and the auto-configuration (see [Configuration](#1-configuration)). `@Transactional` and
+`TransactionTemplate` run Drivine's transactions, alongside your other Spring transactions.
+
+```kotlin
+dependencies {
+    implementation("org.drivine:drivine4j-spring-boot-starter:0.2.0")
+}
+```
+
+Spring without Boot takes `drivine4j-spring` instead: the core library and `DrivineTransactionManager`, Drivine's
+`PlatformTransactionManager`, for `@Transactional` and `TransactionTemplate`, with no auto-configuration. The starter
+is built on it.
+
 ### Core Library
+
+The core library depends only on what it uses: the drivers, Jackson and HikariCP. The Spring artifacts above bring it,
+and it can be used on its own too, with another framework or none (see [Other frameworks, or none](#4-other-frameworks-or-none)).
 
 #### Gradle (Kotlin DSL)
 ```kotlin
@@ -88,6 +107,13 @@ dependencies {
     <version>0.2.0</version>
 </dependency>
 ```
+
+| Artifact | Holds | Depends on |
+|---|---|---|
+| `drivine4j-spring-boot-starter` | the auto-configuration, `@EnableDrivine`, `@EnableDrivinePropertiesConfig`, `@EnableDrivineTestConfig` | `drivine4j-spring`, Spring Boot |
+| `drivine4j-spring` | `DrivineTransactionManager`, for `@Transactional` and `TransactionTemplate`; `FalkorDbCleanupListener` | `drivine4j`, Spring Framework (`spring-tx`) |
+| `drivine4j` | the engines, the managers, the query DSL, schema management, `Transactions` and `Drivine` | the drivers, Jackson, HikariCP |
+| `drivine4j-coroutines` | `transactionSuspending { }`, a transaction block for Kotlin coroutines: see [Transactions in coroutines](#transactions-in-coroutines-drivine4j-coroutines) | `drivine4j`, `kotlinx-coroutines-core` |
 
 ### Code Generation (For the Type-Safe Query DSL)
 
@@ -160,9 +186,38 @@ dependencies {
 
 ### 1. Configuration
 
+There are two ways to set Drivine up in Spring: let the starter configure it, or enable it yourself.
+
+**With Spring Boot auto-configuration.** Put the starter on the classpath and name a datasource:
+
+```yaml
+database:
+  datasources:
+    neo:
+      type: NEO4J
+      host: localhost
+      port: 7687
+      user-name: neo4j
+      password: password
+      database-name: neo4j
+```
+
+That's all. The starter provides the `DatabaseRegistry`, `PersistenceManagerFactory`,
+`GraphObjectManagerFactory`, `SchemaManager` and Drivine's transaction manager. A `DataSourceMap` bean of your own
+also counts as a datasource, in place of the properties. With neither, the starter adds nothing, so it is safe on any
+classpath. Every bean backs off when you define your own (the startup schema run is switched off with `drivine.schema.enabled=false` instead), and `spring.autoconfigure.exclude=org.drivine.autoconfigure.DrivineAutoConfiguration`
+turns the starter off.
+
+Each datasource needs a `type`, here and with `@EnableDrivinePropertiesConfig` below. A name under `database.datasources` with properties but no `type` fails startup,
+naming the datasource and the properties found for it, so a misspelt or partial entry isn't silently dropped.
+
+**Explicitly, with `@EnableDrivine`.** Where auto-configuration doesn't run (a plain `@Configuration` context, or a test
+that names its classes), or where you'd rather the wiring be visible, enable Drivine on a configuration class and give it a
+`DataSourceMap`:
+
 ```kotlin
 @Configuration
-@ComponentScan("org.drivine")
+@EnableDrivine
 class AppConfig {
     @Bean
     fun dataSourceMap(): DataSourceMap {
@@ -177,6 +232,16 @@ class AppConfig {
         return DataSourceMap(mapOf("neo" to props))
     }
 }
+```
+
+or add `@EnableDrivinePropertiesConfig` beside `@EnableDrivine` to build the `DataSourceMap` from the properties above.
+The two ways combine: an application that has `@EnableDrivine` and the starter gets each bean once.
+
+Either way, you ask the factories for the managers you use:
+
+```kotlin
+@Bean
+fun neoManager(factory: PersistenceManagerFactory): PersistenceManager = factory.get("neo")
 ```
 
 ### 2. Domain Model
@@ -241,6 +306,85 @@ class PersonRepository @Autowired constructor(
         )
     }
 }
+```
+
+### 4. Other frameworks, or none
+
+The core library depends only on what it uses, so it also runs outside Spring: in a plain `main`, a Ktor or Micronaut
+server, a batch job or a CLI. Make one `Drivine`, which builds what the starter builds as beans (the registry, the
+factories and the transactions), and hand its managers to your classes:
+
+```kotlin
+fun main() {
+    Drivine(
+        DataSourceMap(
+            mapOf(
+                "neo" to ConnectionProperties(
+                    type = DatabaseType.NEO4J,
+                    host = "localhost",
+                    port = 7687,
+                    userName = "neo4j",
+                    password = "password",
+                    databaseName = "neo4j"
+                )
+            )
+        )
+    ).use { drivine ->                                   // close() ends every database's connections
+        val people = PersonService(drivine.graphObjectManager("neo"), drivine)
+        people.hire(Person(id = "ada", name = "Ada"))
+        println(people.find("ada"))
+    }
+}
+
+class PersonService(private val gom: StatelessGraphObjectManager, private val drivine: Drivine) {
+
+    fun find(id: String): Person? = gom.load<Person>(id)  // outside a transaction each statement commits as it runs
+
+    fun hire(person: Person) = drivine.transaction {
+        gom.save(person)
+        gom.save(Hire("hire-${person.id}", person.id, LocalDate.now()))
+    } // both commit here; a throw out of the block rolls both back
+}
+```
+
+`drivine.transaction { }` takes the propagations `@Transactional` does: see [Transaction Management](#transaction-management).
+`drivine.persistenceManager("neo")` gives the `PersistenceManager`, and `drivine.persistenceManagerFactory`,
+`drivine.graphObjectManagerFactory` and `drivine.transactions` are there to hand on to code that wants them.
+
+With Ktor, a block is blocking work, so run it off the event loop. For a transaction that suspends, see
+[Transactions in coroutines](#transactions-in-coroutines-drivine4j-coroutines).
+
+```kotlin
+fun main() {
+    val drivine = Drivine(DataSourceMap(mapOf("neo" to ConnectionProperties(/* … */))))
+    val people = PersonService(drivine.graphObjectManager("neo"), drivine)
+
+    embeddedServer(Netty, port = 8080) {
+        install(ContentNegotiation) { jackson() }
+        monitor.subscribe(ApplicationStopped) { drivine.close() }
+        routing {
+            get("/people/{id}") {
+                val person = withContext(Dispatchers.IO) { people.find(call.parameters["id"]!!) }
+                if (person == null) call.respond(HttpStatusCode.NotFound) else call.respond(person)
+            }
+            post("/people") {
+                val person = call.receive<Person>()
+                withContext(Dispatchers.IO) { people.hire(person) }
+                call.respond(HttpStatusCode.Created)
+            }
+        }
+    }.start(wait = true)
+}
+```
+
+Here `Person` and `Hire` are fragments:
+
+```kotlin
+@NodeFragment(labels = ["Person"])
+data class Person(@NodeId val id: String, val name: String)
+
+@NodeFragment(labels = ["Hire"])
+data class Hire(@NodeId val id: String, val personId: String, val on: LocalDate)
 ```
 
 ### Important: RETURN Clause Best Practices
@@ -1490,6 +1634,7 @@ graphObjectManager.save(view, Replace(IssueView::assignedTo))              // th
 graphObjectManager.save(view, Replace.all())                               // every relationship field's list is the whole list
 graphObjectManager.save(chunk, except = setOf(Chunk::embedding))           // write everything but these
 graphObjectManager.save(person, only = setOf(Person::name))                // write just these
+graphObjectManager.save(edited, from = loaded)                             // checked against the object as it was loaded
 graphObjectManager.update<Person>(id) { it.copy(name = "Ada") }            // load, change, save what differs
 graphObjectManager.create(person)                                          // make it only if it is not there; null when it is
 graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGNED_TO")
@@ -1498,6 +1643,14 @@ graphObjectManager.edges.unrelate(nodeRef<Issue>(a), nodeRef<Person>(b), "ASSIGN
 A save is one Cypher statement: the root, the relationships it drops, each related node and the relationship to it. It is applied whole or not at all, with or without a transaction, on Neo4j, FalkorDB and Memgraph. Under `NullPolicy.CLEAR`, a root with a `@PropertyBag` or an open `@NodeLabels` field is read first, for the keys and labels it holds: one more statement, which writes nothing.
 
 `only` and `except` name fields of the object, and for a view fields of its root. A view's relationships are written whatever they name. Give one or the other: both together are refused, and so is a property of a class other than the one saved.
+
+`from` is the object as you loaded it, when what you save is a changed copy of it. The save is then checked against the stamp `from` carries, whatever stamp the copy carries, as `update` checks against what it loaded. On Neo4j it is also checked against each field of `from`'s root: see [when a save is refused](#when-a-save-is-refused). It is refused before anything is written if `from` is of another class, has another id, carries no stamp, is of a class (for a view, a root) with no `@NodeStamp` field, or is the object saved itself: an object changed in place no longer says what was loaded, so save a changed copy (a copy may share an unchanged root, as `view.copy(reviewers = …)` does). From Java, `save(edited, loaded)`.
+
+```kotlin
+val loaded = graphObjectManager.load<Person>(id)!!
+// ... later, from what the user changed:
+graphObjectManager.save(loaded.copy(email = form.email), from = loaded)
+```
 
 #### What `save` returns
 
@@ -1597,7 +1750,7 @@ left (merge-patch). See [docs/0.0.73-null-write-policy.md](docs/0.0.73-null-writ
 
 Persist a collection in one group of statements. Within an ambient `@Transactional` the statements join it; otherwise they run together in a single transaction, and a failure on any item rolls the whole call back.
 
-On Neo4j, FalkorDB and Memgraph, a batch of fragments alone, of any number of labels, is **one statement** where each fragment can be written as a row of an `UNWIND` and there are no more than 1,000 of them: it is applied whole on any of them, FalkorDB included. On Oracle a batch of fragments is one block for each 500 of them. Each view is a statement of its own, and so is a fragment with a `@PropertyBag` or a `@NodeLabels` field, or on FalkorDB one with a `@VectorIndex` field: the other fragments are still one statement. In it the classes go in the order of their names and the rows of each in the order of their ids, so two batches over the same nodes take their locks in the same order. FalkorDB has no multi-statement transactions, so a batch of more than one statement is not applied whole there: in the default `WARN` mode it runs statement by statement and the first such batch logs a warning, and with `falkorDbTransactionMode` set to `STRICT` it is refused with `NonAtomicBatchException` before anything is written (inside `@Transactional`, `STRICT` refuses the transaction itself, at its first statement). `PersistenceManager.atomicBatches` says which a store does. See [docs/0.1.7-atomic-save-all.md](docs/0.1.7-atomic-save-all.md).
+On Neo4j, FalkorDB and Memgraph, a batch of fragments alone, of any number of labels, is **one statement** where each fragment can be written as a row of an `UNWIND` and there are no more than 1,000 of them: it is applied whole on any of them, FalkorDB included. On Oracle a batch of fragments is one block for each 500 of them. Each view is a statement of its own, and so is a fragment with a `@PropertyBag` or a `@NodeLabels` field, or on FalkorDB one with a `@VectorIndex` field: the other fragments are still one statement. FalkorDB has no multi-statement transactions, so a batch of more than one statement is not applied whole there: in the default `WARN` mode it runs statement by statement and the first such batch logs a warning, and with `falkorDbTransactionMode` set to `STRICT` it is refused with `NonAtomicBatchException` before anything is written (inside `@Transactional`, `STRICT` refuses the transaction itself, at its first statement). `PersistenceManager.atomicBatches` says which a store does. See [docs/0.1.7-atomic-save-all.md](docs/0.1.7-atomic-save-all.md).
 
 ```kotlin
 val saved = graphObjectManager.saveAll(views)
@@ -1608,6 +1761,7 @@ graphObjectManager.saveAll(chunks, except = setOf(Chunk::embedding))            
 
 - Fragments collapse into chunked `UNWIND … MERGE` statements (sub-linear round trips), with or without a `@NodeStamp` field. A view is saved by a statement of its own, as `save` does it.
 - Heterogeneous collections are grouped by runtime class, and the returned list preserves input order.
+- **Fragments are written in lock order**, on every store and however many statements they take: the classes in an order the classes alone fix (by their names; on Neo4j, FalkorDB and Memgraph those without a `@NodeStamp` first, and of those the ones saved one statement each first, while a stamped one saved one statement each goes last, after the views), and the fragments of each in the order of their ids, so two batches over the same nodes take their locks in the same order whatever order they were given in. Fragments of one id keep the order given, so the last is still the one written last. Views are written in the order given.
 - A fragment with a `@PropertyBag` or a `@NodeLabels` field is saved one statement each. So, on FalkorDB, is a fragment with a `@VectorIndex` field, which that engine stores in a form a batch of rows cannot write.
 - **A batch that only adds does not check stamps.** An object that carries a stale stamp is written all the same, where `save` of it would be refused. The object handed back then keeps the stamp it had, so a later `save` of it is refused: it does not hold what the other writer left.
 - Otherwise the returned objects carry the stamps the batch left, so each can be saved again.
@@ -1728,7 +1882,7 @@ graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), ne
 
 #### Saves and transactions
 
-- A save joins the transaction it is called in, Spring's `@Transactional` or `@DrivineTransactional`. Outside one it is its own.
+- A save joins the transaction it is called in, Spring's `@Transactional` or `@DrivineTransactional`, or a `transaction { }` block (see [Transactions in code](#transactions-in-code-transactions)). Outside one it is its own.
 - `StaleObjectException` is a `RuntimeException`, so a refusal that leaves a `@Transactional` method rolls the transaction back. It is not a `DrivineException`: a handler that catches only that does not catch it.
 - A refused save has written nothing. What the transaction wrote before it is undone only if the transaction rolls back: code that catches the exception and carries on commits it.
 - A checked save holds the node's write lock until the transaction commits, so another writer to the same node waits for it.
@@ -1789,7 +1943,7 @@ Two cases are decided by the object, not by another writer:
 - The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
 - In a view, the root is checked. A node reached through a relationship is written unchecked.
 - `update` is checked against the stamp it loaded, whatever the change does with the object's.
-- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each field of the root as it loaded it too, under the node's lock, and loads again if one differs: a declared field's value, a `@PropertyBag`'s keys and their values, the labels a `@NodeLabels` field reads. A `save` of an object you loaded yourself has only the stamp to go on, and in that moment it can write over the other writer's change: where every writer's change must be kept, change the node with `update`. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
+- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each field of the root as it loaded it too, under the node's lock, and loads again if one differs: a declared field's value, a `@PropertyBag`'s keys and their values, the labels a `@NodeLabels` field reads. A field loaded as what a load gives a node without the property (a `@Default`, an `@EmptyWhenAbsent` empty collection, a constructor default where the load reads every property) is taken as the same where the node has no such property, so a node saved before the field was added can still be updated. A `@JsonPacked` field is compared as the text the load read, not as its value packed again, so JSON another library, raw Cypher or a migration packed with other spacing or escaping is not taken for a change; one the node held nothing for, whose value came from a default, is packed as a save packs it. A `save` checks the same when you give it the object as loaded, as [`from`](#saving-data): the text is kept beside the object a load returned, and beside the one an update returned for a packed field it did not write, for as long as each is, so a `from` no load made, such as a copy, has its packed field compared as a save packs it, and a node whose text was packed another way then has the save refused, though nothing changed. Without `from` it has only the stamp to go on, and in that moment it can write over the other writer's change: hold on to what you loaded and pass it, or change the node with `update`. Where only the stamp makes the round trip, as through a web form, the stamp is all there is. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
 
 Handling a refusal:
 
@@ -2360,7 +2514,162 @@ class UserService @Autowired constructor(
 }
 ```
 
+`DrivineTransactionManager` is a Spring `PlatformTransactionManager`, so everything Spring does with transactions
+works with Drivine: `@Transactional` with any propagation but `NESTED`, `TransactionTemplate`, `@Rollback` in tests,
+and other transaction managers in the same application (name Drivine's with `@Transactional("drivineTransactionManager")`
+where there are several). The starter registers it, and so does `@EnableDrivine`.
+
 Object-manager saves join these transactions: see [Saves and transactions](#saves-and-transactions) for what a refused save does to one.
+
+#### Transactions in code (`Transactions`)
+
+To run a block in a transaction without an annotated method, inject `Transactions` (the starter makes the bean; outside
+Spring, `drivine.transactions`). Its blocks and `@Transactional` methods share one transaction, either way round: a
+`@Transactional` method called from a block joins the block's transaction, and a block run in a `@Transactional`
+method joins Spring's.
+
+```kotlin
+@Component
+class Onboarding(private val transactions: Transactions, private val gom: StatelessGraphObjectManager) {
+
+    fun onboard(person: Person, hire: Hire) = transactions.transaction {
+        gom.save(person)
+        gom.save(hire)
+    } // both commit here; a throw out of the block rolls both back
+
+    fun audit(hire: Hire) = transactions.transaction(Propagation.REQUIRES_NEW) { gom.save(hire) } // commits whatever the caller does
+}
+```
+
+`transaction { }` returns what the block returns, and takes a propagation, with the meaning Spring gives it:
+
+| `propagation` | With a transaction in progress | Without one |
+|---|---|---|
+| `REQUIRED` (the default) | joins it | begins one |
+| `REQUIRES_NEW` | sets it aside, and begins one | begins one |
+| `SUPPORTS` | joins it | runs without one |
+| `MANDATORY` | joins it | refuses: `IllegalTransactionStateException` |
+| `NEVER` | refuses: `IllegalTransactionStateException` | runs without one |
+| `NOT_SUPPORTED` | sets it aside, and runs without one | runs without one |
+
+`NESTED` is refused, with a transaction or without one (`DrivineTransactionManager` refuses it in a transaction, and
+without one Spring runs it as `REQUIRED`). Without a transaction, each statement commits as it runs.
+`transaction(rollback = true) { }` rolls back though nothing failed: for a test.
+
+- The block that began the transaction commits it when it returns, and rolls it back when anything is thrown out of
+  it, a checked exception too.
+- A block that joins a transaction leaves its end to the code that began it. When the joining block throws and the
+  caller catches it and carries on, the transaction still commits, as it does for a `@Transactional` method.
+- The transaction is the thread's, as Spring's is. A block can't suspend, so in a coroutine it stays on one thread. For
+  a transaction across suspension points, see [Transactions in coroutines](#transactions-in-coroutines-drivine4j-coroutines).
+- Begin the transaction with Spring where you rely on Spring's transaction callbacks (`@TransactionalEventListener`,
+  `TransactionSynchronization`): Spring doesn't see a block's commit, so a `@Transactional` method that joins a block's
+  transaction runs them when the method returns.
+- On FalkorDB, which commits each statement as it runs, the `falkorDbTransactionMode` says what a block does: in
+  `WARN` it runs and a rollback undoes nothing, in `STRICT` its first statement is refused.
+
+From Java, the block is a `Callable`, and `transactionWithoutResult` takes a `Runnable`:
+
+```java
+Person saved = transactions.transaction(() -> gom.save(person));
+transactions.transactionWithoutResult(Propagation.REQUIRES_NEW, false, () -> gom.save(hire));
+```
+
+#### Transactions in coroutines (`drivine4j-coroutines`)
+
+A transaction is the thread's, and a coroutine can resume on another thread after any suspension point. For Kotlin
+coroutines, add the small `drivine4j-coroutines` module, which brings `kotlinx-coroutines-core` (the core library and
+Java applications don't need it):
+
+```kotlin
+dependencies {
+    implementation("org.drivine:drivine4j-coroutines:0.2.0")
+}
+```
+
+It gives `Transactions` (and `Drivine`) a suspend form of the block, `transactionSuspending { }`. Its transaction is
+kept in the coroutine's context and put on whichever thread the coroutine resumes on, so the block can suspend or
+switch dispatcher and stay in it, and the blocking code underneath, the managers, `@Transactional` methods and
+`transaction { }` blocks, finds it as it always has. With Spring, inject `Transactions` as above and use both side by
+side:
+
+```kotlin
+@Service
+class Onboarding(
+    private val transactions: Transactions,
+    private val gom: StatelessGraphObjectManager,
+    private val audit: AuditService,                 // its methods are @Transactional
+) {
+    suspend fun onboard(person: Person, hire: Hire) = withContext(Dispatchers.IO) {
+        transactions.transactionSuspending {
+            gom.save(person)
+            audit.record(hire)                       // @Transactional: joins the block's transaction
+            notifyPayroll(hire)                      // a suspend call: the block resumes on any thread, still in it
+            gom.save(hire)
+        } // all of it commits here; a throw out of the block rolls it all back
+    }
+
+    @Transactional
+    fun rehire(person: Person, hire: Hire) = runBlocking {
+        transactions.transactionSuspending {         // on this thread: joins the transaction @Transactional began
+            gom.save(person)
+            gom.save(hire)
+        }
+    }
+}
+```
+
+Spring's `@Transactional` on a `suspend fun` is not Drivine's to run: Spring hands those to a reactive transaction
+manager, and `DrivineTransactionManager` is the imperative one. Under Spring, `transactionSuspending { }` is the way to
+run a transaction across suspension points, and it nests with `@Transactional` and `TransactionTemplate` either way
+round: a `@Transactional` method called in the block joins the block's transaction, and a block run on a thread where
+`@Transactional` or `TransactionTemplate` began one (through `runBlocking`) joins that. It finds that transaction only on
+that thread: called after a `withContext(Dispatchers.IO)`, as `onboard` does, it begins one of its own.
+
+With Ktor, or no framework, it is `drivine.transactionSuspending { }`:
+
+```kotlin
+fun main() {
+    val drivine = Drivine(DataSourceMap(mapOf("neo" to ConnectionProperties(/* … */))))
+    val gom = drivine.graphObjectManager("neo")
+
+    embeddedServer(Netty, port = 8080) {
+        install(ContentNegotiation) { jackson() }
+        monitor.subscribe(ApplicationStopped) { drivine.close() }
+        routing {
+            post("/people") {
+                val person = call.receive<Person>()
+                withContext(Dispatchers.IO) {        // off the event loop: the saves and the commit block
+                    drivine.transactionSuspending {
+                        gom.save(person)
+                        delay(10)                    // may resume on another thread, still in the transaction
+                        gom.save(Hire("hire-${person.id}", person.id, LocalDate.now()))
+                    }                                // both commit, or neither
+                }
+                call.respond(HttpStatusCode.Created)
+            }
+        }
+    }.start(wait = true)
+}
+```
+
+- It takes the propagations and `rollback` that `transaction { }` does, and commits and rolls back as it does. Drivine's
+  calls are blocking calls, and so are the commit and the rollback, which run where `transactionSuspending` was
+  called: call it on a dispatcher for blocking work, such as `Dispatchers.IO`, as above. The block can switch
+  dispatcher with `withContext`, and stays in the transaction.
+- A coroutine that runs on a thread the block has left doesn't find the block's transaction there: it finds what the
+  thread was in before the block, usually none.
+- **Coroutines launched in the block (`launch`, `async`, and what is built on them, such as `flowOn`) don't share its
+  transaction**: two of them using one transaction's connection at once isn't safe on every driver. A statement such a
+  coroutine runs, or a block it runs that would join the transaction, is refused with
+  `IllegalTransactionStateException`. Run that work in the block itself, one step after another, or give each
+  coroutine a transaction of its own with `transactionSuspending(Propagation.REQUIRES_NEW) { }` (or
+  `@Transactional(propagation = REQUIRES_NEW)`). A launched coroutine that doesn't reach Drivine runs as it would
+  anywhere. The one way round this is to hand `launch` the block's whole context, as in `launch(coroutineContext) { }`:
+  kotlinx then treats it like `withContext`, and the coroutine shares the transaction. Don't.
+- Likewise two coroutines that both find a transaction on the thread, launched by `runBlocking` in a `@Transactional`
+  method say, can't run blocks in it at once: the second is refused.
+- On FalkorDB, `falkorDbTransactionMode` says what a block does, as for `transaction { }`.
 
 ### Partial Updates
 
@@ -3240,7 +3549,7 @@ Each engine uses a Cypher dialect that controls query generation. The dialect is
 
 ## Schema Management (Indexes & Constraints)
 
-Drivine manages vector indexes, full-text indexes, range indexes, and uniqueness constraints across Neo4j, Memgraph, FalkorDB and Oracle — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
+Drivine manages vector indexes, full-text indexes, range indexes, Neo4j's TEXT indexes, and uniqueness constraints across Neo4j, Memgraph, FalkorDB, Oracle and Postgres — with idempotent, drift-aware `ensure` semantics and engine differences (DDL syntax, introspection, FalkorDB's Redis-command constraints) handled for you. Opt-in: declare nothing, pay nothing.
 
 ### Imperative API
 
@@ -3255,6 +3564,7 @@ persistenceManager.indexes.ensure(RangeIndexSpec("Proposition", "contextId"))
 persistenceManager.indexes.ensure(RangeIndexSpec("Message", listOf("sessionId", "createdAt")))  // composite
 persistenceManager.indexes.ensure(FullTextIndexSpec("Chunk", "text"))                            // full-text (single property)
 persistenceManager.indexes.ensure(FullTextIndexSpec("Entity", listOf("name", "description")))    // full-text (multi-property)
+persistenceManager.indexes.ensure(TextIndexSpec("Chunk", "title"))                               // Neo4j TEXT index
 
 persistenceManager.constraints.ensure(UniquenessConstraintSpec("ChatSession", "sessionId"))
 persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", listOf("tenantId", "userId")))
@@ -3267,8 +3577,11 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `Created` | Nothing existed and the item was created, or it existed without part of what the engine makes for it (on Oracle, a range index without its index over the label's nodes) and that part was made |
 | `AlreadyMatching` | A matching item exists; nothing changed |
 | `Drift` | An item exists with a **different shape** (e.g. vector dimensions changed). Nothing changed — call `recreate(spec)` to replace it (destructive) |
-| `Violation` | Constraint only: existing data violates it. Includes a bounded sample of the conflicting values |
+| `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values, each with the nodes that hold it: their engine id (`elementId`), and their `@NodeId` when the constraint is declared on a fragment, as many nodes per value as `violationSampleSize`. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
+| `BlockedByIndex` | Constraint only: a plain range index over the same label and properties is in the way of it, and is named. Neo4j alone refuses a constraint for one, since its constraint brings its own index. Nothing changed — drop the index, or ensure with `replaceBlockingIndex = true` (`drivine.schema.replace-blocking-index=true`), which drops it and makes the constraint |
 | `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
+
+**A TEXT index is Neo4j's.** `TextIndexSpec` (or `@TextIndex` on a property) makes `CREATE TEXT INDEX … FOR (n:Label) ON (n.prop)`. That index is over one string property and serves `CONTAINS`, `STARTS WITH` and `ENDS WITH` on it. It is not a full-text index, and Neo4j lists, drift-checks and drops it as a kind of its own (`SchemaItemKind.TEXT_INDEX`), so the two can stand on the same property. No other engine has one. There, `ensure`, `recreate`, `find` and `drop` throw a `DrivineException` before anything runs, rather than make another index in its place, and applying a catalog that declares one fails for its owner. Mind the names: what Memgraph calls a `TEXT INDEX` is a full-text index, declared with `FullTextIndexSpec` / `@FullTextIndex`.
 
 ### Declarative: SchemaCatalog bean
 
@@ -3318,6 +3631,9 @@ data class PropositionNode(
 
     @FullTextIndex                       // full-text index on this property (also drives loadMatching)
     val body: String,
+
+    @TextIndex                           // Neo4j TEXT index, for CONTAINS / STARTS WITH / ENDS WITH
+    val title: String,
 )
 
 // Composite declarations go on the class
@@ -3359,6 +3675,30 @@ class Reindexer(private val schema: SchemaManager) {
 
 `enforce()` is safe to call repeatedly; `recreateAll()` is the destructive hammer. (`drivine.schema.enabled=false` disables only the startup run — the bean is still there for runtime calls.)
 
+The manager reads the catalog beans **once**, when it is built: a `SchemaCatalog` bean made later is not seen, and a later `enforce()` applies the same catalogs. With nothing to apply it says so at INFO — `Schema management found no SchemaCatalog` when none was registered, or `found 2 SchemaCatalog(s), all empty: 'dice', unnamed` when every one registered nothing — so that a missing index can be traced to a catalog that never arrived. Schema known only later is given to `ensure`, below.
+
+### Schema known only at runtime (`SchemaManager.ensure`)
+
+Some schema cannot be in a catalog because it is not known when the catalogs are read: a vector index whose dimensions arrive with an embedding model configured after startup, an index for each label a tenant declares. Give it to `ensure`, under the owner it belongs to:
+
+```kotlin
+@Component
+class PropositionIndex(private val schema: SchemaManager) {
+    fun modelArrived(dimensions: Int) {
+        schema.ensure("dice", VectorIndexSpec("Proposition", "embedding", dimensions))
+    }
+}
+```
+
+The items are added to what that owner's catalogs declared, for the life of the manager, and applied as `enforce` applies the owner's:
+
+- **Under the same policy.** `drivine.schema.mode`, `recreate-on-drift` and `violation-sample-size` apply: a drift or a violation fails under `FAIL_FAST` and is logged under `WARN`, and the same summary line is logged. Only the items given are applied; the owner's others are left as they are. `ensure` neither adopts nor acts on a change of the owner's version, which is `enforce`'s, and `recreate-on-startup` does not apply to it.
+- **In the owner's inventory.** They are recorded in the owner's `_DrivineSchema` marker, marked as ensured at runtime. A later `enforce()` or `enforce("dice")` applies them with the rest, and `recreateAll` recreates them. An `enforce` by a manager built later — the next process, before the item is ensured again — keeps them in the inventory and does not report them as orphans.
+- **Recreated with the owner.** When that later `enforce` recreates the owner's items (its version changed, or `recreateAll`), it cannot recreate a runtime item whose spec it has not been given, so it marks it, and the next `ensure` of the item recreates it.
+- **Checked against other owners.** A declaration that conflicts with another owner's, or with the owner's own, fails naming both, and nothing is added. One identical to another owner's is co-owned, as between catalogs.
+
+Ensuring an item again with the same kind, label and properties replaces it: of another shape it is drift, handled per the policy. One given under a new name leaves the old name an orphan of the owner, reported by the next apply. To target databases, give a catalog: `schema.ensure(SchemaCatalog.of(spec).named("dice").forDatabase("users"))`. A runtime catalog cannot carry a version, since the owner's version is its startup catalogs'.
+
 ### Version-triggered rebuild
 
 Drift detection only catches changes introspection can *see* (dimensions, similarity, properties). A change it can't see — swapping the embedding model for one with the **same dimensions** — leaves stale vectors behind. Tag a catalog with a version token to force a one-time rebuild when that token changes:
@@ -3383,7 +3723,8 @@ drivine:
     mode: FAIL_FAST            # FAIL_FAST (default) or WARN on drift/violations
     recreate-on-drift: false   # destructive: rebuild items whose shape changed
     recreate-on-startup: false # destructive: rebuild everything every startup
-    violation-sample-size: 10  # conflicting rows sampled on constraint violations
+    violation-sample-size: 10  # conflicting rows sampled on constraint violations, and nodes named per row
+    replace-blocking-index: false # drop a plain index in the way of a uniqueness constraint (Neo4j)
 ```
 
 ### Per-engine notes
@@ -3393,6 +3734,7 @@ drivine:
 | Vector indexes | `CREATE VECTOR INDEX … IF NOT EXISTS` | `WITH CONFIG {…}`, uSearch metrics | `OPTIONS {…}`, unnamed |
 | Full-text indexes | `CREATE FULLTEXT INDEX … ON EACH […]` (+ analyzer) | `CREATE TEXT INDEX … ON :L(props)` | `CREATE FULLTEXT INDEX FOR (n:L) ON (n.prop)`, per-property, unnamed |
 | Range indexes | Named, composite supported | Label-property style | Per-label coverage; extended incrementally |
+| TEXT indexes | `CREATE TEXT INDEX … IF NOT EXISTS FOR (n:L) ON (n.prop)`, from Neo4j 4.4 | Refused: its `TEXT INDEX` is full-text, above | Refused |
 | Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build |
 | Item names | Yes | Vector only | No |
 
@@ -3403,6 +3745,7 @@ drivine:
 | Vector indexes | A table of embeddings (`VECTOR(n, FLOAT32)`) beside the nodes, kept in step by a trigger and filled from the nodes there are, with `CREATE VECTOR INDEX … ORGANIZATION NEIGHBOR PARTITIONS` over it. An embedding of another dimension leaves its node out of the index |
 | Full-text indexes | A table of the indexed text beside the nodes, kept in step by a trigger, with an Oracle Text search index over it. Without Oracle Text the index is recorded and nothing is made |
 | Range indexes | Two indexes. `CREATE INDEX … (JSON_VALUE(props, '$.p'))`, the property read as text, over the property whatever the label, so two labels that index a property of one name share it: a save and a load by id find a node by it. And `CREATE INDEX … (CASE WHEN JSON_EXISTS(n.labels, '$[*]?(@ == "Label")') THEN JSON_VALUE(n.props, '$.p') END)`, over the property of the label's nodes alone, which a filter on the label's nodes reads. Composite supported |
+| TEXT indexes | Refused: Neo4j's alone |
 | Uniqueness | A unique index over the property for the nodes that carry the label, with the range index a node is found by. A node that lacks one of the properties is not constrained. Over one property, the unique index stands for the range index's index over the label's nodes, and none is made beside it |
 | Item names | Recorded; the Oracle object's name is derived from the graph, label and properties, and recorded with it. A drop drops the object the record names |
 
@@ -3415,6 +3758,7 @@ The store's identity (`DrivineStore`) and the schema marker are nodes of the gra
 | Vector indexes | `CREATE INDEX … USING hnsw ((CAST(CAST(props -> 'p' AS text) AS vector(n))) vector_cosine_ops) WHERE labels @> '["Label"]' AND …`, over the embeddings of the label's nodes that are of its size (`vector_l2_ops` for Euclidean). Needs pgvector, which the index makes where it may |
 | Full-text indexes | `CREATE INDEX … USING gin ((lower(…)) gin_trgm_ops) WHERE labels @> '["Label"]'`, over the text a search reads, with `pg_trgm`, which the index makes where it may |
 | Range indexes | `CREATE INDEX … ((props ->> 'p')) WHERE labels @> '["Label"]'`, one per label. Composite supported |
+| TEXT indexes | Refused: Neo4j's alone |
 | Uniqueness | The same index made `UNIQUE`, which also finds a node, so no range index is made beside it. A node that lacks one of the properties is not constrained |
 | Item names | Recorded; the index's name is derived from the graph, label and properties, and Postgres keeps it in lower case. A drop drops the index the record names |
 
@@ -3488,7 +3832,7 @@ database:
     neo:
       host: localhost
       port: 7687
-      username: neo4j
+      user-name: neo4j
       password: password
       type: NEO4J
       database-name: neo4j

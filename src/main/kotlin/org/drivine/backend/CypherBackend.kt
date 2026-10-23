@@ -238,8 +238,10 @@ internal class CypherBackend(
                 alone = alone,
             )
         }
+        // Those an UNWIND cannot write first, as where the rest are one statement, so that the locks
+        // are taken in the same order however many statements the batch takes.
         return FragmentBatch(
-            unstamped = batches.buildBatchSpecs(plain.map { it.value }, CascadeType.NONE, nullPolicy, writeFields),
+            unstamped = batches.buildBatchSpecs((perItem + rows).map { it.value }, CascadeType.NONE, nullPolicy, writeFields),
             stamped = batches.buildStampedSpecs(batched, nullPolicy, writeFields),
             alone = alone,
         )

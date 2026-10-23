@@ -26,8 +26,9 @@ repositories {
 }
 
 dependencies {
-    // Core drivine4j library
+    // Core drivine4j library, and its Spring adapter: DrivineTransactionManager
     api project(':')
+    api project(':drivine4j-spring')
 
     // Code generation - users can apply as ksp("org.drivine:drivine4j-codegen")
     // Making it api scope so users don't need to specify the version
@@ -39,6 +40,13 @@ dependencies {
     implementation 'org.springframework:spring-context'
     implementation 'org.springframework:spring-tx'
 
+    // Spring Boot, and AOP with AspectJ for @Aspect beans: the core library used to bring them, and now
+    // depends only on what it uses, so the starter brings them and an application on it has the same
+    // classpath as before. All but spring-test, which an application's tests bring with
+    // spring-boot-starter-test.
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
+
     // Jackson for ObjectMapper
     implementation 'com.fasterxml.jackson.core:jackson-databind'
 
@@ -47,6 +55,16 @@ dependencies {
 
     // Optional: Configuration processor for IDE support
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    // Tests: the auto-configuration, in ApplicationContextRunner contexts
+    testImplementation(platform('org.springframework.boot:spring-boot-dependencies:3.5.7'))
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }
 
 kotlin {

@@ -1,9 +1,11 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.neo4j.driver.exceptions.Neo4jException
 
 class Neo4jSchemaGrammarTest {
 
@@ -17,6 +19,7 @@ class Neo4jSchemaGrammarTest {
         assertTrue(grammar.supportsNamedItems)
         assertFalse(grammar.constraintsRequireBackingIndex)
         assertFalse(grammar.constraintCreationIsAsync)
+        assertTrue(grammar.supportsTextIndex)
     }
 
     // ----- DDL: vector index -----
@@ -137,6 +140,36 @@ class Neo4jSchemaGrammarTest {
         assertTrue(statement.statement.contains("`fulltext.analyzer`: 'english'"))
     }
 
+    // ----- DDL: text index -----
+
+    @Test
+    fun `text index DDL is CREATE TEXT INDEX on the one property`() {
+        val statement = grammar.createIndex(TextIndexSpec("Chunk", "title")).single() as SchemaStatement.Cypher
+
+        assertEquals(
+            "CREATE TEXT INDEX `Chunk_title_text` IF NOT EXISTS FOR (n:`Chunk`) ON (n.`title`)",
+            statement.statement,
+        )
+    }
+
+    @Test
+    fun `text index DDL respects an explicit name`() {
+        val statement = grammar.createIndex(TextIndexSpec("Chunk", "title", "chunk_title")).single() as SchemaStatement.Cypher
+
+        assertTrue(statement.statement.startsWith("CREATE TEXT INDEX `chunk_title` IF NOT EXISTS"))
+    }
+
+    @Test
+    fun `a text index is not the fulltext index on the same property`() {
+        val text = TextIndexSpec("Chunk", "title")
+        val existingFullText = SchemaItemInfo(SchemaItemKind.FULLTEXT_INDEX, "Chunk", listOf("title"), name = "Chunk_title_fulltext")
+        val existingText = SchemaItemInfo(SchemaItemKind.TEXT_INDEX, "Chunk", listOf("title"), name = "Chunk_title_text")
+
+        assertFalse(grammar.matchesIdentity(existingFullText, text))
+        assertTrue(grammar.matchesIdentity(existingText, text))
+        assertTrue(grammar.matchesShape(existingText, text))
+    }
+
     @Test
     fun `analyzer drifts only when both the spec and the engine report one`() {
         val spec = FullTextIndexSpec("Chunk", listOf("title"), analyzer = "english")
@@ -200,7 +233,7 @@ class Neo4jSchemaGrammarTest {
     // ----- Introspection parsing -----
 
     @Test
-    fun `parses vector, range and fulltext rows, skipping unmanaged index types`() {
+    fun `parses vector, range, fulltext and text rows, skipping unmanaged index types`() {
         val rows = listOf(
             mapOf(
                 "name" to "prop_embedding_vector", "type" to "VECTOR", "entityType" to "NODE",
@@ -223,6 +256,11 @@ class Neo4jSchemaGrammarTest {
                 "labelsOrTypes" to listOf("Doc"), "properties" to listOf("title", "body"),
                 "options" to mapOf("indexConfig" to mapOf("fulltext.analyzer" to "english")),
             ),
+            mapOf(
+                "name" to "chunk_title_text", "type" to "TEXT", "entityType" to "NODE",
+                "labelsOrTypes" to listOf("Chunk"), "properties" to listOf("title"),
+                "options" to mapOf("indexProvider" to "text-2.0", "indexConfig" to emptyMap<String, Any>()),
+            ),
             // not managed — must be skipped
             mapOf(
                 "name" to "token_lookup", "type" to "LOOKUP", "entityType" to "NODE",
@@ -236,7 +274,7 @@ class Neo4jSchemaGrammarTest {
 
         val items = grammar.parseIndexRows(rows)
 
-        assertEquals(3, items.size)
+        assertEquals(4, items.size)
         val vector = items.first { it.kind == SchemaItemKind.VECTOR_INDEX }
         assertEquals("Proposition", vector.label)
         assertEquals(listOf("embedding"), vector.properties)
@@ -252,6 +290,11 @@ class Neo4jSchemaGrammarTest {
         assertEquals(listOf("title", "body"), fulltext.properties)
         assertEquals("doc_text_fulltext", fulltext.name)
         assertEquals("english", fulltext.analyzer)
+
+        val text = items.first { it.kind == SchemaItemKind.TEXT_INDEX }
+        assertEquals("Chunk", text.label)
+        assertEquals(listOf("title"), text.properties)
+        assertEquals("chunk_title_text", text.name)
     }
 
     @Test
@@ -322,35 +365,108 @@ class Neo4jSchemaGrammarTest {
 
     // ----- Violations -----
 
+    /** An error as the driver gives it, with a GQL status and the error beneath it. */
+    private fun error(status: String, code: String, message: String, cause: Neo4jException? = null) =
+        Neo4jException(status, message, code, message, emptyMap(), cause)
+
     @Test
-    fun `recognizes constraint violation errors`() {
+    fun `a violation is known by the GQL status a server gives beneath the refusal`() {
+        val refusal = error(
+            "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):",
+            error("22N79", "N/A", "Property uniqueness constraint violated: Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'."),
+        )
+
+        assertTrue(grammar.isConstraintViolation(DrivineException(refusal.message!!, refusal)))
+    }
+
+    @Test
+    fun `an index entry conflict beneath the refusal is a violation too`() {
+        val refusal = error(
+            "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x', type='NODE PROPERTY UNIQUENESS' ):",
+            error("22N80", "N/A", "Index entry conflict: Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'."),
+        )
+
+        assertTrue(grammar.isConstraintViolation(DrivineException(refusal.message!!, refusal)))
+    }
+
+    @Test
+    fun `a refusal to make a constraint whose GQL status names another cause is not a violation`() {
+        val refusal = error(
+            "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( type='NODE KEY', schema=(:U {e}) ):",
+            error("51N27", "N/A", "Key constraint is not supported in community edition."),
+        )
+
+        assertFalse(grammar.isConstraintViolation(DrivineException(refusal.message!!, refusal)))
+    }
+
+    @Test
+    fun `a server older than GQL statuses names a violation by its code alone`() {
+        assertTrue(grammar.isConstraintViolation(Neo4jException("Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x' ):")))
+        assertFalse(grammar.isConstraintViolation(Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}).")))
+    }
+
+    @Test
+    fun `a write the constraint refuses is a violation whatever GQL status it carries`() {
         assertTrue(
             grammar.isConstraintViolation(
-                RuntimeException(
-                    "Unable to create Constraint( name='x', type='UNIQUENESS' ): " +
-                        "Both Node(0) and Node(1) have the label `Person` and property `email` = 'a@b.c'"
-                )
+                error("22N41", "Neo.ClientError.Schema.ConstraintValidationFailed", "Node(0) already exists with label `Person` and property `email` = 'a@b.c'")
             )
         )
+    }
+
+    @Test
+    fun `an index in the way of a constraint is known by its code`() {
+        assertTrue(
+            grammar.isBlockedByIndex(
+                DrivineException("wrapped", Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}). A constraint cannot be created until the index has been dropped."))
+            )
+        )
+        assertFalse(grammar.isBlockedByIndex(Neo4jException("Neo.ClientError.Schema.IndexWithNameAlreadyExists", "There already exists an index called 'person_email'.")))
+        assertFalse(grammar.isBlockedByIndex(RuntimeException("There already exists an index (:Person {email}).")))
+    }
+
+    @Test
+    fun `an error without a driver's code is not a violation, whatever it says`() {
+        assertFalse(grammar.isConstraintViolation(RuntimeException("Unable to create Constraint: both nodes have the same value")))
         assertFalse(grammar.isConstraintViolation(RuntimeException("Connection refused")))
     }
 
     // ----- Conflict sampling -----
 
     @Test
-    fun `conflict sampling groups the labelled nodes that hold every key, and returns the keys that repeat as a map with their count`() {
+    fun `conflict sampling groups the labelled nodes that hold every key, and returns the keys that repeat as a map with their count and nodes`() {
         val query = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", listOf("email", "tenant")), 5)
 
         assertEquals(
             """
             MATCH (n:Person)
             WHERE n.email IS NOT NULL AND n.tenant IS NOT NULL
-            WITH n.email AS _k0, n.tenant AS _k1, count(*) AS _count
+            WITH n.email AS _k0, n.tenant AS _k1, count(*) AS _count, collect({elementId: elementId(n)}) AS _nodes
             WHERE _count > 1
-            RETURN {properties: {email: _k0, tenant: _k1}, count: _count}
+            RETURN {properties: {email: _k0, tenant: _k1}, count: _count, nodes: _nodes[0..5]}
             LIMIT 5
             """.trimIndent(),
             query,
         )
+    }
+
+    @Test
+    fun `a conflicting node is named by the fragment's id too, unless that is a key`() {
+        val byUuid = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "uuid"), 3)
+        assertTrue(byUuid.contains("collect({elementId: elementId(n), uuid: n.uuid}) AS _nodes"), byUuid)
+
+        val byKey = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "email"), 3)
+        assertTrue(byKey.contains("collect({elementId: elementId(n)}) AS _nodes"), byKey)
+
+        // A flattened property-bag key is one name, quoted as key and as property alike.
+        val byBagKey = grammar.sampleConflictsQuery(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "ref.id"), 3)
+        assertTrue(byBagKey.contains("collect({elementId: elementId(n), `ref.id`: n.`ref.id`}) AS _nodes"), byBagKey)
+    }
+
+    @Test
+    fun `Neo4j 4 names a node by id, having no elementId`() {
+        val query = CypherDialect.NEO4J_4.schemaGrammar().sampleConflictsQuery(UniquenessConstraintSpec("Person", "email"), 3)
+
+        assertTrue(query.contains("collect({elementId: id(n)}) AS _nodes"), query)
     }
 }

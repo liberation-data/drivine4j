@@ -21,8 +21,8 @@ import org.drivine.model.RelationshipModel
  *   clearing one set to null
  * @param rootMode whether a root that is not there is made, and one that is there written. A save
  *   that only makes its root ([RootMode.ABSENT]) is of a whole object, unchecked
- * @param loaded the root's fields as the object was loaded, by field name, as a save writes them.
- *   Where the engine [reads without a snapshot][org.drivine.query.grammar.CypherGrammar.readsWithoutSnapshot],
+ * @param loaded the root's fields as the object was loaded, by field name, as a save writes them,
+ *   but a `@JsonPacked` field the node held text for as that text, as the load read it. Where the engine [reads without a snapshot][org.drivine.query.grammar.CypherGrammar.readsWithoutSnapshot],
  *   a checked save compares them with the node under its lock, as well as the stamp: the stamp a
  *   load was handed may be newer than the data it read
  */

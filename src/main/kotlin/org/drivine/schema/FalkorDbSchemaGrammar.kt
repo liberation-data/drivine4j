@@ -73,6 +73,8 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
                     )
                 }
         }
+
+        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
     }
 
     /**

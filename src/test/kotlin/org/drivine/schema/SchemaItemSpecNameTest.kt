@@ -24,6 +24,7 @@ class SchemaItemSpecNameTest {
         )
         assertEquals("Chunk_title_range", RangeIndexSpec("Chunk", "title", name = "").effectiveName)
         assertEquals("Chunk_body_fulltext", FullTextIndexSpec("Chunk", "body", name = "").effectiveName)
+        assertEquals("Chunk_title_text", TextIndexSpec("Chunk", "title", name = "").effectiveName)
         assertEquals(
             "ChatSession_id_unique",
             UniquenessConstraintSpec("ChatSession", "id", name = "").effectiveName,
@@ -54,6 +55,7 @@ class SchemaItemSpecNameTest {
         assertThrows<IllegalArgumentException> { VectorIndexSpec("Proposition", "embedding", 1536, name = " ") }
         assertThrows<IllegalArgumentException> { RangeIndexSpec("Chunk", "title", name = " ") }
         assertThrows<IllegalArgumentException> { FullTextIndexSpec("Chunk", "body", name = "\t") }
+        assertThrows<IllegalArgumentException> { TextIndexSpec("Chunk", "title", name = " ") }
         assertThrows<IllegalArgumentException> { UniquenessConstraintSpec("ChatSession", "id", name = "\n") }
     }
 
@@ -89,6 +91,10 @@ class SchemaItemSpecNameTest {
     fun `fromSpec derives a name for specs that never had an explicit one`() {
         assertEquals("Chunk_title_range", SchemaItemInfo.fromSpec(RangeIndexSpec("Chunk", "title")).name)
         assertEquals("Chunk_body_fulltext", SchemaItemInfo.fromSpec(FullTextIndexSpec("Chunk", "body")).name)
+        assertEquals(
+            SchemaItemInfo(SchemaItemKind.TEXT_INDEX, "Chunk", listOf("title"), name = "Chunk_title_text"),
+            SchemaItemInfo.fromSpec(TextIndexSpec("Chunk", "title")),
+        )
         assertEquals(
             "ChatSession_id_unique",
             SchemaItemInfo.fromSpec(UniquenessConstraintSpec("ChatSession", "id")).name,

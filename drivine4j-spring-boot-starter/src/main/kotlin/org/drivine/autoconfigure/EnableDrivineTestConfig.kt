@@ -21,7 +21,7 @@ import kotlin.annotation.AnnotationTarget.CLASS
  *     neo:
  *       host: localhost
  *       port: 7687
- *       username: neo4j
+ *       user-name: neo4j
  *       password: password
  *       type: NEO4J
  *       database-name: neo4j

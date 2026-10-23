@@ -104,6 +104,17 @@ class PostgresSchemaManagementIntegrationTest {
     }
 
     @Test
+    fun `a range index made first is not in the way of a uniqueness constraint, and is kept when replacing is asked`() {
+        assertTrue(manager.indexes.ensure(RangeIndexSpec("Account", "accountId")) is EnsureResult.Created)
+        val spec = UniquenessConstraintSpec("Account", "accountId")
+
+        val created = manager.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertNotNull(manager.indexes.find(RangeIndexSpec("Account", "accountId")))
+    }
+
+    @Test
     fun `composite uniqueness constraint`() {
         val spec = UniquenessConstraintSpec("Membership", listOf("tenantId", "userId"))
         assertTrue(manager.constraints.ensure(spec) is EnsureResult.Created)
@@ -116,12 +127,17 @@ class PostgresSchemaManagementIntegrationTest {
     fun `constraint on violating data returns Violation with a sample of what repeats`() {
         execute("CREATE (:Person {email: 'dup@example.com', name: 'A'}), (:Person {email: 'dup@example.com', name: 'B'})")
 
-        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email"))
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "name"))
 
         assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
         val sample = (result as EnsureResult.Violation).conflictingSample.single()
         assertEquals(mapOf("email" to "dup@example.com"), sample["properties"])
         assertEquals(2L, (sample["count"] as Number).toLong())
+
+        // Each conflicting node is named, by the engine's id and by the property it is identified by.
+        val nodes = (result.conflictingSample.single()["nodes"] as List<*>).map { it as Map<*, *> }
+        assertEquals(setOf("A", "B"), nodes.map { it["name"] }.toSet())
+        assertEquals(2, nodes.mapNotNull { it["elementId"] }.toSet().size)
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "email")))
     }
 
@@ -191,6 +207,12 @@ class PostgresSchemaManagementIntegrationTest {
         store.record("model-v1", listOf("a", "b"))
         assertEquals("model-v1", store.storedVersion())
         assertEquals(listOf("a", "b"), store.storedInventory())
+
+        store.record("model-v1", listOf("a", "b", "c"), runtime = setOf("b", "c"), stale = setOf("c"))
+        val record = store.storedRecord()!!
+        assertEquals(listOf("a", "b", "c"), record.keys, "an item ensured at runtime is kept in the inventory")
+        assertEquals(setOf("b", "c"), record.runtime)
+        assertEquals(setOf("c"), record.stale)
 
         store.record("model-v2")
         assertEquals("model-v2", store.storedVersion())

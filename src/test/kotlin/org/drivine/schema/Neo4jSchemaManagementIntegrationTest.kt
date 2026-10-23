@@ -183,6 +183,39 @@ class Neo4jSchemaManagementIntegrationTest {
         assertNull(manager.indexes.find(FullTextIndexSpec("Article", listOf("title", "body"))))
     }
 
+    @Test
+    @Order(2)
+    fun `text index - create, idempotent, apart from a fulltext index on the same property, listed, drop`() {
+        val spec = TextIndexSpec("Article", "slug")
+
+        val created = manager.indexes.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        val info = (created as EnsureResult.Created).info
+        assertEquals(SchemaItemKind.TEXT_INDEX, info.kind)
+        assertEquals("Article_slug_text", info.name)
+        assertEquals(listOf("slug"), info.properties)
+
+        val again = manager.indexes.ensure(spec)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+
+        // A fulltext index on the same property is another index, made beside it
+        val fulltext = FullTextIndexSpec("Article", "slug")
+        val fulltextCreated = manager.indexes.ensure(fulltext)
+        assertTrue(fulltextCreated is EnsureResult.Created, "expected Created, got $fulltextCreated")
+        assertEquals(
+            setOf(SchemaItemKind.TEXT_INDEX, SchemaItemKind.FULLTEXT_INDEX),
+            manager.indexes.list().filter { it.label == "Article" && it.properties == listOf("slug") }.map { it.kind }.toSet(),
+        )
+
+        val recreated = manager.indexes.recreate(spec)
+        assertEquals("Article_slug_text", recreated.current.name)
+
+        assertTrue(manager.indexes.drop(spec))
+        assertNull(manager.indexes.find(spec))
+        assertNotNull(manager.indexes.find(fulltext))
+        assertTrue(manager.indexes.drop(fulltext))
+    }
+
     // ----- Uniqueness constraint lifecycle -----
 
     @Test
@@ -196,9 +229,11 @@ class Neo4jSchemaManagementIntegrationTest {
 
         // The constraint is real: duplicate inserts must fail
         execute("CREATE (:ChatSession {sessionId: 'session-1'})")
-        assertThrows<Exception> {
+        val refused = assertThrows<Exception> {
             execute("CREATE (:ChatSession {sessionId: 'session-1'})")
         }
+        // A write the constraint refuses is a violation too: the store identity stamp retries on one.
+        assertTrue(manager.constraints.grammar.isConstraintViolation(refused), refused.message)
     }
 
     @Test
@@ -219,11 +254,16 @@ class Neo4jSchemaManagementIntegrationTest {
         execute("CREATE (:Person {email: 'dup@example.com', name: 'A'})")
         execute("CREATE (:Person {email: 'dup@example.com', name: 'B'})")
 
-        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email"))
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "name"))
 
         assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
         val violation = result as EnsureResult.Violation
         assertTrue(violation.conflictingSample.isNotEmpty(), "expected a conflicting-row sample")
+
+        // Each conflicting node is named, by the engine's id and by the property it is identified by.
+        val nodes = (violation.conflictingSample.single()["nodes"] as List<*>).map { it as Map<*, *> }
+        assertEquals(setOf("A", "B"), nodes.map { it["name"] }.toSet())
+        assertEquals(2, nodes.mapNotNull { it["elementId"] }.toSet().size)
 
         // Nothing was created
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "email")))
@@ -256,5 +296,26 @@ class Neo4jSchemaManagementIntegrationTest {
         assertTrue(indexes.any { it.kind == SchemaItemKind.VECTOR_INDEX && it.label == "Proposition" })
         assertTrue(indexes.any { it.kind == SchemaItemKind.RANGE_INDEX && it.label == "Message" })
         assertTrue(constraints.any { it.label == "Membership" })
+    }
+
+    // ----- An index in the way -----
+
+    @Test
+    @Order(20)
+    fun `a plain index in the way of a uniqueness constraint is reported by name, and replaced when asked`() {
+        manager.indexes.ensure(RangeIndexSpec("Account", "accountId", "account_lookup"))
+        val spec = UniquenessConstraintSpec("Account", "accountId")
+
+        val blocked = manager.constraints.ensure(spec)
+
+        assertTrue(blocked is EnsureResult.BlockedByIndex, "expected BlockedByIndex, got $blocked")
+        assertEquals("account_lookup", (blocked as EnsureResult.BlockedByIndex).index.name)
+        assertNull(manager.constraints.find(spec))
+
+        val replaced = manager.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(replaced is EnsureResult.Created, "expected Created, got $replaced")
+        assertNotNull(manager.constraints.find(spec))
+        assertTrue(manager.indexes.list().none { it.name == "account_lookup" })
     }
 }

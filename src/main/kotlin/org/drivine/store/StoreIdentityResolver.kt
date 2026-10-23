@@ -81,7 +81,8 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         if (!persistenceManager.supportsSchemaManagement) return false
         val constraints = persistenceManager.constraints
         return try {
-            when (val result = constraints.ensure(KEY_CONSTRAINT, violationSampleSize = 0)) {
+            // The label is Drivine's, so a plain index on the key (Neo4j) is replaced by the constraint.
+            when (val result = constraints.ensure(KEY_CONSTRAINT, violationSampleSize = 0, replaceBlockingIndex = true)) {
                 is EnsureResult.Created, is EnsureResult.AlreadyMatching, is EnsureResult.Recreated -> true
                 is EnsureResult.Violation -> {
                     logger.warn(
@@ -97,6 +98,14 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
                         "[store-identity] Unexpected constraint on DrivineStore(key) on database '{}': {}. " +
                             "Identity is best-effort.",
                         persistenceManager.database, result.existing,
+                    )
+                    false
+                }
+                is EnsureResult.BlockedByIndex -> {
+                    logger.warn(
+                        "[store-identity] Index {} on DrivineStore(key) on database '{}' is in the way of its " +
+                            "uniqueness constraint. Identity is best-effort until it is dropped.",
+                        result.index.name, persistenceManager.database,
                     )
                     false
                 }

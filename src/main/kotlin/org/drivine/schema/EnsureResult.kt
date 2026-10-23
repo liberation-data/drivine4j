@@ -10,6 +10,7 @@ package org.drivine.schema
  * - if an item exists with a different shape nothing changes → [Drift]; the caller decides
  *   whether to call `recreate`
  * - constraint creation can fail because existing data violates it → [Violation]
+ * - or because a plain index is in the way of it → [BlockedByIndex]
  */
 sealed interface EnsureResult {
 
@@ -39,12 +40,29 @@ sealed interface EnsureResult {
      * Constraint-only outcome: creation failed because existing data violates the constraint.
      *
      * @param requested the constraint that could not be created
-     * @param conflictingSample a bounded sample of conflicting property combinations
-     *   (each entry holds the duplicated property values and a count), for debugging.
-     *   May be empty if sampling failed or was disabled.
+     * @param conflictingSample a bounded sample of conflicting property combinations, for debugging:
+     *   each entry holds the duplicated `properties`, the `count` of nodes that hold them, and
+     *   `nodes`, as many of those nodes as the sample size at most, each its `elementId` (the
+     *   engine's own id) and, for a spec read from a fragment, its `@NodeId` property.
+     *   Empty only when a sample size of 0 was asked for: when the data cannot be read, the
+     *   refusal is thrown rather than reported as a violation with no sample.
      */
     data class Violation(
         val requested: ConstraintSpec,
         val conflictingSample: List<Map<String, Any?>> = emptyList(),
+    ) : EnsureResult
+
+    /**
+     * Constraint-only outcome: a plain range index over the constraint's label and properties is in
+     * the way of it, on an engine whose constraint brings its own index (Neo4j). Nothing was changed.
+     * Drop [index], or ensure with `replaceBlockingIndex` (`drivine.schema.replace-blocking-index`),
+     * which drops it and makes the constraint, whose own index then serves the same lookups.
+     *
+     * @param requested the constraint that could not be created
+     * @param index the index in the way of it, named
+     */
+    data class BlockedByIndex(
+        val requested: ConstraintSpec,
+        val index: SchemaItemInfo,
     ) : EnsureResult
 }

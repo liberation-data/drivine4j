@@ -8,6 +8,26 @@ By default, tests start a Testcontainer for whichever backend(s) the suite targe
 ./gradlew test
 ```
 
+## The core on its own classpath
+
+The root module's tests run in Spring contexts, through the starter. `./gradlew standaloneTest` runs the tests in
+`src/standaloneTest` on the core's own runtime classpath and JUnit, as a plain `main` or a Ktor server has it. Spring
+support is in `drivine4j-spring`, so the task fails first if an `org.springframework` module comes onto that classpath. They start a Neo4j and a
+FalkorDB of their own, and read no `USE_LOCAL_*` flag. `./gradlew check` (and so `build`) runs them.
+
+## The coroutines module
+
+`drivine4j-coroutines` tests its suspend transaction block on each engine with transactions, with a `Drivine` and
+JUnit and no framework but a `TransactionTemplate` of `drivine4j-spring`. They start a Neo4j, a Memgraph and a FalkorDB
+of their own, and read no `USE_LOCAL_*` flag. Its Oracle and Postgres classes run only with `ORACLE_TESTS=true` and
+`POSTGRES_TESTS=true`, on the containers described below:
+
+```bash
+./gradlew :drivine4j-coroutines:test
+ORACLE_TESTS=true ./gradlew :drivine4j-coroutines:test --tests '*Oracle*'
+POSTGRES_TESTS=true ./gradlew :drivine4j-coroutines:test --tests '*Postgres*'
+```
+
 ## Using a Local Database Instance
 
 To bypass testcontainers and point at a locally running instance, set the corresponding env var (or system property) per backend:

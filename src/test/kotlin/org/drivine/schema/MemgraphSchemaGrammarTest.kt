@@ -236,4 +236,15 @@ class MemgraphSchemaGrammarTest {
         assertEquals(SchemaItemKind.RANGE_INDEX, items[0].kind)
         assertEquals(listOf("contextId"), items[0].properties)
     }
+
+    @Test
+    fun `a violation is known by what Memgraph says of it, and another refusal to make a constraint is not one`() {
+        assertTrue(grammar.isConstraintViolation(RuntimeException("Unable to create unique constraint :Person(email), because an existing node violates it.")))
+        assertFalse(
+            grammar.isConstraintViolation(
+                RuntimeException("Constraints are not supported in analytical storage mode. Please drop them before changing storage mode to analytical or use transactional mode.")
+            )
+        )
+        assertFalse(grammar.isConstraintViolation(RuntimeException("Unable to create constraint: storage is read-only")))
+    }
 }

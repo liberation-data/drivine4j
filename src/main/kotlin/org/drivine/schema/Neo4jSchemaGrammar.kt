@@ -1,6 +1,7 @@
 package org.drivine.schema
 
 import org.drivine.DrivineException
+import org.neo4j.driver.exceptions.Neo4jException
 
 /**
  * Schema DDL and introspection for Neo4j (4.x and 5.x — schema syntax is shared across both,
@@ -9,14 +10,19 @@ import org.drivine.DrivineException
  * - DDL supports `IF NOT EXISTS` / `IF EXISTS` guards.
  * - Indexes and constraints are named; drops are by name.
  * - Introspection via `SHOW INDEXES` / `SHOW CONSTRAINTS` with `YIELD … RETURN {…}`.
+ * - A TEXT index ([TextIndexSpec]) is its own kind, distinct from a FULLTEXT one.
  * - Vector index config uses backtick-quoted dotted keys (`vector.dimensions`,
  *   `vector.similarity_function`).
+ *
+ * @param elementIdFunction the function that gives a node's own id: `elementId` from Neo4j 5, `id`
+ *   on Neo4j 4, which has no `elementId`
  */
-class Neo4jSchemaGrammar : SchemaGrammar {
+class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : SchemaGrammar {
 
     override val engine = "Neo4j"
     override val supportsIfNotExists = true
     override val supportsNamedItems = true
+    override val supportsTextIndex = true
 
     /** Neo4j expresses the portable HNSW parameters and its own options class, so nothing is dropped. */
     override fun unsupportedVectorTuning(spec: VectorIndexSpec): List<String> = emptyList()
@@ -56,6 +62,13 @@ class Neo4jSchemaGrammar : SchemaGrammar {
                 "CREATE FULLTEXT INDEX ${id(spec.effectiveName)} IF NOT EXISTS " +
                     "FOR (n:${id(spec.label)}) ON EACH ${eachPropertyList(spec.properties)} " +
                     "OPTIONS {indexConfig: {${analyzerConfig(spec.analyzer)}}}"
+            )
+        )
+
+        is TextIndexSpec -> listOf(
+            SchemaStatement.Cypher(
+                "CREATE TEXT INDEX `${spec.effectiveName}` IF NOT EXISTS " +
+                    "FOR (n:`${spec.label}`) ON (n.`${spec.property}`)"
             )
         )
     }
@@ -103,7 +116,8 @@ class Neo4jSchemaGrammar : SchemaGrammar {
             "VECTOR" -> SchemaItemKind.VECTOR_INDEX
             "RANGE", "BTREE" -> SchemaItemKind.RANGE_INDEX
             "FULLTEXT" -> SchemaItemKind.FULLTEXT_INDEX
-            else -> return null // LOOKUP, TEXT, POINT — not managed by Drivine
+            "TEXT" -> SchemaItemKind.TEXT_INDEX
+            else -> return null // LOOKUP, POINT — not managed by Drivine
         }
         val label = (map["labelsOrTypes"] as? List<*>)?.firstOrNull() as? String ?: return null
         val properties = (map["properties"] as? List<*>)?.filterIsInstance<String>() ?: return null
@@ -169,15 +183,27 @@ class Neo4jSchemaGrammar : SchemaGrammar {
 
     // ----- Violations -----
 
+    /**
+     * By the driver's codes. A write the constraint refuses (`ConstraintValidationFailed`, which
+     * [org.drivine.store.StoreIdentityResolver] retries on) is always one. A server that gives GQL
+     * statuses (Neo4j 5.26 and later) names a violation in a refused constraint's cause, `22N79` or
+     * `22N80`; its `ConstraintCreationFailed` covers other refusals too, as of a key constraint on
+     * Community Edition (`51N27`). An older server gives only that code, and the data decides.
+     */
     override fun isConstraintViolation(e: Throwable): Boolean {
-        val messages = SchemaGrammar.messagesOf(e)
-        return messages.contains("ConstraintCreationFailed", ignoreCase = true) ||
-            messages.contains("ConstraintValidationFailed", ignoreCase = true) ||
-            // "Unable to create Constraint … both nodes … have the same value …"
-            (messages.contains("unable to create constraint", ignoreCase = true)) ||
-            (messages.contains("constraint", ignoreCase = true) &&
-                messages.contains("same value", ignoreCase = true))
+        val errors = generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().toList()
+        if (errors.any { it.code() == VALIDATION_FAILED || it.gqlStatus() in VIOLATED }) return true
+        return errors.all { it.gqlStatus() == GENERAL_STATUS } && errors.any { it.code() == CREATION_FAILED }
     }
+
+    /**
+     * "There already exists an index (:Label {prop}). A constraint cannot be created until the index
+     * has been dropped." By its code, which Neo4j 4.4 to 2026 all give.
+     */
+    override fun isBlockedByIndex(e: Throwable): Boolean =
+        generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().any { it.code() == INDEX_ALREADY_EXISTS }
+
+    override fun elementId(variable: String): String = "$elementIdFunction($variable)"
 
     // ----- Helpers -----
 
@@ -229,5 +255,22 @@ class Neo4jSchemaGrammar : SchemaGrammar {
         "cosine" -> SimilarityFunction.COSINE
         "euclidean" -> SimilarityFunction.EUCLIDEAN
         else -> null
+    }
+
+    private companion object {
+        /** A uniqueness constraint violated, and the index entry conflict beneath it. */
+        val VIOLATED = setOf("22N79", "22N80")
+
+        /** The status the driver gives an error from a server that sends none. */
+        const val GENERAL_STATUS = "50N42"
+
+        /** A write a constraint refuses. */
+        const val VALIDATION_FAILED = "Neo.ClientError.Schema.ConstraintValidationFailed"
+
+        /** A constraint not made, for whatever reason. */
+        const val CREATION_FAILED = "Neo.DatabaseError.Schema.ConstraintCreationFailed"
+
+        /** An index over the schema a constraint would make its own index over. */
+        const val INDEX_ALREADY_EXISTS = "Neo.ClientError.Schema.IndexAlreadyExists"
     }
 }

@@ -6,7 +6,7 @@ import org.springframework.boot.context.properties.ConfigurationProperties
 /**
  * Configuration properties for Drivine datasources.
  *
- * Activated by `@EnableDrivinePropertiesConfig`.
+ * Activated by `@EnableDrivinePropertiesConfig`, or by the starter's [DrivineAutoConfiguration].
  */
 @ConfigurationProperties(prefix = "database")
 data class DrivineProperties(

@@ -190,10 +190,15 @@ class MemgraphSchemaManagementIntegrationTest {
         execute("CREATE (:Person {email: 'dup@example.com', name: 'A'})")
         execute("CREATE (:Person {email: 'dup@example.com', name: 'B'})")
 
-        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email"))
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "name"))
 
         assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
         assertTrue((result as EnsureResult.Violation).conflictingSample.isNotEmpty())
+
+        // Each conflicting node is named, by the engine's id and by the property it is identified by.
+        val nodes = (result.conflictingSample.single()["nodes"] as List<*>).map { it as Map<*, *> }
+        assertEquals(setOf("A", "B"), nodes.map { it["name"] }.toSet())
+        assertEquals(2, nodes.mapNotNull { it["elementId"] }.toSet().size)
     }
 
     // ----- Drop -----
@@ -216,6 +221,12 @@ class MemgraphSchemaManagementIntegrationTest {
         assertNull(store.storedVersion())
         store.record("model-v1")
         assertEquals("model-v1", store.storedVersion())
+
+        store.record("model-v1", listOf("a", "b", "c"), runtime = setOf("b", "c"), stale = setOf("c"))
+        val record = store.storedRecord()!!
+        assertEquals(listOf("a", "b", "c"), record.keys, "an item ensured at runtime is kept in the inventory")
+        assertEquals(setOf("b", "c"), record.runtime)
+        assertEquals(setOf("c"), record.stale)
         store.clear()
         assertNull(store.storedVersion())
     }
@@ -250,5 +261,19 @@ class MemgraphSchemaManagementIntegrationTest {
         )
         store.record("model-v2")
         assertEquals("model-v2", store.storedVersion())
+    }
+
+    // ----- A plain index beside a constraint -----
+
+    @Test
+    @Order(20)
+    fun `a plain index is not in the way of a uniqueness constraint, and is kept when replacing is asked`() {
+        manager.indexes.ensure(RangeIndexSpec("Account", "accountId"))
+        val spec = UniquenessConstraintSpec("Account", "accountId")
+
+        val created = manager.constraints.ensure(spec, replaceBlockingIndex = true)
+
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertNotNull(manager.indexes.find(RangeIndexSpec("Account", "accountId")))
     }
 }

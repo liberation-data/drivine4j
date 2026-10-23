@@ -8,4 +8,5 @@ enum class SchemaItemKind {
     RANGE_INDEX,
     FULLTEXT_INDEX,
     UNIQUENESS_CONSTRAINT,
+    TEXT_INDEX,
 }

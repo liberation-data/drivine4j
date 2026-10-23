@@ -1,0 +1,116 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id 'maven-publish'
+    id 'com.gradleup.nmcp'
+}
+
+// Apply signing plugin only when needed
+def shouldSign = project.hasProperty('sign') || System.getenv('SIGN') == 'true'
+if (shouldSign) {
+    apply plugin: 'signing'
+}
+
+group = 'org.drivine'
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Core drivine4j library
+    api project(':')
+
+    // Spring Framework, without Boot: the version Spring Boot 3.5.7 manages
+    api(platform('org.springframework:spring-framework-bom:6.2.12'))
+    api 'org.springframework:spring-tx'
+
+    // FalkorDbCleanupListener is a TestExecutionListener: a test that registers it has spring-test
+    compileOnly 'org.springframework:spring-test'
+    compileOnly 'org.springframework:spring-context'
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.addAll '-Xjsr305=strict'
+    }
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+
+            artifactId = 'drivine4j-spring'
+
+            pom {
+                name = 'Drivine4j Spring'
+                description = 'Spring Framework adapter for Drivine4j: a PlatformTransactionManager, for @Transactional and TransactionTemplate'
+                url = 'https://github.com/liberation-data/drivine4j'
+
+                licenses {
+                    license {
+                        name = 'Apache License 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'jasperblues'
+                        name = 'Jasper Blues'
+                        email = 'jasper@liberation-data.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/liberation-data/drivine4j.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/liberation-data/drivine4j.git'
+                    url = 'https://github.com/liberation-data/drivine4j'
+                }
+            }
+        }
+    }
+}
+
+// Javadoc jar (empty for now - Kotlin projects typically use Dokka)
+tasks.register('javadocJar', Jar) {
+    archiveClassifier = 'javadoc'
+}
+
+// Attach javadoc jar to publication
+publishing.publications.mavenJava.artifact(tasks.named('javadocJar'))
+
+// --- Signing (required for non-SNAPSHOT releases to Maven Central) ---
+if (shouldSign) {
+    signing {
+        required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
+
+        def signingKey = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
+        def signingPassword = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+
+        if (signingKey != null && signingKey.contains('BEGIN PGP')) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        } else {
+            useGpgCmd()
+        }
+
+        sign publishing.publications.mavenJava
+    }
+}
+
+// --- Central Publishing Portal (new Maven Central) ---
+nmcp {
+    publishAllPublications {
+        username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+        password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+        publicationType = "AUTOMATIC"
+    }
+}

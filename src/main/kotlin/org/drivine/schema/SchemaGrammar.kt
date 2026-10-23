@@ -1,5 +1,7 @@
 package org.drivine.schema
 
+import org.drivine.DrivineException
+
 /**
  * Encapsulates engine-specific schema DDL and introspection.
  *
@@ -51,6 +53,14 @@ interface SchemaGrammar {
      * index that has just been dropped (FalkorDB).
      */
     val indexOperationsAreAsync: Boolean
+        get() = false
+
+    /**
+     * Whether the engine has Neo4j's TEXT index ([TextIndexSpec]). Only Neo4j does; elsewhere
+     * [IndexManager] refuses the spec ([unsupportedTextIndex]) rather than make another index in
+     * its place. Memgraph's `TEXT INDEX` is a full-text index, made from a [FullTextIndexSpec].
+     */
+    val supportsTextIndex: Boolean
         get() = false
 
     // ----- Drivine's own nodes -----
@@ -198,28 +208,49 @@ interface SchemaGrammar {
     }
 
     /**
-     * Whether the given exception thrown during constraint creation indicates that existing data
-     * violates the constraint (as opposed to a syntax error or connectivity problem).
+     * Whether the given exception thrown during constraint creation says that existing data
+     * violates the constraint (as opposed to a syntax error, a connectivity problem, or a constraint
+     * the engine will not make). By the driver's error code where it gives one that is specific,
+     * by the message where it does not. A suspicion only: [ConstraintManager] reports a violation
+     * when [sampleConflictsQuery] finds a key that repeats, and throws [e] when it finds none.
      */
     fun isConstraintViolation(e: Throwable): Boolean
 
     /**
+     * Whether [e], thrown making a uniqueness constraint, says a plain range index over the same
+     * label and properties is in the way of it. Only on an engine whose constraint brings its own
+     * index, so that the plain one is redundant once the constraint is made and may be dropped for
+     * it (Neo4j). Never where the constraint needs the plain index ([constraintsRequireBackingIndex],
+     * FalkorDB) or makes one beside it (Memgraph, Oracle, Postgres).
+     */
+    fun isBlockedByIndex(e: Throwable): Boolean = false
+
+    /**
      * The statement that samples the key values [spec] would refuse: each row a map of the
-     * `properties` that repeat and the `count` of nodes that hold them, [limit] rows at most.
+     * `properties` that repeat, the `count` of nodes that hold them, and `nodes`, [limit] of those
+     * nodes at most, each named by its `elementId` (see [elementId]) and, when the spec knows it, its
+     * [ConstraintSpec.nodeIdProperty]; [limit] rows at most.
      */
     fun sampleConflictsQuery(spec: ConstraintSpec, limit: Int): String {
         val notNull = spec.properties.joinToString(" AND ") { "n.$it IS NOT NULL" }
         val keyAliases = spec.properties.mapIndexed { i, p -> "n.$p AS _k$i" }.joinToString(", ")
         val keyMap = spec.properties.mapIndexed { i, p -> "$p: _k$i" }.joinToString(", ")
+        val node = listOfNotNull(
+            "elementId: ${elementId("n")}",
+            sampledNodeId(spec)?.let { "${identifier(it)}: n.${identifier(it)}" },
+        ).joinToString(", ")
         return """
             MATCH (n:${spec.label})
             WHERE $notNull
-            WITH $keyAliases, count(*) AS _count
+            WITH $keyAliases, count(*) AS _count, collect({$node}) AS _nodes
             WHERE _count > 1
-            RETURN {properties: {$keyMap}, count: _count}
+            RETURN {properties: {$keyMap}, count: _count, nodes: _nodes[0..$limit]}
             LIMIT $limit
         """.trimIndent()
     }
+
+    /** The engine's own id of the node [variable] is bound to, in Cypher: `id(n)` unless the engine has another. */
+    fun elementId(variable: String): String = "id($variable)"
 
     companion object {
 
@@ -245,6 +276,13 @@ interface SchemaGrammar {
         /** The Unicode escape of a backtick, with as many `u` as an escape may have. */
         private val ESCAPED_BACKTICK = Regex("\\\\u+0060")
 
+        /**
+         * The property a violation's sample names a node by, beside its element id: [spec]'s
+         * [ConstraintSpec.nodeIdProperty], unless it is one of the keys, which every node of a
+         * conflict holds alike.
+         */
+        fun sampledNodeId(spec: ConstraintSpec): String? = spec.nodeIdProperty?.takeIf { it !in spec.properties }
+
         /** Flattens an exception chain's messages for engine-specific violation sniffing. */
         fun messagesOf(e: Throwable): String =
             generateSequence(e) { it.cause }.mapNotNull { it.message }.joinToString(" | ")
@@ -260,3 +298,14 @@ interface SchemaGrammar {
  */
 private fun <T> pinnedMatches(pinned: T?, observed: T?): Boolean =
     pinned == null || observed == null || pinned == observed
+
+/**
+ * The refusal of a [TextIndexSpec] on an [engine] without Neo4j's TEXT index, which [IndexManager]
+ * throws before it touches the database, and a grammar's [SchemaGrammar.createIndex] throws if it is
+ * reached all the same.
+ */
+internal fun unsupportedTextIndex(spec: TextIndexSpec, engine: String): DrivineException = DrivineException(
+    "TEXT index ${spec.effectiveName} on ${spec.label}${spec.properties} cannot be made on $engine: " +
+        "a TEXT index is Neo4j's, and $engine has none. For tokenized search declare a FullTextIndexSpec " +
+        "(@FullTextIndex), which is also what Memgraph calls a TEXT INDEX; for exact lookups, a RangeIndexSpec."
+)

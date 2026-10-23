@@ -13,9 +13,11 @@ import org.drivine.schema.SchemaItemSpec
 import org.drivine.schema.SchemaStatement
 import org.drivine.schema.SimilarityFunction
 import org.drivine.schema.StoreStampStatements
+import org.drivine.schema.TextIndexSpec
 import org.drivine.schema.UniquenessConstraintSpec
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.schema.VersionMarkerStatements
+import org.drivine.schema.unsupportedTextIndex
 import java.sql.SQLException
 
 /**
@@ -132,6 +134,7 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
                 recorded(spec, name, details),
             )
         }
+        is TextIndexSpec -> throw unsupportedTextIndex(spec, engine)
     }
 
     override fun dropIndex(item: SchemaItemInfo): List<SchemaStatement> = listOf(forgotten(item))
@@ -178,11 +181,15 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
     override fun isConstraintViolation(e: Throwable): Boolean =
         generateSequence(e) { it.cause }.any { it is SQLException && it.sqlState == "23505" }
 
+    /** A node's element id is its `nid`; [limit] of a key's nodes at most are named, the first made first. */
     override fun sampleConflictsQuery(spec: ConstraintSpec, limit: Int): String {
         val keys = spec.properties.map { PostgresSql.property("n", it) }
         val entries = spec.properties.zip(keys).joinToString(", ") { (property, key) -> "${literal(property)}, $key" }
+        val node = listOfNotNull("'elementId', n.nid", SchemaGrammar.sampledNodeId(spec)?.let { "${literal(it)}, ${PostgresSql.property("n", it)}" })
+            .joinToString(", ")
         return """
-            SELECT jsonb_build_object('properties', jsonb_build_object($entries), 'count', COUNT(*))
+            SELECT jsonb_build_object('properties', jsonb_build_object($entries), 'count', COUNT(*),
+                                      'nodes', to_jsonb((array_agg(jsonb_build_object($node) ORDER BY n.nid))[1:$limit]))
             FROM ${graph.nodes} n
             WHERE ${hasLabel("n", spec.label)} AND ${keys.joinToString(" AND ") { "$it IS NOT NULL" }}
             GROUP BY ${keys.joinToString(", ")}
