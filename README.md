@@ -89,6 +89,16 @@ dependencies {
 </dependency>
 ```
 
+### Spring Boot Starter
+
+For a Spring application, the starter brings the core library and the Spring wiring (see [Configuration](#1-configuration)):
+
+```kotlin
+dependencies {
+    implementation("org.drivine:drivine4j-spring-boot-starter:0.2.0")
+}
+```
+
 ### Code Generation (For the Type-Safe Query DSL)
 
 If you want to use the object manager with the type-safe query DSL, you need to add the code generation processor.
@@ -160,9 +170,35 @@ dependencies {
 
 ### 1. Configuration
 
+There are two ways to set Drivine up in Spring: let the starter configure it, or enable it yourself.
+
+**With Spring Boot auto-configuration.** Put the starter on the classpath and name a datasource:
+
+```yaml
+database:
+  datasources:
+    neo:
+      type: NEO4J
+      host: localhost
+      port: 7687
+      user-name: neo4j
+      password: password
+      database-name: neo4j
+```
+
+That's all. The starter provides the `DatabaseRegistry`, `PersistenceManagerFactory`,
+`GraphObjectManagerFactory`, `SchemaManager` and Drivine's transaction manager. A `DataSourceMap` bean of your own
+also counts as a datasource, in place of the properties. With neither, the starter adds nothing, so it is safe on any
+classpath. Every bean backs off when you define your own (the startup schema run is switched off with `drivine.schema.enabled=false` instead), and `spring.autoconfigure.exclude=org.drivine.autoconfigure.DrivineAutoConfiguration`
+turns the starter off.
+
+**Explicitly, with `@EnableDrivine`.** Where auto-configuration doesn't run (a plain `@Configuration` context, or a test
+that names its classes), or where you'd rather the wiring be visible, enable Drivine on a configuration class and give it a
+`DataSourceMap`:
+
 ```kotlin
 @Configuration
-@ComponentScan("org.drivine")
+@EnableDrivine
 class AppConfig {
     @Bean
     fun dataSourceMap(): DataSourceMap {
@@ -177,6 +213,16 @@ class AppConfig {
         return DataSourceMap(mapOf("neo" to props))
     }
 }
+```
+
+or add `@EnableDrivinePropertiesConfig` beside `@EnableDrivine` to build the `DataSourceMap` from the properties above.
+The two ways combine: an application that has `@EnableDrivine` and the starter gets each bean once.
+
+Either way, you ask the factories for the managers you use:
+
+```kotlin
+@Bean
+fun neoManager(factory: PersistenceManagerFactory): PersistenceManager = factory.get("neo")
 ```
 
 ### 2. Domain Model
@@ -3474,7 +3520,7 @@ database:
     neo:
       host: localhost
       port: 7687
-      username: neo4j
+      user-name: neo4j
       password: password
       type: NEO4J
       database-name: neo4j

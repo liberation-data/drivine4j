@@ -10,6 +10,7 @@ import kotlin.annotation.AnnotationTarget.CLASS
  *
  * Use this annotation (in addition to `@EnableDrivine`) to configure datasources
  * via application.yml/properties instead of defining a `DataSourceMap` bean manually.
+ * Under Spring Boot auto-configuration the starter does this already (see [DrivineAutoConfiguration]).
  *
  * Example configuration:
  * ```yaml
@@ -18,14 +19,14 @@ import kotlin.annotation.AnnotationTarget.CLASS
  *     neo:
  *       host: localhost
  *       port: 7687
- *       username: neo4j
+ *       user-name: neo4j
  *       password: password
  *       type: NEO4J
  *       database-name: neo4j
  *     analytics:
  *       host: analytics.example.com
  *       port: 7687
- *       username: readonly
+ *       user-name: readonly
  *       password: secret
  *       type: NEO4J
  *       database-name: analytics

@@ -12,7 +12,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 /**
- * Configuration imported by @EnableDrivine.
+ * Configuration imported by @EnableDrivine and by [DrivineAutoConfiguration].
  *
  * Wires the [SchemaManager] from all [SchemaCatalog] beans the consumer registers, plus a startup
  * runner that calls [SchemaManager.enforce]. The manager bean is always available (so an application

@@ -6,7 +6,7 @@ import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 
 /**
- * Configuration imported by @EnableDrivinePropertiesConfig.
+ * Configuration imported by @EnableDrivinePropertiesConfig and by [DrivineAutoConfiguration].
  * Creates a DataSourceMap bean from DrivineProperties.
  *
  * Note: If using @EnableDrivineTestConfig, that configuration's DataSourceMap
