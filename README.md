@@ -3130,7 +3130,8 @@ Works across Neo4j, FalkorDB, and Memgraph.
 **A flat bag** has no prefix: each entry is stored under its bare key, and the bag reads back every
 property that no declared field and no other bag accounts for. It fits a node whose properties are
 open-ended and were never namespaced. A fragment may have one, and an entry whose key is a declared
-field's property is rejected at save.
+field's property, or a declared field's name, is rejected at save: a load hands those to their fields,
+the `@NodeStamp` field among them.
 
 ```kotlin
 @NodeFragment(labels = ["Thing"])
