@@ -400,6 +400,9 @@ abstract class StatelessSaveSoundnessContract {
         val otherClass = assertFailsWith<IllegalArgumentException> { stateless.save<Any>(loaded, from = Claim("f1", "one")) }
         assertContains(otherClass.message.orEmpty(), "from is a Claim, and the object saved a Finding")
 
+        val itself = assertFailsWith<IllegalArgumentException> { stateless.save(loaded, from = loaded) }
+        assertContains(itself.message.orEmpty(), "from is the Finding saved itself")
+
         assertEquals(listOf("first"), stateless.load<Finding>("f1")?.sources, "nothing was written")
     }
 

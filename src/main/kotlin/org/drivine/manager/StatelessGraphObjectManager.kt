@@ -165,11 +165,15 @@ class StatelessGraphObjectManager private constructor(
     /**
      * [obj] to be checked as [from], the object it was loaded as: carrying [from]'s stamp, whatever
      * stamp it carries itself, as [update] checks against the stamp it loaded; and [from]'s root fields,
-     * as a save writes them, which the save compares with the node.
+     * as a save writes them, which the save compares with the node. [from] must not be [obj] itself: an
+     * object changed in place no longer says what was loaded. A copy may share an unchanged root.
      */
     private fun <T : Any> loadedAs(obj: T, from: T): Pair<T, Map<String, Any?>> {
         require(from.javaClass == obj.javaClass) {
             "from is a ${from.javaClass.simpleName}, and the object saved a ${obj.javaClass.simpleName}. Give the object as it was loaded."
+        }
+        require(from !== obj) {
+            "from is the ${obj.javaClass.simpleName} saved itself, so it holds the changes, not what was loaded. Save a changed copy of it, and give from unchanged."
         }
         val root = requireNotNull(stamps.rootOf(obj)) { "The ${obj.javaClass.simpleName} saved has no root fragment." }
         val loadedRoot = requireNotNull(stamps.rootOf(from)) { "The ${from.javaClass.simpleName} given as from has no root fragment." }

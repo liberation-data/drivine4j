@@ -69,6 +69,8 @@ public class JavaStatelessSaveTests {
         assertEquals("Ada founded Acme in 1999", stateless.load(id, Claim.class).getText());
         assertNotEquals(loaded.getStamp(), saved.getStamp());
         assertThrows(StaleObjectException.class, () -> stateless.save(new Claim(id, "late", null, null), loaded));
+        // The object saved itself no longer says what was loaded, once it is changed in place.
+        assertThrows(IllegalArgumentException.class, () -> stateless.save(saved, saved));
     }
 
     @Test

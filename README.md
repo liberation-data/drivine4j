@@ -1497,7 +1497,7 @@ A save is one Cypher statement: the root, the relationships it drops, each relat
 
 `only` and `except` name fields of the object, and for a view fields of its root. A view's relationships are written whatever they name. Give one or the other: both together are refused, and so is a property of a class other than the one saved.
 
-`from` is the object as you loaded it, when what you save is a changed copy of it. The save is then checked against the stamp `from` carries, whatever stamp the copy carries, as `update` checks against what it loaded. On Neo4j it is also checked against each field of `from`'s root: see [when a save is refused](#when-a-save-is-refused). It is refused before anything is written if `from` is of another class, has another id, or carries no stamp. From Java, `save(edited, loaded)`.
+`from` is the object as you loaded it, when what you save is a changed copy of it. The save is then checked against the stamp `from` carries, whatever stamp the copy carries, as `update` checks against what it loaded. On Neo4j it is also checked against each field of `from`'s root: see [when a save is refused](#when-a-save-is-refused). It is refused before anything is written if `from` is of another class, has another id, carries no stamp, or is the object saved itself: an object changed in place no longer says what was loaded, so save a changed copy (a copy may share an unchanged root, as `view.copy(reviewers = …)` does). From Java, `save(edited, loaded)`.
 
 ```kotlin
 val loaded = graphObjectManager.load<Person>(id)!!
