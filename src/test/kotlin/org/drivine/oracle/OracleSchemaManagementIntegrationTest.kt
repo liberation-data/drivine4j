@@ -118,6 +118,19 @@ class OracleSchemaManagementIntegrationTest {
     }
 
     @Test
+    fun `a key whose nodes pass 4000 bytes comes back with every node asked for`() {
+        // JSON_ARRAYAGG with no RETURNING is VARCHAR2(4000), which these nodes overflow (ORA-40478).
+        execute("CREATE " + (1..150).joinToString(", ") { "(:Member {email: 'dup@example.com', handle: 'member-${"%05d".format(it)}'})" })
+
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Member", "email", nodeIdProperty = "handle"), violationSampleSize = 200)
+
+        assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
+        val sample = result.conflictingSample.single()
+        assertEquals(150L, (sample["count"] as Number).toLong())
+        assertEquals(150, (sample["nodes"] as List<*>).size)
+    }
+
+    @Test
     fun `drop a constraint, and what it refused is allowed again`() {
         val spec = UniquenessConstraintSpec("Ticket", "number")
         manager.constraints.ensure(spec)

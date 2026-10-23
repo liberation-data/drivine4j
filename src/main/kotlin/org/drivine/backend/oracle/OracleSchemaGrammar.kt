@@ -407,7 +407,7 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
         val partition = keys.joinToString(", ")
         return """
             SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT($entries), 'count' VALUE MAX(c),
-                               'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT($node) ORDER BY nid) RETURNING JSON)
+                               'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT($node) ORDER BY nid RETURNING JSON) RETURNING JSON)
             FROM (SELECT n.nid, $selected, COUNT(*) OVER (PARTITION BY $partition) AS c, ROW_NUMBER() OVER (PARTITION BY $partition ORDER BY n.nid) AS r
                   FROM ${graph.nodes} n
                   WHERE ${hasLabel("n", spec.label)} AND ${keys.joinToString(" AND ") { "$it IS NOT NULL" }})
