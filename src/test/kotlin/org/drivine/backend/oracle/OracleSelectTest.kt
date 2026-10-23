@@ -507,7 +507,7 @@ class OracleSelectTest {
     @Test
     fun `a partition label narrows the nearest, and the Euclidean score is one over one plus the distance`() {
         val sql = select(Shelf::class.java).nearestTo("embedding", SimilarityFunction.EUCLIDEAN, "Hot", listOf(0.1f), 3).squashed()
-        assertTrue(sql.contains("JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND JSON_EXISTS(c.labels, '$[*]?(@ == \"Hot\")') AND JSON_EXISTS(c.props, '$.embedding')"), sql)
+        assertTrue(sql.contains("JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND INSTR(JSON_SERIALIZE(c.labels), '\"Hot\"') > 0 AND JSON_EXISTS(c.props, '$.embedding')"), sql)
         assertTrue(sql.contains("1 / (1 + VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB)), TO_VECTOR(\$_p0), EUCLIDEAN_SQUARED)) AS score"), sql)
     }
 

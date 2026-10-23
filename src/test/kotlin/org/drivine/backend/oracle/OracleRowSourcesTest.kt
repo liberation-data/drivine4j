@@ -66,13 +66,13 @@ class OracleRowSourcesTest {
     // ----- Nodes -----
 
     @Test
-    fun `the nodes of some labels are asked of the index, until the statement finds its roots some narrower way`() {
+    fun `a scan asks the index for the nodes of its first label, until the statement finds its roots some narrower way`() {
         val scanned = rows.nodes(listOf("Claim", "Hot"), "n_").whole().squashed()
         scope.narrowed = true
         val narrowed = rows.nodes(listOf("Claim", "Hot"), "n_").whole().squashed()
 
         assertEquals(
-            "GRAPH_TABLE (g MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")') AND JSON_EXISTS(n_.labels, '$[*]?(@ == \"Hot\")')) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
+            "GRAPH_TABLE (g MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")') AND INSTR(JSON_SERIALIZE(n_.labels), '\"Hot\"') > 0) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
             scanned,
         )
         assertEquals(

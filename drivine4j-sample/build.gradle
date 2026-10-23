@@ -47,6 +47,10 @@ dependencies {
     // stateless tests on Postgres. The version is the one Spring Boot manages.
     testImplementation 'org.postgresql:postgresql:42.7.8'
 
+    // The JDBC driver an ORACLE datasource needs, as an application adds it: CI runs the sample's stateless
+    // tests on Oracle too. The version is the one Spring Boot manages.
+    testImplementation 'com.oracle.database.jdbc:ojdbc11:23.7.0.25.01'
+
     // Neptune IAM SigV4 auth
     testImplementation 'software.amazon.awssdk:auth:2.31.3'
     testImplementation 'software.amazon.awssdk:regions:2.31.3'

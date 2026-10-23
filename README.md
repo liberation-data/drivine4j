@@ -3034,6 +3034,18 @@ made: see [Schema Management](#schema-management-indexes--constraints).
 - A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
   bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
   `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.
+- A `CypherStatement` is compiled to SQL over the graph's tables and gives the rows a graph engine
+  gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
+  PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
+  each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
+  query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path. `list[i]` reads an item where an expression gives
+  the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
+  What is not compiled yet (a slice, a path returned whole, `SKIP` of an expression…) is refused by
+  name before anything is sent. What the grammar does not read is refused as not Cypher, with the
+  place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,
+  `FOREACH`, `=~`, `shortestPath` and `allShortestPaths` compile. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
+  engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`, `[(a)-->(m) | m]`) is given as
+  their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them.
 - A statement that writes and returns rows is a PL/SQL block that hands them back with
   `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
@@ -3172,10 +3184,10 @@ val provider = JdbcConnectionProvider.pooled(
 )
 ```
 
-A test written for the graph engines usually seeds its graph and reads it back in Cypher, which Oracle
-does not run. `SqlCypherFixtures` works such a statement out over the graph instead, so the test's
-fixtures stay as they are (it was `OracleCypherFixtures`, which still works, before Postgres kept a
-graph the same way):
+A test written for the graph engines usually seeds its graph and reads it back in Cypher, in
+statements of no language, which Oracle takes for SQL. `SqlCypherFixtures` sends such a statement as
+Cypher, which is compiled as any `CypherStatement` is, so the test's fixtures stay as they are (it was
+`OracleCypherFixtures`, which still works, before Postgres kept a graph the same way):
 
 ```kotlin
 val fixtures = SqlCypherFixtures.over(persistenceManager)   // Cypher fixtures here, everything else to the store
@@ -3185,20 +3197,14 @@ SqlCypherFixtures.run(persistenceManager, "MATCH (p:Person) RETURN p.id ORDER BY
 SqlCypherFixtures.clear(persistenceManager)                                               // every node and relationship
 ```
 
-- It reads the Cypher fixtures use and no more: `CREATE`, `MATCH` and `MERGE` patterns with literal or
-  bound properties, `WHERE` (comparisons joined by `AND`), `SET`, `REMOVE`, `DETACH DELETE`, `UNWIND`,
-  `WITH`, and a `RETURN` of one expression or a `count`, with `ORDER BY`. Anything else is refused:
-  `OR`, `ON CREATE SET`, `SKIP`, `LIMIT`, a `RETURN` of several columns.
-- Keywords are read in any case, and a `//` comment is skipped. A statement is taken for a fixture
-  when it opens with `MATCH (`, `CREATE (`, `MERGE (` or `UNWIND`, after any comments; any other, one
-  that opens with `WITH` included, goes to the store as SQL.
-- Each statement reads the whole graph into memory and writes back what it changed, a row at a time. It
-  is for a test's handful of nodes and nothing else.
+- A statement is taken for Cypher when it opens with `MATCH (`, `OPTIONAL MATCH (`, `CREATE (`,
+  `MERGE (` (or one of them naming a path, as `MATCH p = (`), `UNWIND`, `RETURN` or a `//` comment; any
+  other, one that opens with `WITH` included, goes to the store as SQL.
 - The manager must name its graph (`graphName`), as one over a `JdbcConnectionProvider` does.
 - `TestCleanup.beforeEach(persistenceManager, "my-test")` deletes the nodes whose `createdBy` is the tag,
   in SQL on Oracle, as it does in Cypher elsewhere.
 - `SqlCypherFixtures.forStore(persistenceManager)` is the manager itself on a graph engine and the
-  fixture interpreter over it on Oracle or Postgres, so one test, or one `PersistenceManager` bean of a
+  fixtures over it on Oracle or Postgres, so one test, or one `PersistenceManager` bean of a
   test's Spring context, serves every store. Drivine's sample app and its own Spring tests use it so.
 
 Drivine's own Oracle tests are left out of a plain `./gradlew test`: the image is large and the
@@ -3263,6 +3269,8 @@ relationships with it.
   `CAST($list AS jsonb)` to read. A `json` or `jsonb` column comes back as a map, so
   `SELECT jsonb_build_object(…)` hydrates with `.transform(MyView::class.java)`. A function body in
   dollar quotes, `$fn$ … $fn$`, is left as it is.
+- A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle: a read is a query,
+  and a write a function made for the statement in `pg_temp`, applied whole or not at all.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
