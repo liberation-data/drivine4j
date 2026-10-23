@@ -94,6 +94,12 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a whole number is equal to the same number written with a fraction, in a pattern or a condition`() {
+        assertEquals(listOf("Keanu"), query("MATCH (p:Person {born: 1964.0}) RETURN p.name"))
+        assertEquals(listOf("Keanu"), query("MATCH (p:Person) WHERE p.born = \$born RETURN p.name", mapOf("born" to 1964.0)))
+    }
+
+    @Test
     fun `a relationship is read in its direction, or either way, and of any of its types`() {
         assertEquals(listOf("Carrie"), query("MATCH (:Person {name: 'Keanu'})-[:KNOWS]->(p) RETURN p.name"))
         assertEquals(listOf("Laurence"), query("MATCH (:Person {name: 'Keanu'})<-[:KNOWS]-(p) RETURN p.name"))
@@ -121,6 +127,8 @@ abstract class CypherQueryContract {
             listOf(listOf("Carrie", null), listOf("Hugo", null), listOf("Keanu", "Carrie"), listOf("Laurence", "Keanu")),
             query("MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.name, f.name ORDER BY p.name"),
         )
+        // One that binds nothing new keeps the row too.
+        assertEquals(listOf("Hugo"), query("MATCH (p:Person {name: 'Hugo'}) OPTIONAL MATCH (p)-[:KNOWS]->() RETURN p.name"))
     }
 
     @Test
@@ -138,6 +146,7 @@ abstract class CypherQueryContract {
             ),
         )
         assertEquals(listOf("Johnny Mnemonic", "The Matrix"), query("MATCH (m:Movie) RETURN m.title ORDER BY m.title LIMIT 2"))
+        assertEquals(listOf("Laurence", "Keanu"), query("MATCH (p:Person) WITH p ORDER BY p.name DESC LIMIT 2 RETURN p.name"))
         assertEquals(listOf("The Matrix Reloaded"), query("MATCH (m:Movie) RETURN m.title ORDER BY m.title SKIP \$offset LIMIT 5", mapOf("offset" to 2)))
         assertEquals(listOf("Neo", "Johnny", "Trinity", "Morpheus").sorted(), query("MATCH ()-[r:ACTED_IN]->() RETURN DISTINCT r.role ORDER BY r.role"))
     }
@@ -211,7 +220,7 @@ abstract class CypherQueryContract {
                 mapOf(
                     "whole" to 2.0, "last" to 3L, "byParam" to 2L, "head" to 1L, "joined" to listOf(1L, 2L, 3L, 4L), "appended" to listOf(1L, 2L, 3L),
                     "float" to 2.5, "integer" to 7L, "string" to "7", "in" to true, "starts" to true, "ends" to true, "holds" to true,
-                    "coalesced" to "x", "case" to "big",
+                    "coalesced" to "x", "case" to "big", "keyed" to 2L, "notInteger" to null, "notFloat" to null,
                 )
             ),
             query(
@@ -221,7 +230,8 @@ abstract class CypherQueryContract {
                     whole: 2.0, last: xs[-1], byParam: xs[${'$'}i], head: head(xs), joined: xs + [4], appended: [1, 2] + 3,
                     float: toFloat('2.5'), integer: toInteger('7.9'), string: toString(7), in: 2 IN xs,
                     starts: 'Keanu' STARTS WITH 'Ke', ends: 'Keanu' ENDS WITH 'nu', holds: 'Keanu' CONTAINS 'an',
-                    coalesced: coalesce(null, 'x'), case: CASE WHEN size(xs) > 2 THEN 'big' ELSE 'small' END
+                    coalesced: coalesce(null, 'x'), case: CASE WHEN size(xs) > 2 THEN 'big' ELSE 'small' END,
+                    keyed: {a: 2}['a'], notInteger: toInteger('seven'), notFloat: toFloat('2.5.1')
                 }
                 """,
                 mapOf("i" to 1),
@@ -236,6 +246,165 @@ abstract class CypherQueryContract {
                 """
             ).map { row -> (row as Map<*, *>).mapValues { (key, value) -> if (key == "distinct") (value as List<*>).map { it as String }.sorted() else value } },
         )
+    }
+
+    @Test
+    fun `quantifiers, xor, a case of a subject, powers, negation and text functions give a graph engine's values`() {
+        assertEquals(
+            listOf(
+                mapOf(
+                    "all" to true, "none" to false, "single" to true, "xor" to true, "case" to "two", "power" to 8.0,
+                    "negated" to -3L, "abs" to 2.5, "trimmed" to "a", "lower" to "ab", "unordered" to null,
+                )
+            ),
+            query(
+                """
+                WITH [1, 2, 3] AS xs
+                RETURN {
+                    all: all(x IN xs WHERE x > 0), none: none(x IN xs WHERE x > 2), single: single(x IN xs WHERE x > 2),
+                    xor: true XOR false, case: CASE size(xs) - 1 WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END,
+                    power: 2 ^ 3, negated: -(1 + 2), abs: abs(-2.5), trimmed: trim('  a '), lower: toLower('AB'), unordered: 1 < 'a'
+                }
+                """
+            ),
+        )
+        // A key or an index an expression gives: Oracle reads no key so.
+        if (pm.type == DatabaseType.ORACLE) return
+        assertEquals(listOf(listOf(2L, 3L)), query("WITH {a: 2} AS m, [1, 3] AS xs, 'a' AS k, 1 AS i RETURN [m[k], xs[i]]"))
+    }
+
+    @Test
+    fun `not, xor and is null take the whole condition they are given, and an index the whole list`() {
+        assertEquals(listOf("Carrie", "Hugo", "Laurence"), query("MATCH (p:Person) WHERE NOT p.name = 'Keanu' RETURN p.name ORDER BY p.name"))
+        assertEquals(listOf(9L), query("MATCH (n:CyTest) WHERE NOT n:Person:Movie RETURN count(*)"))
+        assertEquals(listOf("Carrie"), query("MATCH (p:Person) WHERE p.name = 'Keanu' XOR p.born > 1962 RETURN p.name"))
+        assertEquals(listOf(true), query("MATCH (p:Person {name: 'Keanu'}) RETURN (p.nick = 'x') IS NULL"))
+        assertEquals(listOf(listOf(1L, 2L, 3L)), query("RETURN [1] + [[2, 3]][0]"))
+    }
+
+    @Test
+    fun `collect of distinct maps and lists keeps each once`() {
+        val (maps, lists) = query(
+            "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->() RETURN [collect(DISTINCT {role: r.role}), collect(DISTINCT [r.role])]"
+        ).single() as List<*>
+        assertEquals(setOf(mapOf("role" to "Neo"), mapOf("role" to "Johnny")), (maps as List<*>).toSet())
+        assertEquals(2, maps.size)
+        assertEquals(setOf(listOf("Neo"), listOf("Johnny")), (lists as List<*>).toSet())
+        assertEquals(2, lists.size)
+    }
+
+    @Test
+    fun `collect leaves out a null, a list's item or a map's entry among them`() {
+        assertEquals(listOf(listOf(listOf(1L, 2L), 2L)), query("UNWIND [1, null, 2] AS x RETURN [collect(x), count(x)]"))
+        assertEquals(listOf(listOf(1L)), query("UNWIND [1, null, 1] AS x RETURN collect(DISTINCT x)"))
+        assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: null}, {b: 1}, {a: 2}] AS m RETURN collect(m.a)"))
+    }
+
+    @Test
+    fun `collect gathers the rows in the order a with gave them, within each group too`() {
+        assertEquals(listOf(listOf(1L, 2L, 3L)), query("UNWIND [3, 1, 2] AS x WITH x ORDER BY x RETURN collect(x)"))
+        assertEquals(listOf(listOf(3L, 2L, 1L)), query("UNWIND [3, 1, 2] AS x WITH x ORDER BY x DESC RETURN collect(x)"))
+        assertEquals(
+            listOf(listOf("The Matrix Reloaded", "The Matrix", "Johnny Mnemonic")),
+            query(
+                """
+                MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WITH p, m ORDER BY m.title DESC
+                WITH p.name AS name, collect(m.title) AS titles WHERE name = 'Keanu'
+                RETURN titles
+                """
+            ),
+        )
+    }
+
+    @Test
+    fun `a projection groups by a map, a list or a pattern comprehension it returns, and orders by an aggregate or an item's expression it does not return`() {
+        assertEquals(
+            listOf(listOf(mapOf("name" to "Keanu"), 3L), listOf(mapOf("name" to "Carrie"), 2L), listOf(mapOf("name" to "Laurence"), 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN {name: p.name} AS who, count(*) AS c ORDER BY c DESC"),
+        )
+        assertEquals(
+            listOf(listOf(mapOf("name" to "Keanu"), 3L), listOf(mapOf("name" to "Carrie"), 2L), listOf(mapOf("name" to "Laurence"), 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name} AS who, count(m) AS c ORDER BY c DESC"),
+        )
+        assertEquals(
+            listOf(listOf(listOf("Keanu"), 1L), listOf(listOf<Any?>(), 2L), listOf(listOf("Carrie"), 3L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN [(p)-[:KNOWS]->(f) | f.name] AS knows, count(*) AS c ORDER BY c"),
+        )
+        // Gathered in the order the rows came in, though the key is worked out before it is grouped by.
+        assertEquals(
+            listOf(listOf(0L, listOf("Hugo", "Carrie")), listOf(1L, listOf("Laurence", "Keanu"))),
+            query("MATCH (p:Person) WITH p ORDER BY p.name DESC RETURN size([(p)-[:KNOWS]->(f) | f]) AS k, collect(p.name) AS names ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf("CARRIE", 1L), listOf("HUGO", 1L), listOf("KEANU", 1L), listOf("LAURENCE", 1L)),
+            query("MATCH (p:Person) RETURN toUpper(toLower(trim(toUpper(toLower(trim(toUpper(p.name))))))) AS k, count(*) AS c ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf("Keanu", 3L), listOf("Carrie", 2L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS n, count(*) AS c ORDER BY min(m.released), n"),
+        )
+        // An order of an expression of an item, which is no item.
+        assertEquals(
+            listOf(listOf(mapOf("name" to "Carrie"), 2L), listOf(mapOf("name" to "Keanu"), 3L), listOf(mapOf("name" to "Laurence"), 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN {name: p.name} AS who, count(*) AS c ORDER BY who.name"),
+        )
+        assertEquals(
+            listOf(listOf(null, 1L), listOf(1967L, 1L), listOf(1964L, 1L), listOf(1961L, 1L)),
+            query("MATCH (p:Person) RETURN p.born AS b, count(*) AS c ORDER BY b + 1 DESC"),
+        )
+    }
+
+    @Test
+    fun `a projection groups by a key of a parameter or a subquery, kept distinct, paged, filtered after, or over an optional match`() {
+        assertEquals(
+            listOf(listOf("Carrie!", 2L), listOf("Keanu!", 3L), listOf("Laurence!", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name + \$x AS k, count(*) AS c ORDER BY k", mapOf("x" to "!")),
+        )
+        assertEquals(
+            listOf(listOf(listOf("Keanu"), 3L), listOf(listOf<Any?>(), 3L)),
+            query(
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN [x IN \$names WHERE x = p.name] AS k, count(*) AS c ORDER BY size(k) DESC",
+                mapOf("names" to listOf("Keanu", "Hugo")),
+            ),
+        )
+        assertEquals(
+            listOf(listOf(listOf<Any?>(), 2L)),
+            query(
+                "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT [(p)-[:KNOWS]->(f) | f.name] AS knows, count(*) AS c ORDER BY c DESC SKIP \$s LIMIT \$l",
+                mapOf("s" to 1, "l" to 1),
+            ),
+        )
+        assertEquals(
+            listOf(mapOf("k" to listOf("Carrie"), "c" to 3L), mapOf("k" to listOf<Any?>(), "c" to 2L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH [(p)-[:KNOWS]->(f) | f.name] AS knows, count(*) AS c WHERE c > 1 RETURN {k: knows, c: c} ORDER BY c DESC"),
+        )
+        assertEquals(
+            listOf(listOf(listOf("Keanu"), 1L), listOf(listOf<Any?>(), 2L), listOf(listOf("Carrie"), 3L)),
+            query("MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m) RETURN [(p)-[:KNOWS]->(f) | f.name] AS knows, count(m) AS c ORDER BY c, size(knows)"),
+        )
+    }
+
+    @Test
+    fun `min and max of values of several kinds order them as Cypher does`() {
+        assertEquals(listOf(listOf("a", 2.5)), query("UNWIND [1, 'a', 2.5] AS x RETURN [min(x), max(x)]"))
+        assertEquals(listOf(listOf(true, 1L)), query("UNWIND [true, 1] AS x RETURN [min(x), max(x)]"))
+        assertEquals(listOf(listOf(listOf(1L), 1L)), query("UNWIND [[1], 'a', 1] AS x RETURN [min(x), max(x)]"))
+        assertEquals(listOf(listOf("a", "b")), query("UNWIND [null, 'b', 'a'] AS x RETURN [min(x), max(x)]"))
+    }
+
+    @Test
+    fun `an order puts null last, a map's null entry among them, and first where it descends`() {
+        assertEquals(listOf(1L, 2L, null), query("UNWIND [{a: 2}, {a: null}, {a: 1}] AS m RETURN m.a ORDER BY m.a"))
+        assertEquals(listOf(null, 2L, 1L), query("UNWIND [{a: 2}, {a: null}, {a: 1}] AS m RETURN m.a ORDER BY m.a DESC"))
+        assertEquals(
+            listOf(mapOf("born" to 1961L), mapOf("born" to 1964L), mapOf("born" to 1967L), mapOf("born" to null)),
+            query("MATCH (p:Person) RETURN DISTINCT p {.born} AS b ORDER BY b.born"),
+        )
+    }
+
+    @Test
+    fun `a negated or absolute floating-point number stays one`() {
+        assertEquals(listOf(listOf(-2.0, 2.0, 2.5, -2L, 2L)), query("RETURN [-2.0, abs(-2.0), abs(-2.5), -(2), abs(-2)]"))
     }
 
     @Test
@@ -272,6 +441,40 @@ abstract class CypherQueryContract {
             ),
         )
         assertEquals(listOf(14L), query("RETURN reduce(dot = 0, i IN range(0, size(\$v) - 1) | dot + \$v[i] * \$v[i])", mapOf("v" to listOf(1, 2, 3))))
+    }
+
+    @Test
+    fun `unwind of a value that is no list gives it as one row, and of null no rows`() {
+        assertEquals(listOf(5L), query("UNWIND 5 AS x RETURN x"))
+        assertEquals(listOf("a"), query("UNWIND \$v AS x RETURN x", mapOf("v" to "a")))
+        assertEquals(emptyList(), query("UNWIND null AS x RETURN x"))
+        assertEquals(emptyList(), query("UNWIND \$v AS x RETURN x", mapOf("v" to null)))
+        assertEquals(listOf(1L, null), query("UNWIND [1, null] AS x RETURN x"))
+    }
+
+    @Test
+    fun `null is equal to nothing, itself included`() {
+        assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [null = null, null <> null, 1 = null, 'a' <> null]"))
+        assertEquals(listOf(null, null), query("UNWIND [1, null] AS x RETURN x = null"))
+        assertEquals(emptyList(), query("MATCH (p:Person {name: 'Keanu'}) WHERE NOT (p.name = null) RETURN p.name"))
+        assertEquals(listOf("other"), query("RETURN CASE null WHEN null THEN 'null' ELSE 'other' END"))
+    }
+
+    @Test
+    fun `a map projection gives what it selects over every property, and a relationship's type`() {
+        assertEquals(
+            listOf(listOf(mapOf("name" to "Laurence", "born" to 1L, "first" to "Keanu"), mapOf("name" to "Laurence", "first" to "Keanu"), "KNOWS")),
+            query("MATCH (p:Person {name: 'Laurence'})-[r]->(k:Person) WITH p, r, k.name AS first RETURN [p {.*, born: 1, first}, p {.name, first}, type(r)]"),
+        )
+    }
+
+    @Test
+    fun `a map projection, the keys and a list comprehension of null are null`() {
+        assertEquals(
+            listOf(listOf(null, null, null, null)),
+            query("MATCH (p:Person {name: 'Hugo'}) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN [f {.name}, f {.*, x: 1}, keys(f), [t IN p.tags | t]]"),
+        )
+        assertEquals(listOf(null), query("RETURN [x IN \$v | x]", mapOf("v" to null)))
     }
 
     @Test
@@ -369,6 +572,7 @@ abstract class CypherQueryContract {
             query("MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN*2]-(:Person {name: 'Carrie'}) WHERE r[0].role = 'Neo' AND r[1].role = 'Trinity' RETURN [x IN r | x.role]").distinct(),
         )
     }
+
 
     @Test
     fun `cypher that is not compiled yet is refused by name`() {

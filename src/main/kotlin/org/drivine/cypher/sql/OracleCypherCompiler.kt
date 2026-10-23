@@ -77,7 +77,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** A merge of [map] over [props] that changes nothing: each of its entries is there, with an equal value. */
     override fun containsAll(props: String, map: String) = shared(props) { (p) -> "JSON_EQUAL(JSON_MERGEPATCH($p, $map RETURNING JSON), $p)" }
 
-    override fun hasLabel(labels: String, label: String) = "JSON_EXISTS($labels, ${literal("\$[*]?(@ == ${quoted(label)})")})"
+    override fun hasLabel(labels: String, label: String) = "JSON_EXISTS($labels, ${literal("\$[*]?(@ == ${OracleSql.quoted(label)})")})"
 
     /**
      * The first label as the index over labels answers it, and the rest by the labels' text: when two tests
@@ -85,7 +85,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * and not yet committed.
      */
     override fun hasLabels(labels: String, all: List<String>) =
-        (listOf(hasLabel(labels, all.first())) + all.drop(1).map { "INSTR(JSON_SERIALIZE($labels), ${literal(quoted(it))}) > 0" }).joinToString(" AND ")
+        (listOf(hasLabel(labels, all.first())) + all.drop(1).map { "INSTR(JSON_SERIALIZE($labels), ${literal(OracleSql.quoted(it))}) > 0" }).joinToString(" AND ")
 
     /**
      * A list that holds a subquery is read from a lateral view first: a subquery in `JSON_TABLE`'s argument
@@ -104,11 +104,13 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * `JSON_ARRAYAGG` leaves nulls out, and takes no `DISTINCT`: distinct values are gathered as their text,
      * which `LISTAGG` keeps once each.
      */
-    override fun collect(value: String, distinct: Boolean) =
+    override fun collect(value: String, distinct: Boolean, order: String?) =
         if (distinct) "JSON('[' || LISTAGG(DISTINCT JSON_SERIALIZE($value), ',') WITHIN GROUP (ORDER BY JSON_SERIALIZE($value)) || ']')"
-        else "COALESCE(JSON_ARRAYAGG($value RETURNING JSON), JSON('[]'))"
+        else "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} RETURNING JSON), JSON('[]'))"
 
-    override fun extreme(value: String, min: Boolean) = "${if (min) "MIN" else "MAX"}(${nullIfJsonNull(value)})"
+    /** Of the values of the kind that comes first, or last, as [kindOrder] orders them. */
+    override fun extreme(value: String, min: Boolean) =
+        "${if (min) "MIN" else "MAX"}(${nullIfJsonNull(value)}) KEEP (DENSE_RANK FIRST ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"} NULLS LAST)"
 
     /** In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. */
     override fun arithmetic(a: String, b: String, operator: String) =
@@ -141,7 +143,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
         "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"
         "last" -> "JSON_QUERY($json, '\$[last]' RETURNING JSON)"
-        "abs" -> "JSON_SCALAR(ABS(${number(json)}))"
+        "abs" -> "CASE WHEN ${kind(json)} = 'double' THEN JSON_SCALAR(ABS(TO_BINARY_DOUBLE(${number(json)}))) ELSE JSON_SCALAR(ABS(${number(json)})) END"
         "keys" -> keys(json)
         else -> null
     }
@@ -150,8 +152,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * A JSON path reads no map's keys, so they are read from the map's data guide: each path it lists one step
      * from the top is a key, written `$.name`, or `$."…"` as JSON writes a string where the name is any other.
      * The map is bound first: the data guide's query reads a column of a row outside it, and not an expression of one.
+     * Null has no keys, and gives null.
      */
-    private fun keys(json: String): String = bound(json) { (map) -> keysOf(map) }
+    private fun keys(json: String): String = bound(json) { (map) -> "CASE WHEN ${kind(map)} = 'object' THEN ${keysOf(map)} END" }
 
     private fun keysOf(json: String): String {
         val key = """CASE WHEN SUBSTR(d.p, 3, 1) = '"' THEN JSON_VALUE(JSON(SUBSTR(d.p, 3)), '${'$'}') ELSE SUBSTR(d.p, 3) END"""
@@ -268,13 +271,10 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun merged(props: String, map: String) = "JSON_MERGEPATCH($props, $map RETURNING JSON)"
 
-    override fun withoutLabel(labels: String, label: String) = "JSON_TRANSFORM($labels, REMOVE ${literal("\$[*]?(@ == ${quoted(label)})")})"
+    override fun withoutLabel(labels: String, label: String) = "JSON_TRANSFORM($labels, REMOVE ${literal("\$[*]?(@ == ${OracleSql.quoted(label)})")})"
 
     /** The kind of the JSON [json] as Oracle names it, a floating-point number by its own name. */
     private fun kind(json: String) = "JSON_VALUE($json, '\$.type()')"
-
-    /** [text] as JSON writes a string. */
-    private fun quoted(text: String) = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
     private companion object {
         /** The cursor a procedure returns its rows by. */

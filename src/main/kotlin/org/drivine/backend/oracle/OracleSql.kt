@@ -102,7 +102,7 @@ internal object OracleSql {
     }
 
     /** [text] as JSON writes a string. */
-    private fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    internal fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
     /**
      * Whether the node [alias] carries every one of [labels]; null when there are none to carry.

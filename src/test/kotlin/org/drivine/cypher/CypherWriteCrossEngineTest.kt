@@ -95,6 +95,11 @@ abstract class CypherWriteContract {
         // A relationship merged between two nodes is made once.
         repeat(2) { query("MATCH (x:CyWrite {key: 'x'}), (y:CyWrite {key: 'y'}) MERGE (x)-[r:NEXT]->(y) ON CREATE SET r.made = true") }
         assertEquals(listOf(true), query("MATCH (:CyWrite {key: 'x'})-[r:NEXT]->(:CyWrite {key: 'y'}) RETURN r.made"))
+        // One merged either way is found either way, and made from the pattern's earlier node.
+        query("MATCH (x:CyWrite {key: 'x'}), (y:CyWrite {key: 'y'}) MERGE (y)-[:NEXT]-(x)")
+        assertEquals(listOf(1L), query("MATCH (:CyWrite)-[r:NEXT]->(:CyWrite) RETURN count(r)"))
+        query("MATCH (x:CyWrite {key: 'x'}), (y:CyWrite {key: 'y'}) MERGE (y)-[:BACK]-(x)")
+        assertEquals(listOf("y"), query("MATCH (a:CyWrite)-[:BACK]->(:CyWrite) RETURN a.key"))
     }
 
     @Test
@@ -135,6 +140,25 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `set and remove write a relationship's properties, and a node's may be set from a relationship's properties`() {
+        query("CREATE (:CyWrite {name: 'a'})-[:R {x: 1, y: 2}]->(:CyWrite {name: 'b'})")
+        assertEquals(listOf(mapOf("x" to 1L, "z" to 3L)), query("MATCH (:CyWrite)-[r:R]->() SET r += {y: null, z: 3} RETURN properties(r)"))
+        assertEquals(listOf(mapOf("w" to 4L)), query("MATCH (:CyWrite)-[r:R]->() SET r = {w: 4, gone: null} RETURN properties(r)"))
+        assertEquals(listOf(mapOf("v" to 5L)), query("MATCH (:CyWrite)-[r:R]->() REMOVE r.w SET r.v = 5 RETURN properties(r)"))
+        assertEquals(listOf(mapOf("v" to 5L)), query("MATCH (a:CyWrite {name: 'a'})-[r:R]->() SET a = properties(r) RETURN properties(a)"))
+    }
+
+    @Test
+    fun `a write's return is paged by parameters, and a delete of what an optional match did not find deletes nothing`() {
+        assertEquals(
+            listOf(2L),
+            query("UNWIND [3, 1, 2] AS i CREATE (n:CyWrite {i: i}) RETURN n.i ORDER BY n.i SKIP \$from LIMIT \$most", mapOf("from" to 1, "most" to 1)),
+        )
+        assertEquals(listOf(1L), query("MATCH (n:CyWrite {i: 1}) OPTIONAL MATCH (n)-[r:NONE]->() DELETE r RETURN n.i"))
+        assertEquals(listOf(3L), query("MATCH (n:CyWrite) RETURN count(n)"))
+    }
+
+    @Test
     fun `delete takes a relationship, and a node with no relationships, and detach delete a node with its relationships`() {
         query("CREATE (:CyWrite {name: 'a'})-[:R]->(:CyWrite {name: 'b'})-[:R]->(:CyWrite {name: 'c'})")
         // A node with relationships is not deleted, and the statement leaves nothing it did behind.
@@ -167,6 +191,54 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `rows keep their order through writes, and a with between writes orders, filters and counts them`() {
+        assertEquals(listOf("c", "a", "b"), query("UNWIND ['c', 'a', 'b'] AS k CREATE (n:CyWrite {k: k}) SET n.seen = true RETURN n.k"))
+        assertEquals(
+            listOf("c", "b"),
+            query("MATCH (n:CyWrite) WITH n ORDER BY n.k DESC WHERE n.k <> 'a' SET n.last = true RETURN n.k"),
+        )
+        assertEquals(
+            listOf(listOf(3L, 2L)),
+            query("MATCH (n:CyWrite) SET n.x = 1 WITH count(n) AS c CREATE (m:CyWrite {c: c}) WITH m MATCH (l:CyWrite {last: true}) WITH m.c AS c, count(l) AS l RETURN [c, l]"),
+        )
+        // A match that finds nothing leaves no row to write for.
+        assertEquals(emptyList(), query("MATCH (n:CyWrite {k: 'none'}) CREATE (n)-[:R]->(:CyWrite) RETURN n"))
+        assertEquals(listOf(4L), query("MATCH (n:CyWrite) RETURN count(n)"))
+    }
+
+    @Test
+    fun `a write before or after a projection that groups by a key of a parameter or a subquery`() {
+        assertEquals(
+            listOf(listOf("a!", 2L), listOf("b!", 1L)),
+            query("UNWIND ['a', 'b', 'a'] AS k CREATE (n:CyWrite {k: k}) WITH n RETURN n.k + \$x AS k, count(*) AS c ORDER BY k", mapOf("x" to "!")),
+        )
+        query("MATCH (a:CyWrite {k: 'b'}) CREATE (a)-[:R]->(:CyWrite {k: 'c'})")
+        assertEquals(
+            listOf(listOf(listOf<Any?>(), 3L), listOf(listOf("c"), 1L)),
+            query(
+                """
+                MATCH (n:CyWrite)
+                WITH [(n)-[:R]->(m) | m.k] AS ks, count(*) AS c
+                CREATE (t:CyWrite:Tally {c: c})
+                RETURN ks, t.c ORDER BY t.c DESC
+                """
+            ),
+        )
+    }
+
+    @Test
+    fun `a merge of a whole pattern makes all of it once, and one found twice is a row for each`() {
+        repeat(2) { query("MERGE (a:CyWrite {k: 'a'})-[:R]->(b:CyWrite {k: 'b'}) ON CREATE SET a.made = 1 ON MATCH SET a.made = a.made + 1") }
+        assertEquals(listOf(listOf(2L, 1L)), query("MATCH (a:CyWrite {k: 'a'})-[r:R]->(:CyWrite {k: 'b'}) WITH a.made AS made, count(r) AS r RETURN [made, r]"))
+        query("MATCH (a:CyWrite {k: 'a'}) CREATE (a)-[:R]->(:CyWrite {k: 'b'})")
+        assertEquals(
+            listOf(listOf(4L, 2L)),
+            query("MERGE (a:CyWrite {k: 'a'})-[r:R]->(b:CyWrite {k: 'b'}) ON MATCH SET a.made = a.made + 1, b.hit = true WITH a.made AS made, count(b) AS found RETURN [made, found]"),
+        )
+        assertEquals(listOf(2L), query("MATCH (b:CyWrite {hit: true}) RETURN count(b)"))
+    }
+
+    @Test
     fun `a statement of hundreds of creates, each naming nodes made before it, makes them all`() {
         val clauses = (0 until 300).flatMap { i ->
             listOf("CREATE (n$i:CyWrite {i: $i})") + if (i > 0) listOf("CREATE (n${i - 1})-[:NEXT]->(n$i)") else emptyList()
@@ -185,6 +257,20 @@ abstract class CypherWriteContract {
         assertTrue(token.length == 16 && token != "aaaaaaaaaaaaaaaa" && links == "bbbbbbbbbbbbbbbb", "$token:$links")
         assertEquals(listOf(mapOf("id" to 1L, Stamps.PROPERTY to "$token:$links")), query("MATCH (n:CyWrite {id: 1}) RETURN properties(n)"))
         query("MATCH (n:CyWrite {id: 1}) REMOVE n.$stamp")
+        assertEquals(listOf(null), query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp"))
+    }
+
+    @Test
+    fun `drivine's stamp in a map a node is made from, replaced by or added from is written as the node's property is`() {
+        val stamp = Stamps.QUOTED
+        query("CREATE (:CyWrite \$props)", mapOf("props" to mapOf("id" to 1, Stamps.PROPERTY to "a:b")))
+        assertEquals(listOf("a:b"), query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp"))
+        query("MATCH (n:CyWrite {id: 1}) SET n += \$more", mapOf("more" to mapOf("x" to 1)))
+        assertEquals(listOf("a:b"), query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp"))
+        query("MATCH (n:CyWrite {id: 1}) SET n += \$more", mapOf("more" to mapOf(Stamps.PROPERTY to "c:d")))
+        assertEquals(listOf(mapOf("id" to 1L, "x" to 1L, Stamps.PROPERTY to "c:d")), query("MATCH (n:CyWrite {id: 1}) RETURN properties(n)"))
+        query("MATCH (n:CyWrite {id: 1}) SET n = {id: 1}")
+        assertEquals(listOf(mapOf("id" to 1L)), query("MATCH (n:CyWrite {id: 1}) RETURN properties(n)"))
         assertEquals(listOf(null), query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp"))
     }
 
@@ -249,6 +335,24 @@ class CypherWritePostgresTest : CypherWriteContract() {
     override val compiles = true
 
     override fun clear() = PostgresTestDatabase.clear(manager)
+
+    @Test
+    fun `a write in a transaction rolled back leaves nothing, and runs again after`() {
+        val connection = PostgresTestDatabase.connections(manager).connect()
+        fun query(cypher: String) = connection.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        connection.startTransaction()
+        try {
+            query("CREATE (:CyWrite {name: 'Ada'})")
+            assertEquals(listOf("Ada"), query("MATCH (n:CyWrite) RETURN n.name"))
+        } finally {
+            connection.rollbackTransaction()
+            connection.release()
+        }
+        assertEquals(listOf(0L), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) RETURN count(n)"))))
+        // The function the write was compiled to went with the transaction, and is made again.
+        pm.query(QuerySpecification.withStatement(CypherStatement("CREATE (:CyWrite {name: 'Ada'})")))
+        assertEquals(listOf(1L), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) RETURN count(n)"))))
+    }
 }
 
 @OracleTests

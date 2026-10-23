@@ -51,7 +51,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun propertyOf(json: String, key: String) = "($json -> ${literal(key)})"
 
-    override fun element(json: String, index: String) = "$json -> CAST($index #>> '{}' AS int)"
+    override fun element(json: String, index: String) = "($json -> CAST($index #>> '{}' AS int))"
 
     override fun keyed(json: String, key: String) = "$json -> ($key #>> '{}')"
 
@@ -67,12 +67,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun aggregateList(value: String, order: String?) = "COALESCE(json_agg($value${order?.let { " ORDER BY $it" }.orEmpty()}), '[]'::json)"
 
-    override fun collect(value: String, distinct: Boolean) =
-        "COALESCE(json_agg(${if (distinct) "DISTINCT " else ""}$value) FILTER (WHERE $value IS NOT NULL), '[]'::json)"
+    /** Distinct values are in no order: Postgres orders a `DISTINCT` aggregate by its argument alone. */
+    override fun collect(value: String, distinct: Boolean, order: String?) =
+        "COALESCE(json_agg(${if (distinct) "DISTINCT $value" else "$value${order?.let { " ORDER BY $it" }.orEmpty()}"}) FILTER (WHERE $value IS NOT NULL), '[]'::json)"
 
     // Postgres has no min or max of jsonb, which orders: the first of the values in order is the least.
     override fun extreme(value: String, min: Boolean) =
-        "(array_agg($value ORDER BY $value ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
+        "(array_agg($value ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"}, $value ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
 
     override fun add(a: String, b: String) =
         "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN to_jsonb(${number(a)} + ${number(b)}) " +
@@ -90,20 +91,24 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun containsText(a: String, b: String) = "strpos($a, $b) > 0"
 
     override fun function(name: String, json: String): String? = when (name) {
-        "keys" -> "(SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb) FROM jsonb_object_keys($json) k)"
+        "keys" -> shared(json) { (x) -> "CASE WHEN jsonb_typeof($x) = 'object' THEN (SELECT COALESCE(jsonb_agg(k ORDER BY k), '[]'::jsonb) FROM jsonb_object_keys($x) k) END" }
         "size" -> "CASE jsonb_typeof($json) WHEN 'array' THEN to_jsonb(jsonb_array_length($json)) WHEN 'string' THEN to_jsonb(length($json #>> '{}')) END"
         "tolower" -> "to_jsonb(lower(${text(json)}))"
         "toupper" -> "to_jsonb(upper(${text(json)}))"
         "trim" -> "to_jsonb(btrim(${text(json)}))"
         "tostring" -> "to_jsonb($json #>> '{}')"
-        "tointeger" -> "to_jsonb(trunc(CAST(NULLIF($json #>> '{}', '') AS numeric)))"
-        "tofloat" -> "to_jsonb(${float("NULLIF($json #>> '{}', '')")})"
+        "tointeger" -> "to_jsonb(trunc(${numeric(json)}))"
+        "tofloat" -> "to_jsonb(${float(numeric(json))})"
         "head" -> "($json -> 0)"
         "last" -> "($json -> -1)"
         "abs" -> "to_jsonb(abs(${number(json)}))"
         else -> null
     }
 
+    /** The JSON [json] as a `numeric`, where it is a number or a text that writes one: null for any other text, as Cypher converts it. */
+    private fun numeric(json: String) = shared(json) { (x) ->
+        "CASE WHEN jsonb_typeof($x) = 'number' OR ($x #>> '{}') ~ ${literal(NUMERIC_TEXT)} THEN CAST($x #>> '{}' AS numeric) END"
+    }
     override fun page(skip: String?, limit: String?) = listOfNotNull(skip?.let { "OFFSET $it" }, limit?.let { "LIMIT $it" })
 
     override fun ids(id: String) = "ARRAY[$id]"
@@ -218,4 +223,9 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun merged(props: String, map: String) = "jsonb_strip_nulls($props || CAST($map AS jsonb))"
 
     override fun withoutLabel(labels: String, label: String) = "($labels - ${literal(label)})"
+
+    private companion object {
+        /** A text Postgres reads as a `numeric`, spaces around it allowed. */
+        const val NUMERIC_TEXT = """^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$"""
+    }
 }

@@ -15,8 +15,8 @@ import java.util.Optional
  * a manager that sends such a statement that is Cypher to the store as Cypher, which compiles it to its
  * SQL, as it compiles any Cypher statement; any other statement, an object manager's among them, goes
  * as it is. A statement is told for Cypher by what it opens with: a pattern (`MATCH`, `OPTIONAL MATCH`,
- * `CREATE`, `MERGE`), `UNWIND`, `RETURN`, or a `//` comment, which SQL has none of. One that opens with
- * `WITH` is taken for a common table expression, and is SQL.
+ * `CREATE`, `MERGE`), named as a path or not, `UNWIND`, `RETURN`, or a `//` comment, which SQL has none
+ * of. One that opens with `WITH` is taken for a common table expression, and is SQL.
  */
 object SqlCypherFixtures {
 
@@ -76,9 +76,9 @@ object SqlCypherFixtures {
     private const val CLEAR = "MATCH (n) DETACH DELETE n"
 
     /**
-     * A statement that opens with a pattern, `UNWIND` or `RETURN`, after any `//` comments: `CREATE INDEX` is
-     * the store's own, and so is one that opens with `WITH`, which SQL names a common table expression by.
-     * SQL has no `//` comment, so a statement that opens with one is Cypher.
+     * A statement that opens with a pattern, named as a path (`MATCH p = (…)`) or not, `UNWIND`, `RETURN`, or
+     * a `//` comment, which SQL has none of: `CREATE INDEX` is the store's own, and so is one that opens with
+     * `WITH`, which SQL names a common table expression by.
      */
-    private val CYPHER = Regex("^(?:\\s|//[^\\n]*)*(?:(?:OPTIONAL\\s+MATCH|MATCH|CREATE|MERGE)\\s*\\(|UNWIND\\s|RETURN\\s)", RegexOption.IGNORE_CASE)
+    private val CYPHER = Regex("^\\s*(?://|(?:OPTIONAL\\s+MATCH|MATCH|CREATE|MERGE)\\s*(?:\\w+\\s*=\\s*)?\\(|UNWIND\\s|RETURN\\s)", RegexOption.IGNORE_CASE)
 }

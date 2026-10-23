@@ -197,6 +197,21 @@ class JdbcConnectionTest {
     }
 
     @Test
+    fun `a Cypher statement is compiled over the tables of the connection's graph, on a store whose SQL is compiled to`() {
+        JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES, "people")
+            .query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc).prepareStatement(prepared.capture())
+        assertTrue("people_node" in prepared.value, prepared.value)
+
+        val refused = assertFailsWith<DrivineException> {
+            JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.NEO4J).query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        }
+        assertEquals("A Cypher statement does not run on NEO4J yet.", refused.message)
+        verify(jdbc).prepareStatement(anyString())
+    }
+
+    @Test
     fun `a transaction is opened once, and committed or rolled back only when open`() {
         assertFailsWith<DrivineException> { connection.commitTransaction() }
         assertFailsWith<DrivineException> { connection.rollbackTransaction() }

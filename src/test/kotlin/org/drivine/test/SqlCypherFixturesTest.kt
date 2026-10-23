@@ -50,8 +50,13 @@ class SqlCypherFixturesTest {
         fixtures.optionalGetOne(statement("UNWIND [1, 2] AS x RETURN x"))
         fixtures.executeBatch(listOf(statement("RETURN 1")))
         fixtures.queryBatch(listOf(statement("MATCH (h) RETURN h")))
+        // SQL has no `//` comment, so one that opens with it is Cypher, whatever follows.
+        fixtures.query(statement("// the names\nWITH ['ada'] AS names UNWIND names AS n RETURN n"))
+        // A pattern named as a path opens with its name: no SQL statement opens so.
+        fixtures.query(statement("MATCH p = (h:Human)-->() RETURN p"))
+        fixtures.execute(statement("CREATE p=(:Human)-[:KNOWS]->(:Human)"))
 
-        assertEquals(List(7) { QueryLanguage.CYPHER }, sent.map { it.first })
+        assertEquals(List(10) { QueryLanguage.CYPHER }, sent.map { it.first })
     }
 
     @Test
@@ -61,6 +66,7 @@ class SqlCypherFixturesTest {
             "CREATE INDEX g_ix ON g_node (nid)",
             "WITH roots AS (SELECT nid FROM g_node) SELECT COUNT(*) FROM roots",
             "BEGIN NULL; END;",
+            "MERGE INTO g_node t USING (SELECT 1 nid FROM dual) s ON (t.nid = s.nid) WHEN MATCHED THEN UPDATE SET t.stamp = NULL",
         )
         sql.forEach { fixtures.execute(statement(it)) }
         fixtures.query(QuerySpecification.withStatement(sqlStatement("MATCH (h) RETURN h")))
@@ -91,6 +97,13 @@ class SqlCypherFixturesTest {
         assertEquals(listOf<Any?>("row"), SqlCypherFixtures.run(store, "\n  MATCH (h:Human) RETURN h.id  \n"))
 
         assertEquals(listOf(QueryLanguage.CYPHER to "MATCH (h:Human) RETURN h.id"), sent)
+    }
+
+    @Test
+    fun `a store that speaks SQL is given its Cypher statements as Cypher`() {
+        SqlCypherFixtures.forStore(store).query(statement("MATCH (h) RETURN h"))
+
+        assertEquals(listOf(QueryLanguage.CYPHER to "MATCH (h) RETURN h"), sent)
     }
 
     @Test

@@ -62,7 +62,7 @@ sealed interface Expression {
     /** A slice of a list, `subject[from..to]`; a bound left out is open. */
     data class Slice(val subject: Expression, val from: Expression?, val to: Expression?) : Expression
 
-    /** A function, by its name in lower case with its namespace (`toLower`, `apoc.text.join`). */
+    /** A function, by its name as written with its namespace (`toLower`, `apoc.text.join`): Cypher takes a function's name in any case. */
     data class Function(val name: String, val distinct: Boolean, val arguments: List<Expression>) : Expression
 
     /** `count(*)`. */
