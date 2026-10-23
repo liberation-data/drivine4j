@@ -409,6 +409,18 @@ abstract class StatelessSaveSoundnessContract {
         val itself = assertFailsWith<IllegalArgumentException> { stateless.save(loaded, from = loaded) }
         assertContains(itself.message.orEmpty(), "from is the Finding saved itself")
 
+        val memo = Memo("m1", "one")
+        val noStampField = assertFailsWith<IllegalArgumentException> { stateless.save(memo.copy(text = "two"), from = memo) }
+        assertContains(noStampField.message.orEmpty(), "Memo has no @NodeStamp field")
+        assertNull(stateless.load<Memo>("m1"), "nothing was written")
+
+        // A view is refused for its root's class, which is what would carry the stamp.
+        val view = MemoView(memo)
+        val noRootStampField = assertFailsWith<IllegalArgumentException> { stateless.save(view.copy(people = listOf(Human("h1", "Ada"))), from = view) }
+        assertContains(noRootStampField.message.orEmpty(), "Memo has no @NodeStamp field, so a save of a MemoView has no stamp")
+        assertNull(stateless.load<Memo>("m1"), "nothing was written")
+        assertNull(stateless.load<Human>("h1"), "nothing was written")
+
         assertEquals(listOf("first"), stateless.load<Finding>("f1")?.sources, "nothing was written")
     }
 
