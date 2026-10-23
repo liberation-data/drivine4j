@@ -13,7 +13,7 @@ package org.drivine.schema
  *   constraint, whose own index takes its place. Only Neo4j reports one in the way: there the
  *   constraint brings its own index, while on FalkorDB the plain index is what the constraint needs.
  */
-data class SchemaPolicy(
+data class SchemaPolicy @JvmOverloads constructor(
     val mode: SchemaMode = SchemaMode.FAIL_FAST,
     val recreateOnDrift: Boolean = false,
     val recreateOnStartup: Boolean = false,

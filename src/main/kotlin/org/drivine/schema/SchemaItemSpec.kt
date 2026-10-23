@@ -7,6 +7,31 @@ package org.drivine.schema
  * Specs are pure data — they carry no engine-specific syntax. The per-engine [SchemaGrammar]
  * translates a spec into DDL, and [SchemaItemInfo] describes what actually exists.
  *
+ * ### Adding an option
+ *
+ * Specs, their [EngineVectorOptions] and [SchemaPolicy] are constructed by consumers' compiled code,
+ * often a library built against another Drivine, so a new option must leave in place every
+ * constructor that code links to:
+ *
+ * - Add the option as the last parameter, with a default. Never reorder, retype or remove a parameter.
+ * - Keep `@JvmOverloads` on every constructor, convenience ones included. Each arity is then its own
+ *   constructor, so a Java caller, or a Kotlin one that passed every argument, still links.
+ *   `JavaSchemaSpecConstructorsTest` builds each arity from Java; add the new one there.
+ * - A Kotlin caller that left a default out links instead to the synthetic
+ *   `<init>(…, int mask, DefaultConstructorMarker)`, whose descriptor grows with every parameter and
+ *   which `@JvmOverloads` does not keep. Keep it with a hidden constructor of the previous synthetic
+ *   signature that forwards to the new one, one per released shape (bit `i` of the mask is set when
+ *   parameter `i` was left out):
+ *
+ * ```kotlin
+ * @Deprecated("Binary compatibility with callers compiled before newOption", level = DeprecationLevel.HIDDEN)
+ * constructor(label: String, properties: List<String>, name: String?, mask: Int, marker: DefaultConstructorMarker?) :
+ *     this(label, properties, if (mask and 4 != 0) null else name)
+ * ```
+ *
+ * The generated `copy` has the same synthetic shape and no such remedy, so a Kotlin caller of `copy`
+ * still needs the Drivine it was compiled against.
+ *
  * @see IndexSpec
  * @see ConstraintSpec
  */

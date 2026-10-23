@@ -9,13 +9,14 @@ package org.drivine.schema
  * @param properties one (single-property) or more (composite) properties
  * @param name explicit index name; null derives one from label and properties
  */
-data class RangeIndexSpec(
+data class RangeIndexSpec @JvmOverloads constructor(
     override val label: String,
     override val properties: List<String>,
     override val name: String? = null,
 ) : IndexSpec {
 
     /** Single-property convenience constructor. */
+    @JvmOverloads
     constructor(label: String, property: String, name: String? = null) : this(label, listOf(property), name)
 
     init {

@@ -38,7 +38,7 @@ sealed interface EngineVectorOptions {
  *   where earlier versions did not, and quantization trades recall for memory, so leaving it unpinned
  *   means the same declaration can produce measurably different search quality per server version.
  */
-data class Neo4jVectorOptions(
+data class Neo4jVectorOptions @JvmOverloads constructor(
     val quantizationEnabled: Boolean? = null,
     override val hnswM: Int? = null,
     override val hnswEfConstruction: Int? = null,
@@ -63,7 +63,7 @@ data class Neo4jVectorOptions(
  *   affects every query rather than the stored index, and FalkorDB is the only supported engine that
  *   accepts it as index configuration.
  */
-data class FalkorDbVectorOptions(
+data class FalkorDbVectorOptions @JvmOverloads constructor(
     override val hnswM: Int? = null,
     override val hnswEfConstruction: Int? = null,
     val efRuntime: Int? = null,
