@@ -76,6 +76,8 @@ dependencies {
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
 	testImplementation 'org.springframework.boot:spring-boot-starter-aop'
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+	// The Cypher spec's files (src/test/resources/cypher) are YAML.
+	testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// TestContainers

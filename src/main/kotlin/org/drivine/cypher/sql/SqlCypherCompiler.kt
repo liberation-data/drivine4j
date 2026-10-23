@@ -1890,7 +1890,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
         fun indent(text: String) = text.prependIndent("    ")
 
-        fun unsupported(construct: String): Nothing = throw DrivineException("$construct is Cypher, and does not run on Oracle or Postgres yet.")
+        fun unsupported(construct: String): Nothing = throw DrivineException("$construct is Cypher, and is not compiled to SQL yet.")
 
         /** Whether [clause] writes, which makes its statement a procedure. */
         fun writes(clause: Clause): Boolean =

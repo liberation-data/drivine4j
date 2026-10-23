@@ -167,7 +167,7 @@ class CypherReaderTest {
         assertEquals(listOf(RemoveItem.Labels("p", listOf("Draft")), RemoveItem.Property("p", "title")), (remove as Clause.Remove).items)
         assertEquals(Clause.Delete(true, listOf(Expression.Variable("t"))), delete)
         assertEquals(
-            "A write to a property of anything but a variable is Cypher, and does not run on Oracle or Postgres yet.",
+            "A write to a property of anything but a variable is Cypher, and is not compiled to SQL yet.",
             assertThrows<DrivineException> { CypherReader.read("MATCH (n) SET n.a.b = 1") }.message,
         )
     }
@@ -191,7 +191,7 @@ class CypherReaderTest {
     @Test
     fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
         assertEquals(
-            "A procedure call (CALL) is Cypher, and does not run on Oracle or Postgres yet.",
+            "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.",
             assertThrows<DrivineException> { CypherReader.read("CALL db.labels()") }.message,
         )
         val syntax = assertThrows<DrivineException> { CypherReader.read("MATCH (n RETURN n") }.message!!

@@ -515,5 +515,5 @@ object CypherReader {
 
     /** Cypher the compiler does not take: refused by name, so the caller is told what, and not that the SQL failed. */
     private fun refuse(construct: String): Nothing =
-        throw DrivineException("$construct is Cypher, and does not run on Oracle or Postgres yet.")
+        throw DrivineException("$construct is Cypher, and is not compiled to SQL yet.")
 }
