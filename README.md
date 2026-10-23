@@ -192,6 +192,9 @@ also counts as a datasource, in place of the properties. With neither, the start
 classpath. Every bean backs off when you define your own (the startup schema run is switched off with `drivine.schema.enabled=false` instead), and `spring.autoconfigure.exclude=org.drivine.autoconfigure.DrivineAutoConfiguration`
 turns the starter off.
 
+Each datasource needs a `type`, here and with `@EnableDrivinePropertiesConfig` below. A name under `database.datasources` with properties but no `type` fails startup,
+naming the datasource and the properties found for it, so a misspelt or partial entry isn't silently dropped.
+
 **Explicitly, with `@EnableDrivine`.** Where auto-configuration doesn't run (a plain `@Configuration` context, or a test
 that names its classes), or where you'd rather the wiring be visible, enable Drivine on a configuration class and give it a
 `DataSourceMap`:

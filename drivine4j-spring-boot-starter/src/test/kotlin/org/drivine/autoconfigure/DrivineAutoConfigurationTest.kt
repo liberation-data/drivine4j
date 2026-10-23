@@ -20,9 +20,6 @@ import org.springframework.boot.autoconfigure.EnableAutoConfiguration
 import org.springframework.boot.autoconfigure.transaction.TransactionAutoConfiguration
 import org.springframework.boot.context.annotation.ImportCandidates
 import org.springframework.boot.test.context.runner.ApplicationContextRunner
-import org.springframework.core.env.StandardEnvironment
-import org.springframework.core.env.SystemEnvironmentPropertySource
-import org.springframework.context.annotation.AnnotationConfigApplicationContext
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
 import org.springframework.transaction.PlatformTransactionManager
@@ -32,17 +29,6 @@ import org.springframework.transaction.support.SimpleTransactionStatus
 import org.springframework.transaction.support.TransactionTemplate
 
 class DrivineAutoConfigurationTest {
-
-    /**
-     * A runner whose environment leaves out the process's environment variables. The condition reads
-     * `DATABASE_DATASOURCES_*` variables too, and CI sets some, so a test that means "no datasource"
-     * must not see them.
-     */
-    private fun isolatedRunner() = ApplicationContextRunner {
-        AnnotationConfigApplicationContext().apply {
-            environment.propertySources.remove(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME)
-        }
-    }
 
     private val runner = isolatedRunner()
         .withConfiguration(AutoConfigurations.of(DrivineAutoConfiguration::class.java))
@@ -124,11 +110,7 @@ class DrivineAutoConfigurationTest {
             val (name, value) = property.split("=", limit = 2)
             name.uppercase().replace('.', '_').replace("-", "") to value
         }
-        runner.withInitializer { context ->
-            context.environment.propertySources.addFirst(
-                SystemEnvironmentPropertySource(StandardEnvironment.SYSTEM_ENVIRONMENT_PROPERTY_SOURCE_NAME, variables)
-            )
-        }.run { context ->
+        runner.withEnvironmentVariables(variables).run { context ->
             assertThat(context).hasNotFailed()
             assertThat(context).hasSingleBean(PersistenceManagerFactory::class.java)
             assertThat(context.getBean(DatabaseRegistry::class.java).databaseNames).containsExactly("neo")
