@@ -37,8 +37,8 @@ class Neo4jSchemaGrammar : SchemaGrammar {
         is VectorIndexSpec -> listOf(
             SchemaStatement.Cypher(
                 """
-                CREATE VECTOR INDEX `${spec.effectiveName}` IF NOT EXISTS
-                FOR (n:`${spec.label}`) ON (n.`${spec.property}`)
+                CREATE VECTOR INDEX ${id(spec.effectiveName)} IF NOT EXISTS
+                FOR (n:${id(spec.label)}) ON (n.${id(spec.property)})
                 OPTIONS { indexConfig: { ${vectorIndexConfig(spec)} }}
                 """.trimIndent()
             )
@@ -46,15 +46,15 @@ class Neo4jSchemaGrammar : SchemaGrammar {
 
         is RangeIndexSpec -> listOf(
             SchemaStatement.Cypher(
-                "CREATE INDEX `${spec.effectiveName}` IF NOT EXISTS " +
-                    "FOR (n:`${spec.label}`) ON ${propertyList(spec.properties)}"
+                "CREATE INDEX ${id(spec.effectiveName)} IF NOT EXISTS " +
+                    "FOR (n:${id(spec.label)}) ON ${propertyList(spec.properties)}"
             )
         )
 
         is FullTextIndexSpec -> listOf(
             SchemaStatement.Cypher(
-                "CREATE FULLTEXT INDEX `${spec.effectiveName}` IF NOT EXISTS " +
-                    "FOR (n:`${spec.label}`) ON EACH ${eachPropertyList(spec.properties)} " +
+                "CREATE FULLTEXT INDEX ${id(spec.effectiveName)} IF NOT EXISTS " +
+                    "FOR (n:${id(spec.label)}) ON EACH ${eachPropertyList(spec.properties)} " +
                     "OPTIONS {indexConfig: {${analyzerConfig(spec.analyzer)}}}"
             )
         )
@@ -65,14 +65,14 @@ class Neo4jSchemaGrammar : SchemaGrammar {
             "Cannot drop index on ${item.label}${item.properties}: Neo4j drops indexes by name, " +
                 "but no name is known for this index"
         )
-        return listOf(SchemaStatement.Cypher("DROP INDEX `$name` IF EXISTS"))
+        return listOf(SchemaStatement.Cypher("DROP INDEX ${id(name)} IF EXISTS"))
     }
 
     override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
         is UniquenessConstraintSpec -> listOf(
             SchemaStatement.Cypher(
-                "CREATE CONSTRAINT `${spec.effectiveName}` IF NOT EXISTS " +
-                    "FOR (n:`${spec.label}`) REQUIRE ${propertyList(spec.properties)} IS UNIQUE"
+                "CREATE CONSTRAINT ${id(spec.effectiveName)} IF NOT EXISTS " +
+                    "FOR (n:${id(spec.label)}) REQUIRE ${propertyList(spec.properties)} IS UNIQUE"
             )
         )
     }
@@ -82,7 +82,7 @@ class Neo4jSchemaGrammar : SchemaGrammar {
             "Cannot drop constraint on ${item.label}${item.properties}: Neo4j drops constraints by name, " +
                 "but no name is known for this constraint"
         )
-        return listOf(SchemaStatement.Cypher("DROP CONSTRAINT `$name` IF EXISTS"))
+        return listOf(SchemaStatement.Cypher("DROP CONSTRAINT ${id(name)} IF EXISTS"))
     }
 
     // ----- Introspection -----
@@ -181,12 +181,18 @@ class Neo4jSchemaGrammar : SchemaGrammar {
 
     // ----- Helpers -----
 
+    /**
+     * A name as Neo4j DDL spells it: always backtick-quoted, so the DDL for a plain name is what it has
+     * always been, and escaped by the rule the other engines share, so a backtick in it stays in the name.
+     */
+    private fun id(name: String): String = SchemaGrammar.quoted(name)
+
     private fun propertyList(properties: List<String>): String =
-        properties.joinToString(", ", "(", ")") { "n.`$it`" }
+        properties.joinToString(", ", "(", ")") { "n.${id(it)}" }
 
     /** Fulltext's `ON EACH` takes a bracketed list, not the parenthesized one the other kinds use. */
     private fun eachPropertyList(properties: List<String>): String =
-        properties.joinToString(", ", "[", "]") { "n.`$it`" }
+        properties.joinToString(", ", "[", "]") { "n.${id(it)}" }
 
     /**
      * The `indexConfig` body for a fulltext index. Empty when no analyzer is declared, so Neo4j

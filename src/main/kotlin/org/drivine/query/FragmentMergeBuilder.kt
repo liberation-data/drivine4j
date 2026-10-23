@@ -62,8 +62,9 @@ internal class FragmentMergeBuilder(
      * @param writeFields The only fields this save may touch, by field name: a field outside the set is
      *   neither written nor cleared, whatever [nullPolicy] says. Null means every field.
      * @param asLoaded The fields as the object was loaded, by field name, as a save writes them. A
-     *   checked save then matches the node only while each declared field still holds what was
-     *   loaded, as well as the stamp. Null compares the stamp alone.
+     *   checked save then matches the node only while each field still holds what was loaded, as
+     *   well as the stamp: a declared field its value, a bag the keys it owns and their values, the
+     *   labels field the labels it reads. Null compares the stamp alone.
      * @return A MergeStatement containing the query and bindings
      */
     fun <T : Any> buildMergeStatement(
@@ -98,19 +99,41 @@ internal class FragmentMergeBuilder(
             "${Stamps.nodeTokenOf("n")} = ${'$'}${parameter(Stamps.EXPECTED_PARAM)}"
         }
         // A load that ran while another writer committed can hold that writer's stamp with the data
-        // from before its write. Each declared field is compared as it was loaded too, under the lock,
-        // so the save of such an object is refused, as a stale one is. A comparison that cannot tell
-        // (a list holding a null) is not a difference: the stamp still speaks for the field.
+        // from before its write. Each field is compared as it was loaded too, under the lock, so the
+        // save of such an object is refused, as a stale one is. A comparison that cannot tell (a list
+        // holding a null) is not a difference: the stamp still speaks for the field.
         val loadedBindings = mutableMapOf<String, Any?>()
+        fun loadedParam(name: String, value: Any?): String = parameter("$LOADED_PARAM$name").also { loadedBindings[it] = value }
         val fieldsAsLoaded = if (expected == null || asLoaded == null) emptyList() else {
-            fragmentModel.fields.filterNot { it.stamp || it.name == nodeIdField }.mapIndexed { index, field ->
+            val declared = fragmentModel.fields.filterNot { it.stamp || it.name == nodeIdField }.mapIndexed { index, field ->
                 val stored = "n.${field.propertyName}"
                 val value = asLoaded[field.name] ?: return@mapIndexed "$stored IS NULL"
-                val param = parameter("$LOADED_PARAM$index")
-                loadedBindings[param] = value
+                val param = loadedParam("$index", value)
                 val loaded = if (field.name in fragmentModel.vectorFieldNames) grammar?.vectorPropertyLiteral(param) ?: "\$$param" else "\$$param"
                 "$stored IS NOT NULL AND NOT coalesce($stored <> $loaded, false)"
             }
+            // A bag holds the keys it owns, each with its value: none added, none removed, none changed.
+            val bags = fragmentModel.propertyBags.mapIndexed { index, bag ->
+                val loaded = (asLoaded[bag.fieldName] as? Map<*, *>).orEmpty()
+                    .filterValues { it != null }.mapKeys { (key, _) -> bag.storedKey(key.toString()) }
+                val entries = "\$${loadedParam("Bag$index", loaded)}"
+                val owned = if (bag.flat) {
+                    "NOT k IN \$${loadedParam("Bag${index}Reserved", bag.reservedKeys.toList())} AND " +
+                        "none(p IN \$${loadedParam("Bag${index}ReservedPrefixes", bag.reservedPrefixes)} WHERE k STARTS WITH p)"
+                } else {
+                    val prefix = "\$${loadedParam("Bag${index}Prefix", bag.storedPrefix)}"
+                    "k STARTS WITH $prefix AND size(k) > size($prefix)"
+                }
+                "size([k IN keys(n) WHERE $owned]) = size(keys($entries)) AND " +
+                    "all(k IN keys($entries) WHERE n[k] IS NOT NULL AND NOT coalesce(n[k] <> $entries[k], false))"
+            }
+            // The labels field reads the node's labels: an open set all of them, a closed set its members.
+            val labels = fragmentModel.nodeLabels?.let { model ->
+                val loaded = "\$${loadedParam("Labels", (asLoaded[model.fieldName] as? Collection<*>).orEmpty().map { it.toString() }.distinct())}"
+                val read = model.closedSet?.let { "[l IN labels(n) WHERE l IN \$${loadedParam("LabelsClosed", it.toList())}]" } ?: "labels(n)"
+                "size($read) = size($loaded) AND all(l IN $loaded WHERE l IN labels(n))"
+            }
+            declared + bags + listOfNotNull(labels)
         }
         val stillAsLoaded = (listOf(stampAsLoaded) + fieldsAsLoaded).joinToString(" AND ")
         // A node the statement makes is told from one it finds, when the stamp is handed back: an

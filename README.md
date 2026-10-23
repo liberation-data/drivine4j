@@ -610,7 +610,10 @@ several. `@VectorIndex` is the query-side declaration of "this embedding is sear
 independent of how the index is *created*: it works whether you create the index from the annotation
 (`SchemaCatalog.fromFragments(...)`) or from an explicit spec (`SchemaCatalog.of(VectorIndexSpec(...))`);
 in the latter case, add the annotation to the fragment as well — it carries no creation side effects
-on its own.
+on its own. Drivine refuses a catalog spec over a fragment field that has no `@VectorIndex`, naming the
+class, the field and the spec: without the annotation FalkorDB writes the field as a plain list and
+`loadNearest` finds no index. The check runs when `SchemaManager` applies the catalog and when the
+fragment class is first used. A spec for a label no fragment maps is not checked.
 
 ```kotlin
 @NodeFragment(labels = ["Proposition"])
@@ -1535,7 +1538,7 @@ A save adds the relationships the object holds and removes none. To remove, name
 
 `update` loads the object, applies your change, and writes only what the change altered: the fields that differ, a field set to null, and for a view the relationships it added or dropped and the related nodes it altered. Of a related node that was loaded it writes the fields that differ and clears one set to null, and leaves the rest, so another writer's change to a field you did not touch stands. A related node the change added is written whole. A relationship another writer added in the meantime is kept, and one another writer removed stays removed. Your change may return a copy, or change the object it is given and return that.
 
-- If the node changed between the load and the save, `update` loads it again and re-applies your change: three attempts in all by default, and then `StaleObjectException` is thrown. On Neo4j the save compares the root's declared fields as they were loaded as well as the stamp: see [when a save is refused](#when-a-save-is-refused).
+- If the node changed between the load and the save, `update` loads it again and re-applies your change: three attempts in all by default, and then `StaleObjectException` is thrown. On Neo4j the save compares the root's fields as they were loaded as well as the stamp: see [when a save is refused](#when-a-save-is-refused).
 - That needs a `@NodeStamp` field. Without one a change by another writer is not noticed.
 - The id is a `String` or a `UUID`.
 - `update` returns null when there is no such node, and when the node is deleted between the load and the save. It writes to the node it loaded and never makes one.
@@ -1786,7 +1789,7 @@ Two cases are decided by the object, not by another writer:
 - The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
 - In a view, the root is checked. A node reached through a relationship is written unchecked.
 - `update` is checked against the stamp it loaded, whatever the change does with the object's.
-- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each declared field of the root as it loaded it too, under the node's lock, and loads again if one differs; a `@PropertyBag` or `@NodeLabels` field has the stamp alone to go on. A `save` of an object you loaded yourself has only the stamp to go on, and in that moment it can write over the other writer's change: where every writer's change must be kept, change the node with `update`. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
+- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each field of the root as it loaded it too, under the node's lock, and loads again if one differs: a declared field's value, a `@PropertyBag`'s keys and their values, the labels a `@NodeLabels` field reads. A `save` of an object you loaded yourself has only the stamp to go on, and in that moment it can write over the other writer's change: where every writer's change must be kept, change the node with `update`. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
 
 Handling a refusal:
 
@@ -2421,6 +2424,8 @@ val people: List<Person> = manager.query(spec)
 // Execute without returning results (for mutations)
 manager.execute(spec)
 ```
+
+A node or relationship in a row comes back as a map of its properties, whether it is a whole column or inside a list or a map, so `collect(n)`, `nodes(p)`, `relationships(p)`, `[n, m]` and `{actor: n}` give maps too. On FalkorDB a node's map also holds its `labels`, and a relationship's its `_type`, `_source` and `_destination`. A path inside a list or a map comes back as `{nodes, edges}`. A path that is a whole column comes back as the driver's `org.neo4j.driver.types.Path` on Neo4j and Memgraph, and as `{nodes, edges}` on FalkorDB.
 
 ## API Reference
 
@@ -3130,7 +3135,8 @@ Works across Neo4j, FalkorDB, and Memgraph.
 **A flat bag** has no prefix: each entry is stored under its bare key, and the bag reads back every
 property that no declared field and no other bag accounts for. It fits a node whose properties are
 open-ended and were never namespaced. A fragment may have one, and an entry whose key is a declared
-field's property is rejected at save.
+field's property, or a declared field's name, is rejected at save: a load hands those to their fields,
+the `@NodeStamp` field among them.
 
 ```kotlin
 @NodeFragment(labels = ["Thing"])

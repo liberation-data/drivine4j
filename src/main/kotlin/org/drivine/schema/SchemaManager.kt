@@ -40,6 +40,11 @@ import org.slf4j.LoggerFactory
  *
  * Outcomes needing attention (drift, violations) are handled per [SchemaPolicy].
  *
+ * **Vector fields.** Before anything is applied, a [VectorIndexSpec] whose label and property a
+ * fragment class maps to a field without `@VectorIndex` is refused, naming the class, the field and
+ * the spec; a fragment class built later is checked against the specs applied here. See
+ * [org.drivine.annotation.VectorIndex].
+ *
  * **Catalogs are read once.** The manager is given its catalogs when it is built — under Spring, every
  * [SchemaCatalog] bean there is when the `SchemaManager` bean is made — and keeps that list. A catalog
  * made later is never seen, and calling [enforce] again applies the same catalogs. When there is
@@ -161,6 +166,7 @@ class SchemaManager(
             val plans = resolution.databases.sorted().mapNotNull { database ->
                 plan(database, runtimeCatalogs, ownerFilter)?.let { database to it }
             }
+            VectorAnnotationCheck.register(listOf(catalog))
             runtime.clear()
             runtime.putAll(candidate)
             val given = catalog.items.map { it.inventoryKey }.toSet()
@@ -206,6 +212,7 @@ class SchemaManager(
                 logNothingToApply()
                 return
             }
+            VectorAnnotationCheck.register(all)
             val resolution = SchemaTargets.resolve(all, databaseRegistry)
             warnSkipped(resolution)
             resolution.databases.sorted().forEach { database ->

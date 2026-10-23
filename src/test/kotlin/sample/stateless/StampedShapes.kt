@@ -1,10 +1,12 @@
 package sample.stateless
 
 import org.drivine.annotation.Direction
+import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
+import org.drivine.annotation.NodeLabels
 import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.RelationshipFragment
@@ -31,6 +33,29 @@ data class Tagged(
     @PropertyBag(prefix = "meta") val meta: Map<String, Any?> = emptyMap(),
     @NodeStamp val stamp: String? = null,
 )
+
+/**
+ * A stamped node whose labels and properties are both open-ended: an open set of labels and a flat bag,
+ * beside a field stored under another name.
+ */
+@NodeFragment(labels = ["Sticker"])
+data class Sticker(
+    @NodeId val id: String,
+    @GraphProperty("sticker_name") val name: String? = null,
+    @NodeLabels val labels: Set<String> = emptySet(),
+    @PropertyBag(flat = true) val extras: Map<String, Any?> = emptyMap(),
+    @NodeStamp val stamp: String? = null,
+)
+
+/** A stamped node with a closed set of labels: the field speaks for the [Shade] labels and no other. */
+@NodeFragment(labels = ["Swatch"])
+data class Swatch(
+    @NodeId val id: String,
+    @NodeLabels val shades: Set<Shade> = emptySet(),
+    @NodeStamp val stamp: String? = null,
+)
+
+enum class Shade { Red, Green, Blue }
 
 /** A view whose fields can be set. */
 @GraphView

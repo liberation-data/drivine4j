@@ -52,6 +52,16 @@ class FalkorDbSchemaGrammarTest {
     }
 
     @Test
+    fun `a name with a dot, a space and a backtick is one quoted name, its backtick doubled`() {
+        val name = "my.odd `name"
+        val create = grammar.createIndex(RangeIndexSpec(name, name)).single() as SchemaStatement.Cypher
+        val drop = grammar.dropIndex(SchemaItemInfo(SchemaItemKind.RANGE_INDEX, name, listOf(name), null)).single() as SchemaStatement.Cypher
+
+        assertEquals("CREATE INDEX FOR (n:`my.odd ``name`) ON (n.`my.odd ``name`)", create.statement)
+        assertEquals("DROP INDEX FOR (n:`my.odd ``name`) ON (n.`my.odd ``name`)", drop.statement)
+    }
+
+    @Test
     fun `range index creation only emits properties missing from the existing label index`() {
         // FalkorDB rejects creating an already-indexed property, so extension is incremental
         val existing = SchemaItemInfo(SchemaItemKind.RANGE_INDEX, "Proposition", listOf("contextId"))

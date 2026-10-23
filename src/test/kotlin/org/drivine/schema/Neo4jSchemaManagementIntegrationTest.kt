@@ -121,6 +121,29 @@ class Neo4jSchemaManagementIntegrationTest {
         assertTrue(compositeAgain is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $compositeAgain")
     }
 
+    // ----- Names that are not plain identifiers -----
+
+    @Test
+    fun `a label and property with a dot, a space and a backtick are made, found and dropped under that name`() {
+        val name = "my.odd `name"
+        val index = RangeIndexSpec(name, name)
+        val constraint = UniquenessConstraintSpec(name, "key")
+
+        val created = manager.indexes.ensure(index)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertEquals(name, (created as EnsureResult.Created).info.label)
+        assertEquals(listOf(name), created.info.properties)
+        assertEquals("my.odd `name_my.odd `name_range", created.info.name)
+        val again = manager.indexes.ensure(index)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+
+        assertTrue(manager.constraints.ensure(constraint) is EnsureResult.Created)
+        assertTrue(manager.constraints.drop(constraint))
+        assertTrue(manager.indexes.drop(index))
+        assertNull(manager.indexes.find(index))
+        assertNull(manager.constraints.find(constraint))
+    }
+
     // ----- Fulltext index lifecycle -----
 
     @Test

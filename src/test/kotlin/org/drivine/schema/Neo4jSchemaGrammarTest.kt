@@ -85,6 +85,34 @@ class Neo4jSchemaGrammarTest {
 
     // ----- DDL: constraints -----
 
+    @Test
+    fun `a name with a dot, a space and a backtick is one quoted name, its backtick doubled`() {
+        val name = "my.odd `name"
+        val range = grammar.createIndex(RangeIndexSpec(name, name)).single() as SchemaStatement.Cypher
+        val vector = grammar.createIndex(VectorIndexSpec(name, name, 3, name = name)).single() as SchemaStatement.Cypher
+        val fulltext = grammar.createIndex(FullTextIndexSpec(name, listOf(name), name = name)).single() as SchemaStatement.Cypher
+        val constraint = grammar.createConstraint(UniquenessConstraintSpec(name, name)).single() as SchemaStatement.Cypher
+        val item = SchemaItemInfo(SchemaItemKind.RANGE_INDEX, name, listOf(name), name)
+        val dropIndex = grammar.dropIndex(item).single() as SchemaStatement.Cypher
+        val dropConstraint = grammar.dropConstraint(item.copy(kind = SchemaItemKind.UNIQUENESS_CONSTRAINT)).single() as SchemaStatement.Cypher
+
+        assertEquals(
+            "CREATE INDEX `my.odd ``name_my.odd ``name_range` IF NOT EXISTS FOR (n:`my.odd ``name`) ON (n.`my.odd ``name`)",
+            range.statement,
+        )
+        assertTrue(vector.statement.contains("CREATE VECTOR INDEX `my.odd ``name` IF NOT EXISTS"), vector.statement)
+        assertTrue(vector.statement.contains("FOR (n:`my.odd ``name`) ON (n.`my.odd ``name`)"), vector.statement)
+        assertTrue(fulltext.statement.contains("CREATE FULLTEXT INDEX `my.odd ``name` IF NOT EXISTS"), fulltext.statement)
+        assertTrue(fulltext.statement.contains("FOR (n:`my.odd ``name`) ON EACH [n.`my.odd ``name`]"), fulltext.statement)
+        assertEquals(
+            "CREATE CONSTRAINT `my.odd ``name_my.odd ``name_unique` IF NOT EXISTS " +
+                "FOR (n:`my.odd ``name`) REQUIRE (n.`my.odd ``name`) IS UNIQUE",
+            constraint.statement,
+        )
+        assertEquals("DROP INDEX `my.odd ``name` IF EXISTS", dropIndex.statement)
+        assertEquals("DROP CONSTRAINT `my.odd ``name` IF EXISTS", dropConstraint.statement)
+    }
+
     // ----- DDL: fulltext index -----
 
     @Test

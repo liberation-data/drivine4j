@@ -13,7 +13,10 @@ import org.drivine.schema.SimilarityFunction
  * (Neo4j quantization, FalkorDB `efRuntime`) go in a hand-written [org.drivine.schema.SchemaCatalog]
  * spec via [org.drivine.schema.EngineVectorOptions]; declaring the same index in both places is
  * expected and supported — the tuned declaration wins. Keep the annotation in place regardless, since
- * [org.drivine.query.VectorIndexResolver] resolves vector queries from it.
+ * [org.drivine.query.VectorIndexResolver] resolves vector queries from it, and FalkorDB writes only an
+ * annotated field as a vector. A catalog spec over a fragment field that lacks the annotation is
+ * refused, when the catalog is applied by [org.drivine.schema.SchemaManager] and when the fragment's
+ * model is first built.
  *
  * ```kotlin
  * @NodeFragment(labels = ["Proposition"])
