@@ -483,6 +483,19 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a shortest path is the least of the pattern's, and all shortest paths every one of that length`() {
+        assertEquals(
+            listOf(listOf(2L, listOf("Laurence", "Keanu", "Carrie"))),
+            query("MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) MATCH p = shortestPath((a)-[:KNOWS*]->(b)) RETURN [length(p), [n IN nodes(p) | n.name]]"),
+        )
+        assertEquals(
+            setOf(listOf("Laurence", "Keanu", "Carrie"), listOf("Laurence", "The Matrix", "Carrie")),
+            query("MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) MATCH p = allShortestPaths((a)-[*]-(b)) RETURN [n IN nodes(p) | coalesce(n.name, n.title)]").toSet(),
+        )
+        assertEquals(emptyList(), query("MATCH (a:Person {name: 'Hugo'}), (b:Person {name: 'Carrie'}) MATCH p = shortestPath((a)-[*]-(b)) RETURN length(p)"))
+    }
+
+    @Test
     fun `a union gives each query's rows in turn, and without all each row once where it is first given`() {
         assertEquals(listOf(3L, 1L, 2L, 3L), query("UNWIND [3, 1] AS x RETURN x AS v UNION ALL UNWIND [2, 3] AS x RETURN x AS v"))
         assertEquals(listOf(3L, 1L, 2L), query("UNWIND [3, 1] AS x RETURN x AS v UNION UNWIND [2, 3] AS x RETURN x AS v"))

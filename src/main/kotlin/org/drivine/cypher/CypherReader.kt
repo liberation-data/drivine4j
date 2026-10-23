@@ -69,6 +69,7 @@ object CypherReader {
         context.oC_Create() != null -> Clause.Create(patterns(context.oC_Create().oC_Pattern()))
         context.oC_Merge() != null -> context.oC_Merge().let { merge ->
             val part = merge.oC_PatternPart()
+            if (part.oC_AnonymousPatternPart().oC_ShortestPathPattern() != null) refuse("A shortest path in MERGE")
             val actions = merge.oC_MergeAction()
             Clause.Merge(
                 pattern(part.oC_AnonymousPatternPart().oC_PatternElement(), part.oC_Variable()?.let(::name)),
@@ -143,7 +144,11 @@ object CypherReader {
     // ----- Patterns -----
 
     private fun patterns(context: OC_PatternContext): List<Pattern> = context.oC_PatternPart().map { part ->
-        pattern(part.oC_AnonymousPatternPart().oC_PatternElement(), part.oC_Variable()?.let(::name))
+        val variable = part.oC_Variable()?.let(::name)
+        val anonymous = part.oC_AnonymousPatternPart()
+        anonymous.oC_ShortestPathPattern()?.let { shortest ->
+            pattern(shortest.oC_PatternElement(), variable).copy(shortest = if (shortest.SHORTESTPATH() != null) Pattern.Shortest.ONE else Pattern.Shortest.ALL)
+        } ?: pattern(anonymous.oC_PatternElement(), variable)
     }
 
     private fun pattern(context: OC_PatternElementContext, variable: String?): Pattern {

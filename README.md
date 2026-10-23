@@ -2734,7 +2734,7 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   What is not compiled yet (a slice, a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
   place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,
-  `FOREACH` and `=~` compile. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
+  `FOREACH`, `=~`, `shortestPath` and `allShortestPaths` compile. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
   engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`) is given as
   their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them.
 - A statement that writes and returns rows is a PL/SQL block that hands them back with

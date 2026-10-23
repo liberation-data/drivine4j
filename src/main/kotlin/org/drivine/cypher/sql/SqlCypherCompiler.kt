@@ -536,6 +536,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun pattern(select: Select, pattern: Pattern, hops: MutableList<Hop>) {
+            if (pattern.shortest != null) return shortest(select, pattern)
             // A node bound before the pattern, or given properties, is where a walk starts best.
             val pinned = pattern.nodes.map { node -> node.properties != null || node.variable?.let { select.scope[it] } != null }
             val before = select.scope
@@ -587,6 +588,34 @@ abstract class SqlCypherCompiler(graph: String) {
                 val eids = mine.map { if (it.many) it.eids else ids(it.eids) }.let { if (it.isEmpty()) noIds else joinIds(it) }
                 select.bind(variable, Value.Path(nids, eids))
             }
+        }
+
+        /**
+         * `shortestPath(…)` or `allShortestPaths(…)`: the pattern's paths for the row, found in a lateral query, of
+         * which the shortest is kept, or every one of the least length. Its relationship is a walk, so a path of it
+         * takes no relationship twice, as Cypher's shortest path takes none.
+         */
+        private fun shortest(select: Select, pattern: Pattern) {
+            val relationship = pattern.relationships.singleOrNull()
+            if (relationship?.range == null) unsupported("A shortest path of anything but one variable-length relationship")
+            val inner = Select(select.scope)
+            val hops = mutableListOf<Hop>()
+            pattern(inner, pattern.copy(shortest = null), hops)
+            val found = inner.bound.filterKeys { it !in select.scope }.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
+            val length = number(idCount(hops.single().eids))
+            val columns = found.flatMap { (_, value, column) -> value.columns(column) } + "$length AS len"
+            val paths = (listOf("SELECT ${columns.joinToString(", ")}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString("\n")
+            val name = alias("sp")
+            val text = when (pattern.shortest) {
+                Pattern.Shortest.ONE -> (listOf(paths, "ORDER BY len") + page(null, "1")).joinToString("\n")
+                // Every path as short as the shortest.
+                else -> {
+                    val s = alias("s")
+                    "SELECT * FROM (\n${indent("SELECT $s.*, MIN($s.len) OVER () AS least FROM (\n${indent(paths)}\n) $s")}\n) ${alias("s")}\nWHERE len = least"
+                }
+            }
+            select.join("CROSS JOIN LATERAL (\n${indent(text)}\n) $name")
+            found.forEach { (variable, value, column) -> select.bind(variable, value.columnsOf(name, column)) }
         }
 
         /** That the relationship type [type] is one of [types]; null when any will do. */
@@ -955,6 +984,7 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun create(pattern: Pattern, merging: Boolean) {
             if (pattern.variable != null) unsupported("A path variable in CREATE or MERGE")
+            if (pattern.shortest != null) unsupported("A shortest path in CREATE")
             val ids = pattern.nodes.map { node ->
                 when (node.variable?.let { kinds[it] }) {
                     Kind.NODE -> {
