@@ -42,6 +42,7 @@ import kotlin.annotation.AnnotationTarget.CLASS
  * - `DatabaseRegistry`
  * - `TransactionContextHolder`
  * - `DrivineTransactionManager`
+ * - `Transactions`
  * - `PersistenceManagerFactory`
  * - `GraphObjectManagerFactory`
  * - `SchemaManager` (applies any registered `SchemaCatalog` beans; enforced on startup unless

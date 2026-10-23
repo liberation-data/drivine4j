@@ -26,8 +26,9 @@ repositories {
 }
 
 dependencies {
-    // Core drivine4j library
+    // Core drivine4j library, and its Spring adapter: DrivineTransactionManager
     api project(':')
+    api project(':drivine4j-spring')
 
     // Code generation - users can apply as ksp("org.drivine:drivine4j-codegen")
     // Making it api scope so users don't need to specify the version
@@ -38,6 +39,11 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-autoconfigure'
     implementation 'org.springframework:spring-context'
     implementation 'org.springframework:spring-tx'
+
+    // What the core library brought before it shed Spring, so an application on the starter has the
+    // same classpath as before: Spring Boot, and AOP with AspectJ for @Aspect beans.
+    implementation 'org.springframework.boot:spring-boot-starter'
+    implementation 'org.springframework.boot:spring-boot-starter-aop'
 
     // Jackson for ObjectMapper
     implementation 'com.fasterxml.jackson.core:jackson-databind'

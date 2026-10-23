@@ -8,6 +8,13 @@ By default, tests start a Testcontainer for whichever backend(s) the suite targe
 ./gradlew test
 ```
 
+## Without Spring
+
+The root module's tests run in Spring contexts. The core library has no Spring, and `./gradlew springFreeTest` shows
+it: the tests in `src/springFreeTest` run on the library's own runtime classpath and JUnit, with nothing of Spring,
+and the task fails first if that classpath has any `org.springframework` module on it. They start a Neo4j and a
+FalkorDB of their own, and read no `USE_LOCAL_*` flag. `./gradlew check` (and so `build`) runs them.
+
 ## Using a Local Database Instance
 
 To bypass testcontainers and point at a locally running instance, set the corresponding env var (or system property) per backend:

@@ -1,8 +1,8 @@
 package org.drivine.transaction
 
 /**
- * Enumeration that represents transaction propagation behaviors for use with the @Transactional annotation.
- * Only 'REQUIRED' is currently supported.
+ * How a block run by [Transactions.transaction] takes the transaction the thread is in: join it, set it
+ * aside, or refuse. The names, and what they mean, are Spring's. All but `NESTED` are supported.
  */
 enum class Propagation {
     /**
