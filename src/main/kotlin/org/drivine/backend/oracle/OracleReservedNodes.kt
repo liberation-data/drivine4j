@@ -40,9 +40,9 @@ internal class OracleVersionMarker(private val graph: OracleGraph, private val l
         MERGE INTO ${graph.nodes} n
         USING (SELECT (SELECT m.nid FROM ${graph.nodes} m WHERE ${marker("m")} ORDER BY ${newestFirst("m")} FETCH FIRST 1 ROWS ONLY) AS nid FROM dual) found
         ON (n.nid = found.nid)
-        WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now))
+        WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now RETURNING JSON))
         WHEN NOT MATCHED THEN INSERT (labels, props)
-            VALUES (${OracleSql.literal("[\"$label\"]")}, JSON_OBJECT(${OracleSql.literal(scopeProperty)} VALUE ${'$'}scope, 'version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now ABSENT ON NULL))
+            VALUES (${OracleSql.literal("[\"$label\"]")}, JSON_OBJECT(${OracleSql.literal(scopeProperty)} VALUE ${'$'}scope, 'version' VALUE ${'$'}version, 'items' VALUE ${'$'}items, 'appliedAt' VALUE ${'$'}now ABSENT ON NULL RETURNING JSON))
     """.trimIndent()
 
     override fun mergeBindings(scope: String, version: String?, items: String): Map<String, Any?> =

@@ -56,8 +56,8 @@ class OracleReservedNodesTest {
 
         // Matched by the id of the marker found: Oracle refuses an update of a column the match reads (ORA-38104).
         assertTrue(merge.startsWith("MERGE INTO g_node n\nUSING (SELECT ($newest) AS nid FROM dual) found\nON (n.nid = found.nid)\n"), merge)
-        assertTrue("WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE \$version, 'items' VALUE \$items, 'appliedAt' VALUE \$now))" in merge, merge)
-        assertTrue("VALUES ('[\"_DrivineSchema\"]', JSON_OBJECT('scope' VALUE \$scope, 'version' VALUE \$version, 'items' VALUE \$items, 'appliedAt' VALUE \$now ABSENT ON NULL))" in merge, merge)
+        assertTrue("WHEN MATCHED THEN UPDATE SET n.props = JSON_MERGEPATCH(n.props, JSON_OBJECT('version' VALUE \$version, 'items' VALUE \$items, 'appliedAt' VALUE \$now RETURNING JSON))" in merge, merge)
+        assertTrue("VALUES ('[\"_DrivineSchema\"]', JSON_OBJECT('scope' VALUE \$scope, 'version' VALUE \$version, 'items' VALUE \$items, 'appliedAt' VALUE \$now ABSENT ON NULL RETURNING JSON))" in merge, merge)
     }
 
     @Test

@@ -253,6 +253,21 @@ class OracleSchemaManagementIntegrationTest {
     }
 
     @Test
+    fun `an inventory past 4000 characters is recorded, and read back whole`() {
+        val store = SchemaVersionStore(manager)
+        store.clear()
+        val items = (1..300).map { "uniqueness:Label$it:property$it" }
+
+        store.record("model-v1", items)
+        assertEquals(items, store.storedInventory())
+
+        store.record("model-v2", items + "one-more")
+        assertEquals(items + "one-more", store.storedInventory(), "the marker found is updated, and kept whole")
+
+        store.clear()
+    }
+
+    @Test
     fun `ensureSingleton repairs duplicate markers and constrains the marker key`() {
         val store = SchemaVersionStore(manager)
         store.clear()
