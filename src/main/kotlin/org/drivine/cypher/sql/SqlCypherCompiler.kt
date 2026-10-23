@@ -864,7 +864,7 @@ abstract class SqlCypherCompiler(graph: String) {
          * The row in [ROW] alone, as a statement of a write reads it, with the variables [needed] bound: a row
          * may hold many, and each node or relationship bound is a join.
          */
-        private fun row(needed: Set<String>): Select = Select(emptyMap()).also { bindRow(it, ROW, needed) }
+        private fun row(needed: Set<String>?): Select = Select(emptyMap()).also { bindRow(it, ROW, needed) }
 
         /** Binds into [select] each variable the row [row] holds, of [needed] where given: a node or a relationship is read from its table, as it is now. */
         private fun bindRow(select: Select, row: String, needed: Set<String>? = null) {
@@ -892,9 +892,13 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        /** [value], worked out over the row in [ROW], into [variable]: [expressions] are what it reads. */
+        /**
+         * [value], worked out over the row in [ROW], into [variable]: [expressions] are what it reads. A subquery among
+         * them reads every variable of the row, for [variablesIn] names none of a subquery's.
+         */
         private fun evaluate(variable: String, vararg expressions: Expression?, value: (Map<String, Value>) -> String) {
-            val select = row(expressions.filterNotNull().flatMap(::variablesIn).toSet())
+            val read = expressions.filterNotNull()
+            val select = row(if (read.any { contains(it) { e -> e is Expression.Subquery } }) null else read.flatMap(::variablesIn).toSet())
             emit((listOf("SELECT ${value(select.scope)} INTO $variable") + from(select)).joinToString("\n") + ";")
         }
 
@@ -1507,9 +1511,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 val inner = Select(scope)
                 patterns(inner, listOf(expression.pattern))
                 expression.where?.let { inner.where += bool(expression(it, inner.scope)) }
-                val projection = json(expression(expression.projection, inner.scope)).sql
-                val text = (listOf("SELECT ${aggregateList(projection)}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ")
-                Value.Json("($text)", ordered = true)
+                val projected = expression(expression.projection, inner.scope)
+                fun gathered(value: String) = "(" + (listOf("SELECT ${aggregateList(value)}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ") + ")"
+                // A comprehension of nodes or relationships is a list of them, so a write to an item of it reaches them.
+                when (projected) {
+                    is Value.Node -> Value.Entities(comparable(Value.Json(gathered(scalar(projected.nid)), ordered = true)), false, gathered(json(projected).sql))
+                    is Value.Relationship -> Value.Entities(comparable(Value.Json(gathered(scalar(projected.eid)), ordered = true)), true, gathered(json(projected).sql))
+                    else -> Value.Json(gathered(json(projected).sql), ordered = true)
+                }
             }
             is Expression.PatternPredicate -> exists(listOf(expression.pattern), null, scope)
             is Expression.Exists -> exists(expression.patterns, expression.where, scope)

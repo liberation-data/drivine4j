@@ -328,6 +328,15 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a count or an exists that a write sets reads the row it is written for`() {
+        query("CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(:CyWrite {id: 'c'}), (a)-[:NEXT]->(:CyWrite {id: 'd'})")
+        assertEquals(
+            listOf(listOf("a", 2L, false), listOf("b", 2L, false), listOf("c", 1L, true), listOf("d", 1L, true)),
+            query("MATCH (n:CyWrite) SET n.degree = COUNT { (n)--() }, n.leaf = NOT EXISTS { MATCH (n)-[:NEXT]->() } RETURN [n.id, n.degree, n.leaf] ORDER BY n.id"),
+        )
+    }
+
+    @Test
     fun `foreach writes its clauses for each item, and leaves the rows as they were`() {
         query("CREATE (:CyWrite {id: 'root'}), (:CyWrite {id: 'other'})")
         assertEquals(
@@ -383,6 +392,9 @@ abstract class CypherWriteContract {
     @Test
     fun `a list of nodes or relationships is of them, so a write to an item of it reaches them`() {
         query("CREATE (a:CyWrite {id: 'a'})-[:NEXT]->(b:CyWrite {id: 'b'})-[:NEXT]->(c:CyWrite {id: 'c'})")
+        // A pattern comprehension of nodes, written to in a FOREACH.
+        query("MATCH (a:CyWrite {id: 'a'}) WITH [(a)-[:NEXT]->(m) | m] AS ms FOREACH (m IN ms | SET m.next = true)")
+        assertEquals(listOf("b"), query("MATCH (n:CyWrite {next: true}) RETURN n.id"))
         // Gathered, then unwound and written to.
         query("MATCH (n:CyWrite) WITH collect(n) AS ns UNWIND ns AS n SET n.seen = true")
         assertEquals(listOf(3L), query("MATCH (n:CyWrite) WHERE n.seen = true RETURN count(n)"))

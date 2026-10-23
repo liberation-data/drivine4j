@@ -13,7 +13,7 @@ import org.drivine.model.Stamps
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
  * number the statement writes is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
  * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` is a function the query
- * declares, and does not run in a statement that writes or in the step of a `reduce`.
+ * declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
  * takes no `JSON` that changes from row to row. A recursive query reads no row outside it, so a walk

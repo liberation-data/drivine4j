@@ -2735,7 +2735,7 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
   place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,
   `FOREACH`, `=~`, `shortestPath` and `allShortestPaths` compile. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
-  engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`) is given as
+  engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`, `[(a)-->(m) | m]`) is given as
   their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them.
 - A statement that writes and returns rows is a PL/SQL block that hands them back with
   `DBMS_SQL.RETURN_RESULT`. A block is one statement: one that fails writes nothing.
