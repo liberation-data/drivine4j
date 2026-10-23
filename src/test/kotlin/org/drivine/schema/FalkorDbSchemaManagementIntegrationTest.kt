@@ -283,10 +283,15 @@ class FalkorDbSchemaManagementIntegrationTest {
         execute("CREATE (:Person {email: 'dup@example.com', name: 'A'})")
         execute("CREATE (:Person {email: 'dup@example.com', name: 'B'})")
 
-        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email"))
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Person", "email", nodeIdProperty = "name"))
 
         assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
         assertTrue((result as EnsureResult.Violation).conflictingSample.isNotEmpty())
+
+        // Each conflicting node is named, by the engine's id and by the property it is identified by.
+        val nodes = (result.conflictingSample.single()["nodes"] as List<*>).map { it as Map<*, *> }
+        assertEquals(setOf("A", "B"), nodes.map { it["name"] }.toSet())
+        assertEquals(2, nodes.mapNotNull { it["elementId"] }.toSet().size)
 
         // The failed constraint was cleaned up — nothing is left behind
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "email")))

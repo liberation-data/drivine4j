@@ -70,11 +70,13 @@ enum class CypherDialect {
      * Schema (index / constraint) DDL grammar for this dialect.
      *
      * Neo4j 4 and 5 share schema DDL — only their DML existence syntax differs, which is why
-     * [grammar] distinguishes them but this does not. Engines without schema management support
+     * [grammar] distinguishes them; this does only for the function that gives a node's id, which
+     * a violation's sample names a node by. Engines without schema management support
      * (Neptune, generic openCypher) return a grammar that fails loudly on every operation.
      */
     fun schemaGrammar(): SchemaGrammar = when (this) {
-        NEO4J_5, NEO4J_4 -> Neo4jSchemaGrammar()
+        NEO4J_5 -> Neo4jSchemaGrammar()
+        NEO4J_4 -> Neo4jSchemaGrammar(elementIdFunction = "id")
         MEMGRAPH -> MemgraphSchemaGrammar()
         FALKORDB -> FalkorDbSchemaGrammar()
         NEPTUNE, OPEN_CYPHER -> UnsupportedSchemaGrammar(name)

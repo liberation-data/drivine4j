@@ -194,6 +194,17 @@ class SchemaManagerOwnershipIntegrationTest {
     }
 
     @Test
+    fun `a constraint read from a fragment and the same one declared by hand by another owner do not conflict`() {
+        // Only the fragment's knows the @NodeId a violation's sample names nodes by; the constraint is the same.
+        val app = SchemaCatalog.fromFragments(MessageFixture::class).forDatabase("neo").named("app")
+        val rag = SchemaCatalog.of(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence"))).forDatabase("neo").named("rag")
+
+        schemaManager(listOf(app, rag)).enforce()
+
+        assertNotNull(manager.constraints.find(UniquenessConstraintSpec("Message", listOf("sessionId", "sequence"))))
+    }
+
+    @Test
     fun `a conflict between two other owners does not block a selective enforce`() {
         // 'app' and 'other' conflict on Doc.embedding; 'rag' is unrelated and must still converge.
         val app = SchemaCatalog.of(VectorIndexSpec("Doc", "embedding", 768)).forDatabase("neo").named("app")

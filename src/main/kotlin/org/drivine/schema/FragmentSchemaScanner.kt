@@ -31,21 +31,27 @@ internal object FragmentSchemaScanner {
         val label = primaryLabel(fragmentClass)
         // A field's index/constraint must target its on-disk property name (@GraphProperty), since
         // that is what is stored and queried. Identity when there is no override.
-        val onDisk = onDiskNameResolver(fragmentClass)
+        val model = fragmentModel(fragmentClass)
+        val onDisk = onDiskNameResolver(model)
+        val nodeId = model?.nodeIdProperty
         val specs = mutableListOf<SchemaItemSpec>()
         specs += classLevelSpecs(fragmentClass, label, onDisk)
         specs += propertyLevelSpecs(fragmentClass, label, dimensionProvider, onDisk)
-        return specs
+        // A violation's sample names each conflicting node by the fragment's @NodeId too.
+        return specs.map { if (it is UniquenessConstraintSpec) it.copy(nodeIdProperty = nodeId) else it }
+    }
+
+    /** The fragment's model, or null when it cannot be read: its fields are then named as declared, and it has no `@NodeId`. */
+    private fun fragmentModel(fragmentClass: Class<*>): FragmentModel? = try {
+        FragmentModel.from(fragmentClass)
+    } catch (e: Exception) {
+        null
     }
 
     /** Maps a fragment field name to its on-disk property name (`@GraphProperty`), identity otherwise. */
-    private fun onDiskNameResolver(fragmentClass: Class<*>): (String) -> String {
-        val byField = try {
-            // A stamp field's property name is held as a statement writes it, quoted; a schema item names the property itself.
-            FragmentModel.from(fragmentClass).fields.associate { it.name to if (it.stamp) Stamps.PROPERTY else it.propertyName }
-        } catch (e: Exception) {
-            emptyMap()
-        }
+    private fun onDiskNameResolver(model: FragmentModel?): (String) -> String {
+        // A stamp field's property name is held as a statement writes it, quoted; a schema item names the property itself.
+        val byField = model?.fields?.associate { it.name to if (it.stamp) Stamps.PROPERTY else it.propertyName }.orEmpty()
         return { field -> byField[field] ?: field }
     }
 

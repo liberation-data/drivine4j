@@ -441,7 +441,8 @@ class SchemaManager(
             }
         }
         byIdentity.forEach { (identity, owned) ->
-            val distinctSpecs = owned.map { it.spec }.distinct()
+            // The property a constraint's violation sample names nodes by is no part of the item.
+            val distinctSpecs = owned.map { (it.spec as? UniquenessConstraintSpec)?.copy(nodeIdProperty = null) ?: it.spec }.distinct()
             if (distinctSpecs.size > 1 && owned.any { ownerFilter.includes(it.owner) }) {
                 throw DrivineException(
                     "Conflicting schema declarations for ${identity.first} on " +

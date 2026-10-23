@@ -63,7 +63,8 @@ class ConstraintManager internal constructor(
      * including one the grammar suspects that no repeated key bears out, is thrown.
      *
      * @param violationSampleSize how many conflicting property combinations to sample when a
-     *   violation is detected (0 leaves the sample empty; the data is still read, to confirm it)
+     *   violation is detected, and how many of the nodes that hold each one to name (0 leaves the
+     *   sample empty; the data is still read, to confirm it)
      * @param replaceBlockingIndex drop a plain index in the way of the constraint and make the
      *   constraint, whose own index takes its place, instead of returning [EnsureResult.BlockedByIndex].
      *   Only an engine whose constraint brings its own index reports one in the way (Neo4j; see

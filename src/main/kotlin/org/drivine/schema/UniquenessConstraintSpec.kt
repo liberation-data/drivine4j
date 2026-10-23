@@ -8,15 +8,20 @@ package org.drivine.schema
  * @param label node label, e.g. `"ChatSession"`
  * @param properties one (single) or more (composite) properties
  * @param name explicit constraint name; null derives one from label and properties
+ * @param nodeIdProperty the property a node is identified by in a violation's sample; set from the
+ *   fragment's `@NodeId` when the spec is read from one
  */
-data class UniquenessConstraintSpec(
+data class UniquenessConstraintSpec @JvmOverloads constructor(
     override val label: String,
     override val properties: List<String>,
     override val name: String? = null,
+    override val nodeIdProperty: String? = null,
 ) : ConstraintSpec {
 
     /** Single-property convenience constructor. */
-    constructor(label: String, property: String, name: String? = null) : this(label, listOf(property), name)
+    @JvmOverloads
+    constructor(label: String, property: String, name: String? = null, nodeIdProperty: String? = null) :
+        this(label, listOf(property), name, nodeIdProperty)
 
     init {
         require(properties.isNotEmpty()) { "UniquenessConstraintSpec requires at least one property" }

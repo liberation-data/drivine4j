@@ -256,6 +256,10 @@ class SchemaCatalog private constructor(
          * the annotation, while engine options can only be expressed in a hand-written catalog spec.
          * The two are not rivals, so the spec carrying engine options wins whole — no field-by-field
          * merging. Two specs that *both* pin engine options and disagree are a genuine conflict.
+         *
+         * A constraint's [ConstraintSpec.nodeIdProperty] may differ too, being no part of the item: a
+         * constraint read from a fragment and the same one declared by hand are one, and the fragment's,
+         * which knows the property its nodes are identified by, wins.
          */
         private fun deduplicate(specs: List<SchemaItemSpec>): List<SchemaItemSpec> {
             val byKey = specs.groupBy { Triple(it.kind, it.label, it.properties.toSet()) }
@@ -273,7 +277,7 @@ class SchemaCatalog private constructor(
 
             // Compare with engine options stripped: what remains is the portable declaration, and every
             // contributor must agree on it before engine options are even considered.
-            val portable = group.map { if (it is VectorIndexSpec) it.withoutEngineOptions() else it }.distinct()
+            val portable = group.map(::declared).distinct()
             if (portable.size > 1) {
                 conflict("they disagree on portable parameters", portable)
             }
@@ -284,7 +288,21 @@ class SchemaCatalog private constructor(
             if (pinning.size > 1) {
                 conflict("more than one declaration pins engine options", pinning)
             }
-            return pinning.firstOrNull() ?: group.first()
+            return pinning.firstOrNull()
+                // A constraint read from a fragment knows the property its nodes are identified by.
+                ?: group.firstOrNull { it is UniquenessConstraintSpec && it.nodeIdProperty != null }
+                ?: group.first()
+        }
+
+        /**
+         * What [spec] declares of the item itself: without engine options, which only one declaration
+         * may pin, and without the property a violation's sample names nodes by, which a hand-written
+         * declaration does not know.
+         */
+        private fun declared(spec: SchemaItemSpec): SchemaItemSpec = when (spec) {
+            is VectorIndexSpec -> spec.withoutEngineOptions()
+            is UniquenessConstraintSpec -> spec.copy(nodeIdProperty = null)
+            else -> spec
         }
     }
 }

@@ -388,15 +388,28 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     override fun isConstraintViolation(e: Throwable): Boolean =
         generateSequence(e) { it.cause }.any { it is SQLException && it.errorCode in setOf(1, 1452) }
 
+    /**
+     * Each node of a key that repeats is numbered within its key, and counted with it, so that a
+     * row names [limit] of its nodes at most however many hold the key. A node's element id is its
+     * `nid`.
+     */
     override fun sampleConflictsQuery(spec: ConstraintSpec, limit: Int): String {
         val keys = spec.properties.map { "JSON_VALUE(n.props, ${path(it)})" }
-        val entries = spec.properties.zip(keys).joinToString(", ") { (property, key) -> "${literal(property)} VALUE $key" }
+        val aliases = keys.indices.map { "k$it" }
+        val entries = spec.properties.zip(aliases).joinToString(", ") { (property, key) -> "${literal(property)} VALUE $key" }
+        val nodeId = SchemaGrammar.sampledNodeId(spec)
+        val node = listOfNotNull("'elementId' VALUE nid", nodeId?.let { "${literal(it)} VALUE i" }).joinToString(", ")
+        val selected = (keys.zip(aliases).map { (key, alias) -> "$key AS $alias" } + listOfNotNull(nodeId?.let { "JSON_VALUE(n.props, ${path(it)}) AS i" }))
+            .joinToString(", ")
+        val partition = keys.joinToString(", ")
         return """
-            SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT($entries), 'count' VALUE COUNT(*) RETURNING JSON)
-            FROM ${graph.nodes} n
-            WHERE ${hasLabel("n", spec.label)} AND ${keys.joinToString(" AND ") { "$it IS NOT NULL" }}
-            GROUP BY ${keys.joinToString(", ")}
-            HAVING COUNT(*) > 1
+            SELECT JSON_OBJECT('properties' VALUE JSON_OBJECT($entries), 'count' VALUE MAX(c),
+                               'nodes' VALUE JSON_ARRAYAGG(JSON_OBJECT($node) ORDER BY nid) RETURNING JSON)
+            FROM (SELECT n.nid, $selected, COUNT(*) OVER (PARTITION BY $partition) AS c, ROW_NUMBER() OVER (PARTITION BY $partition ORDER BY n.nid) AS r
+                  FROM ${graph.nodes} n
+                  WHERE ${hasLabel("n", spec.label)} AND ${keys.joinToString(" AND ") { "$it IS NOT NULL" }})
+            WHERE c > 1 AND r <= $limit
+            GROUP BY ${aliases.joinToString(", ")}
             FETCH FIRST $limit ROWS ONLY
         """.trimIndent()
     }
