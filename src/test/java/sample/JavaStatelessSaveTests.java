@@ -74,6 +74,18 @@ public class JavaStatelessSaveTests {
     }
 
     @Test
+    public void refusesASaveFromAClassWithNoStampField() {
+        Memo memo = new Memo(id, "one");
+
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> stateless.save(new Memo(id, "two"), memo));
+
+        assertEquals(
+            "Memo has no @NodeStamp field, so a save of a Memo has no stamp to be checked against what was loaded. Give it one, or save without from.",
+            refused.getMessage());
+        assertNull(stateless.load(id, Memo.class));
+    }
+
+    @Test
     public void replacesANamedRelationshipField() {
         Human ada = new Human(id + "-ada", "Ada");
         Human bob = new Human(id + "-bob", "Bob");
