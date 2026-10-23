@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
+import org.springframework.transaction.NestedTransactionNotSupportedException
 import org.springframework.transaction.PlatformTransactionManager
 import org.springframework.transaction.TransactionDefinition
 import org.springframework.transaction.annotation.EnableTransactionManagement
@@ -76,6 +77,8 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
         .apply { propagationBehavior = TransactionDefinition.PROPAGATION_REQUIRES_NEW }
     private val notSupportedTemplate = TransactionTemplate(transactionManager)
         .apply { propagationBehavior = TransactionDefinition.PROPAGATION_NOT_SUPPORTED }
+    private val nestedTemplate = TransactionTemplate(transactionManager)
+        .apply { propagationBehavior = TransactionDefinition.PROPAGATION_NESTED }
     private val run = "nest-" + UUID.randomUUID().toString().take(8)
 
     /** FalkorDB has no transactions, so nothing there is rolled back. */
@@ -167,6 +170,21 @@ class SpringAndDrivineTransactionsTests @Autowired constructor(
     }
 
     // Spring's transaction, with a block of Drivine's inside it
+
+    @Test
+    fun `a NESTED template is refused inside a block, and without a transaction Spring begins one`() {
+        transactions.transaction {
+            writer.mark(run, "block")
+            assertFailsWith<NestedTransactionNotSupportedException> {
+                nestedTemplate.executeWithoutResult { writer.mark(run, "nested") }
+            }
+        }
+        nestedTemplate.executeWithoutResult {
+            assertNotNull(transactions.current)
+            writer.mark(run, "alone")
+        }
+        assertEquals(listOf("alone", "block"), committed())
+    }
 
     @Test
     fun `a block run inside a TransactionTemplate joins Spring's transaction`() {

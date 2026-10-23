@@ -2550,7 +2550,8 @@ class Onboarding(private val transactions: Transactions, private val gom: Statel
 | `NEVER` | refuses: `IllegalTransactionStateException` | runs without one |
 | `NOT_SUPPORTED` | sets it aside, and runs without one | runs without one |
 
-`NESTED` is refused, as `DrivineTransactionManager` refuses it. Without a transaction, each statement commits as it runs.
+`NESTED` is refused, with a transaction or without one (`DrivineTransactionManager` refuses it in a transaction, and
+without one Spring runs it as `REQUIRED`). Without a transaction, each statement commits as it runs.
 `transaction(rollback = true) { }` rolls back though nothing failed: for a test.
 
 - The block that began the transaction commits it when it returns, and rolls it back when anything is thrown out of

@@ -52,8 +52,9 @@ class Transactions(
      * - [Propagation.MANDATORY]: join the current transaction; refuse to run without one.
      * - [Propagation.NEVER]: run without a transaction; refuse to run in one.
      * - [Propagation.NOT_SUPPORTED]: run without a transaction, setting the current one aside.
-     * - [Propagation.NESTED] is refused, as Spring's `DrivineTransactionManager` refuses it: no engine
-     *   Drivine speaks to has savepoints it uses.
+     * - [Propagation.NESTED] is refused, with a transaction or without one: no engine Drivine speaks
+     *   to has savepoints it uses. Spring's `DrivineTransactionManager` refuses it in a transaction,
+     *   and without one Spring runs it as `REQUIRED`.
      *
      * Without a transaction each statement commits as it runs.
      *

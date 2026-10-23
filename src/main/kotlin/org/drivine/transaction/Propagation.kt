@@ -11,6 +11,7 @@ enum class Propagation {
     MANDATORY,
     /**
      * Execute within a nested transaction if a current transaction exists, behave like `REQUIRED` otherwise.
+     * Not supported: [Transactions.transaction] refuses it, with a transaction or without one.
      */
     NESTED,
     /**
