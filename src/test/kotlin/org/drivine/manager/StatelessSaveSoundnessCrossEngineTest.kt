@@ -751,6 +751,16 @@ abstract class StatelessSaveSoundnessContract {
     }
 
     @Test
+    fun `a save from the object as loaded, of a node saved before a Default field was added, is written`() {
+        savedBeforeTheField()
+        val loaded = assertNotNull(stateless.load<ClaimWithStatus>("c1"))
+
+        stateless.save(loaded.copy(text = "two"), from = loaded)
+
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
     fun `an update of a node saved before a Default field was added loads again when the field is given another value under the same stamp`() {
         assumeReadsWithoutSnapshot()
         savedBeforeTheField()

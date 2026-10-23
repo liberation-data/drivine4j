@@ -284,6 +284,14 @@ class StatelessGraphObjectManager private constructor(
      * saved by a statement of its own. An object the batch
      * holds more than once is handed the stamp its node is left with each time.
      *
+     * The fragments are written class by class in an order the classes alone fix (by their names; on
+     * a Cypher store those without a stamp first, and of those the ones saved by statements of their
+     * own first, while a stamped one saved so goes last, after the views), and those of each class in
+     * the order of their ids, so that two batches over the same nodes take their locks in the same
+     * order whatever order they were given in. Fragments of one id keep the order they were given
+     * in, so the last of them is still the one written last. The views are written in the order given.
+     * The objects come back in the order given.
+     *
      * A batch that only adds is not checked, and it makes any node it does not find. With [only] or
      * [except], a node that was deleted since the object was loaded comes back holding its id and the
      * written fields alone, and for a view its relationships. It has its labels and a stamp, as any
@@ -344,7 +352,9 @@ class StatelessGraphObjectManager private constructor(
         val fields: Map<Class<*>, Set<String>?> = items.map { it.javaClass }.distinct().associateWith { batchWriteFields(it, only, except) }
         if (items.isEmpty()) return emptyList()
         val views = items.filter { it.javaClass.isAnnotationPresent(GraphView::class.java) }
+        // In lock order, so that two batches over the same nodes take their locks in the same order.
         val fragments = items.withIndex().filterNot { it.value.javaClass.isAnnotationPresent(GraphView::class.java) }
+            .inLockOrder({ it.value.javaClass }, { idOf(it.value) })
         require(relationships !is Replace || fragments.isEmpty()) {
             "Replace applies to the relationship fields of a @GraphView, and ${fragments.first().value.javaClass.simpleName} is not one."
         }
@@ -394,7 +404,7 @@ class StatelessGraphObjectManager private constructor(
         val left = linkedMapOf<Pair<Class<*>, Any?>, String>()
         val nodes = returned.map { row ->
             val item = items[row.index]
-            val node = item.javaClass to objectMapper.toMap(item)[FragmentModel.from(item.javaClass).nodeIdField]
+            val node = item.javaClass to idOf(item)
             found.putIfAbsent(node, row.found)
             left[node] = row.stamp
             item to node
@@ -409,6 +419,9 @@ class StatelessGraphObjectManager private constructor(
         }
         return saved
     }
+
+    /** The id of [fragment], as its object holds it. */
+    private fun idOf(fragment: Any): Any? = objectMapper.toMap(fragment)[FragmentModel.from(fragment.javaClass).nodeIdField]
 
     /** Each of [single] as the statement of [singles] that saved it hands its stamps back, from that statement's [rows]. */
     private fun savedSingly(single: List<Any>, singles: List<SaveStatement>, rows: List<List<Any?>>): Map<Any, Any> {

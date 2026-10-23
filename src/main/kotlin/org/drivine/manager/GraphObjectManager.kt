@@ -607,7 +607,9 @@ class GraphObjectManager internal constructor(
      * view; [StatelessGraphObjectManager.saveAll] writes fragments of several classes as one.
      *
      * Heterogeneous collections are supported: items are grouped by runtime class and each group is
-     * saved with its own model. The returned list is [objs] in input order, unchanged.
+     * saved with its own model. The returned list is [objs] in input order, unchanged. The roots of
+     * each class are upserted in the order of their ids, so two batches over the same roots lock them
+     * in the same order; the classes, and each item's relationship statements, go in the order given.
      *
      * **Batching strategy — "UNWIND the roots, pipeline the rest".** For each homogeneous group the
      * root-fragment upserts collapse into chunked `UNWIND $rows AS row MERGE (n:…{id}) SET n += row.props`
