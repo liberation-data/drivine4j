@@ -1402,7 +1402,7 @@ The `@SortedBy` annotation:
 - `startsWith` - STARTS WITH
 - `endsWith` - ENDS WITH
 - `matches` - regex match (`=~`) — *not supported on FalkorDB*
-- `containsIgnoreCase` / `eqIgnoreCase` - case-insensitive contains / equals (`toLower(...)`)
+- `containsIgnoreCase` / `eqIgnoreCase` - case-insensitive contains / equals (`toLower(...)`), read from an index on a [`@CaseInsensitive`](#caseinsensitive-lookups-that-ignore-case) field
 
 **Null Checking:**
 - `isNull()` - IS NULL
@@ -3401,6 +3401,29 @@ is never removed. Names beginning `__drivine.` are reserved: a field or bag may 
 A fragment may carry one `@NodeLabels` field. `saveAll` saves such a fragment one statement per
 object. On a relationship target in a `@GraphView`, a `String` field adds and does not remove.
 
+### @CaseInsensitive: lookups that ignore case
+
+`eqIgnoreCase` and `containsIgnoreCase` lowercase the property in the statement (`toLower(n.email) = $p`), and an engine cannot read a property wrapped in a function from an index: a lookup by email alone reads every node of the label. Declare the field `@CaseInsensitive`, and an index that ignores case over it, and the lookup is read from the index:
+
+```kotlin
+@NodeFragment(labels = ["Account"])
+data class Account(
+    @NodeId val id: String,
+    @CaseInsensitive @Unique(ignoreCase = true) val email: String,
+)
+
+accounts.loadAll(Account::class.java, AccountQueryDsl.INSTANCE) { where { query.email eqIgnoreCase "Ann@Example.com" } }
+```
+
+- **The copy.** Every save of the node also writes a lowercased copy of the property, under `__drivine.lower.<property>` (the property's stored name, so a `@GraphProperty` name is the one copied), beside the stamp. The database lowercases it, from the property as the save left it: `SET n.`__drivine.lower.email` = toLower(n.email)` on the graph engines, `LOWER` on Oracle and `lower` on Postgres. A property with no value has no copy, and on Oracle neither has an empty text. `save`, `saveAll` (with `only` or `except` too), `create`, `patch`, `patchAll` and the deprecated `GraphObjectManager` all keep it in step. The copy is no part of whether a save changed the node: a save that leaves the property as it was gives no new stamp, and the Neo4j check of `update` and `save(edited, from)` does not compare it.
+- **Hidden.** A load does not read the copy, and a flat `@PropertyBag` never holds it: names beginning `__drivine.` are Drivine's.
+- **The index.** `@RangeIndex(ignoreCase = true)`, `@Unique(ignoreCase = true)` and Neo4j's `@TextIndex(ignoreCase = true)`, or `RangeIndexSpec(…, ignoreCase = true)`, `UniquenessConstraintSpec(…, ignoreCase = true)` and `TextIndexSpec(…, ignoreCase = true)`, are made over the copy and named `<Label>_<property>_ci_range` and so on, apart from an item over the property itself. A uniqueness constraint that ignores case refuses `A@x.com` beside `a@x.com`. The annotations are refused on a field that is not `@CaseInsensitive`, since no save would keep its copy. A spec of your own that ignores case should be over a `@CaseInsensitive` field for the same reason.
+- **Filling the copy in.** A node saved before the field was `@CaseInsensitive` has no copy. `ensure` of an item that ignores case first fills the copy in on every node of the label, ten thousand at a time, then records that it has: on the store's `DrivineStore` node on the graph engines (the list `lowered`, each entry `["<Label>","<property>"]`), and as a row of kind `LOWER_COPY` in `<graph>_schema` on Oracle and Postgres. A recorded copy is not filled in again by a later `ensure`; `recreate` fills it in again.
+- **The lookup.** Once the copy of a property is recorded for a label of the fragment, `eqIgnoreCase` and `containsIgnoreCase` on it compare with the copy, the value lowercased by the database too: `n.`__drivine.lower.email` = toLower($p)` (`= LOWER(…)` on Oracle, `= lower(…)` on Postgres). Until then they lowercase the property itself, as for any other field, and find the nodes saved before there were copies. A process learns of a copy another process recorded within a minute. This is a load's, a count's, a `deleteAll`'s, a grouped read's and a patch's condition on the root; a condition on a related node and the filter of a vector or full-text search lowercase the property itself, as does an empty value.
+- **Which index serves what.** On Neo4j a RANGE index over the copy serves equality and a prefix, and a TEXT index `CONTAINS`. On Memgraph and FalkorDB the index serves equality. On Oracle and Postgres the copy is in the range index over the label's nodes, as any property is, and an equality is read from it.
+- **FalkorDB makes no uniqueness constraint over the copy.** `GRAPH.CONSTRAINT` takes a property only by a plain name, and refuses one with a dot in it ([FalkorDB/FalkorDB#551](https://github.com/FalkorDB/FalkorDB/issues/551)). `ensure` of a constraint that ignores case throws a `DrivineException` there, before anything is filled in or made. A range index over the copy is made, and serves the lookup.
+- **Writes that bypass Drivine** (Cypher or SQL of your own) do not keep the copy in step: a node so written is missed by a lookup once the copy is recorded. Write the copy as Drivine does, `SET ${LowerCopies.setClause("n", "email")}` in a `SET` of its own after the one that writes the property, or `recreate` the index to fill every copy in again.
+
 ### Relationships of a Runtime Type
 
 A `@GraphView` declares its relationships, type included. When the type is data — a graph whose
@@ -3473,6 +3496,8 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `Violation` | Constraint only: existing data violates it — a key the constraint covers repeats. Includes a bounded sample of the conflicting values, each with the nodes that hold it: their engine id (`elementId`), and their `@NodeId` when the constraint is declared on a fragment, as many nodes per value as `violationSampleSize`. A refusal the data does not bear out (no key repeats) is thrown, not reported as a `Violation` |
 | `BlockedByIndex` | Constraint only: a plain range index over the same label and properties is in the way of it, and is named. Neo4j alone refuses a constraint for one, since its constraint brings its own index. Nothing changed — drop the index, or ensure with `replaceBlockingIndex = true` (`drivine.schema.replace-blocking-index=true`), which drops it and makes the constraint |
 | `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
+
+**An item that ignores case** (`ignoreCase = true`) is made over the lowercased copy a `@CaseInsensitive` field keeps, and `ensure` fills the copy in first: see [@CaseInsensitive](#caseinsensitive-lookups-that-ignore-case).
 
 **A TEXT index is Neo4j's.** `TextIndexSpec` (or `@TextIndex` on a property) makes `CREATE TEXT INDEX … FOR (n:Label) ON (n.prop)`. That index is over one string property and serves `CONTAINS`, `STARTS WITH` and `ENDS WITH` on it. It is not a full-text index, and Neo4j lists, drift-checks and drops it as a kind of its own (`SchemaItemKind.TEXT_INDEX`), so the two can stand on the same property. No other engine has one. There, `ensure`, `recreate`, `find` and `drop` throw a `DrivineException` before anything runs, rather than make another index in its place, and applying a catalog that declares one fails for its owner. Mind the names: what Memgraph calls a `TEXT INDEX` is a full-text index, declared with `FullTextIndexSpec` / `@FullTextIndex`.
 

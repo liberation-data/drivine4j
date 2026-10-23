@@ -5,6 +5,7 @@ import org.drivine.backend.sql.StepKind
 import org.drivine.backend.sql.WritePlan
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
+import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
 import org.drivine.query.PatchOutcomes
 
@@ -22,10 +23,12 @@ import org.drivine.query.PatchOutcomes
  *   write and `unset` those to remove; `add` and `drop` are labels. With `expect`, the node must carry
  *   that stamp, or the block returns no row and writes nothing; with `absent`, the node must not be
  *   there, or the same. The node gets a new first token only if the step changes it.
+ *   With `lower`, the step writes the lowercased copy of each property it names, from what the node
+ *   holds once the step's writes are done; the copies are no part of whether it changed the node.
  * - `ref` finds a node that must be there, and locks it.
  * - `patch` writes `set` and removes `unset` on a node that is there, and does nothing for one that is
  *   not, nor for one that does not meet the block's predicate when it has one. The node gets a new
- *   first token only if the step changes it.
+ *   first token only if the step changes it, and then the copies `lower` names, as a `node` step writes them.
  * - `link` joins two nodes; `unlink` removes a field's relationships to some of its targets; `cut`
  *   removes the relationships of a type to one node, or with no node named, to every node in a
  *   direction. Each gives the nodes at both ends a new second token when it changes what joins them.
@@ -122,7 +125,7 @@ internal class OracleWriteBlock(
      * shapes and what it returns are in the text.
      */
     fun text(): String =
-        listOf(declarations(), finding(), joining(), relinking(), spanning(), members(), owning(), writingProperties(), clearingBags(), owningLabels(), relabelling(), savingNode(), findingNode(), linking(), unlinking(), cutting(), patchingNode())
+        listOf(declarations(), finding(), joining(), relinking(), spanning(), members(), owning(), writingProperties(), lowering(), clearingBags(), owningLabels(), relabelling(), savingNode(), findingNode(), linking(), unlinking(), cutting(), patchingNode())
             .joinToString("\n\n") + "\n" + main()
 
     /** The block's types, variables and exceptions. */
@@ -319,6 +322,37 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
     END;
 """.trim('\n')
 
+    /**
+     * `lower_props`: the lowercased copy of each property a step names under `lower`, from what the
+     * node holds once the step has written it, and none where it holds nothing. Oracle lowercases it,
+     * as it lowercases what a lookup compares the copy with. See [LowerCopies].
+     */
+    private fun lowering(): String = """
+    -- Writes to a node's properties the lowercased copy of each property the step names, from the
+    -- property as it now is, and removes the copy of one that has no value.
+    PROCEDURE lower_props(p_keys JSON_ARRAY_T, p_props IN OUT NOCOPY JSON_OBJECT_T) IS
+        v_key   VARCHAR2(4000);
+        v_lower VARCHAR2(32767);
+    BEGIN
+        IF p_keys IS NULL THEN
+            RETURN;
+        END IF;
+        FOR i IN 0 .. p_keys.get_size - 1 LOOP
+            v_key := p_keys.get_string(i);
+            v_lower := NULL;
+            IF p_props.has(v_key) AND NOT p_props.get(v_key).is_null THEN
+                v_lower := LOWER(p_props.get_string(v_key));
+            END IF;
+            -- Oracle keeps an empty text as null, so an empty property has no copy.
+            IF v_lower IS NULL THEN
+                p_props.remove('${LowerCopies.PREFIX}' || v_key);
+            ELSE
+                p_props.put('${LowerCopies.PREFIX}' || v_key, v_lower);
+            END IF;
+        END LOOP;
+    END;
+""".trim('\n')
+
     /** `clear_bags`: the stale keys of the property bags a `node` step names. */
     private fun clearingBags(): String = """
     -- Removes from a node's properties the keys of each property bag that the object no longer holds.
@@ -455,6 +489,7 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         v_dup       PLS_INTEGER := 0;
         v_relabel   BOOLEAN;
         v_same      NUMBER;
+        v_kept      NUMBER;
     BEGIN
         LOOP
             find(op.get_number('s'), op.get_string('k'), v_nid, v_stamp, v_labels, v_props);
@@ -491,9 +526,14 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             relabel(v_add, v_drop, v_labels, v_relabel);
 
             v_new_props := v_o.to_clob;
+            -- The copies are written from what the step leaves, and are no part of whether it changed the node.
+            IF op.has('lower') THEN
+                lower_props(op.get_array('lower'), v_o);
+            END IF;
             IF v_made THEN
                 -- A node that is made is written once, whole, with a stamp of its own.
                 v_stamp := v_fresh;
+                v_new_props := v_o.to_clob;
                 BEGIN
                     INSERT INTO ${graph.nodes} (labels, props, stamp) VALUES (v_labels, v_new_props, v_stamp) RETURNING nid INTO v_nid;
                     EXIT;
@@ -507,6 +547,12 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
             ELSE
                 -- A new first token only if the step changes the node, or the node has no stamp yet.
                 SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
+                -- Whether the properties, copies and all, are as they were.
+                v_kept := v_same;
+                IF op.has('lower') THEN
+                    v_new_props := v_o.to_clob;
+                    SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_kept FROM dual;
+                END IF;
                 -- A stamp that is not two tokens, which no save leaves, counts as none.
                 v_two := ${twoTokens("v_stamp")};
                 IF v_two IS NULL OR v_same = 0 OR v_relabel THEN
@@ -515,11 +561,14 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
                     IF v_relabel THEN
                         UPDATE ${graph.nodes} SET labels = v_labels WHERE nid = v_nid;
                     END IF;
-                    IF v_same = 0 THEN
+                    IF v_kept = 0 THEN
                         UPDATE ${graph.nodes} SET props = v_new_props, stamp = v_stamp WHERE nid = v_nid;
                     ELSE
                         UPDATE ${graph.nodes} SET stamp = v_stamp WHERE nid = v_nid;
                     END IF;
+                ELSIF v_kept = 0 THEN
+                    -- Only a copy was out of step with its property: the node keeps its stamp.
+                    UPDATE ${graph.nodes} SET props = v_new_props WHERE nid = v_nid;
                 END IF;
                 EXIT;
             END IF;
@@ -771,6 +820,11 @@ ${eachShape { index, shape -> joiner(index, shape, outgoing = false) }}
         END IF;
         v_new_props := v_o.to_clob;
         SELECT CASE WHEN JSON_EQUAL(v_props, v_new_props) THEN 1 ELSE 0 END INTO v_same FROM dual;
+        -- A node the step changes has its copies written from what it now holds.
+        IF v_same = 0 AND op.has('lower') THEN
+            lower_props(op.get_array('lower'), v_o);
+            v_new_props := v_o.to_clob;
+        END IF;
         -- A new first token only if the step changes the node, or the node has no stamp of two tokens yet.
         v_two := ${twoTokens("v_stamp")};
         IF v_two IS NULL OR v_same = 0 THEN

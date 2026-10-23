@@ -5,6 +5,7 @@ import org.drivine.annotation.GraphView
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.model.LowerCopies
 import org.drivine.query.GraphObjectMergeBuilder
 import org.drivine.query.ROW_CHANGES_NODE
 import org.drivine.query.Stamping
@@ -237,6 +238,7 @@ internal class BatchSaveOperations(
             "WITH $through, $found AS ${Stamps.FOUND}, $ROW_CHANGES_NODE AS changed",
             "SET n += row.props, ${Stamps.restamp("n", "changed", "row.stamp")}",
             "REMOVE ${Stamps.unmark("n")}".takeIf { handsBack },
+            LowerCopies.clause("n", model.lowerCopied),
         ).joinToString("\n")
     }
 

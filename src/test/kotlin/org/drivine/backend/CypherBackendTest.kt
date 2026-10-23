@@ -78,7 +78,7 @@ class CypherBackendTest {
     fun `a store that speaks Cypher gets the Cypher backend with the manager's own grammar`() {
         for (type in listOf(DatabaseType.NEO4J, DatabaseType.MEMGRAPH, DatabaseType.FALKORDB, DatabaseType.NEPTUNE, DatabaseType.EMBABEL)) {
             val store = RecordingStore(type)
-            val backend = GraphBackends.of(store, Neo4jObjectMapper.instance)
+            val backend = assertIs<LowerCopyLookups>(GraphBackends.of(store, Neo4jObjectMapper.instance)).backend
 
             assertIs<CypherBackend>(backend, type.name)
             assertSame(store.grammar.javaClass, backend.cypherGrammar!!.javaClass)
@@ -89,7 +89,7 @@ class CypherBackendTest {
     @Test
     fun `Postgres gets its own backend, which has no Cypher grammar and makes the graph the manager names`() {
         val store = RecordingStore(DatabaseType.POSTGRES, graphName = "g")
-        val backend = GraphBackends.of(store, Neo4jObjectMapper.instance)
+        val backend = assertIs<LowerCopyLookups>(GraphBackends.of(store, Neo4jObjectMapper.instance)).backend
 
         assertIs<PostgresBackend>(backend)
         assertNull(backend.cypherGrammar)
@@ -99,7 +99,7 @@ class CypherBackendTest {
     @Test
     fun `Oracle gets its own backend, which has no Cypher grammar and makes the graph the manager names`() {
         val store = RecordingStore(DatabaseType.ORACLE, ddl = OracleSchemaGrammar(OracleGraph("g")), graphName = "g")
-        val backend = GraphBackends.of(store, Neo4jObjectMapper.instance)
+        val backend = assertIs<LowerCopyLookups>(GraphBackends.of(store, Neo4jObjectMapper.instance)).backend
 
         assertIs<OracleBackend>(backend)
         assertNull(backend.cypherGrammar)

@@ -1,5 +1,6 @@
 package org.drivine.model
 
+import org.drivine.annotation.CaseInsensitive
 import org.drivine.annotation.CompositeProperty
 import org.drivine.annotation.GraphProperty
 import org.drivine.annotation.GraphTransient
@@ -75,6 +76,13 @@ data class FragmentModel(
     val vectorFieldNames: Set<String>
         get() = fields.filter { it.vectorIndexed }.map { it.name }.toSet()
 
+    /**
+     * The stored names of the `@CaseInsensitive` fields, each of which a save gives a lowercased copy
+     * (see [LowerCopies]). Empty for the common fragment.
+     */
+    val lowerCopied: List<String>
+        get() = fields.filter { it.caseInsensitive }.map { it.propertyName }
+
     /** The name of the `@NodeStamp` field, or null when the fragment declares none. */
     val stampField: String?
         get() = fields.firstOrNull { it.stamp }?.name
@@ -108,6 +116,7 @@ data class FragmentModel(
             // The stamp first: two stamp fields share a property, and should be told so as stamps.
             validateStamp(allFields, clazz)
             validateGraphProperty(allFields, clazz)
+            validateCaseInsensitive(allFields, clazz)
 
             val nodeLabels = resolveNodeLabels(allFields, labels, clazz)
             val declared = allFields.filter { it.propertyBag == null && it.nodeLabels == null }
@@ -212,6 +221,19 @@ data class FragmentModel(
                 require(it.propertyName == Stamps.QUOTED) {
                     "@NodeStamp field '${it.name}' on ${clazz.simpleName} also has @GraphProperty(\"${it.propertyName}\"). " +
                         "The stamp is stored under a property of its own, so it carries no other mapping annotation: remove @GraphProperty."
+                }
+            }
+        }
+
+        /**
+         * A `@CaseInsensitive` field is a `String` stored as a property of its own: not the stamp, not a
+         * property bag and not the node's labels.
+         */
+        private fun validateCaseInsensitive(allFields: List<FragmentField>, clazz: Class<*>) {
+            allFields.filter { it.caseInsensitive }.forEach {
+                require(it.type == String::class.java && !it.stamp && it.propertyBag == null && it.nodeLabels == null) {
+                    "@CaseInsensitive field '${it.name}' on ${clazz.simpleName} is declared as ${it.typeString}. " +
+                        "It must be a String stored as a property of its own: not a @NodeStamp, @PropertyBag or @NodeLabels field."
                 }
             }
         }
@@ -343,6 +365,7 @@ data class FragmentModel(
                         propertyName = storedName(property.name, property.isNodeStamp(), property.graphPropertyName()),
                         nodeLabels = property.nodeLabelsModel(clazz),
                         stamp = property.isNodeStamp(),
+                        caseInsensitive = property.isCaseInsensitive(),
                     )
                 }.sortedBy { it.name }
         }
@@ -358,6 +381,10 @@ data class FragmentModel(
         /** Whether a Kotlin property (or its backing field) carries `@NodeStamp`. */
         private fun KProperty1<*, *>.isNodeStamp(): Boolean =
             findAnnotation<NodeStamp>() != null || javaField?.isAnnotationPresent(NodeStamp::class.java) == true
+
+        /** Whether a Kotlin property (or its backing field) carries `@CaseInsensitive`. */
+        private fun KProperty1<*, *>.isCaseInsensitive(): Boolean =
+            findAnnotation<CaseInsensitive>() != null || javaField?.isAnnotationPresent(CaseInsensitive::class.java) == true
 
         /** Whether a Kotlin property (or its backing field) carries `@VectorIndex`. */
         private fun KProperty1<*, *>.isVectorIndexed(): Boolean =
@@ -462,6 +489,7 @@ data class FragmentModel(
                                 ),
                                 nodeLabels = nodeLabels,
                                 stamp = field.isAnnotationPresent(NodeStamp::class.java),
+                                caseInsensitive = field.isAnnotationPresent(CaseInsensitive::class.java),
                             )
                         )
                     }

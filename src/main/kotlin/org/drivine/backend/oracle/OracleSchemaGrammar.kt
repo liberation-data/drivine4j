@@ -6,6 +6,7 @@ import org.drivine.backend.oracle.OracleSql.path
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
+import org.drivine.schema.LowerCopyStatements
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
@@ -66,6 +67,8 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
     override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = OracleVersionMarker(graph, label, scopeProperty)
 
     override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = OracleStoreStamp(graph, label, keyProperty)
+
+    override fun lowerCopies(): LowerCopyStatements = OracleLowerCopies(graph)
 
     /** [text] as a schema statement. */
     private fun statement(text: String): SchemaStatement = SchemaStatement.Cypher(text.trimIndent())

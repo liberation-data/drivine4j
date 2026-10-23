@@ -191,7 +191,7 @@ class SchemaManager(
     /** What makes two declarations the same item: kind, label and property set. */
     private data class Identity(val kind: SchemaItemKind, val label: String, val properties: Set<String>)
 
-    private fun identityOf(spec: SchemaItemSpec) = Identity(spec.kind, spec.label, spec.properties.toSet())
+    private fun identityOf(spec: SchemaItemSpec) = Identity(spec.kind, spec.label, spec.made().properties.toSet())
 
     /** The [runtime] items with [catalog]'s added, each replacing an item of its identity, owner and target. */
     private fun withRuntime(catalog: SchemaCatalog): Map<Pair<String?, DatabaseTarget>, LinkedHashMap<Identity, SchemaItemSpec>> {
@@ -436,7 +436,7 @@ class SchemaManager(
         val byIdentity = mutableMapOf<Triple<SchemaItemKind, String, Set<String>>, MutableList<Owned>>()
         ownerSpecs.forEach { (owner, specs) ->
             specs.forEach { spec ->
-                val identity = Triple(spec.kind, spec.label, spec.properties.toSet())
+                val identity = Triple(spec.kind, spec.label, spec.made().properties.toSet())
                 byIdentity.getOrPut(identity) { mutableListOf() } += Owned(owner, spec)
             }
         }
