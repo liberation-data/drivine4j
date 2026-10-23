@@ -6,6 +6,7 @@ import org.drivine.StaleObjectException
 import org.drivine.annotation.GraphView
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.backend.FragmentBatch
+import org.drivine.mapper.PackedText
 import org.drivine.mapper.toMap
 import org.drivine.annotation.NodeFragment
 import org.drivine.mapper.ResultPostProcessor
@@ -165,7 +166,7 @@ class StatelessGraphObjectManager private constructor(
     /**
      * [obj] to be checked as [from], the object it was loaded as: carrying [from]'s stamp, whatever
      * stamp it carries itself, as [update] checks against the stamp it loaded; and [from]'s root fields,
-     * as a save writes them, which the save compares with the node. [from] must not be [obj] itself: an
+     * as [asLoaded] gives them, which the save compares with the node. [from] must not be [obj] itself: an
      * object changed in place no longer says what was loaded. A copy may share an unchanged root.
      */
     private fun <T : Any> loadedAs(obj: T, from: T): Pair<T, Map<String, Any?>> {
@@ -178,12 +179,13 @@ class StatelessGraphObjectManager private constructor(
         val root = requireNotNull(stamps.rootOf(obj)) { "The ${obj.javaClass.simpleName} saved has no root fragment." }
         val loadedRoot = requireNotNull(stamps.rootOf(from)) { "The ${from.javaClass.simpleName} given as from has no root fragment." }
         val idField = requireNotNull(rootModel(obj.javaClass).nodeIdField)
-        val asLoaded = objectMapper.toMap(loadedRoot)
+        val loadedStamp = stamps.stampOf(from)
+        val asLoaded = asLoaded(loadedRoot, loadedStamp)
         val id = objectMapper.toMap(root)[idField]
         require(asLoaded[idField]?.toString() == id?.toString()) {
             "from is the ${from.javaClass.simpleName} '${asLoaded[idField]}', and the object saved '$id'. Give the object as it was loaded."
         }
-        val loadedStamp = requireNotNull(stamps.stampOf(from)) {
+        requireNotNull(loadedStamp) {
             "The ${from.javaClass.simpleName} given as from carries no stamp, so nothing says what it was loaded with. Give it as it was loaded, with its @NodeStamp field."
         }
         val saved = if (stamps.stampOf(obj) == loadedStamp) obj else stamps.of(obj, IdentityHashMap<Any, String>().apply { put(root, loadedStamp) })
@@ -638,7 +640,9 @@ class StatelessGraphObjectManager private constructor(
      * `@NodeStamp` field: without one a change by another writer is not noticed. On an engine whose
      * reads take no snapshot (Neo4j), a load can be handed another writer's stamp with the data from
      * before its write, so the save compares each field of the root as it was loaded too: each
-     * declared field, each `@PropertyBag` key by key, and the `@NodeLabels` field.
+     * declared field, each `@PropertyBag` key by key, and the `@NodeLabels` field. A `@JsonPacked`
+     * field is compared as the text the load read, so JSON another writer packed another way is not
+     * taken for a change.
      *
      * An update writes to the node it loaded and never makes one. If the node is deleted between the
      * load and the save, nothing is written and null is returned, as when it was not there to load.
@@ -658,8 +662,7 @@ class StatelessGraphObjectManager private constructor(
             val loadedClass = loaded.javaClass
             val before = digests.digestOf(loaded)
             val loadedStamp = stamps.stampOf(loaded)
-            // The root's fields as the save writes them, which a checked save compares with the node.
-            val asLoaded = objectMapper.toMap(requireNotNull(stamps.rootOf(loaded)))
+            val asLoaded = asLoaded(requireNotNull(stamps.rootOf(loaded)), loadedStamp)
             // Outside the try: a stale save the change makes itself is not this update's to try again.
             val changed = change(loaded)
             try {
@@ -684,6 +687,16 @@ class StatelessGraphObjectManager private constructor(
     @JvmOverloads
     fun <T : Any> update(id: UUID, graphClass: Class<T>, attempts: Int = 3, change: (T) -> T): T? =
         update(id.toString(), graphClass, attempts, change)
+
+    /**
+     * The fields of [root], loaded with [loadedStamp], as a checked save compares them with the node:
+     * as the save writes them, but a `@JsonPacked` field as the text the load read ([PackedText]),
+     * so that JSON another writer packed another way is not taken for a change. A packed field the
+     * node held nothing for, whose value came from a default, and one of a root no load made, such
+     * as a copy, are packed as the save packs them.
+     */
+    private fun asLoaded(root: Any, loadedStamp: String?): Map<String, Any?> =
+        objectMapper.toMap(root) + PackedText.of(root, loadedStamp).orEmpty().filterValues { it != null }
 
     /**
      * Saves what differs between an object as it was loaded, digested as [before], its root's fields

@@ -40,8 +40,11 @@ import org.testcontainers.utility.DockerImageName
 import sample.flatexpand.SeqExpandView
 import sample.stateless.Claim
 import sample.stateless.ClaimWithBagAndStatus
+import sample.stateless.ClaimWithDefaultTags
 import sample.stateless.ClaimWithRoles
 import sample.stateless.ClaimWithStatus
+import sample.stateless.ClaimWithTags
+import sample.stateless.ClaimWithTagsView
 import sample.stateless.Sticker
 import sample.stateless.Finding
 import sample.stateless.Swatch
@@ -760,6 +763,103 @@ abstract class StatelessSaveSoundnessContract {
         assertEquals(2, applied, "the first save is refused: the node holds a status, and not the one loaded")
         assertEquals("closed", property("c1", "status"))
         assertEquals("two", property("c1", "text"))
+    }
+
+    // ----- A packed field another writer packed another way -----
+
+    /** A claim with packed tags, whose text is then rewritten as [text], leaving the stamp alone: as another library packs it. */
+    private fun packedAs(text: String) {
+        stateless.save(ClaimWithTags("c1", "one", tags = listOf("a", "b")))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.tags = $text")
+    }
+
+    @Test
+    fun `an update of a node whose packed field was packed with other spacing is written at the first attempt`() {
+        packedAs("'[\"a\", \"b\", \"c\"]'")
+
+        val updated = assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "two") })
+
+        assertEquals(listOf("a", "b", "c"), updated.tags)
+        assertEquals("two", property("c1", "text"))
+        assertEquals("[\"a\", \"b\", \"c\"]", property("c1", "tags"), "the packed text is left as the other writer packed it")
+    }
+
+    @Test
+    fun `an update of a view whose root's packed field was packed with other spacing is written at the first attempt`() {
+        packedAs("'[\"a\", \"b\"]'")
+
+        val updated = assertNotNull(stateless.update<ClaimWithTagsView>("c1", attempts = 1) { it.copy(claim = it.claim.copy(text = "two")) })
+
+        assertEquals(listOf("a", "b"), updated.claim.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `an update of a node whose packed field holds text that is not JSON, or a list, is written at the first attempt`() {
+        packedAs("'plain'")
+        assertEquals(listOf("plain"), assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "two") }).tags)
+        assertEquals("plain", property("c1", "tags"))
+
+        run("MATCH (c:Claim {id: 'c1'}) SET c.tags = ['x', 'y']")
+        assertEquals(listOf("x", "y"), assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "three") }).tags)
+        assertEquals("three", property("c1", "text"))
+    }
+
+    @Test
+    fun `an update of a node saved before a packed field with a default was added is written at the first attempt`() {
+        savedBeforeTheField()
+
+        val updated = assertNotNull(stateless.update<ClaimWithDefaultTags>("c1", attempts = 1) { it.copy(text = "two") })
+
+        assertEquals(listOf("new"), updated.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `update loads again when a packed field another writer packed another way differs under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        packedAs("'[\"a\", \"b\"]'")
+
+        val applied = appliedAfterUnmarked<ClaimWithTags>("c1", "MATCH (c:Claim {id: 'c1'}) SET c.tags = '[\"a\", \"theirs\"]'") { it.copy(text = "two") }
+
+        assertEquals(2, applied, "the save of the first load was refused")
+        assertEquals(listOf("a", "theirs"), stateless.load<ClaimWithTags>("c1")?.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `update loads again when a packed field loaded as its default is given a value under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        savedBeforeTheField()
+
+        val applied = appliedAfterUnmarked<ClaimWithDefaultTags>("c1", "MATCH (c:Claim {id: 'c1'}) SET c.tags = '[\"theirs\"]'") { it.copy(text = "two") }
+
+        assertEquals(2, applied, "the first save is refused: the node holds tags, and not the ones loaded")
+        assertEquals(listOf("theirs"), stateless.load<ClaimWithDefaultTags>("c1")?.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `a save from the object as loaded compares a packed field as the node held it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val loaded = assertNotNull(stateless.load<ClaimWithTags>("c1"))
+
+        stateless.save(loaded.copy(text = "two"), from = loaded)
+
+        assertEquals("two", property("c1", "text"))
+        assertEquals(listOf("a", "b"), stateless.load<ClaimWithTags>("c1")?.tags)
+    }
+
+    @Test
+    fun `a save from a copy of the object as loaded compares a packed field as a save packs it`() {
+        assumeReadsWithoutSnapshot()
+        packedAs("'[\"a\", \"b\"]'")
+        val loaded = assertNotNull(stateless.load<ClaimWithTags>("c1"))
+
+        // No load made the copy, so nothing says what text the node held: the save is refused, which is safe.
+        assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(text = "two"), from = loaded.copy()) }
+
+        assertEquals("one", property("c1", "text"))
     }
 
     // ----- Inside a transaction -----

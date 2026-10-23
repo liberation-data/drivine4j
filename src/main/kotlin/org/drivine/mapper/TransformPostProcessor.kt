@@ -9,6 +9,7 @@ import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
 import org.drivine.query.POLYMORPHIC_LABELS_KEY
+import org.drivine.query.read
 import org.neo4j.driver.Value
 import org.neo4j.driver.internal.value.MapValue
 import kotlin.reflect.KClass
@@ -71,10 +72,27 @@ class TransformPostProcessor<S, T>(
         // fields from their flat prefixed keys, before deserializing.
         val data = reconstructFragmentData(rawData, targetType)
 
-        return if (requiresSpecialHandling(targetType)) {
+        val result = if (requiresSpecialHandling(targetType)) {
             constructWithSpecialHandling(data as Map<String, Any?>, targetType) as T
         } else {
             objectMapper.convertValue(data, targetType) as T
+        }
+        keepPackedText(result, data)
+        return result
+    }
+
+    /**
+     * Keeps, beside the root fragment of [result], the text its `@JsonPacked` properties held in
+     * [data], for a checked save to compare them as the node held them: see [PackedText].
+     */
+    private fun keepPackedText(result: Any?, data: Any?) {
+        if (result == null || data !is Map<*, *>) return
+        if (result.javaClass.isAnnotationPresent(GraphView::class.java)) {
+            val root = GraphViewModel.from(result.javaClass).rootFragment.fieldName
+            val fragment = read(result, root) ?: return
+            (data[root] as? Map<*, *>)?.let { PackedText.record(fragment, it, objectMapper) }
+        } else if (result.javaClass.isAnnotationPresent(NodeFragment::class.java)) {
+            PackedText.record(result, data, objectMapper)
         }
     }
 
