@@ -3,7 +3,9 @@ package sample.stateless
 import org.drivine.annotation.Aggregate
 import org.drivine.annotation.AggregateFunction
 import org.drivine.annotation.Count
+import org.drivine.annotation.Default
 import org.drivine.annotation.Direction
+import org.drivine.annotation.EmptyWhenAbsent
 import org.drivine.annotation.GraphPath
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
@@ -11,6 +13,7 @@ import org.drivine.annotation.Hop
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
+import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.ReadOnly
 import org.drivine.annotation.RelationshipFragment
 import org.drivine.annotation.Root
@@ -37,6 +40,51 @@ data class Finding(
     /** This finding with the sources of [other] it does not have yet. */
     fun merge(other: Finding): Finding = copy(sources = (sources + other.sources).distinct())
 }
+
+/**
+ * Claims whose last field was added after nodes were saved without it, so a load fills it in: by
+ * `@EmptyWhenAbsent`, and by `@Default`.
+ */
+@NodeFragment(labels = ["Claim"])
+data class ClaimWithRoles(
+    @NodeId val id: String,
+    val text: String,
+    @NodeStamp val stamp: String? = null,
+    @EmptyWhenAbsent val roles: List<String>,
+)
+
+@NodeFragment(labels = ["Claim"])
+data class ClaimWithStatus(
+    @NodeId val id: String,
+    val text: String,
+    @NodeStamp val stamp: String? = null,
+    @Default val status: String = "open",
+)
+
+/**
+ * A claim with a property bag, so loaded with every property of the node, whose status was added
+ * after nodes were saved without it: a load leaves the field out, and Kotlin fills in its default.
+ */
+@NodeFragment(labels = ["Claim"])
+data class ClaimWithBagAndStatus(
+    @NodeId val id: String,
+    val text: String,
+    @NodeStamp val stamp: String? = null,
+    @PropertyBag(prefix = "meta") val meta: Map<String, Any?> = emptyMap(),
+    val status: String = "open",
+)
+
+/**
+ * A claim whose status may be null and has a constructor default: a load naming each field reads a
+ * node without the property as null, so the default is not what such a load gives.
+ */
+@NodeFragment(labels = ["Claim"])
+data class ClaimWithOptionalStatus(
+    @NodeId val id: String,
+    val text: String,
+    @NodeStamp val stamp: String? = null,
+    val status: String? = "open",
+)
 
 /** A node type with no stamp field. */
 @NodeFragment(labels = ["Memo"])

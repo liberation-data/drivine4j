@@ -2,6 +2,7 @@ package org.drivine.query
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import java.util.Objects
 import org.drivine.manager.NullPolicy
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
@@ -102,6 +103,8 @@ internal class FragmentMergeBuilder(
         // from before its write. Each field is compared as it was loaded too, under the lock, so the
         // save of such an object is refused, as a stale one is. A comparison that cannot tell (a list
         // holding a null) is not a difference: the stamp still speaks for the field.
+        // A value that a load gives a node holding no such property (a default, an empty collection)
+        // may have been loaded from none, so a missing property passes for it too.
         val loadedBindings = mutableMapOf<String, Any?>()
         fun loadedParam(name: String, value: Any?): String = parameter("$LOADED_PARAM$name").also { loadedBindings[it] = value }
         val fieldsAsLoaded = if (expected == null || asLoaded == null) emptyList() else {
@@ -110,7 +113,8 @@ internal class FragmentMergeBuilder(
                 val value = asLoaded[field.name] ?: return@mapIndexed "$stored IS NULL"
                 val param = loadedParam("$index", value)
                 val loaded = if (field.name in fragmentModel.vectorFieldNames) grammar?.vectorPropertyLiteral(param) ?: "\$$param" else "\$$param"
-                "$stored IS NOT NULL AND NOT coalesce($stored <> $loaded, false)"
+                val same = "NOT coalesce($stored <> $loaded, false)"
+                if (loadedWhenAbsent(field.name, asLoaded)) same else "$stored IS NOT NULL AND $same"
             }
             // A bag holds the keys it owns, each with its value: none added, none removed, none changed.
             val bags = fragmentModel.propertyBags.mapIndexed { index, bag ->
@@ -323,6 +327,24 @@ internal class FragmentMergeBuilder(
         val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, expected, carried) }
         return MergeStatement(query, bindings, stampWrite)
     }
+
+    /**
+     * Whether a load of the node [asLoaded] was read from, were it to hold no property for [field],
+     * would give the field the value it was loaded with: a `@Default`, an `@EmptyWhenAbsent` empty
+     * collection, a constructor default. The load is the object mapper's, from the fields as loaded
+     * with that one null, as a load naming each field reads it, or, where the load reads every
+     * property ([FragmentQueryBuilder.readWhole]: a property bag, a sealed type), left out, as such a
+     * load reads it. Only the read the load makes counts: a load naming the field hands the mapper a
+     * null, so a nullable field's constructor default is not what it gives. A class it cannot make
+     * so (a field that must be there) is no such case.
+     */
+    private fun loadedWhenAbsent(field: String, asLoaded: Map<String, Any?>): Boolean =
+        (if (FragmentQueryBuilder.readWhole(fragmentModel)) asLoaded - field else asLoaded + (field to null)).let { read ->
+            runCatching {
+                val made = objectMapper.convertValue(read, fragmentModel.clazz)
+                Objects.deepEquals(objectMapper.toMap(made)[field], asLoaded[field])
+            }.getOrDefault(false)
+        }
 
     private companion object {
         /** Bind-parameter name for the labels an open `@NodeLabels` field records as its own. */
