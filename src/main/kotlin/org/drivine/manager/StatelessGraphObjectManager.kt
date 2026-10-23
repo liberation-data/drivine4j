@@ -592,8 +592,8 @@ class StatelessGraphObjectManager private constructor(
      * applied to the fresh one: [attempts] tries in all, and the last failure is thrown. That needs a
      * `@NodeStamp` field: without one a change by another writer is not noticed. On an engine whose
      * reads take no snapshot (Neo4j), a load can be handed another writer's stamp with the data from
-     * before its write, so the save compares each declared field of the root as it was loaded too:
-     * not a `@PropertyBag` or `@NodeLabels` field, which the stamp alone speaks for.
+     * before its write, so the save compares each field of the root as it was loaded too: each
+     * declared field, each `@PropertyBag` key by key, and the `@NodeLabels` field.
      *
      * An update writes to the node it loaded and never makes one. If the node is deleted between the
      * load and the save, nothing is written and null is returned, as when it was not there to load.
