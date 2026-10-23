@@ -9,6 +9,7 @@ import org.drivine.annotation.NodeLabels
 import org.drivine.annotation.NodeStamp
 import org.drivine.annotation.PropertyBag
 import org.drivine.annotation.VectorIndex
+import org.drivine.schema.VectorAnnotationCheck
 import java.lang.reflect.Modifier
 import java.lang.reflect.ParameterizedType
 import kotlin.reflect.KClass
@@ -93,6 +94,8 @@ data class FragmentModel(
          * @param clazz The class to analyze
          * @return FragmentModel containing metadata about the class
          * @throws IllegalArgumentException if the class is not annotated with @GraphFragment
+         * @throws org.drivine.DrivineException if a vector index applied from a [org.drivine.schema.SchemaCatalog]
+         *   covers a field of the class that has no `@VectorIndex`
          */
         fun from(clazz: Class<*>): FragmentModel {
             clazz.getAnnotation(NodeFragment::class.java)
@@ -144,7 +147,7 @@ data class FragmentModel(
                     "else declares, so a fragment can have only one."
             }
 
-            return FragmentModel(
+            val model = FragmentModel(
                 className = clazz.name,
                 clazz = clazz,
                 labels = labels,
@@ -154,6 +157,10 @@ data class FragmentModel(
                 propertyBags = prefixedBags + flatBags,
                 nodeLabels = nodeLabels,
             )
+            // A catalog's vector index over a field without @VectorIndex is refused here as well as when
+            // the catalog is applied, since either may come first.
+            VectorAnnotationCheck.admit(model)
+            return model
         }
 
         /**
