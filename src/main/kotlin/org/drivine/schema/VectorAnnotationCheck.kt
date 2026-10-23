@@ -2,7 +2,8 @@ package org.drivine.schema
 
 import org.drivine.DrivineException
 import org.drivine.model.FragmentModel
-import java.util.concurrent.ConcurrentHashMap
+import java.util.WeakHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Refuses a vector index declared in a [SchemaCatalog] over a fragment field that has no
@@ -17,11 +18,20 @@ import java.util.concurrent.ConcurrentHashMap
  * fragment classes whose [FragmentModel] has been built. Each new arrival is checked against the other.
  * A spec for a label no fragment maps has nothing to check, and a spec beside the annotation is the
  * documented way to tune an index.
+ *
+ * Classes are held weakly, so a classloader dropped by a restart (Spring Boot devtools) is not kept alive.
  */
 internal object VectorAnnotationCheck {
 
     private val specs = mutableSetOf<VectorIndexSpec>()
-    private val admitted = ConcurrentHashMap<Class<*>, FragmentModel>()
+
+    /** Whether a class has passed: the lock-free check every [FragmentModel.from] makes. */
+    private val passed = object : ClassValue<AtomicBoolean>() {
+        override fun computeValue(type: Class<*>) = AtomicBoolean(false)
+    }
+
+    /** The classes that have passed, for [register] to check again; guarded by the object's lock. */
+    private val admitted = WeakHashMap<Class<*>, Unit>()
 
     /** Records the vector specs of [catalogs] and checks them against every fragment admitted so far. */
     fun register(catalogs: List<SchemaCatalog>) {
@@ -29,17 +39,20 @@ internal object VectorAnnotationCheck {
         if (declared.isEmpty()) return
         synchronized(this) {
             specs += declared
-            refuse(admitted.values.flatMap { uncovered(it, declared) })
+            // Rebuilt rather than kept, so nothing here holds a class strongly. An admitted class returns from admit at once.
+            refuse(admitted.keys.toList().flatMap { uncovered(FragmentModel.from(it), declared) })
         }
     }
 
     /** Checks a newly built [model] against the vector specs registered so far, once per class. */
     fun admit(model: FragmentModel) {
-        if (admitted.containsKey(model.clazz)) return
+        val flag = passed.get(model.clazz)
+        if (flag.get()) return
         synchronized(this) {
             // Not admitted when refused, so every later build of the class is refused too.
             refuse(uncovered(model, specs))
-            admitted[model.clazz] = model
+            admitted[model.clazz] = Unit
+            flag.set(true)
         }
     }
 

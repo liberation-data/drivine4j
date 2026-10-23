@@ -32,6 +32,9 @@ data class CheckRenamedAway(@NodeId val id: String, @GraphProperty("other") val 
 @NodeFragment(labels = ["CheckChunk", "CheckContent"])
 data class CheckChunk(@NodeId val id: String, val embedding: List<Float>?)
 
+@NodeFragment(labels = ["CheckTwoFields"])
+data class CheckTwoFields(@NodeId val id: String, val embedding: List<Float>?, val summary: List<Float>?)
+
 @NodeFragment(labels = ["CheckAnnotated"])
 data class CheckAnnotated(@NodeId val id: String, @VectorIndex val embedding: List<Float>?)
 
@@ -45,9 +48,11 @@ data class CheckAnnotatedLater(@NodeId val id: String, @VectorIndex val embeddin
  */
 class VectorAnnotationCheckTest {
 
-    private fun enforce(vararg specs: SchemaItemSpec) {
+    private fun enforce(vararg specs: SchemaItemSpec) = enforce(listOf(SchemaCatalog.of(*specs)))
+
+    private fun enforce(catalogs: List<SchemaCatalog>) {
         val registry = DatabaseRegistry(DataSourceMap(emptyMap()))
-        SchemaManager(PersistenceManagerFactory(registry, TransactionContextHolder(registry)), registry, listOf(SchemaCatalog.of(*specs)))
+        SchemaManager(PersistenceManagerFactory(registry, TransactionContextHolder(registry)), registry, catalogs)
             .enforce()
     }
 
@@ -107,5 +112,29 @@ class VectorAnnotationCheckTest {
 
         enforce(VectorIndexSpec("CheckAnnotatedLater", "embedding", 4))
         assertDoesNotThrow { FragmentModel.from(CheckAnnotatedLater::class) }
+    }
+
+    @Test
+    fun `every uncovered field is reported, once however many specs cover it`() {
+        FragmentModel.from(CheckTwoFields::class)
+
+        val error = assertThrows<DrivineException> {
+            // Two owners may declare the same index; the field is still reported once.
+            enforce(
+                listOf(
+                    SchemaCatalog.of(VectorIndexSpec("CheckTwoFields", "embedding", 4)).named("check-a"),
+                    SchemaCatalog.of(
+                        VectorIndexSpec("CheckTwoFields", "embedding", 4),
+                        VectorIndexSpec("CheckTwoFields", "summary", 4),
+                    ).named("check-b"),
+                ),
+            )
+        }
+
+        assertEquals(
+            message("CheckTwoFields.embedding", "CheckTwoFields.embedding") + "\n" +
+                message("CheckTwoFields.summary", "CheckTwoFields.summary"),
+            error.message,
+        )
     }
 }
