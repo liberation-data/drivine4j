@@ -47,6 +47,16 @@ dependencies {
 
     // Optional: Configuration processor for IDE support
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
+
+    // Tests: the auto-configuration, in ApplicationContextRunner contexts
+    testImplementation(platform('org.springframework.boot:spring-boot-dependencies:3.5.7'))
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
 }
 
 kotlin {

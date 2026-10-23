@@ -15,7 +15,7 @@ import org.springframework.context.annotation.Configuration
 import org.springframework.transaction.PlatformTransactionManager
 
 /**
- * Configuration imported by @EnableDrivine.
+ * Configuration imported by @EnableDrivine and by [DrivineAutoConfiguration].
  * Provides all core Drivine infrastructure beans.
  */
 @Configuration
