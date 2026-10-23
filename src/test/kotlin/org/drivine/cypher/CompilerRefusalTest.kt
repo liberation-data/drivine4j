@@ -64,6 +64,29 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `a union, a subquery or a shortest path the compiler cannot make SQL of is refused`() {
+        val yet = " is Cypher, and does not run on Oracle or Postgres yet."
+        assertRefused("A write in a UNION$yet", "CREATE (n) RETURN n UNION RETURN 1 AS n")
+        assertRefused("A write in EXISTS { … }$yet", "MATCH (p) WHERE EXISTS { MATCH (p)-->(q) CREATE (r) RETURN r } RETURN p")
+        assertRefused("A write in COUNT { … }$yet", "MATCH (p) RETURN COUNT { MATCH (p)-->(q) CREATE (r) RETURN r }")
+        assertRefused("An ORDER BY in a query of a UNION in CALL { … }$yet", "CALL { RETURN 1 AS x ORDER BY x UNION RETURN 2 AS x } RETURN x")
+        assertRefused("Each query of a UNION returns the same names, as in Cypher.", "CALL { RETURN 1 AS x UNION RETURN 2 AS y } RETURN x")
+        assertRefused("A UNION in CALL { … } whose queries return values of different kinds$yet", "CALL { MATCH (n) RETURN n AS x UNION RETURN 2 AS x } RETURN x")
+        assertRefused("An OPTIONAL CALL { … } that writes$yet", "UNWIND [1] AS i OPTIONAL CALL (i) { CREATE (n) RETURN n } RETURN n")
+        assertRefused("A UNION in CALL { … }$yet", "CALL { CREATE (n) RETURN n AS x UNION CREATE (m) RETURN m AS x } RETURN x")
+        assertRefused("An aggregate in the RETURN of a CALL { … } that writes$yet", "UNWIND [1] AS i CALL (i) { CREATE (n) RETURN count(n) AS c } RETURN c")
+        assertRefused(
+            "A FOREACH or CALL { … } that writes nested more than 3 deep$yet",
+            "FOREACH (a IN [1] | FOREACH (b IN [1] | FOREACH (c IN [1] | FOREACH (d IN [1] | CREATE (n)))))",
+        )
+        assertRefused("A shortest path of anything but one variable-length relationship$yet", "MATCH p = shortestPath((a)-[:R]->(b)) RETURN length(p)")
+        assertRefused("A shortest path in MERGE$yet", "MERGE p = shortestPath((a)-[:R*]->(b))")
+        assertRefused("A quantified relationship that has a range of its own$yet", "MATCH (a)-[:R*1..2]->{2}(b) RETURN b")
+        assertRefused("A list has no properties.", "MATCH (n) WITH collect(n) AS ns RETURN ns.name")
+        assertRefused("split() takes a text and a separator.", "RETURN split('a,b')")
+    }
+
+    @Test
     fun `a write to what is not there, or is not a node or a relationship, is refused`() {
         assertRefused("y is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.", "MATCH (n) SET y.a = 1")
         assertRefused("x is not a node or a relationship, and SET writes to one.", "UNWIND [1] AS x SET x.a = 1")

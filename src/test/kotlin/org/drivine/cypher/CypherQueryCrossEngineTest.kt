@@ -298,6 +298,8 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(listOf(1L, 2L), 2L)), query("UNWIND [1, null, 2] AS x RETURN [collect(x), count(x)]"))
         assertEquals(listOf(listOf(1L)), query("UNWIND [1, null, 1] AS x RETURN collect(DISTINCT x)"))
         assertEquals(listOf(listOf(1L, 2L)), query("UNWIND [{a: 1}, {a: null}, {b: 1}, {a: 2}] AS m RETURN collect(m.a)"))
+        // Nodes gathered, and read in the projection that gathers them; a node that is null left out.
+        assertEquals(listOf(listOf(4L, 0L)), query("MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f:Person {name: 'Nobody'}) RETURN [size(collect(p)), size(collect(f))]"))
     }
 
     @Test
@@ -428,24 +430,33 @@ abstract class CypherQueryContract {
     fun `a regular expression matches the whole text, and more functions give a graph engine's values`() {
         assertEquals(listOf("Carrie", "Keanu"), query("MATCH (p:Person) WHERE p.name =~ '[CK].*' RETURN p.name ORDER BY p.name"))
         assertEquals(listOf(listOf(false, false, null)), query("RETURN ['Keanu' =~ 'Kea', 'Keanu' =~ 'keanu', null =~ 'x']"))
+        // A pattern that opens with (?i) matches in any case, as Java's does.
+        assertEquals(listOf(listOf(true, false)), query("RETURN ['Keanu' =~ '(?i)keanu', 'Keanu' =~ '(?i)kea']"))
+        // A dot matches no line break, as Java's does, unless the pattern opens with (?s).
+        assertEquals(listOf(listOf(false, true)), query("RETURN ['a\\nb' =~ 'a.b', 'a\\nb' =~ '(?s)a.b']"))
+        assertEquals(listOf("Carrie", "Keanu"), query("MATCH (p:Person) WHERE p.name =~ \$pattern RETURN p.name ORDER BY p.name", mapOf("pattern" to "(?i)[ck].*")))
         assertEquals(
             listOf(
                 mapOf(
                     "split" to listOf("a", "b", "c"), "reversed" to "unaeK", "reversedList" to listOf(3L, 2L, 1L), "tail" to listOf(2L, 3L),
-                    "yes" to true, "no" to false, "notBoolean" to null, "emptyList" to true, "emptyMap" to true, "fullText" to false,
+                    "yes" to true, "no" to false, "notBoolean" to null, "fromNumbers" to listOf(true, false), "spaced" to true,
+                    "emptyList" to true, "emptyMap" to true, "fullText" to false,
                     "round" to 3.0, "roundTo" to 2.57, "floor" to 2.0, "ceil" to 3.0, "sqrt" to 3.0, "sign" to -1L, "trimmed" to listOf("a ", " b"),
                 )
             ),
             query(
                 """
                 RETURN {split: split('a,b,c', ','), reversed: reverse('Keanu'), reversedList: reverse([1, 2, 3]), tail: tail([1, 2, 3]),
-                        yes: toBoolean('TRUE'), no: toBoolean(false), notBoolean: toBoolean('maybe'),
+                        yes: toBoolean('TRUE'), no: toBoolean(false), notBoolean: toBoolean('maybe'), fromNumbers: [toBoolean(1), toBoolean(0)], spaced: toBoolean(' true '),
                         emptyList: isEmpty([]), emptyMap: isEmpty({}), fullText: isEmpty('x'),
                         round: round(2.5), roundTo: round(2.567, 2), floor: floor(2.7), ceil: ceil(2.1), sqrt: sqrt(9), sign: sign(-4),
                         trimmed: [ltrim('  a '), rtrim(' b  ')]}
                 """
             ),
         )
+        assertEquals(listOf(null), query("RETURN split('a', null)"))
+        // An empty separator cuts at each character. Oracle's empty text is null.
+        if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(listOf("a", "b", "c"), listOf(""))), query("RETURN [split('abc', ''), split('', ',')]"))
     }
 
     @Test
@@ -531,6 +542,20 @@ abstract class CypherQueryContract {
             query("MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) MATCH p = allShortestPaths((a)-[*]-(b)) RETURN [n IN nodes(p) | coalesce(n.name, n.title)]").toSet(),
         )
         assertEquals(emptyList(), query("MATCH (a:Person {name: 'Hugo'}), (b:Person {name: 'Carrie'}) MATCH p = shortestPath((a)-[*]-(b)) RETURN length(p)"))
+        // The WHERE of its MATCH is met by the paths it finds from: the shortest of those that meet it.
+        assertEquals(
+            listOf(2L),
+            query("MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Keanu'}) MATCH p = shortestPath((a)-[*]-(b)) WHERE length(p) > 1 RETURN length(p)"),
+        )
+        // An end not bound before it: the shortest to each node it reaches.
+        assertEquals(
+            listOf(listOf("Johnny Mnemonic", 2L), listOf("The Matrix", 1L), listOf("The Matrix Reloaded", 2L)),
+            query("MATCH (a:Person {name: 'Laurence'}) MATCH p = shortestPath((a)-[*]-(m:Movie)) RETURN [m.title, length(p)] ORDER BY m.title"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH p = allShortestPaths((a:Person)-[:ACTED_IN*]->(:Movie)) WITH a, count(p) AS paths RETURN [a.name, paths] ORDER BY a.name"),
+        )
     }
 
     @Test
@@ -567,8 +592,12 @@ abstract class CypherQueryContract {
         assertEquals(listOf(6L), query("RETURN reduce(total = 0, x IN [1, 2, 3] | total + x)"))
         assertEquals(listOf(null), query("RETURN reduce(total = 0, x IN null | total + x)"))
         assertEquals(listOf(14L), query("RETURN reduce(dot = 0, i IN range(0, size(\$v) - 1) | dot + \$v[i] * \$v[i])", mapOf("v" to listOf(1, 2, 3))))
-        // A text built up from the empty text: Oracle's empty text is null.
+        // A reduce in the list of a reduce.
+        assertEquals(listOf(3L), query("RETURN reduce(s = 0, x IN reduce(t = [], y IN [1, 2] | t + [y]) | s + x)"))
+        // A text built up from the empty text: Oracle's empty text is null. Oracle's reduce in the step of one, and a path read in a step: see CypherQueryOracleTest.
         if (pm.type == DatabaseType.ORACLE) return
+        assertEquals(listOf(6L), query("RETURN reduce(s = 0, x IN [[1, 2], [3]] | s + reduce(t = 0, y IN x | t + y))"))
+        assertEquals(listOf(1L), query("MATCH p = (:Person {name: 'Laurence'})-[:KNOWS]->() RETURN reduce(s = 0, x IN [1] | s + length(p))"))
         assertEquals(
             listOf("Carrie,Hugo,Keanu,Laurence"),
             query(
@@ -784,7 +813,7 @@ class CypherQueryOracleTest : CypherQueryContract() {
     }
 
     @Test
-    fun `reduce reads the row it is in and the parameters, and is refused in a statement that writes`() {
+    fun `reduce reads the row it is in and the parameters, and is refused in a statement that writes, in a step, or reading a path`() {
         assertEquals(
             listOf(listOf("Keanu", 1964L + 7L)),
             pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (p:Person {name: 'Keanu'}) RETURN [p.name, reduce(t = p.born, x IN [3, 4] | t + x * \$k)]")).bind(mapOf("k" to 1))),
@@ -792,6 +821,18 @@ class CypherQueryOracleTest : CypherQueryContract() {
         assertEquals(
             "reduce() does not run on Oracle in a statement that writes: its block calls no function of its own from SQL.",
             assertThrows<DrivineException> { pm.query(QuerySpecification.withStatement(CypherStatement("CREATE (n:CyTest) RETURN reduce(t = 0, x IN [1] | t + x)"))) }.message,
+        )
+        assertEquals(
+            "reduce() does not run on Oracle in the step of a reduce(): its function calls no function of the query's from SQL.",
+            assertThrows<DrivineException> {
+                pm.query(QuerySpecification.withStatement(CypherStatement("RETURN reduce(s = 0, x IN [[1, 2], [3]] | s + reduce(t = 0, y IN x | t + y))")))
+            }.message,
+        )
+        assertEquals(
+            "A path read in the step of reduce() does not run on Oracle: its function is given the row as JSON.",
+            assertThrows<DrivineException> {
+                pm.query(QuerySpecification.withStatement(CypherStatement("MATCH p = (:Person {name: 'Laurence'})-[:KNOWS]->() RETURN reduce(s = 0, x IN [1] | s + length(p))")))
+            }.message,
         )
     }
 

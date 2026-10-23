@@ -180,6 +180,15 @@ class CypherReaderTest {
     }
 
     @Test
+    fun `a word the grammar adds is still a name, of a variable, a property or a map's key`() {
+        listOf("foreach", "shortestPath", "allShortestPaths", "transactions", "rows", "row").forEach { word ->
+            assertEquals(Expression.Variable(word), returned("WITH 1 AS $word RETURN $word"))
+            assertEquals(Expression.Property(Expression.Variable("n"), word), returned("RETURN n.$word"))
+            assertEquals(Expression.MapLiteral(listOf(word to Expression.Literal(1L))), returned("RETURN {$word: 1}"))
+        }
+    }
+
+    @Test
     fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
         assertEquals(
             "A procedure call (CALL) is Cypher, and does not run on Oracle or Postgres yet.",

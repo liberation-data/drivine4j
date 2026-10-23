@@ -164,7 +164,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         initial: String,
         list: String,
         step: (accumulator: String, item: String) -> String,
-        context: String,
+        context: () -> String,
         contextStep: (accumulator: String, item: String, context: String) -> String,
     ): String = shared(list) { (items) -> fold(name, initial, items, step) }
 
@@ -185,9 +185,19 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override val rowNumber = "ROW_NUMBER() OVER ()"
 
-    override fun matches(text: String, pattern: String) = "($text ~ ('^(' || $pattern || ')$'))"
+    /**
+     * Flags the pattern opens with, `(?i)`, are put before the anchors, where Postgres reads them, after `p`: a dot
+     * matches no line break, as Java's does, unless the pattern says `(?s)`.
+     */
+    override fun matches(text: String, pattern: String) = "($text ~ regexp_replace($pattern, '^(\\(\\?([a-z]+)\\))?(.*)\$', '(?p\\2)^(\\3)\$'))"
 
-    override fun split(text: String, separator: String) = "to_jsonb(string_to_array($text, $separator))"
+    /**
+     * An empty separator cuts the text at each character, as Cypher's does: `string_to_array` does so for a null one.
+     * The empty text is a list of itself, where `string_to_array` gives an empty one.
+     */
+    override fun split(text: String, separator: String) = shared(text, separator) { (t, s) ->
+        "CASE WHEN $s IS NOT NULL THEN CASE WHEN $t = '' THEN jsonb_build_array($t) ELSE to_jsonb(string_to_array($t, NULLIF($s, ''))) END END"
+    }
 
     override fun reverseText(text: String) = "reverse($text)"
 
@@ -222,7 +232,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $DOOMED jsonb;",
             "    $RECORD record;",
             "    $MATCHED record;",
-        ) + (1..NESTING).map { "    $SAVED$it jsonb;" } + listOf(
+        ) + (1..NESTING).flatMap { listOf("    $SAVED$it jsonb;", "    $GATHERED$it jsonb;") } + listOf(
             "BEGIN",
             indent(body.joinToString("\n")),
             "END",

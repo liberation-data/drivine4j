@@ -723,6 +723,7 @@ ADD : ( 'A' | 'a' ) ( 'D' | 'd' ) ( 'D' | 'd' ) ;
 
 DROP : ( 'D' | 'd' ) ( 'R' | 'r' ) ( 'O' | 'o' ) ( 'P' | 'p' ) ;
 
+// drivine4j: a word the additions above read, from TRANSACTIONS to ALLSHORTESTPATHS, is still a name, as in Neo4j's Cypher.
 oC_SymbolicName
             :  UnescapedSymbolicName
                 | EscapedSymbolicName
@@ -738,6 +739,9 @@ oC_SymbolicName
                 | OF
                 | ROWS
                 | ROW
+                | FOREACH
+                | SHORTESTPATH
+                | ALLSHORTESTPATHS
                 ;
 
 FILTER : ( 'F' | 'f' ) ( 'I' | 'i' ) ( 'L' | 'l' ) ( 'T' | 't' ) ( 'E' | 'e' ) ( 'R' | 'r' ) ;

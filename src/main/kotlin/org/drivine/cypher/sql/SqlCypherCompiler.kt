@@ -324,14 +324,15 @@ abstract class SqlCypherCompiler(graph: String) {
      * `reduce`: the JSON list [list] folded from [initial], the JSON each step gives of the value so far and
      * the item, as [step] writes it, as JSON; null where the list is. [name] names what the fold reads from.
      * Where the step is worked out where it cannot read the row, it is [contextStep], which reads what the step
-     * reads of the row, and the statement's parameters, from the JSON map [context] is given as.
+     * reads of the row, and the statement's parameters, from the JSON map [context] gives: asked for only there,
+     * for a value such as a path is not JSON.
      */
     protected abstract fun reduce(
         name: String,
         initial: String,
         list: String,
         step: (accumulator: String, item: String) -> String,
-        context: String,
+        context: () -> String,
         contextStep: (accumulator: String, item: String, context: String) -> String,
     ): String
 
@@ -431,15 +432,18 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun match(select: Select, match: Clause.Match) {
+            // A shortest path is the shortest of the paths that meet the WHERE, as Cypher finds it: the WHERE is met where they are found.
+            val shortestWhere = match.where?.takeIf { match.patterns.last().shortest != null }
+            val where = match.where.takeIf { shortestWhere == null }
             if (!match.optional) {
-                patterns(select, match.patterns)
-                match.where?.let { select.where += bool(expression(it, select.scope)) }
+                patterns(select, match.patterns, shortestWhere)
+                where?.let { select.where += bool(expression(it, select.scope)) }
                 return
             }
             // What is found is read by a lateral query, joined to keep the row when it finds nothing.
             val inner = Select(select.scope)
-            patterns(inner, match.patterns)
-            match.where?.let { inner.where += bool(expression(it, inner.scope)) }
+            patterns(inner, match.patterns, shortestWhere)
+            where?.let { inner.where += bool(expression(it, inner.scope)) }
             val found = inner.bound.filterKeys { it !in select.scope }
             if (found.isEmpty() && inner.sources.isEmpty()) return
             val name = alias("o")
@@ -530,15 +534,15 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun unwind(select: Select, unwind: Clause.Unwind) {
             val list = expression(unwind.list, select.scope)
             val name = alias("u")
-            // A list of nodes or relationships unwinds to them, as they are now, so a write reaches them.
+            // A list of nodes or relationships unwinds to them, as they are now, so a write reaches them; a null item is a null one.
             if (list is Value.Entities) {
                 select.source(elements(list.ids, name))
                 val row = alias(if (list.relationships) "e" else "n")
                 if (list.relationships) {
-                    select.join("JOIN $edges $row ON $row.eid = ${idOf("$name.item", null)}")
+                    select.join("LEFT JOIN $edges $row ON $row.eid = ${idOf("$name.item", null)}")
                     select.bind(unwind.variable, Value.Relationship("$row.eid", "$row.src", "$row.dst", "$row.type", "$row.props"))
                 } else {
-                    select.join("JOIN $nodes $row ON $row.nid = ${idOf("$name.item", null)}")
+                    select.join("LEFT JOIN $nodes $row ON $row.nid = ${idOf("$name.item", null)}")
                     select.bind(unwind.variable, Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp"))
                 }
                 select.order += "$name.item_no" to false
@@ -569,9 +573,10 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** Binds the patterns of one `MATCH` into [select]: their relationships are distinct from one another. */
-        private fun patterns(select: Select, patterns: List<Pattern>) {
+        /** [patterns] matched over the rows [select] reads; [shortestWhere] is met by the paths of the last, a shortest path, see [shortest]. */
+        private fun patterns(select: Select, patterns: List<Pattern>, shortestWhere: Expression? = null) {
             val hops = mutableListOf<Hop>()
-            patterns.forEach { pattern(select, it, hops) }
+            patterns.forEachIndexed { i, pattern -> pattern(select, pattern, hops, shortestWhere.takeIf { i == patterns.lastIndex }) }
             for (i in hops.indices) for (j in i + 1 until hops.size) {
                 val (a, b) = hops[i] to hops[j]
                 // Relationships of types no relationship has both of cannot be one.
@@ -579,8 +584,8 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        private fun pattern(select: Select, pattern: Pattern, hops: MutableList<Hop>) {
-            if (pattern.shortest != null) return shortest(select, pattern)
+        private fun pattern(select: Select, pattern: Pattern, hops: MutableList<Hop>, shortestWhere: Expression? = null) {
+            if (pattern.shortest != null) return shortest(select, pattern, shortestWhere)
             // A node bound before the pattern, or given properties, is where a walk starts best.
             val pinned = pattern.nodes.map { node -> node.properties != null || node.variable?.let { select.scope[it] } != null }
             val before = select.scope
@@ -636,26 +641,35 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * `shortestPath(…)` or `allShortestPaths(…)`: the pattern's paths for the row, found in a lateral query, of
-         * which the shortest is kept, or every one of the least length. Its relationship is a walk, so a path of it
-         * takes no relationship twice, as Cypher's shortest path takes none.
+         * which the shortest between each two nodes it joins is kept, or every one of the least length. Its
+         * relationship is a walk, so a path of it takes no relationship twice, as Cypher's shortest path takes none.
+         * The paths are those that meet [where], the `WHERE` of its `MATCH`, as Cypher's shortest path is the least of those.
          */
-        private fun shortest(select: Select, pattern: Pattern) {
+        private fun shortest(select: Select, pattern: Pattern, where: Expression?) {
             val relationship = pattern.relationships.singleOrNull()
             if (relationship?.range == null) unsupported("A shortest path of anything but one variable-length relationship")
             val inner = Select(select.scope)
             val hops = mutableListOf<Hop>()
-            pattern(inner, pattern.copy(shortest = null), hops)
-            val found = inner.bound.filterKeys { it !in select.scope }.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
+            // Its ends named, to find the shortest between each two of them where they were not bound before it.
+            val ends = listOf(pattern.nodes.first().variable ?: SHORTEST_FROM, pattern.nodes.last().variable ?: SHORTEST_TO)
+            pattern(inner, pattern.copy(nodes = listOf(pattern.nodes.first().copy(variable = ends[0]), pattern.nodes.last().copy(variable = ends[1])), shortest = null), hops)
+            where?.let { inner.where += bool(expression(it, inner.scope)) }
+            val found = inner.bound.filterKeys { it !in select.scope && it !in setOf(SHORTEST_FROM, SHORTEST_TO) }.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
             val length = number(idCount(hops.single().eids))
-            val columns = found.flatMap { (_, value, column) -> value.columns(column) } + "$length AS len"
+            val (from, to) = ends.map { (inner.scope.getValue(it) as Value.Node).nid }
+            val columns = found.flatMap { (_, value, column) -> value.columns(column) } + "$length AS len" + "$from AS from_nid" + "$to AS to_nid"
             val paths = (listOf("SELECT ${columns.joinToString(", ")}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString("\n")
             val name = alias("sp")
+            val s = alias("s")
             val text = when (pattern.shortest) {
-                Pattern.Shortest.ONE -> (listOf(paths, "ORDER BY len") + page(null, "1")).joinToString("\n")
+                Pattern.Shortest.ONE -> {
+                    val ranked = "SELECT $s.*, ROW_NUMBER() OVER (PARTITION BY $s.from_nid, $s.to_nid ORDER BY $s.len) AS k FROM (\n${indent(paths)}\n) $s"
+                    "SELECT * FROM (\n${indent(ranked)}\n) ${alias("s")}\nWHERE k = 1"
+                }
                 // Every path as short as the shortest.
                 else -> {
-                    val s = alias("s")
-                    "SELECT * FROM (\n${indent("SELECT $s.*, MIN($s.len) OVER () AS least FROM (\n${indent(paths)}\n) $s")}\n) ${alias("s")}\nWHERE len = least"
+                    val least = "SELECT $s.*, MIN($s.len) OVER (PARTITION BY $s.from_nid, $s.to_nid) AS least FROM (\n${indent(paths)}\n) $s"
+                    "SELECT * FROM (\n${indent(least)}\n) ${alias("s")}\nWHERE len = least"
                 }
             }
             select.join("CROSS JOIN LATERAL (\n${indent(text)}\n) $name")
@@ -720,7 +734,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** The nodes or relationships [entities] lists, as a JSON list of their properties in its order: null where the list is. */
-        private fun entitiesJson(entities: Value.Entities): String = shared(entities.ids) { (ids) ->
+        private fun entitiesJson(entities: Value.Entities): String = entities.gathered ?: shared(entities.ids) { (ids) ->
             val u = alias("u")
             val row = alias(if (entities.relationships) "e" else "n")
             val (table, value) = if (entities.relationships) {
@@ -729,7 +743,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 nodes to json(Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp")).sql
             }
             val id = if (entities.relationships) "eid" else "nid"
-            "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, "$u.item_no")} FROM ${elements(ids, u)} JOIN $table $row ON $row.$id = ${idOf("$u.item", null)}) END"
+            "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, "$u.item_no")} FROM ${elements(ids, u)} LEFT JOIN $table $row ON $row.$id = ${idOf("$u.item", null)}) END"
         }
 
         private fun RelationshipPattern.reversed() = copy(
@@ -769,27 +783,21 @@ abstract class SqlCypherCompiler(graph: String) {
         fun procedure(query: Query): List<String> {
             var select = Select(emptyMap())
             for (clause in creates(query.clauses)) {
-                when {
-                    clause is Clause.Return -> returnRows(project(select, clause.projection, final = true).sql).forEach(::emit)
-                    clause is Clause.Foreach -> {
-                        carry(select)
-                        foreach(clause)
-                        select = rows()
-                    }
-                    clause is Clause.Call && writes(clause) -> {
-                        carry(select)
-                        callWriting(clause)
-                        select = rows()
-                    }
-                    writes(clause) -> {
-                        carry(select)
-                        write(clause)
-                        select = rows()
-                    }
-                    else -> select = read(select, clause)
-                }
+                if (clause is Clause.Return) returnRows(project(select, clause.projection, final = true).sql).forEach(::emit) else select = next(select, clause)
             }
             return body
+        }
+
+        /** [clause] over the rows [select] reads, written for them where it writes: the rows the clauses after it read. */
+        private fun next(select: Select, clause: Clause): Select {
+            if (!writes(clause)) return read(select, clause)
+            carry(select)
+            when (clause) {
+                is Clause.Foreach -> foreach(clause)
+                is Clause.Call -> callWriting(clause)
+                else -> write(clause)
+            }
+            return rows()
         }
 
         /** [clauses] with each run of `CREATE`s one `CREATE` of all their patterns, which makes the same, in one loop over the rows. */
@@ -874,8 +882,12 @@ abstract class SqlCypherCompiler(graph: String) {
                         select.bind(variable, Value.Relationship("$e.eid", "$e.src", "$e.dst", "$e.type", "$e.props"))
                     }
                     Kind.VALUE -> select.bind(variable, Value.Json(propertyOf(row, key)))
-                    Kind.NODES, Kind.RELATIONSHIPS -> select.bind(variable, Value.Entities(propertyOf(row, key), kind == Kind.RELATIONSHIPS))
-                    Kind.PATH -> select.bind(variable, Value.Path(storeIds(propertyOf(propertyOf(row, key), "n")), storeIds(propertyOf(propertyOf(row, key), "e"))))
+                    // A list or a path that is null is held as JSON's null, and read as SQL's.
+                    Kind.NODES, Kind.RELATIONSHIPS -> select.bind(variable, Value.Entities(nullIfJsonNull(propertyOf(row, key)), kind == Kind.RELATIONSHIPS))
+                    Kind.PATH -> select.bind(
+                        variable,
+                        Value.Path(storeIds(nullIfJsonNull(propertyOf(propertyOf(row, key), "n"))), storeIds(nullIfJsonNull(propertyOf(propertyOf(row, key), "e")))),
+                    )
                 }
             }
         }
@@ -931,9 +943,9 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
-         * A `CALL { … }` that writes, over the rows in [ROWS]: its clauses written for each row in turn, as the
-         * statement's own are. One that returns nothing leaves the rows as it found them; one that returns adds
-         * what it returns to each row it gives.
+         * A `CALL { … }` that writes, over the rows in [ROWS]: its clauses written for each row alone, in turn, as a
+         * graph engine writes them, so what one row writes is there for the next to read. One that returns nothing
+         * leaves the rows as it found them; one that returns adds what it returns to each row it gives.
          */
         private fun callWriting(call: Clause.Call) {
             if (call.optional) unsupported("An OPTIONAL CALL { … } that writes")
@@ -942,43 +954,53 @@ abstract class SqlCypherCompiler(graph: String) {
             if (ret != null && ret.projection.items.any { contains(it.expression, ::isAggregate) }) unsupported("An aggregate in the RETURN of a CALL { … } that writes")
             if (nesting == NESTING) unsupported("A FOREACH or CALL { … } that writes nested more than $NESTING deep")
             val kept = "$SAVED${++nesting}"
+            val gathered = "$GATHERED$nesting"
             val before = LinkedHashMap(kinds)
-            if (ret == null) emit("$kept := $ROWS;")
-            var select = rows()
-            for (clause in imported(call.query.clauses)) {
-                when {
-                    clause is Clause.Return -> {
+            emit("$kept := $ROWS;")
+            if (ret != null) assign(gathered, literalJson(emptyList<Any>()))
+            eachRow(kept) {
+                var select = rows()
+                for (clause in imported(call.query.clauses)) {
+                    select = if (clause is Clause.Return) {
                         // What it returns joins what the row held.
                         val items = before.keys.map { Projection.Item(Expression.Variable(it), it) } + clause.projection.items
-                        select = with(select, Clause.With(clause.projection.copy(star = false, items = items), null))
+                        with(select, Clause.With(clause.projection.copy(star = false, items = items), null))
+                    } else {
+                        next(select, clause)
                     }
-                    clause is Clause.Foreach -> {
-                        carry(select)
-                        foreach(clause)
-                        select = rows()
-                    }
-                    clause is Clause.Call && writes(clause) -> {
-                        carry(select)
-                        callWriting(clause)
-                        select = rows()
-                    }
-                    writes(clause) -> {
-                        carry(select)
-                        write(clause)
-                        select = rows()
-                    }
-                    else -> select = read(select, clause)
+                }
+                if (ret != null) {
+                    // The rows this row gives, after those of the rows before it.
+                    carry(select)
+                    val (g, a, b) = listOf(alias("g"), alias("g"), alias("g"))
+                    val both = "SELECT 1 AS part, $a.item_no, $a.item FROM ${elements(gathered, a)} UNION ALL SELECT 2 AS part, $b.item_no, $b.item FROM ${elements(ROWS, b)}"
+                    emit("SELECT ${comparable(Value.Json(aggregateList("$g.item", "$g.part, $g.item_no"), ordered = true))} INTO $gathered FROM ($both) $g;")
                 }
             }
             if (ret == null) {
                 emit("$ROWS := $kept;")
                 kinds.clear()
                 kinds.putAll(before)
-                unread = null
             } else {
-                carry(select)
+                emit("$ROWS := $gathered;")
             }
+            unread = null
             nesting--
+        }
+
+        /**
+         * Writes [body] for each row of [rows], a variable of the procedure, alone in [ROWS] in turn, as a graph engine
+         * writes a `FOREACH` or a `CALL { … }` for each row: what one row writes is there for the next to read.
+         */
+        private fun eachRow(rows: String, body: () -> Unit) {
+            val r = alias("r")
+            emit("FOR $RECORD IN (SELECT $r.item FROM ${elements(rows, r)} ORDER BY $r.item_no) LOOP")
+            depth++
+            assign(ROWS, appended(literalJson(emptyList<Any>()), "$RECORD.item"))
+            unread = null
+            body()
+            depth--
+            emit("END LOOP;")
         }
 
         /** [clauses] without an importing `WITH` of variables alone that opens them: every variable of the row is seen. */
@@ -997,20 +1019,23 @@ abstract class SqlCypherCompiler(graph: String) {
         private var nesting = 0
 
         /**
-         * A `FOREACH` over the rows in [ROWS]: its list unwound over them, each of its clauses written for each row
-         * and item in turn, then the rows put back as they were, for a `FOREACH` leaves them as it found them.
+         * A `FOREACH` over the rows in [ROWS]: its list unwound over them, its clauses written for each row and item
+         * alone, in turn, then the rows put back as they were, for a `FOREACH` leaves them as it found them.
          */
         private fun foreach(foreach: Clause.Foreach) {
             if (nesting == NESTING) unsupported("A FOREACH or CALL { … } that writes nested more than $NESTING deep")
+            if (foreach.clauses.any { it is Clause.Call }) throw DrivineException("A CALL { … } is not written in a FOREACH, as in Cypher.")
             val saved = "$SAVED${++nesting}"
+            val items = "$GATHERED$nesting"
             val before = LinkedHashMap(kinds)
             emit("$saved := $ROWS;")
-            var select = rows()
-            unwind(select, Clause.Unwind(foreach.list, foreach.variable))
-            for (clause in creates(foreach.clauses)) {
-                carry(select)
-                if (clause is Clause.Foreach) foreach(clause) else write(clause)
-                select = rows()
+            val unwound = rows()
+            unwind(unwound, Clause.Unwind(foreach.list, foreach.variable))
+            carry(unwound)
+            emit("$items := $ROWS;")
+            eachRow(items) {
+                var select = rows()
+                for (clause in creates(foreach.clauses)) select = next(select, clause)
             }
             emit("$ROWS := $saved;")
             kinds.clear()
@@ -1380,11 +1405,21 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             is Expression.ListLiteral -> {
                 val items = expression.items.map { expression(it, scope) }
+                // A null written among nodes or relationships is an item of a list of them, as a node that is null is.
+                val entities = items.filterIndexed { i, _ -> expression.items[i] != Expression.Literal(null) }
+                fun ids(relationships: Boolean): Value.Entities {
+                    val listed = items.map { item ->
+                        when (item) {
+                            is Value.Node -> scalar(item.nid)
+                            is Value.Relationship -> scalar(item.eid)
+                            else -> json(item).sql
+                        }
+                    }
+                    return Value.Entities(comparable(Value.Json(jsonArray(listed), ordered = true)), relationships)
+                }
                 when {
-                    items.isNotEmpty() && items.all { it is Value.Node } ->
-                        Value.Entities(comparable(Value.Json(jsonArray(items.map { scalar((it as Value.Node).nid) }), ordered = true)), false)
-                    items.isNotEmpty() && items.all { it is Value.Relationship } ->
-                        Value.Entities(comparable(Value.Json(jsonArray(items.map { scalar((it as Value.Relationship).eid) }), ordered = true)), true)
+                    entities.isNotEmpty() && entities.all { it is Value.Node } -> ids(relationships = false)
+                    entities.isNotEmpty() && entities.all { it is Value.Relationship } -> ids(relationships = true)
                     else -> Value.Json(jsonArray(items.map { json(it).sql }), ordered = true)
                 }
             }
@@ -1441,7 +1476,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 // What the step reads of the row and of the parameters, for a store that works it out where it reads neither.
                 val read = (variablesIn(expression.expression) - own).filter { it in scope }
                 val given = parametersIn(expression.expression)
-                val context = comparable(Value.Json(jsonObject(read.map { it to json(scope.getValue(it)).sql } + given.map { "$$it" to parameters.json(it) }), ordered = true))
+                val context = {
+                    // A path is no JSON a function may be given.
+                    if (read.any { scope.getValue(it) is Value.Path }) throw DrivineException("A path read in the step of reduce() does not run on Oracle: its function is given the row as JSON.")
+                    comparable(Value.Json(jsonObject(read.map { it to json(scope.getValue(it)).sql } + given.map { "$$it" to parameters.json(it) }), ordered = true))
+                }
                 Value.Json(
                     reduce(
                         alias("f"), initial, list,
@@ -1658,9 +1697,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 "count" -> Value.Json(scalar("count($distinct${countable(one())})"))
                 "collect" -> when (val gathered = one()) {
                     // Nodes or relationships are gathered as their ids, so a list of them is still of them.
-                    is Value.Node -> Value.Entities(gatheredIds("CASE WHEN ${gathered.nid} IS NOT NULL THEN ${scalar(gathered.nid)} END", function.distinct), false)
-                    is Value.Relationship -> Value.Entities(gatheredIds("CASE WHEN ${gathered.eid} IS NOT NULL THEN ${scalar(gathered.eid)} END", function.distinct), true)
-                    else -> Value.Json(collect(collectable(gathered, function.distinct), function.distinct, rowOrder), ordered = true)
+                    is Value.Node -> Value.Entities(gatheredIds("CASE WHEN ${gathered.nid} IS NOT NULL THEN ${scalar(gathered.nid)} END", function.distinct), false, collected(gathered, function.distinct))
+                    is Value.Relationship -> Value.Entities(gatheredIds("CASE WHEN ${gathered.eid} IS NOT NULL THEN ${scalar(gathered.eid)} END", function.distinct), true, collected(gathered, function.distinct))
+                    else -> Value.Json(collected(gathered, function.distinct), ordered = true)
                 }
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
@@ -1684,9 +1723,11 @@ abstract class SqlCypherCompiler(graph: String) {
                     val e = alias("e")
                     "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${aggregateList("$e.item", "$e.item_no")} FROM ${elements(x, e)} WHERE $e.item_no > 1) END"
                 })
+                // A text is read as Cypher reads it, its case and the spaces around it aside; a number is true but for 0.
                 "toboolean" -> Value.Json(shared(comparable(json(one()))) { (x) ->
-                    "CASE WHEN ${typeOf(x)} = 'boolean' THEN $x WHEN LOWER(${text(x)}) = 'true' THEN ${literalJson(true)} " +
-                        "WHEN LOWER(${text(x)}) = 'false' THEN ${literalJson(false)} END"
+                    "CASE WHEN ${typeOf(x)} = 'boolean' THEN $x " +
+                        "WHEN ${typeOf(x)} = 'number' THEN CASE WHEN ${number(x)} = 0 THEN ${literalJson(false)} ELSE ${literalJson(true)} END " +
+                        "WHEN LOWER(TRIM(${text(x)})) = 'true' THEN ${literalJson(true)} WHEN LOWER(TRIM(${text(x)})) = 'false' THEN ${literalJson(false)} END"
                 })
                 "isempty" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val size = function("size", x)!!
@@ -1736,6 +1777,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** A value as a SQL whole number. */
         private fun whole(value: Value): String = "CAST(${number(comparable(json(value)))} AS INTEGER)"
+
+        /** The values [value] of a group, gathered as `collect` gathers them, as JSON. */
+        private fun collected(value: Value, distinct: Boolean) = collect(collectable(value, distinct), distinct, rowOrder)
 
         /** The ids [id] of a group, gathered as `collect` gathers them, as JSON that compares. */
         private fun gatheredIds(id: String, distinct: Boolean) = comparable(Value.Json(collect(id, distinct, rowOrder), ordered = true))
@@ -1871,10 +1915,20 @@ abstract class SqlCypherCompiler(graph: String) {
         const val FOUND = "cy_found"
 
         /**
-         * The rows a `FOREACH`, or a `CALL { … }` that writes and returns nothing, puts back once its clauses are
-         * written, followed by its depth, from 1 to [NESTING].
+         * The rows a `FOREACH`, or a `CALL { … }` that writes, is written over: what it puts back once its clauses
+         * are written, where it returns nothing. Followed by its depth, from 1 to [NESTING].
          */
         const val SAVED = "cy_saved"
+
+        /**
+         * The rows a `CALL { … }` that writes and returns gives, or the rows and items a `FOREACH` writes for, each
+         * one alone, followed by its depth, from 1 to [NESTING].
+         */
+        const val GATHERED = "cy_gathered"
+
+        /** The names of a shortest path's ends where its pattern gives none, which no statement can write unquoted: see [Writer.shortest]. */
+        const val SHORTEST_FROM = " shortest from"
+        const val SHORTEST_TO = " shortest to"
 
         /** How deep `FOREACH`es and writing `CALL`s nest. */
         const val NESTING = 3
@@ -1995,7 +2049,7 @@ abstract class SqlCypherCompiler(graph: String) {
     /** This value with [PENDING] read as [alias]. */
     private fun Value.withAlias(alias: String): Value = when (this) {
         is Value.Json -> copy(sql = sql.replace(PENDING, alias))
-        is Value.Entities -> copy(ids = ids.replace(PENDING, alias))
+        is Value.Entities -> copy(ids = ids.replace(PENDING, alias), gathered = gathered?.replace(PENDING, alias))
         is Value.Bool -> copy(sql = sql.replace(PENDING, alias))
         is Value.Node -> Value.Node(nid.replace(PENDING, alias), labels.replace(PENDING, alias), props.replace(PENDING, alias), stamp.replace(PENDING, alias))
         is Value.Relationship -> Value.Relationship(

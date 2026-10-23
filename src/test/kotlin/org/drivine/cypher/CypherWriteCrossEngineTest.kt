@@ -348,6 +348,17 @@ abstract class CypherWriteContract {
         // A FOREACH in a FOREACH.
         query("MATCH (r:CyWrite {id: 'root'}) FOREACH (a IN ['x', 'y'] | FOREACH (b IN [1, 2] | CREATE (r)-[:GRID]->(:CyWrite {id: a + toString(b)})))")
         assertEquals(listOf("x1", "x2", "y1", "y2"), query("MATCH (:CyWrite {id: 'root'})-[:GRID]->(c) RETURN c.id ORDER BY c.id"))
+        // A null among the nodes is written to as null is: not at all.
+        query("MATCH (n:CyWrite {id: 'other'}) FOREACH (x IN [n, null] | SET x.listed = true)")
+        assertEquals(listOf("other"), query("MATCH (n:CyWrite {listed: true}) RETURN n.id"))
+        // Each item's clauses are written before the next item's: the second MERGE finds what the first CREATE made.
+        query("FOREACH (x IN [1, 2] | MERGE (:CyWrite {id: 'seq' + toString(x)}) CREATE (:CyWrite {id: 'seq' + toString(x + 1)}))")
+        assertEquals(listOf("seq1", "seq2", "seq3"), query("MATCH (n:CyWrite) WHERE n.id STARTS WITH 'seq' RETURN n.id ORDER BY n.id"))
+        if (!compiles) return
+        assertEquals(
+            "A CALL { … } is not written in a FOREACH, as in Cypher.",
+            assertThrows<DrivineException> { query("FOREACH (x IN [1] | CALL { CREATE (:CyWrite) })") }.message,
+        )
     }
 
     @Test
@@ -359,6 +370,10 @@ abstract class CypherWriteContract {
         query("UNWIND \$rows AS row CALL (row) { MERGE (x:CyWrite {id: row.id}) SET x.n = row.n + 10 }", mapOf("rows" to listOf(mapOf("id" to "a", "n" to 1), mapOf("id" to "c", "n" to 3))))
         assertEquals(listOf(listOf("a", 11L), listOf("b", 2L), listOf("c", 13L)), query("MATCH (x:CyWrite) RETURN [x.id, x.n] ORDER BY x.id"))
         assertEquals(listOf("d!", "e!"), query("UNWIND ['d', 'e'] AS id CALL (id) { CREATE (x:CyWrite {id: id}) RETURN x.id + '!' AS made } RETURN made ORDER BY made"))
+        // Each row's clauses are written before the next row's: each reads what the rows before it wrote.
+        assertEquals(listOf(12L, 14L), query("UNWIND [1, 2] AS i CALL (i) { MATCH (x:CyWrite {id: 'a'}) SET x.n = x.n + i RETURN x.n AS n } RETURN n"))
+        query("UNWIND [1, 2] AS i CALL (i) { MATCH (x:CyWrite) WHERE x.id STARTS WITH 'tally' WITH count(x) AS c CREATE (:CyWrite {id: 'tally' + toString(c)}) }")
+        assertEquals(listOf("tally0", "tally1"), query("MATCH (x:CyWrite) WHERE x.id STARTS WITH 'tally' RETURN x.id ORDER BY x.id"))
         if (!compiles) return
         // On a graph engine a CALL in transactions commits as it goes, outside any transaction of the caller's; here the statement is one.
         query("UNWIND [1, 2, 3] AS i CALL (i) { CREATE (:CyWrite {id: 'batch' + toString(i)}) } IN TRANSACTIONS OF 2 ROWS")
@@ -386,6 +401,11 @@ abstract class CypherWriteContract {
         assertEquals(
             listOf(listOf(1L, listOf("a", "b"))),
             query("MATCH p = (:CyWrite {id: 'a'})-[:NEXT]->() CREATE (:CyWrite {id: 'z'}) RETURN [length(p), [n IN nodes(p) | n.id]]"),
+        )
+        // A path, and a list of its nodes, that are null, carried past a write.
+        assertEquals(
+            listOf(listOf(null, null, true)),
+            query("MATCH (c:CyWrite {id: 'c'}) OPTIONAL MATCH p = (c)-[:NEXT]->() WITH p, nodes(p) AS ns CREATE (:CyWrite {id: 'y'}) RETURN [length(p), ns, p IS NULL]"),
         )
     }
 

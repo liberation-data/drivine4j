@@ -13,7 +13,7 @@ import org.drivine.model.Stamps
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
  * number the statement writes is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
  * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` is a function the query
- * declares, and does not run in a statement that writes.
+ * declares, and does not run in a statement that writes or in the step of a `reduce`.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
  * takes no `JSON` that changes from row to row. A recursive query reads no row outside it, so a walk
@@ -225,18 +225,27 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /**
      * A function the query declares, `WITH FUNCTION`, that folds the list: Oracle's recursive queries read nothing
      * of the row they are in. The step reads what it reads of the row from the map it is given. A procedure's
-     * queries call no function it declares, so a statement that writes takes no `reduce`.
+     * queries call no function it declares, so a statement that writes takes no `reduce`; nor does the step of one,
+     * whose queries are its function's own.
      */
     override fun reduce(
         name: String,
         initial: String,
         list: String,
         step: (accumulator: String, item: String) -> String,
-        context: String,
+        context: () -> String,
         contextStep: (accumulator: String, item: String, context: String) -> String,
     ): String {
         if (procedural) throw DrivineException("reduce() does not run on Oracle in a statement that writes: its block calls no function of its own from SQL.")
+        if (folding) throw DrivineException("reduce() does not run on Oracle in the step of a reduce(): its function calls no function of the query's from SQL.")
         val function = "cy_$name"
+        val given = context()
+        folding = true
+        val folded = try {
+            contextStep("cy_value", "cy_step.item", "cy_context")
+        } finally {
+            folding = false
+        }
         declare(
             listOf(
                 "FUNCTION $function(cy_initial JSON, cy_list JSON, cy_context JSON) RETURN JSON IS",
@@ -246,14 +255,17 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
                 "    SELECT JSON_VALUE(cy_list, '\$.type()') INTO cy_kind FROM DUAL;",
                 "    IF cy_kind IS NULL OR cy_kind <> 'array' THEN RETURN NULL; END IF;",
                 "    FOR cy_step IN (SELECT s.item FROM JSON_TABLE(cy_list, '\$[*]' COLUMNS (item_no FOR ORDINALITY, item JSON PATH '\$')) s ORDER BY s.item_no) LOOP",
-                indent("    SELECT ${contextStep("cy_value", "cy_step.item", "cy_context")} INTO cy_value FROM DUAL;"),
+                indent("    SELECT $folded INTO cy_value FROM DUAL;"),
                 "    END LOOP;",
                 "    RETURN cy_value;",
                 "END;",
             ).joinToString("\n")
         )
-        return "$function($initial, $list, $context)"
+        return "$function($initial, $list, $given)"
     }
+
+    /** Whether the step of a `reduce` is being written, as its function's own: see [reduce]. */
+    private var folding = false
 
     /** As many rows as the range has numbers, from a hierarchical query of one row. */
     override fun range(from: String, to: String, step: String) = shared(from, to, step) { (first, last, by) ->
@@ -262,8 +274,11 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST($count, 1)) r WHERE r.n <= $count)"
     }
 
-    /** Oracle's GUID, in a UUID's form: unique, though not random as a version 4 UUID is. */
-    override fun matches(text: String, pattern: String) = "REGEXP_LIKE($text, '^(' || $pattern || ')$')"
+    /** Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. */
+    override fun matches(text: String, pattern: String) = shared(pattern) { (p) ->
+        val flags = "REGEXP_SUBSTR($p, '^\\(\\?([a-z]+)\\)', 1, 1, NULL, 1)"
+        "REGEXP_LIKE($text, '^(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\$', NVL(REPLACE($flags, 's', 'n'), 'c'))"
+    }
 
     /** The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next. */
     override fun split(text: String, separator: String) = shared(text, separator) { (t, s) ->
@@ -280,6 +295,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** `ROW_NUMBER()` takes an order of its own; `ROWNUM` counts the rows as the query gives them. */
     override val rowNumber = "ROWNUM"
 
+    /** Oracle's GUID, in a UUID's form: unique, though not random as a version 4 UUID is. */
     override fun uuid() = "LOWER(REGEXP_REPLACE(RAWTOHEX(SYS_GUID()), '(.{8})(.{4})(.{4})(.{4})(.{12})', '\\1-\\2-\\3-\\4-\\5'))"
 
     /** SUBSTR from the end gives null where it is asked for more than there is. */
@@ -311,7 +327,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "    $FOUND BOOLEAN;",
         "    $DOOMED JSON;",
         "    $CURSOR SYS_REFCURSOR;",
-    ) + (1..NESTING).map { "    $SAVED$it JSON;" } + listOf(
+    ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;") } + listOf(
         "BEGIN",
         indent(body.joinToString("\n")),
         "END;",
