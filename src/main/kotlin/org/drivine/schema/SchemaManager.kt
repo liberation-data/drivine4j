@@ -40,6 +40,11 @@ import org.slf4j.LoggerFactory
  *
  * Outcomes needing attention (drift, violations) are handled per [SchemaPolicy].
  *
+ * **Catalogs are read once.** The manager is given its catalogs when it is built — under Spring, every
+ * [SchemaCatalog] bean there is when the `SchemaManager` bean is made — and keeps that list. A catalog
+ * made later is never seen, and calling [enforce] again applies the same catalogs. When there is
+ * nothing to apply (no catalog, or only empty ones) the manager says so at INFO, naming the empty ones.
+ *
  * All DDL runs in auto-commit mode (the non-transactional manager) — schema operations cannot run
  * inside an open data transaction.
  */
@@ -98,6 +103,7 @@ class SchemaManager(
 
     private fun apply(forceRecreate: Boolean, ownerFilter: OwnerFilter) {
         if (catalogs.none { !it.isEmpty() }) {
+            logNothingToApply()
             return
         }
         val resolution = SchemaTargets.resolve(catalogs, databaseRegistry)
@@ -110,6 +116,30 @@ class SchemaManager(
         resolution.databases.sorted().forEach { database ->
             applyToDatabase(database, forceRecreate, ownerFilter)
         }
+    }
+
+    /**
+     * Says why there is nothing to apply, so that a catalog never registered and a catalog that
+     * registered nothing can be told from an application with no schema to manage. Both name the
+     * snapshot: a catalog bean made after this manager was built is not seen.
+     */
+    private fun logNothingToApply() {
+        if (catalogs.isEmpty()) {
+            logger.info(
+                "Schema management found no SchemaCatalog; nothing to apply. " +
+                    "Catalogs are read once, when the SchemaManager is built."
+            )
+            return
+        }
+        val owners = catalogs
+            .groupingBy { catalog -> catalog.name?.let { "'$it'" } ?: "unnamed" }
+            .eachCount()
+            .map { (owner, count) -> if (count == 1) owner else "$owner ($count)" }
+        logger.info(
+            "Schema management found {} SchemaCatalog(s), all empty: {}; nothing to apply. " +
+                "Catalogs are read once, when the SchemaManager is built.",
+            catalogs.size, owners.joinToString(", ")
+        )
     }
 
     private fun applyToDatabase(database: String, forceRecreate: Boolean, ownerFilter: OwnerFilter) {

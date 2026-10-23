@@ -3345,6 +3345,8 @@ class Reindexer(private val schema: SchemaManager) {
 
 `enforce()` is safe to call repeatedly; `recreateAll()` is the destructive hammer. (`drivine.schema.enabled=false` disables only the startup run — the bean is still there for runtime calls.)
 
+The manager reads the catalog beans **once**, when it is built: a `SchemaCatalog` bean made later is not seen, and a later `enforce()` applies the same catalogs. With nothing to apply it says so at INFO — `Schema management found no SchemaCatalog` when none was registered, or `found 2 SchemaCatalog(s), all empty: 'dice', unnamed` when every one registered nothing — so that a missing index can be traced to a catalog that never arrived.
+
 ### Version-triggered rebuild
 
 Drift detection only catches changes introspection can *see* (dimensions, similarity, properties). A change it can't see — swapping the embedding model for one with the **same dimensions** — leaves stale vectors behind. Tag a catalog with a version token to force a one-time rebuild when that token changes:
