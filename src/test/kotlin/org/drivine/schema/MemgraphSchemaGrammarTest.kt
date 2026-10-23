@@ -61,6 +61,16 @@ class MemgraphSchemaGrammarTest {
     }
 
     @Test
+    fun `a name with a dot, a space and a backtick is one quoted name, its backtick doubled`() {
+        val name = "my.odd `name"
+        val create = grammar.createIndex(RangeIndexSpec(name, name)).single() as SchemaStatement.Cypher
+        val constraint = grammar.createConstraint(UniquenessConstraintSpec(name, name)).single() as SchemaStatement.Cypher
+
+        assertEquals("CREATE INDEX ON :`my.odd ``name`(`my.odd ``name`)", create.statement)
+        assertEquals("CREATE CONSTRAINT ON (n:`my.odd ``name`) ASSERT n.`my.odd ``name` IS UNIQUE", constraint.statement)
+    }
+
+    @Test
     fun `fulltext index DDL uses Memgraph's named TEXT INDEX syntax`() {
         val multi = grammar.createIndex(
             FullTextIndexSpec("Chunk", listOf("title", "body"))
