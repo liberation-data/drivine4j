@@ -454,6 +454,7 @@ abstract class CypherQueryContract {
                 """
             ),
         )
+        assertEquals(listOf(2L, 3L), query("UNWIND tail([1, 2, 3]) AS x RETURN x"))
         assertEquals(listOf(null), query("RETURN split('a', null)"))
         // An empty separator cuts at each character. Oracle's empty text is null.
         if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(listOf("a", "b", "c"), listOf(""))), query("RETURN [split('abc', ''), split('', ',')]"))
@@ -517,7 +518,7 @@ abstract class CypherQueryContract {
         // A graph engine's driver gives a day and a moment as values of its own; here they are their ISO text.
         val (day, moment) = query("RETURN [date(), localdatetime()]").single() as List<*>
         assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}").matches(day as String), day)
-        assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}").matches(moment as String), moment)
+        assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3}|\\.\\d{6})?").matches(moment as String), moment)
     }
 
     @Test

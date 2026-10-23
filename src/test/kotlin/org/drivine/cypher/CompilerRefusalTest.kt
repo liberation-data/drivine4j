@@ -15,6 +15,17 @@ class CompilerRefusalTest {
 
     private val compilers = listOf(OracleCypherCompiler("g"), PostgresCypherCompiler("g"))
 
+    @Test
+    fun `a temporal value written as a text that is no such value, or of no temporal kind, is refused`() {
+        compilers.forEach { compiler ->
+            val refused = assertThrows<DrivineException> { compiler.compile("RETURN date('2024-02-30')") }.message!!
+            assertEquals(true, refused.startsWith("'2024-02-30' is no date"), refused)
+        }
+        assertRefused("'hello' is no date.", "RETURN date('hello')")
+        assertRefused("'2024-03-15T10:30:00[Europe/Paris]' is no datetime.", "RETURN datetime('2024-03-15T10:30:00[Europe/Paris]')")
+        assertRefused("'1 day' is no duration.", "RETURN duration('1 day')")
+    }
+
     private fun assertRefused(message: String, cypher: String, parameters: Map<String, Any?> = emptyMap()) = compilers.forEach { compiler ->
         assertEquals(message, assertThrows<DrivineException> { compiler.compile(cypher, parameters) }.message, compiler::class.simpleName)
     }
@@ -39,6 +50,28 @@ class CompilerRefusalTest {
         assertRefused("A node, a relationship or a path is not a condition.", "MATCH (n) WHERE n RETURN n")
         assertRefused("A path has no properties.", "MATCH p = (a)-->(b) RETURN p.x")
         assertRefused("length() takes a path.", "MATCH (n) RETURN length(n)")
+    }
+
+    @Test
+    fun `a temporal value made of a map of fields it does not compile is refused`() {
+        assertRefused("date() of a map with week is Cypher, and does not run on Oracle or Postgres yet.", "RETURN date({year: 2024, week: 10, dayOfWeek: 3})")
+        assertRefused("duration() of a map with day is Cypher, and does not run on Oracle or Postgres yet.", "RETURN duration({day: 1})")
+    }
+
+    @Test
+    fun `a temporal function given what it does not take is refused`() {
+        assertRefused("duration() takes a text or a map of its fields.", "RETURN duration()")
+        assertRefused("date() takes a text or a map of its fields.", "RETURN date('2024-03-15', 'x')")
+        assertRefused("date.truncate() takes a unit and a value.", "RETURN date.truncate('month')")
+        assertRefused(
+            "date.truncate() truncates to year, quarter, month, week, day, hour, minute, second or millisecond, not decade.",
+            "RETURN date.truncate('decade', date('2024-03-15'))",
+        )
+        assertRefused(
+            "A truncation to a unit an expression gives is Cypher, and does not run on Oracle or Postgres yet.",
+            "WITH 'month' AS u RETURN date.truncate(u, date('2024-03-15'))",
+        )
+        assertRefused("duration.between() takes two temporal values.", "RETURN duration.between(date('2024-03-15'))")
     }
 
     @Test
