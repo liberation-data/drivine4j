@@ -309,6 +309,28 @@ abstract class SuspendingTransactionsContract {
     }
 
     @Test
+    fun `a block run on another thread than Spring's transaction begins one of its own`() {
+        val template = TransactionTemplate(DrivineTransactionManager(drivine.transactionContextHolder))
+
+        assertFailsWith<IllegalStateException> {
+            template.executeWithoutResult {
+                val spring = drivine.transactions.current
+                runBlocking {
+                    withContext(Dispatchers.IO) {
+                        drivine.transactionSuspending {
+                            assertNotSame(spring, drivine.transactions.current)
+                            create("in a transaction of its own")
+                        }
+                    }
+                }
+                error("Spring's transaction fails")
+            }
+        }
+
+        assertEquals(listOf("in a transaction of its own"), committed())
+    }
+
+    @Test
     fun `a block run through runBlocking inside a block joins it, where the outer block found the thread's transaction`() {
         val template = TransactionTemplate(DrivineTransactionManager(drivine.transactionContextHolder))
 

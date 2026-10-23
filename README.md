@@ -2611,7 +2611,10 @@ class Onboarding(
 
     @Transactional
     fun rehire(person: Person, hire: Hire) = runBlocking {
-        onboard(person, hire)                        // joins the transaction @Transactional began on this thread
+        transactions.transactionSuspending {         // on this thread: joins the transaction @Transactional began
+            gom.save(person)
+            gom.save(hire)
+        }
     }
 }
 ```
@@ -2620,7 +2623,8 @@ Spring's `@Transactional` on a `suspend fun` is not Drivine's to run: Spring han
 manager, and `DrivineTransactionManager` is the imperative one. Under Spring, `transactionSuspending { }` is the way to
 run a transaction across suspension points, and it nests with `@Transactional` and `TransactionTemplate` either way
 round: a `@Transactional` method called in the block joins the block's transaction, and a block run on a thread where
-`@Transactional` or `TransactionTemplate` began one (through `runBlocking`) joins that.
+`@Transactional` or `TransactionTemplate` began one (through `runBlocking`) joins that. It finds that transaction only on
+that thread: called after a `withContext(Dispatchers.IO)`, as `onboard` does, it begins one of its own.
 
 With Ktor, or no framework, it is `drivine.transactionSuspending { }`:
 

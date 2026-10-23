@@ -34,7 +34,8 @@ import kotlin.coroutines.CoroutineContext
  * - **Nesting.** A suspend block, a [Transactions.transaction] block, a `@Transactional` method or a
  *   `TransactionTemplate` run in the block joins its transaction, as `REQUIRED` says. A suspend block
  *   run on a thread already in a transaction, one Spring or a blocking block began before calling
- *   `runBlocking`, joins that one.
+ *   `runBlocking`, joins that one. It must run on that thread to find it: after a `withContext` to another
+ *   dispatcher, it begins one of its own.
  * - **Coroutines launched in the block** (`launch`, `async`, and what is built on them, such as
  *   `flowOn`) don't share its transaction: two coroutines using one transaction's connection at once
  *   isn't safe on every driver. A statement such a coroutine runs, or a block it runs that would join
