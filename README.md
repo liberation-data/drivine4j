@@ -2422,6 +2422,8 @@ val people: List<Person> = manager.query(spec)
 manager.execute(spec)
 ```
 
+A node or relationship in a row comes back as a map of its properties, whether it is a whole column or inside a list or a map, so `collect(n)`, `nodes(p)`, `relationships(p)`, `[n, m]` and `{actor: n}` give maps too. On FalkorDB a node's map also holds its `labels`, and a relationship's its `_type`, `_source` and `_destination`. A path inside a list or a map comes back as `{nodes, edges}`. A path that is a whole column comes back as the driver's `org.neo4j.driver.types.Path` on Neo4j and Memgraph, and as `{nodes, edges}` on FalkorDB.
+
 ## API Reference
 
 ### PersistenceManager
