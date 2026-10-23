@@ -178,7 +178,11 @@ class StatelessGraphObjectManager private constructor(
         }
         val root = requireNotNull(stamps.rootOf(obj)) { "The ${obj.javaClass.simpleName} saved has no root fragment." }
         val loadedRoot = requireNotNull(stamps.rootOf(from)) { "The ${from.javaClass.simpleName} given as from has no root fragment." }
-        val idField = requireNotNull(rootModel(obj.javaClass).nodeIdField)
+        val model = rootModel(obj.javaClass)
+        require(model.stampField != null) {
+            "${model.clazz.simpleName} has no @NodeStamp field, so a save of a ${obj.javaClass.simpleName} has no stamp to be checked against what was loaded. Give it one, or save without from."
+        }
+        val idField = requireNotNull(model.nodeIdField)
         val loadedStamp = stamps.stampOf(from)
         val asLoaded = asLoaded(loadedRoot, loadedStamp)
         val id = objectMapper.toMap(root)[idField]

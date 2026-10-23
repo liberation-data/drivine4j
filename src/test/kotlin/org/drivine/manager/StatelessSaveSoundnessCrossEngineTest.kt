@@ -409,6 +409,11 @@ abstract class StatelessSaveSoundnessContract {
         val itself = assertFailsWith<IllegalArgumentException> { stateless.save(loaded, from = loaded) }
         assertContains(itself.message.orEmpty(), "from is the Finding saved itself")
 
+        val memo = Memo("m1", "one")
+        val noStampField = assertFailsWith<IllegalArgumentException> { stateless.save(memo.copy(text = "two"), from = memo) }
+        assertContains(noStampField.message.orEmpty(), "Memo has no @NodeStamp field")
+        assertNull(stateless.load<Memo>("m1"), "nothing was written")
+
         assertEquals(listOf("first"), stateless.load<Finding>("f1")?.sources, "nothing was written")
     }
 
