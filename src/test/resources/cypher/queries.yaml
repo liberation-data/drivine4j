@@ -57,6 +57,16 @@ cases:
         parameters: {born: 1964.0}
         rows: ["Keanu"]
 
+  - name: "Integer bounds"
+    description: "The least and greatest whole numbers are written as literals, and one past the greatest is refused."
+    steps:
+      - cypher: "RETURN [-9223372036854775808, 9223372036854775807, - 9223372036854775808]"
+        rows: [[-9223372036854775808, 9223372036854775807, -9223372036854775808]]
+      - cypher: "RETURN 9223372036854775808"
+        error: true
+      - cypher: "RETURN -9223372036854775809"
+        error: true
+
   - name: "Relationship direction and types"
     description: "A relationship is matched in its direction, either way, or by any of several types."
     steps:
@@ -459,6 +469,25 @@ cases:
         rows: ["Carrie", "Keanu"]
       - cypher: "MATCH (:Person {name: 'Laurence'})-[r:KNOWS]->*(p) RETURN [p.name, size(r)] ORDER BY size(r)"
         rows: [["Laurence", 0], ["Keanu", 1], ["Carrie", 2]]
+
+  - name: "Quantifier bounds"
+    description: "A quantifier with no bound in its braces, or a least bound above its greatest, is refused, as Neo4j refuses it."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{} (b) RETURN b.name"
+        error: true
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{3,1} (b) RETURN b.name"
+        error: true
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){3,1} (b) RETURN b.name"
+        error: true
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){} (b) RETURN b.name"
+        error: true
+      - note: "Equal bounds are one count."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{2,2} (b) RETURN b.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*3..1]->(b) RETURN b.name"
+        rows: []
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{,} (b) RETURN b.name ORDER BY b.name"
+        rows: ["Carrie", "Keanu", "Laurence"]
 
   - name: "Quantified path patterns"
     description: "A quantified path pattern repeats a pattern of nodes and relationships, its variables lists of what each repetition matched."

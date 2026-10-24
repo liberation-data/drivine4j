@@ -204,6 +204,21 @@ cases:
         parameters: {title: "Notes"}
         rows: [["Notes", 1]]
 
+  - name: "Reading clauses straight after a write"
+    description: "A reading clause straight after a writing clause, with no WITH between them, reads the rows the write leaves."
+    steps:
+      - cypher: "CREATE (n:CyWrite {name: 'A'}) UNWIND [1, 2, 3] AS x RETURN count(x)"
+        rows: [3]
+      - cypher: "MATCH (n:CyWrite) SET n.seen = true UNWIND [n.name, 'B'] AS x RETURN x ORDER BY x"
+        rows: ["A", "B"]
+      - cypher: "MERGE (n:CyWrite {name: 'A'}) UNWIND [1, 2] AS x CREATE (:CyWrite {name: n.name + toString(x)})"
+      - cypher: "CREATE (n:CyWrite {name: 'C'}) WITH n MATCH (m:CyWrite) RETURN count(m)"
+        rows: [4]
+      - cypher: "CREATE (n:CyWrite {name: 'D'}) MATCH (m:CyWrite) RETURN count(m)"
+        rows: [5]
+      - cypher: "MATCH (n:CyWrite {name: 'D'}) DELETE n UNWIND [1] AS x MATCH (m:CyWrite) RETURN count(m)"
+        rows: [4]
+
   - name: "Row order through writes"
     description: "Rows keep their order through writes; a WITH between writes orders, filters and counts them."
     steps:

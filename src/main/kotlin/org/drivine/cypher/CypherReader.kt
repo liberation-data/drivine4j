@@ -20,6 +20,7 @@ import org.drivine.cypher.ast.Union
 import org.drivine.cypher.grammar.CypherLexer
 import org.drivine.cypher.grammar.CypherParser
 import org.drivine.cypher.grammar.CypherParser.*
+import java.math.BigInteger
 
 /**
  * Reads a Cypher statement into a [Query]: parsed with openCypher's grammar, then walked into the
@@ -49,7 +50,7 @@ object CypherReader {
     private fun single(single: OC_SingleQueryContext): List<Clause> {
         val clauses = mutableListOf<Clause>()
         single.oC_MultiPartQuery()?.let { multi ->
-            // Its children in order: the reading clauses and updates of each part, then the part's WITH.
+            // Its children in order: the reading clauses and updates of each part, in the order written, then the part's WITH.
             for (child in multi.children) {
                 when (child) {
                     is OC_ReadingClauseContext -> clauses += reading(child)
@@ -59,9 +60,14 @@ object CypherReader {
             }
         }
         val last = single.oC_SinglePartQuery() ?: single.oC_MultiPartQuery().oC_SinglePartQuery()
-        last.oC_ReadingClause().forEach { clauses += reading(it) }
-        last.oC_UpdatingClause().forEach { clauses += updating(it) }
-        last.oC_Return()?.let { clauses += Clause.Return(projection(it.oC_ProjectionBody())) }
+        // Reading clauses and updates in the order written: a reading clause may follow an update.
+        for (child in last.children) {
+            when (child) {
+                is OC_ReadingClauseContext -> clauses += reading(child)
+                is OC_UpdatingClauseContext -> clauses += updating(child)
+                is OC_ReturnContext -> clauses += Clause.Return(projection(child.oC_ProjectionBody()))
+            }
+        }
         return clauses
     }
 
@@ -216,15 +222,24 @@ object CypherReader {
         } ?: relationship
     }
 
-    /** `+` is one or more, `*` any, `{n}` exactly n, and `{m,n}` from m to n, either bound left out. */
+    /**
+     * `+` is one or more, `*` any, `{n}` exactly n, and `{m,n}` from m to n, either bound left out. As in Neo4j,
+     * braces with no bound in them, `{}`, and a least bound above the greatest, `{3,1}`, are refused.
+     */
     private fun range(context: OC_PathQuantifierContext): RelationshipPattern.Range {
         if (context.text == "+") return RelationshipPattern.Range(1, null)
         if (context.text == "*") return RelationshipPattern.Range(0, null)
-        val bounds = context.oC_IntegerLiteral().map { integer(it).toInt() }
         val comma = context.children.indexOfFirst { it.text == "," }
-        if (comma < 0) return RelationshipPattern.Range(bounds.single(), bounds.single())
+        if (comma < 0) {
+            val bound = context.oC_IntegerLiteral().singleOrNull()?.let { integer(it).toInt() }
+                ?: throw DrivineException("A quantifier in braces has a bound in them, as in {2} or {1,3}.")
+            return RelationshipPattern.Range(bound, bound)
+        }
         val before = context.oC_IntegerLiteral().firstOrNull { context.children.indexOf(it) < comma }?.let { integer(it).toInt() }
         val after = context.oC_IntegerLiteral().firstOrNull { context.children.indexOf(it) > comma }?.let { integer(it).toInt() }
+        if (before != null && after != null && before > after) {
+            throw DrivineException("A quantifier's least bound is at most its greatest, and $before is more than $after.")
+        }
         return RelationshipPattern.Range(before ?: 0, after)
     }
 
@@ -355,8 +370,18 @@ object CypherReader {
         context.oC_UnaryAddOrSubtractExpression().map(::unary).reduce { a, b -> Expression.Binary(Expression.Binary.Operator.POWER, a, b) }
 
     private fun unary(context: OC_UnaryAddOrSubtractExpressionContext): Expression {
-        val operand = nonArithmetic(context.oC_NonArithmeticOperatorExpression())
-        return if (context.children.first().text == "-") Expression.Unary(Expression.Unary.Operator.NEGATE, operand) else operand
+        val negated = context.children.first().text == "-"
+        val written = context.oC_NonArithmeticOperatorExpression()
+        // The least whole number, -9223372036854775808, is written negated: its digits alone are past the greatest.
+        if (negated && written.childCount == 1) {
+            written.oC_Atom().oC_Literal()?.oC_NumberLiteral()?.oC_IntegerLiteral()?.let { literal ->
+                val magnitude = magnitude(literal)
+                if (magnitude == LONG_MIN_MAGNITUDE) return Expression.Literal(Long.MIN_VALUE)
+                if (magnitude > LONG_MIN_MAGNITUDE) throw outOfRange("-${literal.text}")
+            }
+        }
+        val operand = nonArithmetic(written)
+        return if (negated) Expression.Unary(Expression.Unary.Operator.NEGATE, operand) else operand
     }
 
     /** An atom, then its property lookups and list operators in the order written, then a label test. */
@@ -515,14 +540,28 @@ object CypherReader {
     }
 
     private fun integer(context: OC_IntegerLiteralContext): Long {
+        val magnitude = magnitude(context)
+        if (magnitude > LONG_MAX_MAGNITUDE) throw outOfRange(context.text)
+        return magnitude.toLong()
+    }
+
+    /** The number an integer literal writes, decimal, hexadecimal (`0x`) or octal (`0o`, or a leading 0), however large. */
+    private fun magnitude(context: OC_IntegerLiteralContext): BigInteger {
         val text = context.text
         return when {
-            text.startsWith("0x") -> text.substring(2).toLong(16)
-            text.startsWith("0o") -> text.substring(2).toLong(8)
-            text.length > 1 && text.startsWith("0") -> text.substring(1).toLong(8)
-            else -> text.toLong()
+            text.startsWith("0x") -> BigInteger(text.substring(2), 16)
+            text.startsWith("0o") -> BigInteger(text.substring(2), 8)
+            text.length > 1 && text.startsWith("0") -> BigInteger(text.substring(1), 8)
+            else -> BigInteger(text)
         }
     }
+
+    private fun outOfRange(written: String) =
+        DrivineException("$written is past the range of a whole number, from -9223372036854775808 to 9223372036854775807.")
+
+    private val LONG_MAX_MAGNITUDE = BigInteger.valueOf(Long.MAX_VALUE)
+
+    private val LONG_MIN_MAGNITUDE = LONG_MAX_MAGNITUDE + BigInteger.ONE
 
     /** A string literal's value: its quotes taken off and its escapes read. */
     private fun string(node: TerminalNode): String {
