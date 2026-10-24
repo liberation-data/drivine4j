@@ -12,6 +12,7 @@ import org.drivine.cypher.ast.Query
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.cypher.ast.RemoveItem
 import org.drivine.cypher.ast.SetItem
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
 import org.slf4j.LoggerFactory
 
@@ -77,16 +78,19 @@ abstract class SqlCypherCompiler(graph: String) {
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
-            val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount))
+            val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText))
             return withFunctions(CompiledCypher(writer.query(query), writer.parameters.values))
         }
         procedural = true
         // A procedure takes its parameters as one object, and reads each from it.
         val writer = Writer(
-            Parameters(parameters, { nullIfJsonNull(propertyOf(PARAMS, it)) }, { number(propertyOf(PARAMS, it)) }, inObject = true)
+            Parameters(parameters, { name, _ -> nullIfJsonNull(propertyOf(PARAMS, name)) }, { number(propertyOf(PARAMS, it)) }, inObject = true, text = ::parameterText)
         )
         val body = writer.procedure(query)
-        return CompiledCypher(procedure(body), writer.parameters.values)
+        // The parameters' text is written before the procedure is: on Oracle, writing it is what says whether the procedure
+        // reads it as extended JSON.
+        val values = writer.parameters.values
+        return CompiledCypher(procedure(body), values)
     }
 
     /**
@@ -134,7 +138,7 @@ abstract class SqlCypherCompiler(graph: String) {
         if (names.distinct().size > 1) {
             throw DrivineException("Each query of a UNION returns the same names, as in Cypher: ${names.joinToString(" and ") { it.joinToString(prefix = "(", postfix = ")") }}.")
         }
-        val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount))
+        val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText))
         val rows = parts.mapIndexed { i, clauses ->
             "SELECT ${i + 1} AS part, $rowNumber AS n, q.result FROM (\n${indent(writer.query(Query(clauses)))}\n) q"
         }.joinToString("\nUNION ALL\n")
@@ -153,8 +157,11 @@ abstract class SqlCypherCompiler(graph: String) {
     /** A value [value] the statement writes, as JSON. */
     protected abstract fun literalJson(value: Any?): String
 
-    /** The parameter bound as [marker], JSON text, as JSON. */
-    protected abstract fun parameterJson(marker: String): String
+    /** The parameter bound as [marker], the JSON text [text], as JSON. */
+    protected abstract fun parameterJson(marker: String, text: String?): String
+
+    /** The JSON text a parameter's [value] is bound as. */
+    protected open fun parameterText(value: Any?): String = Neo4jObjectMapper.instance.writeValueAsString(value)
 
     /** The parameter bound as [marker], a whole number, as one. */
     protected abstract fun parameterCount(marker: String): String
@@ -1515,17 +1522,26 @@ abstract class SqlCypherCompiler(graph: String) {
             // a group is keyed by an item, and by no part of one.
             val itemColumns = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(name, pair.first) }
             val after = mutableMapOf<String, String>()
+            // A term worked out in the query is sorted by in the query that reads it: the value carried out as a column, and
+            // what sorts it (JSON's null as SQL's) worked out of that column. Oracle (23.26), sorting by a value that reads
+            // the row more than once beside a variable-length walk, closes the session.
+            val sorted = mutableMapOf<String, (String) -> String>()
+            fun carried(column: String, value: () -> Value, aggregates: Expression) {
+                val (carried, sorts) = aggregating(aggregates) { sortTerm(value()) }
+                selectList += "$carried AS $column"
+                sorted[column] = sorts
+            }
             val sorts = projection.orderBy.mapIndexed { i, sort ->
                 val column = "s${i + 1}"
                 // An order term that is an item, as written, is that item: so it may be ordered by where rows are compared.
                 val item = items.indexOfFirst { it.expression == sort.expression }
                 when {
-                    item >= 0 -> selectList += "${aggregating(sort.expression) { sortable(compiled[item].second) }} AS $column"
+                    item >= 0 -> carried(column, { compiled[item].second }, sort.expression)
                     compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
                         after[column] = sortable(expression(sort.expression, itemColumns))
                     // One that aggregates reads the rows it aggregates, as an item does; so does one that reads an aggregate
                     // distinctFirst worked out first, which no item is.
-                    else -> selectList += "${aggregating(sort.expression) { sortable(expression(sort.expression, select.scope + compiled.toMap())) }} AS $column"
+                    else -> carried(column, { expression(sort.expression, select.scope + compiled.toMap()) }, sort.expression)
                 }
                 column to sort.descending
             }.ifEmpty {
@@ -1549,18 +1565,22 @@ abstract class SqlCypherCompiler(graph: String) {
                 select.whereClause()?.let(::add)
                 if (groupBy.isNotEmpty()) add("GROUP BY ${groupBy.joinToString(", ")}")
             }.joinToString("\n")
+            // What sorts a term in the query that reads this one: worked out there, of the column carried out, or that column.
+            fun sortedBy(column: String) = after[column] ?: sorted[column]?.invoke("$name.$column") ?: "$name.$column"
             val outerColumns = if (final) {
                 val values = columns.map { (column, value) -> json(value.columnsOf(name, column)) }
                 val result = if (values.size == 1) values.single().sql else jsonArray(values.map { it.sql })
                 "$result AS result"
             } else {
                 (columns.flatMap { (column, value) -> value.columns(column).map { "$name.${it.substringAfterLast(" AS ")}" } } +
-                    sorts.map { (column, _) -> after[column]?.let { "$it AS $column" } ?: "$name.$column" }).joinToString(", ")
+                    sorts.map { (column, _) -> "${sortedBy(column)} AS $column" }).joinToString(", ")
             }
             val outer = buildList {
                 add("SELECT $outerColumns")
                 add("FROM (\n${indent(inner)}\n) $name")
-                if (sorts.isNotEmpty()) add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> "${after[column] ?: "$name.$column"}${if (descending) " DESC" else ""}" }}")
+                if (sorts.isNotEmpty()) {
+                    add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> "${sortedBy(column)}${if (descending) " DESC" else ""}" }}")
+                }
                 addAll(page(projection.skip?.let(::count), projection.limit?.let(::count)))
             }.joinToString("\n")
             // What each item is bound to in the query that reads this one: its columns, which that query names.
@@ -2323,11 +2343,14 @@ abstract class SqlCypherCompiler(graph: String) {
          * What an order sorts a value by: JSON's order for a value, a node by its properties. JSON's null, as a map
          * or a list the statement builds holds it, is SQL's null, which comes last, as a graph engine orders null.
          */
-        private fun sortable(value: Value): String = when {
-            value is Value.Bool -> value.sql
+        private fun sortable(value: Value): String = sortTerm(value).let { (carried, sorts) -> sorts(carried) }
+
+        /** What [sortable] sorts [value] by, in two: the value as a column carries it, and what sorts it, of that column. */
+        private fun sortTerm(value: Value): Pair<String, (String) -> String> = when {
+            value is Value.Bool -> value.sql to { it }
             // A zoned value the statement makes sorts as the moment it is, whatever its offset.
-            value is Value.Json && value.temporal?.zoned == true -> temporals.moment(text(comparable(value)), value.temporal)
-            else -> nullIfJsonNull(comparable(json(value)))
+            value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { temporals.moment(text(it), value.temporal) }
+            else -> comparable(json(value)) to { nullIfJsonNull(it) }
         }
     }
 

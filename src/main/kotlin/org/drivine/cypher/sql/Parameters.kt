@@ -1,7 +1,6 @@
 package org.drivine.cypher.sql
 
 import org.drivine.DrivineException
-import org.drivine.mapper.Neo4jObjectMapper
 
 /**
  * The parameters of a statement as the SQL binds them. A Cypher parameter is a value, so it is bound as
@@ -14,25 +13,31 @@ import org.drivine.mapper.Neo4jObjectMapper
  */
 class Parameters(
     private val given: Map<String, Any?>,
-    /** The bound JSON text at a marker, or with [inObject] the parameter of a name, as the store's JSON. */
-    private val asJson: (String) -> String,
+    /**
+     * The bound JSON text at a marker, or with [inObject] the parameter of a name, as the store's JSON: given the marker,
+     * and the text bound at it, or the name and null.
+     */
+    private val asJson: (String, String?) -> String,
     /** The bound whole number at a marker, or with [inObject] the parameter of a name, as the store's number. */
     private val asCount: (String) -> String,
     private val inObject: Boolean = false,
+    /** The JSON text a value is bound as: the store's, see [SqlCypherCompiler.parameterText]. */
+    private val text: (Any?) -> String,
 ) {
     private val bound = linkedMapOf<String, Any?>()
 
     /** What the SQL binds. */
     val values: Map<String, Any?>
-        get() = if (inObject) mapOf(OBJECT to Neo4jObjectMapper.instance.writeValueAsString(given)) else bound
+        get() = if (inObject) mapOf(OBJECT to text(given)) else bound
 
     /** The parameter [name], as JSON. */
     fun json(name: String): String {
         given(name)
-        if (inObject) return asJson(name)
+        if (inObject) return asJson(name, null)
         val key = "_cy_$name"
-        bound[key] = given(name)?.let { Neo4jObjectMapper.instance.writeValueAsString(it) }
-        return asJson("\$$key")
+        val written = given(name)?.let(text)
+        bound[key] = written
+        return asJson("\$$key", written)
     }
 
     /** The parameter [name], as a whole number. */

@@ -896,14 +896,6 @@ cases:
         cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS]->() RETURN reduce(s = 0, x IN [1] | s + length(p))"
         error: "A path read in the step of reduce() does not run on Oracle: its function is given the row as JSON."
 
-  - name: "collect(DISTINCT) past 4000 bytes"
-    description: "collect(DISTINCT …) gathers values whose text is past 4000 bytes, as collect() does."
-    steps:
-      - cypher: "UNWIND range(1, 500) AS i WITH collect(DISTINCT 'value number ' + toString(i % 400)) AS xs RETURN [size(xs), reduce(n = 0, x IN xs | n + size(x)), xs[0], xs[-1]]"
-        rows: [[400, 6290, "value number 1", "value number 0"]]
-      - cypher: "UNWIND range(1, 300) AS i RETURN size(collect(DISTINCT {i: i % 250, text: 'some words to make it longer'}))"
-        rows: [250]
-
   - name: "Quantifiers over a path's nodes"
     description: "any(), all(), none() and single() over a path's nodes, or a quantified path pattern's group variable, read that path's list."
     steps:
@@ -916,3 +908,46 @@ cases:
       - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y))+ (b) RETURN [b.name, any(n IN y WHERE n.name = 'Carrie')] ORDER BY b.name"
         except: [memgraph, falkordb, neptune]
         rows: [["Carrie", true], ["Keanu", false]]
+
+  - name: "A walk sorted by an expression"
+    description: "A variable-length walk sorted by an expression of where it ends, such as coalesce(), gives its rows in order."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n ORDER BY n"
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n ORDER BY n DESC"
+        rows: ["The Matrix Reloaded", "The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix", "Keanu", "Johnny Mnemonic", "Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->(k)-[*1]-(c) RETURN coalesce(c.name, c.title) AS n ORDER BY n"
+        rows: ["Carrie", "Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN b.released ORDER BY coalesce(b.name, b.title), b.released"
+        rows: [null, 1995, null, 1999, 1999, 1999, 2003, 2003]
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS|ACTED_IN]->(y))+ (b) RETURN coalesce(b.name, b.title) AS n ORDER BY n"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+
+  - name: "collect(DISTINCT) past 4000 bytes"
+    description: "collect(DISTINCT …) gathers values whose text is past 4000 bytes, as collect() does."
+    steps:
+      - cypher: "UNWIND range(1, 500) AS i WITH collect(DISTINCT 'value number ' + toString(i % 400)) AS xs RETURN [size(xs), reduce(n = 0, x IN xs | n + size(x)), xs[0], xs[-1]]"
+        rows: [[400, 6290, "value number 1", "value number 0"]]
+      - cypher: "UNWIND range(1, 300) AS i RETURN size(collect(DISTINCT {i: i % 250, text: 'some words to make it longer'}))"
+        rows: [250]
+
+  - name: "A parameter past 32 KB"
+    description: "A parameter whose JSON is past 32 KB is bound, and comes back as it went. Oracle compares no JSON that long, so the value is only returned."
+    steps:
+      - cypher: "RETURN $big"
+        parameters: {big: {$repeat: "x", times: 40000}}
+        rows: [{$repeat: "x", times: 40000}]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [p.name, $doc.text, $doc.n]"
+        parameters: {doc: {text: {$repeat: "y", times: 40000}, n: 1}}
+        rows: [["Keanu", {$repeat: "y", times: 40000}, 1]]
+      - cypher: "UNWIND $texts AS t RETURN t"
+        parameters: {texts: [{$repeat: "a", times: 20000}, {$repeat: "b", times: 20000}]}
+        rows: [{$repeat: "a", times: 20000}, {$repeat: "b", times: 20000}]
+
+  - name: "A float parameter with no fraction"
+    description: "A float parameter that is a whole number, such as 2.0, stays a float."
+    steps:
+      - cypher: "RETURN [$f, $f * 2, $f + 1, toString($f), $m.f]"
+        parameters: {f: 2.0, m: {f: 3.0}}
+        rows: [[2.0, 4.0, 3.0, "2.0", 3.0]]

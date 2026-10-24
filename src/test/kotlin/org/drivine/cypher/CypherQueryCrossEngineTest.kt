@@ -225,6 +225,105 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a float parameter that is a whole number stays a float nested in maps and lists, and past 1e15`() {
+        val p = mapOf("a" to listOf(1.0, 2.5, mapOf("b" to -3.0)), "n" to 4L)
+        assertEquals(listOf(p), query("RETURN \$p", mapOf("p" to p)))
+        assertEquals(listOf(listOf(-3.0, "-2.0")), query("RETURN [\$p.a[2].b, toString(\$f)]", mapOf("p" to p, "f" to -2.0)))
+        // Postgres's jsonb reads a float past a long's range back as a whole number, which drivine reads as a long.
+        if (pm.type != DatabaseType.POSTGRES) assertEquals(listOf(listOf(1e20, 2e20)), query("RETURN [\$big, \$big * 2]", mapOf("big" to 1e20)))
+    }
+
+    @Test
+    fun `a float parameter that is a whole number equals the whole number stored`() {
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val matrix = listOf("The Matrix")
+        assertEquals(matrix, query("MATCH (m:Movie {released: \$r}) RETURN m.title", mapOf("r" to 1999.0)))
+        assertEquals(matrix, query("MATCH (m:Movie) WHERE m.released = \$r RETURN m.title", mapOf("r" to 1999.0)))
+        assertEquals(matrix, query("MATCH (m:Movie) WHERE m.released IN \$rs RETURN m.title", mapOf("rs" to listOf(1999.0, 1.5))))
+        assertEquals(listOf("Keanu"), query("MATCH (p:Person) WHERE p.born >= \$b AND p.born < \$b + 1 RETURN p.name", mapOf("b" to 1964.0)))
+        assertEquals(listOf(true), query("RETURN \$f = 2", mapOf("f" to 2.0)))
+    }
+
+    @Test
+    fun `a float parameter that is a whole number stays a float in a UNION, and in a parameter past 32 KB`() {
+        assertEquals(listOf(2.0, 1.5), query("RETURN \$f AS x UNION ALL RETURN 1.5 AS x", mapOf("f" to 2.0)))
+        assertEquals(listOf(2.0), query("RETURN \$doc.n", mapOf("doc" to mapOf("text" to "y".repeat(40_000), "n" to 2.0))))
+    }
+
+    @Test
+    fun `a map parameter keyed as extended JSON writes a double comes back a map`() {
+        val m = mapOf("\$numberDouble" to "1")
+        assertEquals(listOf(m), query("RETURN \$m", mapOf("m" to m)))
+        // Beside a float parameter whose text is the same as the map's.
+        val same = mapOf("\$numberDouble" to "2.0")
+        assertEquals(listOf(listOf(2.0, same)), query("RETURN [\$f, \$m]", mapOf("f" to 2.0, "m" to same)))
+    }
+
+    @Test
+    fun `a float that is a whole number, collected once each, stays a float`() {
+        // Not in the spec yet: what distinctFirst keeps of a collection is the items collect gathered, not their text read back.
+        assertEquals(listOf(listOf(1.0, 2.5)), query("UNWIND [1.0, 2.5, 1.0] AS x RETURN collect(DISTINCT x)"))
+        assertEquals(listOf(listOf(2L, listOf(2.0)), listOf(1L, listOf(2.0))), query("UNWIND [1, 2] AS x RETURN x, collect(DISTINCT \$f) ORDER BY x DESC", mapOf("f" to 2.0)))
+    }
+
+    @Test
+    fun `an item past 4,000 bytes, and a map with its keys in another order, collected once each`() {
+        // Not in the spec yet: Oracle keeps each item once as JSON compares items, not as their text does.
+        val big = "y".repeat(5_000)
+        assertEquals(listOf(listOf(listOf(big), "a")), query("UNWIND [[\$b], [\$b], 'a'] AS x RETURN collect(DISTINCT x)", mapOf("b" to big)))
+        assertEquals(listOf(listOf(mapOf("a" to 1L, "b" to 2L))), query("UNWIND [{a: 1, b: 2}, {b: 2, a: 1}] AS x RETURN collect(DISTINCT x)"))
+    }
+
+    @Test
+    fun `a map parameter keyed as extended JSON writes a value, beside a float that is a whole number in the same parameter, comes back a map`() {
+        val p = mapOf("a" to 2.5, "m" to mapOf("\$numberDouble" to "1"), "l" to mapOf("\$numberLong" to "5"))
+        assertEquals<List<Any?>>(listOf(p), query("RETURN \$p", mapOf("p" to p + ("b" to 2.0))).map { (it as Map<*, *>) - "b" })
+    }
+
+    @Test
+    fun `a walk sorts by coalesce of an aggregate collected once each, and a DISTINCT projection by coalesce of an item`() {
+        // Not in the spec yet: an order term that reads an aggregate distinctFirst worked out first is carried out, beside a walk, as #162's sort was.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Johnny Mnemonic", 1L), listOf("The Matrix", 3L), listOf("The Matrix Reloaded", 2L), listOf("Keanu", 1L), listOf("Carrie", 1L)),
+            query("MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n, count(*) ORDER BY coalesce(head(collect(DISTINCT b.born)), 0), n"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", listOf("The Matrix", "The Matrix Reloaded")), listOf("Laurence", listOf("The Matrix"))),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT p.name AS n, collect(DISTINCT m.title) AS ts ORDER BY coalesce(ts[2], 'zz'), n SKIP 1 LIMIT 2"),
+        )
+    }
+
+    @Test
+    fun `toString writes a float with its fraction, an integer and a text as they are`() {
+        assertEquals(listOf(listOf("2.5", "3", "a", "4.0")), query("RETURN [toString(2.5), toString(3), toString('a'), toString(\$f * 2)]", mapOf("f" to 2.0)))
+        // A float too small for Oracle's NUMBER, which reads it as 0, a whole number.
+        assertEquals(1e-200, (query("RETURN toString(1.0E-200)").single() as String).toDouble())
+    }
+
+    @Test
+    fun `a walk returns and sorts by toString of a long expression of where it ends`() {
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        // On Oracle toString reads its argument twice, so one this long is bound in a subquery: beside a walk, as #162's sort was.
+        val walk = "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN toString(coalesce(b.name, b.title)) AS n"
+        val rows = listOf("Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded")
+        assertEquals(rows, query(walk).map { it as String }.sorted())
+        assertEquals(rows, query("$walk ORDER BY n"))
+    }
+
+    @Test
+    fun `a walk sorted by coalesce in a WITH keeps that order, skipped and limited, in the query that reads it`() {
+        // Not in the spec yet: a WITH carries its sort term out as #162's RETURN does, and the query after it reads that term.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val walk = "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY coalesce(b.name, b.title) DESC, b.released SKIP 1 LIMIT 4"
+        assertEquals(listOf("The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix"), query("$walk RETURN coalesce(b.name, b.title)"))
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
