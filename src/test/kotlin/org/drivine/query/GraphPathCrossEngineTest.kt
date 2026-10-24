@@ -107,9 +107,9 @@ class GraphPathMemgraphTest {
     fun `paths and aggregates work on Memgraph`() { verifyPaths(gom); verifyAggregates(gom) }
 
     @Test
-    fun `Memgraph refuses to order a path by a property that holds texts and numbers`() {
+    fun `a path ordered by a property that holds texts and numbers reads every text first on Memgraph`() {
         pm.execute(QuerySpecification.withStatement(MIXED_SEED.trimIndent()))
-        assertTrue(runCatching { gom.load("mx", ActorDirectorsByYear::class.java) }.isFailure)
+        assertMixedOrderedPaths { id, view -> gom.load(id, view) }
     }
 }
 
