@@ -161,6 +161,81 @@ class ModelFileCodegenTest {
         assertNull(ModelFileGenerator.layout(java.net.URI.create("mem:///CLASS_OUTPUT/META-INF/drivine/model.json")));
     }
 
+    @Test
+    void outsideAKnownLayoutOnlyTheClassOutputIsWritten() {
+        Compilation compilation = Compiler.javac().withProcessors(new GraphViewProcessor())
+            .compile(TICKET, NULLABLE, NON_NULL);
+        assertThat(compilation).hadWarningContaining("written to the class output only");
+        assertThat(compilation).generatedFile(javax.tools.StandardLocation.CLASS_OUTPUT, "", "META-INF/drivine/model.json");
+    }
+
+    /** A fragment another processor generates, in a later round than the sources it came from. */
+    @javax.annotation.processing.SupportedAnnotationTypes("*")
+    static final class FragmentWriter extends javax.annotation.processing.AbstractProcessor {
+        private boolean written;
+
+        @Override
+        public javax.lang.model.SourceVersion getSupportedSourceVersion() {
+            return javax.lang.model.SourceVersion.latestSupported();
+        }
+
+        @Override
+        public boolean process(java.util.Set<? extends javax.lang.model.element.TypeElement> annotations,
+                               javax.annotation.processing.RoundEnvironment roundEnv) {
+            if (written) return false;
+            written = true;
+            try (java.io.Writer writer = processingEnv.getFiler().createSourceFile("jx.Made").openWriter()) {
+                writer.write("package jx;\n@org.drivine.annotation.NodeFragment(labels = {\"Made\"})\n"
+                    + "public final class Made { @org.drivine.annotation.NodeId public String id; }\n");
+            } catch (IOException e) {
+                throw new java.io.UncheckedIOException(e);
+            }
+            return false;
+        }
+    }
+
+    @Test
+    void aFragmentGeneratedInALaterRoundIsInTheFile() throws IOException {
+        File file = new File(dir, "model.json");
+        Compilation compilation = Compiler.javac().withProcessors(new FragmentWriter(), new GraphViewProcessor())
+            .withOptions("-A" + ModelFiles.FILE + "=" + file.getPath())
+            .compile(TICKET, NULLABLE, NON_NULL);
+        assertThat(compilation).succeeded();
+        Map<?, ?> model = (Map<?, ?>) ModelJson.read(Files.readString(file.toPath()));
+        assertEquals(List.of("Made"), fragment(model, "jx.Made").get("labels"));
+        assertEquals(List.of("Ticket"), fragment(model, "jx.Ticket").get("labels"));
+    }
+
+    /**
+     * Through javac's own file manager, as a build runs it: the module is found from the class output,
+     * and the jar's copy is the file's bytes, UTF-8, whatever encoding the sources are read in.
+     */
+    @Test
+    void gradlesLayoutWritesBesideTheModuleInUtf8() throws IOException {
+        File module = new File(dir, "app");
+        File classes = new File(module, "build/classes/java/main");
+        assertTrue(classes.mkdirs());
+        File source = new File(dir, "Cafe.java");
+        Files.writeString(source.toPath(), "package jx;\n@org.drivine.annotation.NodeFragment(labels = {\"Caf\\u00e9\"})\n"
+            + "public final class Cafe { @org.drivine.annotation.NodeId public String id; }\n");
+        javax.tools.JavaCompiler javac = javax.tools.ToolProvider.getSystemJavaCompiler();
+        try (javax.tools.StandardJavaFileManager files = javac.getStandardFileManager(null, null, null)) {
+            files.setLocation(javax.tools.StandardLocation.CLASS_OUTPUT, List.of(classes));
+            javax.tools.JavaCompiler.CompilationTask task = javac.getTask(null, files, null,
+                List.of("-encoding", "ISO-8859-1", "-proc:only", "-classpath", System.getProperty("java.class.path")),
+                null, files.getJavaFileObjects(source));
+            task.setProcessors(List.of(new GraphViewProcessor()));
+            assertTrue(task.call());
+        }
+        File file = new File(module, ".drivine/model.json");
+        assertTrue(file.isFile(), "no model file beside the module");
+        Map<?, ?> model = (Map<?, ?>) ModelJson.read(Files.readString(file.toPath()));
+        assertEquals("app", model.get("module"));
+        assertEquals(List.of("Café"), fragment(model, "jx.Cafe").get("labels"));
+        assertEquals(Files.readString(file.toPath()),
+            Files.readString(new File(classes, "META-INF/drivine/model.json").toPath()));
+    }
+
     private Map<?, ?> generate(JavaFileObject... sources) throws IOException {
         return generate(new File(dir, "model.json"), sources);
     }

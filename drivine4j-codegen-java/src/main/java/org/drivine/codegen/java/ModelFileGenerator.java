@@ -10,7 +10,7 @@ import javax.tools.FileObject;
 import javax.tools.StandardLocation;
 import java.io.File;
 import java.io.IOException;
-import java.io.Writer;
+import java.io.OutputStream;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -93,8 +93,9 @@ final class ModelFileGenerator {
     private void writeResource(String json) {
         try {
             FileObject resource = filer.createResource(StandardLocation.CLASS_OUTPUT, "", ModelFiles.RESOURCE_PATH + ".json");
-            try (Writer writer = resource.openWriter()) {
-                writer.write(json);
+            // Bytes, not openWriter(), which encodes as the sources are read (-encoding): the file is UTF-8.
+            try (OutputStream out = resource.openOutputStream()) {
+                out.write(json.getBytes(StandardCharsets.UTF_8));
             }
         } catch (IOException e) {
             messager.printMessage(Diagnostic.Kind.WARNING, "Drivine model file: could not write the class output's copy: " + e.getMessage());

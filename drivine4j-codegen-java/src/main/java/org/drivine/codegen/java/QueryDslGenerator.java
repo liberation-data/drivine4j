@@ -456,7 +456,7 @@ public class QueryDslGenerator {
 
     // Helper methods
 
-    private boolean hasAnnotation(Element element, String annotationName) {
+    static boolean hasAnnotation(Element element, String annotationName) {
         for (AnnotationMirror annotation : element.getAnnotationMirrors()) {
             if (annotation.getAnnotationType().toString().equals(annotationName)) {
                 return true;
@@ -470,7 +470,7 @@ public class QueryDslGenerator {
         return typeElement != null && hasAnnotation(typeElement, annotationName);
     }
 
-    private AnnotationMirror getAnnotation(Element element, String annotationName) {
+    static AnnotationMirror getAnnotation(Element element, String annotationName) {
         for (AnnotationMirror annotation : element.getAnnotationMirrors()) {
             if (annotation.getAnnotationType().toString().equals(annotationName)) {
                 return annotation;
@@ -494,7 +494,7 @@ public class QueryDslGenerator {
         return defaultValue;
     }
 
-    private TypeElement getTypeElement(TypeMirror type) {
+    static TypeElement getTypeElement(TypeMirror type) {
         if (type.getKind() == TypeKind.DECLARED) {
             return (TypeElement) ((DeclaredType) type).asElement();
         }

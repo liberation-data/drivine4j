@@ -29,7 +29,7 @@ import java.util.Set;
  * Reads a module's `@NodeFragment`, `@RelationshipFragment` and `@GraphView` classes as the model
  * file describes them, as the KSP processor's reader does for the same annotations, so that a Java
  * module and a Kotlin one describe a class alike. A Java class's properties are its fields, its own
- * and its superclasses', as the core library reads them.
+ * and those it inherits from its superclasses, as the core library reads them.
  *
  * Each class gives a map whose keys are in the order the format's schema lists them, with a null
  * for a key the class has nothing for, which the writer leaves out.
@@ -97,7 +97,8 @@ final class ModelReader {
         for (String[] index : INDEXES) {
             for (AnnotationMirror annotation : all(type, index[0])) {
                 List<String> names = strings(annotation, "properties");
-                if (names.size() == 1) single.putIfAbsent(names.get(0), index[1]);
+                // The last wins, as the KSP reader has it.
+                if (names.size() == 1) single.put(names.get(0), index[1]);
                 else if (names.size() > 1) composite.add(map("kind", index[1], "properties", names));
             }
         }
@@ -325,13 +326,18 @@ final class ModelReader {
         return fields(type).stream().filter(f -> !has(f, "GraphTransient")).toList();
     }
 
-    /** The class's instance fields and its superclasses', a field hiding one above it in its place. */
+    /**
+     * The class's instance fields and those it inherits, a field hiding one above it in its place. A
+     * superclass's private field is not inherited, and the core library, reading the class with Kotlin's
+     * reflection, does not see it.
+     */
     private List<VariableElement> fields(TypeElement type) {
         Map<String, VariableElement> fields = new LinkedHashMap<>();
         for (TypeElement current = type; current != null && !current.getQualifiedName().contentEquals("java.lang.Object");
              current = element(current.getSuperclass())) {
             for (Element member : current.getEnclosedElements()) {
-                if (member.getKind() == ElementKind.FIELD && !member.getModifiers().contains(Modifier.STATIC)) {
+                if (member.getKind() == ElementKind.FIELD && !member.getModifiers().contains(Modifier.STATIC)
+                    && (current == type || !member.getModifiers().contains(Modifier.PRIVATE))) {
                     fields.putIfAbsent(member.getSimpleName().toString(), (VariableElement) member);
                 }
             }
@@ -359,7 +365,12 @@ final class ModelReader {
             case FLOAT, DOUBLE: return new Typed("float", null, null);
             case BOOLEAN: return new Typed("boolean", null, null);
             case CHAR: return new Typed("string", null, null);
-            case ARRAY: return new Typed("list", typed(((ArrayType) type).getComponentType()).type, null);
+            case ARRAY: {
+                // As the KSP reader sees them: a byte[] or char[] is not a list of numbers or of letters.
+                TypeKind component = ((ArrayType) type).getComponentType().getKind();
+                if (component == TypeKind.BYTE || component == TypeKind.CHAR) return new Typed("any", null, null);
+                return new Typed("list", typed(((ArrayType) type).getComponentType()).type, null);
+            }
             default: break;
         }
         TypeElement element = element(type);
@@ -407,8 +418,9 @@ final class ModelReader {
         if (index >= arguments.size()) return null;
         TypeMirror argument = arguments.get(index);
         if (argument.getKind() == TypeKind.WILDCARD) {
-            TypeMirror bound = ((javax.lang.model.type.WildcardType) argument).getExtendsBound();
-            return bound;
+            // `? extends T` and `? super T` are both T to the KSP reader; `?` is nothing.
+            javax.lang.model.type.WildcardType wildcard = (javax.lang.model.type.WildcardType) argument;
+            return wildcard.getExtendsBound() != null ? wildcard.getExtendsBound() : wildcard.getSuperBound();
         }
         return argument;
     }
@@ -429,8 +441,7 @@ final class ModelReader {
     }
 
     private TypeElement element(TypeMirror type) {
-        if (type == null || type.getKind() != TypeKind.DECLARED) return null;
-        return (TypeElement) ((DeclaredType) type).asElement();
+        return type == null ? null : QueryDslGenerator.getTypeElement(type);
     }
 
     private String name(TypeMirror type) {
@@ -443,14 +454,11 @@ final class ModelReader {
     }
 
     private static boolean has(Element element, String name) {
-        return annotation(element, name) != null;
+        return QueryDslGenerator.hasAnnotation(element, DRIVINE + name);
     }
 
     private static AnnotationMirror annotation(Element element, String name) {
-        for (AnnotationMirror annotation : element.getAnnotationMirrors()) {
-            if (annotation.getAnnotationType().toString().equals(DRIVINE + name)) return annotation;
-        }
-        return null;
+        return QueryDslGenerator.getAnnotation(element, DRIVINE + name);
     }
 
     /** Every [name] annotation on [element], those a repeated one is gathered into included. */

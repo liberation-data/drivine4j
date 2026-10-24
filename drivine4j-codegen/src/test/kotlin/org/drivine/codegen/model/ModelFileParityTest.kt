@@ -79,6 +79,19 @@ class ModelFileParityTest {
             public abstract class Shape { @NodeId public String id; }
         """,
         "Circle" to """@NodeFragment(labels = {"Circle"}) public final class Circle extends Shape { public double radius; }""",
+        // A superclass's private field is not the subclass's, as the core library reads it.
+        "Base" to "public abstract class Base { @NodeId private String id; protected String shared; }",
+        "Probe" to """
+            @NodeFragment(labels = {"Probe"})
+            @Unique(properties = {"code"})
+            @RangeIndex(properties = {"code"})
+            public final class Probe extends Base {
+                private String code;
+                public byte[] bytes;
+                public char[] chars;
+                public java.util.List<? super Integer> lower;
+            }
+        """,
         "Membership" to """
             @RelationshipFragment
             public final class Membership { public java.time.LocalDate since; public Member member; }
@@ -126,7 +139,7 @@ class ModelFileParityTest {
 
         val model = ModelJson.read(ksp.readText()) as Map<*, *>
         // Not two empty files alike: the whole domain is in it.
-        assertEquals(listOf(8, 1, 1), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
+        assertEquals(listOf(9, 1, 1), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
         assertEquals(comparable(model), comparable(ModelJson.read(apt.readText())))
     }
 
