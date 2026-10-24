@@ -958,11 +958,32 @@ cases:
         rows: [{$repeat: "a", times: 20000}, {$repeat: "b", times: 20000}]
 
   - name: "A float parameter with no fraction"
-    description: "A float parameter that is a whole number, such as 2.0, stays a float."
+    description: "A float parameter that is a whole number, such as 2.0, stays a float, nested in maps and lists, past a long's range, in a UNION, and in a parameter past 32 KB."
     steps:
       - cypher: "RETURN [$f, $f * 2, $f + 1, toString($f), $m.f]"
         parameters: {f: 2.0, m: {f: 3.0}}
         rows: [[2.0, 4.0, 3.0, "2.0", 3.0]]
+      - cypher: "RETURN $p"
+        parameters: {p: {a: [1.0, 2.5, {b: -3.0}], n: 4}}
+        rows: [{a: [1.0, 2.5, {b: -3.0}], n: 4}]
+      - cypher: "RETURN [$p.a[2].b, toString($f)]"
+        parameters: {p: {a: [1.0, 2.5, {b: -3.0}], n: 4}, f: -2.0}
+        rows: [[-3.0, "-2.0"]]
+      - note: "Postgres's jsonb reads a float past a long's range back as a whole number."
+        cypher: "RETURN [$big, $big * 2]"
+        parameters: {big: 1.0e+20}
+        except: [postgres]
+        rows: [[1.0e+20, 2.0e+20]]
+      - cypher: "RETURN $f AS x UNION ALL RETURN 1.5 AS x"
+        parameters: {f: 2.0}
+        unordered: true
+        rows: [2.0, 1.5]
+      - cypher: "RETURN $doc.n"
+        parameters: {doc: {text: {$repeat: "y", times: 40000}, n: 2.0}}
+        rows: [2.0]
+      - cypher: "RETURN [toString(2.5), toString(3), toString('a'), toString($f * 2)]"
+        parameters: {f: 2.0}
+        rows: [["2.5", "3", "a", "4.0"]]
 
   - name: "A walk sorted in a WITH"
     description: "A walk sorted by an expression of where it ends in a WITH, skipped and limited, keeps that order in the query that reads it."
@@ -985,6 +1006,7 @@ cases:
       - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n, count(*) ORDER BY coalesce(head(collect(DISTINCT b.born)), 0), n"
         rows: [["Johnny Mnemonic", 1], ["The Matrix", 3], ["The Matrix Reloaded", 2], ["Keanu", 1], ["Carrie", 1]]
       - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT p.name AS n, collect(DISTINCT m.title) AS ts ORDER BY coalesce(ts[2], 'zz'), n SKIP 1 LIMIT 2"
+        unorderedLists: true
         rows: [["Carrie", ["The Matrix", "The Matrix Reloaded"]], ["Laurence", ["The Matrix"]]]
 
   - name: "collect(DISTINCT) compares values, not their text"
