@@ -3050,7 +3050,8 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   `MATCH` or before it is named, and that walks no variable-length relationship or quantified path pattern of its own;
   on Postgres they may. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
   engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`, `[(a)-->(m) | m]`) is given as
-  their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them.
+  their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them; compared,
+  indexed, searched with `IN` or iterated, its items are the nodes themselves too, so two with equal properties differ.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
