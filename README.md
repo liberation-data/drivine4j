@@ -182,6 +182,33 @@ dependencies {
 
 **Note:** Maven support for KSP uses the third-party [kotlin-maven-symbol-processing](https://github.com/Dyescape/kotlin-maven-symbol-processing) extension.
 
+#### The model file
+
+The code generator also writes the module's **model file**, `.drivine/model.json`, beside its build file. It lists the module's fragments, relationship fragments and views, and how each is stored: labels, the stored name of each property, subtypes, bags, indexes, and what each view's relationships load. Drivine Studio reads it to browse the model and query the data, without the application running. The format is [drivine-cypher-spec's `model/`](https://github.com/liberation-data/drivine-cypher-spec/tree/main/model), one for all three Drivine libraries.
+
+Keep the file in source control, as you would a lock file: Studio can then read a repository's model straight from GitHub, and a change to the model shows in review as a change to the file. The build writes it again whenever the model changes and leaves it alone otherwise. To have CI fail when the committed file is out of date or missing, check for a change after the build:
+
+```sh
+./gradlew build
+test -z "$(git status --porcelain -- ':(glob)**/.drivine/model.json')"
+```
+
+The jar carries the same file, as `META-INF/drivine/model.json`. KSP options change what is written:
+
+| Option | Effect |
+|---|---|
+| `drivine.model` | `false` writes no model file. |
+| `drivine.model.module` | The module's name in the file. By default, the module directory's name. |
+| `drivine.model.file` | An absolute path to write the file to instead. Needed outside Gradle's layout, as with Maven, where the generator cannot tell the main sources from the tests'. |
+
+```kotlin
+ksp {
+    arg("drivine.model.module", "orders")
+}
+```
+
+The KSP processor writes the file. The Java annotation processor, `drivine4j-codegen-java`, does not yet.
+
 ## Quick Start
 
 ### 1. Configuration

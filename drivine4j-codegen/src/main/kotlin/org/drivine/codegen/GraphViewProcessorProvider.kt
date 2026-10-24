@@ -12,7 +12,8 @@ class GraphViewProcessorProvider : SymbolProcessorProvider {
     override fun create(environment: SymbolProcessorEnvironment): SymbolProcessor {
         return GraphViewProcessor(
             codeGenerator = environment.codeGenerator,
-            logger = environment.logger
+            logger = environment.logger,
+            options = environment.options,
         )
     }
 }

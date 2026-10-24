@@ -7,6 +7,7 @@ import com.google.devtools.ksp.processing.SymbolProcessor
 import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.validate
+import org.drivine.codegen.model.ModelFileGenerator
 
 /**
  * KSP processor that generates query DSL classes and extension functions for @GraphView classes.
@@ -36,10 +37,13 @@ import com.google.devtools.ksp.validate
  *     return loadAll(type, RaisedAndAssignedIssueQueryDsl.INSTANCE, spec)
  * }
  * ```
+ *
+ * It also writes the module's model file, for Drivine Studio: see [ModelFileGenerator].
  */
 class GraphViewProcessor(
     private val codeGenerator: CodeGenerator,
-    private val logger: KSPLogger
+    private val logger: KSPLogger,
+    private val options: Map<String, String> = emptyMap(),
 ) : SymbolProcessor {
 
     private var processedInRound = false
@@ -85,7 +89,14 @@ class GraphViewProcessor(
             }
         }
 
-        if (validViews.isEmpty() && validFragments.isEmpty()) {
+        // Relationship fragments have no query DSL of their own, but the model file describes them.
+        val relationshipFragments = resolver
+            .getSymbolsWithAnnotation("org.drivine.annotation.RelationshipFragment")
+            .filterIsInstance<KSClassDeclaration>()
+            .filter { it.validate() }
+            .toList()
+
+        if (validViews.isEmpty() && validFragments.isEmpty() && relationshipFragments.isEmpty()) {
             return unableToProcess
         }
 
@@ -100,6 +111,8 @@ class GraphViewProcessor(
             )
 
             generator.generateAll()
+
+            ModelFileGenerator(codeGenerator, logger, options).generate(validFragments, relationshipFragments, validViews)
 
         } catch (e: Exception) {
             logger.error("Failed to process @GraphView / @NodeFragment classes: ${e.message}")

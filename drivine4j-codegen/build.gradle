@@ -42,6 +42,11 @@ dependencies {
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.1'
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+    // Runs the processor over sources in the test, and reads the model file it writes.
+    testImplementation 'dev.zacsweers.kctfork:ksp:0.10.0'
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.19.2'
+    // The annotations the test's sources use. Non-transitive: only the drivine classes are needed.
+    testImplementation(rootProject) { transitive = false }
 }
 
 kotlin {
@@ -52,6 +57,14 @@ kotlin {
 
 test {
     useJUnitPlatform()
+}
+
+// The version the model file names as its generator's.
+processResources {
+    inputs.property('version', version)
+    filesMatching('org/drivine/codegen/drivine4j-codegen.properties') {
+        expand(version: version)
+    }
 }
 
 // Publishing configuration
