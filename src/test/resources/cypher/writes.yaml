@@ -492,6 +492,30 @@ cases:
       - cypher: "MATCH (n:CyWrite) RETURN properties(n)"
         rows: [{f: 2.0, g: 3.0, h: 4.0}]
 
+  - name: "A whole float matches the whole number stored"
+    description: "A float parameter that is a whole number, such as 1.0, matches the whole number a node holds, in a MATCH that writes and in a MERGE, which makes no second node."
+    steps:
+      - cypher: "CREATE (n:CyWrite {id: 1})"
+      - cypher: "MATCH (n:CyWrite {id: $id}) SET n.seen = true RETURN n.id"
+        parameters: {id: 1.0}
+        rows: [1]
+      - cypher: "MERGE (n:CyWrite {id: $id}) RETURN n.id"
+        parameters: {id: 1.0}
+        rows: [1]
+      - cypher: "MATCH (n:CyWrite) RETURN [n.id, n.seen]"
+        rows: [[1, true]]
+
+  - name: "A map parameter keyed with $"
+    description: "A write reads a map parameter with a key that begins with $, such as extended JSON's $numberDouble, as the map it is, alone or beside a float that is a whole number."
+    steps:
+      - cypher: "CREATE (n:CyWrite {id: 1}) RETURN $m"
+        parameters: {m: {$numberDouble: "1"}}
+        rows: [{$numberDouble: "1"}]
+      - note: "Beside a float that is a whole number, which the write reads from the same parameters."
+        cypher: "CREATE (n:CyWrite {id: 2, f: $f}) RETURN $l"
+        parameters: {f: 2.0, l: {$numberLong: "5"}}
+        rows: [{$numberLong: "5"}]
+
   - name: "Write refused on SQL stores"
     description: "Write syntax the compiler doesn't handle yet is refused on SQL stores, naming what it is."
     steps:

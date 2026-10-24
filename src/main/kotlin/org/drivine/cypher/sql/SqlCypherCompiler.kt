@@ -67,7 +67,10 @@ abstract class SqlCypherCompiler(graph: String) {
     /** How many values [shared] has bound, to name each subquery it binds one in. */
     private var shares = 0
 
-    /** Whether [shared] binds a long value: not in an expression that aggregates, whose aggregate a subquery would take from its group. */
+    /**
+     * Whether [shared] binds a long value: not in an expression that aggregates, whose aggregate a subquery would take
+     * from its group, nor in a term a projection sorts by that is none of its items (see `project`).
+     */
     private var sharing = true
 
     /** The statement [cypher], with its parameters' values [parameters], as SQL. */
@@ -1540,8 +1543,10 @@ abstract class SqlCypherCompiler(graph: String) {
                     compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
                         after[column] = sortable(expression(sort.expression, itemColumns))
                     // One that aggregates reads the rows it aggregates, as an item does; so does one that reads an aggregate
-                    // distinctFirst worked out first, which no item is.
-                    else -> carried(column, { expression(sort.expression, select.scope + compiled.toMap()) }, sort.expression)
+                    // distinctFirst worked out first, which no item is. It binds no value in a subquery: carried out of a
+                    // WITH's query beside a variable-length walk, one so bound closes Oracle's (23.26) session (ORA-03113),
+                    // as `WITH b ORDER BY toString(coalesce(b.name, b.title))` did, its argument long enough to be bound.
+                    else -> unshared { carried(column, { expression(sort.expression, select.scope + compiled.toMap()) }, sort.expression) }
                 }
                 column to sort.descending
             }.ifEmpty {
@@ -1686,8 +1691,11 @@ abstract class SqlCypherCompiler(graph: String) {
         private var rowOrder: String? = null
 
         /** [work], with no value bound in a subquery where [expression] aggregates: see [sharing]. */
-        private fun <T> aggregating(expression: Expression, work: () -> T): T {
-            if (!contains(expression, ::isAggregate)) return work()
+        private fun <T> aggregating(expression: Expression, work: () -> T): T =
+            if (contains(expression, ::isAggregate)) unshared(work) else work()
+
+        /** [work], with no value bound in a subquery: see [sharing]. */
+        private fun <T> unshared(work: () -> T): T {
             val was = sharing
             sharing = false
             try {
