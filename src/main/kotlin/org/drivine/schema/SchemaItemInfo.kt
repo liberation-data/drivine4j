@@ -10,7 +10,9 @@ package org.drivine.schema
  * @param name the item's name, or null on engines without named items (FalkorDB)
  * @param dimensions vector indexes only: dimensionality
  * @param similarity vector indexes only: similarity function (normalized from engine vocabulary)
- * @param quantizationEnabled vector indexes only: the engine-reported `vector.quantization.enabled`.
+ * @param quantizationEnabled vector indexes only: whether the engine reports the index as quantized,
+ *   from `vector.quantization.enabled`, or from `vector.quantization.type` other than `NONE` on
+ *   Neo4j 2026.06 and later.
  *   Null means "unobservable" (the engine does not report it), never "disabled" — see [dimensions]'s
  *   sibling rule in [SchemaGrammar.matchesShape].
  * @param hnswM vector indexes only: the engine-reported `vector.hnsw.m`, or null where unobservable

@@ -111,6 +111,35 @@ class VectorIndexTuningTest {
         assertEquals(100, info.hnswEfConstruction)
     }
 
+    private fun quantizationReadFrom(vararg indexConfig: Pair<String, Any>): Boolean? =
+        neo4j.parseIndexRows(
+            listOf(
+                mapOf(
+                    "name" to "v",
+                    "type" to "VECTOR",
+                    "entityType" to "NODE",
+                    "labelsOrTypes" to listOf("P"),
+                    "properties" to listOf("e"),
+                    "options" to mapOf("indexConfig" to mapOf("vector.dimensions" to 8, *indexConfig)),
+                )
+            )
+        ).single().quantizationEnabled
+
+    @Test
+    fun `quantization is read from vector quantization type, which Neo4j reports from 2026_06`() {
+        assertEquals(false, quantizationReadFrom("vector.quantization.type" to "NONE"))
+        assertEquals(true, quantizationReadFrom("vector.quantization.type" to "BINARY"))
+        assertEquals(true, quantizationReadFrom("vector.quantization.type" to "SCALAR"))
+    }
+
+    @Test
+    fun `vector quantization type is read over vector quantization enabled when both are reported`() {
+        assertEquals(
+            false,
+            quantizationReadFrom("vector.quantization.type" to "NONE", "vector.quantization.enabled" to true),
+        )
+    }
+
     @Test
     fun `an engine that does not report physical parameters yields nulls, not defaults`() {
         val row = mapOf(
