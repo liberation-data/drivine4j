@@ -685,7 +685,7 @@ data class SessionStarter(
 )
 ```
 
-A node of the ordered hop that has no value for the property comes last, whichever way the path is read; an empty text is a value, and the lowest text. Targets whose first values are equal come in no set order. The property should hold values of one type: every backend reads the order the same way where it does, and a text of digits such as `'0100'` is ordered as text. Where it holds texts on some nodes and numbers on others, Neo4j, FalkorDB and Oracle read every text before every number, lowest first, and Memgraph refuses to compare them.
+A node of the ordered hop that has no value for the property comes last, whichever way the path is read; an empty text is a value, and the lowest text. Targets whose first values are equal come in no set order. The property should hold values of one type: every backend reads the order the same way where it does, and a text of digits such as `'0100'` is ordered as text. Where it holds texts on some nodes and numbers on others, Neo4j, FalkorDB, Oracle and Memgraph 3.14 and later read every text before every number, lowest first; an earlier Memgraph refuses to compare them.
 
 #### 6. Aggregates - Counting & Summarizing Without Loading
 
@@ -3180,12 +3180,12 @@ SELECT JSON_OBJECT(
     'people' VALUE COALESCE((
         SELECT JSON_ARRAYAGG(people_.doc ORDER BY people_.eid RETURNING JSON)
         FROM GRAPH_TABLE (drivine
-            MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0)
+            MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',"', ',"Human","') > 0)
             COLUMNS (claim_.nid AS src, e.eid, people_.doc)) people_
         WHERE people_.src = claim_.nid), JSON('[]'))
     RETURNING JSON) AS result
 FROM GRAPH_TABLE (drivine
-    MATCH (claim_ IS node WHERE INSTR(JSON_SERIALIZE(claim_.labels), '"Claim"') > 0)
+    MATCH (claim_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(claim_.labels), ']'), '[') || ',"', ',"Claim","') > 0)
     COLUMNS (claim_.nid, claim_.props, claim_.doc)) claim_
 WHERE JSON_VALUE(claim_.props, '$.id') = $id
 ```
@@ -3197,7 +3197,8 @@ of the root once a `whereClause` written by hand is in it. A second row for
 one field is numbered (`people2_`), as when a condition on `people` is tested beside the field itself.
 A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
 which the index over labels answers, and with `INSTR` where the node is found by its id or at the end
-of a relationship. Where a range index on the label answers the `where`, the property is read as that
+of a relationship: the label, escaped as `JSON_SERIALIZE` escapes it, is looked for as one whole label
+among the labels as `JSON_SERIALIZE` writes them, its brackets made commas. Where a range index on the label answers the `where`, the property is read as that
 index reads it and the label is not tested on its own:
 
 ```sql
@@ -3219,8 +3220,8 @@ so each node is there once however many ways lead to it:
         SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc
         FROM GRAPH_TABLE (drivine
             MATCH (claim_ IS node)
-                -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '"Human"') > 0)
-                -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(JSON_SERIALIZE(reached_.labels), '"Company"') > 0)
+                -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(m1.labels), ']'), '[') || ',"', ',"Human","') > 0)
+                -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(reached_.labels), ']'), '[') || ',"', ',"Company","') > 0)
             COLUMNS (claim_.nid AS src, reached_.nid, reached_.doc)) reached_
         GROUP BY reached_.src, reached_.nid
     ) employers_
@@ -3260,7 +3261,7 @@ SqlCypherFixtures.clear(persistenceManager)                                     
 - `TestCleanup.beforeEach(persistenceManager, "my-test")` deletes the nodes whose `createdBy` is the tag,
   in SQL on Oracle, as it does in Cypher elsewhere.
 - `SqlCypherFixtures.forStore(persistenceManager)` is the manager itself on a graph engine and the
-  fixtures over it on Oracle or Postgres, so one test, or one `PersistenceManager` bean of a
+  fixtures over it on Oracle, Postgres or SQLite, so one test, or one `PersistenceManager` bean of a
   test's Spring context, serves every store. Drivine's sample app and its own Spring tests use it so.
 
 Drivine's own Oracle tests are left out of a plain `./gradlew test`: the image is large and the
@@ -3469,9 +3470,17 @@ function `drivine_write` that Drivine registers on each connection: applied whol
 stamped and checked as elsewhere. Deleting a node's row deletes its relationships with it.
 
 **Notes:**
-- A statement written by hand is SQL; a `CypherStatement` is refused, as SQLite does not compile Cypher
-  yet. SQLite has no JSON type, so JSON a statement of your own returns is text; one that opens with
-  `/* drivine:json */` has each of its text values read as the JSON it is.
+- A statement written by hand is SQL. SQLite has no JSON type, so JSON a statement of your own returns is
+  text; one that opens with `/* drivine:json */` has each of its text values read as the JSON it is.
+- A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle and Postgres, and gives the
+  rows a graph engine gives. A read is a query; a write is a procedure of steps, as on the other stores,
+  which the function `drivine_cypher` carries out on the statement's connection under a savepoint, so it is
+  applied whole or not at all. A value is JSON text: two compare as Cypher compares them (`1` equal to `1.0`,
+  a map to a map of the same entries in any order) by functions Drivine registers, which also add lists and
+  texts and work out temporal values with `java.time`. A query that reads the row it is in (`OPTIONAL MATCH`,
+  `CALL { … }`, a variable-length walk, a shortest path) is gathered as JSON and joined with `json_each`, as
+  SQLite joins no lateral query. Text compares and sorts by SQLite's `BINARY` collation; `toLower` and
+  `toUpper` change the case of any letter, where SQLite's own `lower` and `upper` change ASCII alone.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
@@ -3486,8 +3495,8 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   `(?i)` ignores case.
 - A vector index and a full-text index are recorded and nothing is made for them: `loadNearest` and
   `loadMatching` measure every node of the label, and are exact.
-- The test kit's Cypher fixtures (`SqlCypherFixtures`) are refused here; seed a test's graph as rows.
-  `TestCleanup.beforeEach` works on SQLite too. SQLite's tests need no container.
+- The test kit's Cypher fixtures (`SqlCypherFixtures`) work here as on Oracle and Postgres, and so does
+  `TestCleanup.beforeEach`. SQLite's tests need no container.
 
 ### @JsonPacked Annotation
 

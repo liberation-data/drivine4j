@@ -12,6 +12,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
@@ -26,7 +27,7 @@ import kotlin.test.assertEquals
 
 /**
  * openCypher's temporal values give the same fields, arithmetic and comparisons on a SQL store, compiled, as on
- * Neo4j: the statements of the spec's `cypher/temporal.yaml` are run on Neo4j, Postgres and Oracle. Here are only
+ * Neo4j: the statements of the spec's `cypher/temporal.yaml` are run on Neo4j, Postgres, Oracle and SQLite. Here are only
  * the parameters of java.time's types, which the spec cannot write. A graph engine's driver gives a temporal
  * value as one of its own, and a SQL store as its ISO text, so the tests read values' fields, and the text
  * where only a SQL store gives it.
@@ -135,4 +136,12 @@ class CypherTemporalOracleTest : CypherTemporalContract() {
     override val pm: PersistenceManager get() = manager
 
     override fun clear() = OracleTestDatabase.clear(manager)
+}
+
+class CypherTemporalSqliteTest : CypherTemporalContract() {
+    private val manager = SqliteTestDatabase.graphManager("cypher")
+
+    override val pm: PersistenceManager get() = manager
+
+    override fun clear() = SqliteTestDatabase.clear(manager)
 }

@@ -47,7 +47,7 @@ class OracleSideTableTest {
     fun `a tolerant trigger keeps the node and leaves it out of the table, in a block of its own inside the test of whether it belongs`() {
         val ddl = side(tolerant = true).triggerDdl
 
-        val belongs = ddl.indexOf("IF INSTR(JSON_SERIALIZE(:NEW.labels), '\"Doc\"') > 0 THEN")
+        val belongs = ddl.indexOf("IF INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(:NEW.labels), ']'), '[') || ',\"', ',\"Doc\",\"') > 0 THEN")
         val handler = ddl.indexOf("EXCEPTION WHEN OTHERS THEN")
         val otherwise = ddl.indexOf("ELSE")
         assertTrue(belongs in 0 until handler && handler < otherwise, ddl)
@@ -82,12 +82,12 @@ class OracleSideTableTest {
             listOf(
                 "INSERT INTO g_t_doc (nid, doc)",
                 "SELECT n.nid, JSON_VALUE(n.props, '$.it''s') FROM g_node n",
-                "WHERE INSTR(JSON_SERIALIZE(n.labels), '\"Doc\"') > 0",
+                "WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Doc\",\"') > 0",
                 "  AND NOT EXISTS (SELECT 1 FROM g_t_doc s WHERE s.nid = n.nid)",
             ).joinToString("\n"),
             plain,
         )
-        assertTrue("WHERE INSTR(JSON_SERIALIZE(n.labels), '\"Doc\"') > 0 AND LENGTH(JSON_VALUE(n.props, '$.title')) > 0\n  AND NOT EXISTS" in filtered, filtered)
+        assertTrue("WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Doc\",\"') > 0 AND LENGTH(JSON_VALUE(n.props, '$.title')) > 0\n  AND NOT EXISTS" in filtered, filtered)
     }
 
     @Test

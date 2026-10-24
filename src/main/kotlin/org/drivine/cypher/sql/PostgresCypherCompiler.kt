@@ -301,7 +301,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * that returns rows or takes parameters no other way. It is named for its text, so a statement run
      * again replaces it with itself.
      */
-    override fun procedure(body: List<String>): String {
+    override fun procedure(program: List<ProcedureStep>): String {
+        val body = statements(program)
         val text = (listOf(
             "#variable_conflict use_column",
             "DECLARE",

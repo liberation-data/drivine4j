@@ -37,6 +37,9 @@ sealed interface EngineVectorOptions {
  * @param quantizationEnabled pins `vector.quantization.enabled`. Neo4j 2026.04 defaults this to true
  *   where earlier versions did not, and quantization trades recall for memory, so leaving it unpinned
  *   means the same declaration can produce measurably different search quality per server version.
+ *   Neo4j 2026.06 and later still accept `vector.quantization.enabled` on create, and quantize with
+ *   their default kind when it is true; they report `vector.quantization.type` back instead, which
+ *   Drivine reads as enabled unless it is `NONE`.
  */
 data class Neo4jVectorOptions @JvmOverloads constructor(
     val quantizationEnabled: Boolean? = null,

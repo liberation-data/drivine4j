@@ -36,6 +36,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * `@GraphProperty` verified on Neo4j, FalkorDB, and Memgraph: a field maps to a differently-named
@@ -231,4 +232,14 @@ class StatelessGraphPropertyPostgresTest {
     fun clean() = PostgresTestDatabase.clear(pm)
 
     @Test fun `graph property name mapping on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
+}
+
+class StatelessGraphPropertySqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test fun `graph property name mapping on SQLite`() = verify(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm))
 }

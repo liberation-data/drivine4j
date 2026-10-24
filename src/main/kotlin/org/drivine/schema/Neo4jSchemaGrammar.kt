@@ -136,7 +136,7 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
                     ?.let { similarityFromName(it) },
                 // Read back whatever the server actually chose, pinned or not — this is what makes the
                 // effective config loggable and drift against a pinned value detectable.
-                quantizationEnabled = indexConfig?.get("vector.quantization.enabled") as? Boolean,
+                quantizationEnabled = quantizationEnabled(indexConfig),
                 hnswM = (indexConfig?.get("vector.hnsw.m") as? Number)?.toInt(),
                 hnswEfConstruction = (indexConfig?.get("vector.hnsw.ef_construction") as? Number)?.toInt(),
             )
@@ -153,6 +153,17 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
         }
 
         return SchemaItemInfo(kind = kind, label = label, properties = properties, name = name)
+    }
+
+    /**
+     * Whether a vector index quantizes, as its `indexConfig` reports it. Neo4j up to 2026.05 reports
+     * `vector.quantization.enabled`. From 2026.06 it reports `vector.quantization.type` in its place:
+     * `NONE`, or the kind of quantization, `SCALAR` or `BINARY`. Null when it reports neither.
+     */
+    private fun quantizationEnabled(indexConfig: Map<*, *>?): Boolean? {
+        val type = indexConfig?.get("vector.quantization.type") as? String
+        if (type != null) return !type.equals("NONE", ignoreCase = true)
+        return indexConfig?.get("vector.quantization.enabled") as? Boolean
     }
 
     override fun listConstraintsQuery(): String = """
@@ -185,15 +196,23 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
 
     /**
      * By the driver's codes. A write the constraint refuses (`ConstraintValidationFailed`, which
-     * [org.drivine.store.StoreIdentityResolver] retries on) is always one. A server that gives GQL
-     * statuses (Neo4j 5.26 and later) names a violation in a refused constraint's cause, `22N79` or
-     * `22N80`; its `ConstraintCreationFailed` covers other refusals too, as of a key constraint on
-     * Community Edition (`51N27`). An older server gives only that code, and the data decides.
+     * [org.drivine.store.StoreIdentityResolver] retries on) is always one. A constraint the server
+     * would not make is `ConstraintCreationFailed` on every version, for a violation and for other
+     * refusals alike, so its cause decides:
+     *
+     * - Neo4j 2026 names a violation in the cause, `22N79` and `22N80`, and another refusal by its
+     *   own status, as `51N27` for a key constraint on Community Edition: not a violation.
+     * - Neo4j 5.26 gives the refusal `50N11` (constraint creation failed) and a violation beneath it
+     *   only `50N42` (unexpected error), the status the driver also gives an error a server sends
+     *   none for. An older server gives no status at all.
+     *
+     * So a refusal whose chain carries no status but these general ones is suspected, and
+     * [ConstraintManager] reads the data to confirm it, as it does for a server older than GQL statuses.
      */
     override fun isConstraintViolation(e: Throwable): Boolean {
         val errors = generateSequence(e) { it.cause }.filterIsInstance<Neo4jException>().toList()
         if (errors.any { it.code() == VALIDATION_FAILED || it.gqlStatus() in VIOLATED }) return true
-        return errors.all { it.gqlStatus() == GENERAL_STATUS } && errors.any { it.code() == CREATION_FAILED }
+        return errors.all { it.gqlStatus() in GENERAL_STATUSES } && errors.any { it.code() == CREATION_FAILED }
     }
 
     /**
@@ -243,6 +262,8 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
         return listOfNotNull(
             "`vector.dimensions`: ${spec.dimensions}",
             "`vector.similarity_function`: '${similarityName(spec.similarity)}'",
+            // `enabled`, not `type`: every Neo4j from 5.x to 2026.10 accepts `enabled`, and
+            // `vector.quantization.type` is refused before 2026.06.
             neo4jOptions(spec)?.quantizationEnabled?.let { "`vector.quantization.enabled`: $it" },
             tuning.hnswM?.let { "`vector.hnsw.m`: $it" },
             tuning.hnswEfConstruction?.let { "`vector.hnsw.ef_construction`: $it" },
@@ -261,8 +282,11 @@ class Neo4jSchemaGrammar(private val elementIdFunction: String = "elementId") : 
         /** A uniqueness constraint violated, and the index entry conflict beneath it. */
         val VIOLATED = setOf("22N79", "22N80")
 
-        /** The status the driver gives an error from a server that sends none. */
-        const val GENERAL_STATUS = "50N42"
+        /**
+         * Statuses that name no cause: a constraint not made (`50N11`), and an unexpected error
+         * (`50N42`), which the driver also gives an error from a server that sends no status.
+         */
+        val GENERAL_STATUSES = setOf("50N11", "50N42")
 
         /** A write a constraint refuses. */
         const val VALIDATION_FAILED = "Neo.ClientError.Schema.ConstraintValidationFailed"

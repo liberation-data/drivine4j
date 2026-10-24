@@ -13,6 +13,7 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -24,7 +25,7 @@ import kotlin.test.assertTrue
 
 /**
  * A Cypher statement written for a graph engine runs on a SQL store, compiled to its SQL, and gives the
- * same rows: the statements of the spec's `cypher/queries.yaml` are run on Neo4j, Postgres and Oracle over
+ * same rows: the statements of the spec's `cypher/queries.yaml` are run on Neo4j, Postgres, Oracle and SQLite over
  * its graph, and give the rows it says.
  */
 abstract class CypherQueryContract {
@@ -300,5 +301,12 @@ class CypherQueryOracleTest : CypherQueryContract() {
     override fun seed(cypher: String) = OracleTestDatabase.seed(manager, cypher)
 
     override fun clear() = OracleTestDatabase.clear(manager)
+}
 
+class CypherQuerySqliteTest : CypherQueryContract() {
+    private val manager = SqliteTestDatabase.graphManager("cypher")
+    override val pm: PersistenceManager get() = manager
+    override val compiles = true
+    override fun seed(cypher: String) = SqliteTestDatabase.seed(manager, cypher)
+    override fun clear() = SqliteTestDatabase.clear(manager)
 }

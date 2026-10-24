@@ -13,6 +13,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
@@ -21,13 +22,14 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import org.testcontainers.containers.Neo4jContainer
 import kotlin.test.assertTrue
 
 /**
  * A Cypher statement that writes runs on a SQL store, compiled to a procedure of its SQL, and leaves the
- * graph a graph engine leaves: the statements of the spec's `cypher/writes.yaml` are run on Neo4j, Postgres
- * and Oracle, and read back.
+ * graph a graph engine leaves: the statements of the spec's `cypher/writes.yaml` are run on Neo4j, Postgres,
+ * Oracle and SQLite, and read back.
  */
 abstract class CypherWriteContract {
 
@@ -199,5 +201,35 @@ class CypherWriteOracleTest : CypherWriteContract() {
         } finally {
             connections.forEach { it.release() }
         }
+    }
+}
+
+class CypherWriteSqliteTest : CypherWriteContract() {
+    private val manager = SqliteTestDatabase.graphManager("cypher")
+
+    override val pm: PersistenceManager get() = manager
+
+    override val compiles = true
+
+    override fun clear() = SqliteTestDatabase.clear(manager)
+
+    @Test
+    fun `a write in a transaction rolled back leaves nothing, and a write that fails leaves nothing of what it wrote`() {
+        val connection = SqliteTestDatabase.connections(manager).connect()
+        fun query(cypher: String) = connection.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        connection.startTransaction()
+        try {
+            query("CREATE (:CyWrite {name: 'Ada'})")
+            assertEquals(listOf("Ada"), query("MATCH (n:CyWrite) RETURN n.name"))
+        } finally {
+            connection.rollbackTransaction()
+            connection.release()
+        }
+        fun count() = pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) RETURN count(n)")))
+        assertEquals(listOf(0L), count())
+        // The second row's delete fails, and the first row's node goes back with it.
+        pm.query(QuerySpecification.withStatement(CypherStatement("CREATE (:CyWrite {name: 'Ada'})-[:KNOWS]->(:CyWrite {name: 'Bob'})")))
+        assertFailsWith<Exception> { pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) CREATE (:CyWrite {name: 'Copy'}) DELETE n"))) }
+        assertEquals(listOf(2L), count())
     }
 }

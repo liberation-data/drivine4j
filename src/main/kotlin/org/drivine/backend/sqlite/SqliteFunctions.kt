@@ -17,6 +17,20 @@ import java.sql.Connection
  * - [LOWER] lowers text as Unicode does: see [SqliteLowerFunction].
  * - [EPOCH] reads a moment as nanoseconds since the epoch: see [SqliteEpochFunction].
  *
+ * Compiled Cypher calls the rest, for what Cypher does with its values, JSON text each, that SQLite does not:
+ *
+ * - [EQUAL], [CONTAINS], [CANONICAL] and [ADD] compare, group and add them: see [SqliteEqualFunction],
+ *   [SqliteContainsFunction], [SqliteCanonicalFunction] and [SqliteAddFunction].
+ * - [UPPER], [SPLIT], [REVERSE] and [UUID] are Cypher's `toUpper`, `split`, `reverse` and `randomUUID`: see
+ *   [SqliteUpperFunction], [SqliteSplitFunction], [SqliteReverseFunction] and [SqliteUuidFunction].
+ * - [REGEX_GROUP] and [REGEX_REPLACE] read and replace what a regular expression matches: see
+ *   [SqliteRegexGroupFunction] and [SqliteRegexReplaceFunction].
+ * - [FLOAT_TEXT] writes a float as Java does, for `toString`, and [SORT_KEY] orders a list as Cypher does: see
+ *   [SqliteFloatTextFunction] and [SqliteSortKeyFunction].
+ * - [TRUNC], [TO_CHAR] and [TEMPORAL] work out temporal values: see [SqliteTruncFunction], [SqliteToCharFunction]
+ *   and [SqliteTemporalFunction].
+ * - [CYPHER] carries out the procedure a statement that writes compiles to: see [SqliteCypherFunction].
+ *
  * A function that reads only its arguments is registered as deterministic, so SQLite may index an
  * expression over it.
  */
@@ -28,6 +42,22 @@ internal object SqliteFunctions {
     const val REGEXP_COUNT = "drivine_regexp_count"
     const val LOWER = "drivine_lower"
     const val EPOCH = "drivine_epoch"
+    const val EQUAL = "drivine_equal"
+    const val CONTAINS = "drivine_contains"
+    const val ADD = "drivine_add"
+    const val CANONICAL = "drivine_canonical"
+    const val CYPHER = "drivine_cypher"
+    const val UPPER = "drivine_upper"
+    const val SPLIT = "drivine_split"
+    const val REVERSE = "drivine_reverse"
+    const val UUID = "drivine_uuid"
+    const val REGEX_GROUP = "drivine_regex_group"
+    const val REGEX_REPLACE = "drivine_regexp_replace"
+    const val TRUNC = "drivine_trunc"
+    const val TO_CHAR = "drivine_to_char"
+    const val TEMPORAL = "drivine_temporal"
+    const val FLOAT_TEXT = "drivine_float_text"
+    const val SORT_KEY = "drivine_sort_key"
 
     /** The name SQLite's `X REGEXP Y` calls, as `regexp(Y, X)`. */
     const val REGEXP = "regexp"
@@ -37,10 +67,27 @@ internal object SqliteFunctions {
         val patterns = SqlitePatterns()
         Function.create(connection, WRITE, SqliteWriteFunction(connection), 6, 0)
         Function.create(connection, DELETE, SqliteDeleteFunction(connection), 2, 0)
+        Function.create(connection, CYPHER, SqliteCypherFunction(connection), 2, 0)
         Function.create(connection, SIMILARITY, SqliteSimilarityFunction(), 3, Function.FLAG_DETERMINISTIC)
         Function.create(connection, REGEXP_COUNT, SqliteRegexpCountFunction(patterns), 2, Function.FLAG_DETERMINISTIC)
         Function.create(connection, REGEXP, SqliteRegexpFunction(patterns), 2, Function.FLAG_DETERMINISTIC)
         Function.create(connection, LOWER, SqliteLowerFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, EPOCH, SqliteEpochFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, EQUAL, SqliteEqualFunction(), 2, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, CONTAINS, SqliteContainsFunction(), 2, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, ADD, SqliteAddFunction(), 2, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, CANONICAL, SqliteCanonicalFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, UPPER, SqliteUpperFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, SPLIT, SqliteSplitFunction(), 2, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, REVERSE, SqliteReverseFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, UUID, SqliteUuidFunction(), 0, 0)
+        Function.create(connection, REGEX_GROUP, SqliteRegexGroupFunction(patterns), 3, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, REGEX_REPLACE, SqliteRegexReplaceFunction(patterns), 3, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, TRUNC, SqliteTruncFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, TO_CHAR, SqliteToCharFunction(), 2, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, FLOAT_TEXT, SqliteFloatTextFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, SORT_KEY, SqliteSortKeyFunction(), 1, Function.FLAG_DETERMINISTIC)
+        // Of as many arguments as its operation takes.
+        Function.create(connection, TEMPORAL, SqliteTemporalFunction(), -1, Function.FLAG_DETERMINISTIC)
     }
 }

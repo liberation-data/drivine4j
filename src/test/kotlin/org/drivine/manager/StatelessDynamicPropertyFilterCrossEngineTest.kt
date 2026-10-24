@@ -42,6 +42,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * The dynamic-predicate escape hatch ([property] / [predicate]) verified cross-engine (Neo4j /
@@ -170,6 +171,13 @@ private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, sup
         where { query.field("tags") hasElement "kotlin" }
     }
     assertEquals(typedTag.map { it.id }.toSet(), dynTagInfix.map { it.id }.toSet())
+
+    // MATCHES holds to the whole value, a line break that ends it included.
+    if (supportsRegex) {
+        pm.execute(QuerySpecification.withStatement("CREATE (:Record {id: 'd', title: 'Alpha\\n', section_id: 's3'})"))
+        val wholeAlpha = gom.loadAll(RecordNode::class.java, dsl) { where { query.title matches "Alpha" } }
+        assertEquals(setOf("a"), wholeAlpha.map { it.id }.toSet())
+    }
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {
@@ -284,4 +292,11 @@ class StatelessDynamicPropertyFilterPostgresTest {
     private val pm = PostgresTestDatabase.graphManager("contracts", registry)
 
     @Test fun `dynamic property filters resolve on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
+}
+
+class StatelessDynamicPropertyFilterSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @Test fun `dynamic property filters resolve on SQLite`() = verify(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm))
 }

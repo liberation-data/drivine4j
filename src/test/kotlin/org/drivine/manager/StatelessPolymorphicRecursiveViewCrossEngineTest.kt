@@ -34,6 +34,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * A **polymorphic root fragment inside a recursive `@GraphView`** loads a mixed-label tree with each
@@ -218,4 +219,13 @@ class StatelessPolymorphicRecursiveViewPostgresTest {
     @BeforeEach fun clean() = PostgresTestDatabase.clear(pm)
 
     @Test fun `polymorphic recursive view on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm), registry)
+}
+
+class StatelessPolymorphicRecursiveViewSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test fun `polymorphic recursive view on SQLite`() = verify(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm), registry)
 }

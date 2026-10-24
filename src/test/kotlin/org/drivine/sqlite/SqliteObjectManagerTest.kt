@@ -62,10 +62,9 @@ import kotlin.test.assertTrue
 
 /**
  * `StatelessGraphObjectManager` on SQLite, end to end and without Cypher: what is written is read back
- * from the tables. The cross-engine contracts seed and read back in Cypher, which SQLite does not
- * compile yet, so this covers what they would: saving, stamping and checking, patching, relationships
- * on their own, the query DSL, views with relationships, paths and recursion, cascading deletes, and
- * the searches.
+ * from the tables, as SQL. The cross-engine contracts seed and read back in Cypher; this covers, besides,
+ * saving, stamping and checking, patching, relationships on their own, the query DSL, views with
+ * relationships, paths and recursion, cascading deletes, and the searches, by what the tables hold.
  */
 class SqliteObjectManagerTest {
 
