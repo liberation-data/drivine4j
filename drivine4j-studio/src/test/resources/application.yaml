@@ -1,0 +1,18 @@
+# The studio's tests and demo: Neo4j, in a test container unless test.neo4j.use-local is true.
+database:
+  datasources:
+    graph:
+      type: NEO4J
+      host: localhost
+      port: 7687
+      user-name: neo4j
+      password: brahmsian
+      database-name: neo4j
+
+spring:
+  main:
+    banner-mode: off
+
+test:
+  neo4j:
+    use-local: false

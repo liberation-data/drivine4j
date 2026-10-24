@@ -13,5 +13,9 @@ include 'drivine4j-coroutines'
 // Spring Boot starter module
 include 'drivine4j-spring-boot-starter'
 
+// Studio: read-only endpoints for browsing views and fragments and running loadAll against them.
+// Opt-in; nothing else depends on it. Its browser app is the drivine-studio repository.
+include 'drivine4j-studio'
+
 // Sample application demonstrating usage
 include 'drivine4j-sample'

@@ -1,0 +1,75 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20'
+}
+
+group = 'org.drivine'
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    api project(':')
+
+    implementation(platform('org.springframework.boot:spring-boot-dependencies:3.5.7'))
+    implementation 'org.springframework.boot:spring-boot-autoconfigure'
+    implementation 'org.springframework:spring-context'
+    implementation 'org.jetbrains.kotlin:kotlin-reflect'
+    implementation 'com.fasterxml.jackson.core:jackson-databind'
+    implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
+    implementation 'org.slf4j:slf4j-api'
+
+    // The host application brings its own web stack; the studio only maps onto Spring MVC.
+    compileOnly 'org.springframework:spring-webmvc'
+    compileOnly 'jakarta.servlet:jakarta.servlet-api'
+
+    testImplementation(platform('org.springframework.boot:spring-boot-dependencies:3.5.7'))
+    testImplementation project(':drivine4j-sample')
+    testImplementation project(':drivine4j-spring-boot-starter')
+    testImplementation 'org.springframework.boot:spring-boot-starter-web'
+    testImplementation 'org.springframework.boot:spring-boot-starter-test'
+    testImplementation 'org.springframework.boot:spring-boot-starter-aop'
+    testImplementation 'org.springframework:spring-tx'
+    testImplementation 'org.testcontainers:neo4j:1.21.4'
+    testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.addAll '-Xjsr305=strict', '-Xcontext-parameters'
+    }
+}
+
+def pinnedImages = {
+    rootProject.file('gradle/test-images.txt').readLines()
+        .collect { it.trim() }.findAll { it && !it.startsWith('#') }
+        .collectEntries { line ->
+            def (named, pinned) = line.split(/\s+/)
+            ["drivine.test.image.${named}".toString(), pinned]
+        }
+}
+
+test {
+    useJUnitPlatform()
+    pinnedImages().each { name, pinned -> systemProperty name, pinned }
+}
+
+// Runs the sample domain behind the studio endpoints, against a Neo4j test container, on port 8087.
+tasks.register('studioDemo', JavaExec) {
+    group = 'application'
+    description = 'Serves the studio endpoints over the sample domain, seeded, on http://localhost:8087/drivine/studio/api/'
+    classpath = sourceSets.test.runtimeClasspath
+    mainClass = 'org.drivine.studio.StudioDemoApplicationKt'
+    pinnedImages().each { name, pinned -> systemProperty name, pinned }
+}
