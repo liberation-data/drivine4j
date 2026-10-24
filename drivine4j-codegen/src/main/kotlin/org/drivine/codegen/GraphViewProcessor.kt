@@ -8,6 +8,7 @@ import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.validate
 import org.drivine.codegen.model.ModelFileGenerator
+import java.io.File
 
 /**
  * KSP processor that generates query DSL classes and extension functions for @GraphView classes.
@@ -93,26 +94,33 @@ class GraphViewProcessor(
         val relationshipFragments = resolver
             .getSymbolsWithAnnotation("org.drivine.annotation.RelationshipFragment")
             .filterIsInstance<KSClassDeclaration>()
-            .filter { it.validate() }
+            .filter { relationshipFragment ->
+                relationshipFragment.validate().also { valid -> if (!valid) unableToProcess.add(relationshipFragment) }
+            }
             .toList()
 
-        if (validViews.isEmpty() && validFragments.isEmpty() && relationshipFragments.isEmpty()) {
-            return unableToProcess
-        }
-
         try {
-            logger.info("Processing ${validViews.size} @GraphView and ${validFragments.size} @NodeFragment classes")
+            if (validViews.isNotEmpty() || validFragments.isNotEmpty()) {
+                logger.info("Processing ${validViews.size} @GraphView and ${validFragments.size} @NodeFragment classes")
 
-            val generator = QueryDslGenerator(
-                codeGenerator = codeGenerator,
-                logger = logger,
-                graphViewClasses = validViews,
-                fragmentClasses = validFragments,
+                val generator = QueryDslGenerator(
+                    codeGenerator = codeGenerator,
+                    logger = logger,
+                    graphViewClasses = validViews,
+                    fragmentClasses = validFragments,
+                )
+
+                generator.generateAll()
+            }
+
+            // Even with nothing declared: what the module's file had is then removed.
+            ModelFileGenerator(codeGenerator, logger, options).generate(
+                validFragments,
+                relationshipFragments,
+                validViews,
+                deferred = unableToProcess.mapNotNull { (it as? KSClassDeclaration)?.qualifiedName?.asString() }.toSet(),
+                sources = resolver.getAllFiles().map { File(it.filePath) }.toList(),
             )
-
-            generator.generateAll()
-
-            ModelFileGenerator(codeGenerator, logger, options).generate(validFragments, relationshipFragments, validViews)
 
         } catch (e: Exception) {
             logger.error("Failed to process @GraphView / @NodeFragment classes: ${e.message}")

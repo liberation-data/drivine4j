@@ -2,6 +2,7 @@ package org.drivine.sample
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.ObjectNode
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.junit.jupiter.api.Test
@@ -15,7 +16,13 @@ import kotlin.test.assertEquals
  */
 class ModelFileTest {
 
-    private val model: JsonNode = ObjectMapper().readTree(File(".drivine/model.json"))
+    // An entry marked removed is a class the code no longer has, so there is nothing to read it against.
+    private val model: JsonNode = (ObjectMapper().readTree(File(".drivine/model.json")) as ObjectNode).apply {
+        listOf("fragments", "relationshipFragments", "views").forEach { list ->
+            val entries = remove(list)
+            putArray(list).addAll(entries.filterNot { it["removed"]?.asBoolean() == true })
+        }
+    }
 
     @Test
     fun `each fragment is stored as the core library stores it`() {

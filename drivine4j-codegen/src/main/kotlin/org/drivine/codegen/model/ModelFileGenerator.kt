@@ -30,14 +30,31 @@ internal class ModelFileGenerator(
     private val options: Map<String, String>,
 ) {
 
+    /**
+     * Writes the model of [fragments], [relationshipFragments] and [views]. The previous file's
+     * entries for classes the code no longer declares stay in it, marked removed; those for classes
+     * KSP has [deferred] stay as they were, since they are still declared. [sources] are the
+     * module's source files, from which a module with nothing left to describe is found.
+     */
     fun generate(
         fragments: List<KSClassDeclaration>,
         relationshipFragments: List<KSClassDeclaration>,
         views: List<KSClassDeclaration>,
+        deferred: Set<String> = emptySet(),
+        sources: List<File> = emptyList(),
     ) {
         if (options[ENABLED]?.lowercase() == "false") return
+        // A relative path would be taken from wherever the build happens to run, as Gradle's daemon's.
+        options[FILE]?.takeIf { !File(it).isAbsolute }?.let {
+            logger.error("Drivine model file: the KSP option $FILE must be an absolute path, not $it.")
+            return
+        }
         val all = fragments + relationshipFragments + views
-        if (all.isEmpty()) return
+        // With nothing declared there is nothing to write unless a file before this one had something,
+        // which is now removed. The module is found from its sources, as there is no resource to go by.
+        if (all.isEmpty() && previous(options[FILE]?.let { File(it) } ?: sources.firstNotNullOfOrNull { mainModuleFile(it) }) == null) {
+            return
+        }
 
         // The resource first: where KSP puts it says where the module is.
         val resource = codeGenerator.createNewFileByPath(
@@ -48,6 +65,9 @@ internal class ModelFileGenerator(
         val resourceFile = codeGenerator.generatedFile.firstOrNull { it.invariantSeparatorsPath.endsWith("$RESOURCE_PATH.json") }
         val layout = resourceFile?.let { gradleLayout(it) }
         val module = options[MODULE] ?: layout?.moduleDir?.name ?: resourceFile?.let { buildFileDir(it) }?.name ?: "module"
+        val target = options[FILE]?.let { File(it) }
+            ?: layout?.takeIf { it.sourceSet == "main" }?.moduleDir?.resolve(".drivine/model.json")
+        val previous = previous(target)
 
         val reader = ModelReader()
         val model = linkedMapOf(
@@ -56,23 +76,18 @@ internal class ModelFileGenerator(
             "generator" to linkedMapOf(
                 "library" to "drivine4j",
                 "version" to version(),
-                "language" to if (all.all { it.origin == Origin.JAVA }) "java" else "kotlin",
+                "language" to if (all.isNotEmpty() && all.all { it.origin == Origin.JAVA }) "java" else "kotlin",
             ),
             "module" to module,
-            "fragments" to fragments.sortedBy { ModelReader.id(it) }.map { reader.fragment(it) },
-            "relationshipFragments" to relationshipFragments.sortedBy { ModelReader.id(it) }.map { reader.relationshipFragment(it) },
-            "views" to views.sortedBy { ModelReader.id(it) }.map { reader.view(it) },
+            "fragments" to withRemoved(fragments.map { reader.fragment(it) }, previous?.get("fragments"), deferred),
+            "relationshipFragments" to withRemoved(
+                relationshipFragments.map { reader.relationshipFragment(it) }, previous?.get("relationshipFragments"), deferred,
+            ),
+            "views" to withRemoved(views.map { reader.view(it) }, previous?.get("views"), deferred),
         )
         val json = ModelJson.write(model)
         resource.use { it.write(json.toByteArray()) }
 
-        // A relative path would be taken from wherever the build happens to run, as Gradle's daemon's.
-        options[FILE]?.takeIf { !File(it).isAbsolute }?.let {
-            logger.error("Drivine model file: the KSP option $FILE must be an absolute path, not $it.")
-            return
-        }
-        val target = options[FILE]?.let { File(it) }
-            ?: layout?.takeIf { it.sourceSet == "main" }?.moduleDir?.resolve(".drivine/model.json")
         if (target == null) {
             // Outside Gradle's layout there is no telling the main source set from the tests'.
             if (layout == null) {
@@ -85,6 +100,20 @@ internal class ModelFileGenerator(
         target.parentFile.mkdirs()
         target.writeText(json)
         logger.info("Drivine model file written to ${target.path}")
+    }
+
+    /**
+     * The model file [file] holds, or null when there is none, or it is not one this generator can
+     * read: a file of another format is written over, as one the module never had.
+     */
+    private fun previous(file: File?): Map<*, *>? {
+        if (file == null || !file.isFile) return null
+        val model = runCatching { ModelJson.read(file.readText()) }.getOrNull() as? Map<*, *>
+        if (model?.get("format") != FORMAT) {
+            logger.warn("Drivine model file: ${file.path} is not a $FORMAT file, so nothing in it is kept.")
+            return null
+        }
+        return model
     }
 
     private fun version(): String = ModelFileGenerator::class.java.getResourceAsStream("/org/drivine/codegen/drivine4j-codegen.properties")
@@ -117,6 +146,44 @@ internal class ModelFileGenerator(
             val sourceSet = resources.parentFile
             val moduleDir = sourceSet.parentFile.parentFile.parentFile.parentFile ?: return null
             return GradleLayout(moduleDir, sourceSet.name)
+        }
+
+        /**
+         * The [current] entries, and the [previous] file's entries the code no longer declares,
+         * marked removed, sorted by id. An entry [deferred] by KSP is still declared, and is kept as
+         * it was.
+         */
+        fun withRemoved(current: List<Map<String, Any?>>, previous: Any?, deferred: Set<String>): List<Map<String, Any?>> {
+            val ids = current.map { it["id"] }.toSet()
+            val kept = (previous as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()
+                .filter { it["id"] is String && it["id"] !in ids }
+                .map { entry ->
+                    @Suppress("UNCHECKED_CAST")
+                    if (entry["id"] in deferred) entry as Map<String, Any?> else removed(entry)
+                }
+            return (current + kept).sortedBy { it["id"] as String }
+        }
+
+        /** [entry] marked removed, the mark after its name, where the format lists it. */
+        private fun removed(entry: Map<*, *>): Map<String, Any?> {
+            val out = LinkedHashMap<String, Any?>()
+            entry.forEach { (key, value) ->
+                if (key == "removed") return@forEach
+                out[key as String] = value
+                if (key == "name") out["removed"] = true
+            }
+            out.putIfAbsent("removed", true)
+            return out
+        }
+
+        /**
+         * `.drivine/model.json` for the module whose main source set holds [source], from Gradle's
+         * layout `<module>/src/main/…`, or null when [source] is not in one.
+         */
+        fun mainModuleFile(source: File): File? {
+            val main = generateSequence(source.parentFile) { it.parentFile }
+                .firstOrNull { it.name == "main" && it.parentFile?.name == "src" } ?: return null
+            return main.parentFile.parentFile?.resolve(".drivine/model.json")
         }
 
         /** The nearest directory above [file] that holds a build file. */

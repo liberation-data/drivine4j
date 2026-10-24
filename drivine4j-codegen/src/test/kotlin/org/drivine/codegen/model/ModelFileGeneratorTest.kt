@@ -370,6 +370,91 @@ class ModelFileGeneratorTest {
         assertTrue(result.messages.contains("${ModelFileGenerator.FILE} must be an absolute path"), result.messages)
     }
 
+    private fun shop(withOrders: Boolean) = SourceFile.kotlin(
+        "Shop.kt",
+        """
+        package shop
+
+        import org.drivine.annotation.*
+
+        @NodeFragment(labels = ["Customer"])
+        data class Customer(@NodeId val id: String, val name: String)
+        """.trimIndent() + if (!withOrders) "" else """
+
+        @NodeFragment(labels = ["Order"])
+        data class Order(@NodeId val id: String, val total: Long)
+
+        @RelationshipFragment
+        data class Placed(val on: String, val order: Order)
+
+        @GraphView
+        data class CustomerOrders(
+            @Root val customer: Customer,
+            @GraphRelationship(type = "PLACED") val orders: List<Placed>,
+        )
+        """.trimIndent(),
+    )
+
+    private val nothing = SourceFile.kotlin("Nothing.kt", "package shop\n\nobject Nothing\n")
+
+    @Test
+    fun `what the code no longer declares stays in the file, marked removed, until it comes back`() {
+        val file = File(dir, ".drivine/model.json")
+        generate(shop(withOrders = true), file = file, workDir = File(dir, "one"))
+        val before = file.readText()
+        val beforeModel = ObjectMapper().readTree(before)
+
+        val model = generate(shop(withOrders = false), file = file, workDir = File(dir, "two"))
+        assertEquals(listOf("shop.Customer", "shop.Order"), model["fragments"].map { it["id"].asText() })
+        assertFalse(fragment(model, "shop.Customer").has("removed"))
+        // A removed entry is the one the file had, with the mark after its name.
+        val order = fragment(model, "shop.Order")
+        assertEquals(listOf("id", "name", "removed", "labels", "nodeId", "properties"), order.fieldNames().asSequence().toList())
+        assertEquals(fragment(beforeModel, "shop.Order"), (order.deepCopy() as com.fasterxml.jackson.databind.node.ObjectNode).apply { remove("removed") })
+        assertEquals(true, view(model, "shop.CustomerOrders")["removed"].asBoolean())
+        assertEquals(true, model["relationshipFragments"].single()["removed"].asBoolean())
+
+        // Written again with nothing changed, it is the same file.
+        val removed = file.readText()
+        generate(shop(withOrders = false), file = file, workDir = File(dir, "three"))
+        assertEquals(removed, file.readText())
+
+        // Back in the code, it is written from the code again.
+        generate(shop(withOrders = true), file = file, workDir = File(dir, "four"))
+        assertEquals(before, file.readText())
+    }
+
+    @Test
+    fun `a module with nothing left keeps its file, everything in it removed`() {
+        val file = File(dir, ".drivine/model.json")
+        generate(shop(withOrders = true), file = file, workDir = File(dir, "one"))
+        val model = generate(nothing, file = file, workDir = File(dir, "two"))
+        val entries = model["fragments"] + model["relationshipFragments"] + model["views"]
+        assertEquals(4, entries.size)
+        assertTrue(entries.all { it["removed"].asBoolean() })
+    }
+
+    @Test
+    fun `a module that never declared anything writes no file`() {
+        val file = File(dir, ".drivine/model.json")
+        compile(listOf(nothing), mapOf(ModelFileGenerator.FILE to file.path), File(dir, "work"))
+        assertFalse(file.exists())
+    }
+
+    @Test
+    fun `a file of another format is written over, keeping nothing`() {
+        val file = File(dir, ".drivine/model.json").apply { parentFile.mkdirs(); writeText("""{"format": "drivine-model/2", "fragments": [{"id": "x.Old"}]}""") }
+        val result = compile(listOf(shop(withOrders = false)), mapOf(ModelFileGenerator.FILE to file.path), File(dir, "work"))
+        assertTrue(result.messages.contains("is not a drivine-model/1 file"), result.messages)
+        assertEquals(listOf("shop.Customer"), ObjectMapper().readTree(file)["fragments"].map { it["id"].asText() })
+    }
+
+    @Test
+    fun `the module's file is found from its main sources`() {
+        assertEquals(File("/repo/app/.drivine/model.json"), ModelFileGenerator.mainModuleFile(File("/repo/app/src/main/kotlin/a/B.kt")))
+        assertNull(ModelFileGenerator.mainModuleFile(File("/repo/app/src/test/kotlin/a/B.kt")))
+    }
+
     private fun generate(vararg sources: SourceFile, file: File = File(dir, "model.json"), workDir: File = File(dir, "work")): JsonNode {
         compile(sources.toList(), mapOf(ModelFileGenerator.FILE to file.path, ModelFileGenerator.MODULE to "fx"), workDir)
         return ObjectMapper().readTree(file)

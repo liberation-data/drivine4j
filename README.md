@@ -193,6 +193,8 @@ Keep the file in source control, as you would a lock file: Studio can then read 
 test -z "$(git status --porcelain -- ':(glob)**/.drivine/model.json')"
 ```
 
+When a fragment, relationship fragment or view leaves the code, its entry stays in the file as it last was, marked `"removed": true`: the database may still hold nodes written under it, and Studio greys it out rather than show a node it cannot name. It goes back to current if the class comes back, and stays until you delete the entry from the file, once the database holds nothing of it. A module with nothing left keeps its file, with every entry removed.
+
 The jar carries the same file, as `META-INF/drivine/model.json`. KSP options change what is written:
 
 | Option | Effect |
