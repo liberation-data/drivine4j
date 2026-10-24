@@ -108,6 +108,9 @@ abstract class CypherWriteContract {
     fun `a map parameter keyed as extended JSON writes a double is written a map`() {
         val m = mapOf("\$numberDouble" to "1")
         assertEquals(listOf(m), query("CREATE (n:CyWrite {id: 1}) RETURN \$m", mapOf("m" to m)))
+        // Beside a float that is a whole number, which a write reads from the same object of parameters.
+        val l = mapOf("\$numberLong" to "5")
+        assertEquals(l, (query("CREATE (n:CyWrite {id: 2}) RETURN [\$f, \$l]", mapOf("f" to 2.0, "l" to l)).single() as List<*>)[1])
     }
 
     @Test

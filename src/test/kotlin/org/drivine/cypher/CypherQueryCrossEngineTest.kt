@@ -249,6 +249,42 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a float that is a whole number, collected once each, stays a float`() {
+        // Not in the spec yet: what distinctFirst keeps of a collection is the items collect gathered, not their text read back.
+        assertEquals(listOf(listOf(1.0, 2.5)), query("UNWIND [1.0, 2.5, 1.0] AS x RETURN collect(DISTINCT x)"))
+        assertEquals(listOf(listOf(2L, listOf(2.0)), listOf(1L, listOf(2.0))), query("UNWIND [1, 2] AS x RETURN x, collect(DISTINCT \$f) ORDER BY x DESC", mapOf("f" to 2.0)))
+    }
+
+    @Test
+    fun `an item past 4,000 bytes, and a map with its keys in another order, collected once each`() {
+        // Not in the spec yet: Oracle keeps each item once as JSON compares items, not as their text does.
+        val big = "y".repeat(5_000)
+        assertEquals(listOf(listOf(listOf(big), "a")), query("UNWIND [[\$b], [\$b], 'a'] AS x RETURN collect(DISTINCT x)", mapOf("b" to big)))
+        assertEquals(listOf(listOf(mapOf("a" to 1L, "b" to 2L))), query("UNWIND [{a: 1, b: 2}, {b: 2, a: 1}] AS x RETURN collect(DISTINCT x)"))
+    }
+
+    @Test
+    fun `a map parameter keyed as extended JSON writes a value, beside a float that is a whole number in the same parameter, comes back a map`() {
+        val p = mapOf("a" to 2.5, "m" to mapOf("\$numberDouble" to "1"), "l" to mapOf("\$numberLong" to "5"))
+        assertEquals<List<Any?>>(listOf(p), query("RETURN \$p", mapOf("p" to p + ("b" to 2.0))).map { (it as Map<*, *>) - "b" })
+    }
+
+    @Test
+    fun `a walk sorts by coalesce of an aggregate collected once each, and a DISTINCT projection by coalesce of an item`() {
+        // Not in the spec yet: an order term that reads an aggregate distinctFirst worked out first is carried out, beside a walk, as #162's sort was.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Johnny Mnemonic", 1L), listOf("The Matrix", 3L), listOf("The Matrix Reloaded", 2L), listOf("Keanu", 1L), listOf("Carrie", 1L)),
+            query("MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n, count(*) ORDER BY coalesce(head(collect(DISTINCT b.born)), 0), n"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", listOf("The Matrix", "The Matrix Reloaded")), listOf("Laurence", listOf("The Matrix"))),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT p.name AS n, collect(DISTINCT m.title) AS ts ORDER BY coalesce(ts[2], 'zz'), n SKIP 1 LIMIT 2"),
+        )
+    }
+
+    @Test
     fun `toString writes a float with its fraction, an integer and a text as they are`() {
         assertEquals(listOf(listOf("2.5", "3", "a", "4.0")), query("RETURN [toString(2.5), toString(3), toString('a'), toString(\$f * 2)]", mapOf("f" to 2.0)))
         // A float too small for Oracle's NUMBER, which reads it as 0, a whole number.

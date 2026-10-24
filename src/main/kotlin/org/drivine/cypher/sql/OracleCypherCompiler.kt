@@ -46,13 +46,22 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * A float that is a whole number, `2.0`, written as Oracle's extended JSON writes a double, `{"${'$'}numberDouble": "2.0"}`, which
-     * `JSON(… EXTENDED)` reads as one: Oracle reads JSON's `2.0` as the number 2, a whole number, as it reads `2`.
+     * `JSON(… EXTENDED)` reads as one: Oracle reads JSON's `2.0` as the number 2, a whole number, as it reads `2`. Not in a
+     * value that holds a map with a key as extended JSON's are, `{"${'$'}numberLong": "5"}`, which `JSON(… EXTENDED)` would read as
+     * the value it writes: such a value is written as JSON is, its floats that are whole numbers read as whole numbers. A
+     * statement that writes reads all its parameters as one value.
      */
     override fun parameterText(value: Any?): String {
+        val tree = Neo4jObjectMapper.instance.valueToTree<JsonNode>(value)
+        if (keyedAsExtended(tree)) return Neo4jObjectMapper.instance.writeValueAsString(tree)
         var doubled = false
-        val written = doubles(Neo4jObjectMapper.instance.valueToTree(value)) { doubled = true }
+        val written = doubles(tree) { doubled = true }
         return Neo4jObjectMapper.instance.writeValueAsString(written).also { if (doubled) extended += it }
     }
+
+    /** Whether [node] holds a map with a key that starts with `$`, as extended JSON's keys do. */
+    private fun keyedAsExtended(node: JsonNode): Boolean =
+        (node is ObjectNode && node.fieldNames().asSequence().any { it.startsWith("$") }) || node.any(::keyedAsExtended)
 
     /**
      * [node] with each float in it that is a whole number written as extended JSON's double, calling [doubled] for each. A
@@ -145,10 +154,15 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun collect(value: String, order: String?) =
         "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} RETURNING JSON), JSON('[]'))"
 
-    /** Oracle groups no `JSON`: each item is grouped by its text, and read back from it. */
+    /**
+     * Each item where it is first among those equal to it as `JSON` compares them, kept as it is: not by its text, which is
+     * at most 4,000 bytes and keeps a map's keys in the order written, and not read back from it, which would read a float
+     * that is a whole number, `2.0`, as the number 2.
+     */
     override fun distinctItems(list: String) =
-        "(SELECT COALESCE(JSON_ARRAYAGG(JSON(d.item) ORDER BY d.first RETURNING JSON), JSON('[]')) " +
-            "FROM (SELECT MIN(e.item_no) AS first, JSON_SERIALIZE(e.item) AS item FROM ${elements(list, "e")} GROUP BY JSON_SERIALIZE(e.item)) d)"
+        "(SELECT COALESCE(JSON_ARRAYAGG(d.item ORDER BY d.item_no RETURNING JSON), JSON('[]')) " +
+            "FROM (SELECT e.item_no, e.item, ROW_NUMBER() OVER (PARTITION BY e.item ORDER BY e.item_no) AS n " +
+            "FROM ${elements(list, "e")}) d WHERE d.n = 1)"
 
     /** Of the values of the kind that comes first, or last, as [kindOrder] orders them. */
     override fun extreme(value: String, min: Boolean) =

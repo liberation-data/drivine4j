@@ -87,7 +87,8 @@ abstract class SqlCypherCompiler(graph: String) {
             Parameters(parameters, { name, _ -> nullIfJsonNull(propertyOf(PARAMS, name)) }, { number(propertyOf(PARAMS, it)) }, inObject = true, text = ::parameterText)
         )
         val body = writer.procedure(query)
-        // The parameters' text first: the procedure reads it as the store's JSON reads that text.
+        // The parameters' text is written before the procedure is: on Oracle, writing it is what says whether the procedure
+        // reads it as extended JSON.
         val values = writer.parameters.values
         return CompiledCypher(procedure(body), values)
     }
