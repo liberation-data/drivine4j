@@ -36,7 +36,7 @@ dependencies {
     testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
     testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-    // Oracle and Postgres, when ORACLE_TESTS / POSTGRES_TESTS ask for them: the drivers the root module's tests use
+    // Oracle when ORACLE_TESTS=true, and Postgres unless POSTGRES_TESTS=false: the drivers the root module's tests use
     testRuntimeOnly 'com.oracle.database.jdbc:ojdbc11:23.7.0.25.01'
     testRuntimeOnly 'org.postgresql:postgresql:42.7.8'
     // A Spring transaction, begun on the thread, that a suspend block joins
@@ -51,6 +51,16 @@ kotlin {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // The Oracle and Postgres switches are inputs, so turning one on runs the tests it enables.
+    def oracleTests = providers.environmentVariable('ORACLE_TESTS').orElse('')
+    inputs.property('oracleTests', oracleTests)
+    inputs.property('postgresTests', providers.environmentVariable('POSTGRES_TESTS').orElse(''))
+    // The Oracle tests are opt-in: say so once, so a run without them is not mistaken for one with them.
+    doFirst {
+        if (oracleTests.get() != 'true') {
+            logger.lifecycle('Oracle tests skipped: set ORACLE_TESTS=true to run them')
+        }
+    }
     // The images the tests run are pinned in one file, and each pin is an input of the tests.
     rootProject.file('gradle/test-images.txt').readLines()
         .collect { it.trim() }.findAll { it && !it.startsWith('#') }

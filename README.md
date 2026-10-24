@@ -3226,7 +3226,8 @@ database wants two gigabytes. Run them with
 ORACLE_TESTS=true ./gradlew :test --tests '*Oracle*'
 ```
 
-CI runs the same command, in a job of its own (`test (Oracle)`).
+Without it, each test task prints `Oracle tests skipped: set ORACLE_TESTS=true to run them`. CI runs
+the same command, in a job of its own (`test (Oracle)`).
 
 ### Postgres
 
@@ -3381,11 +3382,12 @@ val provider = JdbcConnectionProvider.pooled(
 Drivine's own Postgres tests run with
 
 ```bash
-POSTGRES_TESTS=true ./gradlew :test --tests '*Postgres*'
+./gradlew :test --tests '*Postgres*'
 ```
 
-CI runs the same command, in a job of its own (`test (Postgres)`), and then the sample app's stateless
-tests and the root module's stateless Spring tests on a Postgres datasource
+They run by default, in a plain `./gradlew test`. `POSTGRES_TESTS=false` skips them. CI runs them in the
+main job. A job of its own (`test (Postgres)`) runs the sample app's stateless tests and the root
+module's stateless Spring tests on a Postgres datasource
 (`DATABASE_DATASOURCES_GRAPH_TYPE=POSTGRES`, `DATABASE_DATASOURCES_NEO_TYPE=POSTGRES`).
 
 ### @JsonPacked Annotation
