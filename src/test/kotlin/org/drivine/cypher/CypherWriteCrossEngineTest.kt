@@ -99,6 +99,14 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a float parameter that is a whole number, which a write reads, matches the whole number stored`() {
+        query("CREATE (n:CyWrite {id: 1})")
+        assertEquals(listOf(1L), query("MATCH (n:CyWrite {id: \$id}) SET n.seen = true RETURN n.id", mapOf("id" to 1.0)))
+        assertEquals(listOf(1L), query("MERGE (n:CyWrite {id: \$id}) RETURN n.id", mapOf("id" to 1.0)))
+        assertEquals(listOf(listOf(1L, true)), query("MATCH (n:CyWrite) RETURN [n.id, n.seen]"))
+    }
+
+    @Test
     fun `a float that is a whole number, in a parameter past 32 KB a write reads, is written a float`() {
         val doc = mapOf("text" to "y".repeat(40_000), "n" to 2.0)
         assertEquals(listOf(2.0), query("CREATE (n:CyWrite {f: \$doc.n}) RETURN n.f", mapOf("doc" to doc)))

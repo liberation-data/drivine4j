@@ -234,6 +234,18 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a float parameter that is a whole number equals the whole number stored`() {
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val matrix = listOf("The Matrix")
+        assertEquals(matrix, query("MATCH (m:Movie {released: \$r}) RETURN m.title", mapOf("r" to 1999.0)))
+        assertEquals(matrix, query("MATCH (m:Movie) WHERE m.released = \$r RETURN m.title", mapOf("r" to 1999.0)))
+        assertEquals(matrix, query("MATCH (m:Movie) WHERE m.released IN \$rs RETURN m.title", mapOf("rs" to listOf(1999.0, 1.5))))
+        assertEquals(listOf("Keanu"), query("MATCH (p:Person) WHERE p.born >= \$b AND p.born < \$b + 1 RETURN p.name", mapOf("b" to 1964.0)))
+        assertEquals(listOf(true), query("RETURN \$f = 2", mapOf("f" to 2.0)))
+    }
+
+    @Test
     fun `a float parameter that is a whole number stays a float in a UNION, and in a parameter past 32 KB`() {
         assertEquals(listOf(2.0, 1.5), query("RETURN \$f AS x UNION ALL RETURN 1.5 AS x", mapOf("f" to 2.0)))
         assertEquals(listOf(2.0), query("RETURN \$doc.n", mapOf("doc" to mapOf("text" to "y".repeat(40_000), "n" to 2.0))))
@@ -300,6 +312,15 @@ abstract class CypherQueryContract {
         val rows = listOf("Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded")
         assertEquals(rows, query(walk).map { it as String }.sorted())
         assertEquals(rows, query("$walk ORDER BY n"))
+    }
+
+    @Test
+    fun `a walk sorted by coalesce in a WITH keeps that order, skipped and limited, in the query that reads it`() {
+        // Not in the spec yet: a WITH carries its sort term out as #162's RETURN does, and the query after it reads that term.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val walk = "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY coalesce(b.name, b.title) DESC, b.released SKIP 1 LIMIT 4"
+        assertEquals(listOf("The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix"), query("$walk RETURN coalesce(b.name, b.title)"))
     }
 
     @Test

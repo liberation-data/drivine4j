@@ -1,7 +1,6 @@
 package org.drivine.cypher.sql
 
 import org.drivine.DrivineException
-import org.drivine.mapper.Neo4jObjectMapper
 
 /**
  * The parameters of a statement as the SQL binds them. A Cypher parameter is a value, so it is bound as
@@ -22,8 +21,8 @@ class Parameters(
     /** The bound whole number at a marker, or with [inObject] the parameter of a name, as the store's number. */
     private val asCount: (String) -> String,
     private val inObject: Boolean = false,
-    /** The JSON text a value is bound as. */
-    private val text: (Any?) -> String = { Neo4jObjectMapper.instance.writeValueAsString(it) },
+    /** The JSON text a value is bound as: the store's, see [SqlCypherCompiler.parameterText]. */
+    private val text: (Any?) -> String,
 ) {
     private val bound = linkedMapOf<String, Any?>()
 
