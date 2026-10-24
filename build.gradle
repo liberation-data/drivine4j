@@ -91,7 +91,7 @@ dependencies {
 	// Oracle tests run against Oracle Free, when ORACLE_TESTS=true
 	testImplementation 'com.oracle.database.jdbc:ojdbc11'
 
-	// Postgres tests run against pgvector's image, when POSTGRES_TESTS=true
+	// Postgres tests run against pgvector's image, unless POSTGRES_TESTS=false
 	testImplementation 'org.postgresql:postgresql'
 
 	// Connection pool for JDBC databases (Oracle, Postgres). The JDBC driver itself is the application's to add.
@@ -133,6 +133,16 @@ tasks.named('test') {
 	// CI runs the suite once for each collection sort strategy. Gradle does not track the
 	// environment, so without this the second run is up to date and runs nothing.
 	inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
+	// The Oracle and Postgres switches are inputs too, so turning one on runs the tests it enables.
+	def oracleTests = providers.environmentVariable('ORACLE_TESTS').orElse('')
+	inputs.property('oracleTests', oracleTests)
+	inputs.property('postgresTests', providers.environmentVariable('POSTGRES_TESTS').orElse(''))
+	// The Oracle tests are opt-in: say so once, so a run without them is not mistaken for one with them.
+	doFirst {
+		if (oracleTests.get() != 'true') {
+			logger.lifecycle('Oracle tests skipped: set ORACLE_TESTS=true to run them')
+		}
+	}
 	// The full suite runs many Spring contexts + testcontainer integration tests in one JVM; the
 	// default heap is too small and the worker OOM-crashes mid-run (surfacing as a cascade of
 	// NoClassDefFoundError on the still-pending tests, and a missing jacoco test.exec). Give it room.

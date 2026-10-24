@@ -16,6 +16,11 @@ jobs:
 
     name: test (${{ matrix.collection-sort-strategy }})
 
+    # The Postgres tests run by default. They do not read the sort strategy, so one leg runs them
+    # and the other turns them off, and they run once.
+    env:
+      POSTGRES_TESTS: ${{ matrix.collection-sort-strategy == 'APOC_SORT_MAPS' && 'true' || 'false' }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -33,6 +38,12 @@ jobs:
       # Docker 29+ raised minimum API version to 1.44; Testcontainers 1.x defaults to 1.32
       - name: Configure Testcontainers for Docker 29+
         run: echo "api.version=1.44" > ~/.docker-java.properties
+
+      # Pulled here and not by the first test that asks for it, so the time the image takes is not
+      # counted against the container's start. The image is the one PostgresTestContainer names.
+      - name: Pull the Postgres image
+        if: env.POSTGRES_TESTS == 'true'
+        run: docker pull pgvector/pgvector:pg17
 
       # Compiles and assembles every module. The tests run once, in the step that follows.
       - name: Build with Gradle
@@ -110,6 +121,10 @@ jobs:
   test-falkordb:
     runs-on: ubuntu-latest
     name: test (FalkorDB)
+
+    # The Postgres tests run in the matrix job above: not again here.
+    env:
+      POSTGRES_TESTS: false
 
     steps:
       - name: Checkout code
@@ -201,6 +216,10 @@ jobs:
   test-memgraph:
     runs-on: ubuntu-latest
     name: test (Memgraph)
+
+    # The Postgres tests run in the matrix job above: not again here.
+    env:
+      POSTGRES_TESTS: false
 
     steps:
       - name: Checkout code
@@ -313,6 +332,10 @@ jobs:
     runs-on: ubuntu-latest
     name: test (Oracle)
     timeout-minutes: 75
+
+    # The Postgres tests run in the matrix job: not again here.
+    env:
+      POSTGRES_TESTS: false
 
     steps:
       - name: Checkout code
@@ -437,14 +460,18 @@ jobs:
             **/build/reports/tests/test/
           retention-days: 30
 
-  # The Postgres tests are left out of a plain `./gradlew test` too, enabled by POSTGRES_TESTS. This
-  # job runs them, then the sample app's and the root module's stateless Spring tests on a Postgres
-  # datasource: neither a graph engine's job nor Oracle's proves anything of the SQL Drivine writes for
-  # Postgres.
+  # The Postgres tests run in a plain `./gradlew test`, so the matrix job runs them. This job runs the
+  # sample app's and the root module's Spring tests on a Postgres datasource, which no other job does:
+  # neither a graph engine's job nor Oracle's proves anything of the SQL Drivine writes for Postgres.
   test-postgres:
     runs-on: ubuntu-latest
     name: test (Postgres)
     timeout-minutes: 45
+
+    # The Postgres tests ran in the matrix job. Each run here names its classes, and this keeps them
+    # out should one name none.
+    env:
+      POSTGRES_TESTS: false
 
     steps:
       - name: Checkout code
@@ -471,16 +498,6 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew build -x test -x standaloneTest --no-daemon
 
-      - name: Run the Postgres tests
-        run: ./gradlew :test --no-daemon --tests '*Postgres*'
-        env:
-          POSTGRES_TESTS: true
-
-      - name: Run the coroutines module's Postgres tests
-        run: ./gradlew :drivine4j-coroutines:test --no-daemon --tests '*Postgres*'
-        env:
-          POSTGRES_TESTS: true
-
       # The sample app's stateless tests, on a Postgres datasource. Its tests seed in Cypher, which the
       # compiler makes SQL of over the graph's tables (SqlCypherFixtures.forStore). The tests of
       # the deprecated GraphObjectManager are left out: its save is Cypher alone.
@@ -498,8 +515,6 @@ jobs:
       # runs: the stateless manager's Spring tests.
       - name: Run the root module's stateless Spring tests on Postgres
         run: |
-          # This run replaces the root module's results: keep those of the run above for the report.
-          mkdir -p build/test-results-default && cp -r build/test-results/test/. build/test-results-default/
           ./gradlew :test --no-daemon \
             --tests 'org.drivine.annotation.StatelessSortedByTests' \
             --tests 'org.drivine.manager.StatelessCountTests' \
@@ -551,7 +566,6 @@ jobs:
         with:
           report_paths: |
             **/build/test-results/test/*.xml
-            build/test-results-default/*.xml
             build/test-results-spring/*.xml
           detailed_summary: true
           include_passed: true
@@ -567,7 +581,6 @@ jobs:
           name: test-results-POSTGRES
           path: |
             **/build/test-results/test/
-            build/test-results-default/
             build/test-results-spring/
             **/build/reports/tests/test/
           retention-days: 30

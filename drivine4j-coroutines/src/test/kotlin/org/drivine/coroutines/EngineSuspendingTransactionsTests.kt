@@ -6,6 +6,7 @@ import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseType
 import org.drivine.test.OracleTestContainer
 import org.drivine.test.PostgresTestContainer
+import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable
 import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
@@ -93,8 +94,8 @@ class OracleSuspendingTransactionsTest : SuspendingTransactionsContract() {
     }
 }
 
-/** Runs only with `POSTGRES_TESTS=true`, as the root module's Postgres tests do: see `TEST_CONTAINERS.md`. */
-@EnabledIfEnvironmentVariable(named = "POSTGRES_TESTS", matches = "true")
+/** Runs by default, and `POSTGRES_TESTS=false` skips it, as the root module's Postgres tests: see `TEST_CONTAINERS.md`. */
+@DisabledIfEnvironmentVariable(named = "POSTGRES_TESTS", matches = "false")
 class PostgresSuspendingTransactionsTest : SuspendingTransactionsContract() {
 
     override val database = "postgres"

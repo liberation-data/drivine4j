@@ -1,7 +1,7 @@
 
 ## Using Test Containers (Default)
 
-By default, tests start a Testcontainer for whichever backend(s) the suite targets — Neo4j, FalkorDB, or Memgraph. No additional setup required beyond Docker being available on the host. Oracle's and Postgres's containers are started only by their own tests, which a plain `./gradlew test` leaves out: see [Oracle](#oracle) and [Postgres](#postgres).
+By default, tests start a Testcontainer for whichever backend(s) the suite targets — Neo4j, FalkorDB, or Memgraph. No additional setup required beyond Docker being available on the host. Postgres's container is started by its own tests, which a plain `./gradlew test` runs: see [Postgres](#postgres). Oracle's is started only by its tests, which a plain `./gradlew test` leaves out, and the run says so: see [Oracle](#oracle).
 
 ```bash
 # Run tests with test containers (default)
@@ -19,13 +19,12 @@ FalkorDB of their own, and read no `USE_LOCAL_*` flag. `./gradlew check` (and so
 
 `drivine4j-coroutines` tests its suspend transaction block on each engine with transactions, with a `Drivine` and
 JUnit and no framework but a `TransactionTemplate` of `drivine4j-spring`. They start a Neo4j, a Memgraph and a FalkorDB
-of their own, and read no `USE_LOCAL_*` flag. Its Oracle and Postgres classes run only with `ORACLE_TESTS=true` and
-`POSTGRES_TESTS=true`, on the containers described below:
+of their own, and read no `USE_LOCAL_*` flag. Its Postgres class runs by default, and `POSTGRES_TESTS=false` skips it.
+Its Oracle class runs only with `ORACLE_TESTS=true`. Both use the containers described below:
 
 ```bash
 ./gradlew :drivine4j-coroutines:test
 ORACLE_TESTS=true ./gradlew :drivine4j-coroutines:test --tests '*Oracle*'
-POSTGRES_TESTS=true ./gradlew :drivine4j-coroutines:test --tests '*Postgres*'
 ```
 
 ## Using a Local Database Instance
@@ -52,7 +51,13 @@ The Oracle tests run against Oracle Database Free and only when asked for, since
 ORACLE_TESTS=true ./gradlew :test --tests '*Oracle*'
 ```
 
-They are in the root module. Without `ORACLE_TESTS=true` every class marked `@OracleTests` is skipped, so `./gradlew test` neither pulls the image nor starts the container. The benchmark, `OracleManagerBenchmarkTest`, wants `DRIVINE_BENCHMARK=true` as well.
+They are in the root module. Without `ORACLE_TESTS=true` every class marked `@OracleTests` is skipped, so `./gradlew test` neither pulls the image nor starts the container. Each test task then prints one line, so a run without them is not mistaken for one with them:
+
+```
+Oracle tests skipped: set ORACLE_TESTS=true to run them
+```
+
+The benchmark, `OracleManagerBenchmarkTest`, wants `DRIVINE_BENCHMARK=true` as well.
 
 - **The image** is `gvenzl/oracle-free:23-faststart`; choose another with `ORACLE_TEST_IMAGE` or `-Dtest.oracle.image`. Use a regular image and not a slim one, which has no Oracle Text: the full-text tests then search without an index.
 - **The container** (`org.drivine.test.OracleTestContainer`) is started once for the test JVM, when a test first asks for it. Tests connect as the user `drivine`, password `drivine`, to the service `FREEPDB1`.
@@ -62,13 +67,17 @@ They are in the root module. Without `ORACLE_TESTS=true` every class marked `@Or
 
 ## Postgres
 
-The Postgres tests run against Postgres with pgvector, and only when asked for, as the Oracle tests are:
+The Postgres tests run against Postgres with pgvector. They run by default, since the image is small and starts quickly:
 
 ```bash
-POSTGRES_TESTS=true ./gradlew :test --tests '*Postgres*'
+./gradlew :test --tests '*Postgres*'
 ```
 
-They are in the root module. Without `POSTGRES_TESTS=true` every class marked `@PostgresTests` is skipped, so `./gradlew test` neither pulls the image nor starts the container.
+They are in the root module. With `POSTGRES_TESTS=false` every class marked `@PostgresTests` is skipped, so `./gradlew test` neither pulls the image nor starts the container:
+
+```bash
+POSTGRES_TESTS=false ./gradlew test
+```
 
 - **The image** is `pgvector/pgvector:pg17`; choose another with `POSTGRES_TEST_IMAGE` or `-Dtest.postgres.image`. One without pgvector runs every test but those of vector search.
 - **The container** (`org.drivine.test.PostgresTestContainer`) is started once for the test JVM, when a test first asks for it. Tests connect as the user `drivine`, password `drivine`, to the database `drivine`.

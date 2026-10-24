@@ -11,15 +11,15 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
 import org.drivine.test.PostgresTestContainer
 import org.drivine.test.SqlCypherFixtures
-import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable
+import org.junit.jupiter.api.condition.DisabledIfEnvironmentVariable
 
 /**
- * Marks a test class that needs a Postgres database. They run only with `POSTGRES_TESTS=true`, as the
- * Oracle tests run only with `ORACLE_TESTS=true`: see `TEST_CONTAINERS.md`.
+ * Marks a test class that needs a Postgres database. They run by default, and `POSTGRES_TESTS=false`
+ * skips them: see `TEST_CONTAINERS.md`.
  */
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.RUNTIME)
-@EnabledIfEnvironmentVariable(named = "POSTGRES_TESTS", matches = "true")
+@DisabledIfEnvironmentVariable(named = "POSTGRES_TESTS", matches = "false")
 annotation class PostgresTests
 
 /** The test JVM's Postgres, from [PostgresTestContainer]: a container started when a test first asks for it, or a local instance. */
