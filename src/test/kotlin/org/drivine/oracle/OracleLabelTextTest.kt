@@ -1,5 +1,6 @@
 package org.drivine.oracle
 
+import com.fasterxml.jackson.databind.ObjectMapper
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSql
 import org.drivine.query.QuerySpecification
@@ -71,5 +72,47 @@ class OracleLabelTextTest {
         assertEquals(setOf("lone"), matching("Comma", ","))
         assertEquals(setOf("comma"), carrying("Comma", "a,"))
         assertEquals(setOf("bracket"), carrying("Comma", ",b"))
+    }
+
+    /** Labels that try the edges of the text a label is looked for in: brackets, quotes, commas and backslashes. */
+    private val edges = listOf("", "\"", "[", "]", "\\", "a\\", ",\"", "\",\"", "é 😀", "\$x")
+
+    private fun seedEdges() {
+        pm.execute(
+            QuerySpecification.withStatement("INSERT INTO $nodes (labels, props) VALUES (JSON(\$labels), JSON('{\"id\":\"edge\"}'))")
+                .bind(mapOf("labels" to ObjectMapper().writeValueAsString(listOf("Edge") + edges))),
+        )
+        OracleTestDatabase.run(
+            """INSERT INTO $nodes (labels, props) VALUES (JSON('["Single"]'), JSON('{"id":"single"}'))""",
+            """INSERT INTO $nodes (labels, props) VALUES (JSON('[]'), JSON('{"id":"none"}'))""",
+        )
+    }
+
+    @Test
+    fun `a later label of brackets, quotes, commas or backslashes is found whole, and nothing near it is`() {
+        seedEdges()
+        for (label in edges) assertEquals(setOf("edge"), carrying("Edge", label), label)
+        for (label in edges.filter { it.isNotEmpty() }) assertEquals(setOf("edge"), matching("Edge", label), label)
+        for (label in listOf("a", ",", "\\\\", "a\\\\", "\"\"", "[\"", "\"]", "Edge\",\"", "é", "😀", "Edge\",\"\"")) {
+            assertEquals(emptySet(), carrying("Edge", label), label)
+        }
+    }
+
+    @Test
+    fun `a node of one label or none is told by its text alike`() {
+        seedEdges()
+        assertEquals(setOf("single"), carrying("Single"))
+        assertEquals(setOf("single"), matching("Single"))
+        assertEquals(emptySet(), carrying("Single", ""))
+        assertEquals(emptySet(), carrying("Singl"))
+        assertEquals(setOf("single"), pm.query(QuerySpecification.withStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE ${OracleSql.carriesLabel("n", "Single")}").transform(String::class.java)).toSet())
+        assertEquals(emptySet(), pm.query(QuerySpecification.withStatement("SELECT JSON_VALUE(n.props, '$.id') FROM $nodes n WHERE JSON_VALUE(n.props, '$.id') = 'none' AND ${OracleSql.carriesLabel("n", "")}").transform(String::class.java)).toSet())
+    }
+
+    @Test
+    fun `a label is written as JSON_SERIALIZE writes it, for every character up to U+00FF and the others it escapes`() {
+        val text = (1..0xFF).map { it.toChar() }.joinToString("") + "\u2027\u2028\u2029\u202A\uFEFF\uFFFD😀"
+        val written = pm.query(QuerySpecification.withStatement("SELECT JSON_SERIALIZE(JSON_ARRAY(\$text RETURNING JSON)) FROM dual").bind(mapOf("text" to text)).transform(String::class.java)).single()
+        assertEquals("[${OracleSql.serialized(text)}]", written)
     }
 }
