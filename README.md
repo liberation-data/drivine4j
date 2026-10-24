@@ -201,7 +201,7 @@ The jar carries the same file, as `META-INF/drivine/model.json`. Both code gener
 |---|---|
 | `drivine.model` | `false` writes no model file. |
 | `drivine.model.module` | The module's name in the file. By default, the module directory's name. |
-| `drivine.model.file` | An absolute path to write the file to instead. Needed where the generator cannot tell the main sources from the tests': for KSP outside Gradle's layout, as with Maven. The Java processor knows Gradle's layout and Maven's. |
+| `drivine.model.file` | An absolute path to write the file to instead. Needed where the generator cannot tell the main sources from the tests': for KSP outside Gradle's layout, as with Maven. The Java processor knows Gradle's layout and Maven's, and writes no file, a named one included, as it compiles the tests. |
 
 ```kotlin
 ksp {
@@ -211,6 +211,9 @@ ksp {
 
 ```groovy
 // The Java processor, in Gradle
+dependencies {
+    annotationProcessor 'org.drivine:drivine4j-codegen-java:0.2.0'
+}
 tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += ['-Adrivine.model.module=orders']
 }

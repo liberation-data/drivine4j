@@ -92,6 +92,34 @@ class ModelFileCodegenTest {
         assertFalse(ticket.containsKey("subtypesComplete"));
     }
 
+    /** A record, which the KSP processor cannot read yet: its components are its fields. */
+    @Test
+    void aRecordsComponentsAreItsProperties() throws IOException {
+        Map<?, ?> model = generate(JavaFileObjects.forSourceLines("jx.Pet",
+            "package jx;",
+            "import org.drivine.annotation.*;",
+            "@NodeFragment(labels = {\"Pet\"})",
+            "public record Pet(@NodeId String id, @TextIndex String name, int age) {",
+            "  public static final String KIND = \"pet\";",
+            "}"));
+        Map<?, ?> pet = fragment(model, "jx.Pet");
+        assertEquals("id", pet.get("nodeId"));
+        Map<String, Map<?, ?>> properties = properties(pet);
+        assertEquals(List.of("age", "id", "name"), List.copyOf(properties.keySet()));
+        assertEquals("text", properties.get("name").get("index"));
+        assertEquals(false, properties.get("age").get("nullable"));
+        // A record is final: it has no subtypes.
+        assertFalse(pet.containsKey("subtypesComplete"));
+    }
+
+    /** The version is the build's, which drivine4j-codegen-model carries in its resources. */
+    @Test
+    void theGeneratorIsNamedWithTheBuildsVersion() throws IOException {
+        Map<?, ?> generator = (Map<?, ?>) generate(TICKET, NULLABLE, NON_NULL).get("generator");
+        assertEquals("drivine4j", generator.get("library"));
+        assertTrue(((String) generator.get("version")).matches("\\d+\\.\\d+\\.\\d+.*"), generator.toString());
+    }
+
     @Test
     void aSealedClassListsThePermittedFragments() throws IOException {
         Map<?, ?> model = generate(VEHICLE, CAR, BIKE);
@@ -234,6 +262,35 @@ class ModelFileCodegenTest {
         assertEquals(List.of("Café"), fragment(model, "jx.Cafe").get("labels"));
         assertEquals(Files.readString(file.toPath()),
             Files.readString(new File(classes, "META-INF/drivine/model.json").toPath()));
+    }
+
+    /**
+     * Maven gives the compiler's arguments to the test compilation too: there, a file named by
+     * drivine.model.file is the main sources' and is left as it is, whether the tests declare
+     * nothing, which would mark all of it removed, or fragments of their own.
+     */
+    @Test
+    void theTestsCompilationLeavesANamedFileAsItIs() throws IOException {
+        File file = new File(dir, "model.json");
+        generate(file, TICKET, NULLABLE, NON_NULL);
+        String before = Files.readString(file.toPath());
+        File testClasses = new File(dir, "app/target/test-classes");
+        assertTrue(testClasses.mkdirs());
+        for (String source : List.of("public class Plain {}",
+            "@org.drivine.annotation.NodeFragment(labels = {\"Probe\"}) public final class Plain { @org.drivine.annotation.NodeId public String id; }")) {
+            File plain = new File(dir, "Plain.java");
+            Files.writeString(plain.toPath(), "package jx;\n" + source + "\n");
+            javax.tools.JavaCompiler javac = javax.tools.ToolProvider.getSystemJavaCompiler();
+            try (javax.tools.StandardJavaFileManager files = javac.getStandardFileManager(null, null, null)) {
+                files.setLocation(javax.tools.StandardLocation.CLASS_OUTPUT, List.of(testClasses));
+                javax.tools.JavaCompiler.CompilationTask task = javac.getTask(null, files, null,
+                    List.of("-proc:only", "-classpath", System.getProperty("java.class.path"), "-A" + ModelFiles.FILE + "=" + file.getPath()),
+                    null, files.getJavaFileObjects(plain));
+                task.setProcessors(List.of(new GraphViewProcessor()));
+                assertTrue(task.call());
+            }
+            assertEquals(before, Files.readString(file.toPath()), source);
+        }
     }
 
     private Map<?, ?> generate(JavaFileObject... sources) throws IOException {

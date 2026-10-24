@@ -27,7 +27,8 @@ import java.util.Set;
  * - `drivine.model`: `false` writes no model file.
  * - `drivine.model.module`: the module's name in the file; the module directory's name otherwise.
  * - `drivine.model.file`: an absolute path to write the file to, in place of `.drivine/model.json`
- *   beside the build file, for a layout the generator cannot find that in.
+ *   beside the build file, for a layout the generator cannot find that in. A compilation of the
+ *   tests, in Gradle's layout or Maven's, does not write it.
  */
 final class ModelFileGenerator {
 
@@ -56,8 +57,10 @@ final class ModelFileGenerator {
         }
         // Where the class output is says where the module is, before anything is written there.
         Layout layout = layout(resourceUri());
-        File target = named != null ? new File(named)
-            : layout != null && layout.main() ? new File(layout.moduleDir(), ".drivine/model.json") : null;
+        // The tests' compilation leaves the file be, a named one too: Maven gives it the main one's options.
+        File target = layout != null && !layout.main() ? null
+            : named != null ? new File(named)
+            : layout != null ? new File(layout.moduleDir(), ".drivine/model.json") : null;
         Map<?, ?> previous = ModelFiles.previous(target, warning -> messager.printMessage(Diagnostic.Kind.WARNING, warning));
 
         boolean declared = !fragments.isEmpty() || !relationshipFragments.isEmpty() || !views.isEmpty();

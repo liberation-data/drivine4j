@@ -61,6 +61,19 @@ class ModelFileParityTest {
                 @PropertyBag(flat = true) public java.util.Map<String, Object> rest;
                 @GraphTransient public String cache;
                 @GraphProperty("stored_as") public String renamed;
+                @CompositeProperty(prefix = "extra") public java.util.Map<String, Long> extras;
+                public java.util.List<Role> history;
+                public String[] aliases;
+                public int[] ranks;
+                public boolean[] flags;
+                public Iterable<java.util.UUID> refs;
+                public java.util.Collection<java.time.Duration> spans;
+                public Character initial;
+                public java.math.BigDecimal balance;
+                public java.util.Date seen;
+                public Object anything;
+                @JsonPacked public java.util.Map<String, Object> packedMap;
+                @Default public java.util.List<String> defaults;
                 public static final String KIND = "member";
             }
         """,
@@ -90,6 +103,21 @@ class ModelFileParityTest {
                 public byte[] bytes;
                 public char[] chars;
                 public java.util.List<? super Integer> lower;
+            }
+        """,
+        "Outer" to """
+            public final class Outer {
+                @NodeFragment(labels = {"Inner"})
+                public static final class Inner { @NodeId public String id; }
+            }
+        """,
+        "Crew" to """
+            @GraphView
+            public final class Crew {
+                @Root public Member captain;
+                @GraphRelationship(type = "IN", maxDepth = 2) public java.util.List<Team> teams;
+                @GraphRelationship(type = "HAS", maxDepth = 4) public java.util.List<Membership> memberships;
+                @GraphRelationship(type = "OWNS") public Outer.Inner inner;
             }
         """,
         "Membership" to """
@@ -139,7 +167,7 @@ class ModelFileParityTest {
 
         val model = ModelJson.read(ksp.readText()) as Map<*, *>
         // Not two empty files alike: the whole domain is in it.
-        assertEquals(listOf(9, 1, 1), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
+        assertEquals(listOf(10, 1, 2), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
         assertEquals(comparable(model), comparable(ModelJson.read(apt.readText())))
     }
 
