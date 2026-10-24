@@ -225,6 +225,17 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a walk read through a WITH, then sorted by toString in a second WITH, keeps that order`() {
+        // Not in the spec yet: the walk is a query inside the one the second WITH sorts, and its term, carried out, is bound in no subquery (#192).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf("Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"),
+            query("MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b WITH b ORDER BY toString(coalesce(b.name, b.title)) RETURN coalesce(b.name, b.title)"),
+        )
+    }
+
+    @Test
     fun `toString of a float too small for Oracle's NUMBER writes it`() {
         // Oracle's NUMBER reads it as 0, a whole number. Its text differs by store, so the spec has no case for it.
         assertEquals(1e-200, (query("RETURN toString(1.0E-200)").single() as String).toDouble())
@@ -295,4 +306,5 @@ class CypherQueryOracleTest : CypherQueryContract() {
     override fun seed(cypher: String) = OracleTestDatabase.seed(manager, cypher)
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
 }

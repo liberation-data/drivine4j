@@ -484,7 +484,7 @@ cases:
         rows: [{id: 1, text: {$repeat: "x", times: 40000}}, {id: 2, more: {$repeat: "z", times: 40000}}]
 
   - name: "A float with no fraction"
-    description: "A float that is a whole number, such as 2.0, is written and read back as a float, and toString() of it keeps its fraction, from a parameter nested or past 32 KB too."
+    description: "A float that is a whole number, such as 2.0, is written and read back as a float, from a parameter nested or past 32 KB too, and toString() of it keeps its fraction."
     steps:
       - cypher: "CREATE (n:CyWrite {f: $f, g: 3.0}) SET n += $m RETURN [n.f, n.g, n.h]"
         parameters: {f: 2.0, m: {h: 4.0}}

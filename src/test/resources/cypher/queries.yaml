@@ -49,7 +49,7 @@ cases:
         rows: ["Carrie", "Hugo"]
 
   - name: "Whole number equals its float"
-    description: "1964 equals 1964.0, in a pattern or a WHERE."
+    description: "1964 equals 1964.0, in a pattern, a WHERE, an IN, a range or a RETURN, written or a parameter."
     steps:
       - cypher: "MATCH (p:Person {born: 1964.0}) RETURN p.name"
         rows: ["Keanu"]
@@ -992,13 +992,24 @@ cases:
         rows: ["The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix"]
 
   - name: "A walk sorted by toString()"
-    description: "A walk sorted by toString() of an expression of where it ends, in a RETURN or a WITH, gives its rows in order."
+    description: "A walk returns toString() of an expression of where it ends, and sorted by it in a RETURN or a WITH, gives its rows in order."
     steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN toString(coalesce(b.name, b.title)) AS n"
+        unordered: true
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
       - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN toString(coalesce(b.name, b.title)) AS n ORDER BY n"
         rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+      - note: "The order term is not an item of the RETURN, so it is carried beside the walk."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) ORDER BY toString(coalesce(b.name, b.title)) DESC"
+        rows: ["The Matrix Reloaded", "The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix", "Keanu", "Johnny Mnemonic", "Carrie"]
       - note: "The order term is not an item of the WITH, so it is carried beside the walk."
         cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY toString(coalesce(b.name, b.title)) RETURN coalesce(b.name, b.title)"
         rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY toString(coalesce(b.name, b.title)) DESC SKIP 4 LIMIT 3 RETURN coalesce(b.name, b.title)"
+        rows: ["The Matrix", "Keanu", "Johnny Mnemonic"]
+      - note: "toString() of a number, and of null where a person has no released, which sorts last."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY toString(b.released), coalesce(b.name, b.title) RETURN coalesce(b.name, b.title)"
+        rows: ["Johnny Mnemonic", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded", "Carrie", "Keanu"]
 
   - name: "Sorted by coalesce() of collect(DISTINCT)"
     description: "A walk's groups sort by coalesce() of an aggregate collected once each, and a DISTINCT projection by coalesce() of an item of one."
