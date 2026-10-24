@@ -223,8 +223,9 @@ fun assertOrderedPaths(load: (String, Class<*>) -> Any?) {
 
 /**
  * mx's movies hold their years as texts on some and numbers on others: Akerman 'unknown', Bergman
- * 1950, Chaplin 'early', Dreyer 20, and Eisenstein both 'zz' and 5. Neo4j, FalkorDB and Oracle read
- * every text before every number, lowest first; Memgraph refuses to compare them.
+ * 1950, Chaplin 'early', Dreyer 20, and Eisenstein both 'zz' and 5. Neo4j, FalkorDB, Memgraph (3.14
+ * and later) and Oracle read every text before every number, lowest first; an earlier Memgraph refuses
+ * to compare them.
  */
 const val MIXED_SEED = """
     CREATE (mx:PActor {id: 'mx', name: 'Mixed', createdBy: 'path-test'})
@@ -245,7 +246,7 @@ const val MIXED_SEED = """
     CREATE (x4)-[:DIRECTED_BY]->(dreyer) CREATE (x5)-[:DIRECTED_BY]->(eisenstein) CREATE (x6)-[:DIRECTED_BY]->(eisenstein)
 """
 
-/** What Neo4j, FalkorDB and Oracle read from [MIXED_SEED]: every text before every number, and each node by the first value that leads to it. */
+/** What Neo4j, FalkorDB, Memgraph and Oracle read from [MIXED_SEED]: every text before every number, and each node by the first value that leads to it. */
 fun assertMixedOrderedPaths(load: (String, Class<*>) -> Any?) {
     assertEquals(
         listOf("Chaplin", "Akerman", "Eisenstein", "Dreyer", "Bergman"),
