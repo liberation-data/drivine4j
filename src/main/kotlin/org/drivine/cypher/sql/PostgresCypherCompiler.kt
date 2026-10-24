@@ -67,9 +67,11 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun aggregateList(value: String, order: String?) = "COALESCE(json_agg($value${order?.let { " ORDER BY $it" }.orEmpty()}), '[]'::json)"
 
-    /** Distinct values are in no order: Postgres orders a `DISTINCT` aggregate by its argument alone. */
-    override fun collect(value: String, distinct: Boolean, order: String?) =
-        "COALESCE(json_agg(${if (distinct) "DISTINCT $value" else "$value${order?.let { " ORDER BY $it" }.orEmpty()}"}) FILTER (WHERE $value IS NOT NULL), '[]'::json)"
+    override fun collect(value: String, order: String?) =
+        "COALESCE(json_agg($value${order?.let { " ORDER BY $it" }.orEmpty()}) FILTER (WHERE $value IS NOT NULL), '[]'::json)"
+
+    override fun distinctItems(list: String) =
+        "(SELECT COALESCE(json_agg(d.item ORDER BY d.first), '[]'::json) FROM (SELECT min(e.item_no) AS first, e.item FROM ${elements(list, "e")} GROUP BY e.item) d)"
 
     // Postgres has no min or max of jsonb, which orders: the first of the values in order is the least.
     override fun extreme(value: String, min: Boolean) =
@@ -229,14 +231,16 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "    $DOOMED jsonb;",
             "    $RECORD record;",
             "    $MATCHED record;",
-        ) + (1..NESTING).flatMap { listOf("    $SAVED$it jsonb;", "    $GATHERED$it jsonb;") } + listOf(
+        ) + (1..NESTING).flatMap { listOf("    $SAVED$it jsonb;", "    $GATHERED$it jsonb;", "    $CALLER$it jsonb;") } + listOf(
             "BEGIN",
             indent(body.joinToString("\n")),
             "END",
         )).joinToString("\n")
         val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }
         val function = "pg_temp.drivine_cypher_${digest.take(24)}"
-        return "CREATE OR REPLACE FUNCTION $function($PARAMS jsonb) RETURNS SETOF json LANGUAGE plpgsql AS \$cy\$\n$text\n\$cy\$;\n" +
+        // The body is quoted with dollars, by a tag no text in it holds: a text of `$cy$` would end it early.
+        val quote = (sequenceOf("\$cy\$") + generateSequence(1) { it + 1 }.map { "\$cy$it\$" }).first { it !in text }
+        return "CREATE OR REPLACE FUNCTION $function($PARAMS jsonb) RETURNS SETOF json LANGUAGE plpgsql AS $quote\n$text\n$quote;\n" +
             "SELECT cy.result FROM $function(CAST(\$${Parameters.OBJECT} AS jsonb)) AS cy (result)"
     }
 

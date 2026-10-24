@@ -49,6 +49,176 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `collect(DISTINCT) beside grouping keys, other aggregates, an order, a page and a variable outside its aggregates`() {
+        // Not in the spec yet: distinctFirst's grouping WITH, and the projection over it.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Carrie", 4L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name, count(*) + size(collect(DISTINCT m.title)) ORDER BY count(*) DESC, p.name SKIP 1 LIMIT 1"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, collect(DISTINCT m) AS ms WHERE size(ms) > 1 RETURN p.name, size(ms) ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 1969L), listOf("Keanu", 1967L), listOf("Laurence", 1962L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, size(collect(DISTINCT m.title)) + p.born AS x RETURN p.name, x ORDER BY p.name"),
+        )
+    }
+
+    @Test
+    fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
+        // Not in the spec yet: the projection over distinctFirst's grouping WITH orders by what that WITH holds.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) WITH DISTINCT p, size(collect(DISTINCT m.title)) AS n ORDER BY p.born DESC RETURN p.name, n"),
+        )
+        assertEquals(
+            listOf(listOf("Laurence", 1L), listOf("Carrie", 2L), listOf("Keanu", 3L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT p.name, size(collect(DISTINCT m.title)) ORDER BY count(*)"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Laurence", 1L), listOf("Keanu", 3L)),
+            query(
+                "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p.name AS name, m.title AS t " +
+                    "RETURN name AS nm, size(collect(DISTINCT t)) ORDER BY any(x IN collect(DISTINCT t) WHERE x STARTS WITH 'J' AND name = 'Keanu'), nm"
+            ),
+        )
+    }
+
+    @Test
+    fun `collect(DISTINCT) beside an item named after a variable another item is, ordered by that name`() {
+        // Not in the spec yet: in an order term, an item's name is that item, not the variable it shadows.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 1L)),
+            query("MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p AS person, p.name AS p, size(collect(DISTINCT m.title)) ORDER BY toLower(p)")
+                .map { (it as List<*>).drop(1) },
+        )
+    }
+
+    @Test
+    fun `an item of the relationships collect gathers is read in the projection that gathers them`() {
+        // Not in the spec yet: Oracle reads no aggregate from a subquery, so the item is read from what collect gathered.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Carrie", "Trinity"), listOf("Laurence", "Morpheus")),
+            query("MATCH (p:Person)-[r:ACTED_IN]->() WHERE p.name <> 'Keanu' RETURN p.name, collect(r)[0].role ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf(4L, "Morpheus", "Trinity")),
+            query(
+                "MATCH (:Person {name: 'Laurence'})-[r:ACTED_IN]->() MATCH (:Person {name: 'Carrie'})-[s:ACTED_IN]->() " +
+                    "RETURN size(collect(r) + collect(s)), (collect(r) + collect(s))[0].role, (collect(r) + collect(s))[-1].role"
+            ),
+        )
+        assertEquals(
+            listOf(listOf(true, true)),
+            query("MATCH (:Person {name: 'Laurence'})-[r:ACTED_IN]->() WITH collect(r) AS rs RETURN rs[9] IS NULL, rs[-9] IS NULL"),
+        )
+    }
+
+    @Test
+    fun `collect(DISTINCT) under a comprehension, a quantifier or a reduce that names a grouping key in its body`() {
+        // Not in the spec yet: distinctFirst's grouping WITH keeps each variable such a body names, outside the aggregate.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Carrie", 2L, false, 12L), listOf("Keanu", 3L, false, 15L), listOf("Laurence", 1L, false, 8L)),
+            query(
+                "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p.name AS name, m.title AS t " +
+                    "RETURN name, size([x IN collect(DISTINCT t) WHERE x <> name]), any(x IN collect(DISTINCT t) WHERE x = name), " +
+                    "reduce(n = 0, x IN collect(DISTINCT t) | n + size(name)) ORDER BY name"
+            ),
+        )
+    }
+
+    @Test
+    fun `collect(DISTINCT) beside a pattern or a subquery that names a grouping key`() {
+        // Not in the spec yet: distinctFirst's grouping WITH keeps each variable a pattern or a subquery names, outside the aggregate.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Carrie", 2L, 2L, false), listOf("Keanu", 4L, 4L, true), listOf("Laurence", 2L, 2L, true)),
+            query(
+                "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, size(collect(DISTINCT m.title)) + COUNT { (p)-[:KNOWS]->() } AS x, " +
+                    "size([(p)-[:KNOWS]->(f) | f.name] + collect(DISTINCT m.title)) AS y, " +
+                    "size(collect(DISTINCT m.title)) > 2 OR EXISTS { (p)-[:KNOWS]->(:Person {name: 'Keanu'}) } AS z " +
+                    "RETURN p.name, x, y, z ORDER BY p.name"
+            ),
+        )
+    }
+
+    @Test
+    fun `collect(DISTINCT) of dates keeps each once, as dates`() {
+        // Not in the spec yet: what distinctFirst keeps of a collection is still of the kind collect gathered.
+        val dates = "UNWIND [date('2020-01-01'), date('2020-01-01'), date('2021-05-01')] AS d"
+        assertEquals(listOf(listOf(2020L, 2021L)), query("$dates WITH collect(DISTINCT d) AS ds RETURN [x IN ds | x.year]"))
+        assertEquals(listOf(5L), query("$dates RETURN collect(DISTINCT d)[1].month"))
+    }
+
+    @Test
+    fun `an item of a pattern comprehension's relationships is compared by its id`() {
+        // Not in the spec yet: a pattern comprehension gathers their properties beside their ids, as collect does, but in a subquery.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf(false, true, true)),
+            query(
+                "MATCH (a:Person {name: 'Keanu'}) WITH [(a)-[r:ACTED_IN {role: 'Neo'}]->() | r] AS rs, a " +
+                    "RETURN [[(a)-[r:ACTED_IN {role: 'Neo'}]->() | r][0] = [(a)-[r:ACTED_IN {role: 'Neo'}]->() | r][1], " +
+                    "[(a)-[r:ACTED_IN {role: 'Neo'}]->() | r][1] IN rs, [(a)-[r:ACTED_IN {role: 'Neo'}]->() | r][0].role = 'Neo']"
+            ),
+        )
+    }
+
+    @Test
+    fun `a list comprehension over nodes or relationships that keeps them gives a list of them, compared by id`() {
+        // Not in the spec yet: what entityComprehension keeps, with no projection or one of the item, is still a list of nodes or relationships.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf(true, false, 1L, false, listOf("Neo", "Neo"))),
+            query(
+                "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN {role: 'Neo'}]->() WITH collect(r) AS rs " +
+                    "RETURN [[x IN rs WHERE x <> rs[0]][0] = rs[1], [x IN rs | x][0] = rs[1], size([x IN rs WHERE x = rs[0] | x]), " +
+                    "rs[0] IN [x IN rs WHERE x <> rs[0]], [x IN rs | x.role]]"
+            ),
+        )
+        assertEquals(
+            listOf(listOf(true, true, listOf("Carrie"))),
+            query(
+                "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS*2]->(b) " +
+                    "RETURN [[n IN nodes(p) WHERE n.name <> 'Laurence'][0] = nodes(p)[1], b IN [n IN nodes(p) | n], [n IN nodes(p) WHERE n = b | n.name]]"
+            ),
+        )
+    }
+
+    @Test
+    fun `a path's nodes or relationships added together are a list of them, and of no path, null`() {
+        // Not in the spec yet: lists of nodes no collect gathers, added, indexed and iterated by id; over a null list, null.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf(6L, true, false, listOf("Laurence", "Keanu", "Carrie", "Laurence", "Keanu", "Carrie"), true, 4L)),
+            query(
+                "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS*2]->() " +
+                    "RETURN [size(nodes(p) + nodes(p)), (nodes(p) + nodes(p))[3] = nodes(p)[0], (nodes(p) + nodes(p))[3] = nodes(p)[1], " +
+                    "[n IN nodes(p) + nodes(p) | n.name], relationships(p)[1] IN relationships(p) + relationships(p), size(relationships(p) + relationships(p))]"
+            ),
+        )
+        assertEquals(
+            listOf(listOf(null, null, null)),
+            query("OPTIONAL MATCH p = (:Nope)-->() RETURN [[n IN nodes(p) | n.name], [n IN nodes(p) WHERE true], nodes(p)[0]]"),
+        )
+    }
+
+    @Test
     fun `randomUUID gives a new UUID each time`() {
         val (a, b) = query("UNWIND [1, 2] AS x RETURN randomUUID()").map { it as String }
         assertTrue(a != b && Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(a), "$a $b")

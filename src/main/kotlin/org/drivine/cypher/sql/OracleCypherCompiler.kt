@@ -141,13 +141,14 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun aggregateList(value: String, order: String?) =
         "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} NULL ON NULL RETURNING JSON), JSON('[]'))"
 
-    /**
-     * `JSON_ARRAYAGG` leaves nulls out, and takes no `DISTINCT`: distinct values are gathered as their text,
-     * which `LISTAGG` keeps once each.
-     */
-    override fun collect(value: String, distinct: Boolean, order: String?) =
-        if (distinct) "JSON('[' || LISTAGG(DISTINCT JSON_SERIALIZE($value), ',') WITHIN GROUP (ORDER BY JSON_SERIALIZE($value)) || ']')"
-        else "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} RETURNING JSON), JSON('[]'))"
+    /** `JSON_ARRAYAGG` leaves nulls out. */
+    override fun collect(value: String, order: String?) =
+        "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} RETURNING JSON), JSON('[]'))"
+
+    /** Oracle groups no `JSON`: each item is grouped by its text, and read back from it. */
+    override fun distinctItems(list: String) =
+        "(SELECT COALESCE(JSON_ARRAYAGG(JSON(d.item) ORDER BY d.first RETURNING JSON), JSON('[]')) " +
+            "FROM (SELECT MIN(e.item_no) AS first, JSON_SERIALIZE(e.item) AS item FROM ${elements(list, "e")} GROUP BY JSON_SERIALIZE(e.item)) d)"
 
     /** Of the values of the kind that comes first, or last, as [kindOrder] orders them. */
     override fun extreme(value: String, min: Boolean) =
@@ -375,7 +376,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "    $FOUND BOOLEAN;",
         "    $DOOMED JSON;",
         "    $CURSOR SYS_REFCURSOR;",
-    ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;") } + listOf(
+    ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;", "    $CALLER$it JSON;") } + listOf(
         "BEGIN",
         indent(body.joinToString("\n")),
         "END;",
