@@ -17,7 +17,7 @@ internal class SqliteStatements(private val connection: Connection) {
             (size > MAX).also { if (it) eldest.value.close() }
     }
 
-    /** [sql], prepared, with [values] bound in turn: a string, a number, or null. */
+    /** [sql], prepared, with [values] bound in turn: a string, a whole or a real number, or null. */
     fun prepared(sql: String, vararg values: Any?): PreparedStatement {
         val statement = prepared[sql]?.takeUnless { it.isClosed } ?: connection.prepareStatement(sql).also { prepared[sql] = it }
         statement.clearParameters()
@@ -26,6 +26,7 @@ internal class SqliteStatements(private val connection: Connection) {
                 null -> statement.setNull(i + 1, java.sql.Types.VARCHAR)
                 is Long -> statement.setLong(i + 1, value)
                 is Int -> statement.setLong(i + 1, value.toLong())
+                is Double -> statement.setDouble(i + 1, value)
                 else -> statement.setString(i + 1, value.toString())
             }
         }

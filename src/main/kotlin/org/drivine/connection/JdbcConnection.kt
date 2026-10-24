@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.ResultMapper
@@ -107,6 +108,8 @@ class JdbcConnection(
         val compiled = when (type) {
             DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
             DatabaseType.ORACLE -> OracleCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
+            // Its text values are JSON: see JdbcResultMapper.sqliteRows.
+            DatabaseType.SQLITE -> SqliteCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
             else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
         }
         return spec.withSql(compiled.sql, compiled.parameters)

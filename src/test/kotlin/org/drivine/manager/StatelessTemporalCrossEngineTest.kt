@@ -26,6 +26,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * Cross-engine temporal consistency: every temporal type saved via `save()` must round-trip, be
@@ -141,4 +142,14 @@ class StatelessTemporalPostgresTest {
     fun clean() = PostgresTestDatabase.clear(pm)
 
     @Test fun `temporal round-trip and range on Postgres`() = verifyTemporal(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
+}
+
+class StatelessTemporalSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test fun `temporal round-trip and range on SQLite`() = verifyTemporal(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm))
 }

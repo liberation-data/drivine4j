@@ -27,6 +27,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -238,6 +239,35 @@ class StatelessVectorSearchPostgresTest {
 
     @Test
     fun `a partition label narrows the search to the nodes that carry it on Postgres`() {
+        fixtures.execute(QuerySpecification.withStatement("MATCH (n:Doc) WHERE n.id IN ['A','B'] SET n:Corpus_one"))
+        pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
+
+        val results = buildGom(pm, registry).loadNearest(
+            DocNode::class.java, null, QUERY, topK = 10, threshold = null,
+            searchK = null, partitionLabel = "Corpus_one",
+        )
+
+        assertEquals(setOf("A", "B"), results.map { it.value.id }.toSet())
+    }
+}
+
+class StatelessVectorSearchSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+    private val fixtures = SqliteTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun seed() {
+        pm.indexes.ensure(VectorIndexSpec("Doc", "embedding", 4))
+        // An embedding is a list of numbers among a node's properties.
+        seed(fixtures) { it }
+    }
+
+    @Test
+    fun `vector search ranks, prunes, and thresholds on SQLite`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `a partition label narrows the search to the nodes that carry it on SQLite`() {
         fixtures.execute(QuerySpecification.withStatement("MATCH (n:Doc) WHERE n.id IN ['A','B'] SET n:Corpus_one"))
         pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
 

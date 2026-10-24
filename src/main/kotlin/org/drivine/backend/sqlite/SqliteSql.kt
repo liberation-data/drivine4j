@@ -56,7 +56,10 @@ internal object SqliteSql {
      * Whether the node [alias] carries [label]: the test a partial index over the label's nodes is
      * made with (see [SqliteSchemaGrammar]), so a statement that makes it is answered by the index.
      */
-    fun hasLabel(alias: String, label: String): String = "instr(${column(alias, "labels")}, ${literal(quoted(label))}) > 0"
+    fun hasLabel(alias: String, label: String): String = holdsLabel(column(alias, "labels"), label)
+
+    /** Whether the JSON array of labels [labels] holds [label]: the test [hasLabel] makes of a node's column, which compiled Cypher makes too. */
+    fun holdsLabel(labels: String, label: String): String = "instr($labels, ${literal(quoted(label))}) > 0"
 
     /** The labels of a node that carries [label] alone, as a literal of the JSON array they are stored as. */
     fun labelArray(label: String): String = literal("[${quoted(label)}]")
@@ -78,15 +81,20 @@ internal object SqliteSql {
      */
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String {
         if (key == Stamps.PROPERTY) return column(alias, "stamp")
-        val props = column(alias, "props")
-        val path = path(key)
-        val text = "(CASE json_type($props, $path) WHEN 'text' THEN $props ->> $path WHEN 'null' THEN NULL ELSE $props -> $path END)"
+        val text = propertyText(column(alias, "props"), path(key))
         return when (kind) {
             SqlKind.TEXT -> text
             SqlKind.NUMBER -> number(alias, key)
             else -> typed(kind, text)
         }
     }
+
+    /**
+     * The value at [path], a literal, of the JSON [props] as text, as [property] reads a property: a string as itself,
+     * anything else as its JSON, and null as SQL's null. A range index or a uniqueness constraint is made over it.
+     */
+    fun propertyText(props: String, path: String): String =
+        "(CASE json_type($props, $path) WHEN 'text' THEN $props ->> $path WHEN 'null' THEN NULL ELSE $props -> $path END)"
 
     /** The property [key] of [alias] as a number where one is stored, and null for anything else. */
     fun number(alias: String, key: String): String =

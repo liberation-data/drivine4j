@@ -4,6 +4,7 @@ import org.drivine.DrivineException
 import org.drivine.cypher.spec.CypherSpec
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import org.junit.jupiter.api.assertThrows
@@ -24,10 +25,13 @@ class CompilerRefusalTest {
     @TestFactory
     fun oracle() = spec.tests("oracle", before = {}) { step -> OracleCypherCompiler("g").compile(step.cypher, step.parameters); emptyList() }
 
+    @TestFactory
+    fun sqlite() = spec.tests("sqlite", before = {}) { step -> SqliteCypherCompiler("g").compile(step.cypher, step.parameters); emptyList() }
+
     @Test
     fun `collect(DISTINCT) beside a variable no other item is, outside its aggregates, is refused as collect() is`() {
         // Not in the spec yet: distinctFirst groups by each such variable, so it is refused before.
-        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g")).forEach { compiler ->
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             val refused = assertThrows<DrivineException> { compiler.compile("MATCH (p:Person) RETURN p.born, collect(DISTINCT p.name) + p.name") }.message!!
             assertTrue(refused.contains("names p outside its aggregates"), refused)
         }
@@ -36,7 +40,7 @@ class CompilerRefusalTest {
     @Test
     fun `a date written as a text that is no date is refused, with what the JVM's parser says of it`() {
         // Not in the spec: the message ends with the JVM's own text.
-        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g")).forEach { compiler ->
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             val refused = assertThrows<DrivineException> { compiler.compile("RETURN date('2024-02-30')") }.message!!
             assertTrue(refused.startsWith("'2024-02-30' is no date"), refused)
         }

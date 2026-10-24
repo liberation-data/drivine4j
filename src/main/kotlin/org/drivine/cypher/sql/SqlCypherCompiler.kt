@@ -124,6 +124,17 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun boundSelect(columns: String) = "SELECT $columns"
 
     /**
+     * The join of the query [query], which reads the row it is joined to, as the rows named [name]; with [optional], one
+     * that keeps the row where it gives none, its columns null. [columns] names its columns, each and whether it holds
+     * JSON, which [lateralColumn] reads.
+     */
+    protected open fun lateral(query: String, name: String, optional: Boolean, columns: List<Pair<String, Boolean>>): String =
+        if (optional) "LEFT JOIN LATERAL (\n${indent(query)}\n) $name ON TRUE" else "CROSS JOIN LATERAL (\n${indent(query)}\n) $name"
+
+    /** The column [column] of the rows named [name] that a [lateral] join gives, which holds JSON where [json]. */
+    protected open fun lateralColumn(name: String, column: String, json: Boolean) = "$name.$column"
+
+    /**
      * The query of a `CALL { … }`, [query], as the row that reads what it returns joins it: kept apart from that
      * row's query, where a store would merge the two and read a value bound in the row wrongly.
      */
@@ -235,8 +246,35 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun indexedEquality(property: String, value: String): String? = null
 
-    /** The items of the JSON list [json] as rows named [alias], with columns `item` and `item_no`, counted from 1. */
+    /** The items of the JSON list [json] as rows named [alias], whose item is [item] and whose place in the list, counted from 1, [itemNo]. */
     protected abstract fun elements(json: String, alias: String): String
+
+    /** The item, as JSON, of the row named [alias] that [elements] gives. */
+    protected open fun item(alias: String) = "$alias.item"
+
+    /** The place in its list, counted from 1, of the row named [alias] that [elements] gives. */
+    protected open fun itemNo(alias: String) = "$alias.item_no"
+
+    /** Whether the JSON values [x] and [y], neither of them null, are equal, as Cypher compares them: see [Writer.equality]. */
+    protected open fun jsonEquals(x: String, y: String) = "$x = $y"
+
+    /** Whether the JSON value [x] is equal to [y], the JSON of [given], a value the statement gives that is not null. */
+    protected open fun givenEquals(x: String, y: String, given: Any) = "$x = $y"
+
+    /** Whether the JSON values [x] and [y], of one kind, a number, a text or a truth value, stand as [operator] says (`<`, `>=`…). */
+    protected open fun ordered(x: String, operator: String, y: String) = "$x $operator $y"
+
+    /** A SQL truth value [sql] as JSON's `true` or `false`, or null. */
+    protected open fun boolJson(sql: String) = scalar(sql)
+
+    /** What an order sorts the JSON value [json] by: JSON's null as SQL's, which comes last, as a graph engine orders null. */
+    protected open fun sortKey(json: String) = nullIfJsonNull(json)
+
+    /** The term [term] of an `ORDER BY`, ascending or [descending]: null after every value ascending, and before them descending. */
+    protected open fun orderTerm(term: String, descending: Boolean) = if (descending) "$term DESC" else term
+
+    /** The whole number of times the SQL whole number [b] goes into [a], short of a fraction. */
+    protected open fun wholeQuotient(a: String, b: String) = "trunc($a / $b)"
 
     /** The values [value] of a group, or of a query's rows ordered by [order], as a JSON list: empty where there are none. */
     protected abstract fun aggregateList(value: String, order: String? = null): String
@@ -315,8 +353,14 @@ abstract class SqlCypherCompiler(graph: String) {
     /** How many ids the list [list] holds, as JSON. */
     protected abstract fun idCount(list: String): String
 
-    /** The ids of the list [list] as rows named [alias], with columns `id` and `ord`, in its order. */
+    /** The ids of the list [list] as rows named [alias], whose id is [rowId] and whose place, counted from 1, [rowOrd], in its order. */
     protected abstract fun idRows(list: String, alias: String): String
+
+    /** The id of the row named [alias] that [idRows] gives. */
+    protected open fun rowId(alias: String) = "$alias.id"
+
+    /** The place in its list, counted from 1, of the row named [alias] that [idRows] gives. */
+    protected open fun rowOrd(alias: String) = "$alias.ord"
 
     /**
      * Whether a walk reads the row it is in: a condition of a quantified path pattern may then read a variable bound
@@ -431,17 +475,37 @@ abstract class SqlCypherCompiler(graph: String) {
     // ----- A store's procedure, for a statement that writes -----
 
     /**
-     * The statement that runs the procedure whose statements are [body], each ending in `;`, and gives
-     * the rows it returns, of one column, [returnRows]. The procedure declares the variables the companion
-     * names ([PARAMS], [ROWS] …) and sets [PARAMS] from the object bound at [Parameters.OBJECT].
+     * The statement that runs the procedure whose steps are [program], and gives the rows it returns, of one column. Its
+     * variables are those the companion names ([PARAMS], [ROWS] …), [PARAMS] the object bound at [Parameters.OBJECT].
+     * A store with a procedural language writes the steps in it: see [statements].
      */
-    protected abstract fun procedure(body: List<String>): String
+    protected abstract fun procedure(program: List<ProcedureStep>): String
 
-    /** The statements that return the rows of the query [query], whose one column is `result`. */
-    protected abstract fun returnRows(query: String): List<String>
+    /**
+     * The steps [program] as the statements of a procedural language, each ending in `;`, indented by how deep in
+     * loops and conditions it is, from [depth]: a loop over a query's rows is `FOR … IN (…) LOOP`, a value set into a
+     * variable `SELECT … INTO …` or `… := …`, and the rows returned and a failure the store's own, [returnRows] and [raise].
+     */
+    protected fun statements(program: List<ProcedureStep>, depth: Int = 0): List<String> = program.flatMap { step ->
+        fun line(text: String) = text.prependIndent("    ".repeat(depth))
+        when (step) {
+            is ProcedureStep.Select -> listOf(line("SELECT ${step.expression} INTO ${step.variable}${step.from};"))
+            is ProcedureStep.Let -> listOf(line("${step.variable} := ${step.expression};"))
+            is ProcedureStep.Loop ->
+                listOf(line(if (step.multiline) "FOR ${step.record} IN (\n${indent(step.query)}\n) LOOP" else "FOR ${step.record} IN (${step.query}) LOOP")) +
+                    statements(step.body, depth + 1) + line("END LOOP;")
+            is ProcedureStep.If -> listOf(line("IF ${step.condition} THEN")) + statements(step.body, depth + 1) + line("END IF;")
+            is ProcedureStep.Raise -> listOf(line(raise(step.message)))
+            is ProcedureStep.Execute -> listOf(line("${step.statement}${step.into?.let { " INTO $it" }.orEmpty()};"))
+            is ProcedureStep.Return -> returnRows(step.query).map(::line)
+        }
+    }
 
-    /** The statement that fails the procedure with [message]. */
-    protected abstract fun raise(message: String): String
+    /** The statements of a procedural language that return the rows of the query [query], whose one column is `result`: see [statements]. */
+    protected open fun returnRows(query: String): List<String> = throw UnsupportedOperationException("This store writes its procedure in no procedural language.")
+
+    /** The statement of a procedural language that fails the procedure with [message]: see [statements]. */
+    protected open fun raise(message: String): String = throw UnsupportedOperationException("This store writes its procedure in no procedural language.")
 
     /** The id at [key] of the JSON map [json], or with no key the id [json] is, as the store's id. */
     protected abstract fun idOf(json: String, key: String?): String
@@ -519,9 +583,10 @@ abstract class SqlCypherCompiler(graph: String) {
             // Each variable found under a name of its own: a variable may be called what SQL will not take.
             val named = found.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
             val columns = named.flatMap { (_, value, column) -> value.columns(column) }.ifEmpty { listOf("1 AS one") }
+            val kinds = named.flatMap { (_, value, column) -> value.columnKinds(column) }.ifEmpty { listOf("one" to false) }
             val text = listOf("SELECT ${columns.joinToString(", ")}") + inner.from() + listOfNotNull(inner.whereClause())
-            select.join("LEFT JOIN LATERAL (\n${indent(text.joinToString("\n"))}\n) $name ON TRUE")
-            named.forEach { (variable, value, column) -> select.bind(variable, value.columnsOf(name, column)) }
+            select.join(lateral(text.joinToString("\n"), name, optional = true, kinds))
+            named.forEach { (variable, value, column) -> select.bind(variable, value.columnsOf(PENDING, column).laterally(name, kinds)) }
         }
 
         /**
@@ -567,10 +632,9 @@ abstract class SqlCypherCompiler(graph: String) {
             val projected = if (call.query.unions.isEmpty()) calledPart(select, call.query.clauses, null, distinct = false) else calledUnion(select, call.query)
             rowOrder = order
             val name = alias("c")
-            val text = "(\n${indent(called(projected.sql))}\n) $name"
-            select.join(if (call.optional) "LEFT JOIN LATERAL $text ON TRUE" else "CROSS JOIN LATERAL $text")
-            projected.scope.forEach { (variable, value) -> select.bind(variable, value.columnsOf(name)) }
-            projected.order.forEach { (column, descending) -> select.order += "$name.$column" to descending }
+            select.join(lateral(called(projected.sql), name, call.optional, projected.columns))
+            projected.scope.forEach { (variable, value) -> select.bind(variable, value.laterally(name, projected.columns)) }
+            projected.order.forEach { (column, descending) -> select.order += lateralColumn(name, column, json = false) to descending }
         }
 
         /**
@@ -603,7 +667,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 if (value !is Value.Json) value
                 else value.copy(temporal = all.map { it?.temporal }.distinct().singleOrNull(), items = all.map { it?.items }.distinct().singleOrNull())
             }
-            return Projected(sql, scope, emptyList())
+            return Projected(sql, scope, emptyList(), projected.first().columns)
         }
 
         private fun unwind(select: Select, unwind: Clause.Unwind) {
@@ -614,13 +678,13 @@ abstract class SqlCypherCompiler(graph: String) {
                 select.source(elements(list.ids, name))
                 val row = alias(if (list.relationships) "e" else "n")
                 if (list.relationships) {
-                    select.join("LEFT JOIN $edges $row ON $row.eid = ${idOf("$name.item", null)}")
+                    select.join("LEFT JOIN $edges $row ON $row.eid = ${idOf(item(name), null)}")
                     select.bind(unwind.variable, Value.Relationship("$row.eid", "$row.src", "$row.dst", "$row.type", "$row.props"))
                 } else {
-                    select.join("LEFT JOIN $nodes $row ON $row.nid = ${idOf("$name.item", null)}")
+                    select.join("LEFT JOIN $nodes $row ON $row.nid = ${idOf(item(name), null)}")
                     select.bind(unwind.variable, Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp"))
                 }
-                select.order += "$name.item_no" to false
+                select.order += itemNo(name) to false
                 return
             }
             // A value that is no list is one row, and null no rows, as in Cypher.
@@ -628,8 +692,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
             }
             select.source(elements(items, name))
-            select.bind(unwind.variable, Value.Json("$name.item", temporal = itemsOf(list)))
-            select.order += "$name.item_no" to false
+            select.bind(unwind.variable, Value.Json(item(name), temporal = itemsOf(list)))
+            select.order += itemNo(name) to false
         }
 
         /**
@@ -737,6 +801,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val length = number(idCount(hops.single().eids))
             val (from, to) = ends.map { (inner.scope.getValue(it) as Value.Node).nid }
             val columns = found.flatMap { (_, value, column) -> value.columns(column) } + "$length AS len" + "$from AS from_nid" + "$to AS to_nid"
+            val kinds = found.flatMap { (_, value, column) -> value.columnKinds(column) } + listOf("len" to false, "from_nid" to false, "to_nid" to false)
             val paths = (listOf("SELECT ${columns.joinToString(", ")}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString("\n")
             val name = alias("sp")
             val s = alias("s")
@@ -751,8 +816,8 @@ abstract class SqlCypherCompiler(graph: String) {
                     "SELECT * FROM (\n${indent(least)}\n) ${alias("s")}\nWHERE len = least"
                 }
             }
-            select.join("CROSS JOIN LATERAL (\n${indent(text)}\n) $name")
-            found.forEach { (variable, value, column) -> select.bind(variable, value.columnsOf(name, column)) }
+            select.join(lateral(text, name, optional = false, kinds))
+            found.forEach { (variable, value, column) -> select.bind(variable, value.columnsOf(PENDING, column).laterally(name, kinds)) }
         }
 
         /** That the relationship type [type] is one of [types]; null when any will do. */
@@ -869,7 +934,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun every(list: String, first: Int, stride: Int, leave: Int): String {
             val u = alias("u")
             val v = alias("v")
-            return "(SELECT ${comparable(Value.Json(aggregateList(scalar("$v.id"), "$v.ord"), ordered = true))} FROM (SELECT $u.id, $u.ord, COUNT(*) OVER () AS cnt FROM ${idRows(list, u)}) $v " +
+            return "(SELECT ${comparable(Value.Json(aggregateList(scalar("$v.id"), "$v.ord"), ordered = true))} FROM (SELECT ${named(rowId(u), "id")}, ${named(rowOrd(u), "ord")}, COUNT(*) OVER () AS cnt FROM ${idRows(list, u)}) $v " +
                 "WHERE $v.ord > $first AND MOD($v.ord - ${first + 1}, $stride) = 0 AND $v.ord <= $v.cnt - $leave)"
         }
 
@@ -891,7 +956,7 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The store's list of ids [list] as a JSON list of them, in its order: null where the list is. */
         private fun idList(list: String): String {
             val u = alias("u")
-            return "CASE WHEN $list IS NOT NULL THEN (SELECT ${comparable(Value.Json(aggregateList(scalar("$u.id"), "$u.ord"), ordered = true))} FROM ${idRows(list, u)}) END"
+            return "CASE WHEN $list IS NOT NULL THEN (SELECT ${comparable(Value.Json(aggregateList(scalar(rowId(u)), rowOrd(u)), ordered = true))} FROM ${idRows(list, u)}) END"
         }
 
         /** The nodes or relationships [entities] lists, as a JSON list of their properties in its order: null where the list is. */
@@ -904,7 +969,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 nodes to json(Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp")).sql
             }
             val id = if (entities.relationships) "eid" else "nid"
-            "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, "$u.item_no")} FROM ${elements(ids, u)} LEFT JOIN $table $row ON $row.$id = ${idOf("$u.item", null)}) END"
+            "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, itemNo(u))} FROM ${elements(ids, u)} LEFT JOIN $table $row ON $row.$id = ${idOf(item(u), null)}) END"
         }
 
         /**
@@ -926,10 +991,10 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun entityItems(ids: String, relationships: Boolean, name: String): Pair<String, Value> {
             val row = alias(if (relationships) "e" else "n")
             return if (relationships) {
-                "FROM ${elements(ids, name)} LEFT JOIN $edges $row ON $row.eid = ${idOf("$name.item", null)}" to
+                "FROM ${elements(ids, name)} LEFT JOIN $edges $row ON $row.eid = ${idOf(item(name), null)}" to
                     Value.Relationship("$row.eid", "$row.src", "$row.dst", "$row.type", "$row.props")
             } else {
-                "FROM ${elements(ids, name)} LEFT JOIN $nodes $row ON $row.nid = ${idOf("$name.item", null)}" to
+                "FROM ${elements(ids, name)} LEFT JOIN $nodes $row ON $row.nid = ${idOf(item(name), null)}" to
                     Value.Node("$row.nid", "$row.labels", "$row.props", "$row.stamp")
             }
         }
@@ -938,14 +1003,14 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun listComprehension(comprehension: Expression.ListComprehension, listed: Value, scope: Map<String, Value>): Value {
             val list = comparable(json(listed))
             val name = alias("x")
-            val inner = scope + (comprehension.variable to Value.Json("$name.item", temporal = itemsOf(listed)))
+            val inner = scope + (comprehension.variable to Value.Json(item(name), temporal = itemsOf(listed)))
             val projected = comprehension.projection?.let { expression(it, inner) }
-            val projection = projected?.let { json(it).sql } ?: "$name.item"
+            val projection = projected?.let { json(it).sql } ?: item(name)
             val filter = comprehension.where?.let { " WHERE ${bool(expression(it, inner))}" }.orEmpty()
             // Of null, null, as in Cypher, and not an empty list.
             return Value.Json(
                 shared(list) { (items) ->
-                    "CASE WHEN NOT ${isJsonNull(items)} THEN (SELECT ${aggregateList(projection, "$name.item_no")} FROM ${elements(items, name)}$filter) END"
+                    "CASE WHEN NOT ${isJsonNull(items)} THEN (SELECT ${aggregateList(projection, itemNo(name))} FROM ${elements(items, name)}$filter) END"
                 },
                 ordered = true,
                 items = if (projected != null) (projected as? Value.Json)?.temporal else itemsOf(listed),
@@ -971,7 +1036,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     else -> json(projected).sql
                 }
                 // Of null, null, as in Cypher, and not an empty list.
-                "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, "$name.item_no")} $from$filter) END"
+                "CASE WHEN $ids IS NOT NULL THEN (SELECT ${aggregateList(value, itemNo(name))} $from$filter) END"
             }
             return when (val projected = kind) {
                 is Value.Node -> Value.Entities(comparable(Value.Json(list, ordered = true)), false)
@@ -998,11 +1063,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         // ----- A statement that writes -----
 
-        /** The procedure's statements, in order. */
-        private val body = mutableListOf<String>()
-
-        /** How deep in loops and conditions the next statement is, for its indent. */
-        private var depth = 0
+        /** The procedure's steps, in order: the steps of each loop and condition being written within it, innermost last. */
+        private val blocks = ArrayDeque<MutableList<ProcedureStep>>().apply { addLast(mutableListOf()) }
 
         /** The variables a row holds, and what each is: what [ROWS] and [ROW] carry from clause to clause. */
         private val kinds = linkedMapOf<String, Kind>()
@@ -1016,13 +1078,13 @@ abstract class SqlCypherCompiler(graph: String) {
         /** The rows the last write left, as read from [ROWS], and how much was read of them then: nothing more is there to carry. */
         private var unread: Pair<Select, Int>? = null
 
-        /** The statements of the procedure [query] is: its reads, a loop over its rows for each write, and what it returns. */
-        fun procedure(query: Query): List<String> {
+        /** The steps of the procedure [query] is: its reads, a loop over its rows for each write, and what it returns. */
+        fun procedure(query: Query): List<ProcedureStep> {
             var select = Select(emptyMap())
             for (clause in creates(query.clauses)) {
-                if (clause is Clause.Return) returnRows(project(select, clause.projection, final = true).sql).forEach(::emit) else select = next(select, clause)
+                if (clause is Clause.Return) step(ProcedureStep.Return(project(select, clause.projection, final = true).sql)) else select = next(select, clause)
             }
-            return body
+            return blocks.single()
         }
 
         /** [clause] over the rows [select] reads, written for them where it writes: the rows the clauses after it read. */
@@ -1044,11 +1106,28 @@ abstract class SqlCypherCompiler(graph: String) {
             merged
         }
 
-        private fun emit(statement: String) {
-            body += statement.prependIndent("    ".repeat(depth))
+        private fun step(step: ProcedureStep) {
+            blocks.last() += step
         }
 
-        private fun assign(variable: String, sql: String) = emit("SELECT $sql INTO $variable;")
+        /** The steps [body] writes, as the body of a loop or a condition. */
+        private fun block(body: () -> Unit): List<ProcedureStep> {
+            blocks.addLast(mutableListOf())
+            body()
+            return blocks.removeLast()
+        }
+
+        /** [body] for each row of [query], whose `item` is [record]`.item`: see [ProcedureStep.Loop]. */
+        private fun loop(record: String, query: String, multiline: Boolean = false, body: () -> Unit) = step(ProcedureStep.Loop(record, query, multiline, block(body)))
+
+        /** [body] where [condition] holds. */
+        private fun branch(condition: String, body: () -> Unit) = step(ProcedureStep.If(condition, block(body)))
+
+        private fun assign(variable: String, sql: String) = step(ProcedureStep.Select(variable, sql, ""))
+
+        private fun let(variable: String, sql: String) = step(ProcedureStep.Let(variable, sql))
+
+        private fun execute(statement: String, into: String? = null) = step(ProcedureStep.Execute(statement, into))
 
         private fun key(variable: String) = keys.getOrPut(variable) { "v${keys.size + 1}" }
 
@@ -1069,7 +1148,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 key(variable) to held(value)
             }
             val list = comparable(Value.Json(aggregateList(jsonObject(entries), orderOf(select)), ordered = true))
-            emit((listOf("SELECT $list INTO $ROWS") + from(select) + listOfNotNull(select.whereClause())).joinToString("\n") + ";")
+            step(ProcedureStep.Select(ROWS, list, (from(select) + listOfNotNull(select.whereClause())).joinToString("") { "\n$it" }))
         }
 
         /** A value as a row holds it: a node or a relationship as its id, anything else as JSON. */
@@ -1086,15 +1165,15 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The order [select] reads its rows in, as an `ORDER BY` lists it: null where it has none. */
         private fun orderOf(select: Select): String? =
-            select.order.joinToString(", ") { (term, descending) -> if (descending) "$term DESC" else term }.ifEmpty { null }
+            select.order.joinToString(", ") { (term, descending) -> orderTerm(term, descending) }.ifEmpty { null }
 
         /** The rows in [ROWS], as a query reads them. */
         private fun rows(): Select {
             val select = Select(emptyMap())
             val r = alias("r")
             select.source(elements(ROWS, r))
-            select.order += "$r.item_no" to false
-            bindRow(select, "$r.item")
+            select.order += itemNo(r) to false
+            bindRow(select, item(r))
             unread = select to select.size()
             return select
         }
@@ -1139,7 +1218,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun evaluate(variable: String, vararg expressions: Expression?, value: (Map<String, Value>) -> String) {
             val read = expressions.filterNotNull()
             val select = row(if (read.any(::holdsSubquery)) null else read.flatMap(::variablesIn).toSet())
-            emit((listOf("SELECT ${value(select.scope)} INTO $variable") + from(select)).joinToString("\n") + ";")
+            step(ProcedureStep.Select(variable, value(select.scope), from(select).joinToString("") { "\n$it" }))
         }
 
         /** One write: made for each row of [ROWS] in turn, and the rows it leaves put back there. */
@@ -1148,41 +1227,37 @@ abstract class SqlCypherCompiler(graph: String) {
             val deleting = clause is Clause.Delete && !clause.detach
             if (deleting) assign(DOOMED, literalJson(emptyList<Any>()))
             val r = alias("r")
-            emit("FOR $RECORD IN (SELECT $r.item FROM ${elements(ROWS, r)} ORDER BY $r.item_no) LOOP")
-            depth++
-            emit("$ROW := $RECORD.item;")
-            when (clause) {
-                is Clause.Create -> {
-                    clause.patterns.forEach { create(it, merging = false) }
-                    keep()
+            loop(RECORD, "SELECT ${named(item(r), "item")} FROM ${elements(ROWS, r)} ORDER BY ${itemNo(r)}") {
+                let(ROW, "$RECORD.item")
+                when (clause) {
+                    is Clause.Create -> {
+                        clause.patterns.forEach { create(it, merging = false) }
+                        keep()
+                    }
+                    is Clause.Merge -> merge(clause)
+                    is Clause.Set -> {
+                        clause.items.forEach(::set)
+                        keep()
+                    }
+                    is Clause.Remove -> {
+                        clause.items.forEach(::remove)
+                        keep()
+                    }
+                    is Clause.Delete -> {
+                        delete(clause)
+                        keep()
+                    }
+                    else -> error("${clause::class.simpleName} reads")
                 }
-                is Clause.Merge -> merge(clause)
-                is Clause.Set -> {
-                    clause.items.forEach(::set)
-                    keep()
-                }
-                is Clause.Remove -> {
-                    clause.items.forEach(::remove)
-                    keep()
-                }
-                is Clause.Delete -> {
-                    delete(clause)
-                    keep()
-                }
-                else -> error("${clause::class.simpleName} reads")
             }
-            depth--
-            emit("END LOOP;")
-            emit("$ROWS := $OUT;")
+            let(ROWS, OUT)
             if (deleting) {
                 // A node is deleted when the clause has deleted the relationships it deletes: one it does not delete must not be there.
                 val d = alias("d")
-                val doomed = "SELECT ${idOf("$d.item", null)} FROM ${elements(DOOMED, d)}"
-                emit("SELECT count(*) INTO $COUNT FROM $edges WHERE src IN ($doomed) OR dst IN ($doomed);")
-                emit("IF $COUNT > 0 THEN")
-                emit("    ${raise("A node is deleted that still has relationships: delete them first, or DETACH DELETE it.")}")
-                emit("END IF;")
-                emit("DELETE FROM $nodes WHERE nid IN ($doomed);")
+                val doomed = "SELECT ${idOf(item(d), null)} FROM ${elements(DOOMED, d)}"
+                step(ProcedureStep.Select(COUNT, "count(*)", " FROM $edges WHERE src IN ($doomed) OR dst IN ($doomed)"))
+                branch("$COUNT > 0") { step(ProcedureStep.Raise("A node is deleted that still has relationships: delete them first, or DETACH DELETE it.")) }
+                execute("DELETE FROM $nodes WHERE nid IN ($doomed)")
             }
         }
 
@@ -1205,10 +1280,10 @@ abstract class SqlCypherCompiler(graph: String) {
             val carriedBefore = HashMap(carried)
             val returnedKinds = linkedMapOf<String, Kind>()
             val returnedCarried = hashMapOf<String, Value.Json>()
-            emit("$kept := $ROWS;")
+            let(kept, ROWS)
             if (ret != null) assign(gathered, literalJson(emptyList<Any>()))
             eachRow(kept) {
-                if (ret != null) emit("$caller := $RECORD.item;")
+                if (ret != null) let(caller, "$RECORD.item")
                 var select = rows()
                 for (clause in imported(call.query.clauses)) {
                     select = if (clause is Clause.Return) with(select, Clause.With(clause.projection, null)) else next(select, clause)
@@ -1222,17 +1297,18 @@ abstract class SqlCypherCompiler(graph: String) {
                     returnedCarried.putAll(carried.filterKeys { it in returned })
                     val (g, a, b) = listOf(alias("g"), alias("g"), alias("g"))
                     val row = comparable(
-                        Value.Json(jsonObject(before.keys.map { key(it) to propertyOf(caller, key(it)) } + returned.keys.map { key(it) to propertyOf("$b.item", key(it)) }), ordered = true)
+                        Value.Json(jsonObject(before.keys.map { key(it) to propertyOf(caller, key(it)) } + returned.keys.map { key(it) to propertyOf(item(b), key(it)) }), ordered = true)
                     )
-                    val both = "SELECT 1 AS part, $a.item_no, $a.item FROM ${elements(gathered, a)} UNION ALL SELECT 2 AS part, $b.item_no, $row AS item FROM ${elements(ROWS, b)}"
-                    emit("SELECT ${comparable(Value.Json(aggregateList("$g.item", "$g.part, $g.item_no"), ordered = true))} INTO $gathered FROM ($both) $g;")
+                    val both = "SELECT 1 AS part, ${named(itemNo(a), "item_no")}, ${named(item(a), "item")} FROM ${elements(gathered, a)} " +
+                        "UNION ALL SELECT 2 AS part, ${named(itemNo(b), "item_no")}, $row AS item FROM ${elements(ROWS, b)}"
+                    step(ProcedureStep.Select(gathered, comparable(Value.Json(aggregateList("$g.item", "$g.part, $g.item_no"), ordered = true)), " FROM ($both) $g"))
                 }
             }
             if (ret == null) {
-                emit("$ROWS := $kept;")
+                let(ROWS, kept)
                 restore(before, carriedBefore)
             } else {
-                emit("$ROWS := $gathered;")
+                let(ROWS, gathered)
                 restore(before + returnedKinds, carriedBefore + returnedCarried)
             }
             unread = null
@@ -1245,13 +1321,11 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun eachRow(rows: String, body: () -> Unit) {
             val r = alias("r")
-            emit("FOR $RECORD IN (SELECT $r.item FROM ${elements(rows, r)} ORDER BY $r.item_no) LOOP")
-            depth++
-            assign(ROWS, appended(literalJson(emptyList<Any>()), "$RECORD.item"))
-            unread = null
-            body()
-            depth--
-            emit("END LOOP;")
+            loop(RECORD, "SELECT ${named(item(r), "item")} FROM ${elements(rows, r)} ORDER BY ${itemNo(r)}") {
+                assign(ROWS, appended(literalJson(emptyList<Any>()), "$RECORD.item"))
+                unread = null
+                body()
+            }
         }
 
         /** [clauses] without an importing `WITH` of variables alone that opens them: every variable of the row is seen. */
@@ -1280,16 +1354,16 @@ abstract class SqlCypherCompiler(graph: String) {
             val items = "$GATHERED$nesting"
             val before = LinkedHashMap(kinds)
             val carriedBefore = HashMap(carried)
-            emit("$saved := $ROWS;")
+            let(saved, ROWS)
             val unwound = rows()
             unwind(unwound, Clause.Unwind(foreach.list, foreach.variable))
             carry(unwound)
-            emit("$items := $ROWS;")
+            let(items, ROWS)
             eachRow(items) {
                 var select = rows()
                 for (clause in creates(foreach.clauses)) select = next(select, clause)
             }
-            emit("$ROWS := $saved;")
+            let(ROWS, saved)
             restore(before, carriedBefore)
             unread = null
             nesting--
@@ -1327,9 +1401,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     }
                     null -> {
                         evaluate(VALUE, node.properties) { scope -> written(node.properties, scope) }
-                        emit(
-                            "INSERT INTO $nodes (labels, props, stamp) VALUES (${literalJson(node.labels)}, ${stripNulls(unstamped(VALUE))}, ${stampOf(VALUE)}) " +
-                                "RETURNING nid INTO $ID;"
+                        execute(
+                            "INSERT INTO $nodes (labels, props, stamp) VALUES (${literalJson(node.labels)}, ${stripNulls(unstamped(VALUE))}, ${stampOf(VALUE)}) RETURNING nid",
+                            into = ID,
                         )
                         made(node.variable, Kind.NODE)
                     }
@@ -1348,7 +1422,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         if (merging) ids[i] to ids[i + 1] else throw DrivineException("A relationship that CREATE makes has a direction.")
                 }
                 evaluate(VALUE, relationship.properties) { scope -> written(relationship.properties, scope) }
-                emit("INSERT INTO $edges (src, dst, type, props) VALUES ($src, $dst, ${literal(type)}, ${stripNulls(VALUE)}) RETURNING eid INTO $ID;")
+                execute("INSERT INTO $edges (src, dst, type, props) VALUES ($src, $dst, ${literal(type)}, ${stripNulls(VALUE)}) RETURNING eid", into = ID)
                 made(relationship.variable, Kind.RELATIONSHIP)
             }
         }
@@ -1377,25 +1451,21 @@ abstract class SqlCypherCompiler(graph: String) {
             val before = LinkedHashMap(kinds)
             val match = listOf("SELECT ${withEntries(ROW, found.map { (variable, value) -> key(variable) to held(value) })} AS item") +
                 from(select) + listOfNotNull(select.whereClause())
-            emit("$FOUND := FALSE;")
-            emit("FOR $MATCHED IN (\n${indent(match.joinToString("\n"))}\n) LOOP")
-            depth++
-            emit("$FOUND := TRUE;")
-            emit("$ROW := $MATCHED.item;")
-            found.forEach { (variable, value) -> kinds[variable] = if (value is Value.Node) Kind.NODE else Kind.RELATIONSHIP }
-            merge.onMatch.forEach(::set)
-            keep()
-            depth--
-            emit("END LOOP;")
+            let(FOUND, "FALSE")
+            loop(MATCHED, match.joinToString("\n"), multiline = true) {
+                let(FOUND, "TRUE")
+                let(ROW, "$MATCHED.item")
+                found.forEach { (variable, value) -> kinds[variable] = if (value is Value.Node) Kind.NODE else Kind.RELATIONSHIP }
+                merge.onMatch.forEach(::set)
+                keep()
+            }
             kinds.clear()
             kinds.putAll(before)
-            emit("IF NOT $FOUND THEN")
-            depth++
-            create(merge.pattern, merging = true)
-            merge.onCreate.forEach(::set)
-            keep()
-            depth--
-            emit("END IF;")
+            branch("NOT $FOUND") {
+                create(merge.pattern, merging = true)
+                merge.onCreate.forEach(::set)
+                keep()
+            }
         }
 
         /** The table [variable]'s node or relationship is a row of, its key column, and its id in [ROW]. */
@@ -1411,14 +1481,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 is SetItem.Property -> {
                     val (table, id, row) = target(item.variable, "SET")
                     evaluate(VALUE, item.value) { scope -> comparable(json(expression(item.value, scope))) }
-                    if (table == nodes && item.key == Stamps.PROPERTY) emit("UPDATE $nodes SET stamp = ${text(VALUE)} WHERE nid = $row;")
-                    else emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to VALUE)))} WHERE $id = $row;")
+                    if (table == nodes && item.key == Stamps.PROPERTY) execute("UPDATE $nodes SET stamp = ${text(VALUE)} WHERE nid = $row")
+                    else execute("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to VALUE)))} WHERE $id = $row")
                 }
                 is SetItem.Replace -> {
                     val (table, id, row) = target(item.variable, "SET")
                     evaluate(VALUE, item.value) { scope -> properties(expression(item.value, scope)) }
-                    if (table == nodes) emit("UPDATE $nodes SET props = ${stripNulls(unstamped(orEmpty(VALUE)))}, stamp = ${stampOf(VALUE)} WHERE nid = $row;")
-                    else emit("UPDATE $table SET props = ${stripNulls(orEmpty(VALUE))} WHERE $id = $row;")
+                    if (table == nodes) execute("UPDATE $nodes SET props = ${stripNulls(unstamped(orEmpty(VALUE)))}, stamp = ${stampOf(VALUE)} WHERE nid = $row")
+                    else execute("UPDATE $table SET props = ${stripNulls(orEmpty(VALUE))} WHERE $id = $row")
                 }
                 is SetItem.Add -> {
                     val (table, id, row) = target(item.variable, "SET")
@@ -1426,16 +1496,16 @@ abstract class SqlCypherCompiler(graph: String) {
                     if (table == nodes) {
                         // The stamp is kept where the map has no entry for it, and removed where its entry is null.
                         val stamp = "CASE WHEN ${propertyOf(VALUE, Stamps.PROPERTY)} IS NULL THEN stamp ELSE ${stampOf(VALUE)} END"
-                        emit("UPDATE $nodes SET props = ${merged("props", unstamped(orEmpty(VALUE)))}, stamp = $stamp WHERE nid = $row;")
+                        execute("UPDATE $nodes SET props = ${merged("props", unstamped(orEmpty(VALUE)))}, stamp = $stamp WHERE nid = $row")
                     } else {
-                        emit("UPDATE $table SET props = ${merged("props", orEmpty(VALUE))} WHERE $id = $row;")
+                        execute("UPDATE $table SET props = ${merged("props", orEmpty(VALUE))} WHERE $id = $row")
                     }
                 }
                 is SetItem.Labels -> {
                     val (table, id, row) = target(item.variable, "SET")
                     if (table != nodes) throw DrivineException("${item.variable} is not a node, and a label is set on one.")
                     item.labels.forEach { label ->
-                        emit("UPDATE $nodes SET labels = ${appended("labels", literalJson(label))} WHERE $id = $row AND NOT ${hasLabel("labels", label)};")
+                        execute("UPDATE $nodes SET labels = ${appended("labels", literalJson(label))} WHERE $id = $row AND NOT ${hasLabel("labels", label)}")
                     }
                 }
             }
@@ -1445,13 +1515,13 @@ abstract class SqlCypherCompiler(graph: String) {
             when (item) {
                 is RemoveItem.Property -> {
                     val (table, id, row) = target(item.variable, "REMOVE")
-                    if (table == nodes && item.key == Stamps.PROPERTY) emit("UPDATE $nodes SET stamp = NULL WHERE nid = $row;")
-                    else emit("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to literalJson(null))))} WHERE $id = $row;")
+                    if (table == nodes && item.key == Stamps.PROPERTY) execute("UPDATE $nodes SET stamp = NULL WHERE nid = $row")
+                    else execute("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to literalJson(null))))} WHERE $id = $row")
                 }
                 is RemoveItem.Labels -> {
                     val (table, id, row) = target(item.variable, "REMOVE")
                     if (table != nodes) throw DrivineException("${item.variable} is not a node, and a label is removed from one.")
-                    item.labels.forEach { label -> emit("UPDATE $nodes SET labels = ${withoutLabel("labels", label)} WHERE $id = $row;") }
+                    item.labels.forEach { label -> execute("UPDATE $nodes SET labels = ${withoutLabel("labels", label)} WHERE $id = $row") }
                 }
             }
         }
@@ -1480,9 +1550,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 val variable = (expression as? Expression.Variable)?.name ?: unsupported("A DELETE of anything but a variable")
                 variable to target(variable, "DELETE")
             }
-            targets.filter { it.second.first == edges }.forEach { (_, target) -> emit("DELETE FROM $edges WHERE eid = ${target.third};") }
+            targets.filter { it.second.first == edges }.forEach { (_, target) -> execute("DELETE FROM $edges WHERE eid = ${target.third}") }
             targets.filter { it.second.first == nodes }.forEach { (_, target) ->
-                if (delete.detach) emit("DELETE FROM $nodes WHERE nid = ${target.third};")
+                if (delete.detach) execute("DELETE FROM $nodes WHERE nid = ${target.third}")
                 else assign(DOOMED, appended(DOOMED, scalar(target.third)))
             }
         }
@@ -1491,9 +1561,10 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * What a `WITH` or a `RETURN` makes of the rows it reads: the [sql] of its query, what each item's name is
-         * bound to among its columns, and the order of its rows, each term a column of the query and whether it descends.
+         * bound to among its columns, the order of its rows, each term a column of the query and whether it descends,
+         * and its [columns], each named and whether it holds JSON, as a [lateral] join of the query reads them.
          */
-        inner class Projected(val sql: String, val scope: Map<String, Value>, val order: List<Pair<String, Boolean>>)
+        inner class Projected(val sql: String, val scope: Map<String, Value>, val order: List<Pair<String, Boolean>>, val columns: List<Pair<String, Boolean>>)
 
         /**
          * The query a `WITH` or a `RETURN` makes of [select]: its items as columns, grouped where it
@@ -1511,7 +1582,7 @@ abstract class SqlCypherCompiler(graph: String) {
             if (final && items.size > 1) {
                 logger.warn(
                     "The statement returns {} items ({}). Prefer returning a single map or value, such as RETURN {{ key1: val1, key2: val2 }}: " +
-                        "on Oracle and Postgres it is returned as a list of its items, as drivine gives a row of several columns.",
+                        "on Oracle, Postgres and SQLite it is returned as a list of its items, as drivine gives a row of several columns.",
                     items.size, items.joinToString { it.name },
                 )
             }
@@ -1591,13 +1662,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 add("SELECT $outerColumns")
                 add("FROM (\n${indent(inner)}\n) $name")
                 if (sorts.isNotEmpty()) {
-                    add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> "${sortedBy(column)}${if (descending) " DESC" else ""}" }}")
+                    add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> orderTerm(sortedBy(column), descending) }}")
                 }
                 addAll(page(projection.skip?.let(::count), projection.limit?.let(::count)))
             }.joinToString("\n")
             // What each item is bound to in the query that reads this one: its columns, which that query names.
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
-            return Projected(outer, scope, sorts)
+            val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + sorts.map { (column, _) -> column to false }
+            return Projected(outer, scope, sorts, kinds)
         }
 
         /**
@@ -1883,7 +1955,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Value.Bool(
                     // Over a list of nodes or relationships, each item is the node or the relationship, read from its table.
                     if (listed is Value.Entities) shared(listed.ids) { (ids) -> entityItems(ids, listed.relationships, name).let { (from, item) -> quantified(from, item) } }
-                    else quantified("FROM ${elements(comparable(json(listed)), name)}", Value.Json("$name.item", temporal = itemsOf(listed)))
+                    else quantified("FROM ${elements(comparable(json(listed)), name)}", Value.Json(item(name), temporal = itemsOf(listed)))
                 )
             }
         }
@@ -2073,7 +2145,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     val operator = mapOf(
                         Operator.LESS_THAN to "<", Operator.GREATER_THAN to ">", Operator.LESS_THAN_OR_EQUAL to "<=", Operator.GREATER_THAN_OR_EQUAL to ">=",
                     ).getValue(binary.operator)
-                    Value.Bool(shared(a, b) { (x, y) -> "CASE WHEN ${typeOf(x)} = ${typeOf(y)} AND ${typeOf(x)} IN ('number', 'string', 'boolean') THEN $x $operator $y END" })
+                    Value.Bool(shared(a, b) { (x, y) -> "CASE WHEN ${typeOf(x)} = ${typeOf(y)} AND ${typeOf(x)} IN ('number', 'string', 'boolean') THEN ${ordered(x, operator, y)} END" })
                 }
                 // Two lists of nodes, or of relationships, are together a list of them.
                 Operator.ADD -> if (left is Value.Entities && right is Value.Entities && left.relationships == right.relationships) {
@@ -2087,7 +2159,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.MULTIPLY -> Value.Json(shared(a, b) { (x, y) -> arithmetic(x, y, "*") })
                 // A whole number divided by one is a whole number, as in Cypher.
                 Operator.DIVIDE -> Value.Json(
-                    shared(a, b) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar("trunc(${number(x)} / ${number(y)})")} ELSE ${arithmetic(x, y, "/")} END" }
+                    shared(a, b) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar(wholeQuotient(number(x), number(y)))} ELSE ${arithmetic(x, y, "/")} END" }
                 )
                 Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
@@ -2100,8 +2172,8 @@ abstract class SqlCypherCompiler(graph: String) {
                         left is Value.Relationship && right.relationships -> scalar(left.eid)
                         else -> null
                     }
-                    if (id != null) Value.Bool("EXISTS (SELECT 1 FROM ${elements((right as Value.Entities).ids, i)} WHERE $i.item = $id)")
-                    else Value.Bool("EXISTS (SELECT 1 FROM ${elements(b, i)} WHERE $i.item = $a)")
+                    if (id != null) Value.Bool("EXISTS (SELECT 1 FROM ${elements((right as Value.Entities).ids, i)} WHERE ${item(i)} = $id)")
+                    else Value.Bool("EXISTS (SELECT 1 FROM ${elements(b, i)} WHERE ${jsonEquals(item(i), a)})")
                 }
                 Operator.STARTS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> startsWith(x, y) })
                 Operator.MATCHES -> Value.Bool(matches(text(a), text(b)))
@@ -2129,7 +2201,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val indexed = if (given is String || given is Boolean) indexedEquality(a, b) else null
             // Null is equal to nothing, itself included: the comparison is null, as in Cypher. A value the statement
             // is given that is not null needs no test of its own, and a property that is not there is SQL's null.
-            val equal = if (given != null) "$a = $b" else shared(a, b) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN $x = $y END" }
+            val equal = if (given != null) givenEquals(a, b, given) else shared(a, b) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${jsonEquals(x, y)} END" }
             return if (indexed != null) "($indexed AND $equal)" else equal
         }
 
@@ -2226,11 +2298,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
                     "CASE ${typeOf(x)} WHEN 'string' THEN ${scalar(reverseText(text(x)))} " +
-                        "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList("$e.item", "$e.item_no DESC"), ordered = true))} FROM ${elements(x, e)}) END"
+                        "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elements(x, e)}) END"
                 }, items = itemsOf(one()))
                 "tail" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
-                    "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${comparable(Value.Json(aggregateList("$e.item", "$e.item_no"), ordered = true))} FROM ${elements(x, e)} WHERE $e.item_no > 1) END"
+                    "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), itemNo(e)), ordered = true))} FROM ${elements(x, e)} WHERE ${itemNo(e)} > 1) END"
                 }, items = itemsOf(one()))
                 // A text is read as Cypher reads it, its case and the spaces around it aside; a number is true but for 0.
                 "toboolean" -> Value.Json(shared(comparable(json(one()))) { (x) ->
@@ -2240,7 +2312,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 })
                 "isempty" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val size = function("size", x)!!
-                    scalar("CASE WHEN ${typeOf(x)} = 'object' THEN $x = ${literalJson(emptyMap<String, Any>())} WHEN ${typeOf(x)} IN ('array', 'string') THEN ${number(size)} = 0 END")
+                    boolJson("CASE WHEN ${typeOf(x)} = 'object' THEN ${jsonEquals(x, literalJson(emptyMap<String, Any>()))} WHEN ${typeOf(x)} IN ('array', 'string') THEN ${number(size)} = 0 END")
                 })
                 // A float, as Cypher gives these; round as Java rounds, half up.
                 "round" -> Value.Json(
@@ -2339,7 +2411,7 @@ abstract class SqlCypherCompiler(graph: String) {
         /** A value as JSON, for a projection or a comparison. A node is its properties, its stamp among them, as drivine gives a node. */
         fun json(value: Value): Value.Json = when (value) {
             is Value.Json -> value
-            is Value.Bool -> Value.Json(scalar(value.sql))
+            is Value.Bool -> Value.Json(boolJson(value.sql))
             is Value.Node -> Value.Json(nodeJson(value))
             is Value.Relationship -> Value.Json("CASE WHEN ${value.eid} IS NOT NULL THEN ${value.props} END")
             is Value.Entities -> Value.Json(entitiesJson(value), ordered = true)
@@ -2365,7 +2437,7 @@ abstract class SqlCypherCompiler(graph: String) {
             value is Value.Bool -> value.sql to { it }
             // A zoned value the statement makes sorts as the moment it is, whatever its offset.
             value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { temporals.moment(text(it), value.temporal) }
-            else -> comparable(json(value)) to { nullIfJsonNull(it) }
+            else -> comparable(json(value)) to { sortKey(it) }
         }
     }
 
@@ -2418,7 +2490,13 @@ abstract class SqlCypherCompiler(graph: String) {
         /** Stands for the name of the query a `WITH` is read from, before it is named. */
         const val PENDING = "__with__"
 
+        /** A column of the query [PENDING] stands for. */
+        val PENDING_COLUMN = Regex("${PENDING}\\.(\\w+)")
+
         fun literal(text: String) = "'${text.replace("'", "''")}'"
+
+        /** [sql] as the select-list entry of the column [name]: the column itself where [sql] reads one of that name. */
+        fun named(sql: String, name: String) = if (sql.endsWith(".$name")) sql else "$sql AS $name"
 
         fun indent(text: String) = text.prependIndent("    ")
 
@@ -2664,15 +2742,34 @@ abstract class SqlCypherCompiler(graph: String) {
     }
 
     /** This value with [PENDING] read as [alias]. */
-    private fun Value.withAlias(alias: String): Value = when (this) {
-        is Value.Json -> copy(sql = sql.replace(PENDING, alias))
-        is Value.Entities -> copy(ids = ids.replace(PENDING, alias), gathered = gathered?.replace(PENDING, alias))
-        is Value.Bool -> copy(sql = sql.replace(PENDING, alias))
-        is Value.Node -> Value.Node(nid.replace(PENDING, alias), labels.replace(PENDING, alias), props.replace(PENDING, alias), stamp.replace(PENDING, alias))
-        is Value.Relationship -> Value.Relationship(
-            eid.replace(PENDING, alias), src.replace(PENDING, alias), dst.replace(PENDING, alias), type.replace(PENDING, alias), props.replace(PENDING, alias),
-        )
-        is Value.Path -> Value.Path(nids.replace(PENDING, alias), eids.replace(PENDING, alias))
+    private fun Value.withAlias(alias: String): Value = mapSql { it.replace(PENDING, alias) }
+
+    /**
+     * This value, whose columns are named for a query not yet named ([PENDING]), read from the rows named [name] that
+     * a [lateral] join gives, of the columns [columns].
+     */
+    private fun Value.laterally(name: String, columns: List<Pair<String, Boolean>>): Value {
+        val json = columns.toMap()
+        return mapSql { sql -> PENDING_COLUMN.replace(sql) { lateralColumn(name, it.groupValues[1], json.getValue(it.groupValues[1])) } }
+    }
+
+    /** This value with each piece of its SQL [transform]ed. */
+    private fun Value.mapSql(transform: (String) -> String): Value = when (this) {
+        is Value.Json -> copy(sql = transform(sql))
+        is Value.Entities -> copy(ids = transform(ids), gathered = gathered?.let(transform))
+        is Value.Bool -> copy(sql = transform(sql))
+        is Value.Node -> Value.Node(transform(nid), transform(labels), transform(props), transform(stamp))
+        is Value.Relationship -> Value.Relationship(transform(eid), transform(src), transform(dst), transform(type), transform(props))
+        is Value.Path -> Value.Path(transform(nids), transform(eids))
+    }
+
+    /** The columns [columns] gives this value under [name], each named and whether it holds JSON, in the same order. */
+    private fun Value.columnKinds(name: String): List<Pair<String, Boolean>> = when (this) {
+        is Value.Json, is Value.Entities -> listOf(name to true)
+        is Value.Bool -> listOf(name to false)
+        is Value.Node -> listOf("${name}_nid" to false, "${name}_labels" to true, "${name}_props" to true, "${name}_stamp" to false)
+        is Value.Relationship -> listOf("${name}_eid" to false, "${name}_src" to false, "${name}_dst" to false, "${name}_type" to false, "${name}_props" to true)
+        is Value.Path -> listOf("${name}_nids" to false, "${name}_eids" to false)
     }
 
     /** What a projection that aggregates is grouped by, to keep this value: a node by its columns. */
