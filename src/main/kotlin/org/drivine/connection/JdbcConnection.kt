@@ -20,6 +20,7 @@ import java.io.StringReader
 import java.math.BigDecimal
 import java.sql.PreparedStatement
 import java.sql.Types
+import java.time.Duration
 import java.time.Instant
 import java.time.temporal.Temporal
 
@@ -52,10 +53,18 @@ class JdbcConnection(
     private val type: DatabaseType = DatabaseType.ORACLE,
     /** The graph a Cypher statement is compiled against: its tables are `<graph>_node` and `<graph>_edge`. */
     private val graphName: String = JdbcConnectionProvider.DEFAULT_GRAPH,
+    /**
+     * On SQLite, how long a transaction may hold the file's write lock before its end is logged as a warning: the
+     * lock is taken as the transaction begins, and every other writer to the file waits for it.
+     */
+    private val lockWarning: Duration = Duration.ofSeconds(5),
 ) : Connection {
 
     private val logger = LoggerFactory.getLogger(JdbcConnection::class.java)
     private var inTransaction = false
+
+    /** When the open transaction began, by [System.nanoTime]. */
+    private var startedAt = 0L
 
     override fun sessionId(): String = "jdbc-${System.identityHashCode(connection)}"
 
@@ -150,6 +159,7 @@ class JdbcConnection(
         if (inTransaction) throw DrivineException("A transaction is already open on this connection.")
         connection.autoCommit = false
         inTransaction = true
+        startedAt = System.nanoTime()
     }
 
     override fun commitTransaction() {
@@ -191,9 +201,16 @@ class JdbcConnection(
         }
     }
 
-    /** Leaves the connection as a pool expects it back: committing each statement as it runs. */
+    /**
+     * Leaves the connection as a pool expects it back: committing each statement as it runs. A SQLite transaction
+     * that held the write lock past [lockWarning] is logged first, so it is logged though the driver fails to go back.
+     */
     private fun endTransaction() {
         inTransaction = false
+        val held = Duration.ofNanos(System.nanoTime() - startedAt)
+        if (type == DatabaseType.SQLITE && held > lockWarning) {
+            logger.warn("A SQLite transaction held the file's write lock for ${held.toMillis()} ms: no other writer can write while one is held.")
+        }
         connection.autoCommit = true
     }
 
