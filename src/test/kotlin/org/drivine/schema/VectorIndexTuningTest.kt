@@ -141,6 +141,23 @@ class VectorIndexTuningTest {
     }
 
     @Test
+    fun `vector quantization type is read regardless of case`() {
+        assertEquals(false, quantizationReadFrom("vector.quantization.type" to "none"))
+        assertEquals(true, quantizationReadFrom("vector.quantization.type" to "scalar"))
+    }
+
+    @Test
+    fun `a vector quantization type Drivine does not know is read as quantized, since only NONE is not`() {
+        assertEquals(true, quantizationReadFrom("vector.quantization.type" to "PRODUCT"))
+    }
+
+    @Test
+    fun `a vector quantization type that is not a string is ignored in favour of vector quantization enabled`() {
+        assertEquals(false, quantizationReadFrom("vector.quantization.type" to 0, "vector.quantization.enabled" to false))
+        assertNull(quantizationReadFrom("vector.quantization.type" to true))
+    }
+
+    @Test
     fun `an engine that does not report physical parameters yields nulls, not defaults`() {
         val row = mapOf(
             "name" to "v",
