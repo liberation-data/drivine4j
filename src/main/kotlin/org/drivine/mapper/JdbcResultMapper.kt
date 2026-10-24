@@ -18,6 +18,7 @@ class JdbcRow(val keys: List<String>, val values: List<Any?>)
  * column gives the nested map a `@GraphView` is hydrated from, as a Cypher query that returns one map
  * does. JSON held in a character column is text, and stays text. Postgres's `json` and `jsonb` are
  * such a type, an array is a list, and a pgvector `vector` is a list of doubles, as Oracle's is.
+ * SQLite has no JSON type, so a statement says its text is JSON instead: see [sqliteRows].
  */
 class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMapper(subtypeRegistry) {
 
@@ -41,6 +42,30 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
 
         /** Whole numbers are read as `Long`, as the graph drivers give them. */
         private val json = ObjectMapper().enable(DeserializationFeature.USE_LONG_FOR_INTS)
+
+        /**
+         * Reads every row of a SQLite result out of the driver. SQLite types a value and not a column,
+         * so each value is read as what it is: a whole number as a `Long`, a real as a `Double`, a blob
+         * as its bytes, and text as a `String`, or with [json] as the JSON it holds. Drivine's own
+         * statements over a SQLite graph return documents as JSON text, and say so (see `JdbcConnection`).
+         */
+        fun sqliteRows(results: ResultSet, json: Boolean): List<JdbcRow> {
+            val meta = results.metaData
+            val columns = 1..meta.columnCount
+            val keys = columns.map { meta.getColumnLabel(it) }
+            val rows = mutableListOf<JdbcRow>()
+            while (results.next()) {
+                rows += JdbcRow(keys, columns.map { column ->
+                    when (val value = results.getObject(column)) {
+                        is Int, is Short, is Byte -> (value as Number).toLong()
+                        is Float -> value.toDouble()
+                        is String -> if (json) this.json.readValue(value, Any::class.java) else value
+                        else -> value
+                    }
+                })
+            }
+            return rows
+        }
 
         /** Reads every row of [results] out of the driver, so the statement can be closed. */
         fun rows(results: ResultSet): List<JdbcRow> {

@@ -34,6 +34,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * `@PropertyBag` round-trip verified on Neo4j, FalkorDB, and Memgraph: a multi-entry bag persists as
@@ -267,4 +268,18 @@ class StatelessPropertyBagPostgresTest {
 
     @Test
     fun `typed property bags round-trip on Postgres`() = verifyTypedBags(buildGom(pm, SubtypeRegistry()))
+}
+
+class StatelessPropertyBagSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test
+    fun `property bag round-trips on SQLite`() = verify(buildGom(pm, SubtypeRegistry()))
+
+    @Test
+    fun `typed property bags round-trip on SQLite`() = verifyTypedBags(buildGom(pm, SubtypeRegistry()))
 }

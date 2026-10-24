@@ -399,6 +399,11 @@ interface GraphObjectOperations {
      *
      * Ids are always bound as parameters; nothing is interpolated into the Cypher.
      *
+     * A delete, this or any other, that the engine turns away because another writer was changing the
+     * same nodes at that moment is run again, as a save is: one turned away has deleted nothing. Inside
+     * a caller's transaction the engine has usually failed the transaction with it, and that first
+     * failure is what is thrown.
+     *
      * @param id The ID value of the object to delete
      * @param graphClass The graph object class
      * @param whereClause Additional WHERE clause conditions (without WHERE keyword)

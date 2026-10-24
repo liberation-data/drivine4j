@@ -1,7 +1,7 @@
 
 ## Using Test Containers (Default)
 
-By default, tests start a Testcontainer for whichever backend(s) the suite targets — Neo4j, FalkorDB, or Memgraph. No additional setup required beyond Docker being available on the host. Postgres's container is started by its own tests, which a plain `./gradlew test` runs: see [Postgres](#postgres). Oracle's is started only by its tests, which a plain `./gradlew test` leaves out, and the run says so: see [Oracle](#oracle).
+By default, tests start a Testcontainer for whichever backend(s) the suite targets — Neo4j, FalkorDB, or Memgraph. No additional setup required beyond Docker being available on the host. Postgres's container is started by its own tests, which a plain `./gradlew test` runs: see [Postgres](#postgres). Oracle's is started only by its tests, which a plain `./gradlew test` leaves out, and the run says so: see [Oracle](#oracle). SQLite's tests need no container: they keep a file in a temporary directory, and a plain `./gradlew test` runs them (`./gradlew :test --tests '*Sqlite*'` alone).
 
 ```bash
 # Run tests with test containers (default)

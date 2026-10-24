@@ -9,6 +9,7 @@ import org.drivine.backend.postgres.PostgresSql.document
 import org.drivine.backend.postgres.PostgresSql.property
 import org.drivine.backend.sql.CypherShorthand
 import org.drivine.backend.sql.Derived
+import org.drivine.backend.sql.OnceReached
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.RowSource
 import org.drivine.backend.sql.SqlKind
@@ -314,12 +315,6 @@ internal class PostgresSelect(
         } else {
             Query(value, source, tail = listOf(first(sort))).nested()
         }
-    }
-
-    /** The nodes [grouped] gives once each, as rows named [once], joined to their rows of [nodes], named [row]. */
-    private class OnceReached(private val grouped: String, private val once: String, private val nodes: String, private val row: String) : RowSource {
-        override val alias: String get() = row
-        override fun reading(readers: List<String>): String = "(\n    ${grouped.under()}\n) $once\nJOIN $nodes $row ON $row.nid = $once.nid"
     }
 
     /**

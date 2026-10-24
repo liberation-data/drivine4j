@@ -94,7 +94,12 @@ dependencies {
 	// Postgres tests run against pgvector's image, unless POSTGRES_TESTS=false
 	testImplementation 'org.postgresql:postgresql'
 
-	// Connection pool for JDBC databases (Oracle, Postgres). The JDBC driver itself is the application's to add.
+	// SQLite's driver: compiled against for the functions Drivine registers on each connection (see
+	// org.drivine.backend.sqlite), and the application's to add, as the Oracle and Postgres drivers are.
+	compileOnly 'org.xerial:sqlite-jdbc:3.53.2.1'
+	testImplementation 'org.xerial:sqlite-jdbc:3.53.2.1'
+
+	// Connection pool for JDBC databases (Oracle, Postgres, SQLite). The JDBC driver itself is the application's to add.
 	implementation 'com.zaxxer:HikariCP:6.3.3'
 
 	// FalkorDB driver
