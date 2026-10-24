@@ -350,10 +350,10 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
             val micros = clock.nano / 1000
             val fraction = when {
                 micros == 0 -> ""
-                micros % 1000 == 0 -> ".%03d".format(micros / 1000)
-                else -> ".%06d".format(micros)
+                micros % 1000 == 0 -> ".%03d".format(java.util.Locale.ROOT, micros / 1000)
+                else -> ".%06d".format(java.util.Locale.ROOT, micros)
             }
-            val time = "%02d:%02d:%02d".format(clock.hour, clock.minute, clock.second) + fraction
+            val time = "%02d:%02d:%02d".format(java.util.Locale.ROOT, clock.hour, clock.minute, clock.second) + fraction
             val zone = if (kind.zoned) offset ?: "Z" else ""
             return when (kind) {
                 Temporal.DATE -> clock.toLocalDate().toString()

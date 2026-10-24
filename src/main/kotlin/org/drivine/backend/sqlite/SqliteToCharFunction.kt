@@ -6,6 +6,7 @@ import java.math.BigDecimal
 import java.math.RoundingMode
 import java.time.temporal.ChronoField
 import java.time.temporal.IsoFields
+import java.util.Locale
 
 /**
  * `drivine_to_char(value, pattern)`: a timestamp (see [SqliteTimestamps]) or a number written in a pattern of
@@ -56,15 +57,15 @@ internal class SqliteToCharFunction : Function() {
             }
             written.append(
                 when (token) {
-                    "HH24" -> "%02d".format(clock.hour)
-                    "IYYY" -> "%04d".format(clock.get(IsoFields.WEEK_BASED_YEAR))
-                    "YYYY" -> "%04d".format(clock.year)
-                    "DDD" -> "%03d".format(clock.get(ChronoField.DAY_OF_YEAR))
-                    "IW" -> "%02d".format(clock.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR))
-                    "MM" -> "%02d".format(clock.monthValue)
-                    "DD" -> "%02d".format(clock.dayOfMonth)
-                    "MI" -> "%02d".format(clock.minute)
-                    else -> "%02d".format(clock.second)
+                    "HH24" -> "%02d".format(Locale.ROOT, clock.hour)
+                    "IYYY" -> "%04d".format(Locale.ROOT, clock.get(IsoFields.WEEK_BASED_YEAR))
+                    "YYYY" -> "%04d".format(Locale.ROOT, clock.year)
+                    "DDD" -> "%03d".format(Locale.ROOT, clock.get(ChronoField.DAY_OF_YEAR))
+                    "IW" -> "%02d".format(Locale.ROOT, clock.get(IsoFields.WEEK_OF_WEEK_BASED_YEAR))
+                    "MM" -> "%02d".format(Locale.ROOT, clock.monthValue)
+                    "DD" -> "%02d".format(Locale.ROOT, clock.dayOfMonth)
+                    "MI" -> "%02d".format(Locale.ROOT, clock.minute)
+                    else -> "%02d".format(Locale.ROOT, clock.second)
                 },
             )
             at += token.length
