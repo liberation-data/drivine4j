@@ -3180,12 +3180,12 @@ SELECT JSON_OBJECT(
     'people' VALUE COALESCE((
         SELECT JSON_ARRAYAGG(people_.doc ORDER BY people_.eid RETURNING JSON)
         FROM GRAPH_TABLE (drivine
-            MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0)
+            MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',"', ',"Human","') > 0)
             COLUMNS (claim_.nid AS src, e.eid, people_.doc)) people_
         WHERE people_.src = claim_.nid), JSON('[]'))
     RETURNING JSON) AS result
 FROM GRAPH_TABLE (drivine
-    MATCH (claim_ IS node WHERE INSTR(JSON_SERIALIZE(claim_.labels), '"Claim"') > 0)
+    MATCH (claim_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(claim_.labels), ']'), '[') || ',"', ',"Claim","') > 0)
     COLUMNS (claim_.nid, claim_.props, claim_.doc)) claim_
 WHERE JSON_VALUE(claim_.props, '$.id') = $id
 ```
@@ -3197,7 +3197,8 @@ of the root once a `whereClause` written by hand is in it. A second row for
 one field is numbered (`people2_`), as when a condition on `people` is tested beside the field itself.
 A label is tested with `JSON_EXISTS(… '$[*]?(@ == "Claim")')` where every node of the label is read,
 which the index over labels answers, and with `INSTR` where the node is found by its id or at the end
-of a relationship. Where a range index on the label answers the `where`, the property is read as that
+of a relationship: the label, escaped as `JSON_SERIALIZE` escapes it, is looked for as one whole label
+among the labels as `JSON_SERIALIZE` writes them, its brackets made commas. Where a range index on the label answers the `where`, the property is read as that
 index reads it and the label is not tested on its own:
 
 ```sql
@@ -3219,8 +3220,8 @@ so each node is there once however many ways lead to it:
         SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc
         FROM GRAPH_TABLE (drivine
             MATCH (claim_ IS node)
-                -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '"Human"') > 0)
-                -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(JSON_SERIALIZE(reached_.labels), '"Company"') > 0)
+                -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(m1.labels), ']'), '[') || ',"', ',"Human","') > 0)
+                -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(reached_.labels), ']'), '[') || ',"', ',"Company","') > 0)
             COLUMNS (claim_.nid AS src, reached_.nid, reached_.doc)) reached_
         GROUP BY reached_.src, reached_.nid
     ) employers_

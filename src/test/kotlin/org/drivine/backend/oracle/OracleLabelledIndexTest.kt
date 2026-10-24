@@ -146,7 +146,7 @@ class OracleLabelledIndexTest {
         val id = select.hasId("id")
         val sql = select.predicate(listOf(condition("text", ComparisonOperator.EQUALS, "x")), indexed = true)
         assertEquals("JSON_VALUE(n_.props, '$.text') = \$_p0", sql)
-        assertEquals("INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0\n  AND $id", select.selecting(listOf(id)))
+        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0\n  AND $id", select.selecting(listOf(id)))
     }
 
     @Test
@@ -156,7 +156,7 @@ class OracleLabelledIndexTest {
             listOf(LabelCondition("n", listOf("Claim", "Reviewed")), condition("text", ComparisonOperator.EQUALS, "x")),
             indexed = true,
         )
-        assertEquals("INSTR(JSON_SERIALIZE(n_.labels), '\"Reviewed\"') > 0 AND $text = \$_p0", sql)
+        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Reviewed\",\"') > 0 AND $text = \$_p0", sql)
     }
 
     @Test
@@ -171,7 +171,7 @@ class OracleLabelledIndexTest {
     // ----- A root of two labels -----
 
     private fun has(label: String) = "JSON_EXISTS(n_.labels, '$[*]?(@ == \"$label\")')"
-    private fun carries(label: String) = "INSTR(JSON_SERIALIZE(n_.labels), '\"$label\"') > 0"
+    private fun carries(label: String) = "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"$label\",\"') > 0"
 
     /**
      * The statement [conditions] make on a root of two labels, with what is asserted of every such

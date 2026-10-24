@@ -135,7 +135,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * and not yet committed.
      */
     override fun hasLabels(labels: String, all: List<String>) =
-        (listOf(hasLabel(labels, all.first())) + all.drop(1).map { "INSTR(JSON_SERIALIZE($labels), ${literal(OracleSql.quoted(it))}) > 0" }).joinToString(" AND ")
+        (listOf(hasLabel(labels, all.first())) + all.drop(1).map { OracleSql.holdsLabel(labels, it) }).joinToString(" AND ")
 
     /**
      * A list that holds a subquery is read from a lateral view first: a subquery in `JSON_TABLE`'s argument
