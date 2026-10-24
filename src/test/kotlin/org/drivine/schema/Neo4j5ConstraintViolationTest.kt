@@ -65,6 +65,7 @@ class Neo4j5ConstraintViolationTest {
     @BeforeEach
     fun reset() {
         manager.constraints.list().mapNotNull { it.name }.forEach { execute("DROP CONSTRAINT `$it` IF EXISTS") }
+        manager.indexes.list().mapNotNull { it.name }.forEach { execute("DROP INDEX `$it` IF EXISTS") }
         execute("MATCH (n) DETACH DELETE n")
     }
 
@@ -79,6 +80,18 @@ class Neo4j5ConstraintViolationTest {
         val nodes = ((result as EnsureResult.Violation).conflictingSample.single()["nodes"] as List<*>).map { it as Map<*, *> }
         assertEquals(setOf("A", "B"), nodes.map { it["name"] }.toSet())
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "email")))
+    }
+
+    @Test
+    fun `an index in the way of the constraint is BlockedByIndex, not a Violation, even over data that breaks it`() {
+        // 5.26 gives this refusal the general 50N42 too, but under its own code, IndexAlreadyExists.
+        execute("CREATE (:Account {accountId: 'a1'}), (:Account {accountId: 'a1'})")
+        manager.indexes.ensure(RangeIndexSpec("Account", "accountId", "account_lookup"))
+
+        val result = manager.constraints.ensure(UniquenessConstraintSpec("Account", "accountId"))
+
+        assertTrue(result is EnsureResult.BlockedByIndex, "expected BlockedByIndex, got $result")
+        assertEquals("account_lookup", (result as EnsureResult.BlockedByIndex).index.name)
     }
 
     @Test
