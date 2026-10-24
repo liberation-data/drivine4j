@@ -70,11 +70,22 @@ internal object OracleSql {
      * Whether the node [alias] carries [label], written so the index over labels cannot answer it:
      * the form for a node that is found some other way, by its id or at the end of a relationship.
      * Given the choice, Oracle reads every node of the label and tests each for the id, where the
-     * index over the id gives the one node. The label is looked for as JSON writes it, in quotes,
-     * among the labels as JSON writes them.
+     * index over the id gives the one node. The label is looked for by its text: see [holdsLabel].
      */
-    fun carriesLabel(alias: String, label: String): String =
-        "INSTR(JSON_SERIALIZE($alias.labels), ${literal(quoted(label))}) > 0"
+    fun carriesLabel(alias: String, label: String): String = holdsLabel("$alias.labels", label)
+
+    /**
+     * Whether the JSON array of labels [labels] holds [label], told by its text. `JSON_SERIALIZE` writes the array
+     * compactly, `["A","B"]`; with its brackets made commas and `,"` put after it, `,"A","B","`, each label is
+     * `,"label","`, and the label is looked for as that. Matched there, the needle is a whole label. Its first quote
+     * follows a comma, so isn't escaped: it opens a label or closes one. If it opens one, the label's text runs to
+     * the first unescaped quote, which is the needle's own last one. If it closes one, a comma and an opening quote
+     * follow, which the needle has only when the label is `,`, and then the quote after that closes a label `,`.
+     * The label is written as `JSON_SERIALIZE` writes it ([serialized]), so one holding a control character is
+     * found, and one holding `","` is not taken for two.
+     */
+    fun holdsLabel(labels: String, label: String): String =
+        "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE($labels), ']'), '[') || ',\"', ${literal(",${serialized(label)},\"")}) > 0"
 
     /**
      * The property [key] of the node [alias], read as text, where the node carries [label], and null
@@ -103,6 +114,29 @@ internal object OracleSql {
 
     /** [text] as JSON writes a string. */
     internal fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+    /**
+     * [text] as Oracle's `JSON_SERIALIZE` writes a string, checked on Oracle Free 23 for every character: `"` and `\`
+     * escaped; backspace, tab, newline, form feed and carriage return as `\b`, `\t`, `\n`, `\f` and `\r`; every other
+     * character below U+0020, and U+007F, as `\u00XX` in upper case; U+2028 and U+2029 as `\u2028` and `\u2029`; and
+     * every other character as it is.
+     */
+    internal fun serialized(text: String): String = buildString {
+        append('"')
+        for (c in text) {
+            when (c) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\b' -> append("\\b")
+                '\t' -> append("\\t")
+                '\n' -> append("\\n")
+                '\u000C' -> append("\\f")
+                '\r' -> append("\\r")
+                else -> if (c < ' ' || c == '\u007F' || c == '\u2028' || c == '\u2029') append("\\u").append(c.code.toString(16).uppercase().padStart(4, '0')) else append(c)
+            }
+        }
+        append('"')
+    }
 
     /**
      * Whether the node [alias] carries every one of [labels]; null when there are none to carry.

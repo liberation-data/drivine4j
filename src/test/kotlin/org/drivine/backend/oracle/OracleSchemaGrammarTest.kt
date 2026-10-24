@@ -93,7 +93,7 @@ class OracleSchemaGrammarTest {
         assertTrue(trigger.startsWith("BEGIN EXECUTE IMMEDIATE 'CREATE OR REPLACE TRIGGER ${side}_t AFTER INSERT OR UPDATE OF labels, props ON g_node FOR EACH ROW"), trigger)
         assertTrue(trigger.endsWith("END;'; END;"), trigger)
         trigger.inOrder(
-            "IF INSTR(JSON_SERIALIZE(:NEW.labels), ''\"Doc\"'') > 0 AND JSON_EXISTS(:NEW.props, ''$.embedding'') THEN",
+            "IF INSTR('','' || LTRIM(RTRIM(JSON_SERIALIZE(:NEW.labels), '']''), ''['') || '',\"'', '',\"Doc\",\"'') > 0 AND JSON_EXISTS(:NEW.props, ''$.embedding'') THEN",
             "MERGE INTO $side s USING (SELECT :NEW.nid AS nid, TO_VECTOR(JSON_QUERY(:NEW.props, ''$.embedding'' RETURNING CLOB)) AS embedding FROM dual) n ON (s.nid = n.nid)",
             "EXCEPTION WHEN OTHERS THEN",
             "DELETE FROM $side WHERE nid = :NEW.nid;",
@@ -103,7 +103,7 @@ class OracleSchemaGrammarTest {
 
         assertTrue(backfill.startsWith("INSERT INTO $side (nid, embedding)\nSELECT n.nid, TO_VECTOR(JSON_QUERY(n.props, '$.embedding' RETURNING CLOB)) FROM g_node n"), backfill)
         backfill.inOrder(
-            "WHERE INSTR(JSON_SERIALIZE(n.labels), '\"Doc\"') > 0 AND JSON_EXISTS(n.props, '$.embedding')",
+            "WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Doc\",\"') > 0 AND JSON_EXISTS(n.props, '$.embedding')",
             "AND VECTOR_DIMENSION_COUNT(TO_VECTOR(JSON_QUERY(n.props, '$.embedding' RETURNING CLOB))) = 3",
             "AND NOT EXISTS (SELECT 1 FROM $side s WHERE s.nid = n.nid)",
         )

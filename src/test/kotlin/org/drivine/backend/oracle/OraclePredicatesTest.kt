@@ -240,7 +240,7 @@ class OraclePredicatesTest {
 
         val narrowed = fragment()
         narrowed.hasId("id")
-        assertEquals("INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0", narrowed.predicate(listOf(LabelCondition("n", listOf("Claim")))))
+        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0", narrowed.predicate(listOf(LabelCondition("n", listOf("Claim")))))
     }
 
     @Test
@@ -378,7 +378,7 @@ class OraclePredicatesTest {
     fun `a label condition on a relationship alias tests the related node's row`() {
         val sql = assertNotNull(view().predicate(listOf(LabelCondition("people", listOf("Human")))))
         assertTrue(sql.startsWith("EXISTS"), sql)
-        assertTrue(sql.contains("(people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '\"Human\"') > 0)"), sql)
+        assertTrue(sql.contains("(people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',\"', ',\"Human\",\"') > 0)"), sql)
     }
 
     @Test
