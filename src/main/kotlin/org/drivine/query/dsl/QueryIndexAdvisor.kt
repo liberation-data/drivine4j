@@ -106,7 +106,7 @@ internal class QueryIndexAdvisor(
      *
      * Uniqueness comes from two places: the fragment's `@NodeId`, which Drivine treats as unique by
      * contract whether or not a constraint was declared, and single-property uniqueness constraints
-     * the database actually holds. A composite uniqueness constraint does not count unless every one
+     * the database actually holds, apart from one whose build failed, which enforces nothing. A composite uniqueness constraint does not count unless every one
      * of its properties is pinned.
      *
      * Only top-level equalities pin — an equality inside `anyOf` constrains nothing on its own.
@@ -120,7 +120,7 @@ internal class QueryIndexAdvisor(
         if (pinnedBy.any { it in uniqueByContract }) return true
 
         return constraintList()
-            .filter { it.kind == SchemaItemKind.UNIQUENESS_CONSTRAINT && it.label == label }
+            .filter { it.kind == SchemaItemKind.UNIQUENESS_CONSTRAINT && it.label == label && !it.buildFailed }
             .any { it.properties.isNotEmpty() && pinnedBy.containsAll(it.properties) }
     }
 
