@@ -66,6 +66,11 @@ internal class ModelFileGenerator(
         val json = ModelJson.write(model)
         resource.use { it.write(json.toByteArray()) }
 
+        // A relative path would be taken from wherever the build happens to run, as Gradle's daemon's.
+        options[FILE]?.takeIf { !File(it).isAbsolute }?.let {
+            logger.error("Drivine model file: the KSP option $FILE must be an absolute path, not $it.")
+            return
+        }
         val target = options[FILE]?.let { File(it) }
             ?: layout?.takeIf { it.sourceSet == "main" }?.moduleDir?.resolve(".drivine/model.json")
         if (target == null) {

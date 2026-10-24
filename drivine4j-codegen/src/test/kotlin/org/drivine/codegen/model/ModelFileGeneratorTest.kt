@@ -2,7 +2,9 @@ package org.drivine.codegen.model
 
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.ObjectMapper
+import com.tschuchort.compiletesting.JvmCompilationResult
 import com.tschuchort.compiletesting.KotlinCompilation
+import com.tschuchort.compiletesting.KotlinCompilation.ExitCode
 import com.tschuchort.compiletesting.SourceFile
 import com.tschuchort.compiletesting.configureKsp
 import com.tschuchort.compiletesting.useKsp2
@@ -252,6 +254,56 @@ class ModelFileGeneratorTest {
     }
 
     @Test
+    fun `what the core library ignores, the file leaves out`() {
+        val model = generate(
+            SourceFile.kotlin(
+                "Board.kt",
+                """
+                package gx
+
+                import org.drivine.annotation.*
+
+                @NodeFragment(labels = ["Named"])
+                interface Named {
+                    @get:NodeId val id: String
+                }
+
+                @NodeFragment(labels = ["Base"])
+                abstract class Base
+
+                @NodeFragment(labels = ["Leaf"])
+                class Leaf(override val id: String) : Named, Base()
+
+                @RelationshipFragment
+                data class Link(val weight: Int, val leaf: Leaf)
+
+                @GraphView
+                data class Board(
+                    val leaf: Leaf,
+                    @GraphRelationship(type = "LINKS", maxDepth = 3) val links: List<Link>,
+                    @SortedBy("id") @GraphPath(hops = [Hop(type = "A"), Hop(type = "B")]) val far: List<Leaf>,
+                    @GraphRelationship(type = "C") @GraphPath(hops = [Hop(type = "A"), Hop(type = "B")]) val both: List<Leaf>,
+                )
+                """.trimIndent(),
+            ),
+        )
+
+        // The superclass's labels before the interfaces', whichever the class lists first.
+        assertEquals(listOf("Leaf", "Base", "Named"), fragment(model, "gx.Leaf")["labels"].map { it.asText() })
+
+        val relationships = view(model, "gx.Board")["relationships"].associateBy { it["field"].asText() }
+        // A relationship fragment is read one hop away, whatever maxDepth says.
+        assertEquals(
+            """{"field":"links","type":"LINKS","direction":"OUTGOING","target":"gx.Link","many":true,"required":false}""",
+            relationships.getValue("links").toString(),
+        )
+        // A path is not sorted once read, and is a path even with a @GraphRelationship beside it.
+        val path = """"target":"gx.Leaf","many":true,"required":false,"readOnly":true,"path":[{"type":"A","direction":"OUTGOING"},{"type":"B","direction":"OUTGOING"}]}"""
+        assertEquals("""{"field":"far",$path""", relationships.getValue("far").toString())
+        assertEquals("""{"field":"both",$path""", relationships.getValue("both").toString())
+    }
+
+    @Test
     fun `a Java domain says where it cannot tell null`() {
         val model = generate(javaNullable, javaTicket, javaView)
         assertEquals("java", model["generator"]["language"].asText())
@@ -297,12 +349,38 @@ class ModelFileGeneratorTest {
         assertNull(ModelFileGenerator.gradleLayout(File("/repo/app/target/classes/META-INF/drivine/model.json")))
     }
 
+    @Test
+    fun `with no file named, the module is the build file's directory, and the jar's copy is the one written`() {
+        File(dir, "build.gradle").writeText("")
+        val workDir = File(dir, "work")
+        val result = compile(listOf(kotlinDomain), emptyMap(), workDir)
+
+        val resource = workDir.walk().single { it.invariantSeparatorsPath.endsWith("META-INF/drivine/model.json") }
+        val model = ObjectMapper().readTree(resource)
+        assertEquals(dir.name, model["module"].asText())
+        // The version is the build's, put in the processor's resources.
+        assertTrue(Regex("""\d+\.\d+\.\d+.*""").matches(model["generator"]["version"].asText()), model["generator"].toString())
+        assertTrue(result.messages.contains("Set the KSP option ${ModelFileGenerator.FILE}"), result.messages)
+        assertFalse(File(dir, ".drivine").exists())
+    }
+
+    @Test
+    fun `a file named by a relative path is refused`() {
+        val result = compile(listOf(kotlinDomain), mapOf(ModelFileGenerator.FILE to "model.json"), File(dir, "work"), ExitCode.COMPILATION_ERROR)
+        assertTrue(result.messages.contains("${ModelFileGenerator.FILE} must be an absolute path"), result.messages)
+    }
+
     private fun generate(vararg sources: SourceFile, file: File = File(dir, "model.json"), workDir: File = File(dir, "work")): JsonNode {
         compile(sources.toList(), mapOf(ModelFileGenerator.FILE to file.path, ModelFileGenerator.MODULE to "fx"), workDir)
         return ObjectMapper().readTree(file)
     }
 
-    private fun compile(sources: List<SourceFile>, options: Map<String, String>, workDir: File) {
+    private fun compile(
+        sources: List<SourceFile>,
+        options: Map<String, String>,
+        workDir: File,
+        exitCode: ExitCode = ExitCode.OK,
+    ): JvmCompilationResult {
         val result = KotlinCompilation().apply {
             this.sources = sources
             workingDir = workDir
@@ -316,7 +394,8 @@ class ModelFileGeneratorTest {
                 processorOptions.putAll(options)
             }
         }.compile()
-        assertEquals(KotlinCompilation.ExitCode.OK, result.exitCode, result.messages)
+        assertEquals(exitCode, result.exitCode, result.messages)
+        return result
     }
 
     private fun fragment(model: JsonNode, id: String): JsonNode = model["fragments"].single { it["id"].asText() == id }

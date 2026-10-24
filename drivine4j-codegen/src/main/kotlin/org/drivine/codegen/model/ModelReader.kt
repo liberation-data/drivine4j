@@ -96,19 +96,14 @@ internal class ModelReader {
         val element = if (many) type.arguments.firstOrNull()?.type?.resolve() ?: type else type
         // A Java field says nothing of null, and the core library takes it as optional.
         val nullable = prop.isJava() || type.isMarkedNullable
+        // As GraphViewModel reads it: a path wins over a @GraphRelationship beside it, and is not sorted.
         val path = prop.drivine("GraphPath")
-        val related = prop.drivine("GraphRelationship")
-        val maxDepth = (related?.arg("maxDepth") as? Int) ?: 1
-        // The node the relationship reaches: a relationship fragment's target, or the element itself.
-        val reached = if (isRelationshipFragment(element)) {
-            (element.declaration as? KSClassDeclaration)?.let { rel ->
-                storedProperties(rel).map { it.type.resolve() }.firstOrNull { isFragment(it) || isView(it) }
-            }
-        } else element
+        val related = if (path == null) prop.drivine("GraphRelationship") else null
+        // A relationship fragment is read one hop away, whatever its maxDepth says.
+        val maxDepth = (related?.arg("maxDepth") as? Int)?.takeIf { !isRelationshipFragment(element) } ?: 1
         // As GraphViewModel marks it: a path, and a list read over several hops, are never written.
-        val readOnly = prop.drivine("ReadOnly") != null || path != null ||
-            (maxDepth > 1 && reached?.let { isView(it) } != true)
-        val sortedBy = prop.drivine("SortedBy")
+        val readOnly = prop.drivine("ReadOnly") != null || path != null || (maxDepth > 1 && !isView(element))
+        val sortedBy = if (path == null) prop.drivine("SortedBy") else null
         return linkedMapOf(
             "field" to prop.simpleName.asString(),
             "type" to related?.arg("type") as? String,
@@ -231,6 +226,8 @@ internal class ModelReader {
             current.drivine("NodeFragment")?.let { labels.addAll(it.stringList("labels")) }
             current.superTypes.mapNotNull { resolveAlias(it.resolve().declaration) as? KSClassDeclaration }
                 .filter { it.qualifiedName?.asString() != "kotlin.Any" }
+                // The superclass before the interfaces, as the JVM lists them, whatever order the source has.
+                .sortedBy { it.classKind == ClassKind.INTERFACE }
                 .forEach { queue.add(it) }
         }
         return labels.toList()

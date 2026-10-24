@@ -52,6 +52,7 @@ class ModelFileTest {
                     listOf(
                         it.fieldName, if (it.isPath) null else it.type, if (it.isPath) null else it.direction.name,
                         it.elementType.name, it.isCollection, !it.isCollection && !it.isNullable, it.maxDepth, it.readOnly,
+                        it.sortBy, it.sortBy?.let { _ -> it.sortAscending },
                     )
                 },
                 view["relationships"].map {
@@ -59,6 +60,7 @@ class ModelFileTest {
                         it["field"].asText(), it["type"]?.asText(), it["direction"]?.asText(),
                         it["target"].asText(), it["many"].asBoolean(), it["required"].asBoolean(),
                         it["maxDepth"]?.asInt() ?: 1, it["readOnly"]?.asBoolean() ?: false,
+                        it["sortedBy"]?.get("property")?.asText(), it["sortedBy"]?.get("ascending")?.asBoolean(),
                     )
                 },
                 id,
