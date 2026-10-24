@@ -2109,6 +2109,24 @@ abstract class SqlCypherCompiler(graph: String) {
             return Value.Json(present(withEntries(comparable(json(subject)), entries)))
         }
 
+        /**
+         * [left] and [right], the sides of [binary], as compared: where one holds a node or a relationship by identity and the
+         * other may hold one without it (an item taken from a list, a collect, a variable), both by their properties, as
+         * before identities: only a value the statement writes out or is given holds none where it carries no identity, so
+         * `[{x: r}][0] = {x: r}` is true, and `{x: r} = {x: {}}` false.
+         */
+        private fun compared(left: Value, right: Value, binary: Expression.Binary): Pair<Value, Value> {
+            fun written(expression: Expression) = expression is Expression.MapLiteral || expression is Expression.ListLiteral ||
+                expression is Expression.MapProjection || expression is Expression.Literal || expression is Expression.Parameter
+            fun held(value: Value) = (value as? Value.Json)?.identity != null
+            fun plain(value: Value) = if (value is Value.Json) value.copy(identity = null) else value
+            return when {
+                held(left) && right is Value.Json && !held(right) && !written(binary.right) -> plain(left) to right
+                held(right) && left is Value.Json && !held(left) && !written(binary.left) -> left to plain(right)
+                else -> left to right
+            }
+        }
+
         private fun binary(binary: Expression.Binary, scope: Map<String, Value>): Value {
             if (binary.operator == Operator.AND || binary.operator == Operator.OR || binary.operator == Operator.XOR) {
                 val left = bool(expression(binary.left, scope))
@@ -2122,8 +2140,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     }
                 )
             }
-            val left = expression(binary.left, scope)
-            val right = expression(binary.right, scope)
+            val (left, right) = compared(expression(binary.left, scope), expression(binary.right, scope), binary)
             temporalBinary(binary.operator, left, right)?.let { return it }
             val a = comparable(json(left))
             val b = comparable(json(right))

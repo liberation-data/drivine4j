@@ -3078,7 +3078,7 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path. `list[i]` reads an item where an expression gives
   the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
-  What is not compiled yet (a slice, a path returned whole, `SKIP` of an expression…) is refused by
+  What is not compiled yet (a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
   place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,
   `FOREACH`, `=~`, `shortestPath` and `allShortestPaths` compile, as do quantified relationships (`-[:R]->{1,3}`) and

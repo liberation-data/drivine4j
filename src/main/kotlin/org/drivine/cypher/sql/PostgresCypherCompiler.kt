@@ -142,13 +142,21 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     }
 
     /**
-     * A list as the array of its items, which Postgres orders item by item, as Cypher orders lists: `jsonb` orders the shorter
-     * of two lists first. Each item is a pair of where its kind comes ([itemRank]) and itself, so a text comes before a number
-     * and null last, as in Cypher. Any other value is an array of itself, so values of one kind keep their order.
+     * A list as `jsonb` that Postgres orders as Cypher orders lists, item by item: each item, from the first, a list of three, of
+     * where its kind comes ([itemRank]), the item, and what follows it so written, the end an empty list. `jsonb` orders the
+     * shorter of two lists first, and every list here but the last is of three. An item that is a list is written so too, one
+     * level down; a list nested deeper orders as `jsonb` does. Any other value sorts as itself, as before.
      */
     override fun sortKey(json: String) = shared(json) { (x) ->
-        "CASE WHEN jsonb_typeof($x) = 'array' THEN ARRAY(SELECT jsonb_build_array(${itemRank("s.item")}, s.item) FROM jsonb_array_elements($x) WITH ORDINALITY s (item, item_no) ORDER BY s.item_no) " +
-            "WHEN NOT ${isJsonNull(x)} THEN ARRAY[$x] END"
+        "CASE WHEN jsonb_typeof($x) = 'array' THEN CAST(${listKey(x, 2)} AS jsonb) ELSE ${nullIfJsonNull(x)} END"
+    }
+
+    /** The list [list] as [sortKey] writes it, as text, its items that are lists so written [depth] levels down in all. */
+    private fun listKey(list: String, depth: Int): String {
+        val s = "k$depth"
+        val item = if (depth > 1) "CASE WHEN jsonb_typeof($s.item) = 'array' THEN ${listKey("$s.item", depth - 1)} ELSE CAST($s.item AS text) END" else "CAST($s.item AS text)"
+        return "(SELECT COALESCE(string_agg('[' || ${itemRank("$s.item")} || ', ' || $item || ', ', '' ORDER BY $s.item_no), '') || '[]' || repeat(']', COUNT(*)::int) " +
+            "FROM jsonb_array_elements($list) WITH ORDINALITY $s (item, item_no))"
     }
 
     override fun modulo(a: String, b: String) = "($a % $b)"

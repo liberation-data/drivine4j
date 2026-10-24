@@ -63,4 +63,12 @@ class CompiledSizeTest {
             assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
         }
     }
+
+    @Test
+    fun `a sort by a property on Postgres sorts a value that is no list by its JSON, and adds a few hundred characters for one that is`() {
+        val sql = PostgresCypherCompiler("g").compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql
+        val term = sql.substringAfter("ORDER BY ")
+        assertTrue(term.endsWith("ELSE NULLIF(p2.s1, 'null'::jsonb) END"), term)
+        assertTrue(term.length < 1_200, "${term.length} characters: $term")
+    }
 }
