@@ -2,6 +2,7 @@ package org.drivine.cypher
 
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.model.Stamps
 import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
@@ -13,7 +14,7 @@ import kotlin.test.assertTrue
  */
 class CompiledSizeTest {
 
-    private val compilers = listOf(OracleCypherCompiler("g"), PostgresCypherCompiler("g"))
+    private val compilers = listOf(OracleCypherCompiler("g"), PostgresCypherCompiler("g"), SqliteCypherCompiler("g"))
 
     @Test
     fun `the clause that stamps a node compiles to a statement of a few kilobytes on each store`() {

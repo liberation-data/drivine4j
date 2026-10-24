@@ -64,6 +64,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
@@ -1573,6 +1574,12 @@ class StatelessSingleStatementOracleTest : StatelessSingleStatementContract() {
 @PostgresTests
 class StatelessSingleStatementPostgresTest : StatelessSingleStatementContract() {
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
+    override val storesEmptyText: Boolean = false
+    override val readsBagKeysFirst: Boolean = false
+}
+
+class StatelessSingleStatementSqliteTest : StatelessSingleStatementContract() {
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(SqliteTestDatabase.graphManager("contracts"))
     override val storesEmptyText: Boolean = false
     override val readsBagKeysFirst: Boolean = false
 }

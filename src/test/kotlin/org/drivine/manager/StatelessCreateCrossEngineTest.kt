@@ -21,6 +21,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.UniquenessConstraintSpec
@@ -30,6 +31,7 @@ import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
@@ -260,6 +262,7 @@ abstract class StatelessCreateContract {
 
     @Test
     fun `a create in a transaction that began before another writer made the node makes no second node`() {
+        assumeTrue(pm.type != DatabaseType.SQLITE, "SQLite has one writer: a transaction takes the write lock as it begins, so no other writer makes the node in it")
         pm.constraints.ensure(UniquenessConstraintSpec("Finding", "id"))
 
         var made: Finding? = null
@@ -384,4 +387,10 @@ class StatelessCreatePostgresTest : StatelessCreateContract() {
     private val store = PostgresTestDatabase.graphManager("contracts")
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(store)
     override val connections: ConnectionProvider = PostgresTestDatabase.connections(store)
+}
+
+class StatelessCreateSqliteTest : StatelessCreateContract() {
+    private val store = SqliteTestDatabase.graphManager("contracts")
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(store)
+    override val connections: ConnectionProvider = SqliteTestDatabase.connections(store)
 }

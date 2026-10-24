@@ -18,6 +18,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedFalkorDb
@@ -496,4 +497,8 @@ class StatelessSaveAllFieldsOracleTest : StatelessSaveAllFieldsContract() {
 @PostgresTests
 class StatelessSaveAllFieldsPostgresTest : StatelessSaveAllFieldsContract() {
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
+}
+
+class StatelessSaveAllFieldsSqliteTest : StatelessSaveAllFieldsContract() {
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(SqliteTestDatabase.graphManager("contracts"))
 }

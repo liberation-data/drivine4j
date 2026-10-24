@@ -34,6 +34,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * The generated bare-`@NodeFragment` query DSL behaviour, verified cross-engine (Neo4j / FalkorDB /
@@ -196,4 +197,13 @@ class StatelessFragmentDslPostgresTest {
     @BeforeEach fun clean() = PostgresTestDatabase.clear(pm)
 
     @Test fun `bare fragment DSL on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
+}
+
+class StatelessFragmentDslSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test fun `bare fragment DSL on SQLite`() = verify(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm))
 }

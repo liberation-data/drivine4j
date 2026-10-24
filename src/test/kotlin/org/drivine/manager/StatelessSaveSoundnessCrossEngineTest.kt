@@ -78,6 +78,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
@@ -909,6 +910,7 @@ abstract class StatelessSaveSoundnessContract {
 
     @Test
     fun `a save in a transaction that read the node before another writer changed it is refused, and writes nothing`() {
+        assumeTrue(pm.type != DatabaseType.SQLITE, "SQLite has one writer: a transaction takes the write lock as it begins, so no other writer changes the node in it")
         val loaded = stateless.save(Claim("c1", "one"))
         val connection = connections.connect()
         connection.startTransaction()
@@ -1068,4 +1070,10 @@ class StatelessSaveSoundnessPostgresTest : StatelessSaveSoundnessContract() {
     private val store = PostgresTestDatabase.graphManager("contracts")
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(store)
     override val connections: ConnectionProvider = PostgresTestDatabase.connections(store)
+}
+
+class StatelessSaveSoundnessSqliteTest : StatelessSaveSoundnessContract() {
+    private val store = SqliteTestDatabase.graphManager("contracts")
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(store)
+    override val connections: ConnectionProvider = SqliteTestDatabase.connections(store)
 }

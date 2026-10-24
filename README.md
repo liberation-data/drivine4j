@@ -3260,7 +3260,7 @@ SqlCypherFixtures.clear(persistenceManager)                                     
 - `TestCleanup.beforeEach(persistenceManager, "my-test")` deletes the nodes whose `createdBy` is the tag,
   in SQL on Oracle, as it does in Cypher elsewhere.
 - `SqlCypherFixtures.forStore(persistenceManager)` is the manager itself on a graph engine and the
-  fixtures over it on Oracle or Postgres, so one test, or one `PersistenceManager` bean of a
+  fixtures over it on Oracle, Postgres or SQLite, so one test, or one `PersistenceManager` bean of a
   test's Spring context, serves every store. Drivine's sample app and its own Spring tests use it so.
 
 Drivine's own Oracle tests are left out of a plain `./gradlew test`: the image is large and the
@@ -3469,9 +3469,17 @@ function `drivine_write` that Drivine registers on each connection: applied whol
 stamped and checked as elsewhere. Deleting a node's row deletes its relationships with it.
 
 **Notes:**
-- A statement written by hand is SQL; a `CypherStatement` is refused, as SQLite does not compile Cypher
-  yet. SQLite has no JSON type, so JSON a statement of your own returns is text; one that opens with
-  `/* drivine:json */` has each of its text values read as the JSON it is.
+- A statement written by hand is SQL. SQLite has no JSON type, so JSON a statement of your own returns is
+  text; one that opens with `/* drivine:json */` has each of its text values read as the JSON it is.
+- A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle and Postgres, and gives the
+  rows a graph engine gives. A read is a query; a write is a procedure of steps, as on the other stores,
+  which the function `drivine_cypher` carries out on the statement's connection under a savepoint, so it is
+  applied whole or not at all. A value is JSON text: two compare as Cypher compares them (`1` equal to `1.0`,
+  a map to a map of the same entries in any order) by functions Drivine registers, which also add lists and
+  texts and work out temporal values with `java.time`. A query that reads the row it is in (`OPTIONAL MATCH`,
+  `CALL { … }`, a variable-length walk, a shortest path) is gathered as JSON and joined with `json_each`, as
+  SQLite joins no lateral query. Text compares and sorts by SQLite's `BINARY` collation; `toLower` and
+  `toUpper` change the case of any letter, where SQLite's own `lower` and `upper` change ASCII alone.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
@@ -3486,8 +3494,8 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   `(?i)` ignores case.
 - A vector index and a full-text index are recorded and nothing is made for them: `loadNearest` and
   `loadMatching` measure every node of the label, and are exact.
-- The test kit's Cypher fixtures (`SqlCypherFixtures`) are refused here; seed a test's graph as rows.
-  `TestCleanup.beforeEach` works on SQLite too. SQLite's tests need no container.
+- The test kit's Cypher fixtures (`SqlCypherFixtures`) work here as on Oracle and Postgres, and so does
+  `TestCleanup.beforeEach`. SQLite's tests need no container.
 
 ### @JsonPacked Annotation
 

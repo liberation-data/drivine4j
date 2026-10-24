@@ -21,6 +21,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.PatchSpec
 import org.drivine.query.dsl.PropertyReference
@@ -631,6 +632,13 @@ class StatelessPatchOracleTest : StatelessPatchContract() {
 @PostgresTests
 class StatelessPatchPostgresTest : StatelessPatchContract() {
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
+
+    /** A search with no index measures every node. */
+    override fun ensureVectorIndex() = Unit
+}
+
+class StatelessPatchSqliteTest : StatelessPatchContract() {
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(SqliteTestDatabase.graphManager("contracts"))
 
     /** A search with no index measures every node. */
     override fun ensureVectorIndex() = Unit

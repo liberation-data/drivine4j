@@ -11,6 +11,7 @@ import org.drivine.mapper.SubtypeRegistry
 import org.drivine.model.Stamps
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.UniquenessConstraintSpec
@@ -500,6 +501,12 @@ class StatelessSaveAllAtomicMemgraphTest : StatelessSaveAllAtomicContract() {
 @PostgresTests
 class StatelessSaveAllAtomicPostgresTest : StatelessSaveAllAtomicContract() {
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
+
+    override val unwinds = false
+}
+
+class StatelessSaveAllAtomicSqliteTest : StatelessSaveAllAtomicContract() {
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(SqliteTestDatabase.graphManager("contracts"))
 
     override val unwinds = false
 }

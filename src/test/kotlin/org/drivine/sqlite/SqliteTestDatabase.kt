@@ -46,10 +46,7 @@ object SqliteTestDatabase {
     /** Removes every node and relationship of the graph [pm] speaks to. */
     fun clear(pm: NonTransactionalPersistenceManager) = SqlCypherFixtures.clear(pm)
 
-    /**
-     * Writes the nodes and relationships a Cypher `CREATE` fixture describes to the graph [pm] speaks to.
-     * SQLite does not compile Cypher yet, so this is refused until it does; [SqliteSeed] writes rows.
-     */
+    /** Writes the nodes and relationships a Cypher `CREATE` fixture describes to the graph [pm] speaks to. */
     fun seed(pm: PersistenceManager, cypher: String) {
         SqlCypherFixtures.run(pm, cypher)
     }

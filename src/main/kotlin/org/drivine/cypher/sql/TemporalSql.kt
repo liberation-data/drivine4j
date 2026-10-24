@@ -46,6 +46,21 @@ abstract class TemporalSql(protected val shared: (List<String>, (List<String>) -
     /** [timestamp] truncated to [unit] (`year`, `quarter`, `month`, `week`, `day`, `hour`, `minute`, `second`, `millisecond`): null for another unit. */
     abstract fun truncate(unit: String, timestamp: String): String?
 
+    /** The name of the function that writes a timestamp or a number as text in a pattern (`'YYYY-MM-DD'`, `'FM0000'`), as Postgres's and Oracle's `to_char` does. */
+    open val toChar = "to_char"
+
+    /** The name of the function that cuts a number's fraction off, as `TRUNC` does. */
+    open val trunc = "TRUNC"
+
+    /** The timestamp of the epoch, 1970-01-01 at midnight. */
+    open val epoch = "TIMESTAMP '1970-01-01 00:00:00'"
+
+    /** [dividend] divided by [divisor], numbers each, with its fraction kept where both are whole numbers. */
+    open fun quotient(dividend: String, divisor: String) = "$dividend / $divisor"
+
+    /** The field [field] (`YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND` with its fraction) of the timestamp [timestamp], a number. */
+    open fun extract(field: String, timestamp: String) = "EXTRACT($field FROM $timestamp)"
+
     /** The text [text] with every match of [pattern], a SQL text, replaced by [replacement]. */
     open fun replace(text: String, pattern: String, replacement: String) = "REGEXP_REPLACE($text, $pattern, $replacement)"
 
