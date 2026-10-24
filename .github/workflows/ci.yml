@@ -59,6 +59,16 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew build -x test -x standaloneTest --no-daemon
 
+      # The build writes each module's model file, .drivine/model.json, and the one committed must be it.
+      - name: Check the model files are current
+        run: |
+          if [ -n "$(git status --porcelain -- ':(glob)**/.drivine/model.json')" ]; then
+            echo "A model file differs from what the build writes. Build, and commit .drivine/model.json."
+            git status --short -- ':(glob)**/.drivine/model.json'
+            git diff -- ':(glob)**/.drivine/model.json'
+            exit 1
+          fi
+
       # standaloneTest runs the core on its own runtime classpath, as a plain main or a Ktor server has it.
       - name: Run tests
         run: ./gradlew test standaloneTest --no-daemon

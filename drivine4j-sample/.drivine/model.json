@@ -1,0 +1,680 @@
+{
+  "$comment": "Drivine model file: this module's fragments, relationship fragments and views, written by the build. Drivine Studio reads it to browse the model and query the data. Keep it in source control: the build rewrites it when the model changes, and CI checks that it is current. Format: https://github.com/liberation-data/drivine-cypher-spec/tree/main/model",
+  "format": "drivine-model/1",
+  "generator": {
+    "library": "drivine4j",
+    "version": "0.2.0",
+    "language": "kotlin"
+  },
+  "module": "drivine4j-sample",
+  "fragments": [
+    {
+      "id": "org.drivine.sample.fragment.AnonymousWebUser",
+      "name": "AnonymousWebUser",
+      "labels": [
+        "WebUser",
+        "Anonymous"
+      ],
+      "nodeId": "uuid",
+      "properties": [
+        {
+          "name": "anonymousToken",
+          "stored": "anonymousToken",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "displayName",
+          "stored": "displayName",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.ChunkNode",
+      "name": "ChunkNode",
+      "labels": [
+        "ContentElement",
+        "Chunk"
+      ],
+      "nodeId": "id",
+      "properties": [
+        {
+          "name": "containerSectionId",
+          "stored": "container_section_id",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "id",
+          "stored": "id",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "text",
+          "stored": "text",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.GithubPerson",
+      "name": "GithubPerson",
+      "labels": [
+        "Person",
+        "Mapped",
+        "GithubPerson"
+      ],
+      "nodeId": "uuid",
+      "properties": [
+        {
+          "name": "bio",
+          "stored": "bio",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "githubId",
+          "stored": "githubId",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "name",
+          "stored": "name",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.GuideUser",
+      "name": "GuideUser",
+      "labels": [
+        "GuideUser"
+      ],
+      "nodeId": "uuid",
+      "properties": [
+        {
+          "name": "guideProgress",
+          "stored": "guideProgress",
+          "type": "int",
+          "nullable": false,
+          "source": "kotlin.Int"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.IssueCore",
+      "name": "IssueCore",
+      "labels": [
+        "Issue"
+      ],
+      "nodeId": "uuid",
+      "properties": [
+        {
+          "name": "body",
+          "stored": "body",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "id",
+          "stored": "id",
+          "type": "int",
+          "nullable": false,
+          "source": "kotlin.Long"
+        },
+        {
+          "name": "locked",
+          "stored": "locked",
+          "type": "boolean",
+          "nullable": false,
+          "source": "kotlin.Boolean"
+        },
+        {
+          "name": "state",
+          "stored": "state",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "stateReason",
+          "stored": "stateReason",
+          "type": "enum",
+          "values": [
+            "COMPLETED",
+            "NOT_PLANNED",
+            "REOPENED",
+            "UNKNOWN"
+          ],
+          "nullable": true,
+          "source": "org.drivine.sample.fragment.IssueStateReason"
+        },
+        {
+          "name": "title",
+          "stored": "title",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.OddlyStored",
+      "name": "OddlyStored",
+      "labels": [
+        "OddlyStored"
+      ],
+      "nodeId": "id",
+      "properties": [
+        {
+          "name": "greeting",
+          "stored": "say \"hi\"",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "id",
+          "stored": "id",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "path",
+          "stored": "back\\slash",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "price",
+          "stored": "price$usd",
+          "type": "int",
+          "nullable": true,
+          "source": "kotlin.Long"
+        },
+        {
+          "name": "rate",
+          "stored": "rate%",
+          "type": "int",
+          "nullable": true,
+          "source": "kotlin.Long"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.Organization",
+      "name": "Organization",
+      "labels": [
+        "Organization"
+      ],
+      "nodeId": "uuid",
+      "properties": [
+        {
+          "name": "name",
+          "stored": "name",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.Person",
+      "name": "Person",
+      "labels": [
+        "Person",
+        "Mapped"
+      ],
+      "nodeId": "uuid",
+      "properties": [
+        {
+          "name": "bio",
+          "stored": "bio",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "name",
+          "stored": "name",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.RegisteredWebUser",
+      "name": "RegisteredWebUser",
+      "labels": [
+        "WebUser",
+        "Registered"
+      ],
+      "nodeId": "uuid",
+      "properties": [
+        {
+          "name": "displayName",
+          "stored": "displayName",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "email",
+          "stored": "email",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.SampleResolverNode",
+      "name": "SampleResolverNode",
+      "labels": [
+        "SampleResolver"
+      ],
+      "nodeId": "id",
+      "bags": [
+        {
+          "field": "metadata",
+          "prefix": "metadata.",
+          "type": "any"
+        }
+      ],
+      "properties": [
+        {
+          "name": "id",
+          "stored": "id",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "sectionId",
+          "stored": "section_id",
+          "type": "string",
+          "nullable": true,
+          "source": "kotlin.String"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.StampedNote",
+      "name": "StampedNote",
+      "labels": [
+        "StampedNote"
+      ],
+      "nodeId": "id",
+      "stamp": true,
+      "properties": [
+        {
+          "name": "id",
+          "stored": "id",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "text",
+          "stored": "text",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.fragment.WebUser",
+      "name": "WebUser",
+      "labels": [
+        "WebUser"
+      ],
+      "nodeId": "uuid",
+      "subtypes": [
+        "org.drivine.sample.fragment.AnonymousWebUser",
+        "org.drivine.sample.fragment.RegisteredWebUser"
+      ],
+      "properties": [
+        {
+          "name": "displayName",
+          "stored": "displayName",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "uuid",
+          "stored": "uuid",
+          "type": "uuid",
+          "nullable": false,
+          "source": "java.util.UUID"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.SampleArticleNode",
+      "name": "SampleArticleNode",
+      "labels": [
+        "SampleArticle"
+      ],
+      "nodeId": "id",
+      "properties": [
+        {
+          "name": "body",
+          "stored": "body",
+          "type": "string",
+          "nullable": false,
+          "index": "fullText",
+          "source": "kotlin.String"
+        },
+        {
+          "name": "id",
+          "stored": "id",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.SampleDocNode",
+      "name": "SampleDocNode",
+      "labels": [
+        "SampleDoc"
+      ],
+      "nodeId": "id",
+      "properties": [
+        {
+          "name": "embedding",
+          "stored": "embedding",
+          "type": "list",
+          "of": "float",
+          "nullable": true,
+          "vector": {
+            "similarity": "COSINE"
+          },
+          "source": "kotlin.collections.List<kotlin.Float>"
+        },
+        {
+          "name": "id",
+          "stored": "id",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "title",
+          "stored": "title",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        }
+      ]
+    }
+  ],
+  "relationshipFragments": [
+    {
+      "id": "org.drivine.sample.fragment.WorkHistory",
+      "name": "WorkHistory",
+      "target": {
+        "field": "target",
+        "fragment": "org.drivine.sample.fragment.Organization"
+      },
+      "properties": [
+        {
+          "name": "role",
+          "stored": "role",
+          "type": "string",
+          "nullable": false,
+          "source": "kotlin.String"
+        },
+        {
+          "name": "startDate",
+          "stored": "startDate",
+          "type": "date",
+          "nullable": false,
+          "source": "java.time.LocalDate"
+        },
+        {
+          "name": "tags",
+          "stored": "tags",
+          "type": "list",
+          "of": "string",
+          "nullable": true,
+          "packed": "json",
+          "source": "kotlin.collections.List<kotlin.String>"
+        }
+      ]
+    }
+  ],
+  "views": [
+    {
+      "id": "org.drivine.sample.fragment.ChunkView",
+      "name": "ChunkView",
+      "root": {
+        "field": "chunk",
+        "fragment": "org.drivine.sample.fragment.ChunkNode"
+      },
+      "relationships": []
+    },
+    {
+      "id": "org.drivine.sample.view.AnonymousGuideUser",
+      "name": "AnonymousGuideUser",
+      "root": {
+        "field": "core",
+        "fragment": "org.drivine.sample.fragment.GuideUser"
+      },
+      "relationships": [
+        {
+          "field": "webUser",
+          "type": "IS_WEB_USER",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.fragment.AnonymousWebUser",
+          "many": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.GuideUserWithOptionalWebUser",
+      "name": "GuideUserWithOptionalWebUser",
+      "root": {
+        "field": "core",
+        "fragment": "org.drivine.sample.fragment.GuideUser"
+      },
+      "relationships": [
+        {
+          "field": "webUser",
+          "type": "IS_WEB_USER",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.fragment.WebUser",
+          "many": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.GuideUserWithPolymorphicWebUser",
+      "name": "GuideUserWithPolymorphicWebUser",
+      "root": {
+        "field": "core",
+        "fragment": "org.drivine.sample.fragment.GuideUser"
+      },
+      "relationships": [
+        {
+          "field": "webUser",
+          "type": "IS_WEB_USER",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.fragment.WebUser",
+          "many": false,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.GuideUserWithRequiredWebUser",
+      "name": "GuideUserWithRequiredWebUser",
+      "root": {
+        "field": "core",
+        "fragment": "org.drivine.sample.fragment.GuideUser"
+      },
+      "relationships": [
+        {
+          "field": "webUser",
+          "type": "IS_WEB_USER",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.fragment.WebUser",
+          "many": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.PersonCareer",
+      "name": "PersonCareer",
+      "root": {
+        "field": "person",
+        "fragment": "org.drivine.sample.fragment.Person"
+      },
+      "relationships": [
+        {
+          "field": "employmentHistory",
+          "type": "WORKS_FOR",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.fragment.WorkHistory",
+          "many": true,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.PersonContext",
+      "name": "PersonContext",
+      "root": {
+        "field": "person",
+        "fragment": "org.drivine.sample.fragment.Person"
+      },
+      "relationships": [
+        {
+          "field": "worksFor",
+          "type": "WORKS_FOR",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.fragment.Organization",
+          "many": true,
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.RaisedAndAssignedIssue",
+      "name": "RaisedAndAssignedIssue",
+      "root": {
+        "field": "issue",
+        "fragment": "org.drivine.sample.fragment.IssueCore"
+      },
+      "relationships": [
+        {
+          "field": "assignedTo",
+          "type": "ASSIGNED_TO",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.fragment.Person",
+          "many": true,
+          "required": false
+        },
+        {
+          "field": "raisedBy",
+          "type": "RAISED_BY",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.view.PersonContext",
+          "many": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "org.drivine.sample.view.SampleFullTextView",
+      "name": "SampleFullTextView",
+      "root": {
+        "field": "article",
+        "fragment": "org.drivine.sample.view.SampleArticleNode"
+      },
+      "relationships": []
+    },
+    {
+      "id": "org.drivine.sample.view.SampleVectorView",
+      "name": "SampleVectorView",
+      "root": {
+        "field": "doc",
+        "fragment": "org.drivine.sample.view.SampleDocNode"
+      },
+      "relationships": []
+    }
+  ]
+}

@@ -39,6 +39,9 @@ dependencies {
     testImplementation 'org.springframework:spring-tx:6.2.3'
     testImplementation 'org.springframework:spring-test:6.2.3'
 
+    // Reads the model file the build writes, in ModelFileTest. The version is the one Spring Boot manages.
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind'
+
     // Testcontainers for Neo4j
     testImplementation 'org.testcontainers:neo4j:1.21.4'
     testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
@@ -80,6 +83,8 @@ kotlin {
 
 test {
     useJUnitPlatform()
+    // ModelFileTest reads the model file the build writes.
+    inputs.file('.drivine/model.json').optional()
     // See the root build: the collection sort strategy is an input of the tests.
     inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
     // The images the tests run are pinned in one file, and each pin is an input of the tests.
