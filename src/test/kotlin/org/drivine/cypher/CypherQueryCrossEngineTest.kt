@@ -91,7 +91,7 @@ class CypherQueryNeo4jTest : CypherQueryContract() {
 
     override fun seed(cypher: String) = manager.execute(QuerySpecification.withStatement(cypher.trimIndent()))
 
-    override fun clear() = manager.execute(QuerySpecification.withStatement("MATCH (n:CyTest) DETACH DELETE n"))
+    override fun clear() = manager.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 }
 
 @PostgresTests

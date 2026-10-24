@@ -116,7 +116,7 @@ class CypherTemporalNeo4jTest : CypherTemporalContract() {
 
     override val pm: PersistenceManager get() = manager
 
-    override fun clear() = manager.execute(QuerySpecification.withStatement("MATCH (n:CyTemporal) DETACH DELETE n"))
+    override fun clear() = manager.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
 }
 
 @PostgresTests
