@@ -144,19 +144,26 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /**
      * A list as `jsonb` that Postgres orders as Cypher orders lists, item by item: each item, from the first, a list of three, of
      * where its kind comes ([itemRank]), the item, and what follows it so written, the end an empty list. `jsonb` orders the
-     * shorter of two lists first, and every list here but the last is of three. An item that is a list is written so too, one
-     * level down; a list nested deeper orders as `jsonb` does. Any other value sorts as itself, as before.
+     * shorter of two lists first, and every list here but the last is of three. An item that is a list is followed by its own
+     * items, at any depth, then by its end, which comes before any item. Any other value sorts as itself, as before.
      */
     override fun sortKey(json: String) = shared(json) { (x) ->
-        "CASE WHEN jsonb_typeof($x) = 'array' THEN CAST(${listKey(x, 2)} AS jsonb) ELSE ${nullIfJsonNull(x)} END"
+        "CASE WHEN jsonb_typeof($x) = 'array' THEN CAST(${listKey(x)} AS jsonb) ELSE ${nullIfJsonNull(x)} END"
     }
 
-    /** The list [list] as [sortKey] writes it, as text, its items that are lists so written [depth] levels down in all. */
-    private fun listKey(list: String, depth: Int): String {
-        val s = "k$depth"
-        val item = if (depth > 1) "CASE WHEN jsonb_typeof($s.item) = 'array' THEN ${listKey("$s.item", depth - 1)} ELSE CAST($s.item AS text) END" else "CAST($s.item AS text)"
-        return "(SELECT COALESCE(string_agg('[' || ${itemRank("$s.item")} || ', ' || $item || ', ', '' ORDER BY $s.item_no), '') || '[]' || repeat(']', COUNT(*)::int) " +
-            "FROM jsonb_array_elements($list) WITH ORDINALITY $s (item, item_no))"
+    /**
+     * The list [list] as [sortKey] writes it, as text: its items and the items of each that is a list, all the way down, by
+     * their places, each list held in it as its kind, then its items, then its end, ranked 0.
+     */
+    private fun listKey(list: String): String {
+        val items = "SELECT ARRAY[ke.item_no] AS place, ke.item FROM jsonb_array_elements($list) WITH ORDINALITY ke (item, item_no) " +
+            "UNION ALL SELECT kn.place || kc.item_no, kc.item FROM kn, " +
+            "jsonb_array_elements(CASE WHEN jsonb_typeof(kn.item) = 'array' THEN kn.item ELSE '[]'::jsonb END) WITH ORDINALITY kc (item, item_no)"
+        val ends = "SELECT kn.place || CAST(jsonb_array_length(kn.item) + 1 AS bigint), 0, 'null' FROM kn WHERE jsonb_typeof(kn.item) = 'array'"
+        val tokens = "SELECT kn.place, ${itemRank("kn.item")} AS rank, CASE WHEN jsonb_typeof(kn.item) = 'array' THEN 'null' ELSE CAST(kn.item AS text) END AS item " +
+            "FROM kn UNION ALL $ends"
+        return "(WITH RECURSIVE kn (place, item) AS ($items) " +
+            "SELECT COALESCE(string_agg('[' || kt.rank || ', ' || kt.item || ', ', '' ORDER BY kt.place), '') || '[]' || repeat(']', COUNT(*)::int) FROM ($tokens) kt)"
     }
 
     override fun modulo(a: String, b: String) = "($a % $b)"

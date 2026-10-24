@@ -1822,15 +1822,16 @@ abstract class SqlCypherCompiler(graph: String) {
                     // of one collect gathers in this query, its properties, for a store reads no aggregate from a subquery. A
                     // pattern comprehension gathers its properties too, but in a subquery of its own, so its item is read by id.
                     listed is Value.Entities && !contains(expression.subject, ::isAggregate) -> entityAt(listed as Value.Entities, at)
-                    known is Number -> Value.Json(element(subject(), at), temporal = itemsOf(listed))
-                    else -> Value.Json(
-                        shared(subject(), at) { (map, key) ->
+                    // An item of a list that holds a node or a relationship holds it by identity too: see [Value.Json.identity].
+                    known is Number -> Value.Json(element(subject(), at), temporal = itemsOf(listed), identity = identityOf(listed) { element(it, at) })
+                    else -> {
+                        fun item(list: String) = shared(list, at) { (map, key) ->
                             // A store that reads no key an expression gives reads a list's item alone.
                             val keyed = keyed(map, key)?.let { " WHEN 'string' THEN $it" }.orEmpty()
                             "CASE ${typeOf(key)} WHEN 'number' THEN ${element(map, key)}$keyed END"
-                        },
-                        temporal = itemsOf(listed),
-                    )
+                        }
+                        Value.Json(item(subject()), temporal = itemsOf(listed), identity = identityOf(listed, ::item))
+                    }
                 }
             }
             is Expression.Slice -> slice(expression, scope)
@@ -1927,7 +1928,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val listed = expression(slice.subject, scope)
             val bounds = listOfNotNull(slice.from, slice.to).map { comparable(json(expression(it, scope))) }
             val list = if (listed is Value.Entities) listed.ids else comparable(json(listed))
-            val sliced = shared(list, *bounds.toTypedArray()) { values ->
+            fun sliced(list: String) = shared(list, *bounds.toTypedArray()) { values ->
                 val x = values[0]
                 var i = 1
                 val from = slice.from?.let { values[i++] }
@@ -1943,7 +1944,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 val present = (listOf("${typeOf(x)} = 'array'") + listOfNotNull(from, to).map { "NOT ${isJsonNull(it)}" }).joinToString(" AND ")
                 "CASE WHEN $present THEN ($query) END"
             }
-            return if (listed is Value.Entities) Value.Entities(sliced, listed.relationships) else Value.Json(sliced, items = itemsOf(listed))
+            // A slice of a list that holds a node or a relationship holds it by identity too: see [Value.Json.identity].
+            return if (listed is Value.Entities) Value.Entities(sliced(list), listed.relationships)
+            else Value.Json(sliced(list), items = itemsOf(listed), identity = (listed as? Value.Json)?.identity?.let(::sliced))
         }
 
         private fun exists(patterns: List<Pattern>, where: Expression?, scope: Map<String, Value>): Value.Bool {
@@ -1957,7 +1960,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
-            is Value.Json -> temporalField(subject, key) ?: Value.Json(propertyOf(comparable(subject), key))
+            is Value.Json -> temporalField(subject, key) ?: Value.Json(propertyOf(comparable(subject), key), identity = identityOf(subject) { propertyOf(it, key) })
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
         }
@@ -2112,12 +2115,22 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * [left] and [right], the sides of [binary], as compared: where one holds a node or a relationship by identity and the
          * other may hold one without it (an item taken from a list, a collect, a variable), both by their properties, as
-         * before identities: only a value the statement writes out or is given holds none where it carries no identity, so
+         * before identities: only a value the statement writes out or is given, all the way down (a literal, a parameter, a
+         * map, a list or a map projection of such, a `CASE` that gives one), holds none where it carries no identity, so
          * `[{x: r}][0] = {x: r}` is true, and `{x: r} = {x: {}}` false.
          */
         private fun compared(left: Value, right: Value, binary: Expression.Binary): Pair<Value, Value> {
-            fun written(expression: Expression) = expression is Expression.MapLiteral || expression is Expression.ListLiteral ||
-                expression is Expression.MapProjection || expression is Expression.Literal || expression is Expression.Parameter
+            // Written all the way down: `{a: ms[0]}` and `n {.*, x: r}` hold what may be a node without its identity.
+            fun written(expression: Expression): Boolean = when (expression) {
+                is Expression.Literal, is Expression.Parameter -> true
+                is Expression.MapLiteral -> expression.entries.all { written(it.second) }
+                is Expression.ListLiteral -> expression.items.all(::written)
+                is Expression.MapProjection -> expression.elements.all {
+                    it is Expression.MapProjection.Element.Selected || it is Expression.MapProjection.Element.Entry && written(it.value)
+                }
+                is Expression.Case -> (expression.alternatives.map { it.second } + listOfNotNull(expression.otherwise)).all(::written)
+                else -> false
+            }
             fun held(value: Value) = (value as? Value.Json)?.identity != null
             fun plain(value: Value) = if (value is Value.Json) value.copy(identity = null) else value
             return when {
@@ -2237,6 +2250,9 @@ abstract class SqlCypherCompiler(graph: String) {
             else -> null
         }
 
+        /** What [take] takes of [list]'s identity, where it holds a node or a relationship by one: an item, a key's value, a slice. */
+        private fun identityOf(list: Value, take: (String) -> String): String? = (list as? Value.Json)?.identity?.let(take)
+
         /** [value] as JSON that compares by identity where it holds a node or a relationship, and as itself where it does not: see [identityOf]. */
         private fun identified(value: Value): String = identityOf(value) ?: comparable(json(value))
 
@@ -2281,13 +2297,17 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun case(case: Expression.Case, scope: Map<String, Value>): Value {
             val subject = case.subject?.let { expression(it, scope) }
             val results = (case.alternatives.map { it.second } + listOfNotNull(case.otherwise)).map { it to expression(it, scope) }
-            val alternatives = case.alternatives.zip(results).joinToString(" ") { (alternative, result) ->
-                val key = alternative.first
-                val condition = if (subject != null) equality(subject, expression(key, scope)) else bool(expression(key, scope))
-                "WHEN $condition THEN ${comparable(json(result.second))}"
+            val conditions = case.alternatives.map { (key, _) ->
+                if (subject != null) equality(subject, expression(key, scope)) else bool(expression(key, scope))
             }
-            val otherwise = case.otherwise?.let { " ELSE ${comparable(json(results.last().second))}" }.orEmpty()
-            return Value.Json("CASE $alternatives$otherwise END", temporal = kindOf(results))
+            fun written(value: (Value) -> String): String {
+                val alternatives = conditions.zip(results).joinToString(" ") { (condition, result) -> "WHEN $condition THEN ${value(result.second)}" }
+                val otherwise = case.otherwise?.let { " ELSE ${value(results.last().second)}" }.orEmpty()
+                return "CASE $alternatives$otherwise END"
+            }
+            // Where a result holds a node or a relationship, the CASE holds it by identity too.
+            val identity = if (results.any { identityOf(it.second) != null }) written(::identified) else null
+            return Value.Json(written { comparable(json(it)) }, temporal = kindOf(results), identity = identity)
         }
 
         private fun function(function: Expression.Function, scope: Map<String, Value>): Value {
@@ -2319,7 +2339,11 @@ abstract class SqlCypherCompiler(graph: String) {
                     // Nodes or relationships are gathered as their ids, so a list of them is still of them.
                     is Value.Node -> Value.Entities(gatheredIds("CASE WHEN ${gathered.nid} IS NOT NULL THEN ${scalar(gathered.nid)} END"), false, collected(gathered))
                     is Value.Relationship -> Value.Entities(gatheredIds("CASE WHEN ${gathered.eid} IS NOT NULL THEN ${scalar(gathered.eid)} END"), true, collected(gathered))
-                    else -> Value.Json(collected(gathered), ordered = true, items = (gathered as? Value.Json)?.temporal)
+                    // What holds a node or a relationship is gathered beside its identity too.
+                    else -> Value.Json(
+                        collected(gathered), ordered = true, items = (gathered as? Value.Json)?.temporal,
+                        identity = (gathered as? Value.Json)?.identity?.let { comparable(Value.Json(collect(it, rowOrder), ordered = true)) },
+                    )
                 }
                 DISTINCT_ITEMS -> when (val list = one()) {
                     // Nodes or relationships once each by their ids, not their properties.
@@ -2421,7 +2445,12 @@ abstract class SqlCypherCompiler(graph: String) {
                     if (function(name, "NULL") == null) unsupported("The function ${function.name}()")
                     val argument = comparable(json(one()))
                     // An item taken from a list is of the kind its items are.
-                    Value.Json(shared(argument) { (x) -> function(name, x)!! }, temporal = if (name == "head" || name == "last") itemsOf(one()) else null)
+                    val taken = name == "head" || name == "last"
+                    Value.Json(
+                        shared(argument) { (x) -> function(name, x)!! },
+                        temporal = if (taken) itemsOf(one()) else null,
+                        identity = if (taken) identityOf(one()) { list -> shared(list) { (x) -> function(name, x)!! } } else null,
+                    )
                 }
             }
         }
