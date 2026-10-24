@@ -78,7 +78,7 @@ class ConstraintManager internal constructor(
         replaceBlockingIndex: Boolean = false,
     ): EnsureResult {
         val existing = find(spec)
-        if (existing != null && buildFailed(existing)) {
+        if (existing != null && existing.buildFailed) {
             // FalkorDB keeps listing a constraint whose build failed, though it enforces nothing.
             // It is not the constraint: drop it and build again, which gives a violation when the
             // data still repeats a key.
@@ -214,7 +214,7 @@ class ConstraintManager internal constructor(
                     return EnsureResult.Created(info)
                 }
 
-                buildFailed(info) -> {
+                info.buildFailed -> {
                     run(grammar.dropConstraint(info))
                     val failed = DrivineException(
                         "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
@@ -232,10 +232,6 @@ class ConstraintManager internal constructor(
                 "${spec.label}${spec.properties} to become operational"
         )
     }
-
-    /** Whether the engine reports that its build of [info] failed (FalkorDB's `FAILED` status). */
-    private fun buildFailed(info: SchemaItemInfo): Boolean =
-        info.status?.uppercase()?.contains("FAILED") == true
 
     /**
      * The violation a failure to make [spec] is suspected of, confirmed against the data: the key

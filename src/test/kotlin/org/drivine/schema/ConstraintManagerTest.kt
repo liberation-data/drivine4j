@@ -193,6 +193,26 @@ class ConstraintManagerTest {
     }
 
     @Test
+    fun `a failed constraint already in the store is a violation with an empty sample at sample size 0`() {
+        val store = failedInStore("FAILED", conflicts = listOf(repeated))
+
+        assertEquals(EnsureResult.Violation(spec, emptyList()), store.constraints.ensure(spec, violationSampleSize = 0))
+        assertEquals(2, store.schema.count { it.startsWith("DROP CONSTRAINT") })
+    }
+
+    @Test
+    fun `a built constraint already in the store is matching, and left, whether or not the engine reports a status`() {
+        for (grammar in listOf(asyncBuild, Neo4jSchemaGrammar())) {
+            val store = RecordingStore(DatabaseType.NEO4J, grammar) { ran ->
+                if (ran.statement.startsWith("SHOW CONSTRAINTS")) listOf(listed("OPERATIONAL")) else emptyList<Any?>()
+            }
+
+            assertTrue(store.constraints.ensure(spec) is EnsureResult.AlreadyMatching, "on $grammar")
+            assertTrue(store.schema.none { it.startsWith("DROP") || it.startsWith("CREATE") }, "on $grammar: ${store.schema}")
+        }
+    }
+
+    @Test
     fun `drop removes a constraint whose build failed`() {
         val store = failedInStore()
 
