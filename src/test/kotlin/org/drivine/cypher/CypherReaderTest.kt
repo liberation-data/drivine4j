@@ -128,6 +128,18 @@ class CypherReaderTest {
         assertThrows<DrivineException> { CypherReader.read("RETURN \$skip") }
         assertEquals(Expression.Literal(255L), returned("RETURN 0xff"))
         assertEquals(Expression.Literal(1.5e3), returned("RETURN 1.5e3"))
+        // The least whole number is its digits negated, which alone are past the greatest.
+        assertEquals(Expression.Literal(Long.MIN_VALUE), returned("RETURN -9223372036854775808"))
+        assertEquals(Expression.Literal(Long.MIN_VALUE), returned("RETURN -0x8000000000000000"))
+        assertEquals(Expression.Unary(Expression.Unary.Operator.NEGATE, Expression.Literal(1L)), returned("RETURN -1"))
+        assertEquals(
+            "9223372036854775808 is past the range of a whole number, from -9223372036854775808 to 9223372036854775807.",
+            assertThrows<DrivineException> { CypherReader.read("RETURN 9223372036854775808") }.message,
+        )
+        assertEquals(
+            "-9223372036854775809 is past the range of a whole number, from -9223372036854775808 to 9223372036854775807.",
+            assertThrows<DrivineException> { CypherReader.read("RETURN -9223372036854775809") }.message,
+        )
     }
 
     @Test
@@ -197,6 +209,16 @@ class CypherReaderTest {
             "A write to a property of anything but a variable is Cypher, and is not compiled to SQL yet.",
             assertThrows<DrivineException> { CypherReader.read("MATCH (n) SET n.a.b = 1") }.message,
         )
+    }
+
+    @Test
+    fun `a reading clause straight after a write reads in the order written`() {
+        val (create, unwind, match, ret) = CypherReader.read("CREATE (n:Thing) UNWIND [1, 2] AS x MATCH (m:Thing) RETURN count(m)").clauses
+        assertTrue(create is Clause.Create && unwind is Clause.Unwind && match is Clause.Match && ret is Clause.Return)
+        val (_, set, again, delete) = CypherReader.read("MATCH (n) SET n.a = 1 MATCH (m) DELETE m").clauses
+        assertTrue(set is Clause.Set && again is Clause.Match && delete is Clause.Delete)
+        // As in Neo4j, a query that returns nothing ends in a write.
+        assertThrows<DrivineException> { CypherReader.read("CREATE (n) MATCH (m)") }
     }
 
     @Test
