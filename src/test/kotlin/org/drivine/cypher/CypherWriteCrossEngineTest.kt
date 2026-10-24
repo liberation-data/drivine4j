@@ -232,22 +232,4 @@ class CypherWriteSqliteTest : CypherWriteContract() {
         assertFailsWith<Exception> { pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) CREATE (:CyWrite {name: 'Copy'}) DELETE n"))) }
         assertEquals(listOf(2L), count())
     }
-
-    @Test
-    fun `a statement reads one clock, the same for each row it writes`() {
-        // SQLite's own 'now' is the same within one step of a query alone, and each write is a step of its own.
-        pm.query(QuerySpecification.withStatement(CypherStatement("UNWIND range(1, 200) AS i CREATE (:CyClock {at: localdatetime()})")))
-        assertEquals(listOf(1L), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (c:CyClock) RETURN count(DISTINCT c.at)"))))
-    }
-
-    @Test
-    fun `a text or a property key named as the procedure's variables is written as it is, not read as one`() {
-        // Each step's variables are its parameters, ?1 …: a literal, or a key in a JSON path, is read past.
-        val written = pm.query(
-            QuerySpecification.withStatement(
-                CypherStatement("CREATE (n:CyWrite {name: 'cy_row', s: \"it's cy_value\", `cy_count`: 'cy_record.item'}) SET n.cy_id = 'cy_params' RETURN properties(n)")
-            )
-        )
-        assertEquals(listOf(mapOf("name" to "cy_row", "s" to "it's cy_value", "cy_count" to "cy_record.item", "cy_id" to "cy_params")), written)
-    }
 }

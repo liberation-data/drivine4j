@@ -171,6 +171,13 @@ private fun verify(gom: StatelessGraphObjectManager, pm: PersistenceManager, sup
         where { query.field("tags") hasElement "kotlin" }
     }
     assertEquals(typedTag.map { it.id }.toSet(), dynTagInfix.map { it.id }.toSet())
+
+    // MATCHES holds to the whole value, a line break that ends it included.
+    if (supportsRegex) {
+        pm.execute(QuerySpecification.withStatement("CREATE (:Record {id: 'd', title: 'Alpha\\n', section_id: 's3'})"))
+        val wholeAlpha = gom.loadAll(RecordNode::class.java, dsl) { where { query.title matches "Alpha" } }
+        assertEquals(setOf("a"), wholeAlpha.map { it.id }.toSet())
+    }
 }
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry): StatelessGraphObjectManager {

@@ -6,7 +6,10 @@ package org.drivine.cypher.sql
  * apart from days. `ADD_MONTHS` and `MONTHS_BETWEEN` take the last day of a month to the last day of another,
  * where Cypher keeps the day of the month, so months are added and counted from the first of the month.
  */
-class OracleTemporalSql(shared: (List<String>, (List<String>) -> String) -> String) : TemporalSql(shared) {
+class OracleTemporalSql(
+    shared: (List<String>, (List<String>) -> String) -> String,
+    private val procedural: () -> Boolean,
+) : TemporalSql(shared) {
 
     override fun local(text: String, kind: Temporal) = when (kind) {
         Temporal.DATE -> "TO_TIMESTAMP($text, 'YYYY-MM-DD')"
@@ -23,7 +26,11 @@ class OracleTemporalSql(shared: (List<String>, (List<String>) -> String) -> Stri
         else -> local(text, kind)
     }
 
-    override val now = "CAST(SYS_EXTRACT_UTC(SYSTIMESTAMP) AS TIMESTAMP)"
+    /**
+     * The clock as a query starts. A block reads it once, into its variable [NOW], where each statement of the block
+     * would read it as that statement starts, and a statement's clock is one in Cypher.
+     */
+    override val now get() = if (procedural()) NOW else CLOCK
 
     override fun matches(text: String, pattern: String) = "REGEXP_LIKE($text, $pattern)"
 
@@ -75,4 +82,12 @@ class OracleTemporalSql(shared: (List<String>, (List<String>) -> String) -> Stri
 
     /** The moment the ISO 8601 text [text] writes, as Oracle reads it out of JSON, as [type]. */
     private fun iso(text: String, type: String) = "JSON_VALUE(JSON_SCALAR($text), '\$' RETURNING $type)"
+
+    companion object {
+        /** The clock as the query that reads it starts, in UTC. */
+        const val CLOCK = "CAST(SYS_EXTRACT_UTC(SYSTIMESTAMP) AS TIMESTAMP)"
+
+        /** The variable a block reads [CLOCK] into as it starts. */
+        const val NOW = "cy_now"
+    }
 }

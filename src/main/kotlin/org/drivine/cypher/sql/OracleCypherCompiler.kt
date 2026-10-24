@@ -338,7 +338,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST($count, 1)) r WHERE r.n <= $count)"
     }
 
-    override val temporalSql = OracleTemporalSql(sharedList)
+    override val temporalSql = OracleTemporalSql(sharedList) { procedural }
 
     /**
      * Oracle merges a view of no table into the subquery that reads it, and where that subquery is bound in
@@ -352,10 +352,13 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun called(query: String) = "SELECT /*+ NO_MERGE */ * FROM (\n${indent(query)}\n)"
 
-    /** Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. */
+    /**
+     * Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. The whole of the text
+     * matches, as `=~` asks: it ends at `\z`, the text's end, as Oracle's `$` also matches before a line break that ends it.
+     */
     override fun matches(text: String, pattern: String) = shared(pattern) { (p) ->
         val flags = "REGEXP_SUBSTR($p, '^\\(\\?([a-z]+)\\)', 1, 1, NULL, 1)"
-        "REGEXP_LIKE($text, '^(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\$', NVL(REPLACE($flags, 's', 'n'), 'c'))"
+        "REGEXP_LIKE($text, '^(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\\z', NVL(REPLACE($flags, 's', 'n'), 'c'))"
     }
 
     /** The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next. */
@@ -393,8 +396,11 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "    $FOUND BOOLEAN;",
         "    $DOOMED JSON;",
         "    $CURSOR SYS_REFCURSOR;",
+        "    ${OracleTemporalSql.NOW} TIMESTAMP;",
     ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;", "    $CALLER$it JSON;") } + listOf(
         "BEGIN",
+        // The clock is read once, by a query: see [OracleTemporalSql.now].
+        "    SELECT ${OracleTemporalSql.CLOCK} INTO ${OracleTemporalSql.NOW} FROM DUAL;",
         indent(statements(program).joinToString("\n")),
         "END;",
     )).joinToString("\n")
