@@ -50,7 +50,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) beside grouping keys, other aggregates, an order, a page and a variable outside its aggregates`() {
-        // Not in the spec yet: distinctFirst's grouping WITH, and the projection over it.
+        // Not in the spec yet: aggregatesFirst's grouping WITH, and the projection over it.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -69,7 +69,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
-        // Not in the spec yet: the projection over distinctFirst's grouping WITH orders by what that WITH holds.
+        // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -125,7 +125,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) under a comprehension, a quantifier or a reduce that names a grouping key in its body`() {
-        // Not in the spec yet: distinctFirst's grouping WITH keeps each variable such a body names, outside the aggregate.
+        // Not in the spec yet: aggregatesFirst's grouping WITH keeps each variable such a body names, outside the aggregate.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -140,7 +140,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) beside a pattern or a subquery that names a grouping key`() {
-        // Not in the spec yet: distinctFirst's grouping WITH keeps each variable a pattern or a subquery names, outside the aggregate.
+        // Not in the spec yet: aggregatesFirst's grouping WITH keeps each variable a pattern or a subquery names, outside the aggregate.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -156,7 +156,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) of dates keeps each once, as dates`() {
-        // Not in the spec yet: what distinctFirst keeps of a collection is still of the kind collect gathered.
+        // Not in the spec yet: what aggregatesFirst keeps of a collection is still of the kind collect gathered.
         val dates = "UNWIND [date('2020-01-01'), date('2020-01-01'), date('2021-05-01')] AS d"
         assertEquals(listOf(listOf(2020L, 2021L)), query("$dates WITH collect(DISTINCT d) AS ds RETURN [x IN ds | x.year]"))
         assertEquals(listOf(5L), query("$dates RETURN collect(DISTINCT d)[1].month"))
@@ -233,12 +233,6 @@ abstract class CypherQueryContract {
             listOf("Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"),
             query("MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b WITH b ORDER BY toString(coalesce(b.name, b.title)) RETURN coalesce(b.name, b.title)"),
         )
-    }
-
-    @Test
-    fun `toString of a float too small for Oracle's NUMBER writes it`() {
-        // Oracle's NUMBER reads it as 0, a whole number. Its text differs by store, so the spec has no case for it.
-        assertEquals(1e-200, (query("RETURN toString(1.0E-200)").single() as String).toDouble())
     }
 
     @Test

@@ -1,8 +1,14 @@
 package org.drivine.cypher.sql
 
+import com.fasterxml.jackson.core.JsonGenerator
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ArrayNode
+import com.fasterxml.jackson.databind.node.DecimalNode
+import com.fasterxml.jackson.databind.node.ObjectNode
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
+import java.math.BigDecimal
 import java.security.MessageDigest
 
 /**
@@ -15,9 +21,29 @@ import java.security.MessageDigest
  */
 class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
-    override fun literalJson(value: Any?) = "CAST(${literal(Neo4jObjectMapper.instance.writeValueAsString(value))} AS jsonb)"
+    override fun literalJson(value: Any?) = "CAST(${literal(written(value))} AS jsonb)"
 
     override fun parameterJson(marker: String, text: String?) = "CAST($marker AS jsonb)"
+
+    override fun parameterText(value: Any?): String = written(value)
+
+    /**
+     * [value] as JSON text, each float in it that is a whole number written out in full with a fraction, `10000000.0`: as
+     * Java writes it, `1.0E7`, `jsonb` reads it as the whole number 10000000, which is then read back as an integer.
+     */
+    private fun written(value: Any?): String {
+        val tree = Neo4jObjectMapper.instance.valueToTree<JsonNode>(value)
+        return Neo4jObjectMapper.instance.writer().with(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN).writeValueAsString(wholeFloats(tree))
+    }
+
+    /** [node] with each float in it that is a whole number a decimal of one place, `10000000.0`. */
+    private fun wholeFloats(node: JsonNode): JsonNode = when {
+        (node.isDouble || node.isFloat) && node.doubleValue().let { it.isFinite() && it == Math.rint(it) } ->
+            DecimalNode(BigDecimal(node.doubleValue()).setScale(1))
+        node is ObjectNode -> node.apply { properties().toList().forEach { (key, value) -> set<JsonNode>(key, wholeFloats(value)) } }
+        node is ArrayNode -> node.apply { (0 until size()).forEach { set(it, wholeFloats(get(it))) } }
+        else -> node
+    }
 
     override fun parameterCount(marker: String) = "CAST($marker AS bigint)"
 
@@ -39,8 +65,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN jsonb_typeof($x) = 'boolean' THEN CAST($x AS boolean) END" }
 
-    /** A `numeric` with a fraction, so a whole one is written `2.0`, as a graph engine writes a float, and stays one in arithmetic. */
-    override fun float(sql: String) = "(CAST($sql AS numeric) + 0.0)"
+    /**
+     * The double [sql] is, as the `numeric` its text writes, its shortest, with a fraction: so a whole one is written `2.0`, as a
+     * graph engine writes a float, and stays one in arithmetic, and one with a fraction has a double's digits, not `numeric`'s.
+     */
+    override fun float(sql: String) = "(CAST(CAST(CAST($sql AS double precision) AS text) AS numeric) + 0.0)"
+
+    override fun double(sql: String) = "CAST($sql AS double precision)"
 
     override fun jsonArray(items: List<String>) = "json_build_array(${items.joinToString(", ")})"
 
@@ -74,15 +105,51 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "(SELECT COALESCE(json_agg(d.item ORDER BY d.first), '[]'::json) FROM (SELECT min(e.item_no) AS first, e.item FROM ${elements(list, "e")} GROUP BY e.item) d)"
 
     // Postgres has no min or max of jsonb, which orders: the first of the values in order is the least.
-    override fun extreme(value: String, min: Boolean) =
-        "(array_agg($value ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"}, $value ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
+    override fun extreme(value: String, min: Boolean, key: String?) =
+        "(array_agg($value ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"}, ${key ?: value} ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
+
+    /**
+     * Of two whole numbers, in `numeric`; of a float, in `double precision`, as Cypher works a float out, so `1.0 / 3` has a
+     * double's digits and `0.1 + 0.2` is `0.30000000000000004`: `numeric` would give twenty digits, and the exact sum. See [float].
+     */
+    override fun arithmetic(a: String, b: String, operator: String) =
+        "CASE WHEN ${integral(a)} AND ${integral(b)} THEN to_jsonb(${number(a)} $operator ${number(b)}) " +
+            "ELSE to_jsonb(${float("(${double(number(a))} $operator ${double(number(b))})")}) END"
 
     override fun add(a: String, b: String) =
-        "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN to_jsonb(${number(a)} + ${number(b)}) " +
+        "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN ${arithmetic(a, b, "+")} " +
             "WHEN jsonb_typeof($a) = 'array' AND jsonb_typeof($b) = 'array' THEN $a || $b " +
             "WHEN jsonb_typeof($a) = 'array' THEN $a || jsonb_build_array($b) " +
             "WHEN jsonb_typeof($b) = 'array' THEN jsonb_build_array($a) || $b " +
-            "WHEN jsonb_typeof($a) IN ('string', 'number') AND jsonb_typeof($b) IN ('string', 'number') THEN to_jsonb(($a #>> '{}') || ($b #>> '{}')) END"
+            "WHEN jsonb_typeof($a) IN ('string', 'number') AND jsonb_typeof($b) IN ('string', 'number') THEN to_jsonb(${asText(a)} || ${asText(b)}) END"
+
+    /**
+     * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float as Java writes a double, from its
+     * shortest decimal, with no exponent from 10^-3 up to 10^7, and else as `1.0E7`, `1.2E-4`.
+     */
+    private fun asText(json: String) = shared(json) { (x) ->
+        val shortest = "CAST(CAST(CAST($x #>> '{}' AS double precision) AS text) AS numeric)"
+        "CASE WHEN jsonb_typeof($x) = 'number' AND NOT ${integral(x)} THEN ${shared(shortest) { (n) -> floatText(n) }} ELSE $x #>> '{}' END"
+    }
+
+    /** The `numeric` [n], a double's shortest decimal, as Java writes the double: see [asText]. */
+    private fun floatText(n: String): String {
+        // `to_char` writes 17 digits and the exponent, ` 1.0000000000000000e+07`: the digits without the zeros after them, a point and one at least.
+        val scientific = "to_char($n, '9.9999999999999999EEEE')"
+        val mantissa = "regexp_replace(rtrim(btrim(split_part($scientific, 'e', 1)), '0'), '\\.$', '.0')"
+        return "CASE WHEN $n = 0 THEN '0.0' WHEN abs($n) >= 0.001 AND abs($n) < 10000000 THEN to_char($n, '$PLAIN_FLOAT') " +
+            "ELSE $mantissa || 'E' || CAST(split_part($scientific, 'e', 2) AS int) END"
+    }
+
+    /**
+     * A list as the array of its items, which Postgres orders item by item, as Cypher orders lists: `jsonb` orders the shorter
+     * of two lists first. Each item is a pair of where its kind comes ([itemRank]) and itself, so a text comes before a number
+     * and null last, as in Cypher. Any other value is an array of itself, so values of one kind keep their order.
+     */
+    override fun sortKey(json: String) = shared(json) { (x) ->
+        "CASE WHEN jsonb_typeof($x) = 'array' THEN ARRAY(SELECT jsonb_build_array(${itemRank("s.item")}, s.item) FROM jsonb_array_elements($x) WITH ORDINALITY s (item, item_no) ORDER BY s.item_no) " +
+            "WHEN NOT ${isJsonNull(x)} THEN ARRAY[$x] END"
+    }
 
     override fun modulo(a: String, b: String) = "($a % $b)"
 
@@ -98,7 +165,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "tolower" -> "to_jsonb(lower(${text(json)}))"
         "toupper" -> "to_jsonb(upper(${text(json)}))"
         "trim" -> "to_jsonb(btrim(${text(json)}))"
-        "tostring" -> "to_jsonb($json #>> '{}')"
+        "tostring" -> "to_jsonb(${asText(json)})"
         "tointeger" -> "to_jsonb(trunc(${numeric(json)}))"
         "tofloat" -> "to_jsonb(${float(numeric(json))})"
         "head" -> "($json -> 0)"

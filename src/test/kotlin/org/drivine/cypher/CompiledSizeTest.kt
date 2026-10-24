@@ -28,7 +28,8 @@ class CompiledSizeTest {
         fun added(times: Int) = "MATCH (c:Claim) RETURN " + "(".repeat(times) + "c.day" + (1..times).joinToString("") { " + duration('P1D'))" }
         compilers.forEach { compiler ->
             val (one, two, four) = listOf(1, 2, 4).map { compiler.compile(added(it)).sql.length }
-            assertTrue(one < 20_000, "${compiler::class.simpleName}: $one characters")
+            // A sum that may be a text writes each side as toString does, a float as Java writes it.
+            assertTrue(one < 25_000, "${compiler::class.simpleName}: $one characters")
             assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
         }
     }

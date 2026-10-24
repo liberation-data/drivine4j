@@ -969,11 +969,9 @@ cases:
       - cypher: "RETURN [$p.a[2].b, toString($f)]"
         parameters: {p: {a: [1.0, 2.5, {b: -3.0}], n: 4}, f: -2.0}
         rows: [[-3.0, "-2.0"]]
-      - note: "Postgres's jsonb reads a float past a long's range back as a whole number."
-        cypher: "RETURN [$big, $big * 2]"
-        parameters: {big: 1.0e+20}
-        except: [postgres]
-        rows: [[1.0e+20, 2.0e+20]]
+      - cypher: "RETURN [$big, $big * 2, toString($big), $seven, toString($seven)]"
+        parameters: {big: 1.0e+20, seven: 1.0e+7}
+        rows: [[1.0e+20, 2.0e+20, "1.0E20", 1.0e+7, "1.0E7"]]
       - cypher: "RETURN $f AS x UNION ALL RETURN 1.5 AS x"
         parameters: {f: 2.0}
         unordered: true
@@ -1048,3 +1046,109 @@ cases:
         cypher: "RETURN [$p.a, $p.m, $p.l]"
         parameters: {p: {a: 2.5, b: 2.0, m: {$numberDouble: "1"}, l: {$numberLong: "5"}}}
         rows: [[2.5, {$numberDouble: "1"}, {$numberLong: "5"}]]
+
+  - name: "A comprehension or quantifier over collect()"
+    description: "A list comprehension, a quantifier, IN, reverse, tail or a slice reads collect(…) in the projection that collects it, beside a grouping key, in a WITH and in an order term."
+    steps:
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, [x IN collect(r) WHERE x.role = 'Neo' | x.role] ORDER BY p.name"
+        rows: [["Carrie", []], ["Keanu", ["Neo", "Neo"]], ["Laurence", []]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, any(x IN collect(r) WHERE x.role = 'Neo') ORDER BY p.name"
+        rows: [["Carrie", false], ["Keanu", true], ["Laurence", false]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, size([x IN collect(m) WHERE x.released > 2000]) ORDER BY p.name"
+        rows: [["Carrie", 1], ["Keanu", 1], ["Laurence", 0]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, [x IN collect(m.released) WHERE x > 2000], all(x IN collect(m.released) WHERE x > 1996) ORDER BY p.name"
+        rows: [["Carrie", [2003], true], ["Keanu", [2003], false], ["Laurence", [], true]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) WITH p, [x IN collect(m) WHERE x.released > 2000 | x.title] AS ts RETURN p.name, ts ORDER BY p.name"
+        rows: [["Carrie", ["The Matrix Reloaded"]], ["Keanu", ["The Matrix Reloaded"]], ["Laurence", []]]
+      - note: "The comprehension's body reads a grouping key."
+        cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, size([x IN collect(r) WHERE x.role <> p.name]), count(*) ORDER BY p.name"
+        rows: [["Carrie", 2, 2], ["Keanu", 3, 3], ["Laurence", 1, 1]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, collect(m.title) ORDER BY any(x IN collect(r) WHERE x.role = 'Neo'), p.name"
+        unorderedLists: true
+        rows: [["Carrie", ["The Matrix", "The Matrix Reloaded"]], ["Laurence", ["The Matrix"]], ["Keanu", ["The Matrix", "The Matrix Reloaded", "Johnny Mnemonic"]]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, 'Neo' IN collect(r.role), size(reverse(collect(m.title))), size(tail(collect(r.role))), size(collect(m.released)[1..]) ORDER BY p.name"
+        rows: [["Carrie", false, 2, 1, 1], ["Keanu", true, 3, 2, 2], ["Laurence", false, 1, 0, 0]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN count(*), any(x IN collect(m.released) WHERE x > 2000)"
+        rows: [[6, true]]
+
+  - name: "Maps and lists holding relationships compare by identity"
+    description: "Two maps, or two lists of lists, holding different relationships or nodes with the same properties are different; holding the same one, equal."
+    steps:
+      - note: "Neither KNOWS relationship has a property."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() RETURN [{x: r1} = {x: r2}, {x: r1} = {x: r1}, [[r1]] = [[r2]], [[r1]] = [[r1]], {x: [r1]} = {x: [r2]}, {x: r1} <> {x: r2}]"
+        rows: [[false, true, false, true, false, true]]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() RETURN [{x: r1} IN [{x: r2}], {x: r1} IN [{x: r1}], [r1, 1] = [r2, 1], {x: r1, y: 1} = {x: r1, y: 1}, {x: r1} = {x: {}}]"
+        rows: [[false, true, false, true, false]]
+      - note: "Carried by a WITH, a map keeps what it holds by identity."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH {x: r1} AS a, {x: r2} AS b, {x: r1} AS c RETURN [a = b, a = c]"
+        rows: [[false, true]]
+      - cypher: "MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) RETURN [{x: a} = {x: b}, {x: a} = {x: a}, a {.name, b} = a {.name, b}, a {.name, b} = a {.name, b: a}, [[a]] = [[b]], [[a]] = [[a]]]"
+        rows: [[false, true, true, false, false, true]]
+
+  - name: "List slices"
+    description: "list[from..to] gives the items from the one at from up to the one before to, each counted from the end where negative; a bound left out is the list's end, and a null bound or list gives null."
+    steps:
+      - cypher: "WITH [1, 2, 3, 4, 5] AS xs RETURN [xs[1..], xs[..2], xs[1..3], xs[-2..], xs[..-1], xs[3..1], xs[10..], xs[-10..2], xs[1..10]]"
+        rows: [[[2, 3, 4, 5], [1, 2], [2, 3], [4, 5], [1, 2, 3, 4], [], [], [1, 2], [2, 3, 4, 5]]]
+      - cypher: "WITH [1, 2, 3] AS xs, 1 AS i RETURN [xs[null..], xs[1..null], xs[i..i + 1], [][0..1]]"
+        rows: [[null, null, [2], []]]
+      - note: "A bound worked out as the statement runs, or bound as a parameter, may be negative."
+        cypher: "WITH [1, 2, 3] AS xs, 1 AS i RETURN [xs[-i..], xs[..-i], xs[-i - 1..-i], xs[-3..-1], xs[-1..-3], xs[0..0]]"
+        rows: [[[3], [1, 2], [2], [1, 2], [], []]]
+      - cypher: "RETURN [$xs[1..], $xs[$a..$b], $xs[..$a]]"
+        parameters: {xs: [1, 2, 3, 4], a: -2, b: -1}
+        rows: [[[2, 3, 4], [3], [1, 2]]]
+      - cypher: "WITH null AS xs RETURN xs[1..]"
+        rows: [null]
+      - note: "A slice of relationships is a list of them, compared by identity."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(m) WITH r ORDER BY m.released WITH collect(r) AS rs RETURN [[x IN rs[1..] | x.role], rs[1..][0] = rs[1], rs[..1] = rs[1..2], size(rs[-2..])]"
+        rows: [[["Neo", "Neo"], true, false, 2]]
+      - cypher: "UNWIND [date('2024-03-15'), date('2024-01-02'), date('2023-05-01')] AS d WITH collect(d) AS ds RETURN [x IN ds[1..] | x.year]"
+        rows: [[2024, 2023]]
+
+  - name: "Float arithmetic"
+    description: "Arithmetic of a float is a double's, as Cypher works it out: 0.1 + 0.2 is 0.30000000000000004, and 1.0 / 3 has a double's digits."
+    steps:
+      - cypher: "RETURN [4.0 / 2, 1.0 / 3, 0.1 + 0.2, 0.1 * 3, 1.5 - 0.2, 7 / 2.0, 2.0 * 3, 1.0 / 3 * 3, 1e10 * 1e10]"
+        rows: [[2.0, 0.3333333333333333, 0.30000000000000004, 0.30000000000000004, 1.3, 3.5, 6.0, 1.0, 1.0e+20]]
+      - cypher: "RETURN [toString(4.0 / 2), toString(1.0 / 3), toString(0.1 + 0.2), toString(1.5 - 0.2), toString(7 / 2.0), toString(10.0 / 4), toString(1.0 / 3 * 3)]"
+        rows: [["2.0", "0.3333333333333333", "0.30000000000000004", "1.3", "3.5", "2.5", "1.0"]]
+      - cypher: "MATCH (m:Movie) RETURN [toString(avg(m.released)), toString(sum(m.released * 1.5))]"
+        rows: [["1999.0", "8995.5"]]
+
+  - name: "Floats written as text"
+    description: "A float is written as Java writes a double: from 10^7, or under 10^-3, in scientific notation, as returned, by toString() and added to a text."
+    steps:
+      - cypher: "RETURN [1e7, 123456789.0, 1e15, 1e16, 1e20, 1e-4, 2.0e3, -1e7]"
+        rows: [[1.0e+7, 1.23456789e+8, 1.0e+15, 1.0e+16, 1.0e+20, 1.0e-4, 2000.0, -1.0e+7]]
+      - cypher: "RETURN [toString(1e7), toString(1.0e7 + 0.5), toString(123456789.0), toString(1e-3), toString(1e-4), toString(0.00012), toString(1.5e-7), toString(1e20), toString(9999999.0), toString(-1e7), toString(-2.5), toString(1e300), toString(1.0e-200)]"
+        rows: [["1.0E7", "1.00000005E7", "1.23456789E8", "0.001", "1.0E-4", "1.2E-4", "1.5E-7", "1.0E20", "9999999.0", "-1.0E7", "-2.5", "1.0E300", "1.0E-200"]]
+      - cypher: "RETURN ['a' + 1e7, 'a' + 2.0, 'a' + 1e-4, 1e7 + 'a', toString(toFloat('1e7')), toString(10.0 ^ 7)]"
+        rows: [["a1.0E7", "a2.0", "a1.0E-4", "1.0E7a", "1.0E7", "1.0E7"]]
+      - cypher: "RETURN [toString($f), toString($g), $f + 'a']"
+        parameters: {f: 0.00012, g: 12345678.5}
+        rows: [["1.2E-4", "1.23456785E7", "1.2E-4a"]]
+      - note: "JSON holds no NaN, and Postgres's double precision fails a division by zero."
+        cypher: "RETURN [toString(0.0 / 0.0), toString(1.0 / 0), toString(-1.0 / 0)]"
+        except: [postgres]
+        rows: [["NaN", "Infinity", "-Infinity"]]
+
+  - name: "Sorted by a list"
+    description: "A sort by a list compares two lists item by item, the shorter first where one begins the other, items of different kinds as Cypher orders kinds and null last, as by what collect gathered."
+    steps:
+      - cypher: "UNWIND [[1, 2], [1], [0, 5, 6], [], [1, 1]] AS xs RETURN xs ORDER BY xs"
+        rows: [[], [0, 5, 6], [1], [1, 1], [1, 2]]
+      - cypher: "UNWIND [[1, 2], [1], [0, 5, 6], [], [1, 1]] AS xs WITH xs ORDER BY xs DESC RETURN collect(xs)"
+        rows: [[[1, 2], [1, 1], [1], [0, 5, 6], []]]
+      - cypher: "UNWIND [[1, 'b'], [1, 'a'], [2, 'c'], [1, 'd'], [3, 'a'], [3, 'b']] AS r WITH r[0] AS k, r[1] AS v RETURN k, collect(v) ORDER BY collect(v)"
+        rows: [[3, ["a", "b"]], [1, ["b", "a", "d"]], [2, ["c"]]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, m ORDER BY m.released WITH p, collect(m.title) AS ts RETURN p.name ORDER BY ts DESC"
+        rows: ["Carrie", "Laurence", "Keanu"]
+      - note: "Null sorts last within a list, as it does among values. Oracle sorts it first (drivine4j#205)."
+        cypher: "UNWIND [[1, 2], [1, null], [1], [null], [0]] AS xs RETURN xs ORDER BY xs"
+        except: [oracle]
+        rows: [[0], [1], [1, 2], [1, null], [null]]
+      - note: "Items of different kinds sort as Cypher orders kinds: a text before a number. Oracle sorts a number first (drivine4j#205)."
+        cypher: "UNWIND [[1, 'a'], [1, 2], ['a'], [1.5]] AS xs RETURN xs ORDER BY xs"
+        except: [oracle]
+        rows: [["a"], [1, "a"], [1, 2], [1.5]]
