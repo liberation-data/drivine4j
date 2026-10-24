@@ -217,6 +217,9 @@ class CypherReaderTest {
         assertTrue(create is Clause.Create && unwind is Clause.Unwind && match is Clause.Match && ret is Clause.Return)
         val (_, set, again, delete) = CypherReader.read("MATCH (n) SET n.a = 1 MATCH (m) DELETE m").clauses
         assertTrue(set is Clause.Set && again is Clause.Match && delete is Clause.Delete)
+        // And in a part that ends in a WITH.
+        val (made, read, with, _) = CypherReader.read("CREATE (n:Thing) MATCH (m:Thing) WITH count(m) AS c RETURN c").clauses
+        assertTrue(made is Clause.Create && read is Clause.Match && with is Clause.With)
         // As in Neo4j, a query that returns nothing ends in a write.
         assertThrows<DrivineException> { CypherReader.read("CREATE (n) MATCH (m)") }
     }
