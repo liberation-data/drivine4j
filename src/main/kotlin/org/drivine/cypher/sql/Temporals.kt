@@ -35,11 +35,11 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
      * null joins a text as the empty text.
      */
     fun format(timestamp: String, kind: Temporal, offset: String? = null): String = shared(listOf(timestamp)) { (t) ->
-        val time = "to_char($t, 'HH24:MI:SS') || ${fraction(t)}"
+        val time = "${sql.toChar}($t, 'HH24:MI:SS') || ${fraction(t)}"
         val text = when (kind) {
-            Temporal.DATE -> "to_char($t, 'YYYY-MM-DD')"
-            Temporal.LOCAL_DATE_TIME -> "to_char($t, 'YYYY-MM-DD\"T\"') || $time"
-            Temporal.DATE_TIME -> "to_char($t, 'YYYY-MM-DD\"T\"') || $time || ${offset ?: "'Z'"}"
+            Temporal.DATE -> "${sql.toChar}($t, 'YYYY-MM-DD')"
+            Temporal.LOCAL_DATE_TIME -> "${sql.toChar}($t, 'YYYY-MM-DD\"T\"') || $time"
+            Temporal.DATE_TIME -> "${sql.toChar}($t, 'YYYY-MM-DD\"T\"') || $time || ${offset ?: "'Z'"}"
             Temporal.LOCAL_TIME -> time
             Temporal.TIME -> "$time || ${offset ?: "'Z'"}"
             Temporal.DURATION -> error("a duration is no moment")
@@ -79,10 +79,10 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
      * `hour`, `minute`, `second`, `millisecond`, `microsecond`, `nanosecond`), and [timezone], a text.
      */
     fun of(fields: Map<String, String>, timezone: String?, kind: Temporal): String {
-        fun field(name: String, default: String, digits: Int) = "to_char(${fields[name] ?: default}, 'FM${"0".repeat(digits)}')"
-        val micros = "TRUNC(${fields["millisecond"] ?: "0"} * 1000 + ${fields["microsecond"] ?: "0"} + ${fields["nanosecond"] ?: "0"} / 1000)"
+        fun field(name: String, default: String, digits: Int) = "${sql.toChar}(${fields[name] ?: default}, 'FM${"0".repeat(digits)}')"
+        val micros = "${sql.trunc}(${fields["millisecond"] ?: "0"} * 1000 + ${fields["microsecond"] ?: "0"} + ${fields["nanosecond"] ?: "0"} / 1000)"
         val date = "${field("year", "1970", 4)} || '-' || ${field("month", "1", 2)} || '-' || ${field("day", "1", 2)}"
-        val time = "${field("hour", "0", 2)} || ':' || ${field("minute", "0", 2)} || ':' || ${field("second", "0", 2)} || '.' || to_char($micros, 'FM000000')"
+        val time = "${field("hour", "0", 2)} || ':' || ${field("minute", "0", 2)} || ':' || ${field("second", "0", 2)} || '.' || ${sql.toChar}($micros, 'FM000000')"
         val zone = timezone ?: "'Z'"
         val text = when (kind) {
             Temporal.DATE -> date
@@ -105,29 +105,29 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
             return Field(shared(listOf(text)) { (t) -> durationField(parts(t), name)!! }, text = false)
         }
         if (kind.zoned && name in setOf("timezone", "offset", "offsetMinutes", "offsetSeconds")) return zoneField(text, name)
-        val epoch = "TIMESTAMP '1970-01-01 00:00:00'"
+        val epoch = sql.epoch
         when (name) {
-            "epochSeconds" -> return Field("TRUNC(${sql.secondsBetween(epoch, sql.utc(text, kind))})", text = false)
-            "epochMillis" -> return Field("TRUNC(${sql.secondsBetween(epoch, sql.utc(text, kind))} * 1000)", text = false)
+            "epochSeconds" -> return Field("${sql.trunc}(${sql.secondsBetween(epoch, sql.utc(text, kind))})", text = false)
+            "epochMillis" -> return Field("${sql.trunc}(${sql.secondsBetween(epoch, sql.utc(text, kind))} * 1000)", text = false)
         }
         if (name !in INSTANT_FIELDS) return null
         val number = shared(listOf(sql.local(text, kind))) { (t) ->
-            val second = "EXTRACT(SECOND FROM $t)"
+            val second = sql.extract("SECOND", t)
             when (name) {
-                "year" -> "EXTRACT(YEAR FROM $t)"
-                "quarter" -> "TRUNC((EXTRACT(MONTH FROM $t) + 2) / 3)"
-                "month" -> "EXTRACT(MONTH FROM $t)"
-                "week" -> sql.number("to_char($t, 'IW')")
-                "weekYear" -> sql.number("to_char($t, 'IYYY')")
-                "day" -> "EXTRACT(DAY FROM $t)"
-                "ordinalDay" -> sql.number("to_char($t, 'DDD')")
+                "year" -> sql.extract("YEAR", t)
+                "quarter" -> "${sql.trunc}((${sql.extract("MONTH", t)} + 2) / 3)"
+                "month" -> sql.extract("MONTH", t)
+                "week" -> sql.number("${sql.toChar}($t, 'IW')")
+                "weekYear" -> sql.number("${sql.toChar}($t, 'IYYY')")
+                "day" -> sql.extract("DAY", t)
+                "ordinalDay" -> sql.number("${sql.toChar}($t, 'DDD')")
                 "dayOfWeek", "weekDay" -> sql.dayOfWeek(t)
-                "hour" -> "EXTRACT(HOUR FROM $t)"
-                "minute" -> "EXTRACT(MINUTE FROM $t)"
-                "second" -> "TRUNC($second)"
-                "millisecond" -> "(TRUNC($second * 1000) - TRUNC($second) * 1000)"
-                "microsecond" -> "(TRUNC($second * 1000000) - TRUNC($second) * 1000000)"
-                else -> "((TRUNC($second * 1000000) - TRUNC($second) * 1000000) * 1000)"
+                "hour" -> sql.extract("HOUR", t)
+                "minute" -> sql.extract("MINUTE", t)
+                "second" -> "${sql.trunc}($second)"
+                "millisecond" -> "(${sql.trunc}($second * 1000) - ${sql.trunc}($second) * 1000)"
+                "microsecond" -> "(${sql.trunc}($second * 1000000) - ${sql.trunc}($second) * 1000000)"
+                else -> "((${sql.trunc}($second * 1000000) - ${sql.trunc}($second) * 1000000) * 1000)"
             }
         }
         return Field(number, text = false)
@@ -179,7 +179,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     private fun moved(timestamp: String, duration: String, sign: Int, date: String? = null): String {
         val s = if (sign < 0) "-" else ""
         val parts = parts(duration)
-        val seconds = if (date == null) parts.seconds else shared(listOf(parts.seconds)) { (sec) -> "CASE WHEN $date THEN TRUNC($sec / 86400) * 86400 ELSE $sec END" }
+        val seconds = if (date == null) parts.seconds else shared(listOf(parts.seconds)) { (sec) -> "CASE WHEN $date THEN ${sql.trunc}($sec / 86400) * 86400 ELSE $sec END" }
         return sql.addTime(sql.addMonths(timestamp, "$s(${parts.months})"), "$s(${parts.days})", "$s($seconds)")
     }
 
@@ -235,7 +235,7 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         return text(Parts(
             "(${f("years")} * 12 + ${f("quarters")} * 3 + ${f("months")})",
             "(${f("weeks")} * 7 + ${f("days")})",
-            "(${f("hours")} * 3600 + ${f("minutes")} * 60 + ${f("seconds")} + ${f("milliseconds")} / 1000 + ${f("microseconds")} / 1000000 + ${f("nanoseconds")} / 1000000000)",
+            "(${f("hours")} * 3600 + ${f("minutes")} * 60 + ${f("seconds")} + ${sql.quotient(f("milliseconds"), "1000")} + ${sql.quotient(f("microseconds"), "1000000")} + ${sql.quotient(f("nanoseconds"), "1000000000")})",
         ))
     }
 
@@ -245,14 +245,14 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
      * below it, as Cypher's does: a month as 30.436875 days. Null where a part is null.
      */
     private fun text(parts: Parts): String = shared(listOf(parts.months, parts.days, parts.seconds)) { (m0, d0, s0) ->
-        val m = "TRUNC($m0)"
-        val d = "TRUNC($d0 + ($m0 - TRUNC($m0)) * 30.436875)"
-        val s = "($s0 + ($d0 + ($m0 - TRUNC($m0)) * 30.436875 - $d) * 86400)"
+        val m = "${sql.trunc}($m0)"
+        val d = "${sql.trunc}($d0 + ($m0 - ${sql.trunc}($m0)) * 30.436875)"
+        val s = "($s0 + ($d0 + ($m0 - ${sql.trunc}($m0)) * 30.436875 - $d) * 86400)"
         shared(listOf(m, d, s)) { (months, days, seconds) ->
-            val years = "TRUNC($months / 12)"
-            val hours = "TRUNC($seconds / 3600)"
-            val minutes = "(TRUNC($seconds / 60) - $hours * 60)"
-            val secs = "($seconds - TRUNC($seconds / 60) * 60)"
+            val years = "${sql.trunc}($months / 12)"
+            val hours = "${sql.trunc}($seconds / 3600)"
+            val minutes = "(${sql.trunc}($seconds / 60) - $hours * 60)"
+            val secs = "($seconds - ${sql.trunc}($seconds / 60) * 60)"
             fun unit(value: String, letter: String) = "CASE WHEN $value <> 0 THEN ${number(value)} || '$letter' ELSE '' END"
             "CASE WHEN $months = 0 AND $days = 0 AND $seconds = 0 THEN 'PT0S' WHEN $seconds IS NOT NULL THEN 'P' || ${unit(years, "Y")} || ${unit("($months - $years * 12)", "M")} || " +
                 "${unit(days, "D")} || CASE WHEN $seconds <> 0 THEN 'T' || ${unit(hours, "H")} || ${unit(minutes, "M")} || ${unit(secs, "S")} ELSE '' END END"
@@ -263,26 +263,26 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
     private fun durationField(parts: Parts, name: String): String? {
         val (m, d, s) = Triple(parts.months, parts.days, parts.seconds)
         return when (name) {
-            "years" -> "TRUNC($m / 12)"
-            "quarters" -> "TRUNC($m / 3)"
+            "years" -> "${sql.trunc}($m / 12)"
+            "quarters" -> "${sql.trunc}($m / 3)"
             "months" -> m
-            "weeks" -> "TRUNC($d / 7)"
+            "weeks" -> "${sql.trunc}($d / 7)"
             "days" -> d
-            "hours" -> "TRUNC($s / 3600)"
-            "minutes" -> "TRUNC($s / 60)"
-            "seconds" -> "TRUNC($s)"
-            "milliseconds" -> "TRUNC($s * 1000)"
-            "microseconds" -> "TRUNC($s * 1000000)"
-            "nanoseconds" -> "TRUNC($s * 1000000000)"
-            "quartersOfYear" -> "(TRUNC($m / 3) - TRUNC($m / 12) * 4)"
-            "monthsOfQuarter" -> "($m - TRUNC($m / 3) * 3)"
-            "monthsOfYear" -> "($m - TRUNC($m / 12) * 12)"
-            "daysOfWeek" -> "($d - TRUNC($d / 7) * 7)"
-            "minutesOfHour" -> "(TRUNC($s / 60) - TRUNC($s / 3600) * 60)"
-            "secondsOfMinute" -> "(TRUNC($s) - TRUNC($s / 60) * 60)"
-            "millisecondsOfSecond" -> "(TRUNC($s * 1000) - TRUNC($s) * 1000)"
-            "microsecondsOfSecond" -> "(TRUNC($s * 1000000) - TRUNC($s) * 1000000)"
-            "nanosecondsOfSecond" -> "(TRUNC($s * 1000000000) - TRUNC($s) * 1000000000)"
+            "hours" -> "${sql.trunc}($s / 3600)"
+            "minutes" -> "${sql.trunc}($s / 60)"
+            "seconds" -> "${sql.trunc}($s)"
+            "milliseconds" -> "${sql.trunc}($s * 1000)"
+            "microseconds" -> "${sql.trunc}($s * 1000000)"
+            "nanoseconds" -> "${sql.trunc}($s * 1000000000)"
+            "quartersOfYear" -> "(${sql.trunc}($m / 3) - ${sql.trunc}($m / 12) * 4)"
+            "monthsOfQuarter" -> "($m - ${sql.trunc}($m / 3) * 3)"
+            "monthsOfYear" -> "($m - ${sql.trunc}($m / 12) * 12)"
+            "daysOfWeek" -> "($d - ${sql.trunc}($d / 7) * 7)"
+            "minutesOfHour" -> "(${sql.trunc}($s / 60) - ${sql.trunc}($s / 3600) * 60)"
+            "secondsOfMinute" -> "(${sql.trunc}($s) - ${sql.trunc}($s / 60) * 60)"
+            "millisecondsOfSecond" -> "(${sql.trunc}($s * 1000) - ${sql.trunc}($s) * 1000)"
+            "microsecondsOfSecond" -> "(${sql.trunc}($s * 1000000) - ${sql.trunc}($s) * 1000000)"
+            "nanosecondsOfSecond" -> "(${sql.trunc}($s * 1000000000) - ${sql.trunc}($s) * 1000000000)"
             else -> null
         }
     }
@@ -318,16 +318,16 @@ class Temporals(private val sql: TemporalSql, private val shared: (List<String>,
         val months = if (times) "0" else sql.monthsBetween(a, b)
         when (unit) {
             "months" -> text(Parts(months, "0", "0"))
-            "days" -> text(Parts("0", "TRUNC(${sql.secondsBetween(a, b)} / 86400)", "0"))
+            "days" -> text(Parts("0", "${sql.trunc}(${sql.secondsBetween(a, b)} / 86400)", "0"))
             "seconds" -> text(Parts("0", "0", sql.secondsBetween(a, b)))
             else -> shared(listOf(months)) { (m) ->
-                shared(listOf(sql.secondsBetween(sql.addMonths(a, m), b))) { (rest) -> text(Parts(m, "TRUNC($rest / 86400)", "($rest - TRUNC($rest / 86400) * 86400)")) }
+                shared(listOf(sql.secondsBetween(sql.addMonths(a, m), b))) { (rest) -> text(Parts(m, "${sql.trunc}($rest / 86400)", "($rest - ${sql.trunc}($rest / 86400) * 86400)")) }
             }
         }
     }
 
     /** A number as Neo4j writes one in a duration: no zeros after the point, nor the point where there is no fraction. */
-    private fun number(value: String) = "RTRIM(to_char($value, 'FM9999999999990.999999999'), '.')"
+    private fun number(value: String) = "RTRIM(${sql.toChar}($value, 'FM9999999999990.999999999'), '.')"
 
     private fun literal(text: String) = "'${text.replace("'", "''")}'"
 

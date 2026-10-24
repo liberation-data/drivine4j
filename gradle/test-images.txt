@@ -8,3 +8,4 @@
 neo4j:latest                    neo4j:2026.10.1
 falkordb/falkordb:latest        falkordb/falkordb:6.0.3
 memgraph/memgraph:latest        memgraph/memgraph:3.14.0
+neo4j:5.26-community            neo4j:5.26.32-community

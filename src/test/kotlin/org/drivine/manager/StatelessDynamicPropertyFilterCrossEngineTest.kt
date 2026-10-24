@@ -42,6 +42,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * The dynamic-predicate escape hatch ([property] / [predicate]) verified cross-engine (Neo4j /
@@ -284,4 +285,11 @@ class StatelessDynamicPropertyFilterPostgresTest {
     private val pm = PostgresTestDatabase.graphManager("contracts", registry)
 
     @Test fun `dynamic property filters resolve on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
+}
+
+class StatelessDynamicPropertyFilterSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @Test fun `dynamic property filters resolve on SQLite`() = verify(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm))
 }

@@ -33,6 +33,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * Feature 1 end-to-end — `any{}` / `none{}` quantified predicates over the to-many `HAS_MENTION`
@@ -253,4 +254,21 @@ class StatelessQuantifiedRelationshipPostgresTest {
 
     @Test
     fun `a delete of all by a predicate on a to-many relationship on Postgres`() = verifyDelete(buildGom(pm, registry))
+}
+
+class StatelessQuantifiedRelationshipSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun seed() {
+        SqliteTestDatabase.clear(pm)
+        SqliteTestDatabase.seed(pm, SEED)
+    }
+
+    @Test
+    fun `any and none over a to-many relationship on SQLite`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `a delete of all by a predicate on a to-many relationship on SQLite`() = verifyDelete(buildGom(pm, registry))
 }

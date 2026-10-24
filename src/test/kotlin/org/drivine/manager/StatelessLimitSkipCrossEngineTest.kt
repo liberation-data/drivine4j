@@ -36,6 +36,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * `limit` / `skip` in the query DSL, verified on Neo4j, FalkorDB, and Memgraph. Proves the
@@ -368,4 +369,21 @@ class StatelessLimitSkipPostgresTest {
 
     @Test
     fun `index advice stays silent on Postgres`() = verifyAdviceIsSilent(buildGom(pm, registry))
+}
+
+class StatelessLimitSkipSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun seed() {
+        SqliteTestDatabase.clear(pm)
+        SqliteTestDatabase.seed(pm, SEED)
+    }
+
+    @Test
+    fun `limit and skip on SQLite`() = verify(buildGom(pm, registry))
+
+    @Test
+    fun `index advice stays silent on SQLite`() = verifyAdviceIsSilent(buildGom(pm, registry))
 }

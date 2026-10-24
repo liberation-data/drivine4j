@@ -13,6 +13,7 @@ import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -24,7 +25,7 @@ import kotlin.test.assertTrue
 
 /**
  * A Cypher statement written for a graph engine runs on a SQL store, compiled to its SQL, and gives the
- * same rows: the statements of the spec's `cypher/queries.yaml` are run on Neo4j, Postgres and Oracle over
+ * same rows: the statements of the spec's `cypher/queries.yaml` are run on Neo4j, Postgres, Oracle and SQLite over
  * its graph, and give the rows it says.
  */
 abstract class CypherQueryContract {
@@ -219,6 +220,20 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a CALL that returns no path's nodes and relationships, and a node it found none of, returns null for each`() {
+        // Not in the spec yet: on SQLite a CALL's rows are a JSON list of maps, where a null value is JSON's null.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf(null, null, null, null, true, true, null, null)),
+            query(
+                "MATCH (k:Person {name: 'Keanu'}) CALL (k) { OPTIONAL MATCH p = (k)-[rs:NOPE*]->(x) RETURN nodes(p) AS ns, rs, relationships(p) AS r1, x } " +
+                    "RETURN [ns, rs, r1, x, ns IS NULL, rs IS NULL, size(rs), labels(x)]"
+            ),
+        )
+    }
+
+    @Test
     fun `randomUUID gives a new UUID each time`() {
         val (a, b) = query("UNWIND [1, 2] AS x RETURN randomUUID()").map { it as String }
         assertTrue(a != b && Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(a), "$a $b")
@@ -307,4 +322,19 @@ class CypherQueryOracleTest : CypherQueryContract() {
 
     override fun clear() = OracleTestDatabase.clear(manager)
 
+}
+
+class CypherQuerySqliteTest : CypherQueryContract() {
+    private val manager = SqliteTestDatabase.graphManager("cypher")
+    override val pm: PersistenceManager get() = manager
+    override val compiles = true
+    override fun seed(cypher: String) = SqliteTestDatabase.seed(manager, cypher)
+    override fun clear() = SqliteTestDatabase.clear(manager)
+
+    @Test
+    fun `=~ matches the whole text, a line break that ends it included`() {
+        // Java's `$` matches before a line break that ends the text; Neo4j matches the whole text.
+        val matched = pm.query(QuerySpecification.withStatement(CypherStatement("RETURN 'ab\\n' =~ 'ab', 'ab\\n' =~ 'ab\\n', 'AB' =~ '(?i)ab'")))
+        assertEquals(listOf(listOf(false, true, true)), matched)
+    }
 }

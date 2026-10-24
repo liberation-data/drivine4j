@@ -1,5 +1,6 @@
 package org.drivine.sqlite
 
+import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.manager.StatelessGraphObjectManager
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
@@ -43,6 +44,21 @@ class SqliteSchemaManagementTest {
         assertEquals("Proposition_contextId_range", manager.indexes.find(spec)?.name)
         val plan = plan("SELECT nid FROM schema_node n WHERE ${property("n", "contextId")} = 'x' AND ${label("n", "Proposition")}")
         assertTrue("USING INDEX schema_ix_PropositioncontextId" in plan, plan)
+    }
+
+    @Test
+    fun `range index - a compiled Cypher lookup by a text or a truth value, written or a parameter, uses it`() {
+        manager.indexes.ensure(RangeIndexSpec("Verdict", "contextId"))
+        manager.indexes.ensure(RangeIndexSpec("Verdict", "settled"))
+        listOf(
+            Triple("MATCH (p:Verdict {contextId: 'x'}) RETURN p", emptyMap(), "schema_ix_VerdictcontextId"),
+            Triple("MATCH (p:Verdict) WHERE p.contextId = \$c RETURN p", mapOf("c" to "x"), "schema_ix_VerdictcontextId"),
+            Triple("MATCH (p:Verdict) WHERE p.settled = true RETURN p", emptyMap<String, Any?>(), "schema_ix_Verdictsettled"),
+        ).forEach { (cypher, parameters, index) ->
+            val compiled = SqliteCypherCompiler("schema").compile(cypher, parameters)
+            val plan = manager.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${compiled.sql}").bind(compiled.parameters)).joinToString("\n")
+            assertTrue("USING INDEX $index" in plan, "$cypher: $plan")
+        }
     }
 
     @Test

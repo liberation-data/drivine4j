@@ -13,6 +13,7 @@ import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.CypherStatement
 import org.drivine.query.QuerySpecification
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
@@ -21,13 +22,14 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import org.testcontainers.containers.Neo4jContainer
 import kotlin.test.assertTrue
 
 /**
  * A Cypher statement that writes runs on a SQL store, compiled to a procedure of its SQL, and leaves the
- * graph a graph engine leaves: the statements of the spec's `cypher/writes.yaml` are run on Neo4j, Postgres
- * and Oracle, and read back.
+ * graph a graph engine leaves: the statements of the spec's `cypher/writes.yaml` are run on Neo4j, Postgres,
+ * Oracle and SQLite, and read back.
  */
 abstract class CypherWriteContract {
 
@@ -199,5 +201,53 @@ class CypherWriteOracleTest : CypherWriteContract() {
         } finally {
             connections.forEach { it.release() }
         }
+    }
+}
+
+class CypherWriteSqliteTest : CypherWriteContract() {
+    private val manager = SqliteTestDatabase.graphManager("cypher")
+
+    override val pm: PersistenceManager get() = manager
+
+    override val compiles = true
+
+    override fun clear() = SqliteTestDatabase.clear(manager)
+
+    @Test
+    fun `a write in a transaction rolled back leaves nothing, and a write that fails leaves nothing of what it wrote`() {
+        val connection = SqliteTestDatabase.connections(manager).connect()
+        fun query(cypher: String) = connection.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        connection.startTransaction()
+        try {
+            query("CREATE (:CyWrite {name: 'Ada'})")
+            assertEquals(listOf("Ada"), query("MATCH (n:CyWrite) RETURN n.name"))
+        } finally {
+            connection.rollbackTransaction()
+            connection.release()
+        }
+        fun count() = pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) RETURN count(n)")))
+        assertEquals(listOf(0L), count())
+        // The second row's delete fails, and the first row's node goes back with it.
+        pm.query(QuerySpecification.withStatement(CypherStatement("CREATE (:CyWrite {name: 'Ada'})-[:KNOWS]->(:CyWrite {name: 'Bob'})")))
+        assertFailsWith<Exception> { pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) CREATE (:CyWrite {name: 'Copy'}) DELETE n"))) }
+        assertEquals(listOf(2L), count())
+    }
+
+    @Test
+    fun `a statement reads one clock, the same for each row it writes`() {
+        // SQLite's own 'now' is the same within one step of a query alone, and each write is a step of its own.
+        pm.query(QuerySpecification.withStatement(CypherStatement("UNWIND range(1, 200) AS i CREATE (:CyClock {at: localdatetime()})")))
+        assertEquals(listOf(1L), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (c:CyClock) RETURN count(DISTINCT c.at)"))))
+    }
+
+    @Test
+    fun `a text or a property key named as the procedure's variables is written as it is, not read as one`() {
+        // Each step's variables are its parameters, ?1 …: a literal, or a key in a JSON path, is read past.
+        val written = pm.query(
+            QuerySpecification.withStatement(
+                CypherStatement("CREATE (n:CyWrite {name: 'cy_row', s: \"it's cy_value\", `cy_count`: 'cy_record.item'}) SET n.cy_id = 'cy_params' RETURN properties(n)")
+            )
+        )
+        assertEquals(listOf(mapOf("name" to "cy_row", "s" to "it's cy_value", "cy_count" to "cy_record.item", "cy_id" to "cy_params")), written)
     }
 }

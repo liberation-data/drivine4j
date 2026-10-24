@@ -36,6 +36,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -264,4 +265,14 @@ class StatelessFullTextSearchPostgresTest {
     @Test fun `full-text search ranks, projects, and dispatches on Postgres`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
 
     @Test fun `a backslash makes a star, a sign and a colon text on Postgres`() = verifyEscapes(buildGom(pm, registry), fixtures, awaitIndexes = false, backslashBeforeLetter = setOf("E"))
+}
+
+class StatelessFullTextSearchSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+    private val fixtures = SqliteTestDatabase.fixtures(pm)
+
+    @Test fun `full-text search ranks, projects, and dispatches on SQLite`() = verify(buildGom(pm, registry), fixtures, awaitIndexes = false)
+
+    @Test fun `a backslash makes a star, a sign and a colon text on SQLite`() = verifyEscapes(buildGom(pm, registry), fixtures, awaitIndexes = false, backslashBeforeLetter = setOf("E"))
 }

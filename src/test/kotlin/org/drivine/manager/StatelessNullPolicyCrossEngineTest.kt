@@ -29,6 +29,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -196,4 +197,14 @@ class StatelessNullPolicyPostgresTest {
     fun clean() = PostgresTestDatabase.clear(pm)
 
     @Test fun `null-write policy on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
+}
+
+class StatelessNullPolicySqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test fun `null-write policy on SQLite`() = verify(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm))
 }

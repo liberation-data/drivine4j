@@ -7,7 +7,7 @@ import org.drivine.query.QuerySpecification
 import java.util.Optional
 
 /**
- * Lets a test written for the graph engines run against a SQL store, Oracle or Postgres, with its
+ * Lets a test written for the graph engines run against a SQL store, Oracle, Postgres or SQLite, with its
  * fixtures as they are.
  *
  * Such a test seeds its graph, plays another writer and reads back what was stored in Cypher, through
@@ -43,7 +43,7 @@ object SqlCypherFixtures {
     /**
      * [pm] as a test that seeds and reads back in Cypher wants it, whatever store it speaks to: [over]
      * it where the store speaks SQL, and [pm] itself where it speaks Cypher. So one test, or one bean of
-     * a test's context, serves the graph engines, Oracle and Postgres alike.
+     * a test's context, serves the graph engines, Oracle, Postgres and SQLite alike.
      */
     @JvmStatic
     fun forStore(pm: PersistenceManager): PersistenceManager = if (pm.type.speaksCypher) pm else over(pm)
