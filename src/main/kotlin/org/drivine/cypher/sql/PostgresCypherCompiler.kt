@@ -194,9 +194,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * Flags the pattern opens with, `(?i)`, are put before the anchors, where Postgres reads them, after `p`: a dot
-     * matches no line break, as Java's does, unless the pattern says `(?s)`.
+     * matches no line break, as Java's does, unless the pattern says `(?s)`. The anchors are `\A` and `\Z`, the text's
+     * start and end, which `(?m)` leaves as they are: it lets the pattern's own `^` and `$` match at a line break.
+     * Postgres's `s` and `m` each undo the other, so the two together end in `w`, which keeps both.
      */
-    override fun matches(text: String, pattern: String) = "($text ~ regexp_replace($pattern, '^(\\(\\?([a-z]+)\\))?(.*)\$', '(?p\\2)^(\\3)\$'))"
+    override fun matches(text: String, pattern: String) =
+        "($text ~ regexp_replace(regexp_replace($pattern, '^(\\(\\?([a-z]+)\\))?(.*)\$', '(?p\\2)\\\\A(\\3)\\\\Z'), " +
+            "'^\\(\\?([a-z]*(s[a-z]*m|m[a-z]*s)[a-z]*)\\)', '(?\\1w)'))"
 
     /**
      * An empty separator cuts the text at each character, as Cypher's does: `string_to_array` does so for a null one.
