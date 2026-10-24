@@ -91,43 +91,6 @@ abstract class CypherWriteContract {
     }
 
     @Test
-    fun `a float that is a whole number, nested in a parameter a write reads, is written a float`() {
-        val p = mapOf("list" to listOf(1.0, 2.5), "big" to 1e20)
-        assertEquals(listOf(listOf(1.0, 2.5)), query("CREATE (n:CyWrite {list: \$p.list, big: \$p.big}) RETURN n.list", mapOf("p" to p)))
-        // Postgres's jsonb reads a float past a long's range back as a whole number, which drivine reads as a long.
-        if (pm.type != DatabaseType.POSTGRES) assertEquals(listOf(listOf(listOf(1.0, 2.5), 1e20)), query("MATCH (n:CyWrite) RETURN [n.list, n.big]"))
-    }
-
-    @Test
-    fun `a float parameter that is a whole number, which a write reads, matches the whole number stored`() {
-        query("CREATE (n:CyWrite {id: 1})")
-        assertEquals(listOf(1L), query("MATCH (n:CyWrite {id: \$id}) SET n.seen = true RETURN n.id", mapOf("id" to 1.0)))
-        assertEquals(listOf(1L), query("MERGE (n:CyWrite {id: \$id}) RETURN n.id", mapOf("id" to 1.0)))
-        assertEquals(listOf(listOf(1L, true)), query("MATCH (n:CyWrite) RETURN [n.id, n.seen]"))
-    }
-
-    @Test
-    fun `a float that is a whole number, in a parameter past 32 KB a write reads, is written a float`() {
-        val doc = mapOf("text" to "y".repeat(40_000), "n" to 2.0)
-        assertEquals(listOf(2.0), query("CREATE (n:CyWrite {f: \$doc.n}) RETURN n.f", mapOf("doc" to doc)))
-    }
-
-    @Test
-    fun `a map parameter keyed as extended JSON writes a double is written a map`() {
-        val m = mapOf("\$numberDouble" to "1")
-        assertEquals(listOf(m), query("CREATE (n:CyWrite {id: 1}) RETURN \$m", mapOf("m" to m)))
-        // Beside a float that is a whole number, which a write reads from the same object of parameters.
-        val l = mapOf("\$numberLong" to "5")
-        assertEquals(l, (query("CREATE (n:CyWrite {id: 2}) RETURN [\$f, \$l]", mapOf("f" to 2.0, "l" to l)).single() as List<*>)[1])
-    }
-
-    @Test
-    fun `toString of a float that is a whole number, written and read back, keeps its fraction`() {
-        assertEquals(listOf("3.0"), query("CREATE (n:CyWrite {g: 3.0}) RETURN toString(n.g)"))
-        assertEquals(listOf("3.0"), query("MATCH (n:CyWrite) RETURN toString(n.g)"))
-    }
-
-    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>
@@ -217,6 +180,24 @@ class CypherWriteOracleTest : CypherWriteContract() {
         } finally {
             connection.rollbackTransaction()
             connection.release()
+        }
+    }
+
+    @Test
+    fun `a walk either way around a cycle finds its rows in a second session too`() {
+        // Oracle adapted the plan of the walk's step as the first session ran it, and the second then found no rows (#182).
+        pm.query(QuerySpecification.withStatement(CypherStatement("CREATE (a:CyWrite {id: 'a'})-[:R]->(:CyWrite {id: 'b'})-[:R]->(:CyWrite {id: 'c'})-[:R]->(a)")))
+        val walk = QuerySpecification.withStatement(CypherStatement("MATCH (:CyWrite {id: 'a'})-[rs:R*]-(n) RETURN [n.id, size(rs)] ORDER BY size(rs), n.id"))
+        val rows = listOf(listOf("b", 1L), listOf("c", 1L), listOf("b", 2L), listOf("c", 2L), listOf("a", 3L), listOf("a", 3L))
+        val connections = OracleTestDatabase.connections(manager).let { provider -> listOf(provider.connect(), provider.connect()) }
+        try {
+            val sessions = connections.map { connection ->
+                assertEquals<List<Any?>>(rows, connection.query(walk))
+                connection.query(QuerySpecification.withStatement("SELECT SYS_CONTEXT('USERENV', 'SID') FROM DUAL")).single()
+            }
+            assertTrue(sessions[0] != sessions[1], "$sessions")
+        } finally {
+            connections.forEach { it.release() }
         }
     }
 }

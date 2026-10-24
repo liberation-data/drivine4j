@@ -67,7 +67,10 @@ abstract class SqlCypherCompiler(graph: String) {
     /** How many values [shared] has bound, to name each subquery it binds one in. */
     private var shares = 0
 
-    /** Whether [shared] binds a long value: not in an expression that aggregates, whose aggregate a subquery would take from its group. */
+    /**
+     * Whether [shared] binds a long value: not in an expression that aggregates, whose aggregate a subquery would take
+     * from its group, nor in a term a projection beside a variable-length walk sorts by that is none of its items (see `project`).
+     */
     private var sharing = true
 
     /** The statement [cypher], with its parameters' values [parameters], as SQL. */
@@ -489,6 +492,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val projected = project(select, with.projection, final = false)
             val name = alias("w")
             val next = Select(outer)
+            next.walks = select.walks
             next.source("(\n${indent(projected.sql)}\n) $name")
             projected.scope.forEach { (variable, value) -> next.bind(variable, value.columnsOf(name)) }
             projected.order.forEach { (column, descending) -> next.order += "$name.$column" to descending }
@@ -790,6 +794,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Walk(from, to, alias("p"), alias("w"), listOf(Walk.Hop(edge, relationship.direction)), listOf(null, null), range.min ?: 1, range.max, conditions, backwards, seed)
             )
             select.source(walked.source)
+            select.walks = true
             select.where += walked.condition
             // A variable on it is the list of its relationships.
             relationship.variable?.let { select.bind(it, relationshipList(walked.eids)) }
@@ -846,6 +851,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Walk(from, to, alias("p"), alias("w"), inner.relationships.zip(links).map { (r, edge) -> Walk.Hop(edge, r.direction) }, joined, range.min ?: 1, range.max, conditions, false, seed)
             )
             select.source(walked.source)
+            select.walks = true
             select.where += walked.condition
             // The step's nodes and relationships, k of each a repetition, in turn: each variable is every k-th of them.
             val k = inner.relationships.size
@@ -1540,8 +1546,14 @@ abstract class SqlCypherCompiler(graph: String) {
                     compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
                         after[column] = sortable(expression(sort.expression, itemColumns))
                     // One that aggregates reads the rows it aggregates, as an item does; so does one that reads an aggregate
-                    // distinctFirst worked out first, which no item is.
-                    else -> carried(column, { expression(sort.expression, select.scope + compiled.toMap()) }, sort.expression)
+                    // distinctFirst worked out first, which no item is. Beside a variable-length walk it binds no value in a
+                    // subquery: carried out of a WITH's query, one so bound closes Oracle's (23.26) session (ORA-03113), as
+                    // `WITH b ORDER BY toString(coalesce(b.name, b.title))` did, its argument long enough to be bound. Elsewhere
+                    // it does, so operations nested in it compile to a statement that grows with them, not exponentially.
+                    else -> {
+                        val term = { carried(column, { expression(sort.expression, select.scope + compiled.toMap()) }, sort.expression) }
+                        if (select.walks) unshared(term) else term()
+                    }
                 }
                 column to sort.descending
             }.ifEmpty {
@@ -1686,8 +1698,11 @@ abstract class SqlCypherCompiler(graph: String) {
         private var rowOrder: String? = null
 
         /** [work], with no value bound in a subquery where [expression] aggregates: see [sharing]. */
-        private fun <T> aggregating(expression: Expression, work: () -> T): T {
-            if (!contains(expression, ::isAggregate)) return work()
+        private fun <T> aggregating(expression: Expression, work: () -> T): T =
+            if (contains(expression, ::isAggregate)) unshared(work) else work()
+
+        /** [work], with no value bound in a subquery: see [sharing]. */
+        private fun <T> unshared(work: () -> T): T {
             val was = sharing
             sharing = false
             try {
@@ -2362,6 +2377,12 @@ abstract class SqlCypherCompiler(graph: String) {
         val sources = mutableListOf<String>()
         val where = mutableListOf<String>()
         val bound = linkedMapOf<String, Value>()
+
+        /**
+         * Whether a variable-length walk is among its sources, or among those of a `WITH` it reads: a term it sorts by is
+         * then bound in no subquery (see `project`).
+         */
+        var walks = false
 
         /** The order its rows are read in, where it has one: each term, and whether it descends. */
         val order = mutableListOf<Pair<String, Boolean>>()

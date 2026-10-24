@@ -256,14 +256,17 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         val (joins, reached, distinct) = steps(walk, "$w.nid")
         val eids = walk.hops.map { "${it.edge}.eid" }
         val conditions = eids.map { "INSTR($w.eids, ',' || $it || ',') = 0" } + distinct + listOfNotNull(walk.max?.let { "$w.depth < $it" }) + walk.conditions
+        // Oracle adapts a step's plan as the statement runs, and a second session that runs the statement then finds no
+        // rows where a walk either way goes around a cycle (#182): no plan adapts.
+        val select = "SELECT /*+ NO_ADAPTIVE_PLAN */"
         val text = listOf(
             "WITH $w (src, nid, depth, nids, eids) AS (",
             "    SELECT $n.nid, $n.nid, 0, CAST(',' AS VARCHAR2(4000)), CAST(',' AS VARCHAR2(4000))",
             "    FROM $nodes $n${walk.seed?.let { " WHERE ${it(n)}" }.orEmpty()}",
             "    UNION ALL",
             // Walked backwards, each node it leaves goes first, so its nodes end with the one it started from.
-            if (walk.backwards) "    SELECT $w.src, ${reached.single()}, $w.depth + 1, ',' || $w.nid || $w.nids, ',' || ${eids.single()} || $w.eids"
-            else "    SELECT $w.src, ${reached.last()}, $w.depth + 1, $w.nids${reached.joinToString("") { " || $it || ','" }}, $w.eids${eids.joinToString("") { " || $it || ','" }}",
+            if (walk.backwards) "    $select $w.src, ${reached.single()}, $w.depth + 1, ',' || $w.nid || $w.nids, ',' || ${eids.single()} || $w.eids"
+            else "    $select $w.src, ${reached.last()}, $w.depth + 1, $w.nids${reached.joinToString("") { " || $it || ','" }}, $w.eids${eids.joinToString("") { " || $it || ','" }}",
             "    FROM $w",
             joins.joinToString("\n") { "    $it" },
             "    WHERE ${conditions.joinToString(" AND ")}",
