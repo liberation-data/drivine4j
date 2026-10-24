@@ -186,29 +186,30 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun idRows(list: String, alias: String) =
         "JSON_TABLE(JSON('[' || TRIM(BOTH ',' FROM $list) || ']'), '\$[*]' COLUMNS (ord FOR ORDINALITY, id NUMBER PATH '\$')) $alias"
 
+    /** Oracle's recursive queries read nothing of the row they are in. */
+    override val walksReadRow = false
+
     /** A recursive query from each node that meets the seed, each row carrying the node it started from. */
     override fun walk(walk: Walk): Walked {
         val w = walk.step
-        val e = walk.edge
         val n = "${walk.name}_n"
-        val (join, far) = when (walk.direction) {
-            RelationshipPattern.Direction.OUTGOING -> "$e.src = $w.nid" to "$e.dst"
-            RelationshipPattern.Direction.INCOMING -> "$e.dst = $w.nid" to "$e.src"
-            // Either way, and a relationship from a node to itself once.
-            RelationshipPattern.Direction.EITHER -> "($e.src = $w.nid OR $e.dst = $w.nid)" to "CASE WHEN $e.src = $w.nid THEN $e.dst ELSE $e.src END"
-        }
-        val conditions = listOf("INSTR($w.eids, ',' || $e.eid || ',') = 0") + listOfNotNull(walk.max?.let { "$w.depth < $it" }) + walk.conditions
+        val (joins, reached, distinct) = steps(walk, "$w.nid")
+        val eids = walk.hops.map { "${it.edge}.eid" }
+        val conditions = eids.map { "INSTR($w.eids, ',' || $it || ',') = 0" } + distinct + listOfNotNull(walk.max?.let { "$w.depth < $it" }) + walk.conditions
         val text = listOf(
             "WITH $w (src, nid, depth, nids, eids) AS (",
             "    SELECT $n.nid, $n.nid, 0, CAST(',' AS VARCHAR2(4000)), CAST(',' AS VARCHAR2(4000))",
             "    FROM $nodes $n${walk.seed?.let { " WHERE ${it(n)}" }.orEmpty()}",
             "    UNION ALL",
             // Walked backwards, each node it leaves goes first, so its nodes end with the one it started from.
-            if (walk.backwards) "    SELECT $w.src, $far, $w.depth + 1, ',' || $w.nid || $w.nids, ',' || $e.eid || $w.eids"
-            else "    SELECT $w.src, $far, $w.depth + 1, $w.nids || $far || ',', $w.eids || $e.eid || ','",
-            "    FROM $w JOIN $edges $e ON $join",
+            if (walk.backwards) "    SELECT $w.src, ${reached.single()}, $w.depth + 1, ',' || $w.nid || $w.nids, ',' || ${eids.single()} || $w.eids"
+            else "    SELECT $w.src, ${reached.last()}, $w.depth + 1, $w.nids${reached.joinToString("") { " || $it || ','" }}, $w.eids${eids.joinToString("") { " || $it || ','" }}",
+            "    FROM $w",
+            joins.joinToString("\n") { "    $it" },
             "    WHERE ${conditions.joinToString(" AND ")}",
-            ")",
+            // A walk may come back to a node it left, which Oracle takes for a cycle unless told what one is: a step
+            // takes no relationship twice, so no row's relationships are an earlier row's.
+            ") CYCLE eids SET looped TO 'Y' DEFAULT 'N'",
             "SELECT src, nid, nids, eids FROM $w WHERE depth >= ${walk.min}",
         ).joinToString("\n")
         return Walked(

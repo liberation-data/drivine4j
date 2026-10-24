@@ -132,22 +132,18 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** A lateral recursive query from the node walked from, which reads its row. */
     override fun walk(walk: Walk): Walked {
         val w = walk.step
-        val e = walk.edge
-        val (join, far) = when (walk.direction) {
-            RelationshipPattern.Direction.OUTGOING -> "$e.src = $w.nid" to "$e.dst"
-            RelationshipPattern.Direction.INCOMING -> "$e.dst = $w.nid" to "$e.src"
-            // Either way, and a relationship from a node to itself once.
-            RelationshipPattern.Direction.EITHER -> "($e.src = $w.nid OR $e.dst = $w.nid)" to "CASE WHEN $e.src = $w.nid THEN $e.dst ELSE $e.src END"
-        }
-        val conditions = listOf("$e.eid <> ALL ($w.eids)") + listOfNotNull(walk.max?.let { "$w.depth < $it" }) + walk.conditions
+        val (joins, reached, distinct) = steps(walk, "$w.nid")
+        val eids = walk.hops.map { "${it.edge}.eid" }
+        val conditions = eids.map { "$it <> ALL ($w.eids)" } + distinct + listOfNotNull(walk.max?.let { "$w.depth < $it" }) + walk.conditions
         val text = listOf(
             "WITH RECURSIVE $w (nid, depth, nids, eids) AS (",
             "    SELECT ${walk.from}, 0, $noIds, $noIds",
             "    UNION ALL",
             // Walked backwards, each node it leaves goes first, so its nodes end with the one it started from.
-            if (walk.backwards) "    SELECT $far, $w.depth + 1, $w.nid || $w.nids, $e.eid || $w.eids"
-            else "    SELECT $far, $w.depth + 1, $w.nids || $far, $w.eids || $e.eid",
-            "    FROM $w JOIN $edges $e ON $join",
+            if (walk.backwards) "    SELECT ${reached.single()}, $w.depth + 1, $w.nid || $w.nids, ${eids.single()} || $w.eids"
+            else "    SELECT ${reached.last()}, $w.depth + 1, $w.nids || ARRAY[${reached.joinToString(", ")}], $w.eids || ARRAY[${eids.joinToString(", ")}]",
+            "    FROM $w",
+            joins.joinToString("\n") { "    $it" },
             "    WHERE ${conditions.joinToString(" AND ")}",
             ")",
             "SELECT nid, nids, eids FROM $w WHERE depth >= ${walk.min}",
