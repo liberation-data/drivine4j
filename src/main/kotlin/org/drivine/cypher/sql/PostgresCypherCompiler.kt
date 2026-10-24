@@ -166,6 +166,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "SELECT COALESCE(string_agg('[' || kt.rank || ', ' || kt.item || ', ', '' ORDER BY kt.place), '') || '[]' || repeat(']', COUNT(*)::int) FROM ($tokens) kt)"
     }
 
+    override fun idTokens(ids: String, key: String) = "CAST(regexp_replace(CAST($ids AS text), '(-?[0-9]+)', ${literal("{\"$key\": \\1}")}, 'g') AS jsonb)"
+
     override fun modulo(a: String, b: String) = "($a % $b)"
 
     override fun startsWith(a: String, b: String) = "starts_with($a, $b)"

@@ -264,6 +264,12 @@ abstract class SqlCypherCompiler(graph: String) {
         "CASE ${typeOf(x)} WHEN 'object' THEN 1 WHEN 'array' THEN 2 WHEN 'string' THEN 3 WHEN 'boolean' THEN 4 WHEN 'number' THEN 5 END"
     }
 
+    /**
+     * The JSON list of ids [ids] with each id the map `{[key]: id}`, a node's or a relationship's identity (see `identityOf`), and
+     * null where the list is: by its text, so it reads no aggregate in a subquery, as Oracle reads none.
+     */
+    protected abstract fun idTokens(ids: String, key: String): String
+
     /** The SQL number [sql] as the store works out a double: for a function, `sqrt` or `power`, that would give fewer digits. */
     protected open fun double(sql: String) = sql
 
@@ -1823,14 +1829,14 @@ abstract class SqlCypherCompiler(graph: String) {
                     // pattern comprehension gathers its properties too, but in a subquery of its own, so its item is read by id.
                     listed is Value.Entities && !contains(expression.subject, ::isAggregate) -> entityAt(listed as Value.Entities, at)
                     // An item of a list that holds a node or a relationship holds it by identity too: see [Value.Json.identity].
-                    known is Number -> Value.Json(element(subject(), at), temporal = itemsOf(listed), identity = identityOf(listed) { element(it, at) })
+                    known is Number -> element(subject(), at).let { item -> Value.Json(item, temporal = itemsOf(listed), identity = identityOf(listed, item, true) { element(it, at) }) }
                     else -> {
                         fun item(list: String) = shared(list, at) { (map, key) ->
                             // A store that reads no key an expression gives reads a list's item alone.
                             val keyed = keyed(map, key)?.let { " WHEN 'string' THEN $it" }.orEmpty()
                             "CASE ${typeOf(key)} WHEN 'number' THEN ${element(map, key)}$keyed END"
                         }
-                        Value.Json(item(subject()), temporal = itemsOf(listed), identity = identityOf(listed, ::item))
+                        item(subject()).let { taken -> Value.Json(taken, temporal = itemsOf(listed), identity = identityOf(listed, taken, true, ::item)) }
                     }
                 }
             }
@@ -1946,7 +1952,7 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             // A slice of a list that holds a node or a relationship holds it by identity too: see [Value.Json.identity].
             return if (listed is Value.Entities) Value.Entities(sliced(list), listed.relationships)
-            else Value.Json(sliced(list), items = itemsOf(listed), identity = (listed as? Value.Json)?.identity?.let(::sliced))
+            else sliced(list).let { taken -> Value.Json(taken, items = itemsOf(listed), identity = identityOf(listed, taken, false, ::sliced)) }
         }
 
         private fun exists(patterns: List<Pattern>, where: Expression?, scope: Map<String, Value>): Value.Bool {
@@ -1960,7 +1966,9 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
-            is Value.Json -> temporalField(subject, key) ?: Value.Json(propertyOf(comparable(subject), key), identity = identityOf(subject) { propertyOf(it, key) })
+            is Value.Json -> temporalField(subject, key) ?: propertyOf(comparable(subject), key).let { taken ->
+                Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) })
+            }
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
         }
@@ -2242,16 +2250,25 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun identityOf(value: Value): String? = when (value) {
             is Value.Node -> "CASE WHEN ${value.nid} IS NOT NULL THEN ${comparable(Value.Json(jsonObject(listOf(" node" to scalar(value.nid))), ordered = true))} END"
             is Value.Relationship -> "CASE WHEN ${value.eid} IS NOT NULL THEN ${comparable(Value.Json(jsonObject(listOf(" relationship" to scalar(value.eid))), ordered = true))} END"
-            is Value.Entities -> {
-                val key = if (value.relationships) " relationships" else " nodes"
-                "CASE WHEN ${value.ids} IS NOT NULL THEN ${comparable(Value.Json(jsonObject(listOf(key to value.ids)), ordered = true))} END"
-            }
+            // Each id as the node or relationship it is, so a list of them is the same as one that holds them among other values.
+            is Value.Entities -> idTokens(value.ids, if (value.relationships) " relationship" else " node")
             is Value.Json -> value.identity
             else -> null
         }
 
-        /** What [take] takes of [list]'s identity, where it holds a node or a relationship by one: an item, a key's value, a slice. */
-        private fun identityOf(list: Value, take: (String) -> String): String? = (list as? Value.Json)?.identity?.let(take)
+        /**
+         * What [take] takes of [list]'s identity, where it holds a node or a relationship by one: an item, a key's value, a slice;
+         * [taken] is what it takes of the value. Taken from a node or a relationship, a property holds neither, so its identity
+         * is [taken] itself. [item] says whether it takes one value, not a slice.
+         */
+        private fun identityOf(list: Value, taken: String, item: Boolean, take: (String) -> String): String? =
+            (list as? Value.Json)?.identity?.let { identity ->
+                if (!item) return@let take(identity)
+                shared(identity, taken) { (i, t) ->
+                    // A map's key, not a list's items' keys, as Oracle's lax path reads them.
+                    "CASE WHEN ${typeOf(i)} = 'object' AND COALESCE(${propertyOf(i, " node")}, ${propertyOf(i, " relationship")}) IS NOT NULL THEN $t ELSE ${take(i)} END"
+                }
+            }
 
         /** [value] as JSON that compares by identity where it holds a node or a relationship, and as itself where it does not: see [identityOf]. */
         private fun identified(value: Value): String = identityOf(value) ?: comparable(json(value))
@@ -2348,7 +2365,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 DISTINCT_ITEMS -> when (val list = one()) {
                     // Nodes or relationships once each by their ids, not their properties.
                     is Value.Entities -> Value.Entities(comparable(Value.Json(distinctItems(list.ids), ordered = true)), list.relationships)
-                    else -> Value.Json(distinctItems(comparable(json(list))), ordered = true, items = (list as? Value.Json)?.items)
+                    // What holds a node or a relationship once each by its identity, not its properties.
+                    is Value.Json -> list.identity?.let { identity ->
+                        val (v, j, k) = listOf("v", "j", "k").map(::alias)
+                        val firsts = "(SELECT ${aggregateList("$v.item", "$v.item_no")} FROM ${elements(comparable(list), v)} CROSS JOIN ${elements(identity, j)} " +
+                            "WHERE $j.item_no = $v.item_no AND NOT EXISTS (SELECT 1 FROM ${elements(identity, k)} WHERE $k.item_no < $j.item_no AND $k.item = $j.item))"
+                        Value.Json(firsts, ordered = true, items = list.items, identity = comparable(Value.Json(distinctItems(identity), ordered = true)))
+                    } ?: Value.Json(distinctItems(comparable(list)), ordered = true, items = list.items)
+                    else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
                 }
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
@@ -2446,10 +2470,11 @@ abstract class SqlCypherCompiler(graph: String) {
                     val argument = comparable(json(one()))
                     // An item taken from a list is of the kind its items are.
                     val taken = name == "head" || name == "last"
+                    val result = shared(argument) { (x) -> function(name, x)!! }
                     Value.Json(
-                        shared(argument) { (x) -> function(name, x)!! },
+                        result,
                         temporal = if (taken) itemsOf(one()) else null,
-                        identity = if (taken) identityOf(one()) { list -> shared(list) { (x) -> function(name, x)!! } } else null,
+                        identity = if (taken) identityOf(one(), result, true) { list -> shared(list) { (x) -> function(name, x)!! } } else null,
                     )
                 }
             }
@@ -2473,7 +2498,8 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Relationship -> value.eid
             is Value.Path -> value.nids
             is Value.Entities -> value.ids
-            else -> nullIfJsonNull(comparable(json(value)))
+            // What holds a node or a relationship by its identity, so `count(DISTINCT {x: r})` counts each relationship.
+            else -> nullIfJsonNull(identified(value))
         }
 
         /**

@@ -65,6 +65,16 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `items taken out of lists nested twice as deep, holding a relationship, compile to about twice the statement`() {
+        fun taken(depth: Int) = "MATCH (c:Claim)-[r:R]->() WITH ${"[".repeat(depth)}r, 1${"]".repeat(depth)} AS m RETURN m${"[0]".repeat(depth)} = 1"
+        compilers.forEach { compiler ->
+            val (short, long) = listOf(4, 8).map { compiler.compile(taken(it)).sql.length }
+            assertTrue(short < 20_000, "${compiler::class.simpleName}: $short characters")
+            assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
+        }
+    }
+
+    @Test
     fun `a sort by a property on Postgres sorts a value that is no list by its JSON, and adds a few hundred characters for one that is`() {
         val sql = PostgresCypherCompiler("g").compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql
         val term = sql.substringAfter("ORDER BY ")
