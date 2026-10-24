@@ -381,7 +381,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         shared(text, count) { (t, n) -> "CASE WHEN $n >= LENGTH($t) THEN $t WHEN $n > 0 THEN SUBSTR($t, -$n) END" }
 
     /** An anonymous block, which returns its rows as an implicit result. */
-    override fun procedure(body: List<String>) = (listOf(
+    override fun procedure(program: List<ProcedureStep>) = (listOf(
         "DECLARE",
         "    $PARAMS JSON := JSON(\$${Parameters.OBJECT}${if (extended.isNotEmpty()) " EXTENDED" else ""});",
         "    $ROWS JSON;",
@@ -395,7 +395,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "    $CURSOR SYS_REFCURSOR;",
     ) + (1..NESTING).flatMap { listOf("    $SAVED$it JSON;", "    $GATHERED$it JSON;", "    $CALLER$it JSON;") } + listOf(
         "BEGIN",
-        indent(body.joinToString("\n")),
+        indent(statements(program).joinToString("\n")),
         "END;",
     )).joinToString("\n")
 

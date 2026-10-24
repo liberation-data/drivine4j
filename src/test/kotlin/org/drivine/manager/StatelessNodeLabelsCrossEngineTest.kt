@@ -37,6 +37,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * `@NodeLabels` and the flat `@PropertyBag`, verified on Neo4j, FalkorDB and Memgraph.
@@ -316,4 +317,16 @@ class StatelessNodeLabelsPostgresTest {
     @Test
     fun `node labels and a flat bag round-trip on Postgres`() =
         verify(buildGom(pm, SubtypeRegistry()), PostgresTestDatabase.fixtures(pm)) { buildGom(pm, SubtypeRegistry()) }
+}
+
+class StatelessNodeLabelsSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test
+    fun `node labels and a flat bag round-trip on SQLite`() =
+        verify(buildGom(pm, SubtypeRegistry()), SqliteTestDatabase.fixtures(pm)) { buildGom(pm, SubtypeRegistry()) }
 }

@@ -45,6 +45,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * The stamp, the choice of fields, `update` and `unrelate` on [StatelessGraphObjectManager],
@@ -628,4 +629,8 @@ class StatelessSaveOracleTest : StatelessSaveContract() {
 @PostgresTests
 class StatelessSavePostgresTest : StatelessSaveContract() {
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(PostgresTestDatabase.graphManager("contracts"))
+}
+
+class StatelessSaveSqliteTest : StatelessSaveContract() {
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(SqliteTestDatabase.graphManager("contracts"))
 }

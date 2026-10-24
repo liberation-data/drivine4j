@@ -9,6 +9,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.test.SharedFalkorDb
@@ -453,4 +454,24 @@ class RecursiveCascadeDeletePostgresTest {
     @Test fun `DELETE_ORPHAN keeps what a kept node holds on Postgres`() = verifyDeleteOrphanKeepsWhatAKeptNodeHolds(gom, pm)
     @Test fun `DELETE_ORPHAN keeps a kept sub-session whole on Postgres`() = verifyDeleteOrphanKeepsAKeptSubSessionWhole(gom, pm)
     @Test fun `DELETE_ORPHAN keeps a chain longer than the view below a kept node on Postgres`() = verifyDeleteOrphanKeepsAChainLongerThanTheView(gom, pm)
+}
+
+class RecursiveCascadeDeleteSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val store = SqliteTestDatabase.graphManager("contracts", registry)
+    private val pm = SqliteTestDatabase.fixtures(store)
+    private val gom = buildGom(store, registry)
+
+    @BeforeEach fun clean() = SqliteTestDatabase.clear(store)
+
+    @Test fun `DELETE_ALL removes what load reads at every level on SQLite`() = verifyDeleteAllMatchesLoad(gom, pm)
+    @Test fun `DELETE_ALL reaches nested views at every level on SQLite`() = verifyDeleteAllThroughNestedViewsMatchesLoad(gom, pm)
+    @Test fun `DELETE_ALL reaches a recursive view one view in on SQLite`() = verifyDeleteAllFromAShelfMatchesLoad(gom, pm)
+    @Test fun `a tree of exactly maxDepth, and a ring, are deleted on SQLite`() = verifyFullDepthAndCycleAreDeleted(gom, pm)
+    @Test fun `a tree deeper than maxDepth is refused on SQLite`() = verifyTooDeepIsRefused(gom, pm, orphans = true)
+    @Test fun `DELETE_ORPHAN keeps a nested node referred to from outside on SQLite`() = verifyDeleteOrphanPerNode(gom, pm)
+    @Test fun `DELETE_ORPHAN deletes a ring back to its root once on SQLite`() = verifyDeleteOrphanThroughARing(gom, pm)
+    @Test fun `DELETE_ORPHAN keeps what a kept node holds on SQLite`() = verifyDeleteOrphanKeepsWhatAKeptNodeHolds(gom, pm)
+    @Test fun `DELETE_ORPHAN keeps a kept sub-session whole on SQLite`() = verifyDeleteOrphanKeepsAKeptSubSessionWhole(gom, pm)
+    @Test fun `DELETE_ORPHAN keeps a chain longer than the view below a kept node on SQLite`() = verifyDeleteOrphanKeepsAChainLongerThanTheView(gom, pm)
 }

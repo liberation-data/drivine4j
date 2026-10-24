@@ -9,6 +9,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.GraphQuerySpec
@@ -577,4 +578,86 @@ class ReadPathPostgresTest {
     @Test fun `a runtime key cannot end its quotes on Postgres`() = verifyEscapedKeys(gom)
 
     @Test fun `a not over a relationship target's property is a predicate on the relationship on Postgres`() = verifyNotOverRelationship(gom)
+}
+
+class ReadPathSqliteTest {
+    companion object {
+        private lateinit var gom: StatelessGraphObjectManager
+
+        @JvmStatic @BeforeAll
+        fun setup() {
+            val registry = SubtypeRegistry()
+            val store = SqliteTestDatabase.graphManager("readpath", registry)
+            SqliteTestDatabase.clear(store)
+            val pm = SqliteTestDatabase.fixtures(store)
+            gom = buildGom(pm, registry)
+            ensureIndexes(pm)
+            // A related node filtered by a property that has an index.
+            listOf("Keeper" to "display_name", "Keeper" to "id", "Entry" to "title", "Marker" to "display_name", "Marker" to "id")
+                .forEach { (label, property) -> pm.indexes.ensure(RangeIndexSpec(label, property)) }
+            seed(gom, pm)
+        }
+    }
+
+    @Test
+    fun `a view is loaded by an indexed property of a related node, and of a node that one is related to, on SQLite`() {
+        fun loaded(spec: GraphQuerySpec<ShelfViewQueryDsl>.() -> Unit) = gom.loadAll(ShelfView::class.java, DSL, spec).map { it.shelf.id }.toSet()
+
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName eq "kim" } } })
+        assertEquals(setOf("s2", "s3"), loaded { where { query.keeper.none { displayName eq "kim" } } })
+        assertEquals(setOf("s1"), loaded { where { query.entries.any { title eq "alpha"; markers.displayName eq "red" } } })
+        assertEquals(emptySet(), loaded { where { query.entries.any { markers.displayName eq "red"; markers.id eq "m-blue" } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { displayName inList listOf("kim", "lee", "nobody") } } })
+        assertEquals(setOf("s2"), loaded { where { query.keeper.any { id eq "k-lee"; displayName inList listOf("kim", "lee") } } })
+        assertEquals(setOf("s1"), loaded { where { query.entries.any { markers.id eq "m-red"; markers.displayName inList listOf("red", "green") } } })
+    }
+
+    @Test
+    fun `each test a pattern holds is asked of an indexed property of a related node on SQLite`() {
+        fun loaded(spec: GraphQuerySpec<ShelfViewQueryDsl>.() -> Unit) = gom.loadAll(ShelfView::class.java, DSL, spec).map { it.shelf.id }.toSet()
+
+        assertEquals(setOf("s2"), loaded { where { query.keeper.any { displayName neq "kim" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName startsWith "ki" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName contains "i" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName matches "k.*" } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { displayName eqIgnoreCase "KIM" } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { displayName.isNotNull() } } })
+        assertEquals(emptySet(), loaded { where { query.keeper.any { displayName.isNull() } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { anyOf { id eq "k-lee"; displayName eq "kim" } } } })
+    }
+
+    @Test
+    fun `an or that holds a test against a list, itself or under a not, is asked of the rows of a related node on SQLite`() {
+        fun loaded(spec: GraphQuerySpec<ShelfViewQueryDsl>.() -> Unit) = gom.loadAll(ShelfView::class.java, DSL, spec).map { it.shelf.id }.toSet()
+
+        assertEquals(setOf("s2"), loaded { where { query.keeper.any { displayName notIn listOf("kim") } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { anyOf { id eq "k-lee"; displayName inList listOf("kim") } } } })
+        assertEquals(setOf("s1", "s2"), loaded { where { query.keeper.any { anyOf { not { displayName inList listOf("kim") }; id eq "k-kim" } } } })
+        assertEquals(setOf("s1"), loaded { where { query.keeper.any { anyOf { not { displayName inList listOf("kim", "lee") }; id eq "k-kim" } } } })
+    }
+
+    @Test fun `a scored search filters on a collection of nested views on SQLite`() = verifyNestedViewFilter(gom)
+
+    @Test fun `a scored search filters on a relationship that holds one node on SQLite`() = verifySingleRelationshipFilter(gom)
+
+    /** A load reads the node as it is stored, so a property no field declares is there to filter and to order by. */
+    @Test
+    fun `a view is filtered and ordered by a property no field declares on SQLite`() {
+        val found = gom.loadAll(ShelfView::class.java, DSL) { where { query.shelf.property("created_at") gte 2 } }
+        assertEquals(setOf("s1", "s3"), found.map { it.shelf.id }.toSet())
+
+        val ordered = gom.loadAll(ShelfView::class.java, DSL) { orderBy { query.shelf.property("created_at").asc() } }
+        assertEquals(listOf("s2", "s3", "s1"), ordered.map { it.shelf.id })
+        assertEquals(setOf("s1", "s3"), nearest(gom) { where { query.shelf.property("created_at") gte 2 } })
+    }
+
+    @Test fun `a view whose root has a property bag is ordered and paged by a key of the bag on SQLite`() = verifyBagKeyOrder(gom)
+
+    @Test fun `a collection is sorted beside a required relationship and a relationship filter on SQLite`() = verifySortBesideRelationshipChecks(gom)
+
+    @Test fun `a collection inside a nested view is sorted on SQLite`() = verifyNestedSort(gom)
+
+    @Test fun `a runtime key cannot end its quotes on SQLite`() = verifyEscapedKeys(gom)
+
+    @Test fun `a not over a relationship target's property is a predicate on the relationship on SQLite`() = verifyNotOverRelationship(gom)
 }

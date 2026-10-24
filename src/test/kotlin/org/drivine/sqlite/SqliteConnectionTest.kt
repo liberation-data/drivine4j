@@ -109,9 +109,35 @@ class SqliteConnectionTest {
     }
 
     @Test
-    fun `a Cypher statement is refused until SQLite compiles one`() {
-        val refused = assertFailsWith<DrivineException> { pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n) RETURN n"))) }
-        assertTrue("does not run on SQLITE yet" in refused.message.orEmpty(), refused.message)
+    fun `a Cypher statement is compiled to SQLite's SQL, a write applied whole or not at all`() {
+        val graph = SqliteTestDatabase.graphManager("cyconn")
+        SqliteTestDatabase.clear(graph)
+        fun cypher(statement: String) = graph.query(QuerySpecification.withStatement(CypherStatement(statement)))
+        assertEquals(listOf(mapOf("name" to "Ada", "tags" to listOf("a", 1.0))), cypher("CREATE (p:CyConn {name: 'Ada', tags: ['a', 1.0]}) RETURN properties(p)"))
+        assertEquals(listOf(listOf("Ada", 1L)), cypher("MATCH (p:CyConn) RETURN p.name, count(*)"))
+        // A write that fails partway leaves nothing of what it wrote: its savepoint is rolled back.
+        cypher("MATCH (p:CyConn) CREATE (p)-[:KNOWS]->(:CyConn {name: 'Bob'})")
+        assertFailsWith<DrivineException> { cypher("MATCH (p:CyConn) CREATE (:CyConn {name: 'Copy'}) DELETE p") }
+        assertEquals(listOf(listOf("Ada", "Bob")), cypher("MATCH (p:CyConn) WITH p ORDER BY p.name RETURN collect(p.name)"))
+    }
+
+    @Test
+    fun `a compiled Cypher write in a transaction is read there and rolled back with it, and one that fails leaves what the transaction wrote before`() {
+        val graph = SqliteTestDatabase.graphManager("cytx")
+        SqliteTestDatabase.clear(graph)
+        val connection = JdbcConnectionProvider("cytx", DatabaseType.SQLITE, SqliteTestDatabase.provider.nativeDriver, graphName = "cytx").connect()
+        fun cypher(statement: String) = connection.query(QuerySpecification.withStatement(CypherStatement(statement)))
+        try {
+            connection.startTransaction()
+            cypher("CREATE (:CyTx {name: 'kept'})-[:R]->(:CyTx {name: 'other'})")
+            // Its savepoint is rolled back, and the transaction's own writes are left.
+            assertFails { cypher("MATCH (t:CyTx {name: 'kept'}) CREATE (:CyTx {name: 'lost'}) DELETE t") }
+            assertEquals(listOf(listOf("kept", "other")), cypher("MATCH (t:CyTx) WITH t ORDER BY t.name RETURN collect(t.name)"))
+            connection.rollbackTransaction()
+        } finally {
+            connection.release()
+        }
+        assertEquals(listOf(0L), graph.query(QuerySpecification.withStatement(CypherStatement("MATCH (t:CyTx) RETURN count(t)"))))
     }
 
     @Test

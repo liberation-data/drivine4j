@@ -1,0 +1,69 @@
+package org.drivine.backend.sqlite
+
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.ObjectMapper
+import com.fasterxml.jackson.databind.node.JsonNodeFactory
+import com.fasterxml.jackson.databind.node.NullNode
+import java.math.BigDecimal
+
+/**
+ * Cypher's values as a compiled statement holds them on SQLite, the JSON text of each, and what Cypher does
+ * with them that SQLite's JSON functions do not: compare them, and add them. A text a function is given
+ * that is SQL's null, or JSON's, is no value.
+ */
+internal object SqliteCypherValues {
+
+    private val json = ObjectMapper()
+
+    /** The JSON text [text] read, or null where it is null or JSON's null. */
+    fun read(text: String?): JsonNode? = text?.let(json::readTree)?.takeUnless { it.isNull || it.isMissingNode }
+
+    /** [node] as JSON text. */
+    fun write(node: JsonNode): String = json.writeValueAsString(node)
+
+    /**
+     * Whether [a] and [b] are equal as Cypher compares them: a number equal to a number of the same value
+     * whatever its kind (`1` and `1.0`), a list to a list of equal items in the same order, a map to a map of
+     * the same keys with equal values in any order, and nothing to a value of another kind.
+     */
+    fun equal(a: JsonNode, b: JsonNode): Boolean = when {
+        a.isNumber && b.isNumber -> number(a).compareTo(number(b)) == 0
+        a.isArray && b.isArray -> a.size() == b.size() && (0 until a.size()).all { equal(a[it], b[it]) }
+        a.isObject && b.isObject -> a.size() == b.size() && a.properties().all { (key, value) -> b.has(key) && equal(value, b[key]) }
+        else -> a.nodeType == b.nodeType && a == b
+    }
+
+    /** Whether the map [props] holds each entry of the map [map], with an equal value: a null among them is held only by a null. */
+    fun contains(props: JsonNode, map: JsonNode): Boolean =
+        props.isObject && map.isObject && map.properties().all { (key, value) -> props.has(key) && equal(props[key], value) }
+
+    /**
+     * `a + b`, as Cypher adds two values: numbers summed, a whole number where both are; lists joined, or an item put
+     * at a list's end or start; a text and a text or a number written one after the other. Null for any other two.
+     */
+    fun add(a: JsonNode, b: JsonNode): JsonNode? = when {
+        a.isNumber && b.isNumber ->
+            if (a.isIntegralNumber && b.isIntegralNumber) {
+                runCatching { JsonNodeFactory.instance.numberNode(Math.addExact(a.longValue(), b.longValue())) }
+                    .getOrElse { JsonNodeFactory.instance.numberNode(a.bigIntegerValue() + b.bigIntegerValue()) }
+            } else {
+                JsonNodeFactory.instance.numberNode(a.doubleValue() + b.doubleValue())
+            }
+        a.isArray -> JsonNodeFactory.instance.arrayNode().addAll(a.toList()).apply { if (b.isArray) addAll(b.toList()) else add(b) }
+        b.isArray -> JsonNodeFactory.instance.arrayNode().add(a).addAll(b.toList())
+        (a.isTextual || a.isNumber) && (b.isTextual || b.isNumber) -> JsonNodeFactory.instance.textNode(a.asText() + b.asText())
+        else -> null
+    }
+
+    /** [node] with each map in it, at any depth, with its keys in order. */
+    fun canonical(node: JsonNode): JsonNode = when {
+        node.isObject -> JsonNodeFactory.instance.objectNode().apply { node.properties().sortedBy { it.key }.forEach { (key, value) -> set<JsonNode>(key, canonical(value)) } }
+        node.isArray -> JsonNodeFactory.instance.arrayNode().apply { node.forEach { add(canonical(it)) } }
+        else -> node
+    }
+
+    /** JSON's null, which a list holds where an item is null. */
+    val NULL: JsonNode = NullNode.instance
+
+    private fun number(node: JsonNode): BigDecimal = if (node.isIntegralNumber) node.bigIntegerValue().toBigDecimal() else BigDecimal(node.doubleValue())
+}

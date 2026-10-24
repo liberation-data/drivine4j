@@ -5,8 +5,8 @@ import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.query.QuerySpecification
 
 /**
- * Writes a test's graph to a SQLite store as rows, as a Cypher `CREATE` fixture would on a store that
- * compiles one: SQLite does not compile Cypher yet. A node is found again by its `id`.
+ * Writes a test's graph to a SQLite store as rows, without Cypher, as a Cypher `CREATE` fixture would:
+ * a test of what the tables hold seeds them so. A node is found again by its `id`.
  */
 class SqliteSeed(private val pm: PersistenceManager) {
 
