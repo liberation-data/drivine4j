@@ -7,7 +7,7 @@
 
 **Docs: [drivine.org](https://drivine.org/jvm/)**, for Kotlin & Java, TypeScript, and Python.
 
-A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph**, **Oracle** (SQL/PGQ) and **Postgres** (plain SQL, with pgvector for vector search) with two approaches to graph mapping:
+A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph**, **Oracle** (SQL/PGQ), **Postgres** (plain SQL, with pgvector for vector search) and **SQLite** (a file, no server) with two approaches to graph mapping:
 
 1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
 2. **Object manager** (`StatelessGraphObjectManager`) - High-level API with annotated models and type-safe DSL.
@@ -2808,16 +2808,16 @@ QuerySpecification
 
 ```kotlin
 data class ConnectionProperties(
-    val type: DatabaseType,                  // NEO4J, FALKORDB, NEPTUNE, MEMGRAPH, ORACLE, POSTGRES
-    val host: String = "",
+    val type: DatabaseType,                  // NEO4J, FALKORDB, NEPTUNE, MEMGRAPH, ORACLE, POSTGRES, SQLITE
+    val host: String = "",                   // not read on SQLite, a file
     val port: Int? = null,                   // the engine's own when null: 1521 on Oracle, 5432 on Postgres
     val userName: String? = null,
     val password: String? = null,
     val idleTimeout: Int? = null,
     val connectionTimeout: Int? = null,
     val poolMax: Int? = null,
-    val databaseName: String? = null,        // on Oracle, the service to connect to; on Postgres, the database
-    val defaultGraphPath: String? = null,    // on Oracle and Postgres, the name of the graph and its tables
+    val databaseName: String? = null,        // on Oracle, the service to connect to; on Postgres, the database; on SQLite, the file's path
+    val defaultGraphPath: String? = null,    // on Oracle, Postgres and SQLite, the name of the graph and its tables
     val protocol: String? = null,
     val cypherDialect: CypherDialect? = null,
     val falkorDbTransactionMode: FalkorDbTransactionMode? = null,
@@ -2869,6 +2869,7 @@ Drivine4j supports multiple graph database engines from the same codebase. Switc
 | Memgraph | `MEMGRAPH` | Full ACID | CALL subquery | Basic (user/pass) or None |
 | Oracle 23ai / 26ai | `ORACLE` | Full ACID | In the statement | User and password |
 | Postgres 14+ | `POSTGRES` | Full ACID | In the statement | User and password |
+| SQLite 3.45+ | `SQLITE` | Full ACID, one writer at a time | In the statement | None (a file) |
 
 ### Neo4j
 
@@ -3432,6 +3433,61 @@ They run by default, in a plain `./gradlew test`. `POSTGRES_TESTS=false` skips t
 main job. A job of its own (`test (Postgres)`) runs the sample app's stateless tests and the root
 module's stateless Spring tests on a Postgres datasource
 (`DATABASE_DATASOURCES_GRAPH_TYPE=POSTGRES`, `DATABASE_DATASOURCES_NEO_TYPE=POSTGRES`).
+
+### SQLite
+
+SQLite 3.45 or later, over JDBC with xerial's driver: a graph in a file, with no server to run. Drivine
+keeps it in the same two tables as on Oracle and Postgres, so models, the query DSL and
+`StatelessGraphObjectManager` are the same as on the other stores. Add the driver yourself:
+`org.xerial:sqlite-jdbc`.
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: SQLITE
+      database-name: /var/data/app.db  # the file, made if it is not there
+      default-graph-path: drivine      # names the graph's tables; this is the default
+```
+
+`database-name` is required, and names a file: an in-memory database is refused, as each pooled
+connection would open one of its own. A `host`, a `protocol` or a `cypher-dialect` means nothing here and is
+ignored with a warning; a port, a user and a password are not read. The pool is HikariCP with
+`pool-max`. Each connection is opened with a write-ahead log, foreign keys enforced, a wait of 30
+seconds for a locked file, and the functions Drivine's statements call registered on it, so make the
+provider with `JdbcConnectionProvider.sqlite`, not over a `DataSource` of your own:
+
+```kotlin
+val provider = JdbcConnectionProvider.sqlite("graph", "/var/data/app.db", graphName = "drivine")
+```
+
+**How a graph is stored.** `<graph>_node (nid, labels, props, stamp)` and
+`<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON text (not SQLite's binary
+`jsonb`, so Drivine for TypeScript and for Python read the same file), and `<graph>_schema` for what
+schema management made. A save is the plan of steps the other stores carry out, carried out by the
+function `drivine_write` that Drivine registers on each connection: applied whole or not at all, and
+stamped and checked as elsewhere. Deleting a node's row deletes its relationships with it.
+
+**Notes:**
+- A statement written by hand is SQL; a `CypherStatement` is refused, as SQLite does not compile Cypher
+  yet. SQLite has no JSON type, so JSON a statement of your own returns is text; one that opens with
+  `/* drivine:json */` has each of its text values read as the JSON it is.
+- A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
+  `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
+  as 1), where Postgres gives its text.
+- Temporal values are their ISO 8601 text, and a moment is compared and ordered as nanoseconds since
+  the epoch, whatever offset it was written with.
+- SQLite has one writer at a time. A transaction takes the write lock as it begins; a save or a delete
+  the file stays locked against for longer than the wait, or that read before another connection
+  wrote, is run again, as a contended save is on the other stores.
+- Index the id of each node type you save, with a uniqueness constraint or a range index: each is a
+  partial index over the property for the nodes of one label.
+- `matches` takes a regular expression in Java's dialect, matched against the whole value. A leading
+  `(?i)` ignores case.
+- A vector index and a full-text index are recorded and nothing is made for them: `loadNearest` and
+  `loadMatching` measure every node of the label, and are exact.
+- The test kit's Cypher fixtures (`SqlCypherFixtures`) are refused here; seed a test's graph as rows.
+  `TestCleanup.beforeEach` works on SQLite too. SQLite's tests need no container.
 
 ### @JsonPacked Annotation
 

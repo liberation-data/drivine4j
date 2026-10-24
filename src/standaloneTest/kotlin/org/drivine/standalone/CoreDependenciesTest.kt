@@ -26,6 +26,18 @@ class CoreDependenciesTest {
     }
 
     @Test
+    fun `the JDBC stores' classes load without SQLite's driver, which the application adds`() {
+        assertFailsWith<ClassNotFoundException> { Class.forName("org.sqlite.Function") }
+        listOf(
+            "org.drivine.connection.JdbcConnectionProvider",
+            "org.drivine.connection.JdbcConnection",
+            "org.drivine.mapper.JdbcResultMapper",
+            "org.drivine.backend.GraphBackends",
+            "org.drivine.connection.ConnectionProviderBuilder",
+        ).forEach { Class.forName(it) }
+    }
+
+    @Test
     fun `the core's classes load on its own classpath`() {
         Class.forName(Drivine::class.java.name)
         Class.forName(Transactions::class.java.name)

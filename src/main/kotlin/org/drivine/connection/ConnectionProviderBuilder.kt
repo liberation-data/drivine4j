@@ -9,7 +9,8 @@ import org.slf4j.LoggerFactory
  * Builds the [ConnectionProvider] of one datasource from its connection properties and registers it:
  * a Bolt driver for Neo4j, Neptune and Memgraph, a FalkorDB client, or for Oracle and Postgres a JDBC
  * connection pool. What a property means is the engine's: on Oracle the database name is the service
- * to connect to, on Postgres the database, and on both the default graph path is the name of the graph.
+ * to connect to, on Postgres the database, on SQLite the path of the file, and on each of them the
+ * default graph path is the name of the graph. SQLite has no host.
  *
  * An engine with no wire to describe ([DatabaseType.buildableFromProperties] false) is not built
  * here; the application registers a provider for it.
@@ -69,7 +70,8 @@ class ConnectionProviderBuilder(
 
     /**
      * The provider registered as [name]: the one that is there already, or one built from what this
-     * builder was given and registered. A host is required, and what else is depends on the engine.
+     * builder was given and registered. A host is required but for SQLite, a file, and what else is
+     * depends on the engine.
      */
     fun register(name: String = "default"): ConnectionProvider {
         registry.connectionProvider(name)?.let { return it }
@@ -82,7 +84,8 @@ class ConnectionProviderBuilder(
                     "(or via DatabaseRegistry.register); connection properties cannot build one"
             )
         }
-        require(!host.isNullOrBlank()) { "Host config is required" }
+        // A file has no host: SQLite is built from its path alone.
+        if (type != DatabaseType.SQLITE) require(!host.isNullOrBlank()) { "Host config is required" }
 
         val provider = when (type) {
             DatabaseType.NEO4J -> buildNeo4jProvider(name)
@@ -91,6 +94,7 @@ class ConnectionProviderBuilder(
             DatabaseType.MEMGRAPH -> buildMemgraphProvider(name)
             DatabaseType.ORACLE -> buildOracleProvider(name)
             DatabaseType.POSTGRES -> buildPostgresProvider(name)
+            DatabaseType.SQLITE -> buildSqliteProvider(name)
             else -> throw DrivineException("Type $type is not supported by ConnectionProviderBuilder")
         }
 
@@ -229,6 +233,26 @@ class ConnectionProviderBuilder(
             poolMax = poolMax,
             connectionTimeoutMillis = connectionTimeout,
             idleTimeoutMillis = idleTimeout,
+            subtypeRegistry = subtypeRegistry,
+            graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
+        )
+    }
+
+    /**
+     * SQLite: the database name is the path of the file, made if it is not there, and the default graph
+     * path names the graph's tables (see [JdbcConnectionProvider.graphName]). A file has no host or
+     * protocol, and SQLite no Cypher dialect: each is warned about where it is set. A port, a user and a
+     * password are not read, nor are the connection and idle timeouts.
+     */
+    private fun buildSqliteProvider(name: String): ConnectionProvider {
+        val path = requireNotNull(this.name) { "SQLite requires a databaseName: the path of the database file" }
+        cypherDialect?.let { logger.warn("SQLite does not speak Cypher; the dialect $it set for datasource '$name' is ignored") }
+        protocol?.let { logger.warn("SQLite is a file; the protocol '$it' set for datasource '$name' is ignored") }
+        host?.takeIf { it.isNotBlank() }?.let { logger.warn("SQLite is a file; the host '$it' set for datasource '$name' is ignored") }
+        return JdbcConnectionProvider.sqlite(
+            name = name,
+            path = path,
+            poolMax = poolMax,
             subtypeRegistry = subtypeRegistry,
             graphName = defaultGraphPath ?: JdbcConnectionProvider.DEFAULT_GRAPH,
         )

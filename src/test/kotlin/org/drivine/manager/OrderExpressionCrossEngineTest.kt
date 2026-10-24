@@ -10,6 +10,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.OrderExpression
@@ -301,4 +302,15 @@ class OrderExpressionPostgresTest {
 
     @Test
     fun `roots are ranked by a computed score on Postgres`() = verify(buildGom(pm, registry), readsMoments = true, refusesDivisionByZero = true)
+}
+
+class OrderExpressionSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clear() = SqliteTestDatabase.clear(pm)
+
+    @Test
+    fun `roots are ranked by a computed score on SQLite`() = verify(buildGom(pm, registry), readsMoments = true, refusesDivisionByZero = false)
 }

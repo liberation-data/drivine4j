@@ -151,8 +151,14 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
             related(value, parent, steps, row, tail = listOf(first("$row.eid"))).nested()
         }
 
-    /** The clause that keeps the first row by [order]. */
-    protected fun first(order: String): String = "ORDER BY $order FETCH FIRST 1 ROWS ONLY"
+    /** The clause that keeps the first row by [order]. A store without `FETCH FIRST` writes its own. */
+    protected open fun first(order: String): String = "ORDER BY $order FETCH FIRST 1 ROWS ONLY"
+
+    /**
+     * The direction of a term of an order, with its nulls where Cypher puts them: last when ascending,
+     * first when descending. Oracle and Postgres put them there unasked; a store that does not says so.
+     */
+    protected open fun direction(ascending: Boolean): String = if (ascending) "ASC" else "DESC"
 
     /**
      * A field of a view that holds views of the same class: each level holds the next, down to
@@ -203,7 +209,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
     private fun sorted(row: String, targetType: Class<*>, sort: CollectionSortSpec): String {
         val fragment = if (targetType.isAnnotationPresent(GraphView::class.java)) GraphViewModel.from(targetType).rootFragment.fragmentType else targetType
         val kind = SqlKind.ofType(runCatching { FragmentModel.from(fragment) }.getOrNull()?.fields?.firstOrNull { it.propertyName == sort.propertyName }?.type)
-        return "${property(row, sort.propertyName, kind)} ${if (sort.ascending) "ASC" else "DESC"}, $row.eid"
+        return "${property(row, sort.propertyName, kind)} ${direction(sort.ascending)}, $row.eid"
     }
 
     /** A relationship field that is one object and may not be null leaves out the roots that have none. */

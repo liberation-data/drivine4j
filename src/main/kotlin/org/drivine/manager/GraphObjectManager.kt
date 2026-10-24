@@ -524,17 +524,23 @@ class GraphObjectManager internal constructor(
     override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
         validateCascadeSupport(cascade)
         if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) refuseCascadeBelowDepth(id, graphClass, whereClause)
-        return persistenceManager.getOne(
-            backend.delete(graphClass, whereClause, cascade).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java)
-        )
+        return deleted(backend.delete(graphClass, whereClause, cascade).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java))
     }
+
+    /**
+     * Runs a delete, and runs it again if the engine turned it away as contended, as a save is (see
+     * [SaveExecutor.whenNotContended]). Outside a transaction SQLite turns away a delete that read the
+     * nodes it takes before another connection wrote; a delete turned away has deleted nothing.
+     */
+    private fun deleted(spec: QuerySpecification<Int>): Int =
+        SaveExecutor(persistenceManager, backend).whenNotContended { persistenceManager.getOne(spec) }
 
     override fun <T : Any> deleteAll(graphClass: Class<T>): Int {
         return deleteAll(graphClass, null as String?)
     }
 
     override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int =
-        persistenceManager.getOne(backend.deleteAll(graphClass, whereClause).spec().transform(Int::class.java))
+        deleted(backend.deleteAll(graphClass, whereClause).spec().transform(Int::class.java))
 
     override fun <T : Any, Q : Any> deleteAll(
         graphClass: Class<T>,
@@ -543,7 +549,7 @@ class GraphObjectManager internal constructor(
     ): Int {
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
-        return persistenceManager.getOne(backend.deleteAll(graphClass, querySpec).spec().transform(Int::class.java))
+        return deleted(backend.deleteAll(graphClass, querySpec).spec().transform(Int::class.java))
     }
 
     /**
