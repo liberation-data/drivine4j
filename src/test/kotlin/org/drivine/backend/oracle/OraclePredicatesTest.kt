@@ -145,17 +145,17 @@ class OraclePredicatesTest {
     fun `matches anchors the expression to the whole value`() {
         val (sql, bound) = compared("name", ComparisonOperator.MATCHES, "a.*")
         assertEquals("REGEXP_LIKE($name, \$_p0)", sql)
-        assertEquals("^(a.*)$", bound["_p0"])
+        assertEquals("^(a.*)\\z", bound["_p0"])
     }
 
     @Test
     fun `matches renumbers a backreference for the group that anchors the expression`() {
-        assertEquals("^((A).*\\2)$", compared("name", ComparisonOperator.MATCHES, "(A).*\\1").second.values.single())
-        assertEquals("^((a)(b)\\3\\2)$", compared("name", ComparisonOperator.MATCHES, "(a)(b)\\2\\1").second.values.single())
+        assertEquals("^((A).*\\2)\\z", compared("name", ComparisonOperator.MATCHES, "(A).*\\1").second.values.single())
+        assertEquals("^((a)(b)\\3\\2)\\z", compared("name", ComparisonOperator.MATCHES, "(a)(b)\\2\\1").second.values.single())
         // An escaped backslash, and a backslash in a bracket expression, are no backreferences.
-        assertEquals("^(a\\\\1)$", compared("name", ComparisonOperator.MATCHES, "a\\\\1").second.values.single())
-        assertEquals("^([\\1]x)$", compared("name", ComparisonOperator.MATCHES, "[\\1]x").second.values.single())
-        assertEquals("^([]\\1](a)\\2)$", compared("name", ComparisonOperator.MATCHES, "[]\\1](a)\\1").second.values.single())
+        assertEquals("^(a\\\\1)\\z", compared("name", ComparisonOperator.MATCHES, "a\\\\1").second.values.single())
+        assertEquals("^([\\1]x)\\z", compared("name", ComparisonOperator.MATCHES, "[\\1]x").second.values.single())
+        assertEquals("^([]\\1](a)\\2)\\z", compared("name", ComparisonOperator.MATCHES, "[]\\1](a)\\1").second.values.single())
     }
 
     @Test
@@ -168,7 +168,7 @@ class OraclePredicatesTest {
     fun `matches ignores case only for a leading case flag, which is taken off the expression`() {
         val (sql, bound) = compared("name", ComparisonOperator.MATCHES, "(?i)a.*")
         assertEquals("REGEXP_LIKE($name, \$_p0, 'i')", sql)
-        assertEquals("^(a.*)$", bound["_p0"])
+        assertEquals("^(a.*)\\z", bound["_p0"])
     }
 
     @Test

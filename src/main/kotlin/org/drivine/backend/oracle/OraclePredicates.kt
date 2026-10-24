@@ -260,12 +260,13 @@ internal class OraclePredicates(
      *
      * The expression is anchored in a group of its own, which POSIX can only write as one that
      * captures: so each group the caller wrote is one further on, and a backreference to it is
-     * renumbered to match (see [renumbered]).
+     * renumbered to match (see [renumbered]). It ends at `\z`, the value's end, as Oracle's `$` also
+     * matches before a line break that ends it.
      */
     private fun matches(text: String, pattern: String): String {
         val ignoreCase = pattern.startsWith("(?i)")
         val body = renumbered(pattern.removePrefix("(?i)"))
-        return "REGEXP_LIKE($text, ${scope.bound("^($body)$")}${if (ignoreCase) ", 'i'" else ""})"
+        return "REGEXP_LIKE($text, ${scope.bound("^($body)\\z")}${if (ignoreCase) ", 'i'" else ""})"
     }
 
     /**

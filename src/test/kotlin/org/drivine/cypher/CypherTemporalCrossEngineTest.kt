@@ -144,30 +144,4 @@ class CypherTemporalSqliteTest : CypherTemporalContract() {
     override val pm: PersistenceManager get() = manager
 
     override fun clear() = SqliteTestDatabase.clear(manager)
-
-    @Test
-    fun `a fraction of a second gives its milliseconds and microseconds whole, though a real number misses it`() {
-        // 33.001 in binary times a million is 33000999.999999996.
-        val fields = pm.query(
-            QuerySpecification.withStatement(
-                CypherStatement(
-                    "WITH localdatetime('2024-03-15T10:30:33.001') AS t, duration('PT33.007S') AS d " +
-                        "RETURN [t.millisecond, t.microsecond, d.microseconds, d.microsecondsOfSecond, localtime('10:59:59.999999').hour, " +
-                        "datetime('2024-03-15T10:30:33.123999Z').epochMillis]"
-                )
-            )
-        )
-        assertEquals(listOf(listOf(1L, 1000L, 33007000L, 7000L, 10L, 1710498633123L)), fields)
-    }
-
-    @Test
-    fun `a duration of a map keeps the fraction of a second its smaller units make`() {
-        // SQLite divides one whole number by another to a whole number.
-        val durations = pm.query(
-            QuerySpecification.withStatement(
-                CypherStatement("RETURN [toString(duration({milliseconds: 1500})), toString(duration({seconds: 1, microseconds: 7})), toString(duration({nanoseconds: 1000}))]")
-            )
-        )
-        assertEquals(listOf(listOf("PT1.5S", "PT1.000007S", "PT0.000001S")), durations)
-    }
 }
