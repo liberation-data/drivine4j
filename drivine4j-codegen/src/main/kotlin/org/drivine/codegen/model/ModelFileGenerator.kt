@@ -34,7 +34,8 @@ internal class ModelFileGenerator(
      * Writes the model of [fragments], [relationshipFragments] and [views]. The previous file's
      * entries for classes the code no longer declares stay in it, marked removed; those for classes
      * KSP has [deferred] stay as they were, since they are still declared. [sources] are the
-     * module's source files, from which a module with nothing left to describe is found.
+     * module's source files, from which a module with nothing left to describe is found: only when
+     * they are a main source set's.
      */
     fun generate(
         fragments: List<KSClassDeclaration>,
@@ -49,10 +50,13 @@ internal class ModelFileGenerator(
             logger.error("Drivine model file: the KSP option $FILE must be an absolute path, not $it.")
             return
         }
+        val file = options[FILE]?.let { File(it) }
         val all = fragments + relationshipFragments + views
         // With nothing declared there is nothing to write unless a file before this one had something,
-        // which is now removed. The module is found from its sources, as there is no resource to go by.
-        if (all.isEmpty() && previous(options[FILE]?.let { File(it) } ?: sources.firstNotNullOfOrNull { mainModuleFile(it) }) == null) {
+        // which is now removed. The module is found from its sources, as there is no resource to go by,
+        // and only from its main ones: a test source set, as Maven's with drivine.model.file, leaves it be.
+        val mainFile = sources.firstNotNullOfOrNull { mainModuleFile(it) }
+        if (all.isEmpty() && (mainFile == null || previous(file ?: mainFile) == null)) {
             return
         }
 
@@ -65,7 +69,7 @@ internal class ModelFileGenerator(
         val resourceFile = codeGenerator.generatedFile.firstOrNull { it.invariantSeparatorsPath.endsWith("$RESOURCE_PATH.json") }
         val layout = resourceFile?.let { gradleLayout(it) }
         val module = options[MODULE] ?: layout?.moduleDir?.name ?: resourceFile?.let { buildFileDir(it) }?.name ?: "module"
-        val target = options[FILE]?.let { File(it) }
+        val target = file
             ?: layout?.takeIf { it.sourceSet == "main" }?.moduleDir?.resolve(".drivine/model.json")
         val previous = previous(target)
 
@@ -76,7 +80,9 @@ internal class ModelFileGenerator(
             "generator" to linkedMapOf(
                 "library" to "drivine4j",
                 "version" to version(),
-                "language" to if (all.isNotEmpty() && all.all { it.origin == Origin.JAVA }) "java" else "kotlin",
+                // With nothing declared, the language the module last had.
+                "language" to if (all.isEmpty()) (previous?.get("generator") as? Map<*, *>)?.get("language") ?: "kotlin"
+                else if (all.all { it.origin == Origin.JAVA }) "java" else "kotlin",
             ),
             "module" to module,
             "fragments" to withRemoved(fragments.map { reader.fragment(it) }, previous?.get("fragments"), deferred),

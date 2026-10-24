@@ -397,6 +397,11 @@ class ModelFileGeneratorTest {
 
     private val nothing = SourceFile.kotlin("Nothing.kt", "package shop\n\nobject Nothing\n")
 
+    /** A source with nothing to describe, in [sourceSet] of Gradle's and Maven's layout under [dir]. */
+    private fun nothingIn(sourceSet: String) = SourceFile.fromPath(
+        File(dir, "app/src/$sourceSet/kotlin/shop/Nothing.kt").apply { parentFile.mkdirs(); writeText("package shop\n\nobject Nothing\n") },
+    )
+
     @Test
     fun `what the code no longer declares stays in the file, marked removed, until it comes back`() {
         val file = File(dir, ".drivine/model.json")
@@ -428,10 +433,46 @@ class ModelFileGeneratorTest {
     fun `a module with nothing left keeps its file, everything in it removed`() {
         val file = File(dir, ".drivine/model.json")
         generate(shop(withOrders = true), file = file, workDir = File(dir, "one"))
-        val model = generate(nothing, file = file, workDir = File(dir, "two"))
+        val model = generate(nothingIn("main"), file = file, workDir = File(dir, "two"))
         val entries = model["fragments"] + model["relationshipFragments"] + model["views"]
         assertEquals(4, entries.size)
         assertTrue(entries.all { it["removed"].asBoolean() })
+    }
+
+    @Test
+    fun `a test source set with nothing declared leaves the main file alone`() {
+        val file = File(dir, ".drivine/model.json")
+        generate(shop(withOrders = true), file = file, workDir = File(dir, "one"))
+        val before = file.readText()
+        compile(listOf(nothingIn("test")), mapOf(ModelFileGenerator.FILE to file.path), File(dir, "two"))
+        assertEquals(before, file.readText())
+    }
+
+    @Test
+    fun `a Java module with nothing left is still a Java one`() {
+        val file = File(dir, ".drivine/model.json")
+        generate(javaNullable, javaTicket, javaView, file = file, workDir = File(dir, "one"))
+        val model = generate(nothingIn("main"), file = file, workDir = File(dir, "two"))
+        assertEquals("java", model["generator"]["language"].asText())
+    }
+
+    @Test
+    fun `a deferred entry is kept as it was, a removed one marked once, all sorted by id`() {
+        val entries = ModelFileGenerator.withRemoved(
+            current = listOf(linkedMapOf("id" to "b.Current", "name" to "Current")),
+            previous = listOf(
+                linkedMapOf("id" to "c.Gone", "name" to "Gone", "removed" to true, "labels" to listOf("Gone")),
+                linkedMapOf("id" to "a.Deferred", "name" to "Deferred", "labels" to listOf("Deferred")),
+                linkedMapOf("id" to "b.Current", "name" to "Old"),
+                linkedMapOf("id" to "d.Nameless"),
+            ),
+            deferred = setOf("a.Deferred"),
+        )
+        assertEquals(listOf("a.Deferred", "b.Current", "c.Gone", "d.Nameless"), entries.map { it["id"] })
+        assertEquals(linkedMapOf("id" to "a.Deferred", "name" to "Deferred", "labels" to listOf("Deferred")), entries[0])
+        assertEquals("Current", entries[1]["name"])
+        assertEquals(listOf("id", "name", "removed", "labels"), entries[2].keys.toList())
+        assertEquals(listOf("id", "removed"), entries[3].keys.toList())
     }
 
     @Test
