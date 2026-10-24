@@ -1,5 +1,9 @@
 package org.drivine.cypher.sql
 
+import com.fasterxml.jackson.databind.JsonNode
+import com.fasterxml.jackson.databind.node.ArrayNode
+import com.fasterxml.jackson.databind.node.JsonNodeFactory
+import com.fasterxml.jackson.databind.node.ObjectNode
 import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleSql
 import org.drivine.cypher.ast.RelationshipPattern
@@ -11,7 +15,7 @@ import org.drivine.model.Stamps
  *
  * A value is Oracle's `JSON`, which compares, groups and orders as JSON and keeps a map's keys in the
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
- * number the statement writes is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
+ * number the statement writes, or a parameter's that is a whole number, is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
  * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` is a function the query
  * declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
  *
@@ -26,7 +30,31 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         if (value is Double) "JSON_SCALAR(TO_BINARY_DOUBLE(${literal(value.toString())}))"
         else "JSON(${literal(Neo4jObjectMapper.instance.writeValueAsString(value))})"
 
-    override fun parameterJson(marker: String) = "JSON($marker)"
+    override fun parameterJson(marker: String, text: String?) = if (text?.contains("\"$DOUBLE\"") == true) "JSON($marker EXTENDED)" else "JSON($marker)"
+
+    /** Whether a parameter's text holds a float as Oracle's extended JSON writes one: see [parameterText]. */
+    private var extended = false
+
+    /**
+     * A float that is a whole number, `2.0`, written as Oracle's extended JSON writes a double, `{"${'$'}numberDouble": "2.0"}`, which
+     * `JSON(… EXTENDED)` reads as one: Oracle reads JSON's `2.0` as the number 2, a whole number, as it reads `2`.
+     */
+    override fun parameterText(value: Any?): String {
+        val tree = Neo4jObjectMapper.instance.valueToTree<JsonNode>(value)
+        val written = doubles(tree)
+        return Neo4jObjectMapper.instance.writeValueAsString(written)
+    }
+
+    /** [node] with each float in it that is a whole number written as extended JSON's double. */
+    private fun doubles(node: JsonNode): JsonNode = when {
+        node.isFloatingPointNumber && node.doubleValue().let { it.isFinite() && it == Math.rint(it) } -> {
+            extended = true
+            JsonNodeFactory.instance.objectNode().put(DOUBLE, node.doubleValue().toString())
+        }
+        node is ObjectNode -> node.apply { properties().toList().forEach { (key, value) -> set<JsonNode>(key, doubles(value)) } }
+        node is ArrayNode -> node.apply { (0 until size()).forEach { set(it, doubles(get(it))) } }
+        else -> node
+    }
 
     override fun parameterCount(marker: String) = "CAST($marker AS NUMBER)"
 
@@ -139,7 +167,11 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "tolower" -> "JSON_SCALAR(LOWER(${text(json)}))"
         "toupper" -> "JSON_SCALAR(UPPER(${text(json)}))"
         "trim" -> "JSON_SCALAR(TRIM(${text(json)}))"
-        "tostring" -> "JSON_SCALAR(JSON_VALUE($json, '\$'))"
+        // A float that is a whole number is written with its fraction, 2.0, as in Cypher: Oracle writes a double of 2 as 2.
+        "tostring" -> shared(json) { (x) ->
+            val n = "JSON_VALUE($x, '\$' RETURNING NUMBER)"
+            "CASE WHEN ${kind(x)} = 'double' AND ABS($n) < 1e15 AND $n = TRUNC($n) THEN JSON_SCALAR(TO_CHAR(TRUNC($n)) || '.0') ELSE JSON_SCALAR(JSON_VALUE($x, '\$')) END"
+        }
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
         "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"
@@ -320,7 +352,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** An anonymous block, which returns its rows as an implicit result. */
     override fun procedure(body: List<String>) = (listOf(
         "DECLARE",
-        "    $PARAMS JSON := JSON(\$${Parameters.OBJECT});",
+        "    $PARAMS JSON := JSON(\$${Parameters.OBJECT}${if (extended) " EXTENDED" else ""});",
         "    $ROWS JSON;",
         "    $OUT JSON;",
         "    $ROW JSON;",
@@ -356,5 +388,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private companion object {
         /** The cursor a procedure returns its rows by. */
         const val CURSOR = "cy_cursor"
+
+        /** The key of a double in Oracle's extended JSON. */
+        const val DOUBLE = "\$numberDouble"
     }
 }

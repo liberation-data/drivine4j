@@ -17,7 +17,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun literalJson(value: Any?) = "CAST(${literal(Neo4jObjectMapper.instance.writeValueAsString(value))} AS jsonb)"
 
-    override fun parameterJson(marker: String) = "CAST($marker AS jsonb)"
+    override fun parameterJson(marker: String, text: String?) = "CAST($marker AS jsonb)"
 
     override fun parameterCount(marker: String) = "CAST($marker AS bigint)"
 
