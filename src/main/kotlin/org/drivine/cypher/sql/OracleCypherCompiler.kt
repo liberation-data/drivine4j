@@ -9,6 +9,8 @@ import org.drivine.backend.oracle.OracleSql
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
+import java.util.Collections
+import java.util.IdentityHashMap
 
 /**
  * Compiles a Cypher statement to SQL over a graph's tables on Oracle: see [SqlCypherCompiler].
@@ -30,29 +32,39 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         if (value is Double) "JSON_SCALAR(TO_BINARY_DOUBLE(${literal(value.toString())}))"
         else "JSON(${literal(Neo4jObjectMapper.instance.writeValueAsString(value))})"
 
-    override fun parameterJson(marker: String, text: String?) = if (text?.contains("\"$DOUBLE\"") == true) "JSON($marker EXTENDED)" else "JSON($marker)"
+    /**
+     * A text that holds an extended JSON double is read as extended JSON, and only one: else a map of the parameter's whose
+     * key is `${'$'}numberDouble` would be read as a double.
+     */
+    override fun parameterJson(marker: String, text: String?) = if (text != null && text in extended) "JSON($marker EXTENDED)" else "JSON($marker)"
 
-    /** Whether a parameter's text holds a float as Oracle's extended JSON writes one: see [parameterText]. */
-    private var extended = false
+    /**
+     * The parameters' texts that hold a float as Oracle's extended JSON writes one: see [parameterText]. Kept by identity, as
+     * a map parameter `{"${'$'}numberDouble": "2.0"}` is written as the same text as the float 2.0.
+     */
+    private val extended: MutableSet<String> = Collections.newSetFromMap(IdentityHashMap())
 
     /**
      * A float that is a whole number, `2.0`, written as Oracle's extended JSON writes a double, `{"${'$'}numberDouble": "2.0"}`, which
      * `JSON(… EXTENDED)` reads as one: Oracle reads JSON's `2.0` as the number 2, a whole number, as it reads `2`.
      */
     override fun parameterText(value: Any?): String {
-        val tree = Neo4jObjectMapper.instance.valueToTree<JsonNode>(value)
-        val written = doubles(tree)
-        return Neo4jObjectMapper.instance.writeValueAsString(written)
+        var doubled = false
+        val written = doubles(Neo4jObjectMapper.instance.valueToTree(value)) { doubled = true }
+        return Neo4jObjectMapper.instance.writeValueAsString(written).also { if (doubled) extended += it }
     }
 
-    /** [node] with each float in it that is a whole number written as extended JSON's double. */
-    private fun doubles(node: JsonNode): JsonNode = when {
-        node.isFloatingPointNumber && node.doubleValue().let { it.isFinite() && it == Math.rint(it) } -> {
-            extended = true
+    /**
+     * [node] with each float in it that is a whole number written as extended JSON's double, calling [doubled] for each. A
+     * `BigDecimal` is no float: it stays the number it is, every digit kept.
+     */
+    private fun doubles(node: JsonNode, doubled: () -> Unit): JsonNode = when {
+        (node.isDouble || node.isFloat) && node.doubleValue().let { it.isFinite() && it == Math.rint(it) } -> {
+            doubled()
             JsonNodeFactory.instance.objectNode().put(DOUBLE, node.doubleValue().toString())
         }
-        node is ObjectNode -> node.apply { properties().toList().forEach { (key, value) -> set<JsonNode>(key, doubles(value)) } }
-        node is ArrayNode -> node.apply { (0 until size()).forEach { set(it, doubles(get(it))) } }
+        node is ObjectNode -> node.apply { properties().toList().forEach { (key, value) -> set<JsonNode>(key, doubles(value, doubled)) } }
+        node is ArrayNode -> node.apply { (0 until size()).forEach { set(it, doubles(get(it), doubled)) } }
         else -> node
     }
 
@@ -168,9 +180,10 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "toupper" -> "JSON_SCALAR(UPPER(${text(json)}))"
         "trim" -> "JSON_SCALAR(TRIM(${text(json)}))"
         // A float that is a whole number is written with its fraction, 2.0, as in Cypher: Oracle writes a double of 2 as 2.
+        // Whole as the double it is: a double too small for a NUMBER, 1e-200, is the NUMBER 0.
         "tostring" -> shared(json) { (x) ->
             val n = "JSON_VALUE($x, '\$' RETURNING NUMBER)"
-            "CASE WHEN ${kind(x)} = 'double' AND ABS($n) < 1e15 AND $n = TRUNC($n) THEN JSON_SCALAR(TO_CHAR(TRUNC($n)) || '.0') ELSE JSON_SCALAR(JSON_VALUE($x, '\$')) END"
+            "CASE WHEN ${kind(x)} = 'double' AND ABS($n) < 1e15 AND JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE) = TRUNC($n) THEN JSON_SCALAR(TO_CHAR(TRUNC($n)) || '.0') ELSE JSON_SCALAR(JSON_VALUE($x, '\$')) END"
         }
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
@@ -352,7 +365,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** An anonymous block, which returns its rows as an implicit result. */
     override fun procedure(body: List<String>) = (listOf(
         "DECLARE",
-        "    $PARAMS JSON := JSON(\$${Parameters.OBJECT}${if (extended) " EXTENDED" else ""});",
+        "    $PARAMS JSON := JSON(\$${Parameters.OBJECT}${if (extended.isNotEmpty()) " EXTENDED" else ""});",
         "    $ROWS JSON;",
         "    $OUT JSON;",
         "    $ROW JSON;",

@@ -71,6 +71,32 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a float that is a whole number, nested in a parameter a write reads, is written a float`() {
+        val p = mapOf("list" to listOf(1.0, 2.5), "big" to 1e20)
+        assertEquals(listOf(listOf(1.0, 2.5)), query("CREATE (n:CyWrite {list: \$p.list, big: \$p.big}) RETURN n.list", mapOf("p" to p)))
+        // Postgres's jsonb reads a float past a long's range back as a whole number, which drivine reads as a long.
+        if (pm.type != DatabaseType.POSTGRES) assertEquals(listOf(listOf(listOf(1.0, 2.5), 1e20)), query("MATCH (n:CyWrite) RETURN [n.list, n.big]"))
+    }
+
+    @Test
+    fun `a float that is a whole number, in a parameter past 32 KB a write reads, is written a float`() {
+        val doc = mapOf("text" to "y".repeat(40_000), "n" to 2.0)
+        assertEquals(listOf(2.0), query("CREATE (n:CyWrite {f: \$doc.n}) RETURN n.f", mapOf("doc" to doc)))
+    }
+
+    @Test
+    fun `a map parameter keyed as extended JSON writes a double is written a map`() {
+        val m = mapOf("\$numberDouble" to "1")
+        assertEquals(listOf(m), query("CREATE (n:CyWrite {id: 1}) RETURN \$m", mapOf("m" to m)))
+    }
+
+    @Test
+    fun `toString of a float that is a whole number, written and read back, keeps its fraction`() {
+        assertEquals(listOf("3.0"), query("CREATE (n:CyWrite {g: 3.0}) RETURN toString(n.g)"))
+        assertEquals(listOf("3.0"), query("MATCH (n:CyWrite) RETURN toString(n.g)"))
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>

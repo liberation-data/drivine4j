@@ -19,6 +19,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import org.testcontainers.containers.Neo4jContainer
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -51,6 +52,48 @@ abstract class CypherQueryContract {
     fun `randomUUID gives a new UUID each time`() {
         val (a, b) = query("UNWIND [1, 2] AS x RETURN randomUUID()").map { it as String }
         assertTrue(a != b && Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(a), "$a $b")
+    }
+
+    @Test
+    fun `a float parameter that is a whole number stays a float nested in maps and lists, and past 1e15`() {
+        val p = mapOf("a" to listOf(1.0, 2.5, mapOf("b" to -3.0)), "n" to 4L)
+        assertEquals(listOf(p), query("RETURN \$p", mapOf("p" to p)))
+        assertEquals(listOf(listOf(-3.0, "-2.0")), query("RETURN [\$p.a[2].b, toString(\$f)]", mapOf("p" to p, "f" to -2.0)))
+        // Postgres's jsonb reads a float past a long's range back as a whole number, which drivine reads as a long.
+        if (pm.type != DatabaseType.POSTGRES) assertEquals(listOf(listOf(1e20, 2e20)), query("RETURN [\$big, \$big * 2]", mapOf("big" to 1e20)))
+    }
+
+    @Test
+    fun `a float parameter that is a whole number stays a float in a UNION, and in a parameter past 32 KB`() {
+        assertEquals(listOf(2.0, 1.5), query("RETURN \$f AS x UNION ALL RETURN 1.5 AS x", mapOf("f" to 2.0)))
+        assertEquals(listOf(2.0), query("RETURN \$doc.n", mapOf("doc" to mapOf("text" to "y".repeat(40_000), "n" to 2.0))))
+    }
+
+    @Test
+    fun `a map parameter keyed as extended JSON writes a double comes back a map`() {
+        val m = mapOf("\$numberDouble" to "1")
+        assertEquals(listOf(m), query("RETURN \$m", mapOf("m" to m)))
+        // Beside a float parameter whose text is the same as the map's.
+        val same = mapOf("\$numberDouble" to "2.0")
+        assertEquals(listOf(listOf(2.0, same)), query("RETURN [\$f, \$m]", mapOf("f" to 2.0, "m" to same)))
+    }
+
+    @Test
+    fun `toString writes a float with its fraction, an integer and a text as they are`() {
+        assertEquals(listOf(listOf("2.5", "3", "a", "4.0")), query("RETURN [toString(2.5), toString(3), toString('a'), toString(\$f * 2)]", mapOf("f" to 2.0)))
+        // A float too small for Oracle's NUMBER, which reads it as 0, a whole number.
+        assertEquals(1e-200, (query("RETURN toString(1.0E-200)").single() as String).toDouble())
+    }
+
+    @Test
+    fun `a walk returns and sorts by toString of a long expression of where it ends`() {
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        // On Oracle toString reads its argument twice, so one this long is bound in a subquery: beside a walk, as #162's sort was.
+        val walk = "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN toString(coalesce(b.name, b.title)) AS n"
+        val rows = listOf("Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded")
+        assertEquals(rows, query(walk).map { it as String }.sorted())
+        assertEquals(rows, query("$walk ORDER BY n"))
     }
 
     @Test

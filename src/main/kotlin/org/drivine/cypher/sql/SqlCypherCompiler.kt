@@ -1475,19 +1475,21 @@ abstract class SqlCypherCompiler(graph: String) {
                 select.whereClause()?.let(::add)
                 if (groupBy.isNotEmpty()) add("GROUP BY ${groupBy.joinToString(", ")}")
             }.joinToString("\n")
+            // What sorts a term in the query that reads this one: worked out there, of the column carried out, or that column.
+            fun sortedBy(column: String) = after[column] ?: sorted[column]?.invoke("$name.$column") ?: "$name.$column"
             val outerColumns = if (final) {
                 val values = columns.map { (column, value) -> json(value.columnsOf(name, column)) }
                 val result = if (values.size == 1) values.single().sql else jsonArray(values.map { it.sql })
                 "$result AS result"
             } else {
                 (columns.flatMap { (column, value) -> value.columns(column).map { "$name.${it.substringAfterLast(" AS ")}" } } +
-                    sorts.map { (column, _) -> "${after[column] ?: sorted[column]?.invoke("$name.$column") ?: "$name.$column"} AS $column" }).joinToString(", ")
+                    sorts.map { (column, _) -> "${sortedBy(column)} AS $column" }).joinToString(", ")
             }
             val outer = buildList {
                 add("SELECT $outerColumns")
                 add("FROM (\n${indent(inner)}\n) $name")
                 if (sorts.isNotEmpty()) {
-                    add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> "${after[column] ?: sorted[column]?.invoke("$name.$column") ?: "$name.$column"}${if (descending) " DESC" else ""}" }}")
+                    add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> "${sortedBy(column)}${if (descending) " DESC" else ""}" }}")
                 }
                 addAll(page(projection.skip?.let(::count), projection.limit?.let(::count)))
             }.joinToString("\n")
