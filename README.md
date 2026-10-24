@@ -195,13 +195,13 @@ test -z "$(git status --porcelain -- ':(glob)**/.drivine/model.json')"
 
 When a fragment, relationship fragment or view leaves the code, its entry stays in the file as it last was, marked `"removed": true`: the database may still hold nodes written under it, and Studio greys it out rather than show a node it cannot name. It goes back to current if the class comes back, and stays until you delete the entry from the file, once the database holds nothing of it. A module with nothing left keeps its file, with every entry removed.
 
-The jar carries the same file, as `META-INF/drivine/model.json`. KSP options change what is written:
+The jar carries the same file, as `META-INF/drivine/model.json`. Both code generators write it: the KSP processor, and the Java annotation processor, `drivine4j-codegen-java`, for a Java module. Options change what is written, given to KSP with `ksp { arg(…) }` and to the Java processor with `-A`:
 
 | Option | Effect |
 |---|---|
 | `drivine.model` | `false` writes no model file. |
 | `drivine.model.module` | The module's name in the file. By default, the module directory's name. |
-| `drivine.model.file` | An absolute path to write the file to instead. Needed outside Gradle's layout, as with Maven, where the generator cannot tell the main sources from the tests'. |
+| `drivine.model.file` | An absolute path to write the file to instead. Needed where the generator cannot tell the main sources from the tests': for KSP outside Gradle's layout, as with Maven. The Java processor knows Gradle's layout and Maven's. |
 
 ```kotlin
 ksp {
@@ -209,7 +209,12 @@ ksp {
 }
 ```
 
-The KSP processor writes the file. The Java annotation processor, `drivine4j-codegen-java`, does not yet.
+```groovy
+// The Java processor, in Gradle
+tasks.withType(JavaCompile).configureEach {
+    options.compilerArgs += ['-Adrivine.model.module=orders']
+}
+```
 
 ## Quick Start
 

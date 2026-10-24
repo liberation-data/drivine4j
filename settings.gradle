@@ -1,6 +1,7 @@
 rootProject.name = 'drivine4j'
 
 // Code generation modules
+include 'drivine4j-codegen-model'  // The model file both processors write
 include 'drivine4j-codegen'        // KSP processor for Kotlin
 include 'drivine4j-codegen-java'   // APT processor for Java
 

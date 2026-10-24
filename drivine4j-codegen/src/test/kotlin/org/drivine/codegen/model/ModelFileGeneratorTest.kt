@@ -337,7 +337,7 @@ class ModelFileGeneratorTest {
     @Test
     fun `the switch turns it off`() {
         val file = File(dir, ".drivine/model.json")
-        compile(listOf(kotlinDomain), mapOf(ModelFileGenerator.ENABLED to "false", ModelFileGenerator.FILE to file.path), File(dir, "work"))
+        compile(listOf(kotlinDomain), mapOf(ModelFiles.ENABLED to "false", ModelFiles.FILE to file.path), File(dir, "work"))
         assertFalse(file.exists())
     }
 
@@ -360,14 +360,14 @@ class ModelFileGeneratorTest {
         assertEquals(dir.name, model["module"].asText())
         // The version is the build's, put in the processor's resources.
         assertTrue(Regex("""\d+\.\d+\.\d+.*""").matches(model["generator"]["version"].asText()), model["generator"].toString())
-        assertTrue(result.messages.contains("Set the KSP option ${ModelFileGenerator.FILE}"), result.messages)
+        assertTrue(result.messages.contains("Set the KSP option ${ModelFiles.FILE}"), result.messages)
         assertFalse(File(dir, ".drivine").exists())
     }
 
     @Test
     fun `a file named by a relative path is refused`() {
-        val result = compile(listOf(kotlinDomain), mapOf(ModelFileGenerator.FILE to "model.json"), File(dir, "work"), ExitCode.COMPILATION_ERROR)
-        assertTrue(result.messages.contains("${ModelFileGenerator.FILE} must be an absolute path"), result.messages)
+        val result = compile(listOf(kotlinDomain), mapOf(ModelFiles.FILE to "model.json"), File(dir, "work"), ExitCode.COMPILATION_ERROR)
+        assertTrue(result.messages.contains("${ModelFiles.FILE} must be an absolute path"), result.messages)
     }
 
     private fun shop(withOrders: Boolean) = SourceFile.kotlin(
@@ -444,7 +444,7 @@ class ModelFileGeneratorTest {
         val file = File(dir, ".drivine/model.json")
         generate(shop(withOrders = true), file = file, workDir = File(dir, "one"))
         val before = file.readText()
-        compile(listOf(nothingIn("test")), mapOf(ModelFileGenerator.FILE to file.path), File(dir, "two"))
+        compile(listOf(nothingIn("test")), mapOf(ModelFiles.FILE to file.path), File(dir, "two"))
         assertEquals(before, file.readText())
     }
 
@@ -458,7 +458,7 @@ class ModelFileGeneratorTest {
 
     @Test
     fun `a deferred entry is kept as it was, a removed one marked once, all sorted by id`() {
-        val entries = ModelFileGenerator.withRemoved(
+        val entries = ModelFiles.withRemoved(
             current = listOf(linkedMapOf("id" to "b.Current", "name" to "Current")),
             previous = listOf(
                 linkedMapOf("id" to "c.Gone", "name" to "Gone", "removed" to true, "labels" to listOf("Gone")),
@@ -478,14 +478,14 @@ class ModelFileGeneratorTest {
     @Test
     fun `a module that never declared anything writes no file`() {
         val file = File(dir, ".drivine/model.json")
-        compile(listOf(nothing), mapOf(ModelFileGenerator.FILE to file.path), File(dir, "work"))
+        compile(listOf(nothing), mapOf(ModelFiles.FILE to file.path), File(dir, "work"))
         assertFalse(file.exists())
     }
 
     @Test
     fun `a file of another format is written over, keeping nothing`() {
         val file = File(dir, ".drivine/model.json").apply { parentFile.mkdirs(); writeText("""{"format": "drivine-model/2", "fragments": [{"id": "x.Old"}]}""") }
-        val result = compile(listOf(shop(withOrders = false)), mapOf(ModelFileGenerator.FILE to file.path), File(dir, "work"))
+        val result = compile(listOf(shop(withOrders = false)), mapOf(ModelFiles.FILE to file.path), File(dir, "work"))
         assertTrue(result.messages.contains("is not a drivine-model/1 file"), result.messages)
         assertEquals(listOf("shop.Customer"), ObjectMapper().readTree(file)["fragments"].map { it["id"].asText() })
     }
@@ -497,7 +497,7 @@ class ModelFileGeneratorTest {
     }
 
     private fun generate(vararg sources: SourceFile, file: File = File(dir, "model.json"), workDir: File = File(dir, "work")): JsonNode {
-        compile(sources.toList(), mapOf(ModelFileGenerator.FILE to file.path, ModelFileGenerator.MODULE to "fx"), workDir)
+        compile(sources.toList(), mapOf(ModelFiles.FILE to file.path, ModelFiles.MODULE to "fx"), workDir)
         return ObjectMapper().readTree(file)
     }
 
