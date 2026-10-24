@@ -56,7 +56,8 @@ class ConstraintManager internal constructor(
      * Never destructive unless asked: existing mismatched constraints surface as [EnsureResult.Drift];
      * existing violating data surfaces as [EnsureResult.Violation]; a plain index in the way of the
      * constraint surfaces as [EnsureResult.BlockedByIndex]. In each case nothing is changed and the
-     * caller decides what to do.
+     * caller decides what to do. The one thing dropped unasked is a constraint whose build failed,
+     * which FalkorDB keeps listing though it enforces nothing: it is dropped and built again.
      *
      * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
      * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
@@ -77,7 +78,16 @@ class ConstraintManager internal constructor(
         replaceBlockingIndex: Boolean = false,
     ): EnsureResult {
         val existing = find(spec)
-        if (existing != null) {
+        if (existing != null && buildFailed(existing)) {
+            // FalkorDB keeps listing a constraint whose build failed, though it enforces nothing.
+            // It is not the constraint: drop it and build again, which gives a violation when the
+            // data still repeats a key.
+            run(grammar.dropConstraint(existing))
+            logger.warn(
+                "Dropped {} {} on {}{}, whose build had failed, to build it again",
+                grammar.engine, spec.kind, spec.label, spec.properties
+            )
+        } else if (existing != null) {
             return if (grammar.matchesShape(existing, spec)) {
                 EnsureResult.AlreadyMatching(existing)
             } else {
@@ -146,7 +156,8 @@ class ConstraintManager internal constructor(
         introspect(grammar.listConstraintsQuery())?.let { grammar.parseConstraintRows(it) } ?: emptyList()
 
     /**
-     * Drops the constraint that [spec] refers to.
+     * Drops the constraint that [spec] refers to, including one whose build failed, which FalkorDB
+     * keeps listing though it enforces nothing.
      *
      * @return true if a constraint was found and dropped, false if none existed
      */
@@ -184,9 +195,11 @@ class ConstraintManager internal constructor(
 
     /**
      * Engines with asynchronous constraint creation (FalkorDB) return immediately from CREATE;
-     * the constraint then transitions UNDER CONSTRUCTION → OPERATIONAL or FAILED. A FAILED
-     * constraint must be dropped (FalkorDB does not allow retrying a failed constraint); it is
-     * reported as a violation when the data confirms one, and thrown when it does not.
+     * the constraint then transitions UNDER CONSTRUCTION → OPERATIONAL or FAILED. Each poll reads
+     * the status from one listing, so a build that fails between two reads is never taken for
+     * built. A FAILED constraint is dropped: it enforces nothing, yet stays listed, where it would
+     * be taken for the constraint by anything that reads the store. It is reported as a violation
+     * when the data confirms one, and thrown when it does not.
      */
     private fun awaitAsyncCreation(spec: ConstraintSpec, violationSampleSize: Int): EnsureResult {
         val deadline = System.currentTimeMillis() + asyncCreationTimeout.toMillis()
@@ -201,7 +214,7 @@ class ConstraintManager internal constructor(
                     return EnsureResult.Created(info)
                 }
 
-                status.contains("FAILED") -> {
+                buildFailed(info) -> {
                     run(grammar.dropConstraint(info))
                     val failed = DrivineException(
                         "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
@@ -219,6 +232,10 @@ class ConstraintManager internal constructor(
                 "${spec.label}${spec.properties} to become operational"
         )
     }
+
+    /** Whether the engine reports that its build of [info] failed (FalkorDB's `FAILED` status). */
+    private fun buildFailed(info: SchemaItemInfo): Boolean =
+        info.status?.uppercase()?.contains("FAILED") == true
 
     /**
      * The violation a failure to make [spec] is suspected of, confirmed against the data: the key
