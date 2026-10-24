@@ -3046,7 +3046,9 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   `FOREACH`, `=~`, `shortestPath` and `allShortestPaths` compile, as do quantified relationships (`-[:R]->{1,3}`) and
   quantified path patterns (`(a) ((x)-[r:R]->(y) WHERE x.v < y.v){1,3} (b)`), whose variables are lists of what each
   repetition matched. A quantified path pattern's `WHERE` and properties read no variable from outside it on Oracle,
-  whose recursive queries read nothing of the row they are in; on Postgres they may. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
+  whose recursive queries read nothing of the row they are in, and hold a subquery only where no variable of its
+  `MATCH` or before it is named, and that walks no variable-length relationship or quantified path pattern of its own;
+  on Postgres they may. `CALL { … } IN TRANSACTIONS` is one statement here, applied whole, where a graph
   engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`, `[(a)-->(m) | m]`) is given as
   their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,

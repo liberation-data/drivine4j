@@ -573,6 +573,30 @@ cases:
         cypher: "MATCH (a:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE y.born <= b.born)+ (b:Person {name: 'Carrie'}) RETURN size(x)"
         except: [memgraph, falkordb, neptune, oracle]
         rows: [2]
+      - note: "Its WHERE may hold a subquery of its nodes."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE COUNT { (y)-[:ACTED_IN]->() } >= 2)+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
+      - note: "Oracle's walks read nothing of the row they are in, which a subquery may: refusals.yaml."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE EXISTS { MATCH (y)-[:ACTED_IN]->(:Movie {title: 'Johnny Mnemonic'}) })+ (b) RETURN b.name"
+        except: [memgraph, falkordb, neptune, oracle]
+        rows: ["Keanu"]
+      - note: "A subquery of its WHERE may walk a pattern of its own. Oracle's recursive queries hold none of their own: refusals.yaml."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE EXISTS { MATCH (y) ((a)-[:ACTED_IN]->(b)){1} (:Movie {title: 'Johnny Mnemonic'}) })+ () RETURN [n IN y | n.name]"
+        except: [memgraph, falkordb, neptune, oracle]
+        rows: [["Keanu"]]
+      - note: "Its WHERE may hold a subquery in a quantifier's condition."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE any(k IN [2] WHERE COUNT { (y)-[:ACTED_IN]->() } >= k))+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
+      - note: "Its WHERE may hold a subquery in a pattern comprehension's properties."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE size([(:Person {name: 'Keanu'})-[:ACTED_IN]->(m {title: CASE WHEN COUNT { (y)-[:ACTED_IN]->() } >= 2 THEN 'The Matrix' ELSE '-' END}) | m]) > 0)+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
+      - note: "Its WHERE may hold a subquery in an EXISTS pattern's properties."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE EXISTS { (:Person {name: 'Keanu'})-[:ACTED_IN]->(:Movie {title: CASE WHEN COUNT { (y)-[:ACTED_IN]->() } >= 2 THEN 'The Matrix' ELSE '-' END}) })+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
 
   - name: "Shortest paths"
     description: "shortestPath gives the shortest match, and allShortestPaths every match of that length."

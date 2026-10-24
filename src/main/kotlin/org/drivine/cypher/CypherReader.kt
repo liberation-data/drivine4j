@@ -157,7 +157,6 @@ object CypherReader {
         val nodes = mutableListOf<NodePattern>()
         val relationships = mutableListOf<RelationshipPattern>()
         // A quantified path pattern with no node beside it is joined to a node of no label of its own.
-        var grouped = false
         context.children.forEach { child ->
             when (child) {
                 is OC_NodePatternContext -> {
@@ -165,7 +164,8 @@ object CypherReader {
                     nodes += node(child)
                 }
                 is OC_PatternElementChainContext -> {
-                    if (nodes.size == relationships.size) nodes += NodePattern(null, emptyList(), null)
+                    // Only after a quantified path pattern: Cypher puts a node between them.
+                    if (nodes.size == relationships.size) throw DrivineException("A relationship after a quantified path pattern has a node between them.")
                     relationships += chained(child)
                     nodes += node(child.oC_NodePattern())
                 }
@@ -188,7 +188,10 @@ object CypherReader {
             if (relationship.range != null) refuse("A variable-length relationship in a quantified path pattern")
         }
         val group = RelationshipPattern.Group(pattern, context.oC_Where()?.let { expression(it.oC_Expression()) })
-        return RelationshipPattern(null, emptyList(), RelationshipPattern.Direction.OUTGOING, range(context.oC_PathQuantifier()), null, group)
+        val range = range(context.oC_PathQuantifier())
+        // As in Neo4j: a group that may repeat no times at most matches nothing of its own.
+        if (range.max == 0) throw DrivineException("A quantified path pattern's quantifier has a maximum of at least 1.")
+        return RelationshipPattern(null, emptyList(), RelationshipPattern.Direction.OUTGOING, range, null, group)
     }
 
     private fun pattern(context: OC_RelationshipsPatternContext, variable: String?): Pattern =

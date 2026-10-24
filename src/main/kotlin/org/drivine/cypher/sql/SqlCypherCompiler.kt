@@ -776,7 +776,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 types("$edge.type", relationship.types),
                 relationship.properties?.let { propertiesMatch("$edge.props", it, select.scope) },
             )
-            val walked = walk(
+            val walked = walked(
                 Walk(from, to, alias("p"), alias("w"), listOf(Walk.Hop(edge, relationship.direction)), listOf(null, null), range.min ?: 1, range.max, conditions, backwards, seed)
             )
             select.source(walked.source)
@@ -804,26 +804,35 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             scope.groupBy({ it.first }).forEach { (variable, values) ->
                 if (values.size > 1) unsupported("A variable named twice in a quantified path pattern")
-                if (select.scope[variable] != null) throw DrivineException("$variable is bound before the quantified path pattern that names it.")
+                if (select.scope[variable] != null) throw DrivineException("$variable is bound outside the quantified path pattern that names it.")
             }
-            val read = (inner.nodes.mapNotNull { it.properties } + inner.relationships.mapNotNull { it.properties } + listOfNotNull(group.where))
-                .flatMap(::variablesIn).toSet()
+            val tests = inner.nodes.mapNotNull { it.properties } + inner.relationships.mapNotNull { it.properties } + listOfNotNull(group.where)
+            val read = tests.flatMap(::variablesIn).toSet()
+            // A subquery reads every variable, for [variablesIn] names none of a subquery's: as [evaluate] takes it.
+            val subquery = tests.any(::holdsSubquery)
             if (!walksReadRow && read.any { select.scope[it] != null }) unsupported("On Oracle, a quantified path pattern that reads a variable from outside it")
+            if (!walksReadRow && subquery && select.scope.isNotEmpty()) unsupported("On Oracle, a subquery in a quantified path pattern that may read a variable from outside it")
             val within = select.scope + scope
-            val conditions = inner.nodes.zip(rows).flatMap { (node, row) ->
-                listOfNotNull(
-                    node.labels.takeIf { it.isNotEmpty() }?.let { hasLabels("$row.labels", it) },
-                    node.properties?.let { propertiesMatch("$row.props", it, within) },
-                )
-            } + inner.relationships.zip(links).flatMap { (relationship, edge) ->
-                listOfNotNull(types("$edge.type", relationship.types), relationship.properties?.let { propertiesMatch("$edge.props", it, within) })
-            } + listOfNotNull(group.where?.let { bool(expression(it, within)) })
+            val outer = stepping
+            stepping = true
+            val conditions = try {
+                inner.nodes.zip(rows).flatMap { (node, row) ->
+                    listOfNotNull(
+                        node.labels.takeIf { it.isNotEmpty() }?.let { hasLabels("$row.labels", it) },
+                        node.properties?.let { propertiesMatch("$row.props", it, within) },
+                    )
+                } + inner.relationships.zip(links).flatMap { (relationship, edge) ->
+                    listOfNotNull(types("$edge.type", relationship.types), relationship.properties?.let { propertiesMatch("$edge.props", it, within) })
+                } + listOfNotNull(group.where?.let { bool(expression(it, within)) })
+            } finally {
+                stepping = outer
+            }
             // A node is joined to the step where a condition reads it.
             val joined = inner.nodes.zip(rows).map { (node, row) ->
-                row.takeIf { node.labels.isNotEmpty() || node.properties != null || node.variable in read }
+                row.takeIf { (subquery && node.variable != null) || node.labels.isNotEmpty() || node.properties != null || node.variable in read }
             }
             val range = relationship.range!!
-            val walked = walk(
+            val walked = walked(
                 Walk(from, to, alias("p"), alias("w"), inner.relationships.zip(links).map { (r, edge) -> Walk.Hop(edge, r.direction) }, joined, range.min ?: 1, range.max, conditions, false, seed)
             )
             select.source(walked.source)
@@ -846,6 +855,15 @@ abstract class SqlCypherCompiler(graph: String) {
             val v = alias("v")
             return "(SELECT ${comparable(Value.Json(aggregateList(scalar("$v.id"), "$v.ord"), ordered = true))} FROM (SELECT $u.id, $u.ord, COUNT(*) OVER () AS cnt FROM ${idRows(list, u)}) $v " +
                 "WHERE $v.ord > $first AND MOD($v.ord - ${first + 1}, $stride) = 0 AND $v.ord <= $v.cnt - $leave)"
+        }
+
+        /** Whether a quantified path pattern's conditions are being compiled: what they hold is in its walk's step. */
+        private var stepping = false
+
+        /** [walk]'s rows. On Oracle, no walk is in another's step, for its recursive query holds no `WITH` of its own. */
+        private fun walked(walk: Walk): Walked {
+            if (!walksReadRow && stepping) unsupported("On Oracle, a variable-length relationship or quantified path pattern in a subquery of a quantified path pattern")
+            return walk(walk)
         }
 
         /** The nodes whose ids are the store's list [nids], in its order: null where the list is. */
@@ -2279,6 +2297,29 @@ abstract class SqlCypherCompiler(graph: String) {
             if (test(expression)) return true
             return children(expression).any { contains(it, test) }
         }
+
+        /**
+         * Whether [expression] holds a subquery anywhere: in a comprehension's, a quantifier's or a pattern's
+         * condition or properties too, where [contains] does not look.
+         */
+        fun holdsSubquery(expression: Expression): Boolean = when (expression) {
+            is Expression.Subquery -> true
+            is Expression.ListComprehension -> listOfNotNull(expression.list, expression.where, expression.projection).any(::holdsSubquery)
+            is Expression.Quantifier -> listOfNotNull(expression.list, expression.where).any(::holdsSubquery)
+            is Expression.Reduce -> listOf(expression.initial, expression.list, expression.expression).any(::holdsSubquery)
+            is Expression.PatternComprehension -> holdsSubquery(expression.pattern) || listOfNotNull(expression.where, expression.projection).any(::holdsSubquery)
+            is Expression.PatternPredicate -> holdsSubquery(expression.pattern)
+            is Expression.Exists -> expression.patterns.any(::holdsSubquery) || expression.where?.let(::holdsSubquery) == true
+            else -> children(expression).any(::holdsSubquery)
+        }
+
+        /** Whether [pattern] holds a subquery in its parts' properties or a quantified path pattern's condition. */
+        fun holdsSubquery(pattern: Pattern): Boolean =
+            pattern.nodes.any { it.properties?.let(::holdsSubquery) == true } ||
+                pattern.relationships.any { relationship ->
+                    relationship.properties?.let(::holdsSubquery) == true ||
+                        relationship.group?.let { holdsSubquery(it.pattern) || it.where?.let(::holdsSubquery) == true } == true
+                }
 
         /** The variables [expression] names outside its aggregates: what an aggregating projection is grouped by. */
         fun variablesOutsideAggregates(expression: Expression): Set<String> = when {
