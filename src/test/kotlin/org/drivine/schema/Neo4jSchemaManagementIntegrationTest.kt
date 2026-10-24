@@ -99,6 +99,31 @@ class Neo4jSchemaManagementIntegrationTest {
         assertEquals(1536, found!!.dimensions)
     }
 
+    @Test
+    fun `vector index - pinned quantization reads back, matches, and drifts when pinned the other way`() {
+        val unquantized = VectorIndexSpec(
+            "Quantized", "embedding", 8,
+            engineOptions = listOf(Neo4jVectorOptions(quantizationEnabled = false)),
+        )
+        val created = manager.indexes.ensure(unquantized)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertEquals(false, (created as EnsureResult.Created).info.quantizationEnabled)
+
+        val again = manager.indexes.ensure(unquantized)
+        assertTrue(again is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $again")
+
+        val quantized = VectorIndexSpec(
+            "Quantized", "embedding", 8,
+            engineOptions = listOf(Neo4jVectorOptions(quantizationEnabled = true)),
+        )
+        val drifted = manager.indexes.ensure(quantized)
+        assertTrue(drifted is EnsureResult.Drift, "expected Drift, got $drifted")
+
+        val recreated = manager.indexes.recreate(quantized)
+        assertEquals(true, recreated.current.quantizationEnabled)
+        manager.indexes.drop(quantized)
+    }
+
     // ----- Range index lifecycle -----
 
     @Test
