@@ -258,6 +258,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** Whether the JSON values [x] and [y], neither of them null, are equal, as Cypher compares them: see [Writer.equality]. */
     protected open fun jsonEquals(x: String, y: String) = "$x = $y"
 
+    /**
+     * Whether the identities [x] and [y], neither of them null, are equal: see [Writer.identityOf]. A list of a few thousand
+     * relationships' tokens is larger than Oracle's `=` compares, so Oracle compares them otherwise.
+     */
+    protected open fun identityEquals(x: String, y: String) = jsonEquals(x, y)
+
     /** Whether the JSON value [x] is equal to [y], the JSON of [given], a value the statement gives that is not null. */
     protected open fun givenEquals(x: String, y: String, given: Any) = "$x = $y"
 
@@ -2273,7 +2279,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         id != null -> Value.Bool("EXISTS (SELECT 1 FROM ${elements((right as Value.Entities).ids, i)} WHERE ${item(i)} = $id)")
                         // A map or a list that holds a node or a relationship is in a list where an item holds the same, by identity.
                         (left as? Value.Json)?.identity != null || (right as? Value.Json)?.identity != null ->
-                            Value.Bool("EXISTS (SELECT 1 FROM ${elements(identified(right), i)} WHERE ${jsonEquals(item(i), identified(left))})")
+                            Value.Bool("EXISTS (SELECT 1 FROM ${elements(identified(right), i)} WHERE ${identityEquals(item(i), identified(left))})")
                         else -> Value.Bool("EXISTS (SELECT 1 FROM ${elements(b, i)} WHERE ${jsonEquals(item(i), a)})")
                     }
                 }
@@ -2297,7 +2303,7 @@ abstract class SqlCypherCompiler(graph: String) {
             if (left is Value.Relationship && right is Value.Relationship) return "${left.eid} = ${right.eid}"
             // A map or a list that holds a node or a relationship is equal where what it holds is, by identity.
             if ((left as? Value.Json)?.identity != null || (right as? Value.Json)?.identity != null) {
-                return shared(identified(left), identified(right)) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN $x = $y END" }
+                return shared(identified(left), identified(right)) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${identityEquals(x, y)} END" }
             }
             // Two lists of nodes, or of relationships, are equal where their ids are, item by item.
             val entities = left is Value.Entities && right is Value.Entities && left.relationships == right.relationships
@@ -2425,10 +2431,10 @@ abstract class SqlCypherCompiler(graph: String) {
                     // Nodes or relationships are gathered as their ids, so a list of them is still of them.
                     is Value.Node -> Value.Entities(gatheredIds("CASE WHEN ${gathered.nid} IS NOT NULL THEN ${scalar(gathered.nid)} END"), false, collected(gathered))
                     is Value.Relationship -> Value.Entities(gatheredIds("CASE WHEN ${gathered.eid} IS NOT NULL THEN ${scalar(gathered.eid)} END"), true, collected(gathered))
-                    // What holds a node or a relationship is gathered beside its identity too.
+                    // What holds a node or a relationship, a map or a list of them, is gathered beside its identity too.
                     else -> Value.Json(
                         collected(gathered), ordered = true, items = (gathered as? Value.Json)?.temporal,
-                        identity = (gathered as? Value.Json)?.identity?.let { comparable(Value.Json(collect(it, rowOrder), ordered = true)) },
+                        identity = identityOf(gathered)?.let { comparable(Value.Json(collect(it, rowOrder), ordered = true)) },
                     )
                 }
                 DISTINCT_ITEMS -> when (val list = one()) {

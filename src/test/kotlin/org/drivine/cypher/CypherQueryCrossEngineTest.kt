@@ -164,6 +164,28 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a map or a list that holds a relationship is equal to one whose numbers are written otherwise or whose keys come in another order`() {
+        // Not in the spec yet: identities compare as JSON values, not as their text, which SQLite's = compares.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf(true, true, true, true)),
+            query("MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->() RETURN [{x: r1, y: 1} = {x: r1, y: 1.0}, [r1, 1] = [r1, 1.0], {a: 1, x: r1} = {x: r1, a: 1}, {x: r1, y: 1} IN [{x: r1, y: 1.0}]]"),
+        )
+    }
+
+    @Test
+    fun `a list of a few thousand relationships is equal by identity to a map's or a list's`() {
+        // Not in the spec yet: their identity is larger than Oracle's = compares (ORA-40180), so Oracle compares it by JSON_EQUAL.
+        clear()
+        assertEquals(listOf(2500L), query("CREATE (h:Hub) WITH h UNWIND range(1, 2500) AS i CREATE (h)-[:R]->(:Leaf) RETURN count(*)"))
+        assertEquals(
+            listOf(listOf(true, true, true, 2500L)),
+            query("MATCH (:Hub)-[r:R]->() WITH collect(r) AS rs RETURN [[rs][0] = rs, {x: rs}.x = rs, rs IN [rs], size(rs)]"),
+        )
+    }
+
+    @Test
     fun `an item of a pattern comprehension's relationships is compared by its id`() {
         // Not in the spec yet: a pattern comprehension gathers their properties beside their ids, as collect does, but in a subquery.
         clear()

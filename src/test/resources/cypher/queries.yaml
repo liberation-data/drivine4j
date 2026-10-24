@@ -1117,13 +1117,16 @@ cases:
         rows: [2]
       - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [{x: [p]}.x[0] = p, [[p]][0][0] = p, head({x: [p]}.x) = p, {x: [p]}.x[0].name = 'Keanu', [[p]][0][-1] = p, last([[p]][0]) = p, [[p]][0][0..1] = [p]]"
         rows: [[true, true, true, true, true, true, true]]
-      - cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(m) WITH r ORDER BY m.released WITH collect(r) AS rs RETURN [{x: rs}.x[0] = rs[0], {x: rs}.x[0] = rs[1], {x: rs}.x[-1] = rs[2], {x: rs}.x[1..] = rs[1..], [rs][0][9] IS NULL]"
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(m) WITH r ORDER BY m.released WITH collect(r) AS rs RETURN [{x: rs}.x[0] = rs[0], {x: rs}.x[1] = rs[2], {x: rs}.x[-1] = rs[2], {x: rs}.x[1..] = rs[1..], [rs][0][9] IS NULL]"
         rows: [[true, false, true, true, true]]
       - note: "A list of relationships is the same as a list that holds them among other values, or taken out of a map."
         cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH {x: r1} AS m, r1, r2 RETURN [[m.x] = [r1], [m.x] = [r2], [r1, 1][0..1] = [r1], [r1, 1][0..1] = [r2], [m.x, 1] = [r1, 1], {y: [r1]} = {y: [m.x]}]"
         rows: [[true, false, true, false, true, true]]
       - note: "collect(DISTINCT) and count(DISTINCT) keep a map holding a relationship once for each relationship."
         cypher: "MATCH (p:Person)-[r:ACTED_IN]->() WITH p, collect(DISTINCT {x: r}) AS l, count(DISTINCT {x: r}) AS n MATCH (p)-[r2:ACTED_IN]->(:Movie {title: 'The Matrix'}) RETURN p.name, size(l), n, {x: r2} IN l ORDER BY p.name"
+        rows: [["Carrie", 2, 2, true], ["Keanu", 3, 3, true], ["Laurence", 1, 1, true]]
+      - note: "So they do a list holding a relationship."
+        cypher: "MATCH (p:Person)-[r:ACTED_IN]->() WITH p, collect(DISTINCT [r]) AS l, count(DISTINCT [r]) AS n MATCH (p)-[r2:ACTED_IN]->(:Movie {title: 'The Matrix'}) RETURN p.name, size(l), n, [r2] IN l ORDER BY p.name"
         rows: [["Carrie", 2, 2, true], ["Keanu", 3, 3, true], ["Laurence", 1, 1, true]]
 
   - name: "List slices"
