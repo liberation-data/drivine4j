@@ -8,11 +8,12 @@ package org.drivine.codegen.model
  * It reads one back too, into the same shapes, so that the generator can keep the entries the
  * previous file had and the code no longer declares.
  *
- * Written by hand rather than with a JSON library, so that the processor needs nothing on its path
- * beyond KSP, and the layout is the format's rather than a library's.
+ * Written by hand rather than with a JSON library, so that a processor needs nothing on its path
+ * beyond Kotlin's standard library, and the layout is the format's rather than a library's.
  */
-internal object ModelJson {
+object ModelJson {
 
+    @JvmStatic
     fun write(value: Any): String = StringBuilder().also { append(it, value, "") }.append('\n').toString()
 
     private fun append(out: StringBuilder, value: Any?, indent: String) {
@@ -53,6 +54,7 @@ internal object ModelJson {
     }
 
     /** Reads [text] into maps that keep their keys' order, lists, strings, booleans, numbers and nulls. */
+    @JvmStatic
     fun read(text: String): Any? = Reader(text).run { value().also { space(); require(at == text.length) { "Unexpected text at $at" } } }
 
     private class Reader(val text: String) {

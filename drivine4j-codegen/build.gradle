@@ -38,6 +38,9 @@ dependencies {
     // Kotlin reflection
     implementation 'org.jetbrains.kotlin:kotlin-reflect'
 
+    // The model file, which the Java processor writes too
+    implementation project(':drivine4j-codegen-model')
+
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.1'
@@ -45,6 +48,11 @@ dependencies {
     // Runs the processor over sources in the test, and reads the model file it writes.
     testImplementation 'dev.zacsweers.kctfork:ksp:0.10.0'
     testImplementation 'com.fasterxml.jackson.core:jackson-databind:2.19.2'
+    // ModelFileParityTest runs the Java processor over the same Java domain, and compares the files.
+    testImplementation project(':drivine4j-codegen-java')
+    testImplementation('com.google.testing.compile:compile-testing:0.21.0') {
+        exclude group: 'junit', module: 'junit'
+    }
     // The annotations the test's sources use. Non-transitive: only the drivine classes are needed.
     testImplementation(rootProject) { transitive = false }
 }
@@ -57,14 +65,6 @@ kotlin {
 
 test {
     useJUnitPlatform()
-}
-
-// The version the model file names as its generator's.
-processResources {
-    inputs.property('version', version)
-    filesMatching('org/drivine/codegen/drivine4j-codegen.properties') {
-        expand(version: version)
-    }
 }
 
 // Publishing configuration

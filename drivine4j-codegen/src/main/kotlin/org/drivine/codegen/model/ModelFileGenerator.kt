@@ -5,12 +5,17 @@ import com.google.devtools.ksp.processing.Dependencies
 import com.google.devtools.ksp.processing.KSPLogger
 import com.google.devtools.ksp.symbol.KSClassDeclaration
 import com.google.devtools.ksp.symbol.Origin
+import org.drivine.codegen.model.ModelFiles.ENABLED
+import org.drivine.codegen.model.ModelFiles.FILE
+import org.drivine.codegen.model.ModelFiles.MODULE
+import org.drivine.codegen.model.ModelFiles.RESOURCE_PATH
+import org.drivine.codegen.model.ModelFiles.buildFileDir
 import java.io.File
-import java.util.Properties
 
 /**
  * Writes the module's model file: its fragments, relationship fragments and views, which Drivine
- * Studio reads. The format is drivine-cypher-spec's `model/`.
+ * Studio reads. The format is drivine-cypher-spec's `model/`; [ModelFiles], which the Java processor
+ * shares, writes it from the entries [ModelReader] reads.
  *
  * The file goes in two places. One is the module's resources, as `META-INF/drivine/model.json`, so
  * it is in the jar. The other is `.drivine/model.json` beside the module's build file, for the
@@ -74,22 +79,14 @@ internal class ModelFileGenerator(
         val previous = previous(target)
 
         val reader = ModelReader()
-        val model = linkedMapOf(
-            "\$comment" to COMMENT,
-            "format" to FORMAT,
-            "generator" to linkedMapOf(
-                "library" to "drivine4j",
-                "version" to version(),
-                // With nothing declared, the language the module last had.
-                "language" to if (all.isEmpty()) (previous?.get("generator") as? Map<*, *>)?.get("language") ?: "kotlin"
-                else if (all.all { it.origin == Origin.JAVA }) "java" else "kotlin",
-            ),
-            "module" to module,
-            "fragments" to withRemoved(fragments.map { reader.fragment(it) }, previous?.get("fragments"), deferred),
-            "relationshipFragments" to withRemoved(
-                relationshipFragments.map { reader.relationshipFragment(it) }, previous?.get("relationshipFragments"), deferred,
-            ),
-            "views" to withRemoved(views.map { reader.view(it) }, previous?.get("views"), deferred),
+        val model = ModelFiles.model(
+            module = module,
+            language = if (all.isEmpty()) null else if (all.all { it.origin == Origin.JAVA }) "java" else "kotlin",
+            fragments = fragments.map { reader.fragment(it) },
+            relationshipFragments = relationshipFragments.map { reader.relationshipFragment(it) },
+            views = views.map { reader.view(it) },
+            previous = previous,
+            deferred = deferred,
         )
         val json = ModelJson.write(model)
         resource.use { it.write(json.toByteArray()) }
@@ -101,46 +98,12 @@ internal class ModelFileGenerator(
             }
             return
         }
-        // Only when it changes, so that a build with nothing new leaves the file as it is.
-        if (target.isFile && target.readText() == json) return
-        target.parentFile.mkdirs()
-        target.writeText(json)
-        logger.info("Drivine model file written to ${target.path}")
+        if (ModelFiles.write(target, json)) logger.info("Drivine model file written to ${target.path}")
     }
 
-    /**
-     * The model file [file] holds, or null when there is none, or it is not one this generator can
-     * read: a file of another format is written over, as one the module never had.
-     */
-    private fun previous(file: File?): Map<*, *>? {
-        if (file == null || !file.isFile) return null
-        val model = runCatching { ModelJson.read(file.readText()) }.getOrNull() as? Map<*, *>
-        if (model?.get("format") != FORMAT) {
-            logger.warn("Drivine model file: ${file.path} is not a $FORMAT file, so nothing in it is kept.")
-            return null
-        }
-        return model
-    }
-
-    private fun version(): String = ModelFileGenerator::class.java.getResourceAsStream("/org/drivine/codegen/drivine4j-codegen.properties")
-        ?.use { stream -> Properties().also { it.load(stream) }.getProperty("version") }
-        ?: "unknown"
+    private fun previous(file: File?): Map<*, *>? = ModelFiles.previous(file) { logger.warn(it) }
 
     internal companion object {
-        const val ENABLED = "drivine.model"
-        const val MODULE = "drivine.model.module"
-        const val FILE = "drivine.model.file"
-
-        const val FORMAT = "drivine-model/1"
-        const val RESOURCE_PATH = "META-INF/drivine/model"
-
-        /** Word for word what the format asks every library to write. */
-        const val COMMENT = "Drivine model file: this module's fragments, relationship fragments and views, written by the build. " +
-            "Drivine Studio reads it to browse the model and query the data. Keep it in source control: the build rewrites it " +
-            "when the model changes, and CI checks that it is current. Format: https://github.com/liberation-data/drivine-cypher-spec/tree/main/model"
-
-        val BUILD_FILES = listOf("build.gradle", "build.gradle.kts", "pom.xml")
-
         /** A module's directory and the source set KSP is processing in it. */
         data class GradleLayout(val moduleDir: File, val sourceSet: String)
 
@@ -155,34 +118,6 @@ internal class ModelFileGenerator(
         }
 
         /**
-         * The [current] entries, and the [previous] file's entries the code no longer declares,
-         * marked removed, sorted by id. An entry [deferred] by KSP is still declared, and is kept as
-         * it was.
-         */
-        fun withRemoved(current: List<Map<String, Any?>>, previous: Any?, deferred: Set<String>): List<Map<String, Any?>> {
-            val ids = current.map { it["id"] }.toSet()
-            val kept = (previous as? List<*>).orEmpty().filterIsInstance<Map<*, *>>()
-                .filter { it["id"] is String && it["id"] !in ids }
-                .map { entry ->
-                    @Suppress("UNCHECKED_CAST")
-                    if (entry["id"] in deferred) entry as Map<String, Any?> else removed(entry)
-                }
-            return (current + kept).sortedBy { it["id"] as String }
-        }
-
-        /** [entry] marked removed, the mark after its name, where the format lists it. */
-        private fun removed(entry: Map<*, *>): Map<String, Any?> {
-            val out = LinkedHashMap<String, Any?>()
-            entry.forEach { (key, value) ->
-                if (key == "removed") return@forEach
-                out[key as String] = value
-                if (key == "name") out["removed"] = true
-            }
-            out.putIfAbsent("removed", true)
-            return out
-        }
-
-        /**
          * `.drivine/model.json` for the module whose main source set holds [source], from Gradle's
          * layout `<module>/src/main/…`, or null when [source] is not in one.
          */
@@ -191,9 +126,5 @@ internal class ModelFileGenerator(
                 .firstOrNull { it.name == "main" && it.parentFile?.name == "src" } ?: return null
             return main.parentFile.parentFile?.resolve(".drivine/model.json")
         }
-
-        /** The nearest directory above [file] that holds a build file. */
-        fun buildFileDir(file: File): File? =
-            generateSequence(file.parentFile) { it.parentFile }.firstOrNull { dir -> BUILD_FILES.any { File(dir, it).isFile } }
     }
 }
