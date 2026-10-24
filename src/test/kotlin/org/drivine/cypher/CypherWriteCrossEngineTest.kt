@@ -49,6 +49,26 @@ abstract class CypherWriteContract {
     fun spec() = CypherSpec.load("writes.yaml").tests(CypherSpec.storeOf(pm.type), before = ::clear) { step -> query(step.cypher, step.parameters) }
 
     @Test
+    fun `CALLs that write, nested, give each row its own variables with the nodes they return`() {
+        // Not in the spec yet: a caller row at each depth, merged with a node returned from below it.
+        assertEquals(
+            listOf(listOf(1L, 1L, 10L), listOf(2L, 2L, 20L)),
+            query(
+                "UNWIND [1, 2] AS x CALL { WITH x CREATE (a:CyWrite {x: x}) WITH a, x " +
+                    "CALL { WITH a, x CREATE (b:CyWrite {y: x * 10}) RETURN b } RETURN a, b } RETURN [x, a.x, b.y]"
+            ),
+        )
+        assertEquals(
+            listOf(listOf(1L, 1L, 10L), listOf(2L, 2L, 20L)),
+            query("UNWIND [1, 2] AS i CALL { WITH i CREATE (n:CyWrite {i: i}) RETURN n } SET n.j = i * 10 RETURN [i, n.i, n.j] ORDER BY i"),
+        )
+        assertEquals(
+            listOf(listOf(2020L, 3L)),
+            query("WITH date('2020-01-02') AS d CALL { CREATE (n:CyWrite) RETURN date('2021-03-04') AS e } RETURN [d.year, e.month]"),
+        )
+    }
+
+    @Test
     fun `a statement of hundreds of creates, each naming nodes made before it, makes them all`() {
         val clauses = (0 until 300).flatMap { i ->
             listOf("CREATE (n$i:CyWrite {i: $i})") + if (i > 0) listOf("CREATE (n${i - 1})-[:NEXT]->(n$i)") else emptyList()

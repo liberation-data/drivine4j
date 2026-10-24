@@ -25,6 +25,15 @@ class CompilerRefusalTest {
     fun oracle() = spec.tests("oracle", before = {}) { step -> OracleCypherCompiler("g").compile(step.cypher, step.parameters); emptyList() }
 
     @Test
+    fun `collect(DISTINCT) beside a variable no other item is, outside its aggregates, is refused as collect() is`() {
+        // Not in the spec yet: distinctFirst groups by each such variable, so it is refused before.
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g")).forEach { compiler ->
+            val refused = assertThrows<DrivineException> { compiler.compile("MATCH (p:Person) RETURN p.born, collect(DISTINCT p.name) + p.name") }.message!!
+            assertTrue(refused.contains("names p outside its aggregates"), refused)
+        }
+    }
+
+    @Test
     fun `a date written as a text that is no date is refused, with what the JVM's parser says of it`() {
         // Not in the spec: the message ends with the JVM's own text.
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g")).forEach { compiler ->

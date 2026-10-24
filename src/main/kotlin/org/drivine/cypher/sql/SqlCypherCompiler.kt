@@ -1491,6 +1491,8 @@ abstract class SqlCypherCompiler(graph: String) {
             // As in Neo4j, a star gives the variables in the order of their names, before the items named after it.
             val items = (if (projection.star) select.bound.keys.sorted().map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
             if (items.isEmpty()) throw DrivineException("A projection has at least one item.")
+            // Before distinctFirst, which names each variable it groups by as an item of its own.
+            requireExplicitGrouping(items)
             distinctFirst(select, projection, items)?.let { (grouped, kept) -> return project(grouped, kept, final) }
             heldFirst(select, projection, items)?.let { (held, keyed) -> return project(held, keyed, final) }
             if (final && items.size > 1) {
@@ -1500,7 +1502,6 @@ abstract class SqlCypherCompiler(graph: String) {
                     items.size, items.joinToString { it.name },
                 )
             }
-            requireExplicitGrouping(items)
             rowOrder = orderOf(select)
             val compiled = items.map { item -> item.name to aggregating(item.expression) { expression(item.expression, select.scope) } }
             val aggregating = items.any { contains(it.expression, ::isAggregate) }
@@ -1520,8 +1521,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 val item = items.indexOfFirst { it.expression == sort.expression }
                 when {
                     item >= 0 -> selectList += "${aggregating(sort.expression) { sortable(compiled[item].second) }} AS $column"
-                    compared && !contains(sort.expression, ::isAggregate) -> after[column] = sortable(expression(sort.expression, itemColumns))
-                    // One that aggregates reads the rows it aggregates, as an item does.
+                    compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
+                        after[column] = sortable(expression(sort.expression, itemColumns))
+                    // One that aggregates reads the rows it aggregates, as an item does; so does one that reads an aggregate
+                    // distinctFirst worked out first, which no item is.
                     else -> selectList += "${aggregating(sort.expression) { sortable(expression(sort.expression, select.scope + compiled.toMap())) }} AS $column"
                 }
                 column to sort.descending
@@ -1595,11 +1598,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * Where a projection holds `collect(DISTINCT …)`, the rows [select] reads grouped first, in a `WITH` of their own:
-         * each item that does not aggregate a key of its own, each variable an aggregating item names beside its aggregates,
-         * and each aggregate, `collect(DISTINCT …)` collected without its `DISTINCT`. Then the projection, over those, keeps
-         * each item of such a collection once, where it is first, as a graph engine does: by its id for a node or a
-         * relationship, not its properties. A store dedupes no aggregate in the query that makes it, and Oracle's
-         * `LISTAGG`, which does, gives at most 4,000 bytes. Null where the projection collects nothing distinct.
+         * each item that does not aggregate a key of its own; each variable an aggregating item names beside its aggregates,
+         * in a body, a pattern or a subquery it holds too, and each key an aggregating order term names; and each aggregate,
+         * the items' and the order terms', `collect(DISTINCT …)` collected without its `DISTINCT`. Then the projection, over
+         * those, keeps each item of such a collection once, where it is first, as a graph engine does: by its id for a node
+         * or a relationship, not its properties. An order term, or a part of one, that is an item is read by the item's name.
+         * A store dedupes no aggregate in the query that makes it, and Oracle's `LISTAGG`, which does, gives at most 4,000
+         * bytes. Null where the projection collects nothing distinct.
          */
         private fun distinctFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             fun collectsDistinct(expression: Expression) = expression is Expression.Function && expression.distinct && expression.name.lowercase() == "collect"
@@ -1609,7 +1614,21 @@ abstract class SqlCypherCompiler(graph: String) {
             val keys = items.filter { !contains(it.expression, ::isAggregate) }.associate { it.expression to "#group${++counter}" }
             val aggregates = linkedMapOf<Expression, String>()
             terms.forEach { term -> contains(term) { if (isAggregate(it)) aggregates.getOrPut(it) { "#aggregate${++counter}" }; false } }
-            val beside = items.filter { contains(it.expression, ::isAggregate) }.flatMap { variablesOutsideAggregates(it.expression) }.distinct().filter { it in select.scope }
+            // A comprehension's, a quantifier's or a reduce's body is kept as it is, so a variable it names outside its own is kept too,
+            // and so is a pattern's or a subquery's. A subquery may name any variable: each the projection groups by is kept.
+            fun named(expression: Expression): Set<String> = if (isAggregate(expression)) emptySet() else variablesOutsideAggregates(expression) + when (expression) {
+                is Expression.ListComprehension -> listOfNotNull(expression.where, expression.projection).flatMap(::named) - expression.variable
+                is Expression.Quantifier -> listOfNotNull(expression.where).flatMap(::named) - expression.variable
+                is Expression.Reduce -> named(expression.expression) - expression.accumulator - expression.variable
+                is Expression.PatternComprehension, is Expression.PatternPredicate, is Expression.Exists -> variablesIn(expression)
+                is Expression.Subquery -> keys.keys.filterIsInstance<Expression.Variable>().map { it.name }
+                else -> emptySet()
+            } + children(expression).flatMap(::named)
+            // An order term that aggregates may name a key too, by the variable the projection groups by.
+            val keyed = keys.keys.filterIsInstance<Expression.Variable>().map { it.name }
+            val beside = (items.filter { contains(it.expression, ::isAggregate) }.flatMap { named(it.expression) } +
+                projection.orderBy.filter { contains(it.expression, ::isAggregate) }.flatMap { named(it.expression) }.filter { it in keyed })
+                .distinct().filter { it in select.scope }
             val grouped = Projection(
                 distinct = false,
                 star = false,
@@ -1619,15 +1638,23 @@ abstract class SqlCypherCompiler(graph: String) {
                 skip = null,
                 limit = null,
             )
-            fun kept(expression: Expression) = replaced(expression) { term ->
-                keys[term]?.let(Expression::Variable) ?: aggregates[term]?.let { name ->
-                    if (collectsDistinct(term)) Expression.Function(DISTINCT_ITEMS, false, listOf(Expression.Variable(name))) else Expression.Variable(name)
-                }
+            fun kept(term: Expression) = keys[term]?.let(Expression::Variable) ?: aggregates[term]?.let { name ->
+                if (collectsDistinct(term)) Expression.Function(DISTINCT_ITEMS, false, listOf(Expression.Variable(name))) else Expression.Variable(name)
             }
+            // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
+            // a variable an item is named after is that item, not the variable of that name before it.
+            val itemNames = items.associate { it.expression to it.name }
+            val aliases = items.map { it.name }.toSet()
             val kept = projection.copy(
                 star = false,
-                items = items.map { it.copy(expression = kept(it.expression)) },
-                orderBy = projection.orderBy.map { it.copy(expression = kept(it.expression)) },
+                items = items.map { it.copy(expression = replaced(it.expression, ::kept)) },
+                orderBy = projection.orderBy.map { sort ->
+                    sort.copy(
+                        expression = replaced(sort.expression) { term ->
+                            if (term is Expression.Variable && term.name in aliases) term else itemNames[term]?.let(Expression::Variable) ?: kept(term)
+                        },
+                    )
+                },
             )
             return with(select, Clause.With(grouped, null)) to kept
         }
@@ -1726,8 +1753,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 when {
                     known is String -> property(expression(expression.subject, scope), known)
-                    // An item of a list of nodes or relationships is the node or the relationship, so it is compared by its id.
-                    listed is Value.Entities -> entityAt(listed as Value.Entities, at)
+                    // An item of a list of nodes or relationships is the node or the relationship, so it is compared by its id;
+                    // of one collect gathers in this query, its properties, for a store reads no aggregate from a subquery. A
+                    // pattern comprehension gathers its properties too, but in a subquery of its own, so its item is read by id.
+                    listed is Value.Entities && !contains(expression.subject, ::isAggregate) -> entityAt(listed as Value.Entities, at)
                     known is Number -> Value.Json(element(subject(), at), temporal = itemsOf(listed))
                     else -> Value.Json(
                         shared(subject(), at) { (map, key) ->
@@ -2013,7 +2042,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 // Two lists of nodes, or of relationships, are together a list of them.
                 Operator.ADD -> if (left is Value.Entities && right is Value.Entities && left.relationships == right.relationships) {
-                    val gathered = if (left.gathered != null || right.gathered != null) shared(entitiesJson(left), entitiesJson(right)) { (x, y) -> add(x, y) } else null
+                    val gathered = if (left.gathered != null || right.gathered != null) shared(a, b) { (x, y) -> add(x, y) } else null
                     Value.Entities(shared(left.ids, right.ids) { (x, y) -> add(x, y) }, left.relationships, gathered)
                 } else {
                     // Two lists of items of one kind are, together, a list of that kind.
@@ -2262,8 +2291,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * What `collect` gathers of a value: nulls are left out, as Cypher's `collect` leaves them out, JSON's null
-         * among them, as a list's item or a map's entry may be. Gathered once each, with [distinct], a value is what
-         * compares: Postgres compares no `json` a map or a list is built as.
+         * among them, as a list's item or a map's entry may be.
          */
         private fun collectable(value: Value): String = when {
             value is Value.Node -> "CASE WHEN ${value.nid} IS NOT NULL THEN ${json(value).sql} END"
