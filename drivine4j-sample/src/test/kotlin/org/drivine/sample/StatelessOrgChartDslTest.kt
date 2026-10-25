@@ -12,7 +12,9 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.annotation.Rollback
 import org.springframework.transaction.annotation.Transactional
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 /** A view that holds itself is queried by its generated DSL, which builds each level only when it is read. */
 @SpringBootTest(classes = [SampleAppContext::class])
@@ -66,6 +68,16 @@ class StatelessOrgChartDslTest @Autowired constructor(
         }
 
         assertEquals(listOf("Head Office"), charts.map { it.organization.name })
+    }
+
+    @Test
+    fun `a where three levels down is refused, as the DSL reaches it but the query does not`() {
+        val refusal = assertFailsWith<IllegalArgumentException> {
+            graphObjectManager.loadAll<OrgChart> {
+                where { units.units.units.organization.name eq "Sales East" }
+            }
+        }
+        assertContains(refusal.message!!, "Nested relationship 'units_units' not found")
     }
 
     @Test
