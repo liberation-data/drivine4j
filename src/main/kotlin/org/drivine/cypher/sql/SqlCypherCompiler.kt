@@ -74,6 +74,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** Whether the store aggregates a `CASE` whose result holds a subquery: see `casesFirst`. */
     protected open val aggregatesCaseSubqueries = true
 
+    /**
+     * Whether `min` and `max` of a list the statement makes order it by [listSortKey]: not where the store's JSON orders
+     * lists item by item already, as Oracle's does, where a grouped `KEEP` ordered by that key closes the session (ORA-03113).
+     */
+    protected open val extremesByListKey = true
+
     /** How many values [shared] has bound, to name each subquery it binds one in. */
     private var shares = 0
 
@@ -2649,7 +2655,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 "min", "max" -> {
                     val value = json(one())
                     val key = value.temporal?.takeIf { it.zoned }?.let { temporals.moment(text(comparable(value)), it) }
-                        ?: if (isList(one())) listSortKey(comparable(value)) else null
+                        ?: if (extremesByListKey && isList(one())) listSortKey(comparable(value)) else null
                     Value.Json(extreme(comparable(value), min = name == "min", key = key), temporal = value.temporal)
                 }
                 "range" -> {
