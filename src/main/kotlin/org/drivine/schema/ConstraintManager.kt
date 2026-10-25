@@ -87,7 +87,7 @@ class ConstraintManager internal constructor(
             // FalkorDB keeps listing a constraint whose build failed, though it enforces nothing.
             // It is not the constraint: drop it and build again, which gives a violation when the
             // data still repeats a key.
-            run(grammar.dropConstraint(existing))
+            dropFailedBuild(spec, existing)
             logger.warn(
                 "Dropped {} {} on {}{}, whose build had failed, to build it again",
                 grammar.engine, spec.kind, spec.label, spec.properties
@@ -208,7 +208,7 @@ class ConstraintManager internal constructor(
     private fun awaitAsyncCreation(spec: ConstraintSpec, violationSampleSize: Int): EnsureResult {
         val info = awaitBuild(spec, untilListed = true)!!
         if (info.buildFailed) {
-            run(grammar.dropConstraint(info))
+            dropFailedBuild(spec, info)
             val failed = DrivineException(
                 "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
                     "but no key it covers repeats in the data"
@@ -217,6 +217,20 @@ class ConstraintManager internal constructor(
         }
         logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
         return EnsureResult.Created(info)
+    }
+
+    /**
+     * Drops [failed], the constraint [spec] refers to, whose build failed. Another process waiting on the
+     * same build sees it fail too, and may drop it first: FalkorDB then refuses the drop, as there is no
+     * such constraint, which is no error once the failed build is no longer listed.
+     */
+    private fun dropFailedBuild(spec: ConstraintSpec, failed: SchemaItemInfo) {
+        try {
+            run(grammar.dropConstraint(failed))
+        } catch (e: Exception) {
+            if (find(spec)?.buildFailed == true) throw e
+            logger.debug("{} {} on {}{}, whose build had failed, was dropped already: {}", grammar.engine, spec.kind, spec.label, spec.properties, e.message)
+        }
     }
 
     /**

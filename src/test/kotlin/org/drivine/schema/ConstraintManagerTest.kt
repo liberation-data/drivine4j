@@ -5,6 +5,7 @@ import org.drivine.connection.DatabaseType
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
 import org.neo4j.driver.exceptions.Neo4jException
+import java.time.Duration
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -299,6 +300,76 @@ class ConstraintManagerTest {
         assertTrue(result is EnsureResult.Created, "expected Created, got $result")
         assertTrue(store.schema.none { it.startsWith("DROP CONSTRAINT") }, "${store.schema}")
         assertEquals(1, store.schema.count { it.startsWith("CREATE CONSTRAINT") })
+    }
+
+    @Test
+    fun `a constraint already in the store still being built when the wait ends is thrown, and left`() {
+        val store = RecordingStore(DatabaseType.NEO4J, asyncBuild, asyncCreationTimeout = Duration.ofMillis(500)) { ran ->
+            if (ran.statement.startsWith("SHOW CONSTRAINTS")) listOf(listed("UNDER CONSTRUCTION")) else emptyList<Any?>()
+        }
+
+        val thrown = assertFailsWith<DrivineException> { store.constraints.ensure(spec) }
+
+        assertContains(thrown.message!!, "Timed out")
+        assertTrue(store.schema.none { it.startsWith("DROP") || it.startsWith("CREATE") }, "${store.schema}")
+    }
+
+    /** What FalkorDB says to a drop of a constraint that is not there. */
+    private val noSuchConstraint = DrivineException("Unable to drop constraint, no such constraint.")
+
+    /**
+     * A store whose constraint is listed with each of [builds] in turn, the last from then on, until another
+     * process also waiting on it drops it first: the drop here is refused, and nothing is listed until CREATE
+     * has run, after which it is listed OPERATIONAL. With [madeHere], nothing is listed until CREATE has run
+     * here, and the listing of [builds] follows it.
+     */
+    private fun droppedFirstElsewhere(vararg builds: String, madeHere: Boolean = false, conflicts: Any? = emptyList<Any?>()): RecordingStore {
+        var phase = if (madeHere) "none" else "building"
+        var listings = 0
+        return RecordingStore(DatabaseType.NEO4J, asyncBuild) { ran ->
+            when {
+                ran.statement.startsWith("DROP CONSTRAINT") -> noSuchConstraint.also { phase = "dropped" }
+                ran.statement.startsWith("CREATE CONSTRAINT") -> emptyList<Any?>().also { phase = if (phase == "none") "building" else "made" }
+                ran.statement.startsWith("SHOW CONSTRAINTS") -> when (phase) {
+                    "building" -> listOf(listed(builds[minOf(listings++, builds.size - 1)]))
+                    "made" -> listOf(listed("OPERATIONAL"))
+                    else -> emptyList()
+                }
+                "_count > 1" in ran.statement -> conflicts
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `a failed build another process dropped first is built again here`() {
+        val store = droppedFirstElsewhere("UNDER CONSTRUCTION", "FAILED")
+
+        val result = store.constraints.ensure(spec)
+
+        assertTrue(result is EnsureResult.Created, "expected Created, got $result")
+        assertEquals(1, store.schema.count { it.startsWith("CREATE CONSTRAINT") })
+    }
+
+    @Test
+    fun `a failed build made here that another process dropped first is a violation when a key repeats`() {
+        val store = droppedFirstElsewhere("UNDER CONSTRUCTION", "FAILED", madeHere = true, conflicts = listOf(repeated))
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), store.constraints.ensure(spec))
+    }
+
+    @Test
+    fun `a refused drop of a failed build is thrown while it is still listed`() {
+        val store = RecordingStore(DatabaseType.NEO4J, asyncBuild) { ran ->
+            when {
+                ran.statement.startsWith("DROP CONSTRAINT") -> noSuchConstraint
+                ran.statement.startsWith("SHOW CONSTRAINTS") -> listOf(listed("FAILED"))
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertSame(noSuchConstraint, assertFailsWith<DrivineException> { store.constraints.ensure(spec) })
+        assertTrue(store.schema.none { it.startsWith("CREATE CONSTRAINT") }, "${store.schema}")
     }
 
     // ----- An index in the way -----
