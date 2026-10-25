@@ -591,6 +591,9 @@ abstract class SqlCypherCompiler(graph: String) {
      * number. Worked out in decimal, as Neo4j works it out with Java's `BigDecimal`, so 2.345 is halfway between 2.34 and
      * 2.35: a store whose numbers are decimal (`numeric`, `NUMBER`) takes this, one whose numbers are binary its own.
      */
+    /** `round(x, p)` of two arguments: [number] to [precision] places, half away from zero, as SQL's `ROUND` rounds. */
+    protected open fun roundPlaces(number: String, precision: String): String = "ROUND($number, $precision)"
+
     protected open fun roundTo(number: String, precision: String, mode: RoundingMode): String = shared(number, precision) { (n, p) ->
         val scale = "POWER(CAST(10 AS NUMERIC), $p)"
         val scaled = "(ABS($n) * $scale)"
@@ -3036,7 +3039,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     3 -> roundingMode(function.arguments[2])?.let { mode ->
                         Value.Json(scalar(float(roundTo(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1]), mode))))
                     } ?: Value.Json(literalJson(null))
-                    2 -> Value.Json(scalar(float("ROUND(${number(comparable(json(arguments[0])))}, ${precisionOf(arguments[1], function.arguments[1])})")))
+                    2 -> Value.Json(scalar(float(roundPlaces(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1])))))
                     else -> Value.Json(scalar(float("FLOOR(${number(comparable(json(one())))} + 0.5)")))
                 }
                 "floor", "ceil" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))

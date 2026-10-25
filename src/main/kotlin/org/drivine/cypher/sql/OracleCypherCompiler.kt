@@ -1,5 +1,6 @@
 package org.drivine.cypher.sql
 
+import java.math.RoundingMode
 import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
@@ -585,6 +586,21 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
 
     /** A text that is no number, read as one: Oracle fails with ORA-01722, whose ORA-03302 detail gives the text. */
+    override fun roundPlaces(number: String, precision: String) = pastItsDigits(number, precision) { n, p -> super.roundPlaces(n, p) }
+
+    override fun roundTo(number: String, precision: String, mode: RoundingMode) = pastItsDigits(number, precision) { n, p -> super.roundTo(n, p, mode) }
+
+    /**
+     * [round] of [number] to [precision] places, or [number] itself where those places are past its digits: Oracle's NUMBER
+     * stops near 10^126, so `ROUND(n, 400)`, and the scale `10^p` a mode rounds by, overflow (ORA-01426) where Neo4j gives
+     * the number back. Neo4j rounds a double, of [DOUBLE_DIGITS] significant digits at most, so rounding it to places past
+     * its last digit changes nothing; a number Oracle holds to more digits is a double again once rounded. Oracle works
+     * out only the branch of a CASE a row takes, so the overflowing one is never reached.
+     */
+    private fun pastItsDigits(number: String, precision: String, round: (String, String) -> String) = shared(number, precision) { (n, p) ->
+        "CASE WHEN $n = 0 OR $p >= $DOUBLE_DIGITS - FLOOR(LOG(10, ABS($n))) THEN $n ELSE ${round(n, p)} END"
+    }
+
     override fun failure(message: String, value: String) = "TO_NUMBER(${literal("$message ")} || TO_CHAR($value))"
 
     override fun raise(message: String) = "RAISE_APPLICATION_ERROR(-20000, ${literal(message)});"
@@ -611,5 +627,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
         /** The function a query declares that compares two values that may hold a null: see [nullsEqual]. */
         const val NULLS_EQUAL = "cy_nulls_equal"
+
+        /** How many significant digits a double holds at most, as Neo4j rounds one. */
+        const val DOUBLE_DIGITS = 17
     }
 }

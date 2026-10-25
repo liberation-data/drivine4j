@@ -310,6 +310,12 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** In decimal, as Neo4j rounds: see [org.drivine.backend.sqlite.SqliteRoundFunction]. SQLite's numbers are binary, and 2.345 is below 2.345 there. */
     override fun roundTo(number: String, precision: String, mode: RoundingMode) = "${SqliteFunctions.ROUND}($number, $precision, ${literal(mode.name)})"
 
+    /**
+     * Half up, as Neo4j rounds by two arguments, by Drivine's function as a mode rounds: SQLite's `ROUND` keeps no more
+     * than 15 places of a fraction, so 1.0E-100 to 120 places would be 0.
+     */
+    override fun roundPlaces(number: String, precision: String) = roundTo(number, precision, RoundingMode.HALF_UP)
+
     override fun rightText(text: String, count: String) = shared(text, count) { (t, n) ->
         "CASE WHEN $t IS NULL OR $n IS NULL THEN NULL WHEN $n >= length($t) THEN $t WHEN $n > 0 THEN substr($t, -$n) ELSE '' END"
     }

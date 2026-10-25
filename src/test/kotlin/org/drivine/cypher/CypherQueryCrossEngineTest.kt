@@ -527,8 +527,12 @@ abstract class CypherQueryContract {
         )
         assertEquals(listOf(listOf(3.0, -2.0, 2.0, 3.0, 2.0, -3.0)), query("RETURN [round(2.5, 0, 'HALF_UP'), round(-2.5, 0, 'HALF_EVEN'), round(2.5, 0, 'DOWN'), round(2.1, 0, 'CEILING'), round(2.9, 0, 'FLOOR'), round(-2.1, 0, 'UP')]"))
         assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
-        // Oracle overflows on a precision past its NUMBER range.
-        if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
+        // Places past a number's digits give it back, where Oracle's NUMBER would overflow (#266); short of them, it rounds.
+        assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
+        assertEquals(
+            listOf(listOf(1.0E-100, 123.456, 1.0E100, 0.3333333333333333, 0.0, -2.5)),
+            query("RETURN [round(1.0E-100, 120), round(123.456, 200, 'HALF_UP'), round(1.0E100, 30), round(1.0 / 3, 20), round(1.0E-100, 99), round(-2.5, 300, 'FLOOR')]"),
+        )
         // A negative precision from data fails when the row is read, on every store, in both forms.
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')") }
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r)") }
