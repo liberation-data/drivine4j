@@ -520,7 +520,7 @@ abstract class CypherQueryContract {
     fun `round() reads a precision from data, or a whole float, as a whole number toward zero, and a null as null`() {
         // Not in the spec yet: its round() case takes the precision as written or given.
         clear()
-        seed("CREATE (:Round {p: 1.7, q: -0.5, w: 2.0, r: -2, z: 0.0})")
+        seed("CREATE (:Round {p: 1.7, q: -0.5, w: 2.0, r: -2, z: 0.0, b: 400})")
         assertEquals(
             listOf(listOf(2.6, 2.6, 3.0, 3.0, 2.56, 2.56)),
             query("MATCH (n:Round) RETURN [round(2.555, n.p), round(2.55, n.p, 'UP'), round(2.5, n.q), round(2.5, n.q, 'HALF_UP'), round(2.555, n.w), round(2.555, 2.0, 'HALF_UP')]"),
@@ -529,6 +529,9 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
         // Places past a number's digits give it back, where Oracle's NUMBER would overflow (#266); short of them, it rounds.
         assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
+        // Read from data, and so far past the digits that writing them all out would not finish; Postgres's ROUND overflows there.
+        assertEquals(listOf(listOf(2.5, 2.5)), query("MATCH (n:Round) RETURN [round(2.5, n.b), round(2.5, n.b, 'FLOOR')]"))
+        if (pm.type != DatabaseType.POSTGRES) assertEquals(listOf(listOf(2.5, 2.5)), query("RETURN [round(2.5, 1000000000), round(2.5, 1000000000, 'HALF_UP')]"))
         assertEquals(
             listOf(listOf(1.0E-100, 123.456, 1.0E100, 0.3333333333333333, 0.0, -2.5)),
             query("RETURN [round(1.0E-100, 120), round(123.456, 200, 'HALF_UP'), round(1.0E100, 30), round(1.0 / 3, 20), round(1.0E-100, 99), round(-2.5, 300, 'FLOOR')]"),
