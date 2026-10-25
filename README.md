@@ -4291,6 +4291,12 @@ The Java methods are named differently from their Kotlin counterparts (`isEqualT
 from Kotlin 2.3 two members sharing a name are ambiguous there, so each language gets its own. Renamed in
 0.0.87 — see [0.0.87-java-dsl-names.md](docs/0.0.87-java-dsl-names.md) for the old → new table.
 
+The Java annotation processor, `drivine4j-codegen-java`, gives a view held by another view's field, and a
+`@RelationshipFragment`, a Properties class of its own, as KSP does: `dsl.staff.employer.title()`. Inside a held
+view, a relationship to a further view is a method, not a field, so a view that holds itself, or two that hold
+each other, can be built: `dsl.reports.reports().person.name()`. A relationship fragment's Properties class holds
+the relationship's own properties; its target is not among them.
+
 | Operation | Example |
 |-----------|---------|
 | Equality | `.isEqualTo("value")`, `.isNotEqualTo("value")` |
@@ -4356,7 +4362,7 @@ List<PersonContext> results = JavaQueryBuilderKt
 | `@GraphView` runtime | ✅ Full | Loading, saving, polymorphism all work |
 | Type-safe DSL | ✅ Full | Use `filterWith()` API from Java |
 | `instanceOf()` | ✅ Full | Filter by `@NodeFragment` subtype |
-| DSL generation | ⚠️ Kotlin only | Define `@GraphView` in Kotlin |
+| DSL generation | ✅ Full | KSP for Kotlin modules, `drivine4j-codegen-java` for Java ones |
 | Generic collections | ✅ Full | Java reflection handles `List<T>`, `Set<T>` |
 | Polymorphic types | ✅ Full | Works with sealed classes or `@JsonSubTypes` |
 

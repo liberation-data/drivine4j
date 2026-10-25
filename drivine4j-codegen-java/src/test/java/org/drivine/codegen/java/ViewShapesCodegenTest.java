@@ -144,6 +144,140 @@ class ViewShapesCodegenTest {
     }
 
     @Test
+    void twoViewsThatHoldEachOtherEnd() {
+        JavaFileObject mentor = source("MentorView",
+            "package sample.vs;",
+            "import java.util.List;",
+            "import org.drivine.annotation.GraphRelationship;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class MentorView {",
+            "  @Root public Person person;",
+            "  @GraphRelationship(type = \"MENTORS\") public List<MenteeView> mentees;",
+            "}");
+        JavaFileObject mentee = source("MenteeView",
+            "package sample.vs;",
+            "import org.drivine.annotation.GraphRelationship;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class MenteeView {",
+            "  @Root public Person person;",
+            "  @GraphRelationship(type = \"MENTORED_BY\") public MentorView mentor;",
+            "}");
+
+        Compilation compilation = compile(mentor, mentee);
+
+        assertThat(compilation).succeeded();
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.MentorViewProperties")
+            .contentsAsUtf8String()
+            .contains("return new MenteeViewProperties(alias + \"_mentees\");");
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.MenteeViewProperties")
+            .contentsAsUtf8String()
+            .contains("return new MentorViewProperties(alias + \"_mentor\");");
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.MentorViewQueryDsl")
+            .contentsAsUtf8String()
+            .contains("new MenteeViewProperties(\"mentees\")");
+    }
+
+    @Test
+    void aRelationshipFragmentWhoseTargetIsAViewGivesTheViewItsProperties() {
+        JavaFileObject employee = source("EmployeeView",
+            "package sample.vs;",
+            "import org.drivine.annotation.GraphRelationship;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class EmployeeView {",
+            "  @Root public Person person;",
+            "  @GraphRelationship(type = \"WORKS_FOR\") public Company employer;",
+            "}");
+        JavaFileObject hire = source("Hire",
+            "package sample.vs;",
+            "import org.drivine.annotation.RelationshipFragment;",
+            "@RelationshipFragment",
+            "public class Hire {",
+            "  public String role;",
+            "  public EmployeeView target;",
+            "}");
+        JavaFileObject staffing = source("StaffingView",
+            "package sample.vs;",
+            "import java.util.List;",
+            "import org.drivine.annotation.GraphRelationship;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class StaffingView {",
+            "  @Root public Company company;",
+            "  @GraphRelationship(type = \"HIRED\") public List<Hire> hires;",
+            "}");
+
+        Compilation compilation = compile(employee, hire, staffing);
+
+        assertThat(compilation).succeeded();
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.EmployeeViewProperties")
+            .contentsAsUtf8String()
+            .contains("new CompanyProperties(alias + \"_employer\")");
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.HireProperties")
+            .contentsAsUtf8String()
+            .doesNotContain("target");
+    }
+
+    @Test
+    void aRelationshipFragmentHeldByTwoViewsAndANestedOneHasOneProperties() {
+        JavaFileObject employment = source("Employment",
+            "package sample.vs;",
+            "import org.drivine.annotation.RelationshipFragment;",
+            "@RelationshipFragment",
+            "public class Employment {",
+            "  public String role;",
+            "  public Company target;",
+            "}");
+        JavaFileObject career = source("CareerView",
+            "package sample.vs;",
+            "import java.util.List;",
+            "import org.drivine.annotation.GraphRelationship;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class CareerView {",
+            "  @Root public Person person;",
+            "  @GraphRelationship(type = \"WORKED_AT\") public List<Employment> history;",
+            "}");
+        JavaFileObject cv = source("CvView",
+            "package sample.vs;",
+            "import java.util.List;",
+            "import org.drivine.annotation.GraphRelationship;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class CvView {",
+            "  @Root public Person person;",
+            "  @GraphRelationship(type = \"WORKED_AT\") public List<Employment> jobs;",
+            "  @GraphRelationship(type = \"REFERS\") public List<CareerView> referees;",
+            "}");
+
+        Compilation compilation = compile(employment, career, cv);
+
+        // A second Properties class of the same name would fail the compile on the Filer.
+        assertThat(compilation).succeeded();
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.CareerViewProperties")
+            .contentsAsUtf8String()
+            .contains("new EmploymentProperties(alias + \"_history\")");
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.CvViewQueryDsl")
+            .contentsAsUtf8String()
+            .contains("new EmploymentProperties(\"jobs\")");
+    }
+
+    @Test
     void aStaticFieldIsNoProperty() {
         JavaFileObject view = source("PersonView",
             "package sample.vs;",
