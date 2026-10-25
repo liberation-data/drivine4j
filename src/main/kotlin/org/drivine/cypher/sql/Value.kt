@@ -31,6 +31,12 @@ sealed interface Value {
          */
         val text: Boolean = false,
         val texts: Boolean = false,
+        /**
+         * Whether it is known to hold no null in a list or a map, at any depth: a value of one kind, a property read from the
+         * store, which holds none, or a list or map the statement writes or is given without one. It may itself be null. Two such
+         * values compare as JSON; any other may hold a null, which makes Cypher's comparison of the two null where it is not false.
+         */
+        val flat: Boolean = false,
     ) : Value
 
     /** A truth value: SQL's boolean, with its null for Cypher's. */
@@ -47,9 +53,9 @@ sealed interface Value {
      * given as their properties, and read as the nodes or relationships themselves where it is unwound, so a write
      * reaches them, and where it is compared, indexed, searched with `IN` or iterated, so they compare by their ids.
      * Where `collect` gathers it, [gathered] is the JSON list of their properties, gathered beside the ids, for
-     * a store reads no aggregate of the query it is in from a subquery.
+     * a store reads no aggregate of the query it is in from a subquery. With [flat], it is known to hold no null: see [Json.flat].
      */
-    data class Entities(val ids: String, val relationships: Boolean, val gathered: String? = null) : Value
+    data class Entities(val ids: String, val relationships: Boolean, val gathered: String? = null, val flat: Boolean = false) : Value
 
     /** A path: the ids of its nodes, and of its relationships, in the order the pattern names them. */
     data class Path(val nids: String, val eids: String) : Value

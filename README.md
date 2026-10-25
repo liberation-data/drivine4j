@@ -72,7 +72,7 @@ Drivine's transaction manager and the auto-configuration (see [Configuration](#1
 
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j-spring-boot-starter:0.2.0")
+    implementation("org.drivine:drivine4j-spring-boot-starter:0.3.0")
 }
 ```
 
@@ -88,14 +88,14 @@ and it can be used on its own too, with another framework or none (see [Other fr
 #### Gradle (Kotlin DSL)
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j:0.2.0")
+    implementation("org.drivine:drivine4j:0.3.0")
 }
 ```
 
 #### Gradle (Groovy)
 ```groovy
 dependencies {
-    implementation 'org.drivine:drivine4j:0.2.0'
+    implementation 'org.drivine:drivine4j:0.3.0'
 }
 ```
 
@@ -104,7 +104,7 @@ dependencies {
 <dependency>
     <groupId>org.drivine</groupId>
     <artifactId>drivine4j</artifactId>
-    <version>0.2.0</version>
+    <version>0.3.0</version>
 </dependency>
 ```
 
@@ -137,8 +137,8 @@ kotlin {
 }
 
 dependencies {
-    implementation("org.drivine:drivine4j:0.2.0")
-    ksp("org.drivine:drivine4j-codegen:0.2.0")
+    implementation("org.drivine:drivine4j:0.3.0")
+    ksp("org.drivine:drivine4j-codegen:0.3.0")
 }
 ```
 
@@ -172,7 +172,7 @@ dependencies {
                 <dependency>
                     <groupId>org.drivine</groupId>
                     <artifactId>drivine4j-codegen</artifactId>
-                    <version>0.2.0</version>
+                    <version>0.3.0</version>
                 </dependency>
             </dependencies>
         </plugin>
@@ -212,7 +212,7 @@ ksp {
 ```groovy
 // The Java processor, in Gradle
 dependencies {
-    annotationProcessor 'org.drivine:drivine4j-codegen-java:0.2.0'
+    annotationProcessor 'org.drivine:drivine4j-codegen-java:0.3.0'
 }
 tasks.withType(JavaCompile).configureEach {
     options.compilerArgs += ['-Adrivine.model.module=orders']
@@ -2698,7 +2698,7 @@ Java applications don't need it):
 
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j-coroutines:0.2.0")
+    implementation("org.drivine:drivine4j-coroutines:0.3.0")
 }
 ```
 
@@ -3154,7 +3154,10 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
   each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
-  query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path. `list[i]` reads an item where an expression gives
+  query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
+  Two lists or maps that may hold a null are compared item by item, as Cypher compares them, by a function the query
+  declares too; in a statement that writes, or the step of a `reduce`, two that are equal as JSON compare as null and any
+  other two as false, so `[null] = [1]` is false there, where Cypher's comparison is null. `list[i]` reads an item where an expression gives
   the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
   What is not compiled yet (a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
