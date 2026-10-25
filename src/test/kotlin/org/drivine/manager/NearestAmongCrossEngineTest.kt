@@ -33,9 +33,8 @@ import kotlin.test.assertTrue
  * [GraphObjectOperations.loadNearestAmong] on every store with a vector search: each of a set of ids
  * gets its nearest among the same set, and nothing else.
  *
- * The embeddings are 4-dimensional and lie in one plane, so each cosine is plain to see. Each store
- * scores a pair as its `loadNearest` does (see [NearestAmongContract.score]): `(1 + cos) / 2` on Neo4j
- * and the SQL stores, the cosine itself on FalkorDB and Memgraph.
+ * The embeddings are 4-dimensional and lie in one plane, so each cosine is plain to see. Every store
+ * scores a pair as its `loadNearest` does, `(1 + cos) / 2` (see [score] and [VectorScoreContract]).
  *
  * | pair | cos  |
  * |------|------|
@@ -55,6 +54,9 @@ private val SET = listOf("A", "B", "C", "D", "E", "Z")
 private const val WIDE = 10
 
 private const val TOLERANCE = 1e-6
+
+/** The score every store's `loadNearest` gives a pair of cosine [cos]. */
+private fun score(cos: Double): Double = (1 + cos) / 2
 
 /** Seeds the nodes. [vec] writes an embedding literal as the store keeps one. */
 private fun seedAmong(pm: PersistenceManager, vec: (String) -> String) {
@@ -102,9 +104,6 @@ abstract class NearestAmongContract {
      * FalkorDB's vector procedures refuse a vector of another size, rather than leaving that id out.
      */
     protected open val refusesMisSized = false
-
-    /** The score the store's `loadNearest` gives a pair of cosine [cos]. */
-    protected open fun score(cos: Double): Double = (1 + cos) / 2
 
     private fun ids(near: List<Scored<String>>?) = near?.map { it.value }
     private fun assertScores(expected: List<Double>, near: List<Scored<String>>?) {
@@ -303,9 +302,6 @@ class NearestAmongFalkorDbTest : NearestAmongContract() {
     override val gom: GraphObjectOperations get() = manager
     override val exact = false
 
-    /** FalkorDB and Memgraph give the cosine itself, as their `loadNearest` does. */
-    override fun score(cos: Double) = cos
-
     override val refusesMisSized = true
     override fun addMisSized() = true.also { seedMisSized(pm) { "vecf32($it)" } }
 
@@ -346,9 +342,6 @@ class NearestAmongMemgraphTest : NearestAmongContract() {
 
     override val gom: GraphObjectOperations get() = manager
     override val exact = false
-
-    /** FalkorDB and Memgraph give the cosine itself, as their `loadNearest` does. */
-    override fun score(cos: Double) = cos
 
     /** Memgraph refuses to write an embedding of another size than its index's. */
     override fun addMisSized() = false
