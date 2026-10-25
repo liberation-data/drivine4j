@@ -51,6 +51,24 @@ class StatelessOrgChartDslTest @Autowired constructor(
     }
 
     @Test
+    fun `a where on a held level reads that level's targets`() {
+        val charts = graphObjectManager.loadAll<OrgChart> {
+            where { units.organization.name eq "Sales" }
+        }
+
+        assertEquals(listOf("Head Office"), charts.map { it.organization.name })
+    }
+
+    @Test
+    fun `a where two levels down reads the targets of the targets`() {
+        val charts = graphObjectManager.loadAll<OrgChart> {
+            where { units.units.organization.name eq "Sales East" }
+        }
+
+        assertEquals(listOf("Head Office"), charts.map { it.organization.name })
+    }
+
+    @Test
     fun `each level of the DSL is at the alias its relationship gives it`() {
         assertEquals("units", OrgChartQueryDsl.INSTANCE.units.nodeAlias)
         assertEquals("units_units", OrgChartQueryDsl.INSTANCE.units.units.nodeAlias)

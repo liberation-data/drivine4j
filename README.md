@@ -631,6 +631,8 @@ graphObjectManager.loadAll<LocationHierarchy> {
 }
 ```
 
+**Querying a level below.** The generated DSL reaches each level, built only when it is read, so a where can test the targets of the targets: `where { subLocations.subLocations.location.name eq "France" }`.
+
 **Chain cycles** (A → B → A) are also supported. When a relationship targets a `@GraphView` that forms a cycle through other types, Drivine tracks visit counts and terminates at `maxDepth`:
 
 ```kotlin
@@ -4323,9 +4325,9 @@ the relationship's own properties; its target is not among them.
 
 ### DSL Generation Note
 
-The code generator (KSP) only processes **Kotlin source files**. For the best experience:
-- Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
-- Your `@NodeFragment` classes can be in Java or Kotlin
+KSP generates the type-safe DSL in a module with Kotlin in it; a Java module gets it from the
+annotation processor, `drivine4j-codegen-java`:
+- Your `@GraphView` and `@NodeFragment` classes can be in Java or Kotlin
 - At runtime, both Java and Kotlin classes work fully with the object manager
 
 ### Recommended Pattern
