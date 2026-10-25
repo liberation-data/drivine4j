@@ -1,5 +1,8 @@
 package org.drivine.codegen
 
+import com.google.testing.compile.Compilation
+import com.google.testing.compile.Compiler
+import com.google.testing.compile.JavaFileObjects
 import com.tschuchort.compiletesting.KotlinCompilation
 import com.tschuchort.compiletesting.SourceFile
 import com.tschuchort.compiletesting.configureKsp
@@ -11,6 +14,7 @@ import java.io.File
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+import org.drivine.codegen.java.GraphViewProcessor as JavaProcessor
 
 /**
  * The generated DSL has a reference for each property the node stores, as the core library reads
@@ -184,7 +188,7 @@ class InheritedFieldsDslTest {
             val code = classOf(files, dsl)
             for (stored in listOf("\"id\"", "\"full_title\"", "PropertyBagReference(", "\"meta.\"", "\"body\"", "\"embedding\""))
                 assertTrue(stored in code, "$dsl lacks $stored:\n$code")
-            assertTrue("val shown: PropertyReference<Int>" in code, "$dsl reads Doc's shown, not the Page field hiding it:\n$code")
+            assertTrue("val shown: PropertyReference<Int>" in code, "$dsl reads Page's shown, not the Doc field it hides:\n$code")
             assertFalse("hidden" in code, "$dsl has a field that a transient one hides:\n$code")
         }
         val cites = classOf(files, "CitesProperties")
@@ -231,4 +235,43 @@ class InheritedFieldsDslTest {
             assertTrue("PropertyReference<kotlin.Long>(" in code, "$dsl lacks content as a Long:\n$code")
         }
     }
+
+    @Test
+    fun `the Java processor's DSL references a compiled Kotlin superclass's properties but not its private ones`() {
+        val compilation = Compiler.javac().withProcessors(JavaProcessor()).compile(
+            JavaFileObjects.forSourceString(
+                "jx.OverKotlin",
+                """
+                package jx;
+                import org.drivine.annotation.*;
+                @NodeFragment(labels = {"OverKotlin"})
+                public class OverKotlin extends org.drivine.codegen.KotlinTitled { @NodeId public String id; }
+                """.trimIndent(),
+            ),
+            JavaFileObjects.forSourceString(
+                "jx.OverKotlinView",
+                """
+                package jx;
+                import org.drivine.annotation.*;
+                @GraphView public class OverKotlinView { @Root public OverKotlin over; }
+                """.trimIndent(),
+            ),
+        )
+        assertEquals(Compilation.Status.SUCCESS, compilation.status(), compilation.diagnostics().toString())
+        for (dsl in listOf("OverKotlinQueryDsl", "OverKotlinProperties")) {
+            val code = compilation.generatedSourceFiles().single { it.name.endsWith("/$dsl.java") }.getCharContent(true).toString()
+            // A Kotlin property's backing field is private, whatever the property's visibility.
+            for (stored in listOf("\"title\"", "\"open\"", "\"isDone\"", "\"rank\"")) assertTrue(stored in code, "$dsl lacks $stored:\n$code")
+            assertFalse("secret" in code, "$dsl has secret:\n$code")
+        }
+    }
+}
+
+/** A Kotlin superclass of a Java fragment, on the classpath as a compiled Kotlin class: [secret] is no stored state. */
+abstract class KotlinTitled {
+    var title: String = ""
+    protected val open: Boolean = false
+    val isDone: Boolean = false
+    internal val rank: Int = 0
+    private val secret: String = ""
 }

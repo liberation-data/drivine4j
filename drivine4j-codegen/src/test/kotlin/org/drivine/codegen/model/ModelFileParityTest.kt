@@ -188,7 +188,7 @@ class ModelFileParityTest {
         // Base's hidden field is hidden by Probe's transient one, so neither is stored.
         assertTrue("hidden" !in names)
         val overKotlin = (model["fragments"] as List<*>).map { it as Map<*, *> }.single { it["name"] == "OverKotlin" }
-        assertEquals(listOf("id", "shared"), (overKotlin["properties"] as List<*>).map { (it as Map<*, *>)["name"] }.sortedBy { it as String })
+        assertEquals(listOf("id", "shared", "title"), (overKotlin["properties"] as List<*>).map { (it as Map<*, *>)["name"] }.sortedBy { it as String })
     }
 
     /** [value] without the two keys the processors may rightly differ on. */
@@ -202,5 +202,6 @@ class ModelFileParityTest {
 /** A Kotlin superclass of a Java fragment, on the classpath as a compiled Kotlin class: [secret] is no stored state. */
 abstract class KotlinBase {
     @JvmField var shared: String = ""
+    var title: String = ""
     private val secret: String = ""
 }
