@@ -358,21 +358,25 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /**
      * `a + b` of the JSON values [a] and [b]: numbers added, lists joined, texts put together. [given] is what the statement
-     * gives each as, where it does: see [summedText].
+     * gives each as, where it does, or [MadeText] where it makes it a text without giving it: see [summedText].
      */
     protected abstract fun add(a: String, b: String, given: Pair<Any?, Any?> = null to null): String
+
+    /** A side of a `+` the statement makes a text, or null, though it does not give it: see [Value.Json.text]. */
+    protected object MadeText
 
     /**
      * The text the JSON [json], a side of a `+` that may put a number and a text together, is written as there: by [written],
      * as `toString` writes it, a float as Java writes a double. Where the statement gives it a number, [given], it is that
      * number's text, worked out here; and where it gives the other side, [other], a number, or this side a text, it is its own
-     * text, [plain], for a side is put together with a number only where it is a text. So only a side the statement gives
-     * neither way is written as `toString` writes it, which is long: `c.name + 1` compiles as it did before floats were so written.
+     * text, [plain], for a side is put together with a number only where it is a text. So is a side the statement makes a
+     * text ([MadeText]), as `'x' + toString(i)`. So only a side the statement gives or makes neither way, which may be a float,
+     * is written as `toString` writes it, which is long: `c.name + 1` compiles as it did before floats were so written.
      * NaN and the infinities count as given neither way: Postgres binds them as texts, so a number may be added to one as text.
      */
     protected fun summedText(json: String, given: Any?, other: Any?, plain: (String) -> String, written: (String) -> String): String = when {
         isGivenNumber(given) -> literal(given.toString())
-        given is String || isGivenNumber(other) -> plain(json)
+        given is String || given === MadeText || isGivenNumber(other) -> plain(json)
         else -> written(json)
     }
 
@@ -799,7 +803,10 @@ abstract class SqlCypherCompiler(graph: String) {
             val scope = projected.first().scope.mapValues { (variable, value) ->
                 val all = projected.map { it.scope.getValue(variable) as? Value.Json }
                 if (value !is Value.Json) value
-                else value.copy(temporal = all.map { it?.temporal }.distinct().singleOrNull(), items = all.map { it?.items }.distinct().singleOrNull())
+                else value.copy(
+                    temporal = all.map { it?.temporal }.distinct().singleOrNull(), items = all.map { it?.items }.distinct().singleOrNull(),
+                    text = all.all { it?.text == true }, texts = all.all { it?.texts == true },
+                )
             }
             return Projected(sql, scope, emptyList(), projected.first().columns)
         }
@@ -826,7 +833,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
             }
             select.source(elements(items, name))
-            select.bind(unwind.variable, Value.Json(item(name), temporal = itemsOf(list), list = holdsLists(list)))
+            select.bind(unwind.variable, Value.Json(item(name), temporal = itemsOf(list), list = holdsLists(list), text = holdsTexts(list) || isText(list)))
             select.order += itemNo(name) to false
         }
 
@@ -1340,6 +1347,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         Value.Json(
                             propertyOf(row, key), temporal = carried[variable]?.temporal, items = carried[variable]?.items,
                             list = carried[variable]?.list == true, itemLists = carried[variable]?.itemLists == true,
+                            text = carried[variable]?.text == true, texts = carried[variable]?.texts == true,
                         ),
                     )
                     // A list or a path that is null is held as JSON's null, and read as SQL's.
@@ -2017,7 +2025,7 @@ abstract class SqlCypherCompiler(graph: String) {
         // ----- Expressions -----
 
         fun expression(expression: Expression, scope: Map<String, Value>): Value = when (expression) {
-            is Expression.Literal -> Value.Json(literalJson(expression.value))
+            is Expression.Literal -> Value.Json(literalJson(expression.value), text = expression.value is String)
             is Expression.Parameter ->
                 givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name), temporal = Temporal.ofValue(parameters.value(expression.name)))
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
@@ -2050,6 +2058,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         identity = identityHolding(items) { jsonArray(it) },
                         list = true,
                         itemLists = entities.isNotEmpty() && entities.all(::isList),
+                        texts = items.all(::isText),
                     )
                 }
             }
@@ -2085,7 +2094,10 @@ abstract class SqlCypherCompiler(graph: String) {
                     listed is Value.Entities && !contains(expression.subject, ::isAggregate) -> entityAt(listed as Value.Entities, at)
                     // An item of a list that holds a node or a relationship holds it by identity too: see [Value.Json.identity].
                     known is Number -> element(subject(), at).let { item ->
-                        Value.Json(item, temporal = itemsOf(listed), identity = identityOf(listed, item, true) { element(it, at) }, list = holdsLists(listed))
+                        Value.Json(
+                            item, temporal = itemsOf(listed), identity = identityOf(listed, item, true) { element(it, at) }, list = holdsLists(listed),
+                            text = holdsTexts(listed),
+                        )
                     }
                     else -> {
                         fun item(list: String) = shared(list, at) { (map, key) ->
@@ -2093,7 +2105,9 @@ abstract class SqlCypherCompiler(graph: String) {
                             val keyed = keyed(map, key)?.let { " WHEN 'string' THEN $it" }.orEmpty()
                             "CASE ${typeOf(key)} WHEN 'number' THEN ${element(map, key)}$keyed END"
                         }
-                        item(subject()).let { taken -> Value.Json(taken, temporal = itemsOf(listed), identity = identityOf(listed, taken, true, ::item), list = holdsLists(listed)) }
+                        item(subject()).let { taken ->
+                            Value.Json(taken, temporal = itemsOf(listed), identity = identityOf(listed, taken, true, ::item), list = holdsLists(listed), text = holdsTexts(listed))
+                        }
                     }
                 }
             }
@@ -2210,7 +2224,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // A slice of a list that holds a node or a relationship holds it by identity too: see [Value.Json.identity].
             return if (listed is Value.Entities) Value.Entities(sliced(list), listed.relationships)
             else sliced(list).let { taken ->
-                Value.Json(taken, items = itemsOf(listed), identity = identityOf(listed, taken, false, ::sliced), list = true, itemLists = holdsLists(listed))
+                Value.Json(taken, items = itemsOf(listed), identity = identityOf(listed, taken, false, ::sliced), list = true, itemLists = holdsLists(listed), texts = holdsTexts(listed))
             }
         }
 
@@ -2245,6 +2259,12 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether the statement makes [value] a list whose every item is a list: see [Value.Json.itemLists]. */
         private fun holdsLists(value: Value): Boolean = (value as? Value.Json)?.itemLists == true
+
+        /** Whether the statement makes [value] a text, or null: see [Value.Json.text]. */
+        private fun isText(value: Value): Boolean = (value as? Value.Json)?.text == true
+
+        /** Whether the statement makes [value] a list whose every item is a text, or null: see [Value.Json.texts]. */
+        private fun holdsTexts(value: Value): Boolean = (value as? Value.Json)?.texts == true
 
         /** The temporal kind the statement makes each item of the list [list]: see [Value.Json.items]. */
         private fun itemsOf(list: Value): Temporal? = (list as? Value.Json)?.items
@@ -2445,10 +2465,18 @@ abstract class SqlCypherCompiler(graph: String) {
                     val gathered = if (left.gathered != null || right.gathered != null) shared(a, b) { (x, y) -> add(x, y) } else null
                     Value.Entities(shared(left.ids, right.ids) { (x, y) -> add(x, y) }, left.relationships, gathered)
                 } else {
-                    // Two lists of items of one kind are, together, a list of that kind.
+                    // Two lists of items of one kind are, together, a list of that kind. A side the statement makes a text, not given,
+                    // is written as its own text; a text put together with a text, or a number given, is a text.
+                    val (givenLeft, givenRight) = given(binary.left) to given(binary.right)
+                    val (textLeft, textRight) = (isText(left) || givenLeft is String) to (isText(right) || givenRight is String)
                     Value.Json(
-                        shared(a, b) { (x, y) -> add(x, y, given(binary.left) to given(binary.right)) }, items = itemsOf(left)?.takeIf { it == itemsOf(right) },
+                        shared(a, b) { (x, y) ->
+                            add(x, y, (givenLeft ?: MadeText.takeIf { textLeft }) to (givenRight ?: MadeText.takeIf { textRight }))
+                        },
+                        items = itemsOf(left)?.takeIf { it == itemsOf(right) },
                         list = isList(left) || isList(right), itemLists = holdsLists(left) && (holdsLists(right) || !isList(right)),
+                        text = (textLeft && (textRight || isGivenNumber(givenRight))) || (textRight && isGivenNumber(givenLeft)),
+                        texts = (holdsTexts(left) && (holdsTexts(right) || textRight)) || (textLeft && holdsTexts(right)),
                     )
                 }
                 Operator.SUBTRACT -> Value.Json(shared(a, b) { (x, y) -> arithmetic(x, y, "-") })
@@ -2605,6 +2633,7 @@ abstract class SqlCypherCompiler(graph: String) {
             return Value.Json(
                 sql, temporal = kindOf(results), identity = identity,
                 list = results.all { isList(it.second) }, itemLists = results.all { holdsLists(it.second) },
+                text = results.all { isText(it.second) }, texts = results.all { holdsTexts(it.second) },
             )
         }
 
@@ -2618,7 +2647,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     else -> subject
                 }
                 "labels" -> (one() as? Value.Node)?.let { Value.Json(it.labels) } ?: throw DrivineException("labels() takes a node.")
-                "type" -> (one() as? Value.Relationship)?.let { Value.Json(scalar(it.type)) } ?: throw DrivineException("type() takes a relationship.")
+                "type" -> (one() as? Value.Relationship)?.let { Value.Json(scalar(it.type), text = true) } ?: throw DrivineException("type() takes a relationship.")
                 "id", "elementid" -> when (val subject = one()) {
                     is Value.Node -> Value.Json(scalar(subject.nid))
                     is Value.Relationship -> Value.Json(scalar(subject.eid))
@@ -2630,6 +2659,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 "coalesce" -> Value.Json(
                     "COALESCE(${arguments.joinToString(", ") { nullIfJsonNull(comparable(json(it))) }})",
                     temporal = kindOf(function.arguments.zip(arguments)),
+                    text = arguments.all(::isText), texts = arguments.all(::holdsTexts),
                 )
                 "count" -> Value.Json(scalar("count($distinct${countable(one())})"))
                 // collect(DISTINCT …) is collected in a WITH of its own, then kept once each: see aggregatesFirst.
@@ -2639,7 +2669,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     is Value.Relationship -> Value.Entities(gatheredIds("CASE WHEN ${gathered.eid} IS NOT NULL THEN ${scalar(gathered.eid)} END"), true, collected(gathered))
                     // What holds a node or a relationship, a map or a list of them, is gathered beside its identity too.
                     else -> Value.Json(
-                        collected(gathered), ordered = true, items = (gathered as? Value.Json)?.temporal, list = true, itemLists = isList(gathered),
+                        collected(gathered), ordered = true, items = (gathered as? Value.Json)?.temporal, list = true, itemLists = isList(gathered), texts = isText(gathered),
                         identity = identityOf(gathered)?.let { comparable(Value.Json(collect(it, rowOrder), ordered = true)) },
                     )
                 }
@@ -2650,9 +2680,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     is Value.Json -> list.identity?.let { identity ->
                         Value.Json(
                             firstOfEach(comparable(list), identity), ordered = true, items = list.items, identity = comparable(Value.Json(distinctItems(identity), ordered = true)),
-                            list = true, itemLists = list.itemLists,
+                            list = true, itemLists = list.itemLists, texts = list.texts,
                         )
-                    } ?: Value.Json(distinctItems(comparable(list)), ordered = true, items = list.items, list = true, itemLists = list.itemLists)
+                    } ?: Value.Json(distinctItems(comparable(list)), ordered = true, items = list.items, list = true, itemLists = list.itemLists, texts = list.texts)
                     else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
                 }
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
@@ -2673,17 +2703,17 @@ abstract class SqlCypherCompiler(graph: String) {
                 "split" -> {
                     if (arguments.size != 2) throw DrivineException("split() takes a text and a separator.")
                     val (text, separator) = arguments.map { text(comparable(json(it))) }
-                    Value.Json(split(text, separator), list = true)
+                    Value.Json(split(text, separator), list = true, texts = true)
                 }
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
                     "CASE ${typeOf(x)} WHEN 'string' THEN ${scalar(reverseText(text(x)))} " +
                         "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elements(x, e)}) END"
-                }, items = itemsOf(one()), list = isList(one()), itemLists = holdsLists(one()))
+                }, items = itemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), text = isText(one()), texts = holdsTexts(one()))
                 "tail" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
                     "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), itemNo(e)), ordered = true))} FROM ${elements(x, e)} WHERE ${itemNo(e)} > 1) END"
-                }, items = itemsOf(one()), list = isList(one()), itemLists = holdsLists(one()))
+                }, items = itemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), texts = holdsTexts(one()))
                 // A text is read as Cypher reads it, its case and the spaces around it aside; a number is true but for 0.
                 "toboolean" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     "CASE WHEN ${typeOf(x)} = 'boolean' THEN $x " +
@@ -2711,23 +2741,23 @@ abstract class SqlCypherCompiler(graph: String) {
                 "e", "pi" -> if (arguments.isEmpty()) Value.Json(literalJson(if (name == "e") Math.E else Math.PI))
                     else throw DrivineException("${function.name}() takes no argument.")
                 "sign" -> Value.Json(scalar("SIGN(${number(comparable(json(one())))})"))
-                "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"))
+                "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"), text = true)
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.
                 "substring" -> {
                     if (arguments.size !in 2..3) throw DrivineException("substring() takes a text, a start and a length.")
                     val (text, start) = textAndCount(arguments)
-                    Value.Json(scalar("SUBSTR($text, $start + 1${arguments.getOrNull(2)?.let { ", ${whole(it)}" }.orEmpty()})"))
+                    Value.Json(scalar("SUBSTR($text, $start + 1${arguments.getOrNull(2)?.let { ", ${whole(it)}" }.orEmpty()})"), text = true)
                 }
                 "left", "right" -> {
                     if (arguments.size != 2) throw DrivineException("${function.name}() takes a text and a length.")
                     val (text, count) = textAndCount(arguments)
-                    Value.Json(scalar(if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)))
+                    Value.Json(scalar(if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)), text = true)
                 }
                 "replace" -> {
                     if (arguments.size != 3) throw DrivineException("replace() takes a text, what to replace, and what with.")
                     val (text, search, replacement) = arguments.map { text(comparable(json(it))) }
-                    Value.Json(scalar("REPLACE($text, $search, $replacement)"))
+                    Value.Json(scalar("REPLACE($text, $search, $replacement)"), text = true)
                 }
                 "date", "localtime", "time", "localdatetime", "datetime", "duration" -> temporal(Temporal.ofFunction(name)!!, function, arguments, scope)
                 "timestamp" -> if (arguments.isEmpty()) Value.Json(scalar(temporals.field(temporals.now(Temporal.DATE_TIME), Temporal.DATE_TIME, "epochMillis")!!.sql))
@@ -2768,6 +2798,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         temporal = if (taken) itemsOf(one()) else null,
                         identity = if (taken) identityOf(one(), result, true) { list -> shared(list) { (x) -> function(name, x)!! } } else null,
                         list = taken && holdsLists(one()),
+                        text = if (taken) holdsTexts(one()) else name in TEXT_FUNCTIONS,
                     )
                 }
             }
@@ -3034,6 +3065,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** openCypher's functions of one number that [math] works out, as Neo4j names them, lowered. */
         val MATH_FUNCTIONS = setOf("exp", "log", "log10", "sqrt", "sin", "cos", "tan", "cot", "asin", "acos", "atan", "degrees", "radians", "haversin")
+
+        /** The functions of one value a store writes ([function]) whose result is a text, or null: see [Value.Json.text]. */
+        val TEXT_FUNCTIONS = setOf("tostring", "toupper", "tolower", "trim")
 
         /**
          * The doubles Java's `Math.toDegrees` and `Math.toRadians` multiply by, as Neo4j's `degrees` and `radians` do: a

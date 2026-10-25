@@ -93,6 +93,28 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `a sum writes a side the statement makes a text as its own text, and only a side that may be a float as toString writes it`() {
+        // Written as toString writes a float, a side that is always a text made `count('x' + toString(i))` 2.5 times as slow on Oracle (#268).
+        val written = mapOf("PostgresCypherCompiler" to "to_char(", "OracleCypherCompiler" to "TO_CHAR(")
+        compilers.filter { it::class.simpleName in written }.forEach { compiler ->
+            val name = compiler::class.simpleName!!
+            fun writes(cypher: String) = compiler.compile(cypher).sql.split(written.getValue(name)).size - 1
+            // toString writes its float once, and the sum writes the text it gives as it is.
+            val once = writes("MATCH (c:Claim) RETURN toString(c.i)")
+            assertTrue(once > 0, name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i)"), name)
+            assertEquals(0, writes("MATCH (c:Claim) RETURN 'a' + toUpper(c.s), trim(c.s) + substring(c.s, 1) + left(c.s, 2) + replace(c.s, 'a', 'b')"), name)
+            assertEquals(0, writes("MATCH (c:Claim)-[r]->() RETURN split(c.s, ',')[0] + reverse(toLower(c.s)) + type(r)"), name)
+            // Carried through a WITH, a collect and an UNWIND, still a text.
+            assertEquals(0, writes("MATCH (c:Claim) WITH toLower(c.s) AS t, collect(toUpper(c.s)) AS ts UNWIND ts AS u RETURN t + u + ts[0] + head(ts)"), name)
+            // A property may hold a float: it is written as toString writes it, beside a text or not.
+            assertEquals(once, writes("MATCH (c:Claim) RETURN c.s + 'b'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN toUpper(c.s) + c.f"), name)
+            assertEquals(2 * once, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i) + c.f"), name)
+        }
+    }
+
+    @Test
     fun `a sort by a property on Postgres is by its JSON alone, and only a list the statement makes is keyed as a list`() {
         // Keyed as a list, a term costs thousands a row in the planner's estimate, which brings in its JIT for the whole
         // statement past a few dozen rows.

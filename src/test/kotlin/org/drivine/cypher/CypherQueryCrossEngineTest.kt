@@ -435,6 +435,17 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a sum of a text the statement makes and a text or a float gives the text Cypher writes`() {
+        // A side the statement makes a text is written as its own text on a SQL store (#268); a float beside it still as toString writes it.
+        assertEquals(
+            listOf(listOf("x1B", "aX1", "x12.5", "px1"), listOf("x2B", "aX2", "x22.5", "px2")),
+            query("UNWIND [1, 2] AS i WITH 'x' + toString(i) AS t RETURN t + toUpper('b'), 'a' + toUpper(t), t + 2.5, split('p,q', ',')[0] + t ORDER BY t"),
+        )
+        assertEquals(listOf(listOf("x11.0E7", "bc0.5")), query("WITH 1.0E7 AS f, 0.5 AS h RETURN 'x' + toString(1) + f, substring('abc', 1) + h"))
+        assertEquals(listOf("A1.5", "B1.5"), query("UNWIND ['a', 'b'] AS s WITH collect(toUpper(s)) AS ss, 1.5 AS f UNWIND ss AS u RETURN u + f ORDER BY u"))
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
