@@ -6,6 +6,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
@@ -45,6 +46,7 @@ import sample.stateless.ClaimWithRoles
 import sample.stateless.ClaimWithStatus
 import sample.stateless.ClaimWithTags
 import sample.stateless.ClaimWithTagsView
+import sample.stateless.SetProbe
 import sample.stateless.Sticker
 import sample.stateless.Finding
 import sample.stateless.Swatch
@@ -363,8 +365,9 @@ abstract class StatelessSaveSoundnessContract {
         // As a load sees the node when it is handed another writer's stamp with the data from before its write.
         run("MATCH (n:Finding {id: 'f1'}) SET n.sources = n.sources + 'theirs'")
 
-        assertFailsWith<StaleObjectException> { stateless.save(loaded.merge(Finding("f1", listOf("mine"))), from = loaded) }
+        val refused = assertFailsWith<StaleObjectException> { stateless.save(loaded.merge(Finding("f1", listOf("mine"))), from = loaded) }
 
+        assertContains(refused.message.orEmpty(), "Finding 'f1' has a field that is not as the object was loaded with")
         assertEquals(setOf("first", "theirs"), stateless.load<Finding>("f1")?.sources?.toSet(), "the other writer's change stands")
     }
 
@@ -904,6 +907,149 @@ abstract class StatelessSaveSoundnessContract {
         assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(text = "two"), from = loaded.copy()) }
 
         assertEquals("one", property("c1", "text"))
+    }
+
+    // ----- A set compared as the list it was loaded from -----
+
+    /** A set probe whose tags another writer stored as [list], a Cypher list, leaving the stamp as it was. */
+    private fun tagsStoredAs(list: String, id: String = "p1") {
+        stateless.save(SetProbe(id, "one", setOf("x")))
+        run("MATCH (n:SetProbe {id: '$id'}) SET n.tags = $list")
+    }
+
+    /** The list the node holds for the tags of the set probe [id], in its order. */
+    private fun storedTags(id: String = "p1"): List<*> = pm.query(
+        QuerySpecification.withStatement("MATCH (n:SetProbe {id: \$id}) RETURN n.tags").bind(mapOf("id" to id)).transform(List::class.java)
+    ).single()
+
+    private val twelve = listOf("quince", "apple", "mango", "kiwi", "banana", "lime", "cherry", "fig", "grape", "date", "lemon", "pear")
+
+    @Test
+    fun `a save from the object as loaded compares a set loaded from a list holding an item twice as the list`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        assertEquals(setOf("a", "b"), loaded.tags)
+
+        stateless.save(loaded.copy(name = "two"), from = loaded)
+
+        assertEquals("two", property("p1", "name"))
+        assertEquals(listOf("a", "b"), storedTags(), "a save of the whole object writes the set")
+    }
+
+    @Test
+    fun `an update compares a set loaded from a list holding an item twice as the list, and leaves the list as it is`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+
+        val updated = assertNotNull(stateless.update<SetProbe>("p1", attempts = 1) { it.copy(name = "two") })
+
+        assertEquals(setOf("a", "b"), updated.tags)
+        assertEquals("two", property("p1", "name"))
+        assertEquals(listOf("a", "a", "b"), storedTags(), "the update did not write the set")
+    }
+
+    @Test
+    fun `a set loaded from a list in an order of its own is compared as the list, by a save from the object as loaded and by an update`() {
+        assumeReadsWithoutSnapshot()
+        val orders = listOf(
+            listOf("omega", "beta", "mid", "alpha", "zeta"),
+            listOf("alpha", "beta", "mid", "omega", "zeta"),
+            twelve,
+        )
+        orders.forEachIndexed { index, order ->
+            val list = order.joinToString(", ", "[", "]") { "'$it'" }
+            tagsStoredAs(list, "s$index")
+            val loaded = assertNotNull(stateless.load<SetProbe>("s$index"))
+            stateless.save(loaded.copy(name = "two"), from = loaded)
+            assertEquals("two", property("s$index", "name"), "saved from the object as loaded: $order")
+
+            tagsStoredAs(list, "u$index")
+            assertNotNull(stateless.update<SetProbe>("u$index", attempts = 1) { it.copy(name = "two") })
+            assertEquals("two", property("u$index", "name"), "updated: $order")
+            assertEquals(order, storedTags("u$index"))
+        }
+    }
+
+    @Test
+    fun `a set saved in sorted order is saved again from the object as loaded, and updated`() {
+        val sorted = setOf("alpha", "beta", "mid", "omega", "zeta")
+        stateless.save(SetProbe("p1", "one", sorted))
+        stateless.save(SetProbe("p2", "one", twelve.sorted().toSet()))
+
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        stateless.save(loaded.copy(name = "two"), from = loaded)
+        assertNotNull(stateless.update<SetProbe>("p2", attempts = 1) { it.copy(name = "two") })
+
+        assertEquals(sorted, stateless.load<SetProbe>("p1")?.tags)
+        assertEquals("two", stateless.load<SetProbe>("p1")?.name)
+        assertEquals("two", stateless.load<SetProbe>("p2")?.name)
+    }
+
+    @Test
+    fun `a set loads in the order the node holds its list`() {
+        val order = listOf("zeta", "alpha", "omega", "beta", "mid") + twelve
+        stateless.save(SetProbe("p1", "one", order.toSet()))
+
+        assertEquals(order, stateless.load<SetProbe>("p1")?.tags?.toList())
+    }
+
+    @Test
+    fun `a set changed from one loaded from a list holding an item twice is written, by a save from the object as loaded and by an update`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['b', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+
+        stateless.save(loaded.copy(tags = loaded.tags + "new"), from = loaded)
+        assertEquals(setOf("a", "b", "new"), stateless.load<SetProbe>("p1")?.tags)
+
+        tagsStoredAs("['b', 'a', 'b']", "p2")
+        assertNotNull(stateless.update<SetProbe>("p2", attempts = 1) { it.copy(tags = it.tags - "a" + "c") })
+        assertEquals(listOf("b", "c"), storedTags("p2"))
+    }
+
+    @Test
+    fun `a set changed in another order is written, and saved again from the object the save returned`() {
+        stateless.save(SetProbe("p1", "one", setOf("a", "b")))
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+
+        val saved = stateless.save(loaded.copy(tags = setOf("c", "b", "a")), from = loaded)
+        stateless.save(saved.copy(name = "two"), from = saved)
+
+        assertEquals(listOf("c", "b", "a"), stateless.load<SetProbe>("p1")?.tags?.toList())
+        assertEquals("two", stateless.load<SetProbe>("p1")?.name)
+    }
+
+    @Test
+    fun `a save from the object an update or a save of other fields returned compares a set they left as the node holds it`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val updated = assertNotNull(stateless.update<SetProbe>("p1", attempts = 1) { it.copy(name = "two") })
+        stateless.save(updated.copy(name = "three"), from = updated)
+        assertEquals("three", property("p1", "name"))
+
+        tagsStoredAs("['a', 'a', 'b']", "p2")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p2"))
+        val saved = stateless.saveFields(loaded.copy(name = "two"), only = setOf("name"), from = loaded)
+        assertEquals(listOf("a", "a", "b"), storedTags("p2"), "only the name was written")
+        stateless.saveFields(saved.copy(name = "three"), only = setOf("name"), from = saved)
+        assertEquals("three", property("p2", "name"))
+    }
+
+    @Test
+    fun `a save from the object as loaded is refused when another writer changed the set under the same stamp, and says a field differs`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        run("MATCH (n:SetProbe {id: 'p1'}) SET n.tags = ['a', 'b', 'theirs']")
+
+        val refused = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(name = "two"), from = loaded) }
+
+        assertTrue(refused.fieldsDiffer)
+        val message = refused.message.orEmpty()
+        assertContains(message, "SetProbe 'p1' has a field that is not as the object was loaded with, though it carries the stamp the object was loaded with")
+        assertFalse("relationship" in message, message)
+        assertEquals(listOf("a", "b", "theirs"), storedTags(), "the other writer's change stands")
     }
 
     // ----- Inside a transaction -----

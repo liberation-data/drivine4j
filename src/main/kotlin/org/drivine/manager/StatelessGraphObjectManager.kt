@@ -6,7 +6,7 @@ import org.drivine.StaleObjectException
 import org.drivine.annotation.GraphView
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.backend.FragmentBatch
-import org.drivine.mapper.PackedText
+import org.drivine.mapper.AsStored
 import org.drivine.mapper.toMap
 import org.drivine.annotation.NodeFragment
 import org.drivine.mapper.ResultPostProcessor
@@ -161,7 +161,12 @@ class StatelessGraphObjectManager private constructor(
         val (saved, asLoaded) = from?.let { loadedAs(obj, it) } ?: (obj to null)
         val statement = statementFor(saved, relationships, nullPolicy, fields, checked = true, asLoaded)
         requireStampable(saved, statement)
-        return stamped(saved, statement, executor.save(statement))
+        return stamped(saved, statement, executor.save(statement)).also { result ->
+            // A packed or set field the save did not write still holds what was loaded.
+            if (asLoaded == null || fields == null) return@also
+            val root = stamps.rootOf(result) ?: return@also
+            stamps.stampOf(result)?.let { AsStored.carry(root, it, asLoaded, fields, objectMapper) }
+        }
     }
 
     /**
@@ -660,7 +665,8 @@ class StatelessGraphObjectManager private constructor(
      * before its write, so the save compares each field of the root as it was loaded too: each
      * declared field, each `@PropertyBag` key by key, and the `@NodeLabels` field. A `@JsonPacked`
      * field is compared as the text the load read, so JSON another writer packed another way is not
-     * taken for a change.
+     * taken for a change, and a `Set` field as the list the load read, so a list in another order than
+     * the set's, or holding an item twice, is not taken for one either.
      *
      * An update writes to the node it loaded and never makes one. If the node is deleted between the
      * load and the save, nothing is written and null is returned, as when it was not there to load.
@@ -708,13 +714,14 @@ class StatelessGraphObjectManager private constructor(
 
     /**
      * The fields of [root], loaded with [loadedStamp], as a checked save compares them with the node:
-     * as the save writes them, but a `@JsonPacked` field as the text the load read ([PackedText]),
-     * so that JSON another writer packed another way is not taken for a change. A packed field the
+     * as the save writes them, but a `@JsonPacked` field as the text the load read, and a `Set` field
+     * as the list the load read ([AsStored]), so that JSON another writer packed another way, or a list
+     * in another order or holding an item twice, is not taken for a change. A packed or set field the
      * node held nothing for, whose value came from a default, and one of a root no load made, such
-     * as a copy, are packed as the save packs them.
+     * as a copy, are written as the save writes them.
      */
     private fun asLoaded(root: Any, loadedStamp: String?): Map<String, Any?> =
-        objectMapper.toMap(root) + PackedText.of(root, loadedStamp).orEmpty().filterValues { it != null }
+        objectMapper.toMap(root) + AsStored.of(root, loadedStamp).orEmpty().filterValues { it != null }
 
     /**
      * Saves what differs between an object as it was loaded, digested as [before], its root's fields
@@ -749,9 +756,9 @@ class StatelessGraphObjectManager private constructor(
         val statement = backend.save(SaveRequest.changed(changed, before, digests.digestOf(changed), dirty, asLoaded))
         requireStampable(changed, statement)
         return stamped(changed, statement, executor.save(statement)).also { saved ->
-            // A packed field the update did not write still holds the text that was loaded.
+            // A packed or set field the update did not write still holds what was loaded.
             val root = stamps.rootOf(saved) ?: return@also
-            stamps.stampOf(saved)?.let { PackedText.carry(root, it, asLoaded, dirty, objectMapper) }
+            stamps.stampOf(saved)?.let { AsStored.carry(root, it, asLoaded, dirty, objectMapper) }
         }
     }
 
