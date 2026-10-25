@@ -316,6 +316,11 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun roundPlaces(number: String, precision: String) = roundTo(number, precision, RoundingMode.HALF_UP)
 
+    /** Half toward +infinity, by Drivine's function as a mode rounds: half up above 0, half down below. */
+    override fun roundWhole(number: String) = shared(number) { (n) ->
+        "CASE WHEN $n < 0 THEN ${roundTo(n, "0", RoundingMode.HALF_DOWN)} ELSE ${roundTo(n, "0", RoundingMode.HALF_UP)} END"
+    }
+
     override fun rightText(text: String, count: String) = shared(text, count) { (t, n) ->
         "CASE WHEN $t IS NULL OR $n IS NULL THEN NULL WHEN $n >= length($t) THEN $t WHEN $n > 0 THEN substr($t, -$n) ELSE '' END"
     }

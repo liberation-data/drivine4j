@@ -590,6 +590,13 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected abstract fun math(name: String, numbers: List<String>): String
 
+    /**
+     * `round(x)`, and `round(x, 0)`: the SQL number [number] to a whole number, half toward +infinity, as Java's `Math.round`
+     * rounds. Worked out in decimal: a store whose numbers are decimal takes this, one whose numbers are binary its own,
+     * where 0.49999999999999994 + 0.5 is 1.
+     */
+    protected open fun roundWhole(number: String): String = "FLOOR($number + 0.5)"
+
     /** `round(x, p)` of two arguments: [number] to [precision] places, half away from zero, as SQL's `ROUND` rounds. */
     protected open fun roundPlaces(number: String, precision: String): String = "ROUND($number, $precision)"
 
@@ -3096,9 +3103,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     } ?: Value.Json(literalJson(null))
                     // To 0 places Neo4j rounds as round(x) does, half toward +infinity, as Java's Math.round; to more, half away from zero.
                     2 -> Value.Json(scalar(float(shared(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1])) { (n, p) ->
-                        "CASE WHEN $p = 0 THEN FLOOR($n + 0.5) ELSE ${roundPlaces(n, p)} END"
+                        "CASE WHEN $p = 0 THEN ${roundWhole(n)} ELSE ${roundPlaces(n, p)} END"
                     })))
-                    else -> Value.Json(scalar(float("FLOOR(${number(comparable(json(one())))} + 0.5)")))
+                    else -> Value.Json(scalar(float(roundWhole(number(comparable(json(one())))))))
                 }
                 "floor", "ceil" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))
                 in MATH_FUNCTIONS -> Value.Json(scalar(math(name, listOf(number(comparable(json(one())))))))
