@@ -72,5 +72,15 @@ data class Snippet(
     @VectorIndex(similarity = SimilarityFunction.COSINE) val embedding: List<Float>? = null,
 )
 
+/** [Snippet]'s query DSL, written by hand: the test source set isn't KSP-processed. */
+class SnippetQueryDsl : NodeReference {
+    override val nodeAlias: String = "n"
+    val id = StringPropertyReference("n", "id")
+
+    companion object {
+        val INSTANCE = SnippetQueryDsl()
+    }
+}
+
 @GraphView
 data class SnippetView(@Root val snippet: Snippet)

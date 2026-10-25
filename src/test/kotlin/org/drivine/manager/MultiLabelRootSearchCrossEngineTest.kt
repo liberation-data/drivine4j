@@ -28,6 +28,7 @@ import sample.multilabel.PublishedClip
 import sample.multilabel.PublishedClipView
 import sample.multilabel.PublishedNote
 import sample.multilabel.Snippet
+import sample.multilabel.SnippetQueryDsl
 import sample.multilabel.SnippetView
 import sample.multilabel.PublishedPaper
 import sample.multilabel.PublishedPaperQueryDsl
@@ -124,6 +125,16 @@ private fun verify(gom: StatelessGraphObjectManager) {
         listOf("kept"),
         gom.loadNearest(SnippetView::class.java, null, QUERY, topK = 5, threshold = null, searchK = null, partitionLabel = "Corpus_two")
             .map { it.value.snippet.id },
+    )
+    assertEquals(
+        listOf("kept"),
+        gom.loadNearest(Snippet::class.java, QUERY, topK = 1, searchK = 5, partitionLabel = "Corpus_two").map { it.value.id },
+    )
+    assertEquals(
+        emptyList(),
+        gom.loadNearest(Snippet::class.java, SnippetQueryDsl.INSTANCE, QUERY, topK = 5, partitionLabel = "Corpus_two") {
+            where { query.id eq "stray" }
+        }.map { it.value.id },
     )
 
     // Among a set, a neighbour must have every root label too, though its id is one of the set's.

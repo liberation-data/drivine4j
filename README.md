@@ -889,8 +889,9 @@ graphObjectManager.loadNearest(
 )
 ```
 
-The label changes only which index is located: the node still carries its own `:Proposition` label, so
-`where { }` and the projection are unaffected. The index name re-derives as
+The label changes only which index is located: `where { }` and the projection are unaffected. A node
+the partition's index yields comes back only when it has every one of the fragment's labels, here
+`:Proposition`, so a node of the partition that is no `Proposition` is dropped. The index name re-derives as
 `${label}_${property}_vector`, matching what `VectorIndexSpec` would create — so a fragment whose
 `@VectorIndex` pins an explicit name cannot be partitioned, and says so.
 See [0.0.79-vector-partitioning.md](docs/0.0.79-vector-partitioning.md).

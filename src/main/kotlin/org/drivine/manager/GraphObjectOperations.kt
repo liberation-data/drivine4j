@@ -187,7 +187,8 @@ interface GraphObjectOperations {
      * @param searchK how many candidates the index is asked for; [topK] is then the limit applied
      *   after the filter. Null asks the index for [topK]. See `docs/0.0.79-vector-search-k.md`
      * @param partitionLabel the label whose vector index is searched, in place of the fragment's own;
-     *   null searches the fragment's. See `docs/0.0.79-vector-partitioning.md`
+     *   null searches the fragment's. A node it yields comes back only when it has every one of the
+     *   fragment's labels. See `docs/0.0.79-vector-partitioning.md`
      * @return scored instances, most similar first, of length `<= topK`
      * @throws UnsupportedOperationException if the backend has no native vector index
      */
