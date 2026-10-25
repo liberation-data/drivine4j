@@ -386,13 +386,9 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
         // Oracle overflows on a precision past its NUMBER range.
         if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
-        // A negative precision from data fails on Neo4j, at run time; SQL has no way to fail there, so it rounds to tens or hundreds.
-        val negative = "MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')"
-        if (!compiles) {
-            assertThrows<Exception> { query(negative) }
-            return
-        }
-        assertEquals(listOf(1200.0), query(negative))
+        // A negative precision from data fails when the row is read, on every store, in both forms.
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')") }
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r)") }
     }
 
     @Test
@@ -413,6 +409,29 @@ abstract class CypherQueryContract {
         if (pm.type == DatabaseType.ORACLE) return
         assertEquals(listOf(listOf(listOf("a", 1L), listOf(1L, "a"))), query("UNWIND [[1, 'a'], ['a', 1], [true]] AS xs RETURN [min(xs), max(xs)]"))
         assertEquals(listOf(listOf(listOf(1L), listOf(null))), query("UNWIND [[1, null], [1], [null], null] AS xs RETURN [min(xs), max(xs)]"))
+    }
+
+    @Test
+    fun `a negative precision from data fails only on a row that reads it, in a WHERE and an aggregate too, with the compiler's message`() {
+        // The spec reads a precision from data since v0.6.4; here, in a WHERE and an aggregate, and on rows filtered out.
+        clear()
+        seed("CREATE (:Round {r: -2, k: 1}), (:Round {r: 1, k: 2})")
+        listOf(
+            "MATCH (n:Round) RETURN round(1234.5, n.r)",
+            "MATCH (n:Round) WHERE round(1234.5, n.r) > 0 RETURN n.k",
+            "MATCH (n:Round) RETURN sum(round(1234.5, n.r))",
+            "MATCH (n:Round) RETURN collect(round(1234.5, n.r, 'HALF_UP'))",
+            // A constant the compiler does not read as given is worked out by the store, as one from data.
+            "RETURN round(1234.5, 1 - 3)",
+            "RETURN round(1234.5, toInteger('-2'))",
+        ).forEach { statement ->
+            val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), failed)
+        }
+        assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.r >= 0 RETURN round(1234.5, n.r)"))
+        assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.k = 2 RETURN sum(round(1234.5, n.r))"))
+        assertEquals(listOf(0.0, 1234.5), query("MATCH (n:Round) RETURN CASE WHEN n.r < 0 THEN 0.0 ELSE round(1234.5, n.r) END ORDER BY n.k"))
+        assertEquals(listOf(listOf(1234.5, 1234.5)), query("RETURN [round(1234.5, 3 - 1), round(1234.5, toInteger('2'))]"))
     }
 
     @Test
