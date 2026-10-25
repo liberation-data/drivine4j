@@ -297,6 +297,53 @@ class FalkorDbSchemaManagementIntegrationTest {
         assertNull(manager.constraints.find(UniquenessConstraintSpec("Person", "email")))
     }
 
+    // ----- A failed constraint already in the store -----
+
+    /**
+     * Leaves a constraint whose build failed in the store, as drivine and drivine-python did before they
+     * dropped one, or a crash between the failure and the drop would: CREATE run by hand over [spec]'s
+     * label, which holds a key twice.
+     */
+    private fun leaveFailedConstraint(spec: UniquenessConstraintSpec) {
+        manager.indexes.ensure(RangeIndexSpec(spec.label, spec.properties))
+        SchemaExecutor(provider).execute(FalkorDbSchemaGrammar().createConstraint(spec))
+        val deadline = System.currentTimeMillis() + 30_000
+        while (manager.constraints.find(spec)?.status != "FAILED") {
+            assertTrue(System.currentTimeMillis() < deadline, "expected the build to fail: ${manager.constraints.find(spec)}")
+            Thread.sleep(100)
+        }
+    }
+
+    @Test
+    @Order(6)
+    fun `a failed constraint already in the store is not taken for the constraint, and drop removes it`() {
+        val spec = UniquenessConstraintSpec("Customer", "code")
+        execute("CREATE (:Customer {code: 'C-1'})")
+        execute("CREATE (:Customer {code: 'C-1'})")
+
+        // It enforces nothing: a third node with the same key is written.
+        leaveFailedConstraint(spec)
+        execute("CREATE (:Customer {code: 'C-1'})")
+
+        // The data still holds the key more than once: a violation, and the failed constraint gone.
+        val result = manager.constraints.ensure(spec)
+        assertTrue(result is EnsureResult.Violation, "expected Violation, got $result")
+        assertNull(manager.constraints.find(spec))
+
+        leaveFailedConstraint(spec)
+        assertTrue(manager.constraints.drop(spec))
+        assertNull(manager.constraints.find(spec))
+
+        // Once the data is clean, the constraint is made over the failed one, and enforced.
+        leaveFailedConstraint(spec)
+        execute("MATCH (c:Customer) DELETE c")
+        execute("CREATE (:Customer {code: 'C-1'})")
+        val created = manager.constraints.ensure(spec)
+        assertTrue(created is EnsureResult.Created, "expected Created, got $created")
+        assertEquals("OPERATIONAL", manager.constraints.find(spec)?.status)
+        assertThrows<Exception> { execute("CREATE (:Customer {code: 'C-1'})") }
+    }
+
     // ----- Drop -----
 
     @Test

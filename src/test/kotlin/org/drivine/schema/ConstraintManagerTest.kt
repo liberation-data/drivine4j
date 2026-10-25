@@ -137,6 +137,100 @@ class ConstraintManagerTest {
         assertTrue(store.schema.any { it.startsWith("DROP CONSTRAINT") })
     }
 
+    // ----- A failed constraint already in the store -----
+
+    /** Neo4j's grammar as an engine that builds a constraint after CREATE returns would use it, reading each constraint's status from its row. */
+    private val asyncBuild = object : SchemaGrammar by Neo4jSchemaGrammar() {
+        override val constraintCreationIsAsync = true
+        override fun parseConstraintRows(rows: List<Any?>) =
+            Neo4jSchemaGrammar().parseConstraintRows(rows).zip(rows) { info, row -> info.copy(status = (row as Map<*, *>)["status"] as String?) }
+    }
+
+    private fun listed(status: String) =
+        mapOf("name" to "Person_email", "type" to "UNIQUENESS", "entityType" to "NODE", "labelsOrTypes" to listOf("Person"), "properties" to listOf("email"), "status" to status)
+
+    /**
+     * A store holding a constraint whose build failed, until DROP CONSTRAINT has run. Once CREATE has run, each
+     * listing gives the next of [builds], the last of them from then on. The query for repeated keys gives [conflicts].
+     */
+    private fun failedInStore(vararg builds: String, conflicts: Any? = emptyList<Any?>()): RecordingStore {
+        var status: String? = "FAILED"
+        var listings = 0
+        return RecordingStore(DatabaseType.NEO4J, asyncBuild) { ran ->
+            when {
+                ran.statement.startsWith("DROP CONSTRAINT") -> emptyList<Any?>().also { status = null }
+                ran.statement.startsWith("CREATE CONSTRAINT") -> emptyList<Any?>().also { status = "CREATED" }
+                ran.statement.startsWith("SHOW CONSTRAINTS") -> when (status) {
+                    null -> emptyList()
+                    "CREATED" -> listOf(listed(builds[minOf(listings++, builds.size - 1)]))
+                    else -> listOf(listed(status!!))
+                }
+                "_count > 1" in ran.statement -> conflicts
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `a failed constraint already in the store is not taken for the constraint, but dropped and built again`() {
+        val store = failedInStore("OPERATIONAL")
+
+        val result = store.constraints.ensure(spec)
+
+        assertTrue(result is EnsureResult.Created, "expected Created, got $result")
+        val dropped = store.schema.indexOfFirst { it.startsWith("DROP CONSTRAINT") }
+        assertTrue(dropped >= 0, "expected the failed constraint dropped: ${store.schema}")
+        assertTrue(store.schema.drop(dropped).any { it.startsWith("CREATE CONSTRAINT") }, "expected the constraint made after it: ${store.schema}")
+    }
+
+    @Test
+    fun `a failed constraint already in the store is a violation when the data still repeats a key`() {
+        val store = failedInStore("FAILED", conflicts = listOf(repeated))
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), store.constraints.ensure(spec))
+        // The one in the store, then the one built again, which failed too.
+        assertEquals(2, store.schema.count { it.startsWith("DROP CONSTRAINT") })
+    }
+
+    @Test
+    fun `a failed constraint already in the store is a violation with an empty sample at sample size 0`() {
+        val store = failedInStore("FAILED", conflicts = listOf(repeated))
+
+        assertEquals(EnsureResult.Violation(spec, emptyList()), store.constraints.ensure(spec, violationSampleSize = 0))
+        assertEquals(2, store.schema.count { it.startsWith("DROP CONSTRAINT") })
+    }
+
+    @Test
+    fun `a built constraint already in the store is matching, and left, whether or not the engine reports a status`() {
+        for (grammar in listOf(asyncBuild, Neo4jSchemaGrammar())) {
+            val store = RecordingStore(DatabaseType.NEO4J, grammar) { ran ->
+                if (ran.statement.startsWith("SHOW CONSTRAINTS")) listOf(listed("OPERATIONAL")) else emptyList<Any?>()
+            }
+
+            assertTrue(store.constraints.ensure(spec) is EnsureResult.AlreadyMatching, "on $grammar")
+            assertTrue(store.schema.none { it.startsWith("DROP") || it.startsWith("CREATE") }, "on $grammar: ${store.schema}")
+        }
+    }
+
+    @Test
+    fun `drop removes a constraint whose build failed`() {
+        val store = failedInStore()
+
+        assertTrue(store.constraints.drop(spec))
+        assertTrue(store.schema.any { it.startsWith("DROP CONSTRAINT") })
+        assertEquals(null, store.constraints.find(spec))
+    }
+
+    @Test
+    fun `a build is read from one listing a poll, so one that fails after being listed under construction is not built`() {
+        val store = failedInStore("UNDER CONSTRUCTION", "UNDER CONSTRUCTION", "FAILED", conflicts = listOf(repeated))
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), store.constraints.ensure(spec))
+        // One listing for each poll after CREATE: twice under construction, then failed.
+        val made = store.schema.indexOfFirst { it.startsWith("CREATE CONSTRAINT") }
+        assertEquals(3, store.schema.drop(made).takeWhile { !it.startsWith("DROP CONSTRAINT") }.count { it.startsWith("SHOW CONSTRAINTS") })
+    }
+
     // ----- An index in the way -----
 
     private val inTheWay = Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}). A constraint cannot be created until the index has been dropped.")

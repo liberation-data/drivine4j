@@ -104,6 +104,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun distinctItems(list: String) =
         "(SELECT COALESCE(json_agg(d.item ORDER BY d.first), '[]'::json) FROM (SELECT min(e.item_no) AS first, e.item FROM ${elements(list, "e")} GROUP BY e.item) d)"
 
+    override fun firstOfEach(list: String, identities: String) =
+        "(SELECT ${aggregateList("v.item", "v.item_no")} FROM ${elements(list, "v")} " +
+            "JOIN (SELECT min(e.item_no) AS first FROM ${elements(identities, "e")} GROUP BY e.item) f ON f.first = v.item_no)"
+
     // Postgres has no min or max of jsonb, which orders: the first of the values in order is the least.
     override fun extreme(value: String, min: Boolean, key: String?) =
         "(array_agg($value ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"}, ${key ?: value} ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
@@ -145,9 +149,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * A list as `jsonb` that Postgres orders as Cypher orders lists, item by item: each item, from the first, a list of three, of
      * where its kind comes ([itemRank]), the item, and what follows it so written, the end an empty list. `jsonb` orders the
      * shorter of two lists first, and every list here but the last is of three. An item that is a list is followed by its own
-     * items, at any depth, then by its end, which comes before any item. Any other value sorts as itself, as before.
+     * items, at any depth, then by its end, which comes before any item. Any other value sorts as itself, as before. Only a
+     * value the statement makes a list sorts so: the planner costs the walk at millions, which brings in its JIT for any sort.
      */
-    override fun sortKey(json: String) = shared(json) { (x) ->
+    override fun listSortKey(json: String) = shared(json) { (x) ->
         "CASE WHEN jsonb_typeof($x) = 'array' THEN CAST(${listKey(x)} AS jsonb) ELSE ${nullIfJsonNull(x)} END"
     }
 
@@ -278,9 +283,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * Flags the pattern opens with, `(?i)`, are put before the anchors, where Postgres reads them, after `p`: a dot
-     * matches no line break, as Java's does, unless the pattern says `(?s)`.
+     * matches no line break, as Java's does, unless the pattern says `(?s)`. The anchors are `\A` and `\Z`, the text's
+     * start and end, which `(?m)` leaves as they are: it lets the pattern's own `^` and `$` match at a line break.
+     * Postgres's `s` and `m` each undo the other, so the two together end in `w`, which keeps both.
      */
-    override fun matches(text: String, pattern: String) = "($text ~ regexp_replace($pattern, '^(\\(\\?([a-z]+)\\))?(.*)\$', '(?p\\2)^(\\3)\$'))"
+    override fun matches(text: String, pattern: String) =
+        "($text ~ regexp_replace(regexp_replace($pattern, '^(\\(\\?([a-z]+)\\))?(.*)\$', '(?p\\2)\\\\A(\\3)\\\\Z'), " +
+            "'^\\(\\?([a-z]*(s[a-z]*m|m[a-z]*s)[a-z]*)\\)', '(?\\1w)'))"
 
     /**
      * An empty separator cuts the text at each character, as Cypher's does: `string_to_array` does so for a null one.

@@ -39,6 +39,13 @@ data class SchemaItemInfo(
 ) {
 
     /**
+     * Whether the engine reports that its build of this item failed (FalkorDB's `FAILED` status). FalkorDB
+     * keeps listing such a constraint, though it enforces nothing, so it is never taken as made.
+     */
+    internal val buildFailed: Boolean
+        get() = status?.uppercase()?.contains("FAILED") == true
+
+    /**
      * The physical vector parameters this item actually has, for logging what an engine chose when the
      * spec did not pin it. Omits anything the engine did not report. Empty for non-vector items.
      */

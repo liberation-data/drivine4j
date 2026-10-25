@@ -164,6 +164,10 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "FROM (SELECT e.item_no, e.item, ROW_NUMBER() OVER (PARTITION BY e.item ORDER BY e.item_no) AS n " +
             "FROM ${elements(list, "e")}) d WHERE d.n = 1)"
 
+    override fun firstOfEach(list: String, identities: String) =
+        "(SELECT ${aggregateList("v.item", "v.item_no")} FROM ${elements(list, "v")} JOIN (SELECT d.item_no FROM (SELECT e.item_no, " +
+            "ROW_NUMBER() OVER (PARTITION BY e.item ORDER BY e.item_no) AS n FROM ${elements(identities, "e")}) d WHERE d.n = 1) f ON f.item_no = v.item_no)"
+
     /** Of the values of the kind that comes first, or last, as [kindOrder] orders them; by [key] first where there is one. */
     override fun extreme(value: String, min: Boolean, key: String?): String {
         val direction = if (min) "ASC" else "DESC"
@@ -200,6 +204,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "WHEN $float THEN CASE WHEN $double = 0 THEN '0.0' WHEN ABS($n) >= 0.001 AND ABS($n) < 10000000 THEN TO_CHAR($n, '$PLAIN_FLOAT') ELSE $scientific END " +
             "ELSE $written END"
     }
+
+    /** `collect(CASE WHEN … THEN [r] ELSE [m.title] END)` fails with ORA-00979, or closes the session: see `casesFirst`. */
+    override val aggregatesCaseSubqueries = false
 
     /** `TO_CHAR`'s scientific notation, `1.E+07`, `-1.2E-04`, as Java's: `1.0E7`, `-1.2E-4`. */
     private fun scientific(text: String) = "REGEXP_REPLACE(REPLACE($text, '.E', '.0E'), 'E\\+?(-?)0*([0-9])', 'E\\1\\2')"
@@ -377,11 +384,13 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * Flags the pattern opens with, `(?i)`, are Oracle's match parameter, Java's `s` its `n`. The whole of the text
-     * matches, as `=~` asks: it ends at `\z`, the text's end, as Oracle's `$` also matches before a line break that ends it.
+     * matches, as `=~` asks: it starts at `\A` and ends at `\z`, the text's start and end, which `(?m)` leaves as they are,
+     * and Oracle's `$` also matches before a line break that ends the text. Under `(?m)`, Oracle's own `^` and `$` match
+     * at a line break only where nothing in the pattern reads past it: `x$\n^ab` matches no text.
      */
     override fun matches(text: String, pattern: String) = shared(pattern) { (p) ->
         val flags = "REGEXP_SUBSTR($p, '^\\(\\?([a-z]+)\\)', 1, 1, NULL, 1)"
-        "REGEXP_LIKE($text, '^(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\\z', NVL(REPLACE($flags, 's', 'n'), 'c'))"
+        "REGEXP_LIKE($text, '\\A(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\\z', NVL(REPLACE($flags, 's', 'n'), 'c'))"
     }
 
     /** The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next. */

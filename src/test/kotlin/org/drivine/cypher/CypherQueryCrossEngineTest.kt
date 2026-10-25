@@ -1,5 +1,6 @@
 package org.drivine.cypher
 
+import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.cypher.spec.CypherSpec
 import org.drivine.connection.Neo4jConnectionProvider
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
+import org.junit.jupiter.api.assertThrows
 import org.testcontainers.containers.Neo4jContainer
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -186,6 +188,20 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `collect(DISTINCT) keeps a few thousand lists or maps holding a relationship once each in about a second, not a minute`() {
+        // Not in the spec yet: each was compared with every one before it, which took 20 to 40 seconds on Oracle and SQLite.
+        clear()
+        assertEquals(listOf(5000L), query("CREATE (h:Hub) WITH h UNWIND range(1, 5000) AS i CREATE (h)-[:R]->(:Leaf) RETURN count(*)"))
+        val started = System.nanoTime()
+        assertEquals(
+            listOf(listOf(5000L, 5000L)),
+            query("MATCH p = (:Hub)-[r:R]->() RETURN [size(collect(DISTINCT relationships(p))), size(collect(DISTINCT {x: r}))]"),
+        )
+        val seconds = (System.nanoTime() - started) / 1_000_000_000
+        assertTrue(seconds < 15, "$seconds seconds")
+    }
+
+    @Test
     fun `an item of a pattern comprehension's relationships is compared by its id`() {
         // Not in the spec yet: a pattern comprehension gathers their properties beside their ids, as collect does, but in a subquery.
         clear()
@@ -255,6 +271,42 @@ abstract class CypherQueryContract {
         assertEquals(
             listOf("Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"),
             query("MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b WITH b ORDER BY toString(coalesce(b.name, b.title)) RETURN coalesce(b.name, b.title)"),
+        )
+    }
+
+    @Test
+    fun `a UNION in CALL whose queries return a list with an identity beside one without compiles, as it did before identities`() {
+        // Not in the spec yet: the queries are compiled again without identities, so their columns match.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(0L, 3L),
+            query("CALL { MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->() RETURN collect([r]) AS l UNION RETURN [] AS l } RETURN size(l) ORDER BY size(l)"),
+        )
+        assertEquals(
+            listOf(2L),
+            query("CALL { MATCH (:Person {name: 'Keanu'})-[r:KNOWS]->() RETURN {x: r} AS m UNION RETURN {x: 1} AS m } RETURN count(*)"),
+        )
+    }
+
+    @Test
+    fun `a CASE that gives a list of relationships or of texts is read, and gathered on every store but Oracle, which refuses it`() {
+        // Not in the spec yet: on Oracle the CASE's results are worked out first; gathered, it closes the session, so it is refused.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Johnny Mnemonic"), listOf("The Matrix"), listOf(mapOf("role" to "Neo"))),
+            query("MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(m) WITH r, m ORDER BY m.title RETURN CASE WHEN m.released > 2000 THEN [r] ELSE [m.title] END"),
+        )
+        val gathered = "MATCH (a:Person)-[r:ACTED_IN]->(m) WITH a, r, m ORDER BY m.title RETURN a.name, [x IN collect(CASE WHEN m.released > 2000 THEN [r] ELSE [m.title] END) | x[0]] ORDER BY a.name"
+        if (pm.type == DatabaseType.ORACLE) {
+            val refused = assertThrows<DrivineException> { query(gathered) }.message!!
+            assertTrue(refused.contains("On Oracle, an aggregate of a CASE that gives a list of nodes or relationships beside a value of another kind"), refused)
+            return
+        }
+        assertEquals(
+            listOf(listOf("Carrie", listOf("The Matrix", mapOf("role" to "Trinity"))), listOf("Keanu", listOf("Johnny Mnemonic", "The Matrix", mapOf("role" to "Neo"))), listOf("Laurence", listOf("The Matrix"))),
+            query(gathered),
         )
     }
 

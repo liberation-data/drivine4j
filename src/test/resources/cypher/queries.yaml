@@ -398,6 +398,19 @@ cases:
       - note: The whole text matches, a line break that ends it included, though Java's $ matches before one.
         cypher: "RETURN ['ab\\n' =~ 'ab', 'ab\\n' =~ 'ab\\n', 'ab\\n' =~ 'ab$']"
         rows: [[false, true, false]]
+      - note: (?m) lets ^ and $ in the pattern match at a line break, and the whole text must still match.
+        cypher: "RETURN ['x\\nab' =~ '(?m)ab', 'ab\\nx' =~ '(?m)ab', 'x\\nab' =~ 'x$\\n^ab', 'x\\nab' =~ '(?m).*ab']"
+        rows: [[false, false, false, false]]
+      - note: Oracle's ^ and $ match at a line break only where nothing in the pattern reads past it, so a pattern that does is left out there.
+        except: [oracle]
+        cypher: "RETURN 'x\\nab' =~ '(?m)x$\\n^ab'"
+        rows: [true]
+      - note: (?s) and (?m) together let a dot match a line break and ^ and $ match at one, in either order.
+        cypher: "RETURN ['a\\nb' =~ '(?sm)a.b', 'a\\nb' =~ '(?ms)a.b', 'a\\nb' =~ '(?si)A.B']"
+        rows: [[true, true, true]]
+      - except: [oracle]
+        cypher: "RETURN 'a\\nb' =~ '(?ims)A$.^B'"
+        rows: [true]
       - cypher: "MATCH (p:Person) WHERE p.name =~ $pattern RETURN p.name ORDER BY p.name"
         parameters: {pattern: "(?i)[ck].*"}
         rows: ["Carrie", "Keanu"]
@@ -1088,6 +1101,9 @@ cases:
         rows: [[false, true, false, true, false, true]]
       - cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() RETURN [{x: r1} IN [{x: r2}], {x: r1} IN [{x: r1}], [r1, 1] = [r2, 1], {x: r1, y: 1} = {x: r1, y: 1}, {x: r1} = {x: {}}]"
         rows: [[false, true, false, true, false]]
+      - note: "Holding the same relationship, a map or a list is equal to one whose number is written as a float, or whose keys come in another order."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->() RETURN [{x: r1, y: 1} = {x: r1, y: 1.0}, [r1, 1] = [r1, 1.0], {a: 1, x: r1} = {x: r1, a: 1}, {x: r1, y: 1} IN [{x: r1, y: 1.0}]]"
+        rows: [[true, true, true, true]]
       - note: "Carried by a WITH, a map keeps what it holds by identity."
         cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH {x: r1} AS a, {x: r2} AS b, {x: r1} AS c RETURN [a = b, a = c]"
         rows: [[false, true]]
@@ -1175,7 +1191,7 @@ cases:
       - cypher: "RETURN [toString($f), toString($g), $f + 'a']"
         parameters: {f: 0.00012, g: 12345678.5}
         rows: [["1.2E-4", "1.23456785E7", "1.2E-4a"]]
-      - note: "JSON holds no NaN: Postgres's double precision fails a division by zero, and SQLite's gives null."
+      - note: "JSON holds no NaN: Postgres's double precision fails a division by zero, and SQLite's gives null (drivine4j#201)."
         cypher: "RETURN [toString(0.0 / 0.0), toString(1.0 / 0), toString(-1.0 / 0)]"
         except: [postgres, sqlite]
         rows: [["NaN", "Infinity", "-Infinity"]]
@@ -1217,3 +1233,21 @@ cases:
         cypher: "UNWIND [[1, 2], [[null]], [1, [2, null]], [1, [2]], [1, [1, 5]]] AS xs RETURN xs ORDER BY xs"
         except: [oracle]
         rows: [[[null]], [1, [1, 5]], [1, [2]], [1, [2, null]], [1, 2]]
+      - note: "A list worked out in the order term, by reverse(), tail(), a slice, +, range() or split(), sorts so too."
+        cypher: "UNWIND [[1, 2], [3], [0, 5, 6]] AS xs RETURN xs ORDER BY reverse(xs)"
+        rows: [[1, 2], [3], [0, 5, 6]]
+      - cypher: "UNWIND [[9, 1, 2], [9, 3], [9]] AS xs RETURN xs ORDER BY tail(xs)"
+        rows: [[9], [9, 1, 2], [9, 3]]
+      - cypher: "UNWIND [[9, 1, 2], [9, 3], [9]] AS xs WITH xs ORDER BY xs[1..] DESC RETURN collect(xs)"
+        rows: [[[9, 3], [9, 1, 2], [9]]]
+      - cypher: "UNWIND [[1, 2], [3], [0, 5, 6]] AS xs RETURN xs ORDER BY xs + [0]"
+        rows: [[0, 5, 6], [1, 2], [3]]
+      - cypher: "UNWIND [3, 1, 2] AS i RETURN i ORDER BY range(i, 3)"
+        rows: [1, 2, 3]
+      - cypher: "UNWIND ['b', 'a,c'] AS s RETURN s ORDER BY split(s, ',')"
+        rows: ["a,c", "b"]
+      - note: "So does an item, or head() of a slice, of a list of lists."
+        cypher: "WITH [[3], [1, 2]] AS ls UNWIND [0, 1] AS i RETURN i ORDER BY ls[i]"
+        rows: [1, 0]
+      - cypher: "WITH [[3], [1, 2]] AS ls UNWIND [0, 1] AS i RETURN i ORDER BY head(ls[i..]) DESC"
+        rows: [0, 1]

@@ -22,6 +22,9 @@ sealed interface Value {
         val temporal: Temporal? = null,
         val items: Temporal? = null,
         val identity: String? = null,
+        /** Whether the statement makes it a list, and with [itemLists] a list of lists: a store may sort a list as Cypher does only then. */
+        val list: Boolean = false,
+        val itemLists: Boolean = false,
     ) : Value
 
     /** A truth value: SQL's boolean, with its null for Cypher's. */

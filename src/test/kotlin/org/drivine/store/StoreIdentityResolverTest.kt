@@ -5,6 +5,7 @@ import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.connection.DatabaseType
 import org.drivine.schema.CypherStoreStamp
+import org.drivine.schema.FalkorDbSchemaGrammar
 import org.drivine.store.StoreIdentityResolver.Stamp
 import org.drivine.test.RecordingStore
 import org.junit.jupiter.api.Test
@@ -138,6 +139,25 @@ class StoreIdentityResolverTest {
 
         assertEquals("store-4", StoreIdentityResolver(store).resolve().id)
         assertTrue(store.schema.isNotEmpty(), "the constraint was tried")
+    }
+
+    @Test
+    fun `a constraint whose build failed is not taken as in force when ensure throws, so a lost race is not retried`() {
+        // FalkorDB lists the failed constraint, and the recording store cannot run the native command that drops it.
+        val failed = mapOf("type" to "unique", "label" to "DrivineStore", "properties" to listOf("key"), "entitytype" to "NODE", "status" to "FAILED")
+        val conflict = IllegalStateException("Cannot resolve conflicting transactions")
+        var merges = 0
+        val store = RecordingStore(DatabaseType.FALKORDB, FalkorDbSchemaGrammar()) { ran ->
+            when {
+                "db.constraints()" in ran.statement -> listOf(failed)
+                ran.statement == cypherStamp.assignIfAbsent -> if (merges++ == 0) conflict else emptyList<Any?>()
+                ran.statement == cypherStamp.readStamps -> listOf(Stamp("store-7", "2026-01-01T00:00:00Z"))
+                else -> emptyList<Any?>()
+            }
+        }
+
+        assertSame(conflict, assertFailsWith<IllegalStateException> { StoreIdentityResolver(store).resolve() })
+        assertEquals(1, merges)
     }
 
     @Test

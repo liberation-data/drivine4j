@@ -5,6 +5,7 @@ import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.model.Stamps
 import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -76,10 +77,12 @@ class CompiledSizeTest {
     }
 
     @Test
-    fun `a sort by a property on Postgres sorts a value that is no list by its JSON, and adds a few hundred characters for one that is`() {
-        val sql = PostgresCypherCompiler("g").compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql
-        val term = sql.substringAfter("ORDER BY ")
-        assertTrue(term.endsWith("ELSE NULLIF(p2.s1, 'null'::jsonb) END"), term)
-        assertTrue(term.length < 1_200, "${term.length} characters: $term")
+    fun `a sort by a property on Postgres is by its JSON alone, and only a list the statement makes is keyed as a list`() {
+        // Keyed as a list, a term costs millions in the planner's estimate, which brings in its JIT for the whole statement.
+        val compiler = PostgresCypherCompiler("g")
+        val property = compiler.compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql.substringAfter("ORDER BY ")
+        assertEquals("NULLIF(p2.s1, 'null'::jsonb)", property)
+        val list = compiler.compile("MATCH (c:Claim) WITH c.name AS n, collect(c.id) AS ids RETURN n ORDER BY ids").sql.substringAfter("ORDER BY ")
+        assertTrue(list.contains("WITH RECURSIVE"), list)
     }
 }
