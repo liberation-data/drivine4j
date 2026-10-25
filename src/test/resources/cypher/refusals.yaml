@@ -81,8 +81,6 @@ cases:
   - name: "Read not compiled yet"
     description: "Read syntax the compiler doesn't handle yet is refused, naming what it is."
     steps:
-      - cypher: "RETURN [1, 2][0..1]"
-        error: "A slice of a list (list[from..to]) is Cypher, and is not compiled to SQL yet."
       - cypher: "MATCH (n) RETURN n LIMIT 1 + 1"
         error: "SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet."
       - cypher: "RETURN nope(1)"

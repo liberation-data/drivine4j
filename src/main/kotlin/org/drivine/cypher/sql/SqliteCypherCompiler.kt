@@ -108,7 +108,8 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun ordered(x: String, operator: String, y: String) = "(($x ->> '$') $operator ($y ->> '$'))"
 
-    override fun sortKey(json: String) = "($json ->> '$')"
+    /** A list as [SqliteFunctions.SORT_KEY] writes it, which orders as Cypher orders lists; any other value as the SQL value `->>` reads. */
+    override fun sortKey(json: String) = shared(json) { (x) -> "CASE WHEN json_type($x) = 'array' THEN ${SqliteFunctions.SORT_KEY}($x) ELSE ($x ->> '$') END" }
 
     /** SQLite puts null first when ascending, and Cypher last. */
     override fun orderTerm(term: String, descending: Boolean) = if (descending) "$term DESC NULLS FIRST" else "$term NULLS LAST"
@@ -125,13 +126,22 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "(SELECT json_group_array(json(d.item) ORDER BY d.first) FROM (SELECT min(${itemNo("e")}) AS first, ${item("e")} AS item " +
             "FROM ${elements(list, "e")} GROUP BY ${SqliteFunctions.CANONICAL}(${item("e")})) d)"
 
+    /** Each item read at its place: `json_each` is no table a join can look a place up in, so a join reads it whole for each. */
+    override fun firstOfEach(list: String, identities: String) =
+        "(SELECT json_group_array(json($list -> ('\$[' || f.first || ']')) ORDER BY f.first) " +
+            "FROM (SELECT min(e.key) AS first FROM ${elements(identities, "e")} GROUP BY ${SqliteFunctions.CANONICAL}(${item("e")})) f)"
+
     /** The first of the values in order, the nulls left out: SQLite's `min` and `max` order no JSON. */
-    override fun extreme(value: String, min: Boolean): String {
+    override fun extreme(value: String, min: Boolean, key: String?): String {
         val direction = if (min) "ASC" else "DESC"
-        return "(json_group_array(json($value) ORDER BY ${kindOrder(value)} $direction, ($value ->> '$') $direction) FILTER (WHERE NOT ${isJsonNull(value)}) -> 0)"
+        return "(json_group_array(json($value) ORDER BY ${kindOrder(value)} $direction, ${key ?: "($value ->> '$')"} $direction) FILTER (WHERE NOT ${isJsonNull(value)}) -> 0)"
     }
 
-    override fun add(a: String, b: String) = "${SqliteFunctions.ADD}($a, $b)"
+    override fun idTokens(ids: String, key: String) = shared(ids) { (x) ->
+        "CASE WHEN $x IS NOT NULL THEN (SELECT json_group_array(CASE WHEN t.type = 'null' THEN json('null') ELSE json_object(${literal(key)}, t.value) END ORDER BY t.key) FROM json_each($x) t) END"
+    }
+
+    override fun add(a: String, b: String, given: Pair<Any?, Any?>) = "${SqliteFunctions.ADD}($a, $b)"
 
     /** `%` of two whole numbers, and of any other two `mod`, which keeps the fraction: SQLite's `%` takes whole numbers alone. */
     override fun modulo(a: String, b: String) = shared(a, b) { (x, y) -> "CASE WHEN typeof($x) = 'integer' AND typeof($y) = 'integer' THEN $x % $y ELSE mod($x, $y) END" }
@@ -150,7 +160,9 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "toupper" -> scalar("${SqliteFunctions.UPPER}(${text(json)})")
         "trim" -> scalar("trim(${text(json)}, $WHITESPACE)")
         // A string is itself; anything else is the text of its JSON.
-        "tostring" -> shared(json) { (x) -> "CASE json_type($x) WHEN 'text' THEN $x WHEN 'null' THEN NULL ELSE json_quote('' || $x) END" }
+        "tostring" -> shared(json) { (x) ->
+            "CASE json_type($x) WHEN 'text' THEN $x WHEN 'null' THEN NULL WHEN 'real' THEN json_quote(${SqliteFunctions.FLOAT_TEXT}($x ->> '$')) ELSE json_quote('' || $x) END"
+        }
         "tointeger" -> shared(json) { (x) ->
             "CASE json_type($x) WHEN 'integer' THEN $x WHEN 'real' THEN json_quote(CAST($x ->> '$' AS INTEGER)) " +
                 "WHEN 'text' THEN CASE WHEN trim($x ->> '$') REGEXP '^[+-]?[0-9]+$' THEN json_quote(CAST(trim($x ->> '$') AS INTEGER)) " +

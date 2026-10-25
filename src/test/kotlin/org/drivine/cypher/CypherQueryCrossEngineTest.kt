@@ -1,5 +1,6 @@
 package org.drivine.cypher
 
+import org.drivine.DrivineException
 import org.drivine.connection.DatabaseType
 import org.drivine.cypher.spec.CypherSpec
 import org.drivine.connection.Neo4jConnectionProvider
@@ -19,6 +20,7 @@ import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
+import org.junit.jupiter.api.assertThrows
 import org.testcontainers.containers.Neo4jContainer
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -51,7 +53,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) beside grouping keys, other aggregates, an order, a page and a variable outside its aggregates`() {
-        // Not in the spec yet: distinctFirst's grouping WITH, and the projection over it.
+        // Not in the spec yet: aggregatesFirst's grouping WITH, and the projection over it.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -70,7 +72,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) in a DISTINCT projection ordered by a key's property or an aggregate no item is`() {
-        // Not in the spec yet: the projection over distinctFirst's grouping WITH orders by what that WITH holds.
+        // Not in the spec yet: the projection over aggregatesFirst's grouping WITH orders by what that WITH holds.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -126,7 +128,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) under a comprehension, a quantifier or a reduce that names a grouping key in its body`() {
-        // Not in the spec yet: distinctFirst's grouping WITH keeps each variable such a body names, outside the aggregate.
+        // Not in the spec yet: aggregatesFirst's grouping WITH keeps each variable such a body names, outside the aggregate.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -141,7 +143,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) beside a pattern or a subquery that names a grouping key`() {
-        // Not in the spec yet: distinctFirst's grouping WITH keeps each variable a pattern or a subquery names, outside the aggregate.
+        // Not in the spec yet: aggregatesFirst's grouping WITH keeps each variable a pattern or a subquery names, outside the aggregate.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -157,10 +159,46 @@ abstract class CypherQueryContract {
 
     @Test
     fun `collect(DISTINCT) of dates keeps each once, as dates`() {
-        // Not in the spec yet: what distinctFirst keeps of a collection is still of the kind collect gathered.
+        // Not in the spec yet: what aggregatesFirst keeps of a collection is still of the kind collect gathered.
         val dates = "UNWIND [date('2020-01-01'), date('2020-01-01'), date('2021-05-01')] AS d"
         assertEquals(listOf(listOf(2020L, 2021L)), query("$dates WITH collect(DISTINCT d) AS ds RETURN [x IN ds | x.year]"))
         assertEquals(listOf(5L), query("$dates RETURN collect(DISTINCT d)[1].month"))
+    }
+
+    @Test
+    fun `a map or a list that holds a relationship is equal to one whose numbers are written otherwise or whose keys come in another order`() {
+        // Not in the spec yet: identities compare as JSON values, not as their text, which SQLite's = compares.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf(true, true, true, true)),
+            query("MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->() RETURN [{x: r1, y: 1} = {x: r1, y: 1.0}, [r1, 1] = [r1, 1.0], {a: 1, x: r1} = {x: r1, a: 1}, {x: r1, y: 1} IN [{x: r1, y: 1.0}]]"),
+        )
+    }
+
+    @Test
+    fun `a list of a few thousand relationships is equal by identity to a map's or a list's`() {
+        // Not in the spec yet: their identity is larger than Oracle's = compares (ORA-40180), so Oracle compares it by JSON_EQUAL.
+        clear()
+        assertEquals(listOf(2500L), query("CREATE (h:Hub) WITH h UNWIND range(1, 2500) AS i CREATE (h)-[:R]->(:Leaf) RETURN count(*)"))
+        assertEquals(
+            listOf(listOf(true, true, true, 2500L)),
+            query("MATCH (:Hub)-[r:R]->() WITH collect(r) AS rs RETURN [[rs][0] = rs, {x: rs}.x = rs, rs IN [rs], size(rs)]"),
+        )
+    }
+
+    @Test
+    fun `collect(DISTINCT) keeps a few thousand lists or maps holding a relationship once each in about a second, not a minute`() {
+        // Not in the spec yet: each was compared with every one before it, which took 20 to 40 seconds on Oracle and SQLite.
+        clear()
+        assertEquals(listOf(5000L), query("CREATE (h:Hub) WITH h UNWIND range(1, 5000) AS i CREATE (h)-[:R]->(:Leaf) RETURN count(*)"))
+        val started = System.nanoTime()
+        assertEquals(
+            listOf(listOf(5000L, 5000L)),
+            query("MATCH p = (:Hub)-[r:R]->() RETURN [size(collect(DISTINCT relationships(p))), size(collect(DISTINCT {x: r}))]"),
+        )
+        val seconds = (System.nanoTime() - started) / 1_000_000_000
+        assertTrue(seconds < 15, "$seconds seconds")
     }
 
     @Test
@@ -237,9 +275,102 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `toString of a float too small for Oracle's NUMBER writes it`() {
-        // Oracle's NUMBER reads it as 0, a whole number. Its text differs by store, so the spec has no case for it.
-        assertEquals(1e-200, (query("RETURN toString(1.0E-200)").single() as String).toDouble())
+    fun `a whole float past 2 to the 53 written in the statement or given equals the same float worked out`() {
+        // Not in the spec yet: Postgres writes such a float out in full, by its shortest decimal, not the double's exact value.
+        assertEquals(listOf(listOf(true, true, true)), query("RETURN [toFloat('1e24') = 1e24, toFloat('1e300') = 1e300, toFloat('1e24') = \$x]", mapOf("x" to 1e24)))
+    }
+
+    @Test
+    fun `a number or a text the statement gives, added to a text, is written as toString writes it`() {
+        // Not in the spec yet: a side the statement gives is written out at compile time, and the other side as it is.
+        assertEquals(
+            listOf(listOf("a1.0E7", "1.0E7a", "a2.0", "a1.0E-4", "3b", "as", "s1.5E-7", "x10", "0.5y", "4b")),
+            query(
+                "RETURN ['a' + 1e7, 1e7 + 'a', 'a' + 2.0, 'a' + \$f, \$i + 'b', 'a' + \$s, \$s + 1.5e-7, 'x' + 10, \$m.n + 'y', \$j + 'b']",
+                mapOf("f" to 1.0e-4, "i" to 3L, "s" to "s", "m" to mapOf("n" to 0.5), "j" to 4),
+            ),
+        )
+    }
+
+    @Test
+    fun `NaN or an infinity the statement gives, added to a text, is written as toString writes it`() {
+        assertEquals(
+            listOf(listOf("aNaN", "Infinityb", "c-Infinity", "NaN1.5")),
+            query(
+                "RETURN ['a' + \$n, \$p + 'b', 'c' + \$q, \$n + toString(1.5)]",
+                mapOf("n" to Double.NaN, "p" to Double.POSITIVE_INFINITY, "q" to Double.NEGATIVE_INFINITY),
+            ),
+        )
+    }
+
+    @Test
+    fun `a quotient of floats is written without the zeros its scale leaves`() {
+        // The spec's float arithmetic steps skip Postgres, which works a float out in exact decimal (#188): these it gives as a double does.
+        assertEquals(
+            listOf(listOf(2.0, 3.5, 2.5, "2.0", "2.5", "3.5")),
+            query("RETURN [4.0 / 2, 7 / 2.0, 10.0 / 4, toString(4.0 / 2), toString(10.0 / 4), toString(7 / 2.0)]"),
+        )
+    }
+
+    @Test
+    fun `toString of a double past Oracle's NUMBER range writes its shortest digits`() {
+        // Not in the spec yet: Oracle writes such a double from its own text, not from TO_CHAR's 15 digits.
+        assertEquals(
+            listOf(listOf("1.7976931348623157E308", "1.5E300", "1.0E-310", "-2.5E-320", "-1.5E300")),
+            query("RETURN [toString(1.7976931348623157e308), toString(1.5e300), toString(1.0e-310), toString(\$a), toString(\$b)]", mapOf("a" to -2.5e-320, "b" to -1.5e300)),
+        )
+        assertEquals(listOf("4.9E-324"), query("RETURN toString(5e-324)"))
+    }
+
+    @Test
+    fun `a UNION in CALL whose queries return a list with an identity beside one without compiles, as it did before identities`() {
+        // Not in the spec yet: the queries are compiled again without identities, so their columns match.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(0L, 3L),
+            query("CALL { MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->() RETURN collect([r]) AS l UNION RETURN [] AS l } RETURN size(l) ORDER BY size(l)"),
+        )
+        assertEquals(
+            listOf(2L),
+            query("CALL { MATCH (:Person {name: 'Keanu'})-[r:KNOWS]->() RETURN {x: r} AS m UNION RETURN {x: 1} AS m } RETURN count(*)"),
+        )
+    }
+
+    @Test
+    fun `a CASE that gives a list of relationships or of texts is read, and gathered on every store but Oracle, which refuses it`() {
+        // Not in the spec yet: on Oracle the CASE's results are worked out first; gathered, it closes the session, so it is refused.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf("Johnny Mnemonic"), listOf("The Matrix"), listOf(mapOf("role" to "Neo"))),
+            query("MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(m) WITH r, m ORDER BY m.title RETURN CASE WHEN m.released > 2000 THEN [r] ELSE [m.title] END"),
+        )
+        // A CASE that reads an aggregate is worked out in the query that aggregates, where a subquery would group it again.
+        assertEquals(
+            listOf(listOf("Carrie", 2L), listOf("Keanu", 3L), listOf("Laurence", 0L)),
+            query("MATCH (a:Person)-[r:ACTED_IN]->(m) RETURN a.name, size(CASE WHEN count(*) > 1 THEN collect(r) ELSE [] END) ORDER BY a.name"),
+        )
+        // Counted, by count() or the size() of its collect, it is read on Oracle too, as it was before.
+        assertEquals(
+            listOf(listOf("Carrie", 2L, 2L), listOf("Keanu", 3L, 3L), listOf("Laurence", 1L, 1L)),
+            query("MATCH (a:Person)-[r:ACTED_IN]->(m) RETURN a.name, size(collect(CASE WHEN m.released > 2000 THEN [r] ELSE [] END)), count(CASE WHEN m.released > 2000 THEN [r] ELSE [] END) ORDER BY a.name"),
+        )
+        val gathered = "MATCH (a:Person)-[r:ACTED_IN]->(m) WITH a, r, m ORDER BY m.title RETURN a.name, [x IN collect(CASE WHEN m.released > 2000 THEN [r] ELSE [m.title] END) | x[0]] ORDER BY a.name"
+        // With no ELSE, its null is the value of another kind.
+        val unmatched = "MATCH (a:Person)-[r:ACTED_IN]->(m) WITH a, r, m ORDER BY m.title RETURN a.name, [x IN collect(CASE WHEN m.released > 2000 THEN [r] END) | x[0].role] ORDER BY a.name"
+        if (pm.type == DatabaseType.ORACLE) {
+            listOf(gathered, unmatched).forEach { statement ->
+                val refused = assertThrows<DrivineException> { query(statement) }.message!!
+                assertTrue(refused.contains("On Oracle, an aggregate of a CASE that gives a list of nodes or relationships beside a value of another kind"), refused)
+            }
+            return
+        }
+        assertEquals(listOf(listOf("Carrie", listOf("Trinity")), listOf("Keanu", listOf("Neo")), listOf("Laurence", emptyList<String>())), query(unmatched))
+        assertEquals(
+            listOf(listOf("Carrie", listOf("The Matrix", mapOf("role" to "Trinity"))), listOf("Keanu", listOf("Johnny Mnemonic", "The Matrix", mapOf("role" to "Neo"))), listOf("Laurence", listOf("The Matrix"))),
+            query(gathered),
+        )
     }
 
     @Test

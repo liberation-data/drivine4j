@@ -5,6 +5,7 @@ import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.model.Stamps
 import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -29,7 +30,8 @@ class CompiledSizeTest {
         fun added(times: Int) = "MATCH (c:Claim) RETURN " + "(".repeat(times) + "c.day" + (1..times).joinToString("") { " + duration('P1D'))" }
         compilers.forEach { compiler ->
             val (one, two, four) = listOf(1, 2, 4).map { compiler.compile(added(it)).sql.length }
-            assertTrue(one < 20_000, "${compiler::class.simpleName}: $one characters")
+            // A sum that may be a text writes each side as toString does, a float as Java writes it.
+            assertTrue(one < 25_000, "${compiler::class.simpleName}: $one characters")
             assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
         }
     }
@@ -62,5 +64,44 @@ class CompiledSizeTest {
             assertTrue(short < 20_000, "${compiler::class.simpleName}: $short characters")
             assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
         }
+    }
+
+    @Test
+    fun `items taken out of lists nested twice as deep, holding a relationship, compile to about twice the statement`() {
+        fun taken(depth: Int) = "MATCH (c:Claim)-[r:R]->() WITH ${"[".repeat(depth)}r, 1${"]".repeat(depth)} AS m RETURN m${"[0]".repeat(depth)} = 1"
+        compilers.forEach { compiler ->
+            val (short, long) = listOf(4, 8).map { compiler.compile(taken(it)).sql.length }
+            assertTrue(short < 20_000, "${compiler::class.simpleName}: $short characters")
+            assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
+        }
+    }
+
+    @Test
+    fun `a sum writes a side as toString writes a float only where the statement gives neither side`() {
+        // A number the statement gives is written out at compile time, and a side added to one is a text where the sum is one.
+        val written = mapOf("PostgresCypherCompiler" to "to_char(", "OracleCypherCompiler" to "TO_CHAR(")
+        compilers.filter { it::class.simpleName in written }.forEach { compiler ->
+            fun writes(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+                compiler.compile(cypher, parameters).sql.split(written.getValue(compiler::class.simpleName!!)).size - 1
+            val once = writes("MATCH (c:Claim) RETURN c.a + c.b") / 2
+            assertTrue(once > 0, "${compiler::class.simpleName}")
+            assertEquals(0, writes("MATCH (c:Claim) RETURN c.a + 1, 2.5 + c.b, c.a + \$n", mapOf("n" to 1.5)), "${compiler::class.simpleName}")
+            assertEquals(once, writes("MATCH (c:Claim) RETURN 'x' + c.b"), "${compiler::class.simpleName}")
+            // NaN and the infinities are bound as texts on Postgres, so both sides of a sum with one are written as toString writes them.
+            assertEquals(2 * once, writes("MATCH (c:Claim) RETURN c.a + \$n", mapOf("n" to Double.NaN)), "${compiler::class.simpleName}")
+        }
+    }
+
+    @Test
+    fun `a sort by a property on Postgres is by its JSON alone, and only a list the statement makes is keyed as a list`() {
+        // Keyed as a list, a term costs thousands a row in the planner's estimate, which brings in its JIT for the whole
+        // statement past a few dozen rows.
+        val compiler = PostgresCypherCompiler("g")
+        val property = compiler.compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql.substringAfter("ORDER BY ")
+        assertEquals("NULLIF(p2.s1, 'null'::jsonb)", property)
+        val list = compiler.compile("MATCH (c:Claim) WITH c.name AS n, collect(c.id) AS ids RETURN n ORDER BY ids").sql.substringAfter("ORDER BY ")
+        assertTrue(list.contains("WITH RECURSIVE"), list)
+        // Its items as arrays unnested, which the planner takes for 10 items, not a set-returning function's 100: a 150th of the cost.
+        assertTrue(!list.contains("FROM jsonb_array_elements(") && list.contains("unnest(ARRAY(SELECT jsonb_array_elements("), list)
     }
 }

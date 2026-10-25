@@ -1,8 +1,10 @@
 package org.drivine.mapper
 
+import com.fasterxml.jackson.core.exc.InputCoercionException
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
 import java.math.BigDecimal
+import java.math.BigInteger
 import java.sql.ResultSet
 import java.sql.Types
 import java.time.OffsetDateTime
@@ -43,6 +45,29 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
         /** Whole numbers are read as `Long`, as the graph drivers give them. */
         private val json = ObjectMapper().enable(DeserializationFeature.USE_LONG_FOR_INTS)
 
+        /** Reads whole numbers past a `Long` as `BigInteger`, for [readJson] to make floats of. */
+        private val wideJson = ObjectMapper()
+
+        /**
+         * The JSON [text] as maps, lists and values, a whole number as a `Long`. A whole number past a `Long`'s range is a
+         * `Double`: no Cypher integer is that large, so it is a float whose fraction the store dropped, as Postgres's
+         * `jsonb` writes `1e20` as `100000000000000000000`.
+         */
+        private fun readJson(text: String): Any? = try {
+            json.readValue(text, Any::class.java)
+        } catch (e: InputCoercionException) {
+            widened(wideJson.readValue(text, Any::class.java))
+        }
+
+        /** [value] with each whole number a `Long`, and each past a `Long`'s range a `Double`. */
+        private fun widened(value: Any?): Any? = when (value) {
+            is Int -> value.toLong()
+            is BigInteger -> value.toDouble()
+            is Map<*, *> -> value.mapValuesTo(LinkedHashMap()) { (_, v) -> widened(v) }
+            is List<*> -> value.map(::widened)
+            else -> value
+        }
+
         /**
          * Reads every row of a SQLite result out of the driver. SQLite types a value and not a column,
          * so each value is read as what it is: a whole number as a `Long`, a real as a `Double`, a blob
@@ -59,7 +84,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
                     when (val value = results.getObject(column)) {
                         is Int, is Short, is Byte -> (value as Number).toLong()
                         is Float -> value.toDouble()
-                        is String -> if (json) this.json.readValue(value, Any::class.java) else value
+                        is String -> if (json) readJson(value) else value
                         else -> value
                     }
                 })
@@ -98,7 +123,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
          * outlive the statement.
          */
         private fun value(results: ResultSet, column: Int, type: Int): Any? = when (type) {
-            ORACLE_JSON -> results.getString(column)?.let { json.readValue(it, Any::class.java) }
+            ORACLE_JSON -> results.getString(column)?.let(::readJson)
             Types.CLOB, Types.NCLOB, Types.LONGVARCHAR, Types.LONGNVARCHAR -> results.getString(column)
             Types.NUMERIC, Types.DECIMAL -> results.getBigDecimal(column)?.let(::number)
             Types.FLOAT, Types.DOUBLE, Types.REAL, ORACLE_BINARY_FLOAT, ORACLE_BINARY_DOUBLE ->

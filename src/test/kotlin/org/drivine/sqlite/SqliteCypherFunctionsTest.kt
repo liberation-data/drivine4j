@@ -93,6 +93,25 @@ class SqliteCypherFunctionsTest {
     }
 
     @Test
+    fun `drivine_float_text writes a real as Java writes a double`() {
+        assertEquals(
+            listOf("2.0", "1.0E7", "1.2E-4", "0.3333333333333333", "-2.5", null),
+            row("SELECT drivine_float_text(2.0), drivine_float_text(1e7), drivine_float_text(1.2e-4), drivine_float_text(1.0 / 3), drivine_float_text(-2.5), drivine_float_text(NULL)"),
+        )
+    }
+
+    @Test
+    fun `drivine_sort_key orders lists as Cypher does, a text before one it begins, and leaves any other value as it is`() {
+        // Each list's place in the array; read back in the order of their keys.
+        val lists = "[[1, null], [\"ab\"], [true], [], [1e300], [\"a\\u0002\"], [[1]], [-1], [null], [\"a\"], [{\"a\": 1}], [1, 2], [false], [\"a\\u0001\"], [-2.5], [1], [0]]"
+        assertEquals(
+            "[3,10,6,9,13,5,1,12,2,14,7,16,15,11,0,4,8]",
+            row("SELECT json_group_array(t.key ORDER BY drivine_sort_key(t.value)) FROM json_each('$lists') t"),
+        )
+        assertEquals(listOf("\"x\"", null), row("SELECT drivine_sort_key('\"x\"'), drivine_sort_key(NULL)"))
+    }
+
+    @Test
     fun `drivine_temporal reads, moves, measures and cuts a timestamp`() {
         assertEquals(
             listOf(

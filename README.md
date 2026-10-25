@@ -3150,7 +3150,7 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path. `list[i]` reads an item where an expression gives
   the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
-  What is not compiled yet (a slice, a path returned whole, `SKIP` of an expression…) is refused by
+  What is not compiled yet (a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
   place in the statement it stands at. `UNION`, `CALL { … }` (one that writes too), `EXISTS { … }`, `COUNT { … }`,
   `FOREACH`, `=~`, `shortestPath` and `allShortestPaths` compile, as do quantified relationships (`-[:R]->{1,3}`) and
@@ -3409,6 +3409,9 @@ relationships with it.
 - A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle: a read is a query,
   and a write a function made for the statement in `pg_temp`, applied whole or not at all.
 - Temporal values are their ISO 8601 text, as on Oracle.
+- Compiled Cypher works float arithmetic out in exact decimal (`numeric`), not as a double, so a result can
+  differ from a graph engine's in its last digits: `0.1 * 3` is `0.3`, where Neo4j gives `0.30000000000000004`.
+  A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it

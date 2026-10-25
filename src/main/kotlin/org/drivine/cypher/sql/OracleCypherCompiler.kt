@@ -164,9 +164,15 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "FROM (SELECT e.item_no, e.item, ROW_NUMBER() OVER (PARTITION BY e.item ORDER BY e.item_no) AS n " +
             "FROM ${elements(list, "e")}) d WHERE d.n = 1)"
 
-    /** Of the values of the kind that comes first, or last, as [kindOrder] orders them. */
-    override fun extreme(value: String, min: Boolean) =
-        "${if (min) "MIN" else "MAX"}(${nullIfJsonNull(value)}) KEEP (DENSE_RANK FIRST ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"} NULLS LAST)"
+    override fun firstOfEach(list: String, identities: String) =
+        "(SELECT ${aggregateList("v.item", "v.item_no")} FROM ${elements(list, "v")} JOIN (SELECT d.item_no FROM (SELECT e.item_no, " +
+            "ROW_NUMBER() OVER (PARTITION BY e.item ORDER BY e.item_no) AS n FROM ${elements(identities, "e")}) d WHERE d.n = 1) f ON f.item_no = v.item_no)"
+
+    /** Of the values of the kind that comes first, or last, as [kindOrder] orders them; by [key] first where there is one. */
+    override fun extreme(value: String, min: Boolean, key: String?): String {
+        val direction = if (min) "ASC" else "DESC"
+        return "${if (min) "MIN" else "MAX"}(${nullIfJsonNull(value)}) KEEP (DENSE_RANK FIRST ORDER BY ${kindOrder(value)} $direction NULLS LAST${key?.let { ", $it $direction NULLS LAST" }.orEmpty()})"
+    }
 
     /** In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. */
     override fun arithmetic(a: String, b: String, operator: String) =
@@ -174,12 +180,45 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "THEN JSON_SCALAR(TO_BINARY_DOUBLE(${number(a)}) $operator TO_BINARY_DOUBLE(${number(b)})) " +
             "ELSE JSON_SCALAR(${number(a)} $operator ${number(b)}) END"
 
-    override fun add(a: String, b: String) =
+    override fun add(a: String, b: String, given: Pair<Any?, Any?>) =
         "CASE WHEN ${typeOf(a)} = 'number' AND ${typeOf(b)} = 'number' THEN ${arithmetic(a, b, "+")} " +
             "WHEN ${kind(a)} = 'array' AND ${kind(b)} = 'array' THEN JSON_QUERY(JSON_ARRAY($a, $b RETURNING JSON), '\$[*][*]' RETURNING JSON WITH ARRAY WRAPPER) " +
             "WHEN ${kind(a)} = 'array' THEN JSON_TRANSFORM($a, APPEND '\$' = $b) " +
             "WHEN ${kind(b)} = 'array' THEN JSON_TRANSFORM($b, INSERT '\$[0]' = $a) " +
-            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN JSON_SCALAR(JSON_VALUE($a, '\$') || JSON_VALUE($b, '\$')) END"
+            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN JSON_SCALAR(${summedText(a, given)} || ${summedText(b, given.second to given.first)}) END"
+
+    /** The side [json] of a `+` whose sides the statement gives as [given], this side first, as text: see [summedText]. */
+    private fun summedText(json: String, given: Pair<Any?, Any?>) = summedText(json, given.first, given.second, { "JSON_VALUE($it, '\$')" }, ::asText)
+
+    /**
+     * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float (a double, or a number with a
+     * fraction) as Java writes a double, from the shortest decimal Oracle writes it as, with no exponent from 10^-3 up to
+     * 10^7, and else as `1.0E7`, `1.2E-4`; NaN and the infinities by Java's names. A double past a `NUMBER`'s range,
+     * `1e300`, is written from Oracle's own text of it, its shortest digits, `1E+300`.
+     */
+    private fun asText(json: String) = shared(json) { (x) ->
+        val written = "JSON_VALUE($x, '\$')"
+        val float = "${kind(x)} = 'double' OR (${kind(x)} = 'number' AND NOT ${integral(x)})"
+        val n = "TO_NUMBER($written DEFAULT NULL ON CONVERSION ERROR)"
+        val double = "JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE)"
+        // Past a NUMBER's range, which reads 1e-200 as 0, the double's own text, with a point where it has none: `1E-310`.
+        // TO_CHAR of the double writes 15 digits, so 1e-310 as 9.99999999999997E-311.
+        val scientific = scientific("NVL(TO_CHAR(NULLIF($n, 0), 'FM9.9999999999999999EEEE'), REGEXP_REPLACE($written, '^(-?[0-9]+)E', '\\1.0E'))")
+        "CASE WHEN ${kind(x)} = 'double' AND $written IN ('Nan', 'Inf', '-Inf') THEN DECODE($written, 'Nan', 'NaN', 'Inf', 'Infinity', '-Infinity') " +
+            "WHEN $float THEN CASE WHEN $double = 0 THEN '0.0' WHEN ABS($n) >= 0.001 AND ABS($n) < 10000000 THEN TO_CHAR($n, '$PLAIN_FLOAT') ELSE $scientific END " +
+            "ELSE $written END"
+    }
+
+    /** `collect(CASE WHEN … THEN [r] ELSE [m.title] END)` fails with ORA-00979, or closes the session: see `casesFirst`. */
+    override val aggregatesCaseSubqueries = false
+
+    /** `TO_CHAR`'s scientific notation, `1.E+07`, `-1.2E-04`, as Java's: `1.0E7`, `-1.2E-4`. */
+    private fun scientific(text: String) = "REGEXP_REPLACE(REPLACE($text, '.E', '.0E'), 'E\\+?(-?)0*([0-9])', 'E\\1\\2')"
+
+    /** `JSON_EQUAL`, which compares values larger than `=` does, with ORA-40180 past about 32 KB. */
+    override fun identityEquals(x: String, y: String) = "JSON_EQUAL($x, $y)"
+
+    override fun idTokens(ids: String, key: String) = "JSON(REGEXP_REPLACE(JSON_SERIALIZE($ids RETURNING CLOB), '(-?[0-9]+)', ${literal("{\"$key\": \\1}")}))"
 
     override fun modulo(a: String, b: String) = "MOD($a, $b)"
 
@@ -194,12 +233,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "tolower" -> "JSON_SCALAR(LOWER(${text(json)}))"
         "toupper" -> "JSON_SCALAR(UPPER(${text(json)}))"
         "trim" -> "JSON_SCALAR(TRIM(${text(json)}))"
-        // A float that is a whole number is written with its fraction, 2.0, as in Cypher: Oracle writes a double of 2 as 2.
-        // Whole as the double it is: a double too small for a NUMBER, 1e-200, is the NUMBER 0.
-        "tostring" -> shared(json) { (x) ->
-            val n = "JSON_VALUE($x, '\$' RETURNING NUMBER)"
-            "CASE WHEN ${kind(x)} = 'double' AND ABS($n) < 1e15 AND JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE) = TRUNC($n) THEN JSON_SCALAR(TO_CHAR(TRUNC($n)) || '.0') ELSE JSON_SCALAR(JSON_VALUE($x, '\$')) END"
-        }
+        "tostring" -> "JSON_SCALAR(${asText(json)})"
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
         "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"

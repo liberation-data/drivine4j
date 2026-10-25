@@ -30,7 +30,7 @@ class CompilerRefusalTest {
 
     @Test
     fun `collect(DISTINCT) beside a variable no other item is, outside its aggregates, is refused as collect() is`() {
-        // Not in the spec yet: distinctFirst groups by each such variable, so it is refused before.
+        // Not in the spec yet: aggregatesFirst groups by each such variable, so it is refused before.
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             val refused = assertThrows<DrivineException> { compiler.compile("MATCH (p:Person) RETURN p.born, collect(DISTINCT p.name) + p.name") }.message!!
             assertTrue(refused.contains("names p outside its aggregates"), refused)

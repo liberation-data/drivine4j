@@ -27,6 +27,8 @@ import java.sql.Connection
  *   Neo4j does: see [SqliteMathFunction] and [SqliteRoundFunction].
  * - [REGEX_GROUP] and [REGEX_REPLACE] read and replace what a regular expression matches: see
  *   [SqliteRegexGroupFunction] and [SqliteRegexReplaceFunction].
+ * - [FLOAT_TEXT] writes a float as Java does, for `toString`, and [SORT_KEY] orders a list as Cypher does: see
+ *   [SqliteFloatTextFunction] and [SqliteSortKeyFunction].
  * - [TRUNC], [TO_CHAR] and [TEMPORAL] work out temporal values: see [SqliteTruncFunction], [SqliteToCharFunction]
  *   and [SqliteTemporalFunction].
  * - [CYPHER] carries out the procedure a statement that writes compiles to: see [SqliteCypherFunction].
@@ -56,6 +58,8 @@ internal object SqliteFunctions {
     const val TRUNC = "drivine_trunc"
     const val TO_CHAR = "drivine_to_char"
     const val TEMPORAL = "drivine_temporal"
+    const val FLOAT_TEXT = "drivine_float_text"
+    const val SORT_KEY = "drivine_sort_key"
     const val MATH = "drivine_math"
     const val ROUND = "drivine_round"
 
@@ -85,6 +89,8 @@ internal object SqliteFunctions {
         Function.create(connection, REGEX_REPLACE, SqliteRegexReplaceFunction(patterns), 3, Function.FLAG_DETERMINISTIC)
         Function.create(connection, TRUNC, SqliteTruncFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, TO_CHAR, SqliteToCharFunction(), 2, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, FLOAT_TEXT, SqliteFloatTextFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, SORT_KEY, SqliteSortKeyFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, ROUND, SqliteRoundFunction(), 3, Function.FLAG_DETERMINISTIC)
         // Of as many arguments as its operation takes.
         Function.create(connection, TEMPORAL, SqliteTemporalFunction(), -1, Function.FLAG_DETERMINISTIC)
