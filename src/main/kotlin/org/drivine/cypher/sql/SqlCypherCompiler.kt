@@ -2680,18 +2680,16 @@ abstract class SqlCypherCompiler(graph: String) {
                     boolJson("CASE WHEN ${typeOf(x)} = 'object' THEN ${jsonEquals(x, literalJson(emptyMap<String, Any>()))} WHEN ${typeOf(x)} IN ('array', 'string') THEN ${number(size)} = 0 END")
                 })
                 // A float, as Cypher gives these; round as Java rounds, half up.
+                // The precision is read as a whole number toward zero, as Neo4j reads it: 1.7 places is 1.
                 "round" -> when (arguments.size) {
                     3 -> roundingMode(function.arguments[2])?.let { mode ->
-                        // As Neo4j refuses it, where the precision is written, negated or not, or a parameter's value.
-                        val precision = function.arguments[1]
-                        val negated = precision is Expression.Unary && precision.operator == Expression.Unary.Operator.NEGATE
-                        val given = (given(if (negated) (precision as Expression.Unary).operand else precision) as? Number)?.toDouble()
-                        if (given != null && (if (negated) -given else given) < 0) {
-                            throw DrivineException("round() takes a precision of 0 or more, as in Neo4j.")
-                        }
-                        Value.Json(scalar(float(roundTo(number(comparable(json(arguments[0]))), whole(arguments[1]), mode))))
+                        refuseNegativePrecision(function.arguments[1])
+                        Value.Json(scalar(float(roundTo(number(comparable(json(arguments[0]))), truncatedWhole(arguments[1]), mode))))
                     } ?: Value.Json(literalJson(null))
-                    2 -> Value.Json(scalar(float("ROUND(${number(comparable(json(arguments[0])))}, ${whole(arguments[1])})")))
+                    2 -> {
+                        refuseNegativePrecision(function.arguments[1])
+                        Value.Json(scalar(float("ROUND(${number(comparable(json(arguments[0])))}, ${truncatedWhole(arguments[1])})")))
+                    }
                     else -> Value.Json(scalar(float("FLOOR(${number(comparable(json(one())))} + 0.5)")))
                 }
                 "floor", "ceil" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))
@@ -2783,6 +2781,21 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** A value as a SQL whole number. */
         private fun whole(value: Value): String = "CAST(${number(comparable(json(value)))} AS INTEGER)"
+
+        /** [value] as a whole number with its fraction cut off, toward zero, as Neo4j reads `round()`'s precision. */
+        private fun truncatedWhole(value: Value): String = "CAST(${temporalSql.trunc}(${number(comparable(json(value)))}) AS INTEGER)"
+
+        /**
+         * Refuses a precision for `round()` that is below 0 as a whole number toward zero, as Neo4j refuses it,
+         * where it is written, negated or not, or a parameter's value: -0.5 is 0 places, and -1.2 is refused.
+         */
+        private fun refuseNegativePrecision(precision: Expression) {
+            val negated = precision is Expression.Unary && precision.operator == Expression.Unary.Operator.NEGATE
+            val given = (given(if (negated) (precision as Expression.Unary).operand else precision) as? Number)?.toDouble() ?: return
+            if (kotlin.math.truncate(if (negated) -given else given) < 0) {
+                throw DrivineException("round() takes a precision of 0 or more, as in Neo4j.")
+            }
+        }
 
         /** The values [value] of a group, gathered as `collect` gathers them, as JSON. */
         private fun collected(value: Value) = collect(collectable(value), rowOrder)
