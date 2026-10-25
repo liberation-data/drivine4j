@@ -68,5 +68,6 @@ class MemgraphGrammar(
             "CALL text_search.search_all('${spec.indexName}', \$${spec.queryParam})",
             rootAlias,
             scoreAlias,
+            spec.indexLimitParam,
         )
 }

@@ -356,7 +356,7 @@ class GraphObjectManager internal constructor(
     }
 
     /**
-     * Reports a vector search that returned fewer rows than asked for.
+     * Reports a vector or full-text search that returned fewer rows than asked for.
      *
      * Filters run *after* the index yields, so a scoped search returns roughly `k × selectivity` rows —
      * ask for 40 against a 22%-selective filter and about 9 come back, drawn from the globally-nearest
@@ -374,9 +374,11 @@ class GraphObjectManager internal constructor(
         if (returned >= requested) return
         if (!logger.isDebugEnabled) return
         logger.debug(
-            "Vector search on {} returned {} of {} requested rows; the index was asked for {}. " +
-                "Filters apply after the index yields, so a scoped search thins the result — raise " +
-                "searchK to widen the search, or search a partition's own index.",
+            """
+            Search on {} returned {} of {} requested rows; the index was asked for {}. Filters apply
+            after the index yields, so a scoped search thins the result — for a vector search raise
+            searchK or search a partition's own index.
+            """.trimIndent().replace('\n', ' '),
             graphClass.simpleName, returned, requested, plan.indexK,
         )
     }

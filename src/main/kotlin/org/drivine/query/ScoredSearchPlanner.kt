@@ -7,6 +7,7 @@ import org.drivine.model.GraphViewModel
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.grammar.CypherGrammar
+import org.drivine.query.grammar.FullTextQuerySpec
 import org.drivine.query.grammar.VectorQuerySpec
 
 /**
@@ -15,8 +16,8 @@ import org.drivine.query.grammar.VectorQuerySpec
  * shared executor turns it into `List<Scored<T>>`.
  */
 /**
- * A planned scored search: the Cypher, its bindings, and — for vector searches — what was asked of the
- * index versus what the caller wanted back.
+ * A planned scored search: the Cypher, its bindings, and what was asked of the index versus what the
+ * caller wanted back.
  *
  * The two counts exist so the executor can report a short result. Note what is deliberately absent: the
  * number of rows the index yielded *before* the filter. Observing that would mean restructuring the
@@ -25,7 +26,8 @@ import org.drivine.query.grammar.VectorQuerySpec
  * trailing LIMIT never bound, so the rows returned *are* the post-filter survivors.
  *
  * @param requestedRows rows the caller asked for (`topK`), or null for searches that do not track it
- * @param indexK what the index was actually asked for — `searchK` when over-fetching, else `topK`
+ * @param indexK what the index was actually asked for — `searchK` when over-fetching, else `topK`; for
+ *   a full-text search, the [FullTextSearchLimits.indexLimit] its `CALL` was cut to
  */
 internal data class ScoredSearchPlan(
     val cypher: String,
@@ -204,6 +206,7 @@ internal object FullTextSearchPlanner {
     const val TOP_K_PARAM = "_fullTextTopK"
     const val QUERY_PARAM = "_fullTextQuery"
     const val THRESHOLD_PARAM = "_fullTextThreshold"
+    const val INDEX_LIMIT_PARAM = "_fullTextIndexLimit"
 
     /** Unfiltered full-text search over a `@GraphView` (projected) or a bare `@NodeFragment` (itself). */
     fun plan(
@@ -218,12 +221,12 @@ internal object FullTextSearchPlanner {
         val cypher = when {
             graphClass.isAnnotationPresent(GraphView::class.java) -> {
                 val rootFragmentType = GraphViewModel.from(graphClass).rootFragment.fragmentType
-                val spec = FullTextIndexResolver.resolve(rootFragmentType, property, QUERY_PARAM, TOP_K_PARAM)
+                val spec = resolveSpec(rootFragmentType, property)
                 GraphViewQueryBuilder.forView(graphClass, grammar).buildFullTextQuery(spec, THRESHOLD_PARAM)
             }
 
             graphClass.isAnnotationPresent(NodeFragment::class.java) -> {
-                val spec = FullTextIndexResolver.resolve(graphClass, property, QUERY_PARAM, TOP_K_PARAM)
+                val spec = resolveSpec(graphClass, property)
                 FragmentFullTextSearchBuilder(FragmentModel.from(graphClass), grammar).build(spec, THRESHOLD_PARAM)
             }
 
@@ -231,7 +234,9 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return ScoredSearchPlan(cypher, bindings(query, topK, threshold, emptyMap()))
+        // A view's required relationships prune the hits after the index, as a caller filter does.
+        val filtered = graphClass.isAnnotationPresent(GraphView::class.java)
+        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, filtered))
     }
 
     /** Full-text search over a view or fragment with a caller `where { }` predicate AND-ed in. */
@@ -256,7 +261,7 @@ internal object FullTextSearchPlanner {
                     CypherGenerator.buildWhereClause(querySpec.conditions, viewModel, grammar, projectedCollectionMode = true)
                 } else null
                 callerBindings = CypherGenerator.extractBindings(querySpec.conditions, viewModel)
-                val spec = FullTextIndexResolver.resolve(viewModel.rootFragment.fragmentType, null, QUERY_PARAM, TOP_K_PARAM)
+                val spec = resolveSpec(viewModel.rootFragment.fragmentType, null)
                 cypher = GraphViewQueryBuilder.forView(graphClass, grammar)
                     .buildFullTextQuery(spec, THRESHOLD_PARAM, whereResult?.whereClause)
             }
@@ -268,7 +273,7 @@ internal object FullTextSearchPlanner {
                     CypherGenerator.buildWhereClause(querySpec.conditions, null, grammar)
                 } else null
                 callerBindings = CypherGenerator.extractBindings(querySpec.conditions, null)
-                val spec = FullTextIndexResolver.resolve(graphClass, null, QUERY_PARAM, TOP_K_PARAM)
+                val spec = resolveSpec(graphClass, null)
                 cypher = FragmentFullTextSearchBuilder(FragmentModel.from(graphClass), grammar)
                     .build(spec, THRESHOLD_PARAM, whereResult?.whereClause)
             }
@@ -277,7 +282,8 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return ScoredSearchPlan(cypher, bindings(query, topK, threshold, callerBindings))
+        val filtered = querySpec.conditions.isNotEmpty() || graphClass.isAnnotationPresent(GraphView::class.java)
+        return plan(cypher, query, topK, threshold, callerBindings, FullTextSearchLimits.indexLimit(topK, filtered))
     }
 
     private fun requireSupport(grammar: CypherGrammar) {
@@ -288,11 +294,50 @@ internal object FullTextSearchPlanner {
         }
     }
 
-    private fun bindings(query: String, topK: Int, threshold: Double, caller: Map<String, Any?>) =
-        buildMap<String, Any?> {
+    private fun resolveSpec(fragmentClass: Class<*>, property: String?): FullTextQuerySpec =
+        FullTextIndexResolver.resolve(fragmentClass, property, QUERY_PARAM, TOP_K_PARAM)
+            .copy(indexLimitParam = INDEX_LIMIT_PARAM)
+
+    private fun plan(
+        cypher: String,
+        query: String,
+        topK: Int,
+        threshold: Double,
+        caller: Map<String, Any?>,
+        indexLimit: Int,
+    ): ScoredSearchPlan {
+        val bindings = buildMap<String, Any?> {
             put(TOP_K_PARAM, topK)
+            put(INDEX_LIMIT_PARAM, indexLimit)
             put(QUERY_PARAM, query)
             put(THRESHOLD_PARAM, threshold)
             putAll(caller)
         }
+        return ScoredSearchPlan(cypher, bindings, topK, indexLimit)
+    }
+}
+
+/**
+ * How many hits a full-text index `CALL` may yield for a search that wants `topK` rows.
+ *
+ * Where nothing removes a hit after the index — a fragment searched with at most a score threshold,
+ * which keeps a prefix of the ranking — the best `topK` hits are the answer, and the index is asked
+ * for exactly those. Where something does — a caller `where { }`, or a view's required relationships —
+ * the index is asked for [FILTERED_OVER_FETCH] times as many, and the filters choose the `topK` among
+ * them. A filter that keeps fewer than one hit in [FILTERED_OVER_FETCH] of the best can then return
+ * fewer than `topK` rows while the index holds more that pass it; a result that is short of `topK`
+ * while the index yielded its whole limit is the one that may be missing rows.
+ *
+ * The bound is not optional, because the cost of a search is set by it: the head collects every hit
+ * the index yields to normalize the scores (see
+ * [org.drivine.query.grammar.CypherGrammar.normalizedFullTextHead]), and an ordinary English query
+ * matches most of a corpus.
+ */
+object FullTextSearchLimits {
+    /** The over-fetch for a full-text search whose hits are filtered after the index. */
+    const val FILTERED_OVER_FETCH: Int = 10
+
+    /** The index limit for a search wanting [topK] rows, given whether its hits are [filtered] afterwards. */
+    fun indexLimit(topK: Int, filtered: Boolean): Int =
+        if (filtered) (topK.toLong() * FILTERED_OVER_FETCH).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() else topK
 }
