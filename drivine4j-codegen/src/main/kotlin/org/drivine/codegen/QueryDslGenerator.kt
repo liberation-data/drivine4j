@@ -1218,13 +1218,13 @@ class QueryDslGenerator(
             .build()
     }
 
-    /** Whether the view's `@Root` fragment declares a `@VectorIndex` property (so it is searchable). */
+    /** Whether the view's `@Root` fragment stores a `@VectorIndex` property, an inherited one among them (so it is searchable). */
     private fun rootFragmentHasVectorIndex(graphViewClass: KSClassDeclaration): Boolean {
         val rootProperty = graphViewClass.getAllProperties().find { prop ->
             prop.annotations.any { it.shortName.asString() == "Root" }
         } ?: return false
         val rootFragment = rootProperty.type.resolve().declaration as? KSClassDeclaration ?: return false
-        return rootFragment.getAllProperties().any { p ->
+        return ModelReader.storedProperties(rootFragment).any { p ->
             p.annotations.any { it.shortName.asString() == "VectorIndex" }
         }
     }
@@ -1242,10 +1242,10 @@ class QueryDslGenerator(
         return fragmentHasFullTextIndex(rootFragment)
     }
 
-    /** Whether a fragment carries a `@FullTextIndex` — property-level or class-level (multi-property). */
+    /** Whether a fragment carries a `@FullTextIndex` — on a property it stores, an inherited one among them, or class-level (multi-property). */
     private fun fragmentHasFullTextIndex(fragmentClass: KSClassDeclaration): Boolean {
         val classLevel = fragmentClass.annotations.any { it.shortName.asString() == "FullTextIndex" }
-        val propertyLevel = fragmentClass.getAllProperties().any { p ->
+        val propertyLevel = ModelReader.storedProperties(fragmentClass).any { p ->
             p.annotations.any { it.shortName.asString() == "FullTextIndex" }
         }
         return classLevel || propertyLevel

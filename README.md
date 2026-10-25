@@ -1116,6 +1116,11 @@ graphObjectManager.loadAll<ChunkNode, _>(ChunkNodeQueryDsl.INSTANCE) {
 Use `query.<field>` (the Kotlin field name); `@GraphProperty` on-disk names are mapped for you. The same
 `<Fragment>QueryDsl.INSTANCE` powers the filtered `loadNearest` / `loadMatching` forms above.
 
+A fragment's DSL has a reference for each property the node stores, as Drivine reads them: the ones it
+inherits too, a Java superclass's private fields among them, but not a Kotlin superclass's private
+properties. A static or `@GraphTransient` field has none. An inherited `@VectorIndex` or `@FullTextIndex`
+makes the fragment searchable just as its own would.
+
 #### Quantified Predicates over a To-Many Relationship (`any` / `none`)
 
 Filter a root by a predicate over the elements of a `List<>`-typed `@GraphRelationship`. The block

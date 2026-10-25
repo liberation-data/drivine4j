@@ -113,4 +113,85 @@ class InheritedFieldsDslTest {
             for (not in listOf("secret", "scratch")) assertFalse(not in code, "$dsl has $not:\n$code")
         }
     }
+
+    @Test
+    fun `an inherited field's annotations shape its reference, and a field hiding one in a base is the one read`() {
+        val files = generated(
+            SourceFile.java(
+                "Doc.java",
+                """
+                package inh;
+                import java.util.List;
+                import java.util.Map;
+                import org.drivine.annotation.*;
+                public abstract class Doc {
+                    @NodeId private String id;
+                    @GraphProperty("full_title") private String title;
+                    @PropertyBag private Map<String, Object> meta;
+                    @FullTextIndex private String body;
+                    @VectorIndex private List<Float> embedding;
+                    protected String shown;
+                    protected String hidden;
+                }
+                """.trimIndent(),
+            ),
+            SourceFile.java(
+                "Page.java",
+                """
+                package inh;
+                import org.drivine.annotation.*;
+                @NodeFragment(labels = {"Page"})
+                public class Page extends Doc {
+                    protected Integer shown;
+                    @GraphTransient protected String hidden;
+                }
+                """.trimIndent(),
+            ),
+            SourceFile.java(
+                "Edge.java",
+                """
+                package inh;
+                public abstract class Edge {
+                    private String since;
+                }
+                """.trimIndent(),
+            ),
+            SourceFile.java(
+                "Cites.java",
+                """
+                package inh;
+                import org.drivine.annotation.*;
+                @RelationshipFragment
+                public class Cites extends Edge {
+                    @GraphTransient public String scratch;
+                    public Page target;
+                }
+                """.trimIndent(),
+            ),
+            SourceFile.kotlin(
+                "PageView.kt",
+                """
+                package inh
+                import org.drivine.annotation.*
+                @GraphView data class PageView(
+                    @Root val page: Page,
+                    @GraphRelationship(type = "CITES") val cites: List<Cites>,
+                )
+                """.trimIndent(),
+            ),
+        )
+        for (dsl in listOf("PageQueryDsl", "PageProperties")) {
+            val code = classOf(files, dsl)
+            for (stored in listOf("\"id\"", "\"full_title\"", "PropertyBagReference(", "\"meta.\"", "\"body\"", "\"embedding\""))
+                assertTrue(stored in code, "$dsl lacks $stored:\n$code")
+            assertTrue("val shown: PropertyReference<Int>" in code, "$dsl reads Doc's shown, not the Page field hiding it:\n$code")
+            assertFalse("hidden" in code, "$dsl has a field that a transient one hides:\n$code")
+        }
+        val cites = classOf(files, "CitesProperties")
+        assertTrue("\"since\"" in cites, "CitesProperties lacks since:\n$cites")
+        assertFalse("scratch" in cites, "CitesProperties has scratch:\n$cites")
+        // An inherited index makes the fragment, and a view rooted at it, searchable.
+        assertTrue("loadMatching" in files.getValue("PageQueryDsl.kt"), "PageQueryDsl has no loadMatching")
+        for (search in listOf("loadNearest", "loadMatching")) assertTrue(search in files.getValue("PageViewQueryDsl.kt"), "PageViewQueryDsl has no $search")
+    }
 }

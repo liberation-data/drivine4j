@@ -72,4 +72,61 @@ class InheritedFieldsCodegenTest {
             }
         }
     }
+
+    @Test
+    void anInheritedFieldsAnnotationsShapeItsReferenceAndAFieldHidingOneInABaseIsTheOneRead() {
+        Compilation compilation = Compiler.javac().withProcessors(new GraphViewProcessor()).compile(
+            JavaFileObjects.forSourceLines("sample.inh.Doc",
+                "package sample.inh;",
+                "import java.util.Map;",
+                "import org.drivine.annotation.*;",
+                "public abstract class Doc {",
+                "  @NodeId private String id;",
+                "  @GraphProperty(\"full_title\") private String title;",
+                "  @PropertyBag private Map<String, Object> meta;",
+                "  protected String shown;",
+                "  protected String hidden;",
+                "}"),
+            JavaFileObjects.forSourceLines("sample.inh.Page",
+                "package sample.inh;",
+                "import org.drivine.annotation.*;",
+                "@NodeFragment(labels = {\"Page\"})",
+                "public class Page extends Doc {",
+                "  protected Integer shown;",
+                "  @GraphTransient protected String hidden;",
+                "}"),
+            JavaFileObjects.forSourceLines("sample.inh.Edge",
+                "package sample.inh;",
+                "public abstract class Edge {",
+                "  private String since;",
+                "}"),
+            JavaFileObjects.forSourceLines("sample.inh.Cites",
+                "package sample.inh;",
+                "import org.drivine.annotation.*;",
+                "@RelationshipFragment",
+                "public class Cites extends Edge {",
+                "  @GraphTransient public String scratch;",
+                "  public Page target;",
+                "}"),
+            JavaFileObjects.forSourceLines("sample.inh.PageView",
+                "package sample.inh;",
+                "import java.util.List;",
+                "import org.drivine.annotation.*;",
+                "@GraphView",
+                "public class PageView {",
+                "  @Root public Page page;",
+                "  @GraphRelationship(type = \"CITES\") public List<Cites> cites;",
+                "}"));
+
+        assertThat(compilation).succeeded();
+        for (String dsl : new String[] {"sample.inh.PageQueryDsl", "sample.inh.PageProperties"}) {
+            for (String reference : new String[] {"\"id\"", "\"full_title\"", "PropertyBagReference", "\"meta.\"",
+                                                  "PropertyReference<Integer> shown()"}) {
+                assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String().contains(reference);
+            }
+            assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String().doesNotContain("hidden");
+        }
+        assertThat(compilation).generatedSourceFile("sample.inh.CitesProperties").contentsAsUtf8String().contains("\"since\"");
+        assertThat(compilation).generatedSourceFile("sample.inh.CitesProperties").contentsAsUtf8String().doesNotContain("scratch");
+    }
 }
