@@ -586,14 +586,14 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected abstract fun math(name: String, numbers: List<String>): String
 
+    /** `round(x, p)` of two arguments: [number] to [precision] places, half away from zero, as SQL's `ROUND` rounds. */
+    protected open fun roundPlaces(number: String, precision: String): String = "ROUND($number, $precision)"
+
     /**
      * `round(value, precision, mode)`: the SQL number [number] rounded to [precision] decimal places by [mode], as a SQL
      * number. Worked out in decimal, as Neo4j works it out with Java's `BigDecimal`, so 2.345 is halfway between 2.34 and
      * 2.35: a store whose numbers are decimal (`numeric`, `NUMBER`) takes this, one whose numbers are binary its own.
      */
-    /** `round(x, p)` of two arguments: [number] to [precision] places, half away from zero, as SQL's `ROUND` rounds. */
-    protected open fun roundPlaces(number: String, precision: String): String = "ROUND($number, $precision)"
-
     protected open fun roundTo(number: String, precision: String, mode: RoundingMode): String = shared(number, precision) { (n, p) ->
         val scale = "POWER(CAST(10 AS NUMERIC), $p)"
         val scaled = "(ABS($n) * $scale)"
