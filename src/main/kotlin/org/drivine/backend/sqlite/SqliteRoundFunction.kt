@@ -15,6 +15,8 @@ internal class SqliteRoundFunction : Function() {
     override fun xFunc() {
         if (value_type(0) == Codes.SQLITE_NULL || value_type(1) == Codes.SQLITE_NULL) return result()
         val number = if (value_type(0) == Codes.SQLITE_INTEGER) BigDecimal.valueOf(value_long(0)) else BigDecimal.valueOf(value_double(0))
-        result(number.setScale(value_int(1), RoundingMode.valueOf(requireNotNull(value_text(2)))).toDouble())
+        // Places at or past the number's own change nothing, and setScale would write each out: round(2.5, 1000000000) overflows.
+        val places = value_long(1)
+        result(if (places >= number.scale()) number.toDouble() else number.setScale(places.toInt(), RoundingMode.valueOf(requireNotNull(value_text(2)))).toDouble())
     }
 }

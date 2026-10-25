@@ -520,18 +520,43 @@ abstract class CypherQueryContract {
     fun `round() reads a precision from data, or a whole float, as a whole number toward zero, and a null as null`() {
         // Not in the spec yet: its round() case takes the precision as written or given.
         clear()
-        seed("CREATE (:Round {p: 1.7, q: -0.5, w: 2.0, r: -2})")
+        seed("CREATE (:Round {p: 1.7, q: -0.5, w: 2.0, r: -2, z: 0.0, b: 400})")
         assertEquals(
             listOf(listOf(2.6, 2.6, 3.0, 3.0, 2.56, 2.56)),
             query("MATCH (n:Round) RETURN [round(2.555, n.p), round(2.55, n.p, 'UP'), round(2.5, n.q), round(2.5, n.q, 'HALF_UP'), round(2.555, n.w), round(2.555, 2.0, 'HALF_UP')]"),
         )
         assertEquals(listOf(listOf(3.0, -2.0, 2.0, 3.0, 2.0, -3.0)), query("RETURN [round(2.5, 0, 'HALF_UP'), round(-2.5, 0, 'HALF_EVEN'), round(2.5, 0, 'DOWN'), round(2.1, 0, 'CEILING'), round(2.9, 0, 'FLOOR'), round(-2.1, 0, 'UP')]"))
         assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
-        // Oracle overflows on a precision past its NUMBER range.
-        if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
+        // Places past a number's digits give it back, where Oracle's NUMBER would overflow (#266); short of them, it rounds.
+        assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
+        // Read from data, and so far past the digits that writing them all out would not finish, where Postgres's numeric would overflow.
+        assertEquals(listOf(listOf(2.5, 2.5)), query("MATCH (n:Round) RETURN [round(2.5, n.b), round(2.5, n.b, 'FLOOR')]"))
+        assertEquals(listOf(listOf(2.5, 2.5)), query("RETURN [round(2.5, 1000000000), round(2.5, 1000000000, 'HALF_UP')]"))
+        assertEquals(
+            listOf(listOf(1.0E-100, 123.456, 1.0E100, 0.3333333333333333, 0.0, -2.5)),
+            query("RETURN [round(1.0E-100, 120), round(123.456, 200, 'HALF_UP'), round(1.0E100, 30), round(1.0 / 3, 20), round(1.0E-100, 99), round(-2.5, 300, 'FLOOR')]"),
+        )
+        // Zero, whose digits Oracle cannot count by its logarithm, and a precision short of a tiny number's digits but past NUMBER's range.
+        assertEquals(
+            listOf(listOf(0.0, 0.0, 0.0, 0.0, 0.0, 1.0E-120, 1.0E-120, -1.0E-120)),
+            query("MATCH (n:Round) RETURN [round(0.0, 400), round(0, 400, 'HALF_UP'), round(n.z, 2), round(n.z, 400), round(n.z, 2, 'UP'), round(1.0E-120, 130), round(1.0E-120, 130, 'HALF_UP'), round(-1.0E-120, 136, 'CEILING')]"),
+        )
+        // Either side of the last place a double holds, and short of it, where a mode still rounds.
+        assertEquals(
+            listOf(listOf(123.456, 123.456, 123.456, -123.456, 1234.5678901234567, 1234.567890123457)),
+            query("RETURN [round(123.456, 14, 'UP'), round(123.456, 15, 'UP'), round(123.456, 16, 'UP'), round(-123.456, 14, 'FLOOR'), round(1234.5678901234567, 13), round(1234.5678901234567, 12, 'HALF_EVEN')]"),
+        )
         // A negative precision from data fails when the row is read, on every store, in both forms.
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')") }
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r)") }
+        // Zero too, whose places Oracle gives back without rounding.
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(n.z, n.r, 'HALF_UP')") }
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(n.z, n.r)") }
+        // The least doubles, whose last digits are short of the 400 places Postgres holds a precision to. Oracle's NUMBER holds none of them.
+        if (pm.type != DatabaseType.ORACLE) assertEquals(
+            listOf(listOf(2.225073858507201E-308, 2.2250738585072014E-308, 4.9E-324, 9.9E-324)),
+            query("RETURN [round(2.2250738585072014E-308, 323), round(2.2250738585072014E-308, 400), round(4.9E-324, 324, 'UP'), round(4.9E-324, 323, 'UP')]"),
+        )
     }
 
     @Test
@@ -682,6 +707,25 @@ abstract class CypherQueryContract {
 
     /** What the compiler refuses a start or length [what] of [function] out of range with. */
     private fun outOfRange(function: String, what: String) = "$function() takes a $what from 0 to 2147483647, as in Neo4j."
+
+    @Test
+    fun `a sum of a text the statement makes and a text or a float gives the text Cypher writes`() {
+        // A side the statement makes a text is written as its own text on a SQL store (#268); a float beside it still as toString writes it.
+        assertEquals(
+            listOf(listOf("x1B", "aX1", "x12.5", "px1"), listOf("x2B", "aX2", "x22.5", "px2")),
+            query("UNWIND [1, 2] AS i WITH 'x' + toString(i) AS t RETURN t + toUpper('b'), 'a' + toUpper(t), t + 2.5, split('p,q', ',')[0] + t ORDER BY t"),
+        )
+        assertEquals(listOf(listOf("x11.0E7", "bc0.5")), query("WITH 1.0E7 AS f, 0.5 AS h RETURN 'x' + toString(1) + f, substring('abc', 1) + h"))
+        assertEquals(listOf("A1.5", "B1.5"), query("UNWIND ['a', 'b'] AS s WITH collect(toUpper(s)) AS ss, 1.5 AS f UNWIND ss AS u RETURN u + f ORDER BY u"))
+        // A CASE, a coalesce, a list and a CALL's UNION that may give a float beside a text write the float as toString does.
+        assertEquals(
+            listOf(listOf("2.5x", "2.5x", "2.5x")),
+            query("WITH 2.5 AS f RETURN CASE WHEN f > 1 THEN f ELSE 'a' END + 'x', coalesce(CASE WHEN f < 1 THEN 'a' END, f) + 'x', ['a', f][1] + 'x'"),
+        )
+        assertEquals(listOf("2.5x", "Ax"), query("CALL { RETURN 2.5 AS v UNION RETURN toUpper('a') AS v } RETURN v + 'x' AS s ORDER BY s"))
+        // The least and the greatest of texts are a text, put together with a float as Cypher writes it.
+        assertEquals(listOf(listOf("A2.5", "b2.5")), query("UNWIND ['b', 'a'] AS s WITH min(toUpper(s)) AS lo, max(s) AS hi RETURN lo + 2.5, hi + 2.5"))
+    }
 
     @Test
     fun `a day and a moment are their ISO text`() {

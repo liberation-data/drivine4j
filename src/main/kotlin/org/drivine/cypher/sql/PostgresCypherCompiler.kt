@@ -9,6 +9,7 @@ import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
 import java.math.BigDecimal
+import java.math.RoundingMode
 import java.security.MessageDigest
 
 /**
@@ -398,6 +399,17 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun returnRows(query: String) = listOf("RETURN QUERY SELECT CAST(cy_q.result AS json) FROM (\n${indent(query)}\n) cy_q;")
 
+    /**
+     * Places past [MOST_PLACES] change no double, the least of which is near 4.9E-324, and Postgres's `numeric` overflows
+     * on a precision as large as a billion: so a precision is held to them, as Neo4j gives the number back. A CASE, not
+     * `LEAST`, which passes over a null where a null precision rounds to null.
+     */
+    override fun roundPlaces(number: String, precision: String) = super.roundPlaces(number, heldPlaces(precision))
+
+    override fun roundTo(number: String, precision: String, mode: RoundingMode) = super.roundTo(number, heldPlaces(precision), mode)
+
+    private fun heldPlaces(precision: String) = shared(precision) { (p) -> "CASE WHEN $p > $MOST_PLACES THEN $MOST_PLACES ELSE $p END" }
+
     /** A text that is no whole number, cast to one: Postgres fails with the text in its message. */
     override fun failure(message: String, value: String) = "CAST(${literal("$message ")} || CAST($value AS text) AS integer)"
 
@@ -414,6 +426,9 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun withoutLabel(labels: String, label: String) = "($labels - ${literal(label)})"
 
     private companion object {
+        /** The most places `round()` rounds to: past them, a double, the least of which is near 4.9E-324, has no digit. */
+        const val MOST_PLACES = 400
+
         /** A text Postgres reads as a `numeric`, spaces around it allowed. */
         const val NUMERIC_TEXT = """^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$"""
 

@@ -93,6 +93,50 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `a sum writes a side the statement makes a text as its own text, and only a side that may be a float as toString writes it`() {
+        // Written as toString writes a float, a side that is always a text made `count('x' + toString(i))` 2.5 times as slow on Oracle (#268).
+        val written = mapOf("PostgresCypherCompiler" to "to_char(", "OracleCypherCompiler" to "TO_CHAR(")
+        compilers.filter { it::class.simpleName in written }.forEach { compiler ->
+            val name = compiler::class.simpleName!!
+            fun writes(cypher: String) = compiler.compile(cypher).sql.split(written.getValue(name)).size - 1
+            // toString writes its float once, and the sum writes the text it gives as it is.
+            val once = writes("MATCH (c:Claim) RETURN toString(c.i)")
+            assertTrue(once > 0, name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i)"), name)
+            assertEquals(0, writes("MATCH (c:Claim) RETURN 'a' + toUpper(c.s), trim(c.s) + substring(c.s, 1) + left(c.s, 2) + replace(c.s, 'a', 'b')"), name)
+            assertEquals(0, writes("MATCH (c:Claim)-[r]->() RETURN split(c.s, ',')[0] + reverse(toLower(c.s)) + type(r)"), name)
+            // Carried through a WITH, a collect and an UNWIND, still a text.
+            assertEquals(0, writes("MATCH (c:Claim) WITH toLower(c.s) AS t, collect(toUpper(c.s)) AS ts UNWIND ts AS u RETURN t + u + ts[0] + head(ts)"), name)
+            // A property may hold a float: it is written as toString writes it, beside a text or not.
+            assertEquals(once, writes("MATCH (c:Claim) RETURN c.s + 'b'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN toUpper(c.s) + c.f"), name)
+            assertEquals(2 * once, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i) + c.f"), name)
+            // A CASE, a coalesce and a list written are a text, or hold texts, where each of theirs is; a text unwound is one.
+            assertEquals(0, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN toUpper(c.s) ELSE 'n' END + coalesce(toLower(c.s), 'z') + ['a', toUpper(c.s)][1]"), name)
+            assertEquals(0, writes("MATCH (c:Claim) RETURN ltrim(c.s) + rtrim(c.s) + right(c.s, 2)"), name)
+            assertEquals(0, writes("MATCH (c:Claim) UNWIND toUpper(c.s) AS u RETURN u + 'x'"), name)
+            // A list of texts kept distinct, sliced, its tail, its last, and an item an expression names, still holds texts.
+            assertEquals(0, writes("MATCH (c:Claim) WITH collect(DISTINCT toUpper(c.s)) AS ts RETURN last(ts) + ts[1..][0] + tail(ts)[0] + ts[size(ts) - 1]"), name)
+            assertEquals(0, writes("MATCH (c:Claim) WITH collect(toUpper(c.s)) AS ts RETURN reverse(ts)[0] + coalesce(ts, split('a,b', ','))[0]"), name)
+            // Joined to texts, too: the join writes its sides as any `+` does, and its item, added to a text, is written as it is.
+            val joined = "MATCH (c:Claim) WITH collect(toUpper(c.s)) AS ts, collect(c.f) AS fs RETURN (ts + ['a'])[0], ('b' + ts)[0], (ts + fs)[0]"
+            assertEquals(writes(joined), writes(joined.replace("[0],", "[0] + 'x',")), name)
+            assertEquals(writes(joined) + once, writes("$joined + 'x'"), name)
+            // Each query of a CALL's UNION makes it a text, and a write carries it on.
+            assertEquals(0, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN 'n' AS v } RETURN v + 'x'"), name)
+            assertEquals(0, writes("MATCH (c:Claim) WITH c, toUpper(c.s) AS t SET c.t = t RETURN t + 'x'"), name)
+            // Where any one of them may be a float, it is written as toString writes it.
+            assertEquals(once, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN 'a' ELSE c.f END + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN coalesce(toUpper(c.s), c.f) + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN ['a', c.f][1] + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN c.f AS v } RETURN v + 'x'"), name)
+            // The least and the greatest of texts are a text; of a property, which may hold a float, not.
+            assertEquals(0, writes("MATCH (c:Claim) WITH min(toUpper(c.s)) AS lo, max(toLower(c.s)) AS hi RETURN lo + hi + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) WITH max(c.f) AS hi RETURN hi + 'x'"), name)
+        }
+    }
+
+    @Test
     fun `an equality of values that hold no null in a list or a map compiles with no test for one`() {
         // #225: a null a list or a map holds is tested for, and the two walked, only where one may hold one.
         val tested = mapOf("PostgresCypherCompiler" to "jsonb_path_exists(", "OracleCypherCompiler" to "[[,:]null[],}]")
@@ -101,6 +145,9 @@ class CompiledSizeTest {
             fun tests(cypher: String, parameters: Map<String, Any?> = emptyMap()) = compiler.compile(cypher, parameters).sql.contains(test)
             assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, 2))), "${compiler::class.simpleName}")
             assertTrue(!tests("MATCH (c:Claim) WITH c, c.list AS l RETURN [1, 2] = [1, 2], c.a = c.b, l = c.b, c.list IN \$ls, {x: 1} <> {x: 2}, size(l) = 2", mapOf("ls" to listOf(listOf(1)))), "${compiler::class.simpleName}")
+            // An item unwound from a list that holds no null holds none.
+            assertTrue(!tests("UNWIND [[1, 2], [3]] AS l RETURN l = [1, 2]"), "${compiler::class.simpleName}")
+            assertTrue(tests("UNWIND [[1, null], [3]] AS l RETURN l = [1, 2]"), "${compiler::class.simpleName}")
             // Lists and maps written out are compared item by item.
             assertTrue(!tests("MATCH (c:Claim) WITH c.a AS a, c.b AS b RETURN [a, b] = [b, a], {x: a} = {x: b}, a IN [b, null]"), "${compiler::class.simpleName}")
             // A parameter's list that holds a null is compared item by item as the statement is compiled; a map is walked.
