@@ -231,6 +231,76 @@ class ConstraintManagerTest {
         assertEquals(3, store.schema.drop(made).takeWhile { !it.startsWith("DROP CONSTRAINT") }.count { it.startsWith("SHOW CONSTRAINTS") })
     }
 
+    // ----- A constraint already in the store, still being built -----
+
+    /**
+     * A store holding a constraint another process is building. Until DROP CONSTRAINT has run, each listing
+     * gives the next of [builds], the last of them from then on; a null in [builds] lists nothing, as when
+     * that process has dropped its failed build. After DROP CONSTRAINT, nothing is listed until CREATE has
+     * run, and then each listing gives the next of [rebuilds]. The query for repeated keys gives [conflicts].
+     */
+    private fun buildingInStore(vararg builds: String?, rebuilds: List<String> = listOf("OPERATIONAL"), conflicts: Any? = emptyList<Any?>()): RecordingStore {
+        var phase = "building"
+        var listings = 0
+        return RecordingStore(DatabaseType.NEO4J, asyncBuild) { ran ->
+            when {
+                ran.statement.startsWith("DROP CONSTRAINT") -> emptyList<Any?>().also { phase = "dropped" }
+                ran.statement.startsWith("CREATE CONSTRAINT") -> emptyList<Any?>().also { phase = "made"; listings = 0 }
+                ran.statement.startsWith("SHOW CONSTRAINTS") -> when (phase) {
+                    "building" -> listOfNotNull(builds[minOf(listings++, builds.size - 1)]?.let { listed(it) })
+                    "made" -> listOf(listed(rebuilds[minOf(listings++, rebuilds.size - 1)]))
+                    else -> emptyList()
+                }
+                "_count > 1" in ran.statement -> conflicts
+                else -> emptyList<Any?>()
+            }
+        }
+    }
+
+    @Test
+    fun `a constraint already in the store and still being built is waited on, and matching once built`() {
+        val store = buildingInStore("UNDER CONSTRUCTION", "UNDER CONSTRUCTION", "OPERATIONAL")
+
+        val result = store.constraints.ensure(spec)
+
+        assertTrue(result is EnsureResult.AlreadyMatching, "expected AlreadyMatching, got $result")
+        assertEquals("OPERATIONAL", result.info.status)
+        assertEquals(3, store.schema.count { it.startsWith("SHOW CONSTRAINTS") })
+        assertTrue(store.schema.none { it.startsWith("DROP") || it.startsWith("CREATE") }, "${store.schema}")
+    }
+
+    @Test
+    fun `a constraint already in the store whose build then fails is dropped, and a violation when the data repeats a key`() {
+        val store = buildingInStore("UNDER CONSTRUCTION", "FAILED", rebuilds = listOf("FAILED"), conflicts = listOf(repeated))
+
+        assertEquals(EnsureResult.Violation(spec, listOf(repeated)), store.constraints.ensure(spec))
+        // The one whose build failed, then the one built again, which failed too.
+        assertEquals(2, store.schema.count { it.startsWith("DROP CONSTRAINT") })
+    }
+
+    @Test
+    fun `a constraint already in the store whose build then fails is dropped, and built again once the data is clean`() {
+        val store = buildingInStore("UNDER CONSTRUCTION", "FAILED")
+
+        val result = store.constraints.ensure(spec)
+
+        assertTrue(result is EnsureResult.Created, "expected Created, got $result")
+        val dropped = store.schema.indexOfFirst { it.startsWith("DROP CONSTRAINT") }
+        assertTrue(dropped >= 0, "expected the failed constraint dropped: ${store.schema}")
+        assertTrue(store.schema.drop(dropped).any { it.startsWith("CREATE CONSTRAINT") }, "expected the constraint made after it: ${store.schema}")
+    }
+
+    @Test
+    fun `a constraint already in the store that is dropped while it is built is made`() {
+        val store = buildingInStore("UNDER CONSTRUCTION", null)
+
+        val result = store.constraints.ensure(spec)
+
+        assertTrue(result is EnsureResult.Created, "expected Created, got $result")
+        assertTrue(store.schema.none { it.startsWith("DROP CONSTRAINT") }, "${store.schema}")
+        assertEquals(1, store.schema.count { it.startsWith("CREATE CONSTRAINT") })
+    }
+
     // ----- An index in the way -----
 
     private val inTheWay = Neo4jException("Neo.ClientError.Schema.IndexAlreadyExists", "There already exists an index (:Person {email}). A constraint cannot be created until the index has been dropped.")

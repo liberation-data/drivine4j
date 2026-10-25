@@ -57,7 +57,10 @@ class ConstraintManager internal constructor(
      * existing violating data surfaces as [EnsureResult.Violation]; a plain index in the way of the
      * constraint surfaces as [EnsureResult.BlockedByIndex]. In each case nothing is changed and the
      * caller decides what to do. The one thing dropped unasked is a constraint whose build failed,
-     * which FalkorDB keeps listing though it enforces nothing: it is dropped and built again.
+     * which FalkorDB keeps listing though it enforces nothing: it is dropped and built again. A
+     * constraint FalkorDB still lists as under construction, from another process or an earlier run,
+     * is waited on, as one made here is: matching once built, and dropped and built again if its
+     * build fails.
      *
      * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
      * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
@@ -77,7 +80,9 @@ class ConstraintManager internal constructor(
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
     ): EnsureResult {
-        val existing = find(spec)
+        // A constraint still being built, by another process or an earlier run, may yet fail: wait for
+        // its build to end, as for one made here. One dropped meanwhile is made again below.
+        val existing = find(spec)?.let { if (it.buildInProgress) awaitBuild(spec, untilListed = false) else it }
         if (existing != null && existing.buildFailed) {
             // FalkorDB keeps listing a constraint whose build failed, though it enforces nothing.
             // It is not the constraint: drop it and build again, which gives a violation when the
@@ -195,36 +200,37 @@ class ConstraintManager internal constructor(
 
     /**
      * Engines with asynchronous constraint creation (FalkorDB) return immediately from CREATE;
-     * the constraint then transitions UNDER CONSTRUCTION → OPERATIONAL or FAILED. Each poll reads
-     * the status from one listing, so a build that fails between two reads is never taken for
-     * built. A FAILED constraint is dropped: it enforces nothing, yet stays listed, where it would
-     * be taken for the constraint by anything that reads the store. It is reported as a violation
-     * when the data confirms one, and thrown when it does not.
+     * the constraint then transitions UNDER CONSTRUCTION → OPERATIONAL or FAILED. A FAILED
+     * constraint is dropped: it enforces nothing, yet stays listed, where it would be taken for the
+     * constraint by anything that reads the store. It is reported as a violation when the data
+     * confirms one, and thrown when it does not.
      */
     private fun awaitAsyncCreation(spec: ConstraintSpec, violationSampleSize: Int): EnsureResult {
+        val info = awaitBuild(spec, untilListed = true)!!
+        if (info.buildFailed) {
+            run(grammar.dropConstraint(info))
+            val failed = DrivineException(
+                "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
+                    "but no key it covers repeats in the data"
+            )
+            return confirmedViolation(spec, violationSampleSize, failed) ?: throw failed
+        }
+        logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
+        return EnsureResult.Created(info)
+    }
+
+    /**
+     * Polls the constraint [spec] refers to until its build has ended, OPERATIONAL or FAILED, and returns
+     * it as last listed. Each poll reads the status from one listing, so a build that fails between two
+     * reads is never taken for built. While it is not listed, polling goes on when [untilListed] (a
+     * constraint just made, not yet visible), and otherwise ends with null (one dropped meanwhile).
+     */
+    private fun awaitBuild(spec: ConstraintSpec, untilListed: Boolean): SchemaItemInfo? {
         val deadline = System.currentTimeMillis() + asyncCreationTimeout.toMillis()
         while (System.currentTimeMillis() < deadline) {
             val info = find(spec)
-            val status = info?.status?.uppercase()
-            when {
-                info == null -> { /* not yet visible — keep polling */ }
-
-                status == null || status == "OPERATIONAL" -> {
-                    logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
-                    return EnsureResult.Created(info)
-                }
-
-                info.buildFailed -> {
-                    run(grammar.dropConstraint(info))
-                    val failed = DrivineException(
-                        "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
-                            "but no key it covers repeats in the data"
-                    )
-                    return confirmedViolation(spec, violationSampleSize, failed) ?: throw failed
-                }
-
-                // UNDER CONSTRUCTION → keep polling
-            }
+            if (info == null && !untilListed) return null
+            if (info != null && !info.buildInProgress) return info
             Thread.sleep(asyncPollInterval.toMillis())
         }
         throw DrivineException(
