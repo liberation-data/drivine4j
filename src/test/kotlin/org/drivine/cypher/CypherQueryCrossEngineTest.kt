@@ -517,6 +517,67 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `round() reads a precision from data, or a whole float, as a whole number toward zero, and a null as null`() {
+        // Not in the spec yet: its round() case takes the precision as written or given.
+        clear()
+        seed("CREATE (:Round {p: 1.7, q: -0.5, w: 2.0, r: -2})")
+        assertEquals(
+            listOf(listOf(2.6, 2.6, 3.0, 3.0, 2.56, 2.56)),
+            query("MATCH (n:Round) RETURN [round(2.555, n.p), round(2.55, n.p, 'UP'), round(2.5, n.q), round(2.5, n.q, 'HALF_UP'), round(2.555, n.w), round(2.555, 2.0, 'HALF_UP')]"),
+        )
+        assertEquals(listOf(listOf(3.0, -2.0, 2.0, 3.0, 2.0, -3.0)), query("RETURN [round(2.5, 0, 'HALF_UP'), round(-2.5, 0, 'HALF_EVEN'), round(2.5, 0, 'DOWN'), round(2.1, 0, 'CEILING'), round(2.9, 0, 'FLOOR'), round(-2.1, 0, 'UP')]"))
+        assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
+        // Oracle overflows on a precision past its NUMBER range.
+        if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
+        // A negative precision from data fails when the row is read, on every store, in both forms.
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')") }
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r)") }
+    }
+
+    @Test
+    fun `min() and max() of lists the statement makes compare them item by item, whatever their lengths`() {
+        // Not in the spec yet: a nested list (#220). The spec holds DISTINCT and the grouping WITH from v0.6.3.
+        assertEquals(listOf(listOf(listOf(listOf(1L), listOf(2L)), listOf(listOf(3L)))), query("UNWIND [[[1, 2]], [[3]], [[1], [2]]] AS xs RETURN [min(xs), max(xs)]"))
+        assertEquals(listOf(listOf(listOf(1L, 5L), listOf(10L))), query("UNWIND [[2], [1, 5], [1, 5], [10]] AS xs RETURN [min(DISTINCT xs), max(DISTINCT xs)]"))
+        assertEquals(
+            listOf(listOf(false, listOf(2L, 1L), listOf(3L)), listOf(true, listOf(0L, 9L, 9L), listOf(1L, 2L))),
+            query("UNWIND [[1, 2], [3], [0, 9, 9], [2, 1]] AS xs WITH xs[0] < 2 AS k, min(xs) AS lo, max(xs) AS hi RETURN k, lo, hi ORDER BY k"),
+        )
+        // The least and the greatest moment still, whatever their offsets.
+        assertEquals(
+            listOf(listOf("2020-01-01T00:30:00+02:00", "2020-01-01T00:00:00+01:00")),
+            query("UNWIND [datetime('2020-01-01T00:00+01:00'), datetime('2020-01-01T00:30+02:00')] AS x RETURN [toString(min(x)), toString(max(x))]"),
+        )
+        // Oracle puts a null item first and a number before a text (#205).
+        if (pm.type == DatabaseType.ORACLE) return
+        assertEquals(listOf(listOf(listOf("a", 1L), listOf(1L, "a"))), query("UNWIND [[1, 'a'], ['a', 1], [true]] AS xs RETURN [min(xs), max(xs)]"))
+        assertEquals(listOf(listOf(listOf(1L), listOf(null))), query("UNWIND [[1, null], [1], [null], null] AS xs RETURN [min(xs), max(xs)]"))
+    }
+
+    @Test
+    fun `a negative precision from data fails only on a row that reads it, in a WHERE and an aggregate too, with the compiler's message`() {
+        // The spec reads a precision from data since v0.6.4; here, in a WHERE and an aggregate, and on rows filtered out.
+        clear()
+        seed("CREATE (:Round {r: -2, k: 1}), (:Round {r: 1, k: 2})")
+        listOf(
+            "MATCH (n:Round) RETURN round(1234.5, n.r)",
+            "MATCH (n:Round) WHERE round(1234.5, n.r) > 0 RETURN n.k",
+            "MATCH (n:Round) RETURN sum(round(1234.5, n.r))",
+            "MATCH (n:Round) RETURN collect(round(1234.5, n.r, 'HALF_UP'))",
+            // A constant the compiler does not read as given is worked out by the store, as one from data.
+            "RETURN round(1234.5, 1 - 3)",
+            "RETURN round(1234.5, toInteger('-2'))",
+        ).forEach { statement ->
+            val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), failed)
+        }
+        assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.r >= 0 RETURN round(1234.5, n.r)"))
+        assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.k = 2 RETURN sum(round(1234.5, n.r))"))
+        assertEquals(listOf(0.0, 1234.5), query("MATCH (n:Round) RETURN CASE WHEN n.r < 0 THEN 0.0 ELSE round(1234.5, n.r) END ORDER BY n.k"))
+        assertEquals(listOf(listOf(1234.5, 1234.5)), query("RETURN [round(1234.5, 3 - 1), round(1234.5, toInteger('2'))]"))
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return

@@ -38,6 +38,9 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** Null as SQL's null, where `json_quote` writes it as JSON's. */
     override fun scalar(sql: String) = "NULLIF(json_quote($sql), 'null')"
 
+    /** SQLite has no failing expression of its own: Drivine's function fails with the text. */
+    override fun failure(message: String, value: String) = "${SqliteFunctions.FAIL}(${literal("$message ")} || $value)"
+
     override fun typeOf(json: String) =
         "(CASE json_type($json) WHEN 'integer' THEN 'number' WHEN 'real' THEN 'number' WHEN 'text' THEN 'string' WHEN 'true' THEN 'boolean' " +
             "WHEN 'false' THEN 'boolean' WHEN 'array' THEN 'array' WHEN 'object' THEN 'object' WHEN 'null' THEN 'null' END)"

@@ -398,6 +398,9 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun returnRows(query: String) = listOf("RETURN QUERY SELECT CAST(cy_q.result AS json) FROM (\n${indent(query)}\n) cy_q;")
 
+    /** A text that is no whole number, cast to one: Postgres fails with the text in its message. */
+    override fun failure(message: String, value: String) = "CAST(${literal("$message ")} || CAST($value AS text) AS integer)"
+
     override fun raise(message: String) = "RAISE EXCEPTION USING MESSAGE = ${literal(message)};"
 
     override fun idOf(json: String, key: String?) = if (key != null) "CAST($json ->> ${literal(key)} AS bigint)" else "CAST($json #>> '{}' AS bigint)"

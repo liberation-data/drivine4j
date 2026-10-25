@@ -226,6 +226,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** `collect(CASE WHEN … THEN [r] ELSE [m.title] END)` fails with ORA-00979, or closes the session: see `casesFirst`. */
     override val aggregatesCaseSubqueries = false
 
+    /** `min` and `max` of lists grouped and ordered by [listSortKey] close the session (ORA-03113): `JSON` orders them by itself. */
+    override val extremesByListKey = false
+
     /** `TO_CHAR`'s scientific notation, `1.E+07`, `-1.2E-04`, as Java's: `1.0E7`, `-1.2E-4`. */
     private fun scientific(text: String) = "REGEXP_REPLACE(REPLACE($text, '.E', '.0E'), 'E\\+?(-?)0*([0-9])', 'E\\1\\2')"
 
@@ -561,6 +564,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     )).joinToString("\n")
 
     override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
+
+    /** A text that is no number, read as one: Oracle fails with ORA-01722, whose ORA-03302 detail gives the text. */
+    override fun failure(message: String, value: String) = "TO_NUMBER(${literal("$message ")} || TO_CHAR($value))"
 
     override fun raise(message: String) = "RAISE_APPLICATION_ERROR(-20000, ${literal(message)});"
 

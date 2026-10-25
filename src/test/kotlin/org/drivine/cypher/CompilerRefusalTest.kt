@@ -38,6 +38,24 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `round() of two arguments refuses a precision below 0 when cut toward zero, written, negated or given`() {
+        // Not in the spec's refusals yet, which name the message for three arguments alone.
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            listOf(
+                "RETURN round(1234.5, -2)" to emptyMap(),
+                "RETURN round(1234.5, -1.2)" to emptyMap(),
+                "RETURN round(1234.5, -\$p)" to mapOf("p" to 2),
+                "RETURN round(1234.5, \$p)" to mapOf("p" to -2.5),
+            ).forEach { (cypher, parameters) ->
+                val refused = assertThrows<DrivineException> { compiler.compile(cypher, parameters) }.message!!
+                assertTrue(refused == "round() takes a precision of 0 or more, as in Neo4j.", refused)
+            }
+            // -0.5 and -0.9 cut toward zero are 0 places.
+            compiler.compile("RETURN [round(1234.5, -0.5), round(1234.5, \$p, 'HALF_UP')]", mapOf("p" to -0.9))
+        }
+    }
+
+    @Test
     fun `a date written as a text that is no date is refused, with what the JVM's parser says of it`() {
         // Not in the spec: the message ends with the JVM's own text.
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
