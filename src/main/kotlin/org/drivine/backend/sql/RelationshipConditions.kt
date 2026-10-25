@@ -2,6 +2,7 @@ package org.drivine.backend.sql
 
 import org.drivine.model.GraphViewModel
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.dsl.CypherGenerator
 import org.drivine.model.RelationshipModel
 import org.drivine.query.dsl.WhereCondition
 
@@ -20,7 +21,7 @@ internal object RelationshipConditions {
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
                     val alias = condition.propertyPath.substringBefore('.')
-                    val relationship = if (alias in relationships) alias else alias.substringBefore('_').takeIf { '_' in alias && it in relationships }
+                    val relationship = CypherGenerator.relationshipNamedFirst(alias, relationships)
                     if (relationship != null) byRelationship.getOrPut(relationship) { mutableListOf() }.add(condition) else kept += condition
                 }
                 is WhereCondition.LabelCondition ->

@@ -11,6 +11,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
 import org.drivine.query.dsl.ComparisonOperator
+import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.NullPlacement
 import org.drivine.query.dsl.ExpressionOrder
 import org.drivine.query.dsl.OrderExpression
@@ -198,17 +199,23 @@ internal class OraclePredicates(
             "Cannot filter on nested relationship '${target}_*' because ${targetType.simpleName} is not a @GraphView"
         }
         val targetModel = GraphViewModel.from(targetType)
-        return nested.groupBy { (it as WhereCondition.PropertyCondition).propertyPath.substringBefore('.').removePrefix("${target}_") }
-            .map { (name, conditions) ->
+        val relationships = targetModel.relationships.map { it.fieldName }
+        fun aliasOf(condition: WhereCondition) = (condition as WhereCondition.PropertyCondition).propertyPath.substringBefore('.')
+        // Keyed by the relationship the alias names next, which may hold an underscore; a level below it is checked within it.
+        return nested.groupBy { aliasOf(it).removePrefix("${target}_").let { rest -> CypherGenerator.relationshipNamedFirst(rest, relationships) ?: rest } }
+            .map { (name, all) ->
                 val nestedRelationship = targetModel.relationships.find { it.fieldName == name }
                     ?: throw IllegalArgumentException("Nested relationship '$name' not found in ${targetModel.className}")
                 val nestedRow = scope.row(name)
+                val (deeper, conditions) = all.partition { aliasOf(it).startsWith("${target}_${name}_") }
+                val nestedType = nestedRelationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }
+                val below = nestedPredicates(deeper, nestedType, "${target}_$name", nestedRow)
                 val (onRows, inPattern) = conditions.partition(::holdsSubquery)
                 val names = mapOf("${target}_$name" to nestedRow)
                 // No labels: a condition on a relationship is met by whatever node it leads to.
                 rows.exists(
                     row, rows.steps(nestedRelationship, emptyList()), nestedRow,
-                    where = inPattern.map { one(it, names, null) }, predicates = onRows.map { one(it, names, null) },
+                    where = inPattern.map { one(it, names, null) }, predicates = onRows.map { one(it, names, null) } + below,
                 )
             }
     }

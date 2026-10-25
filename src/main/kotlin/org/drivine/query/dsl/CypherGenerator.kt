@@ -155,10 +155,16 @@ object CypherGenerator {
      * `assignedTo.name`, and for `assignedTo_worksFor.name`, a relationship of the target — or null
      * when the path is the root's.
      */
-    private fun relationshipOf(propertyPath: String, relationshipNames: Set<String>): String? {
-        val alias = propertyPath.substringBefore(".")
-        return alias.takeIf { it in relationshipNames } ?: alias.substringBefore("_").takeIf { "_" in alias && it in relationshipNames }
-    }
+    private fun relationshipOf(propertyPath: String, relationshipNames: Set<String>): String? =
+        relationshipNamedFirst(propertyPath.substringBefore("."), relationshipNames)
+
+    /**
+     * The relationship of [relationshipNames] that [alias] names first: the longest that is the alias,
+     * or that it begins with before an `_`, as a relationship's name may hold an underscore. Null when
+     * none is.
+     */
+    internal fun relationshipNamedFirst(alias: String, relationshipNames: Collection<String>): String? =
+        relationshipNames.filter { alias == it || alias.startsWith("${it}_") }.maxByOrNull { it.length }
 
     /**
      * `NOT ( … )` — renders the (raw, un-regrouped) inner conditions AND-joined, then negates. A
@@ -219,20 +225,11 @@ object CypherGenerator {
                     // Extract alias from property path (e.g., "assignedTo.name" -> "assignedTo")
                     val alias = condition.propertyPath.substringBefore(".")
 
-                    if (alias in relationshipNames) {
-                        // This is a direct relationship target property
-                        relationshipConditions.getOrPut(alias) { mutableListOf() }.add(condition)
-                    } else if (alias.contains("_")) {
-                        // Possibly a nested relationship (e.g., "raisedBy_worksFor.name")
-                        val parentAlias = alias.substringBefore("_")
-                        if (parentAlias in relationshipNames) {
-                            // This is a nested relationship property
-                            // Group it under the parent relationship for now
-                            relationshipConditions.getOrPut(parentAlias) { mutableListOf() }.add(condition)
-                        } else {
-                            // Not a nested relationship, treat as root property
-                            grouped.add(condition)
-                        }
+                    // A relationship target's property ("assignedTo.name"), or a property of a view
+                    // nested below it ("raisedBy_worksFor.name"), is grouped under that relationship.
+                    val relationship = relationshipNamedFirst(alias, relationshipNames)
+                    if (relationship != null) {
+                        relationshipConditions.getOrPut(relationship) { mutableListOf() }.add(condition)
                     } else {
                         // This is a root fragment property
                         grouped.add(condition)
@@ -953,9 +950,7 @@ object CypherGenerator {
                         // Nested relationship property (e.g., "raisedBy_worksFor.name")
                         val rest = alias.substringAfter("${targetAlias}_")
                         val nestedRelName = targetViewModel?.relationships
-                            ?.map { it.fieldName }
-                            ?.filter { rest == it || rest.startsWith("${it}_") }
-                            ?.maxByOrNull { it.length }
+                            ?.let { relationships -> relationshipNamedFirst(rest, relationships.map { it.fieldName }) }
                             ?: rest
                         nested.getOrPut(nestedRelName) { mutableListOf() }.add(condition)
                     } else {
