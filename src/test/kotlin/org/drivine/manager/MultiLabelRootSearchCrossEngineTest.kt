@@ -77,6 +77,19 @@ private fun verify(gom: StatelessGraphObjectManager) {
         }.map { it.value.id },
     )
 
+    // The draft outranks the paper, but is no PublishedPaper: the scores are scaled by the best hit the
+    // search can return, so the paper scores 1, as it does on a store that narrows by labels first, and
+    // a threshold just under 1 keeps it.
+    assertEquals(1.0, gom.loadMatching<PublishedPaper>("kotlin", topK = 5).single().score, 1e-9)
+    assertEquals(1.0, gom.loadMatching<PublishedPaperView>("kotlin", topK = 5).single().score, 1e-9)
+    assertEquals(listOf("published"), gom.loadMatching<PublishedPaper>("kotlin", topK = 5, threshold = 0.99).map { it.value.id })
+    assertEquals(
+        listOf(1.0),
+        gom.loadMatching(PublishedPaper::class.java, PublishedPaperQueryDsl.INSTANCE, "kotlin", topK = 5) {
+            where { query.id eq "published" }
+        }.map { it.score },
+    )
+
     // A fragment's inherited label is checked, and counted when the search over-fetches.
     assertEquals(listOf("published"), gom.loadAll(Essay::class.java).map { it.id })
     assertEquals(listOf("published"), gom.loadMatching<Essay>("kotlin", topK = 1).map { it.value.id })
