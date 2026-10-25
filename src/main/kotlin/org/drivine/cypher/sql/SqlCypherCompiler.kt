@@ -3110,13 +3110,20 @@ abstract class SqlCypherCompiler(graph: String) {
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.
                 "substring" -> {
                     if (arguments.size !in 2..3) throw DrivineException("substring() takes a text, a start and a length.")
-                    val (text, start) = textAndCount(arguments)
-                    Value.Json(scalar("SUBSTR($text, $start + 1${arguments.getOrNull(2)?.let { ", ${whole(it)}" }.orEmpty()})"), text = true)
+                    Value.Json(scalar(shared(text(comparable(json(arguments[0])))) { (text) ->
+                        val start = countOf(function, 1, "start", arguments, text)
+                        val length = if (arguments.size == 3) ", ${countOf(function, 2, "length", arguments, text)}" else ""
+                        // The greatest start is past any text, so it is kept as it is rather than counted past Postgres's integer.
+                        val position = shared(start) { (s) -> "CASE WHEN $s < $MAX_COUNT THEN $s + 1 ELSE $s END" }
+                        "SUBSTR($text, $position$length)"
+                    }), text = true)
                 }
                 "left", "right" -> {
                     if (arguments.size != 2) throw DrivineException("${function.name}() takes a text and a length.")
-                    val (text, count) = textAndCount(arguments)
-                    Value.Json(scalar(if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)), text = true)
+                    Value.Json(scalar(shared(text(comparable(json(arguments[0])))) { (text) ->
+                        val count = countOf(function, 1, "length", arguments, text)
+                        if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)
+                    }), text = true)
                 }
                 "replace" -> {
                     if (arguments.size != 3) throw DrivineException("replace() takes a text, what to replace, and what with.")
@@ -3182,11 +3189,44 @@ abstract class SqlCypherCompiler(graph: String) {
             return known
         }
 
-        /** A function's text, its first argument, and a whole number, its second. */
-        private fun textAndCount(arguments: List<Value>): Pair<String, String> = text(comparable(json(arguments[0]))) to whole(arguments[1])
+        /**
+         * The start or length [what] of `substring()`, `left()` or `right()`, its argument [index], as a SQL whole number,
+         * as Neo4j reads it. A float written in the statement, even a whole one such as 2.0, is refused, whatever the
+         * text, as Neo4j refuses an argument it knows to be a float; one bound to a parameter or read from data is cut
+         * toward zero, as Neo4j cuts it: 2.7 is 2, and -0.5 is 0. A number then below 0 or past 2147483647 is refused
+         * where the text, [text] in SQL, is not null: when compiling, where the number and the text are given; and else
+         * when the row is read, by [failure], on every store alike.
+         */
+        private fun countOf(function: Expression.Function, index: Int, what: String, arguments: List<Value>, text: String): String {
+            val outOfRange = "${function.name}() takes a $what from 0 to $MAX_COUNT, as in Neo4j."
+            val count = function.arguments[index]
+            val negated = count is Expression.Unary && count.operator == Expression.Unary.Operator.NEGATE
+            val written = if (negated) (count as Expression.Unary).operand else count
+            val given = given(written)
+            if (written is Expression.Literal && given is Double) throw DrivineException("${function.name}() takes an integer for its $what, not a float, as in Neo4j.")
+            if (given is Number) {
+                val cut = if (given is Long || given is Int) given.toLong() else kotlin.math.truncate(given.toDouble()).toLong()
+                val whole = if (negated) -cut else cut
+                if (whole in 0..MAX_COUNT) return "CAST($whole AS INTEGER)"
+                val subject = function.arguments[0]
+                // Where the text is given, it is null, so the function gives null, or it is refused.
+                if (isGiven(subject)) {
+                    if (given(subject) == null) return "CAST(NULL AS INTEGER)"
+                    throw DrivineException(outOfRange)
+                }
+                // A failure of constants alone may be worked out before any row: this one reads the text.
+                return "CASE WHEN $text IS NOT NULL THEN ${failure(outOfRange, "CASE WHEN $text IS NOT NULL THEN $whole END")} END"
+            }
+            // Read only beside a text that is not null, so a number past SQL's integer beside a null text is null, and a
+            // constant out of range is not worked out before any row.
+            return shared("CASE WHEN $text IS NOT NULL THEN ${temporalSql.trunc}(${number(comparable(json(arguments[index])))}) END") { (n) ->
+                "CASE WHEN $n < 0 OR $n > $MAX_COUNT THEN ${failure(outOfRange, n)} ELSE CAST($n AS INTEGER) END"
+            }
+        }
 
-        /** A value as a SQL whole number. */
-        private fun whole(value: Value): String = "CAST(${number(comparable(json(value)))} AS INTEGER)"
+        /** Whether the statement gives the value of [expression], as [given] reads it, null or not. */
+        private fun isGiven(expression: Expression): Boolean =
+            expression is Expression.Literal || expression is Expression.Parameter || (expression as? Expression.Property)?.subject is Expression.Parameter
 
         /** [value] as a whole number with its fraction cut off, toward zero, as Neo4j reads `round()`'s precision. */
         private fun truncatedWhole(value: Value): String = "CAST(${temporalSql.trunc}(${number(comparable(json(value)))}) AS INTEGER)"
@@ -3327,6 +3367,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** What `round()` is refused with, as Neo4j refuses it, a precision below 0. */
         const val NEGATIVE_PRECISION = "round() takes a precision of 0 or more, as in Neo4j."
+
+        /** The greatest start or length `substring()`, `left()` and `right()` take, as Neo4j takes them: Java's greatest `int`. */
+        const val MAX_COUNT = Int.MAX_VALUE.toLong()
 
         /** [sql] as the select-list entry of the column [name]: the column itself where [sql] reads one of that name. */
         fun named(sql: String, name: String) = if (sql.endsWith(".$name")) sql else "$sql AS $name"
