@@ -631,6 +631,8 @@ graphObjectManager.loadAll<LocationHierarchy> {
 }
 ```
 
+**Querying a level below.** The generated DSL reaches each level, built only when it is read, so a where can test the targets of the targets: `where { subLocations.subLocations.location.name eq "France" }`. A where reaches two levels: one three levels down, `subLocations.subLocations.subLocations`, is refused with an `IllegalArgumentException`.
+
 **Chain cycles** (A → B → A) are also supported. When a relationship targets a `@GraphView` that forms a cycle through other types, Drivine tracks visit counts and terminates at `maxDepth`:
 
 ```kotlin
@@ -4323,9 +4325,9 @@ the relationship's own properties; its target is not among them.
 
 ### DSL Generation Note
 
-The code generator (KSP) only processes **Kotlin source files**. For the best experience:
-- Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
-- Your `@NodeFragment` classes can be in Java or Kotlin
+KSP generates the type-safe DSL in a module with Kotlin in it; a Java module gets it from the
+annotation processor, `drivine4j-codegen-java`:
+- Your `@GraphView` and `@NodeFragment` classes can be in Java or Kotlin
 - At runtime, both Java and Kotlin classes work fully with the object manager
 
 ### Recommended Pattern
@@ -4345,7 +4347,7 @@ public class Person {
 A fragment may extend a Java base class that keeps its fields private, `@NodeId private String id;` among them: they are the fragment's state, saved and loaded with its own, and the base's schema annotations, such as `@Unique`, are declared. A field the subclass declares again, `@GraphTransient` or not, hides the base's. A Kotlin base class's private properties are not stored, as Kotlin's reflection leaves them out.
 
 ```kotlin
-// Define GraphViews in Kotlin to get DSL generation
+// A GraphView in Kotlin gets its DSL from KSP; one in Java, from drivine4j-codegen-java
 @GraphView
 data class PersonContext(
     @Root val person: Person,  // References Java class!
