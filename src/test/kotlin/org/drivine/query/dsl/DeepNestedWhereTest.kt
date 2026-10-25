@@ -59,14 +59,39 @@ class DeepNestedWhereTest {
     }
 
     @Test
-    fun `a where three levels down is one pattern of three hops on the openCypher engines`() {
-        listOf(CypherDialect.FALKORDB, CypherDialect.MEMGRAPH).forEach { dialect ->
-            val cypher = rendered(threeDown, dialect)
+    fun `a where three levels down is one pattern of three hops on FalkorDB`() {
+        val cypher = rendered(threeDown, CypherDialect.FALKORDB)
+        assertTrue(
+            "(location)-[:HAS_LOCATION]->(subLocations)-[:HAS_LOCATION]->(subLocations_subLocations)" +
+                "-[:HAS_LOCATION]->(subLocations_subLocations_subLocations)" in cypher,
+            cypher,
+        )
+    }
+
+    @Test
+    fun `a where three levels down is a comprehension within a comprehension for each level on Memgraph`() {
+        val cypher = rendered(threeDown, CypherDialect.MEMGRAPH)
+        assertTrue("[(location)-[:HAS_LOCATION]->(subLocations) WHERE size([(subLocations)-[:HAS_LOCATION]->(subLocations_subLocations)" in cypher, cypher)
+        assertTrue("[(subLocations_subLocations)-[:HAS_LOCATION]->(subLocations_subLocations_subLocations) WHERE" in cypher, cypher)
+        assertEquals(3, Regex("size\\(\\[").findAll(cypher).count(), cypher)
+    }
+
+    @Test
+    fun `sibling relationships of a nested view each lead from the node they share`() {
+        val view = GraphViewModel.from(sample.siblings.SibOfficeView::class.java)
+        val conditions = listOf(eq("desks_employer.name", "Acme"), eq("desks_mentor.name", "Ann"))
+        listOf(CypherDialect.FALKORDB, CypherDialect.NEPTUNE).forEach { dialect ->
+            val cypher = rendered(conditions, dialect, view)
             assertTrue(
-                "(location)-[:HAS_LOCATION]->(subLocations)-[:HAS_LOCATION]->(subLocations_subLocations)" +
-                    "-[:HAS_LOCATION]->(subLocations_subLocations_subLocations)" in cypher,
+                "OPTIONAL MATCH (office)-[:SEATS]->(desks)-[:WORKS_FOR]->(desks_employer), (desks)-[:MENTORED_BY]->(desks_mentor) WHERE" in cypher,
                 "$dialect: $cypher",
             )
+            assertTrue("WITH office\n" in cypher, "$dialect: $cypher")
+        }
+        listOf(CypherDialect.NEO4J_5, CypherDialect.MEMGRAPH).forEach { dialect ->
+            val cypher = rendered(conditions, dialect, view)
+            assertTrue("(desks)-[:WORKS_FOR]->(desks_employer)" in cypher, "$dialect: $cypher")
+            assertTrue("(desks)-[:MENTORED_BY]->(desks_mentor)" in cypher, "$dialect: $cypher")
         }
     }
 
@@ -98,13 +123,14 @@ class DeepNestedWhereTest {
         val neo4j = rendered(conditions, CypherDialect.NEO4J_5, view)
         assertTrue("(issues)-[:RAISED_BY]->(issues_raisedBy)" in neo4j, neo4j)
         assertTrue("(issues_raisedBy)-[:WORKS_FOR]->(issues_raisedBy_employer)" in neo4j, neo4j)
-        listOf(CypherDialect.FALKORDB, CypherDialect.MEMGRAPH).forEach { dialect ->
-            val cypher = rendered(conditions, dialect, view)
-            assertTrue(
-                "(root)-[:HAS_ISSUES]->(issues)-[:RAISED_BY]->(issues_raisedBy)-[:WORKS_FOR]->(issues_raisedBy_employer)" in cypher,
-                "$dialect: $cypher",
-            )
-        }
+        val falkor = rendered(conditions, CypherDialect.FALKORDB, view)
+        assertTrue(
+            "(root)-[:HAS_ISSUES]->(issues)-[:RAISED_BY]->(issues_raisedBy)-[:WORKS_FOR]->(issues_raisedBy_employer)" in falkor,
+            falkor,
+        )
+        val memgraph = rendered(conditions, CypherDialect.MEMGRAPH, view)
+        assertTrue("(issues)-[:RAISED_BY]->(issues_raisedBy)" in memgraph, memgraph)
+        assertTrue("(issues_raisedBy)-[:WORKS_FOR]->(issues_raisedBy_employer)" in memgraph, memgraph)
     }
 
     @Test
