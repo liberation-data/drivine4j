@@ -33,6 +33,30 @@ internal object SqliteCypherValues {
         else -> a.nodeType == b.nodeType && a == b
     }
 
+    /**
+     * Whether [a] and [b] are equal as Cypher compares values that may be or hold a null: null where either is null; a list
+     * to a list, and a map to a map, item by item and key by key, false where a pair is false (lists of different lengths
+     * and maps of different keys among them), else null where a pair is null, else true; any other two as [equal] compares them.
+     */
+    fun compare(a: JsonNode, b: JsonNode): Boolean? {
+        fun all(pairs: List<Pair<JsonNode, JsonNode>>): Boolean? {
+            var unknown = false
+            for ((x, y) in pairs) when (compare(x, y)) {
+                false -> return false
+                null -> unknown = true
+                true -> {}
+            }
+            return if (unknown) null else true
+        }
+        return when {
+            a.isNull || b.isNull -> null
+            a.isArray && b.isArray -> if (a.size() != b.size()) false else all((0 until a.size()).map { a[it] to b[it] })
+            a.isObject && b.isObject ->
+                if (a.size() != b.size() || a.properties().any { !b.has(it.key) }) false else all(a.properties().map { (key, value) -> value to b[key] })
+            else -> equal(a, b)
+        }
+    }
+
     /** Whether the map [props] holds each entry of the map [map], with an equal value: a null among them is held only by a null. */
     fun contains(props: JsonNode, map: JsonNode): Boolean =
         props.isObject && map.isObject && map.properties().all { (key, value) -> props.has(key) && equal(props[key], value) }

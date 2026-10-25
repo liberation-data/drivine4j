@@ -93,6 +93,48 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `an equality of values that hold no null in a list or a map compiles with no test for one`() {
+        // #225: a null a list or a map holds is tested for, and the two walked, only where one may hold one.
+        val tested = mapOf("PostgresCypherCompiler" to "jsonb_path_exists(", "OracleCypherCompiler" to "[[,:]null[],}]")
+        compilers.filter { it::class.simpleName in tested }.forEach { compiler ->
+            val test = tested.getValue(compiler::class.simpleName!!)
+            fun tests(cypher: String, parameters: Map<String, Any?> = emptyMap()) = compiler.compile(cypher, parameters).sql.contains(test)
+            assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, 2))), "${compiler::class.simpleName}")
+            assertTrue(!tests("MATCH (c:Claim) WITH c, c.list AS l RETURN [1, 2] = [1, 2], c.a = c.b, l = c.b, c.list IN \$ls, {x: 1} <> {x: 2}, size(l) = 2", mapOf("ls" to listOf(listOf(1)))), "${compiler::class.simpleName}")
+            // Lists and maps written out are compared item by item.
+            assertTrue(!tests("MATCH (c:Claim) WITH c.a AS a, c.b AS b RETURN [a, b] = [b, a], {x: a} = {x: b}, a IN [b, null]"), "${compiler::class.simpleName}")
+            // A parameter's list that holds a null is compared item by item as the statement is compiled; a map is walked.
+            assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, null, listOf(null, 2)))), "${compiler::class.simpleName}")
+            assertTrue(tests("MATCH (c:Claim) WHERE c.map = \$p RETURN c.id", mapOf("p" to mapOf("x" to null))), "${compiler::class.simpleName}")
+            assertTrue(tests("MATCH (c:Claim) WITH c, [c.a] AS l RETURN l = [c.b]"), "${compiler::class.simpleName}")
+        }
+    }
+
+    @Test
+    fun `a WHERE that searches a list that holds no null compiles to the search alone`() {
+        // #225: null and false keep no row alike, so a WHERE needs no test of the value being null.
+        compilers.forEach { compiler ->
+            val sql = compiler.compile("MATCH (c:Claim) WHERE c.a IN \$l AND (c.b IN [1, 2] OR c.c > 1) RETURN c.id", mapOf("l" to listOf(1, 2))).sql
+            assertTrue(!sql.contains("ELSE FALSE") && !sql.contains("THEN FALSE"), "${compiler::class.simpleName}: $sql")
+            val returned = compiler.compile("MATCH (c:Claim) RETURN c.a IN \$l", mapOf("l" to listOf(1, 2))).sql
+            assertTrue(returned.contains("THEN FALSE"), "${compiler::class.simpleName}: $returned")
+        }
+    }
+
+    @Test
+    fun `lists and maps written out that may hold a null are compared item by item, not built and compared whole`() {
+        val built = mapOf(
+            "PostgresCypherCompiler" to listOf("json_build_"), "OracleCypherCompiler" to listOf("JSON_ARRAY(", "JSON_OBJECT("), "SqliteCypherCompiler" to listOf("json_array(", "json_object("),
+        )
+        compilers.forEach { compiler ->
+            listOf("[a, b] = [b, a]", "{x: a} = {x: b}").forEach { equality ->
+                val sql = compiler.compile("MATCH (c:Claim) WITH c.a AS a, c.b AS b RETURN $equality AS e").sql
+                assertTrue(built.getValue(compiler::class.simpleName!!).none { sql.contains(it) }, "${compiler::class.simpleName}: $sql")
+            }
+        }
+    }
+
+    @Test
     fun `a sort by a property on Postgres is by its JSON alone, and only a list the statement makes is keyed as a list`() {
         // Keyed as a list, a term costs thousands a row in the planner's estimate, which brings in its JIT for the whole
         // statement past a few dozen rows.

@@ -1,5 +1,6 @@
 package org.drivine.cypher.sql
 
+import com.fasterxml.jackson.databind.JsonNode
 import org.drivine.DrivineException
 import org.drivine.cypher.CypherReader
 import org.drivine.cypher.ast.Clause
@@ -279,6 +280,37 @@ abstract class SqlCypherCompiler(graph: String) {
      * relationships' tokens is larger than Oracle's `=` compares, so Oracle compares them otherwise.
      */
     protected open fun identityEquals(x: String, y: String) = jsonEquals(x, y)
+
+    /**
+     * Whether the JSON value [json], not null, holds a null in a list or a map, at any depth: it may say so of one that holds
+     * none, which [nullsEqual] then compares. Null where the store's [jsonEquals] is already null for a value that holds one,
+     * as Cypher's comparison is, so no test is needed.
+     */
+    protected abstract fun holdsNull(json: String): String?
+
+    /**
+     * Whether the JSON values [x] and [y], neither of them null, are equal, as Cypher compares values that may hold a null: item
+     * by item and key by key, at any depth, false where a pair differs (a list's length, a map's keys, a value's kind among
+     * them), else null where a pair holds a null, else true. Called where [holdsNull] says one of them holds one; [equals]
+     * compares two that hold none, as [jsonEquals] or [identityEquals] does.
+     */
+    protected abstract fun nullsEqual(x: String, y: String, equals: (String, String) -> String): String
+
+    /** The item at [index], counted from 0, of the JSON list [json]: null where it has none. */
+    protected open fun itemAt(json: String, index: Int) = element(json, literalJson(index.toLong()))
+
+    /** How many items the JSON list [json] holds, as a SQL number. */
+    protected open fun listSize(json: String) = number(function("size", json)!!)
+
+    /**
+     * Whether the JSON values [x] and [y] are equal, as Cypher compares values that may hold a null: null where either is null,
+     * and as [nullsEqual] compares them where one holds one; else as [equals] compares them.
+     */
+    private fun nullableEquals(x: String, y: String, equals: (String, String) -> String): String = shared(x, y) { (a, b) ->
+        val held = listOfNotNull(holdsNull(a), holdsNull(b))
+        val equal = if (held.isEmpty()) equals(a, b) else "CASE WHEN ${held.joinToString(" OR ")} THEN ${nullsEqual(a, b, equals)} ELSE ${equals(a, b)} END"
+        "CASE WHEN NOT ${isJsonNull(a)} AND NOT ${isJsonNull(b)} THEN $equal END"
+    }
 
     /** Whether the JSON value [x] is equal to [y], the JSON of [given], a value the statement gives that is not null. */
     protected open fun givenEquals(x: String, y: String, given: Any) = "$x = $y"
@@ -668,7 +700,7 @@ abstract class SqlCypherCompiler(graph: String) {
             next.source("(\n${indent(if (apart) called(sql) else sql)}\n) $name")
             projected.scope.forEach { (variable, value) -> next.bind(variable, value.columnsOf(name)) }
             projected.order.forEach { (column, descending) -> next.order += "$name.$column" to descending }
-            with.where?.let { next.where += bool(expression(it, next.scope)) }
+            with.where?.let { next.where += condition(it, next.scope) }
             return next
         }
 
@@ -678,13 +710,13 @@ abstract class SqlCypherCompiler(graph: String) {
             val where = match.where.takeIf { shortestWhere == null }
             if (!match.optional) {
                 patterns(select, match.patterns, shortestWhere)
-                where?.let { select.where += bool(expression(it, select.scope)) }
+                where?.let { select.where += condition(it, select.scope) }
                 return
             }
             // What is found is read by a lateral query, joined to keep the row when it finds nothing.
             val inner = Select(select.scope)
             patterns(inner, match.patterns, shortestWhere)
-            where?.let { inner.where += bool(expression(it, inner.scope)) }
+            where?.let { inner.where += condition(it, inner.scope) }
             val found = inner.bound.filterKeys { it !in select.scope }
             if (found.isEmpty() && inner.sources.isEmpty()) return
             val name = alias("o")
@@ -813,7 +845,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
             }
             select.source(elements(items, name))
-            select.bind(unwind.variable, Value.Json(item(name), temporal = itemsOf(list), list = holdsLists(list)))
+            // An item of a list that holds no null holds none.
+            select.bind(unwind.variable, Value.Json(item(name), temporal = itemsOf(list), list = holdsLists(list), flat = isFlat(list)))
             select.order += itemNo(name) to false
         }
 
@@ -917,7 +950,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // Its ends named, to find the shortest between each two of them where they were not bound before it.
             val ends = listOf(pattern.nodes.first().variable ?: SHORTEST_FROM, pattern.nodes.last().variable ?: SHORTEST_TO)
             pattern(inner, pattern.copy(nodes = listOf(pattern.nodes.first().copy(variable = ends[0]), pattern.nodes.last().copy(variable = ends[1])), shortest = null), hops)
-            where?.let { inner.where += bool(expression(it, inner.scope)) }
+            where?.let { inner.where += condition(it, inner.scope) }
             val found = inner.bound.filterKeys { it !in select.scope && it !in setOf(SHORTEST_FROM, SHORTEST_TO) }.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
             val length = number(idCount(hops.single().eids))
             val (from, to) = ends.map { (inner.scope.getValue(it) as Value.Node).nid }
@@ -1127,7 +1160,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val inner = scope + (comprehension.variable to Value.Json(item(name), temporal = itemsOf(listed)))
             val projected = comprehension.projection?.let { expression(it, inner) }
             val projection = projected?.let { json(it).sql } ?: item(name)
-            val filter = comprehension.where?.let { " WHERE ${bool(expression(it, inner))}" }.orEmpty()
+            val filter = comprehension.where?.let { " WHERE ${condition(it, inner)}" }.orEmpty()
             // Of null, null, as in Cypher, and not an empty list.
             return Value.Json(
                 shared(list) { (items) ->
@@ -1152,7 +1185,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val inner = scope + (comprehension.variable to item)
                 val projected = comprehension.projection?.let { expression(it, inner) } ?: item
                 kind = projected
-                val filter = comprehension.where?.let { " WHERE ${bool(expression(it, inner))}" }.orEmpty()
+                val filter = comprehension.where?.let { " WHERE ${condition(it, inner)}" }.orEmpty()
                 val value = when (projected) {
                     is Value.Node -> scalar(projected.nid)
                     is Value.Relationship -> scalar(projected.eid)
@@ -1179,7 +1212,9 @@ abstract class SqlCypherCompiler(graph: String) {
         /** A pattern's properties: each key equal to its value, or every key of a parameter's map. */
         private fun propertiesMatch(props: String, properties: Expression, scope: Map<String, Value>): String = when (properties) {
             is Expression.MapLiteral -> properties.entries.joinToString(" AND ") { (key, value) ->
-                equality(Value.Json(propertyOf(props, key)), expression(value, scope), value)
+                // A property holds no null, as a graph engine stores none in a list.
+                val compiled = expression(value, scope)
+                equality(Value.Json(propertyOf(props, key), flat = true), compiled, value, scalar(value, scope) || isFlat(compiled))
             }
             else -> containsAll(props, comparable(json(expression(properties, scope))))
         }
@@ -2003,7 +2038,44 @@ abstract class SqlCypherCompiler(graph: String) {
 
         // ----- Expressions -----
 
-        fun expression(expression: Expression, scope: Map<String, Value>): Value = when (expression) {
+        /**
+         * [where], a condition that keeps the rows it is true of, as SQL: within it, a comparison whose truth is all a `WHERE` reads
+         * (one of its conditions joined by `AND` or `OR`) may be false where Cypher's is null, as neither keeps a row.
+         */
+        fun condition(where: Expression, scope: Map<String, Value>): String {
+            filtering = true
+            return try {
+                bool(expression(where, scope))
+            } finally {
+                filtering = false
+            }
+        }
+
+        /** Whether the expression being compiled is read by a `WHERE` for its truth alone: see [condition]. */
+        private var filtering = false
+
+        /** Whether the expression [evaluate] has begun is read by a `WHERE` for its truth alone, as [filtering] said as it began. */
+        private var filtered = false
+
+        /** The value [expression] gives in [scope]: see [evaluate]. Marked [Value.Json.flat] where it is known to hold no null in a list or a map. */
+        fun expression(expression: Expression, scope: Map<String, Value>): Value {
+            val outer = filtering
+            // Only a condition joined by AND or OR is read for its truth alone: NOT, a CASE or a function reads null apart from false.
+            filtering = outer && expression is Expression.Binary && (expression.operator == Operator.AND || expression.operator == Operator.OR)
+            filtered = outer
+            val value = try {
+                evaluate(expression, scope)
+            } finally {
+                filtering = outer
+            }
+            return when {
+                value is Value.Json && !value.flat && flat(expression, scope) -> value.copy(flat = true)
+                value is Value.Entities && !value.flat && flat(expression, scope) -> value.copy(flat = true)
+                else -> value
+            }
+        }
+
+        private fun evaluate(expression: Expression, scope: Map<String, Value>): Value = when (expression) {
             is Expression.Literal -> Value.Json(literalJson(expression.value))
             is Expression.Parameter ->
                 givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name), temporal = Temporal.ofValue(parameters.value(expression.name)))
@@ -2131,7 +2203,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.PatternComprehension -> {
                 val inner = Select(scope)
                 patterns(inner, listOf(expression.pattern))
-                expression.where?.let { inner.where += bool(expression(it, inner.scope)) }
+                expression.where?.let { inner.where += condition(it, inner.scope) }
                 val projected = expression(expression.projection, inner.scope)
                 fun gathered(value: String) = "(" + (listOf("SELECT ${aggregateList(value)}") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ") + ")"
                 // A comprehension of nodes or relationships is a list of them, so a write to an item of it reaches them.
@@ -2204,7 +2276,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun exists(patterns: List<Pattern>, where: Expression?, scope: Map<String, Value>): Value.Bool {
             val inner = Select(scope)
             patterns(inner, patterns)
-            where?.let { inner.where += bool(expression(it, inner.scope)) }
+            where?.let { inner.where += condition(it, inner.scope) }
             return Value.Bool("EXISTS (${(listOf("SELECT 1") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ")})")
         }
 
@@ -2377,7 +2449,8 @@ abstract class SqlCypherCompiler(graph: String) {
          * other may hold one without it (an item taken from a list, a collect, a variable), both by their properties, as
          * before identities: only a value the statement writes out or is given, all the way down (a literal, a parameter, a
          * map, a list or a map projection of such, a `CASE` that gives one), holds none where it carries no identity, so
-         * `[{x: r}][0] = {x: r}` is true, and `{x: r} = {x: {}}` false.
+         * `[{x: r}][0] = {x: r}` is true, and `{x: r} = {x: {}}` false. A node or a relationship compared with such a value is
+         * compared by its identity, so `r = {}` is false.
          */
         private fun compared(left: Value, right: Value, binary: Expression.Binary): Pair<Value, Value> {
             // Written all the way down: `{a: ms[0]}` and `n {.*, x: r}` hold what may be a node without its identity.
@@ -2393,7 +2466,11 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             fun held(value: Value) = (value as? Value.Json)?.identity != null
             fun plain(value: Value) = if (value is Value.Json) value.copy(identity = null) else value
+            fun entity(value: Value) = value is Value.Node || value is Value.Relationship
+            fun identity(value: Value) = Value.Json(json(value).sql, identity = identityOf(value), flat = true)
             return when {
+                entity(left) && right is Value.Json && !held(right) && written(binary.right) -> identity(left) to right
+                entity(right) && left is Value.Json && !held(left) && written(binary.left) -> left to identity(right)
                 held(left) && right is Value.Json && !held(right) && !written(binary.right) -> plain(left) to right
                 held(right) && left is Value.Json && !held(left) && !written(binary.left) -> left to plain(right)
                 else -> left to right
@@ -2401,6 +2478,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun binary(binary: Expression.Binary, scope: Map<String, Value>): Value {
+            val filter = filtered
             if (binary.operator == Operator.AND || binary.operator == Operator.OR || binary.operator == Operator.XOR) {
                 val left = bool(expression(binary.left, scope))
                 val right = bool(expression(binary.right, scope))
@@ -2413,13 +2491,20 @@ abstract class SqlCypherCompiler(graph: String) {
                     }
                 )
             }
+            if (binary.operator == Operator.EQUALS || binary.operator == Operator.NOT_EQUALS || binary.operator == Operator.IN) {
+                itemwise(binary, scope)?.let { return Value.Bool(if (binary.operator == Operator.NOT_EQUALS) "(NOT $it)" else it) }
+            }
             val (left, right) = compared(expression(binary.left, scope), expression(binary.right, scope), binary)
             temporalBinary(binary.operator, left, right)?.let { return it }
             val a = comparable(json(left))
             val b = comparable(json(right))
             return when (binary.operator) {
-                Operator.EQUALS -> Value.Bool(equality(left, right, binary.right))
-                Operator.NOT_EQUALS -> Value.Bool("NOT (${equality(left, right, binary.right)})")
+                Operator.EQUALS, Operator.NOT_EQUALS -> {
+                    val plain = plain(binary.left, binary.right, left, right, scope)
+                    val equal = (if (plain) null else givenItemwise(binary.left, left, binary.right, right))
+                        ?: equality(left, right, binary.right, plain, stored(binary.left, scope))
+                    Value.Bool(if (binary.operator == Operator.EQUALS) equal else "NOT ($equal)")
+                }
                 // Values of two kinds are not ordered, as in Cypher: the comparison is null.
                 Operator.LESS_THAN, Operator.GREATER_THAN, Operator.LESS_THAN_OR_EQUAL, Operator.GREATER_THAN_OR_EQUAL -> {
                     val operator = mapOf(
@@ -2446,23 +2531,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 )
                 Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
-                Operator.IN -> {
-                    val i = alias("i")
-                    // A node or a relationship is in a list of them where its id is.
-                    val id = when {
-                        right !is Value.Entities -> null
-                        left is Value.Node && !right.relationships -> scalar(left.nid)
-                        left is Value.Relationship && right.relationships -> scalar(left.eid)
-                        else -> null
-                    }
-                    when {
-                        id != null -> Value.Bool("EXISTS (SELECT 1 FROM ${elements((right as Value.Entities).ids, i)} WHERE ${item(i)} = $id)")
-                        // A map or a list that holds a node or a relationship is in a list where an item holds the same, by identity.
-                        (left as? Value.Json)?.identity != null || (right as? Value.Json)?.identity != null ->
-                            Value.Bool("EXISTS (SELECT 1 FROM ${elements(identified(right), i)} WHERE ${identityEquals(item(i), identified(left))})")
-                        else -> Value.Bool("EXISTS (SELECT 1 FROM ${elements(b, i)} WHERE ${jsonEquals(item(i), a)})")
-                    }
-                }
+                Operator.IN -> Value.Bool(membership(binary, left, right, scope, filter))
                 Operator.STARTS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> startsWith(x, y) })
                 Operator.MATCHES -> Value.Bool(matches(text(a), text(b)))
                 Operator.ENDS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> endsWith(x, y) })
@@ -2475,26 +2544,252 @@ abstract class SqlCypherCompiler(graph: String) {
          * Whether two values are equal: as JSON, so `'7'` is not `7` and `1` is `1.0`. A node is equal to a
          * node by its row. Where a property is compared with [written], a text or a truth value the statement
          * is given, a test an index answers stands beside it, where the store has one: such a value's text is
-         * equal where its JSON is, and a number's is not (`1` and `1.0`).
+         * equal where its JSON is, and a number's is not (`1` and `1.0`). [left] is [stored] where it is a property read from the
+         * store, which is SQL's null where it is not there, and so needs no test of its own beside such a value. Where neither
+         * is [plain], either may hold a null: see [plain].
          */
-        private fun equality(left: Value, right: Value, written: Expression? = null): String {
+        private fun equality(left: Value, right: Value, written: Expression? = null, plain: Boolean = true, stored: Boolean = true): String {
             (temporalBinary(Operator.EQUALS, left, right) as? Value.Bool)?.let { return it.sql }
             if (left is Value.Node && right is Value.Node) return "${left.nid} = ${right.nid}"
             if (left is Value.Relationship && right is Value.Relationship) return "${left.eid} = ${right.eid}"
             // A map or a list that holds a node or a relationship is equal where what it holds is, by identity.
             if ((left as? Value.Json)?.identity != null || (right as? Value.Json)?.identity != null) {
+                if (!plain) return nullableEquals(identified(left), identified(right), ::identityEquals)
                 return shared(identified(left), identified(right)) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${identityEquals(x, y)} END" }
             }
             // Two lists of nodes, or of relationships, are equal where their ids are, item by item.
             val entities = left is Value.Entities && right is Value.Entities && left.relationships == right.relationships
             val a = if (entities) (left as Value.Entities).ids else comparable(json(left))
             val b = if (entities) (right as Value.Entities).ids else comparable(json(right))
+            // Either may hold a null, which makes the comparison null where no item or entry differs.
+            if (!plain) return nullableEquals(a, b, ::jsonEquals)
             val given = written?.let(::given)
             val indexed = if (given is String || given is Boolean) indexedEquality(a, b) else null
             // Null is equal to nothing, itself included: the comparison is null, as in Cypher. A value the statement
             // is given that is not null needs no test of its own, and a property that is not there is SQL's null.
-            val equal = if (given != null) givenEquals(a, b, given) else shared(a, b) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${jsonEquals(x, y)} END" }
+            val equal = if (given != null) givenEquals(a, b, given).let { if (stored) it else "CASE WHEN NOT ${isJsonNull(a)} THEN $it END" } else shared(a, b) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${jsonEquals(x, y)} END" }
             return if (indexed != null) "($indexed AND $equal)" else equal
+        }
+
+        /**
+         * Whether the sides [leftWritten] and [rightWritten] of a comparison, compiled as [left] and [right], compare as JSON, as
+         * [jsonEquals] compares them: where one is no list or map, or neither holds a null in one (see [Value.Json.flat]). Else
+         * a null they hold makes the comparison null where no item or entry differs, as in Cypher.
+         */
+        private fun plain(leftWritten: Expression, rightWritten: Expression, left: Value, right: Value, scope: Map<String, Value>): Boolean =
+            scalar(leftWritten, scope) || scalar(rightWritten, scope) || (isFlat(left) && isFlat(right))
+
+        /** Whether [expression] is a property of a node or a relationship in [scope], read from the store: SQL's null where it is not there. */
+        private fun stored(expression: Expression, scope: Map<String, Value>): Boolean =
+            expression is Expression.Property && (expression.subject as? Expression.Variable)?.let { scope[it.name] is Value.Node || scope[it.name] is Value.Relationship } == true
+
+        /** Whether [value] is known to hold no null in a list or a map: see [Value.Json.flat]. A node or a relationship is compared by its id. */
+        private fun isFlat(value: Value): Boolean = when (value) {
+            is Value.Json -> value.flat
+            is Value.Entities -> value.flat
+            is Value.Bool, is Value.Node, is Value.Relationship -> true
+            is Value.Path -> false
+        }
+
+        /** Whether [expression] is never null: a value the statement writes, a list or a map among them, or a parameter bound to one. */
+        private fun present(expression: Expression): Boolean = when (expression) {
+            is Expression.Literal -> expression.value != null
+            is Expression.Parameter -> parameters.value(expression.name) != null
+            is Expression.ListLiteral, is Expression.MapLiteral -> true
+            else -> false
+        }
+
+        /** Whether [expression] is a number, a text or a truth value the statement writes, or a parameter bound to one: never null, and no list or map. */
+        private fun presentScalar(expression: Expression, scope: Map<String, Value>): Boolean = present(expression) && scalar(expression, scope)
+
+        /** Whether the value [expression] gives in [scope] is known to be no list or map: it may be null. */
+        private fun scalar(expression: Expression, scope: Map<String, Value>): Boolean = when (expression) {
+            is Expression.Literal, is Expression.Unary, is Expression.HasLabels, is Expression.CountStar, is Expression.PatternPredicate,
+            is Expression.Exists, is Expression.Subquery, is Expression.Quantifier -> true
+            is Expression.Parameter -> parameterTree(expression.name)?.isContainerNode != true
+            is Expression.Variable -> scope[expression.name] is Value.Bool
+            // A sum is a list where either side is; every other operator gives a number, a text, a temporal value or a truth value.
+            is Expression.Binary -> expression.operator != Operator.ADD || (scalar(expression.left, scope) && scalar(expression.right, scope))
+            is Expression.Function -> expression.name.lowercase() in SCALAR_FUNCTIONS
+            else -> false
+        }
+
+        /**
+         * Whether the value [expression] gives in [scope] is known to hold no null in a list or a map, at any depth: see
+         * [Value.Json.flat]. Read from what is written, and what [scope] holds, so it compiles nothing.
+         */
+        private fun flat(expression: Expression, scope: Map<String, Value>): Boolean = when (expression) {
+            is Expression.Literal, is Expression.Unary, is Expression.HasLabels, is Expression.CountStar, is Expression.PatternPredicate,
+            is Expression.Exists, is Expression.Subquery, is Expression.Quantifier -> true
+            is Expression.Parameter -> parameterTree(expression.name)?.let(::holdsNoNull) ?: true
+            is Expression.Variable -> scope[expression.name]?.let(::isFlat) ?: false
+            // A property of a node or a relationship holds no null, as a graph engine stores none in a list; a parameter's map's, as it is bound.
+            is Expression.Property -> (expression.subject as? Expression.Parameter)?.let { parameterTree(it.name)?.get(expression.key)?.let(::holdsNoNull) ?: true }
+                ?: flat(expression.subject, scope)
+            is Expression.ListLiteral -> expression.items.all { present(it) && flat(it, scope) }
+            is Expression.MapLiteral -> expression.entries.all { (_, value) -> present(value) && flat(value, scope) }
+            // A list and an item that may be null are a list that holds it.
+            is Expression.Binary -> expression.operator != Operator.ADD || (flat(expression.left, scope) && flat(expression.right, scope) &&
+                (present(expression.left) || presentScalar(expression.right, scope)) && (present(expression.right) || presentScalar(expression.left, scope)))
+            is Expression.Index -> flat(expression.subject, scope)
+            is Expression.Slice -> flat(expression.subject, scope)
+            is Expression.Function -> expression.name.lowercase().let { name ->
+                name in FLAT_FUNCTIONS || (name in CARRYING_FUNCTIONS && expression.arguments.all { flat(it, scope) })
+            }
+            is Expression.Case -> (expression.alternatives.map { it.second } + listOfNotNull(expression.otherwise)).all { flat(it, scope) }
+            else -> false
+        }
+
+        /** The parameter [name]'s value as the JSON it is bound as; null where it is null. */
+        private fun parameterTree(name: String): JsonNode? = parameterTrees.getOrPut(name) {
+            Neo4jObjectMapper.instance.valueToTree<JsonNode>(parameters.value(name)).takeUnless { it.isNull || it.isMissingNode }
+        }
+
+        private val parameterTrees = mutableMapOf<String, JsonNode?>()
+
+        /** Whether the JSON [node] holds no null in a list or a map, at any depth. */
+        private fun holdsNoNull(node: JsonNode): Boolean = !node.isContainerNode || node.all { !it.isNull && holdsNoNull(it) }
+
+        /**
+         * [binary], an equality or an `IN`, compared item by item where its sides are lists or maps the statement writes out, `[a, b] = [c, d]`,
+         * `{x: a} = {x: b}`, `x IN [a, b]`, and one of them may hold a null: each pair compared, and the comparisons taken together as SQL's
+         * `AND` (`OR` for an `IN`) takes them, which is as Cypher takes them: false where one is false, else null where one is null. Lists of
+         * different lengths, and maps of different keys, are not equal. Null where the sides are not so written, or hold no null, and so
+         * compare whole, as JSON.
+         */
+        private fun itemwise(binary: Expression.Binary, scope: Map<String, Value>): String? {
+            val (left, right) = binary.left to binary.right
+            if (flat(left, scope) && flat(right, scope)) return null
+            fun joined(pairs: List<Pair<Expression, Expression>>, operator: String) =
+                pairs.joinToString(" $operator ", "(", ")") { (a, b) -> bool(binary(Expression.Binary(Operator.EQUALS, a, b), scope)) }
+            return when {
+                // The item compiled once, and compared with each of the list's.
+                binary.operator == Operator.IN -> (right as? Expression.ListLiteral)?.takeIf { it.items.isNotEmpty() }?.let { list ->
+                    val item = expression(left, scope)
+                    list.items.joinToString(" OR ", "(", ")") { listed ->
+                        val equals = Expression.Binary(Operator.EQUALS, left, listed)
+                        val (l, r) = compared(item, expression(listed, scope), equals)
+                        equality(l, r, listed, plain(left, listed, l, r, scope), stored(left, scope))
+                    }
+                }
+                left is Expression.ListLiteral && right is Expression.ListLiteral ->
+                    if (left.items.size != right.items.size) "FALSE" else joined(left.items.zip(right.items), "AND")
+                left is Expression.MapLiteral && right is Expression.MapLiteral -> {
+                    val (l, r) = left.entries.toMap() to right.entries.toMap()
+                    if (l.keys != r.keys) "FALSE" else joined(l.map { (key, value) -> value to r.getValue(key) }, "AND")
+                }
+                else -> null
+            }
+        }
+
+        /**
+         * An equality of [left] and [right], written as [leftWritten] and [rightWritten], where one is a parameter bound to a list
+         * that holds a null, lists within it among its items and no map: the other compared with it item by item, each item
+         * as the statement is compiled with it, as [itemwise] compares a list written out, so no store walks the two. Null
+         * where neither is such a parameter, or the store's own comparison compares a null as Cypher does.
+         */
+        private fun givenItemwise(leftWritten: Expression, left: Value, rightWritten: Expression, right: Value): String? {
+            if (holdsNull("x") == null) return null
+            fun given(expression: Expression) = (expression as? Expression.Parameter)?.let { parameterTree(it.name) }
+                ?.takeIf { it.isArray && !holdsNoNull(it) && arrays(it) }
+            fun other(value: Value) = (value as? Value.Json)?.takeIf { it.identity == null && it.temporal == null }
+            given(rightWritten)?.let { list -> other(left)?.let { return itemsEqual(comparable(it), list) } }
+            given(leftWritten)?.let { list -> other(right)?.let { return itemsEqual(comparable(it), list) } }
+            return null
+        }
+
+        /** Whether the JSON [node] holds no map, at any depth. */
+        private fun arrays(node: JsonNode): Boolean = !node.isObject && (!node.isArray || node.all(::arrays))
+
+        /**
+         * Whether the JSON value [json] is equal to [given], a list that may hold a null and lists, as Cypher compares them: the
+         * same length, and each item equal, false where one is not, else null where one is null. A text, a number or a truth value
+         * is compared as JSON.
+         */
+        private fun itemsEqual(json: String, given: JsonNode): String = shared(json) { (x) ->
+            if (!given.isArray) return@shared "CASE WHEN NOT ${isJsonNull(x)} THEN ${jsonEquals(x, literalJson(scalarOf(given)))} END"
+            val checks = given.withIndex().filter { !it.value.isNull }.map { (i, item) -> itemsEqual(itemAt(x, i), item) }
+            val nulls = given.any { it.isNull }
+            // A null item makes the whole null where every other item is equal.
+            val items = when {
+                !nulls -> if (checks.isEmpty()) "TRUE" else checks.joinToString(" AND ", "(", ")")
+                checks.isEmpty() -> "NULL"
+                else -> "CASE WHEN NOT ${checks.joinToString(" AND ", "(", ")")} THEN FALSE END"
+            }
+            // Its size read only of a list, in the order a CASE reads its conditions.
+            "CASE WHEN ${isJsonNull(x)} THEN NULL WHEN ${typeOf(x)} <> 'array' THEN FALSE WHEN ${listSize(x)} <> ${given.size()} THEN FALSE ELSE $items END"
+        }
+
+        /** The text, the number or the truth value [node] holds, as the statement would write it. */
+        private fun scalarOf(node: JsonNode): Any? = when {
+            node.isTextual -> node.textValue()
+            node.isBoolean -> node.booleanValue()
+            node.isIntegralNumber -> node.longValue()
+            node.isNumber -> node.doubleValue()
+            else -> null
+        }
+
+        /**
+         * `x IN list`, of [left] and [right], the sides of [binary], as Cypher has it: null where the list is null; else true where an item is
+         * equal to the value, else null where a comparison with one is null (the value is null, an item is, or holds a null where the value
+         * holds another), else false. A value that holds no null, in a list that holds none, is in it where an item is equal to it;
+         * read by a `WHERE` for its truth alone ([filter]), it is not in it where it is null, as before.
+         */
+        private fun membership(binary: Expression.Binary, left: Value, right: Value, scope: Map<String, Value>, filter: Boolean): String {
+            // A node or a relationship is in a list of them where its id is.
+            val id = when {
+                right !is Value.Entities -> null
+                left is Value.Node && !right.relationships -> scalar(left.nid)
+                left is Value.Relationship && right.relationships -> scalar(left.eid)
+                else -> null
+            }
+            val identities = (left as? Value.Json)?.identity != null || (right as? Value.Json)?.identity != null
+            val list = when {
+                id != null -> (right as Value.Entities).ids
+                // A map or a list that holds a node or a relationship is in a list where an item holds the same, by identity.
+                identities -> identified(right)
+                else -> comparable(json(right))
+            }
+            val x = when {
+                id != null -> id
+                identities -> identified(left)
+                else -> comparable(json(left))
+            }
+            val equals: (String, String) -> String = if (identities) ::identityEquals else ::jsonEquals
+            fun matches(item: String, value: String) = if (id != null) "$item = $value" else equals(item, value)
+            val within = isFlat(right)
+            // A node, a relationship or a value of one kind holds no null; nor does an item of a list that holds none.
+            val whole = id != null || scalar(binary.left, scope) || isFlat(left)
+            val given = (binary.right as? Expression.Parameter)?.let { parameterTree(it.name) }
+            val filled = (binary.right as? Expression.ListLiteral)?.items?.isNotEmpty() == true || (given != null && given.size() > 0)
+            // Null and false keep no row alike, and a value that holds no null is null beside such a list only where it is null.
+            if ((present(binary.left) || filter) && present(binary.right) && within && whole) {
+                val i = alias("i")
+                return "EXISTS (SELECT 1 FROM ${elements(list, i)} WHERE ${matches(item(i), x)})"
+            }
+            // A value that may be null, in a list that is not and holds none: in where an item is equal, null where the value is
+            // null, else not, written so the store still answers the first as it did, as a semi-join.
+            if (present(binary.right) && within && whole && filled) {
+                val i = alias("i")
+                return "(EXISTS (SELECT 1 FROM ${elements(list, i)} WHERE ${matches(item(i), x)}) OR CASE WHEN NOT ${isNull(left)} THEN FALSE END)"
+            }
+            return shared(list, x) { (l, v) ->
+                val (i, j) = alias("i") to alias("i")
+                val cases = mutableListOf<String>()
+                if (!present(binary.right)) cases += "WHEN ${isNull(right)} THEN NULL"
+                // Null is compared with each item, and is in no empty list.
+                if (!present(binary.left)) cases += "WHEN ${isNull(left)} THEN " +
+                    if (filled) "NULL" else "CASE WHEN EXISTS (SELECT 1 FROM ${elements(l, j)}) THEN NULL ELSE FALSE END"
+                // A value that holds a null is equal to no item.
+                val held = if (whole) null else holdsNull(v)
+                cases += "WHEN ${held?.let { "NOT ($it) AND " }.orEmpty()}EXISTS (SELECT 1 FROM ${elements(l, i)} WHERE ${matches(item(i), v)}) THEN TRUE"
+                if (!(within && whole)) {
+                    val k = alias("i")
+                    val undecided = if (id != null) isJsonNull(item(k)) else "(${nullableEquals(item(k), v, equals)}) IS NULL"
+                    cases += "WHEN EXISTS (SELECT 1 FROM ${elements(l, k)} WHERE $undecided) THEN NULL"
+                }
+                "CASE ${cases.joinToString(" ")} ELSE FALSE END"
+            }
         }
 
         /**
@@ -2570,7 +2865,8 @@ abstract class SqlCypherCompiler(graph: String) {
             val subject = case.subject?.let { expression(it, scope) }
             val results = (case.alternatives.map { it.second } + listOfNotNull(case.otherwise)).map { it to expression(it, scope) }
             val conditions = case.alternatives.map { (key, _) ->
-                if (subject != null) equality(subject, expression(key, scope)) else bool(expression(key, scope))
+                if (subject != null) expression(key, scope).let { value -> equality(subject, value, plain = plain(case.subject!!, key, subject, value, scope)) }
+                else bool(expression(key, scope))
             }
             fun written(value: (Value) -> String): String {
                 val alternatives = conditions.zip(results).joinToString(" ") { (condition, result) -> "WHEN $condition THEN ${value(result.second)}" }
@@ -2996,12 +3292,27 @@ abstract class SqlCypherCompiler(graph: String) {
 
         val AGGREGATES = setOf("count", "collect", "sum", "avg", "min", "max")
 
+
         /** The function that keeps each item of a list once, where it is first: see [Writer.aggregatesFirst]. No statement can name it. */
         const val DISTINCT_ITEMS = "#distinct items"
 
 
         /** openCypher's functions of one number that [math] works out, as Neo4j names them, lowered. */
         val MATH_FUNCTIONS = setOf("exp", "log", "log10", "sqrt", "sin", "cos", "tan", "cot", "asin", "acos", "atan", "degrees", "radians", "haversin")
+
+        /** The functions whose value, null aside, is a number, a text, a truth value or a temporal value: no list or map. */
+        val SCALAR_FUNCTIONS = setOf(
+            "size", "length", "count", "sum", "avg", "tostring", "tointeger", "tofloat", "toboolean", "tolower", "toupper", "trim", "ltrim", "rtrim",
+            "substring", "left", "right", "replace", "id", "elementid", "type", "round", "floor", "ceil", "sign", "atan2", "e", "pi", "randomuuid",
+            "timestamp", "isempty", "date", "localtime", "time", "localdatetime", "datetime", "duration",
+            "duration.between", "duration.inmonths", "duration.indays", "duration.inseconds",
+        ) + MATH_FUNCTIONS + TEMPORAL_NOW + TEMPORAL_TRUNCATE
+
+        /** The functions whose value holds no null in a list or a map: see [Value.Json.flat]. */
+        val FLAT_FUNCTIONS = SCALAR_FUNCTIONS + setOf("labels", "keys", "nodes", "relationships", "range", "split")
+
+        /** The functions whose value holds a null in a list or a map only where an argument does: see [Value.Json.flat]. */
+        val CARRYING_FUNCTIONS = setOf("collect", "min", "max", "coalesce", "head", "last", "tail", "reverse", "properties", DISTINCT_ITEMS)
 
         /**
          * The doubles Java's `Math.toDegrees` and `Math.toRadians` multiply by, as Neo4j's `degrees` and `radians` do: a
@@ -3173,7 +3484,7 @@ abstract class SqlCypherCompiler(graph: String) {
         val base = name
         return when (this) {
             is Value.Json -> copy(sql = "$prefix$base", identity = identity?.takeIf { identities }?.let { "$prefix${base}_identity" })
-            is Value.Entities -> Value.Entities("$prefix$base", relationships)
+            is Value.Entities -> Value.Entities("$prefix$base", relationships, flat = flat)
             is Value.Bool -> Value.Bool("$prefix$base")
             is Value.Node -> Value.Node("$prefix${base}_nid", "$prefix${base}_labels", "$prefix${base}_props", "$prefix${base}_stamp")
             is Value.Relationship -> Value.Relationship("$prefix${base}_eid", "$prefix${base}_src", "$prefix${base}_dst", "$prefix${base}_type", "$prefix${base}_props")
