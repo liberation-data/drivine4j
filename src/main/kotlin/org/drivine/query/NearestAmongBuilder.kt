@@ -49,7 +49,7 @@ internal class NearestAmongBuilder(
         val kept = listOfNotNull("m.id IN \$$idsParam", "m.id <> $SEED_ID", thresholdParam?.let { "m.score >= \$$it" })
         // The index is on the first label, so a neighbour with that label alone is in it, and is no node
         // of the set, though it may have an id the caller passed.
-        val labelled = indexedNodeLabelCheck(NODE, fragmentModel.labels)?.let { "\nWHERE $it" } ?: ""
+        val labelled = indexedNodeLabelCheck(NODE, fragmentModel.labels, vectorSpec.label)?.let { "\nWHERE $it" } ?: ""
         return """
             |UNWIND ${'$'}$idsParam AS $SEED_ID
             |MATCH ($SEED:${fragmentModel.labels.joinToString(":")})

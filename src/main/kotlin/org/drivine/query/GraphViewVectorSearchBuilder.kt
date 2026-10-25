@@ -48,7 +48,7 @@ internal class GraphViewVectorSearchBuilder(
         // A node the index yields may lack the root's other labels; it is checked while it is a node,
         // before the projection binds the root's name to a map.
         val head = grammar.vectorSearchHead(vectorSpec, rootFieldName, scoreVar) +
-            (assembler.indexedRootLabelCheck()?.let { "\nWHERE $it" } ?: "")
+            (assembler.indexedRootLabelCheck(vectorSpec.label)?.let { "\nWHERE $it" } ?: "")
 
         // Build the WITH projection first — it accumulates the prologs/bridge variables the prolog
         // section then reads. Carry the score through so the RETURN can reference it.

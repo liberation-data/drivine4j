@@ -45,7 +45,7 @@ internal class FragmentVectorSearchBuilder(
         // A fragment's filters: its labels beyond the indexed one, the optional score threshold (a
         // scalar — no relationships) and any caller `where { }` predicate over the node's properties.
         val filters = buildList {
-            indexedNodeLabelCheck(node, fragmentModel.labels)?.let { add(it) }
+            indexedNodeLabelCheck(node, fragmentModel.labels, vectorSpec.label)?.let { add(it) }
             thresholdParam?.let { add("$scoreVar >= \$$it") }
             callerWhere?.let { add(it) }
         }

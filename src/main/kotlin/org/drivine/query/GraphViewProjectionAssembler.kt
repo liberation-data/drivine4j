@@ -100,8 +100,8 @@ internal class GraphViewProjectionAssembler(
     /** The root fragment's own labels, which a load of the view matches and a search checks its hits for. */
     fun rootLabels(): List<String> = GraphTypeLabels.fragmentLabels(viewModel.rootFragment.fragmentType)
 
-    /** The root's labels beyond the one its index is on, checked on the node a search's index yielded: see [indexedNodeLabelCheck]. */
-    fun indexedRootLabelCheck(): String? = indexedNodeLabelCheck(rootFieldName, rootLabels())
+    /** The root's labels, checked on the node a search's index on [indexedLabel] yielded: see [indexedNodeLabelCheck]. */
+    fun indexedRootLabelCheck(indexedLabel: String): String? = indexedNodeLabelCheck(rootFieldName, rootLabels(), indexedLabel)
 
     /**
      * The colon-joined label string for the root fragment's `MATCH`, e.g. `Person:Mapped`.

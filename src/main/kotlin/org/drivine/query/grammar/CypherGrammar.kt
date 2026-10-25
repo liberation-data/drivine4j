@@ -260,6 +260,8 @@ interface CypherGrammar {
          * @param labels the root's labels, each hit checked for all of them before it is kept or scaled:
          *   the index is on the first alone, so a hit with that label only is no root, and the best of
          *   the scale must be a hit the search can return
+         * @param indexedLabel the label the index is on: when [labels] is that label alone, every hit has it
+         *   and there is nothing to check
          */
         fun normalizedFullTextHead(
             callClause: String,
@@ -267,11 +269,12 @@ interface CypherGrammar {
             scoreAlias: String,
             indexLimitParam: String,
             labels: List<String> = emptyList(),
+            indexedLabel: String = labels.firstOrNull().orEmpty(),
         ): String =
             """
             |$callClause
             |YIELD node, score
-            |${indexedNodeLabelCheck("node", labels)?.let { "WITH node, score WHERE $it\n|" } ?: ""}WITH node, score
+            |${indexedNodeLabelCheck("node", labels, indexedLabel)?.let { "WITH node, score WHERE $it\n|" } ?: ""}WITH node, score
             |ORDER BY score DESC
             |LIMIT ${'$'}$indexLimitParam
             |WITH collect({node: node, score: score}) AS _ftResults, max(score) AS _ftMax
@@ -365,6 +368,7 @@ class Neo4j5Grammar(
             scoreAlias,
             spec.indexLimitParam,
             spec.labels,
+            spec.label,
         )
 }
 
@@ -493,5 +497,6 @@ class FalkorDbCypherGrammar(
             scoreAlias,
             spec.indexLimitParam,
             spec.labels,
+            spec.label,
         )
 }

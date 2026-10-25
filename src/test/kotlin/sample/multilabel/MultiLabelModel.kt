@@ -61,3 +61,16 @@ data class PublishedNote(
     @NodeId val id: String,
     @VectorIndex(similarity = SimilarityFunction.COSINE) val embedding: List<Float>? = null,
 )
+
+/**
+ * One label, searched through a partition's index, which is on the partition's label: a node of the
+ * partition without `Snippet` is in that index, and is no [Snippet].
+ */
+@NodeFragment(labels = ["Snippet"])
+data class Snippet(
+    @NodeId val id: String,
+    @VectorIndex(similarity = SimilarityFunction.COSINE) val embedding: List<Float>? = null,
+)
+
+@GraphView
+data class SnippetView(@Root val snippet: Snippet)
