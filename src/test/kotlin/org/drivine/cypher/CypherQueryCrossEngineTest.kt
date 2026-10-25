@@ -578,6 +578,92 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `substring(), left() and right() refuse a written float, even a whole one, and a given start or length out of range, as Neo4j does`() {
+        // Not in the spec yet: a start or a length (#263). Neo4j refuses a float it knows to be one whatever the text; a bound one
+        // it cuts toward zero. It refuses one out of range only where the text is not null.
+        listOf(
+            Triple("RETURN left('hello', 2.7)", emptyMap<String, Any?>(), float("left", "length")),
+            Triple("RETURN left('hello', 2.0)", emptyMap(), float("left", "length")),
+            Triple("RETURN right('hello', -0.5)", emptyMap(), float("right", "length")),
+            Triple("RETURN substring('hello', 1.0)", emptyMap(), float("substring", "start")),
+            Triple("RETURN substring('hello', 1, 2.6)", emptyMap(), float("substring", "length")),
+            Triple("RETURN left(null, 2.7)", emptyMap(), float("left", "length")),
+            Triple("RETURN left('hello', -1)", emptyMap(), outOfRange("left", "length")),
+            Triple("RETURN right('hello', -1)", emptyMap(), outOfRange("right", "length")),
+            Triple("RETURN substring('hello', -1, 2)", emptyMap(), outOfRange("substring", "start")),
+            Triple("RETURN substring('hello', 1, -1)", emptyMap(), outOfRange("substring", "length")),
+            Triple("RETURN left('hello', 9223372036854775807)", emptyMap(), outOfRange("left", "length")),
+            Triple("RETURN substring(\$t, \$s)", mapOf("t" to "hello", "s" to -1L), outOfRange("substring", "start")),
+            // Bound, -1.5 is cut to -1, and 1.0E20 is past the greatest.
+            Triple("RETURN left('hello', \$n)", mapOf("n" to -1.5), outOfRange("left", "length")),
+            Triple("RETURN left('hello', \$n)", mapOf("n" to 1.0e20), outOfRange("left", "length")),
+        ).forEach { (statement, parameters, message) ->
+            val failed = assertThrows<Exception>(statement) { query(statement, parameters) }
+            if (compiles) assertTrue(failed.message!!.contains(message), "$statement: ${failed.message}")
+        }
+        assertEquals(
+            listOf(listOf("he", "lo", "ello", "el", null, null, null, null, null, null, "hello", empty, empty)),
+            query(
+                "RETURN [left('hello', 2), right('hello', 2), substring('hello', 1), substring('hello', 1, 2), left('hello', null), substring('hello', null), " +
+                    "substring('hello', 1, null), left(null, -1), right(null, -1), substring(null, 1, -1), left('hello', 10), left('hello', 0), substring('hello', 10)]",
+            ),
+        )
+        assertEquals(
+            listOf(listOf(null, "he", "he", "el", empty, null, "he")),
+            query(
+                "RETURN [left(\$t, \$m), left('hello', \$i), left('hello', \$f), substring('hello', \$s, \$l), left('hello', \$q), right(\$t, \$f), left('hello', \$p.f)]",
+                mapOf("t" to null, "m" to -1L, "i" to 2L, "f" to 2.7, "s" to 1.7, "l" to 2.6, "q" to -0.5, "p" to mapOf("f" to 2.7)),
+            ),
+        )
+        assertEquals(listOf("he", null), query("UNWIND \$xs AS c RETURN left('hello', c)", mapOf("xs" to listOf(2.7, null))))
+    }
+
+    @Test
+    fun `a start or length from data is cut toward zero, and one out of range fails only on a row that reads it, with the compiler's message`() {
+        // Not in the spec yet: a start or a length read from data (#263), in a WHERE and an aggregate too, and on rows filtered out.
+        clear()
+        seed(
+            "CREATE (:Count {k: 1, f: 2.7, w: 2.0, q: -0.5, r: -1.5, m: -1, h: 2147483647.9, hp: 2147483648.5, t: 'hello'}), " +
+                "(:Count {k: 2, m: 1, t: 'hello'}), (:Count {k: 3, m: -1, r: -1.5})",
+        )
+        listOf(
+            "MATCH (n:Count) RETURN left(n.t, n.m)" to outOfRange("left", "length"),
+            "MATCH (n:Count) WHERE left(n.t, n.m) = 'h' RETURN n.k" to outOfRange("left", "length"),
+            "MATCH (n:Count) RETURN collect(right(n.t, n.m))" to outOfRange("right", "length"),
+            "MATCH (n:Count) RETURN substring(n.t, n.m)" to outOfRange("substring", "start"),
+            "MATCH (n:Count) RETURN substring(n.t, 0, n.r)" to outOfRange("substring", "length"),
+            // -1.5 is cut to -1, and 2147483648.5 to past the greatest.
+            "MATCH (n:Count) RETURN left(n.t, n.r)" to outOfRange("left", "length"),
+            "MATCH (n:Count) RETURN left(n.t, n.hp)" to outOfRange("left", "length"),
+            // Written, below 0, beside a text from data: it fails on the row whose text is not null.
+            "MATCH (n:Count) RETURN left(n.t, -1)" to outOfRange("left", "length"),
+            // A constant the compiler does not read as given is worked out by the store, as one from data.
+            "RETURN left('hello', 1 - 3)" to outOfRange("left", "length"),
+            "RETURN substring('hello', toInteger('-2'))" to outOfRange("substring", "start"),
+        ).forEach { (statement, message) ->
+            val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+            if (compiles) assertTrue(failed.contains(message), "$statement: $failed")
+        }
+        assertEquals(
+            listOf(listOf("he", "lo", "llo", "he", "hello", "he", null, empty)),
+            query("MATCH (n:Count) WHERE n.k = 1 RETURN [left(n.t, n.f), right(n.t, n.w), substring(n.t, n.f), substring(n.t, n.q, n.f), left(n.t, n.h), left(n.t, n.f * 1), left(n.none, n.f), left(n.t, n.q)]"),
+        )
+        // Out of range beside a null text is null, as in Neo4j, and so is a null start or length.
+        assertEquals(listOf(listOf(null, null, null, null)), query("MATCH (n:Count) WHERE n.k = 3 RETURN [left(n.t, n.m), substring(n.t, n.m), left(n.t, -1), right(n.t, n.r)]"))
+        assertEquals(listOf(listOf(null, null, null)), query("MATCH (n:Count) WHERE n.k = 2 RETURN [left(n.t, n.none), substring(n.t, n.none), substring(n.t, 1, n.none)]"))
+        assertEquals(listOf("none", "h", "none"), query("MATCH (n:Count) RETURN CASE WHEN n.m < 0 THEN 'none' ELSE left(n.t, n.m) END ORDER BY n.k"))
+    }
+
+    /** The empty text, which Oracle reads as null. */
+    private val empty get() = if (pm.type == DatabaseType.ORACLE) null else ""
+
+    /** What the compiler refuses a written float start or length [what] of [function] with. */
+    private fun float(function: String, what: String) = "$function() takes an integer for its $what, not a float, as in Neo4j."
+
+    /** What the compiler refuses a start or length [what] of [function] out of range with. */
+    private fun outOfRange(function: String, what: String) = "$function() takes a $what from 0 to 2147483647, as in Neo4j."
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
