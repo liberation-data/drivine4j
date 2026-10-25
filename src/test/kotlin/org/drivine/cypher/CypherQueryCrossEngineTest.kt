@@ -375,7 +375,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `lists and maps that hold a null compare item by item, null where no pair differs`() {
-        // Not in the spec yet (#225): Cypher compares a list or a map item by item, so a null it holds makes the comparison null.
+        // Beside the spec's cases since v0.6.6 (#225): Cypher compares a list or a map item by item, so a null it holds makes the comparison null.
         assertEquals(listOf(listOf(null, null, null)), query("RETURN [[null] = [null], {x: null} = {x: null}, [null, 1] = [null, 1]]"))
         assertEquals(listOf(listOf(false, false, false, true)), query("RETURN [[1, null] = [2, null], [1, 2] = [1], [null] = [null, null], [] = []]"))
         assertEquals(listOf(listOf(null, true, null)), query("RETURN [[null] <> [null], [1, null] <> [2, null], [null, 1] <> [null, 1]]"))
@@ -398,7 +398,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `IN compares a value with each item as equality does`() {
-        // Not in the spec yet (#225): true where an item is equal, else null where a comparison is null, else false.
+        // Beside the spec's cases since v0.6.6 (#225): true where an item is equal, else null where a comparison is null, else false.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         // A node with no name is in no list of names, nor out of one: NOT keeps it no more than the IN does.
@@ -427,7 +427,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `values that hold a null compare item by item where neither side is written out`() {
-        // Not in the spec yet (#225): parameters, values carried by a WITH and collected lists are compared as they are at run time.
+        // Beside the spec's cases since v0.6.6 (#225): parameters, values carried by a WITH and collected lists are compared as they are at run time.
         assertEquals(
             listOf(listOf(null, false, null, null, null, true)),
             query(
@@ -460,7 +460,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a text that holds a null's text, and a value too long for a short text, compare as values that hold no null`() {
-        // Not in the spec yet (#225): Oracle reads whether a value holds a null from its JSON's text.
+        // Beside the spec's cases since v0.6.6 (#225): Oracle reads whether a value holds a null from its JSON's text.
         assertEquals(
             List(6) { listOf(true, true, true) },
             query("UNWIND ['a,null]', 'x:null}', 'null', 'a\\\",null]', 'é😀\\\",null]', 'a\\\\'] AS s WITH s, [s] AS v, [[s]] AS l, {k: s} AS m, [{k: s}] AS ms RETURN [v IN l, v = [s], m IN ms]"),
@@ -481,7 +481,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a null node or relationship in a list or a map makes its comparison null`() {
-        // Not in the spec yet (#225): a node or a relationship OPTIONAL MATCH finds none of is null in what holds it.
+        // Beside the spec's cases since v0.6.6 (#225): a node or a relationship OPTIONAL MATCH finds none of is null in what holds it.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -500,7 +500,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a statement that writes compares a list that holds a null as null where it is equal as JSON`() {
-        // Not in the spec yet (#225): on Oracle a procedure calls no function of its own, so values that differ as JSON are false there.
+        // Beside the spec's cases since v0.6.6 (#225): on Oracle a procedure calls no function of its own, so values that differ as JSON are false there.
         clear()
         assertEquals(
             listOf(listOf("null", false, true)),
