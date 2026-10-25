@@ -54,8 +54,9 @@ internal class OracleBackend(
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
         // What the search measures is the nearest searchK, and of what is left of them topK come back.
-        // Through the index for the label when one has been made; else by measuring every node.
-        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
+        // Through the index for the label when one has been made for embeddings of the vector's size; else by
+        // measuring every node. Oracle refuses to measure a vector against an index of another size.
+        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property), dimensions = vector.size)
         val candidates = if (embeddings != null) {
             select.nearestThrough(embeddings, index.similarity, vector, searchK ?: topK)
         } else {
@@ -83,11 +84,17 @@ internal class OracleBackend(
         return ScoredSearchPlan(statement.statement, statement.bindings)
     }
 
-    /** The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not been made. */
-    private fun made(kind: SchemaItemKind, label: String, properties: List<String>): String? = persistenceManager.query(
+    /**
+     * The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not
+     * been made, or, given [dimensions], when it is a vector index made for embeddings of another size.
+     */
+    private fun made(kind: SchemaItemKind, label: String, properties: List<String>, dimensions: Int? = null): String? = persistenceManager.query(
         QuerySpecification
-            .withStatement("SELECT object_name FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL")
-            .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)))
+            .withStatement(
+                "SELECT object_name FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL" +
+                    dimensions?.let { " AND JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) = \$dimensions" }.orEmpty()
+            )
+            .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)) + listOfNotNull(dimensions?.let { "dimensions" to it }))
             .transform(String::class.java)
     ).firstOrNull()
 

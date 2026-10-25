@@ -207,9 +207,9 @@ internal class OracleSchemaGrammar(private val graph: OracleGraph) : SchemaGramm
             nodes = graph.nodes,
             column = "embedding",
             columnType = "VECTOR(${spec.dimensions}, FLOAT32)",
-            payload = { row -> "TO_VECTOR(JSON_QUERY($row.props, ${path(property)} RETURNING CLOB))" },
+            payload = { row -> OracleSql.embedding(row, property) },
             indexed = { row -> "${OracleSql.carriesLabel(row, spec.label)} AND JSON_EXISTS($row.props, ${path(property)})" },
-            backfillFilter = { row -> "VECTOR_DIMENSION_COUNT(TO_VECTOR(JSON_QUERY($row.props, ${path(property)} RETURNING CLOB))) = ${spec.dimensions}" },
+            backfillFilter = { row -> OracleSql.holdsEmbedding(row, property, spec.dimensions) },
             tolerant = true,
         )
         return statements(
