@@ -1441,6 +1441,7 @@ val results = graphObjectManager.loadAll<RaisedAndAssignedIssue> {
 
 **How it works:**
 - Root-level ordering (e.g., `issue.id.desc()`) uses Cypher's `ORDER BY`, which can utilize indexes
+- A sort names its collection by the whole path to it, at any depth: `raisedBy.worksFor` is `raisedBy_worksFor`, and a relationship whose name holds an underscore is read whole. Beneath a recursive view, a path names a collection from the level as from the root, so `messages.attachments` orders the root's and every level's alike
 - Collection sorting strategy is selected automatically by the Cypher dialect
 - On Neo4j, the default uses APOC Extended's `apoc.coll.sortMaps()` — requires APOC Extended matching your Neo4j version
 - On FalkorDB, Neptune, and Memgraph, CALL subquery prologs are used — no plugins required
