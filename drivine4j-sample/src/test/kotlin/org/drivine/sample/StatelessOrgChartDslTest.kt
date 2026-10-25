@@ -12,9 +12,7 @@ import org.springframework.beans.factory.annotation.Autowired
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.test.annotation.Rollback
 import org.springframework.transaction.annotation.Transactional
-import kotlin.test.assertContains
 import kotlin.test.assertEquals
-import kotlin.test.assertFailsWith
 
 /** A view that holds itself is queried by its generated DSL, which builds each level only when it is read. */
 @SpringBootTest(classes = [SampleAppContext::class])
@@ -34,8 +32,10 @@ class StatelessOrgChartDslTest @Autowired constructor(
                 CREATE (root:Organization {uuid: randomUUID(), name: 'Head Office', testMarker: 'org-chart-test'})
                 CREATE (sales:Organization {uuid: randomUUID(), name: 'Sales', testMarker: 'org-chart-test'})
                 CREATE (east:Organization {uuid: randomUUID(), name: 'Sales East', testMarker: 'org-chart-test'})
+                CREATE (coast:Organization {uuid: randomUUID(), name: 'East Coast', testMarker: 'org-chart-test'})
                 CREATE (root)-[:RUNS]->(sales)
                 CREATE (sales)-[:RUNS]->(east)
+                CREATE (east)-[:RUNS]->(coast)
                 """.trimIndent()
             )
         )
@@ -71,13 +71,29 @@ class StatelessOrgChartDslTest @Autowired constructor(
     }
 
     @Test
-    fun `a where three levels down is refused, as the DSL reaches it but the query does not`() {
-        val refusal = assertFailsWith<IllegalArgumentException> {
-            graphObjectManager.loadAll<OrgChart> {
-                where { units.units.units.organization.name eq "Sales East" }
+    fun `a where three levels down reads each level in turn`() {
+        val charts = graphObjectManager.loadAll<OrgChart> {
+            where { units.units.units.organization.name eq "East Coast" }
+        }
+
+        assertEquals(listOf("Head Office"), charts.map { it.organization.name })
+    }
+
+    @Test
+    fun `a where at three levels holds of one chain of units`() {
+        val held = graphObjectManager.loadAll<OrgChart> {
+            where {
+                units.organization.name eq "Sales"
+                units.units.organization.name eq "Sales East"
+                units.units.units.organization.name eq "East Coast"
             }
         }
-        assertContains(refusal.message!!, "Nested relationship 'units_units' not found")
+        assertEquals(listOf("Head Office"), held.map { it.organization.name })
+
+        val unheld = graphObjectManager.loadAll<OrgChart> {
+            where { units.units.units.organization.name eq "Sales East" }
+        }
+        assertEquals(emptyList(), unheld.map { it.organization.name })
     }
 
     @Test
