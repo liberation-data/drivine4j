@@ -127,6 +127,33 @@ class VectorSearchGrammarTest {
         assertTrue(head.contains("WITH node AS doc, similarity AS _score"))
     }
 
+    /**
+     * `loadNearestAmong` searches from each seed's own embedding, inside an `UNWIND`: the vector is an
+     * expression, not a parameter, and the head's closing `WITH` must keep the seed's id in scope.
+     */
+    @Test
+    fun `each head reads its vector from an expression and carries variables in scope through its WITH`() {
+        val among = spec().copy(vectorSource = "seed.embedding", carried = listOf("_seedId"), rowLimitParam = "keep")
+
+        val neo4j = Neo4j5Grammar(ApocSortMapsEmitter()).vectorSearchHead(among, "n", "_score")
+        assertEquals(
+            """
+            CALL db.index.vector.queryNodes('Doc_embedding_vector', ${'$'}topK, seed.embedding)
+            YIELD node
+            WITH _seedId, node AS n, vector.similarity.cosine(node.embedding, seed.embedding) AS _score
+            """.trimIndent(),
+            neo4j,
+        )
+
+        val falkor = FalkorDbCypherGrammar(CallSubqueryEmitter()).vectorSearchHead(among, "n", "_score")
+        assertTrue(falkor.contains("CALL db.idx.vector.queryNodes('Doc', 'embedding', \$topK, seed.embedding)"), falkor)
+        assertTrue(falkor.contains("WITH _seedId, node AS n, 1.0 - score AS _score"), falkor)
+
+        val memgraph = MemgraphGrammar(CallSubqueryEmitter()).vectorSearchHead(among, "n", "_score")
+        assertTrue(memgraph.contains("CALL vector_search.search('Doc_embedding_vector', \$topK, seed.embedding)"), memgraph)
+        assertTrue(memgraph.contains("WITH _seedId, node AS n, similarity AS _score"), memgraph)
+    }
+
     @Test
     fun `Neptune has no native vector index and throws`() {
         val grammar = NeptuneCypherGrammar(CallSubqueryEmitter())

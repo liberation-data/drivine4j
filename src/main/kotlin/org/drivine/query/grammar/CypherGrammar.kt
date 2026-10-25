@@ -145,8 +145,9 @@ interface CypherGrammar {
      * K nearest nodes bound to [rootAlias] and a **normalized similarity** bound to [scoreAlias]
      * (higher = more similar, the same convention on every engine — each grammar converts its
      * native distance/similarity output as needed). The head ends with a `WITH` that establishes
-     * exactly those two variables, so the rest of the load query (filters, projection, RETURN)
-     * composes on top of it unchanged.
+     * exactly those two variables, after any [VectorQuerySpec.carried] from before the head, so the
+     * rest of the load query (filters, projection, RETURN) composes on top of it unchanged. The query
+     * vector is [VectorQuerySpec.vectorSource] when set, else the bound [VectorQuerySpec.vectorParam].
      *
      * The default throws — engines without a native vector index inherit it.
      *
@@ -305,16 +306,16 @@ class Neo4j5Grammar(
      */
     override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
         val call =
-            "CALL db.index.vector.queryNodes(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})"
+            "CALL db.index.vector.queryNodes(${spec.indexNameArgument()}, \$${spec.topKParam}, ${spec.vectorArgument()})"
         if (spec.rowLimitParam == null) {
-            return "$call\nYIELD node, score\nWITH node AS $rootAlias, score AS $scoreAlias"
+            return "$call\nYIELD node, score\nWITH ${spec.carriedPrefix()}node AS $rootAlias, score AS $scoreAlias"
         }
         val similarityFunction = when (spec.similarity) {
             SimilarityFunction.COSINE -> "vector.similarity.cosine"
             SimilarityFunction.EUCLIDEAN -> "vector.similarity.euclidean"
         }
         return "$call\nYIELD node\n" +
-            "WITH node AS $rootAlias, $similarityFunction(node.${SchemaGrammar.identifier(spec.property)}, \$${spec.vectorParam}) AS $scoreAlias"
+            "WITH ${spec.carriedPrefix()}node AS $rootAlias, $similarityFunction(node.${SchemaGrammar.identifier(spec.property)}, ${spec.vectorArgument()}) AS $scoreAlias"
     }
 
     override val supportsFullTextSearch: Boolean = true
@@ -418,6 +419,9 @@ class FalkorDbCypherGrammar(
      * raw *distance* (smaller = closer), so we convert to a higher-is-closer similarity to match the
      * cross-engine convention: cosine distance `d → 1 - d`; euclidean distance `d → 1 / (1 + d)`
      * (the same shape Neo4j applies to euclidean).
+     *
+     * A vector read from a stored property ([VectorQuerySpec.vectorSource]) is not wrapped: it is
+     * already FalkorDB's vector type, and `vecf32` takes only a list.
      */
     override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
         val similarityExpr = when (spec.similarity) {
@@ -425,9 +429,9 @@ class FalkorDbCypherGrammar(
             org.drivine.schema.SimilarityFunction.EUCLIDEAN -> "1.0 / (1.0 + score)"
         }
         return "CALL db.idx.vector.queryNodes(${spec.labelArgument()}, '${spec.property}', \$${spec.topKParam}, " +
-            "vecf32(\$${spec.vectorParam}))\n" +
+            "${spec.vectorSource ?: "vecf32(\$${spec.vectorParam})"})\n" +
             "YIELD node, score\n" +
-            "WITH node AS $rootAlias, $similarityExpr AS $scoreAlias"
+            "WITH ${spec.carriedPrefix()}node AS $rootAlias, $similarityExpr AS $scoreAlias"
     }
 
     /**

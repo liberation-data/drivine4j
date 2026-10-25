@@ -9,6 +9,7 @@ import org.drivine.backend.sqlite.SqliteSql.property
 import org.drivine.backend.sql.CypherShorthand
 import org.drivine.backend.sql.Derived
 import org.drivine.backend.sql.OnceReached
+import org.drivine.backend.sql.Paired
 import org.drivine.backend.sql.Query
 import org.drivine.backend.sql.RowSource
 import org.drivine.backend.sql.SqlKind
@@ -445,6 +446,45 @@ internal class SqliteSelect(
     }
 
     /**
+     * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
+     * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
+     * Each pair is scored by [SqliteSql.score], as [nearestTo] scores a node against a vector, and only
+     * the roots are measured, so the answer is exact. A pair whose embeddings differ in size has no
+     * score, and is left out.
+     *
+     * SQLite has no `LATERAL`, so each root's nearest are not a query of their own: every pair is
+     * scored once, numbered within its root best first, and a root keeps the first [topK].
+     */
+    fun nearestAmong(key: String, similarity: SimilarityFunction, ids: List<String>, topK: Int, threshold: Double?): GraphStatement {
+        val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
+        val members = Query(
+            "c.nid, ${property("c", idProperty)} AS id, c.props", Table(graph.nodes, "c"),
+            listOfNotNull(
+                SqliteSql.hasLabels("c", rootLabels()), "${SqliteSql.type("c", key)} = 'array'",
+                "${property("c", idProperty)} IN (${SqliteSql.values(scope.bound(ids), SqlKind.TEXT)})",
+            ),
+        )
+        val scored = Query(
+            "s.nid AS seed, o.nid, o.id, ${SqliteSql.score("o", key, similarity, SqliteSql.value("s", key))} AS score",
+            Paired(MEMBERS, "s", "o", "o.nid <> s.nid"),
+        )
+        val ranked = Query(
+            "p.seed, p.nid, p.id, p.score, ROW_NUMBER() OVER (PARTITION BY p.seed ORDER BY p.score DESC, p.nid) AS place",
+            Derived(scored.text(), "p"), listOf("p.score IS NOT NULL"),
+        )
+        val near = Query(
+            SqliteSql.arrayOf(SqliteSql.plainObject(listOf("id" to "r.id", "score" to "r.score")), "r.score DESC, r.nid"),
+            Table(RANKED, "r"),
+            listOfNotNull("r.seed = s.nid", "r.place <= ${scope.bound(topK)}", threshold?.let { "r.score >= ${scope.bound(it)}" }),
+        )
+        val result = SqliteSql.plainObject(listOf("seed" to "s.id", "near" to "json(${near.nested()})"))
+        return GraphStatement(
+            "${SqliteSql.JSON_ROWS}\nWITH $MEMBERS AS ${members.nested()},\n$RANKED AS ${ranked.nested()}\n" + Query("$result AS result", Table(MEMBERS, "s")).text(),
+            bindings(),
+        )
+    }
+
+    /**
      * The nodes whose text under [keys] meets [query], scored by how often its terms occur and then
      * against the best of them, so the best scores one. Each term is a regular expression that matches
      * it as a whole word, counted by the function [SqliteRegexpCountFunction] registers as Postgres
@@ -536,5 +576,11 @@ internal class SqliteSelect(
 
         /** The parameter the query [meeting] writes is given the `nid` of the node it asks about as. */
         private const val NID = "_nid"
+
+        /** What [nearestAmong] calls the roots among its ids, which each of them measures the others of. */
+        private const val MEMBERS = "members"
+
+        /** What [nearestAmong] calls every pair of its roots, scored and numbered within the first of the pair. */
+        private const val RANKED = "ranked"
     }
 }

@@ -215,6 +215,59 @@ interface GraphObjectOperations {
     ): List<Scored<T>>
 
     /**
+     * For each of [ids], finds its nearest neighbours **among the same [ids]**, by the embedding of its
+     * root node, in one statement the store answers natively: the batched form of calling [loadNearest]
+     * once per id with that node's own embedding and keeping only the hits inside the set.
+     *
+     * The result maps each id whose root node has the embedding to up to [topK] *other* ids from
+     * [ids] (never itself), most similar first, each paired with the same normalized
+     * [score][Scored.score] [loadNearest] gives that pair on this store, so the two agree. Those
+     * below [threshold] are dropped. An id with no embedding, or no node, is not a key; an id whose
+     * neighbours were all dropped maps to an empty list. The map iterates in the order of [ids].
+     * An embedding of another size than the index's is measured against none of a different size: on
+     * Postgres or Oracle with a vector index made it is not a key, on Neo4j and FalkorDB the search
+     * fails, as their index search refuses a vector of another size, and Memgraph does not store one.
+     *
+     * Works on a `@NodeFragment` and on a `@GraphView`, whose **root fragment**'s embedding is searched;
+     * the vector index is resolved from `@VectorIndex` as [loadNearest] resolves it. A view's
+     * relationships play no part: the set is named by id.
+     *
+     * **Result count semantics:** on a store that searches through an approximate index (Neo4j,
+     * FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been made), the index is asked
+     * for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion and the
+     * [threshold] then apply to those, so **fewer than [topK] may come back** for an id whose nearest
+     * mostly lie outside the set. A selective set — few ids among many indexed nodes — needs a larger
+     * [searchK], exactly as a filtered [loadNearest] does. Where the store measures every node instead
+     * (SQLite, and Postgres or Oracle with no vector index made) only the set is measured, the answer
+     * is exact, and [searchK] changes nothing; it measures every pair of the set, so its cost grows
+     * with the square of the number of [ids].
+     *
+     * ```kotlin
+     * val neighbours = graphObjectManager.loadNearestAmong(PropositionNode::class.java, batchIds, topK = 5, threshold = 0.8)
+     * neighbours["p-1"] // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
+     * ```
+     *
+     * @param graphClass the `@GraphView` or `@NodeFragment` class whose root nodes the ids name
+     * @param ids the set: both the seeds searched from and the only ids that can come back
+     * @param topK the most neighbours kept for each id
+     * @param threshold optional minimum similarity (higher = closer); neighbours below it are dropped
+     * @param property the `@VectorIndex` embedding property to search, when the fragment has several
+     * @param searchK how many candidates the index is asked for per id, before the filter; null asks
+     *   for `topK + 1`, the one more being the id itself, which an index finds first. See
+     *   `docs/0.0.79-vector-search-k.md`
+     * @return for each id with an embedding, its neighbours' ids, scored, most similar first
+     * @throws UnsupportedOperationException if the backend has no native vector index
+     */
+    fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        threshold: Double? = null,
+        property: String? = null,
+        searchK: Int? = null,
+    ): Map<String, List<Scored<String>>>
+
+    /**
      * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
      * similarity plus arbitrary property predicates in one statement. Works on a `@GraphView`
      * (predicates filter the *projected* values) and on a bare `@NodeFragment` (predicates filter the
@@ -511,6 +564,23 @@ interface GraphObjectOperations {
         threshold: Double?,
         searchK: Int?,
     ): List<Scored<T>> = loadNearest(graphClass, property, vector, topK, threshold, searchK, null)
+
+    /** [loadNearestAmong] with every optional argument left out, for Java. */
+    fun <T : Any> loadNearestAmong(graphClass: Class<T>, ids: Collection<String>, topK: Int): Map<String, List<Scored<String>>> =
+        loadNearestAmong(graphClass, ids, topK, null, null, null)
+
+    /** [loadNearestAmong] with a [threshold] and nothing after it, for Java. */
+    fun <T : Any> loadNearestAmong(graphClass: Class<T>, ids: Collection<String>, topK: Int, threshold: Double?): Map<String, List<Scored<String>>> =
+        loadNearestAmong(graphClass, ids, topK, threshold, null, null)
+
+    /** [loadNearestAmong] with a [threshold] and a named [property] and no [searchK], for Java. */
+    fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        threshold: Double?,
+        property: String?,
+    ): Map<String, List<Scored<String>>> = loadNearestAmong(graphClass, ids, topK, threshold, property, null)
 
     /** [loadMatching] with every optional argument left out, for Java. */
     fun <T : Any> loadMatching(graphClass: Class<T>, query: String, topK: Int): List<Scored<T>> =
