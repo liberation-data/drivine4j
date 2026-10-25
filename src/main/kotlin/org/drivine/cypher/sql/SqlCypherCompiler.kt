@@ -15,6 +15,7 @@ import org.drivine.cypher.ast.SetItem
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
 import org.slf4j.LoggerFactory
+import java.math.RoundingMode
 
 /**
  * Compiles a Cypher statement to SQL over a graph's tables, `<graph>_node` and `<graph>_edge`, so a
@@ -139,6 +140,12 @@ abstract class SqlCypherCompiler(graph: String) {
      * row's query, where a store would merge the two and read a value bound in the row wrongly.
      */
     protected open fun called(query: String) = query
+
+    /**
+     * The query [query] that makes a value anew for each row, `randomUUID()`, kept apart from the query that reads it, where a
+     * store would merge the two and make the value again for each read: a `WITH`'s, and a projection's sorted by it.
+     */
+    protected open fun once(query: String) = called(query)
 
     /**
      * A `UNION`: each query's rows, in the order of the queries and each query's own order, as a graph engine
@@ -460,6 +467,46 @@ abstract class SqlCypherCompiler(graph: String) {
     /** `randomUUID()`: a new UUID, as SQL text in its usual form. */
     protected abstract fun uuid(): String
 
+    /**
+     * One of openCypher's functions of numbers, [name], one of [MATH_FUNCTIONS] or `atan2`, of [numbers], the store's
+     * SQL numbers, as a SQL float: null where one is null. Neo4j works these out as Java's doubles, and gives NaN or
+     * an infinity for some (`log(0)`, `sqrt(-1)`, `exp(1000)`, `cot(0)`), which JSON holds neither of: there, the store fails.
+     */
+    protected abstract fun math(name: String, numbers: List<String>): String
+
+    /**
+     * `round(value, precision, mode)`: the SQL number [number] rounded to [precision] decimal places by [mode], as a SQL
+     * number. Worked out in decimal, as Neo4j works it out with Java's `BigDecimal`, so 2.345 is halfway between 2.34 and
+     * 2.35: a store whose numbers are decimal (`numeric`, `NUMBER`) takes this, one whose numbers are binary its own.
+     */
+    protected open fun roundTo(number: String, precision: String, mode: RoundingMode): String = shared(number, precision) { (n, p) ->
+        val scale = "POWER(CAST(10 AS NUMERIC), $p)"
+        val scaled = "(ABS($n) * $scale)"
+        // Rounded as a magnitude, then given the number's sign: UP, DOWN and the HALF_ modes round toward or away from 0.
+        val magnitude = when (mode) {
+            RoundingMode.UP -> "CEIL($scaled)"
+            RoundingMode.DOWN -> "FLOOR($scaled)"
+            RoundingMode.HALF_UP -> "FLOOR($scaled + 0.5)"
+            RoundingMode.HALF_DOWN -> "CEIL($scaled - 0.5)"
+            RoundingMode.HALF_EVEN -> "CASE WHEN $scaled - FLOOR($scaled) = 0.5 THEN FLOOR($scaled) + MOD(FLOOR($scaled), 2) ELSE FLOOR($scaled + 0.5) END"
+            RoundingMode.CEILING, RoundingMode.FLOOR, RoundingMode.UNNECESSARY -> null
+        }
+        when (mode) {
+            RoundingMode.CEILING -> "(CEIL($n * $scale) / $scale)"
+            RoundingMode.FLOOR -> "(FLOOR($n * $scale) / $scale)"
+            else -> "(SIGN($n) * $magnitude / $scale)"
+        }
+    }
+
+    /**
+     * Fails where a `CALL` returns or yields a variable of [returned] that is bound around it, in [bound], as Neo4j fails:
+     * those of the query part it is in, and not those around a `CALL { … }` that it is in and that does not import them.
+     * In a statement that writes, each variable the row holds, which a `CALL { … }` there sees whether it imports it or not.
+     */
+    private fun redeclared(returned: Collection<String>, bound: Collection<String>) {
+        returned.firstOrNull { it in bound }?.let { throw DrivineException("The variable $it is bound already, so a CALL does not return or yield it, as in Cypher: name it with AS.") }
+    }
+
     /** `right`: the last [count] characters of the SQL text [text], or all of it where it has fewer. */
     protected abstract fun rightText(text: String, count: String): String
 
@@ -557,7 +604,9 @@ abstract class SqlCypherCompiler(graph: String) {
             val name = alias("w")
             val next = Select(outer)
             next.walks = select.walks
-            next.source("(\n${indent(projected.sql)}\n) $name")
+            // A value made anew for each row is one value however often the clauses after read it: see [once].
+            val anew = with.projection.items.any { item -> contains(item.expression, ::isAnew) }
+            next.source("(\n${indent(if (anew) once(projected.sql) else projected.sql)}\n) $name")
             projected.scope.forEach { (variable, value) -> next.bind(variable, value.columnsOf(name)) }
             projected.order.forEach { (column, descending) -> next.order += "$name.$column" to descending }
             with.where?.let { next.where += bool(expression(it, next.scope)) }
@@ -631,6 +680,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val order = rowOrder
             val projected = if (call.query.unions.isEmpty()) calledPart(select, call.query.clauses, null, distinct = false) else calledUnion(select, call.query)
             rowOrder = order
+            redeclared(projected.scope.keys, select.bound.keys)
             val name = alias("c")
             select.join(lateral(called(projected.sql), name, call.optional, projected.columns))
             projected.scope.forEach { (variable, value) -> select.bind(variable, value.laterally(name, projected.columns)) }
@@ -1273,6 +1323,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val ret = call.query.clauses.last() as? Clause.Return
             if (ret != null && ret.projection.items.any { contains(it.expression, ::isAggregate) }) unsupported("An aggregate in the RETURN of a CALL { … } that writes")
             if (nesting == NESTING) unsupported("A FOREACH or CALL { … } that writes nested more than $NESTING deep")
+            ret?.let { r -> redeclared(r.projection.items.map { it.name }, kinds.keys) }
             val kept = "$SAVED${++nesting}"
             val gathered = "$GATHERED$nesting"
             val caller = "$CALLER$nesting"
@@ -1603,6 +1654,9 @@ abstract class SqlCypherCompiler(graph: String) {
             // what sorts it (JSON's null as SQL's) worked out of that column. Oracle (23.26), sorting by a value that reads
             // the row more than once beside a variable-length walk, closes the session.
             val sorted = mutableMapOf<String, (String) -> String>()
+            // An item made anew for each row, randomUUID(), is sorted by of its column, as it is given, not made again: see [once].
+            val anew = items.filter { contains(it.expression, ::isAnew) }.map { it.name }.toSet()
+            var sortsAnew = false
             fun carried(column: String, value: () -> Value, aggregates: Expression) {
                 val (carried, sorts) = aggregating(aggregates) { sortTerm(value()) }
                 selectList += "$carried AS $column"
@@ -1613,6 +1667,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 // An order term that is an item, as written, is that item: so it may be ordered by where rows are compared.
                 val item = items.indexOfFirst { it.expression == sort.expression }
                 when {
+                    contains(sort.expression) { it is Expression.Variable && it.name in anew } && variablesIn(sort.expression).all { it in itemColumns } -> {
+                        after[column] = sortable(expression(sort.expression, itemColumns))
+                        sortsAnew = true
+                    }
                     item >= 0 -> carried(column, { compiled[item].second }, sort.expression)
                     compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
                         after[column] = sortable(expression(sort.expression, itemColumns))
@@ -1660,7 +1718,7 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             val outer = buildList {
                 add("SELECT $outerColumns")
-                add("FROM (\n${indent(inner)}\n) $name")
+                add("FROM (\n${indent(if (sortsAnew) once(inner) else inner)}\n) $name")
                 if (sorts.isNotEmpty()) {
                     add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> orderTerm(sortedBy(column), descending) }}")
                 }
@@ -2315,11 +2373,27 @@ abstract class SqlCypherCompiler(graph: String) {
                     boolJson("CASE WHEN ${typeOf(x)} = 'object' THEN ${jsonEquals(x, literalJson(emptyMap<String, Any>()))} WHEN ${typeOf(x)} IN ('array', 'string') THEN ${number(size)} = 0 END")
                 })
                 // A float, as Cypher gives these; round as Java rounds, half up.
-                "round" -> Value.Json(
-                    if (arguments.size == 2) scalar(float("ROUND(${number(comparable(json(arguments[0])))}, ${whole(arguments[1])})"))
-                    else scalar(float("FLOOR(${number(comparable(json(one())))} + 0.5)"))
-                )
-                "floor", "ceil", "sqrt" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))
+                "round" -> when (arguments.size) {
+                    3 -> roundingMode(function.arguments[2])?.let { mode ->
+                        // As Neo4j refuses it, where the precision is written, negated or not, or a parameter's value.
+                        val precision = function.arguments[1]
+                        val negated = precision is Expression.Unary && precision.operator == Expression.Unary.Operator.NEGATE
+                        val given = (given(if (negated) (precision as Expression.Unary).operand else precision) as? Number)?.toDouble()
+                        if (given != null && (if (negated) -given else given) < 0) {
+                            throw DrivineException("round() takes a precision of 0 or more, as in Neo4j.")
+                        }
+                        Value.Json(scalar(float(roundTo(number(comparable(json(arguments[0]))), whole(arguments[1]), mode))))
+                    } ?: Value.Json(literalJson(null))
+                    2 -> Value.Json(scalar(float("ROUND(${number(comparable(json(arguments[0])))}, ${whole(arguments[1])})")))
+                    else -> Value.Json(scalar(float("FLOOR(${number(comparable(json(one())))} + 0.5)")))
+                }
+                "floor", "ceil" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))
+                in MATH_FUNCTIONS -> Value.Json(scalar(math(name, listOf(number(comparable(json(one())))))))
+                "atan2" -> if (arguments.size == 2) Value.Json(scalar(math(name, arguments.map { number(comparable(json(it))) })))
+                    else throw DrivineException("atan2() takes two numbers.")
+                // Java's constants, which Neo4j gives, written as the floats they are.
+                "e", "pi" -> if (arguments.isEmpty()) Value.Json(literalJson(if (name == "e") Math.E else Math.PI))
+                    else throw DrivineException("${function.name}() takes no argument.")
                 "sign" -> Value.Json(scalar("SIGN(${number(comparable(json(one())))})"))
                 "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"))
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
@@ -2373,6 +2447,20 @@ abstract class SqlCypherCompiler(graph: String) {
                     Value.Json(shared(argument) { (x) -> function(name, x)!! })
                 }
             }
+        }
+
+        /**
+         * The mode [mode] a `round()` names, as Java's `BigDecimal` names it, as Neo4j takes it: null where it is null, as
+         * the rounding then is. Written, or a parameter's value: the SQL is worked out for the one mode.
+         */
+        private fun roundingMode(mode: Expression): RoundingMode? {
+            if (mode !is Expression.Literal && mode !is Expression.Parameter) unsupported("A rounding mode an expression gives")
+            val name = given(mode) ?: return null
+            val known = RoundingMode.entries.firstOrNull { it.name == name }
+                ?: throw DrivineException("round() rounds by CEILING, FLOOR, UP, DOWN, HALF_EVEN, HALF_UP, HALF_DOWN or UNNECESSARY, not $name.")
+            // It fails where rounding would change the number, which SQL has no way to say in a query.
+            if (known == RoundingMode.UNNECESSARY) unsupported("round() by UNNECESSARY")
+            return known
         }
 
         /** A function's text, its first argument, and a whole number, its second. */
@@ -2586,6 +2674,20 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The function that keeps each item of a list once, where it is first: see [Writer.distinctFirst]. No statement can name it. */
         const val DISTINCT_ITEMS = "#distinct items"
+
+
+        /** openCypher's functions of one number that [math] works out, as Neo4j names them, lowered. */
+        val MATH_FUNCTIONS = setOf("exp", "log", "log10", "sqrt", "sin", "cos", "tan", "cot", "asin", "acos", "atan", "degrees", "radians", "haversin")
+
+        /**
+         * The doubles Java's `Math.toDegrees` and `Math.toRadians` multiply by, as Neo4j's `degrees` and `radians` do: a
+         * store that works out 180 / π otherwise, or divides, can differ in the last digit, as at `degrees(0.1)`.
+         */
+        const val RADIANS_TO_DEGREES = "57.29577951308232"
+        const val DEGREES_TO_RADIANS = "0.017453292519943295"
+
+        /** Whether [expression] is a call of `randomUUID()`, the one function compiled here that gives a value anew each time it is called. */
+        fun isAnew(expression: Expression): Boolean = expression is Expression.Function && expression.name.equals("randomUUID", ignoreCase = true)
 
         fun isAggregate(expression: Expression): Boolean =
             expression == Expression.CountStar || (expression is Expression.Function && expression.name.lowercase() in AGGREGATES)

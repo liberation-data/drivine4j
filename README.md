@@ -3146,6 +3146,11 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`, `[(a)-->(m) | m]`) is given as
   their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them; compared,
   indexed, searched with `IN` or iterated, its items are the nodes themselves too, so two with equal properties differ.
+  `CALL db.labels()` and `CALL db.relationshipTypes()` compile, alone or within a query with `YIELD`, and give each
+  label and type something has now, read from the nodes and relationships; any other procedure is refused. A parameter
+  may be named by a keyword (`$limit`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
+  mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
+  statement fails: JSON holds neither.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields

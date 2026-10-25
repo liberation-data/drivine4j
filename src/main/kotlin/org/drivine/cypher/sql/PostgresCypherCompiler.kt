@@ -111,6 +111,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private fun numeric(json: String) = shared(json) { (x) ->
         "CASE WHEN jsonb_typeof($x) = 'number' OR ($x #>> '{}') ~ ${literal(NUMERIC_TEXT)} THEN CAST($x #>> '{}' AS numeric) END"
     }
+
     override fun page(skip: String?, limit: String?) = listOfNotNull(skip?.let { "OFFSET $it" }, limit?.let { "LIMIT $it" })
 
     override fun ids(id: String) = "ARRAY[$id]"
@@ -214,6 +215,29 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun uuid() = "CAST(gen_random_uuid() AS text)"
 
+    /**
+     * Worked out as a `double precision`, as Neo4j works it out as a Java double, and written back as the text of that
+     * double: a cast to `numeric` would keep 15 of its digits. Postgres fails where Neo4j gives NaN or an infinity,
+     * `ln(0)`, `sqrt(-1)`, `asin(2)`, `exp(1000)` and `1 / tan(0)` among them, but for an exponent too small for a double,
+     * which Neo4j gives as 0.0, and Postgres would fail on as an underflow.
+     */
+    override fun math(name: String, numbers: List<String>): String {
+        val doubles = numbers.map { "CAST($it AS double precision)" }
+        val x = doubles[0]
+        val result = when (name) {
+            "exp" -> shared(x) { (d) -> "CASE WHEN $d < $EXP_UNDERFLOW THEN 0 ELSE exp($d) END" }
+            "log" -> "ln($x)"
+            "log10" -> "log($x)"
+            "cot" -> "(1 / tan($x))"
+            "haversin" -> "((1 - cos($x)) / 2)"
+            // By the ratio Java multiplies by, where Postgres divides by its inverse: see [RADIANS_TO_DEGREES].
+            "degrees" -> "($x * CAST($RADIANS_TO_DEGREES AS double precision))"
+            "atan2" -> "atan2($x, ${doubles[1]})"
+            else -> "$name($x)"
+        }
+        return float("CAST($result AS text)")
+    }
+
     override fun rightText(text: String, count: String) = "right($text, $count)"
 
     /**
@@ -266,5 +290,11 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private companion object {
         /** A text Postgres reads as a `numeric`, spaces around it allowed. */
         const val NUMERIC_TEXT = """^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$"""
+
+        /**
+         * Below it, `exp` is nearer 0 than the least double, half of 2^-1074, and Java gives 0.0: ln(2^-1075) is
+         * -745.13321910194120…, and this is the least double Java's `exp` gives more than 0.0 for.
+         */
+        const val EXP_UNDERFLOW = "-745.1332191019411"
     }
 }
