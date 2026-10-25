@@ -61,13 +61,9 @@ tasks.named('test') {
             logger.lifecycle('Oracle tests skipped: set ORACLE_TESTS=true to run them')
         }
     }
-    // The images the tests run are pinned in one file, and each pin is an input of the tests.
-    rootProject.file('gradle/test-images.txt').readLines()
-        .collect { it.trim() }.findAll { it && !it.startsWith('#') }
-        .each { line ->
-            def (named, pinned) = line.split(/\s+/)
-            systemProperty "drivine.test.image.${named}", pinned
-        }
+    // The images the tests run are pinned in one file, and each pin is an input of the tests: see the root build.
+    rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+    if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
 }
 
 // Publishing configuration
