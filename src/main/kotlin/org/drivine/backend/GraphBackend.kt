@@ -120,6 +120,19 @@ internal interface GraphBackend {
     ): ScoredSearchPlan
 
     /**
+     * The search, for each root among [ids] that holds the embedding [property] names (null for the only
+     * one the fragment declares), for its nearest among the other [ids]: one row for each such root,
+     * `{seed, near}`, `near` up to [topK] of `{id, score}`, best first, none of them the seed, none
+     * scoring under [threshold]. A root with no neighbour left still has its row, with `near` empty. The
+     * score is the one [nearest] gives for the same pair.
+     *
+     * Where the store searches through an approximate index, the index is asked for [searchK] for each
+     * root and the set is a filter on what it finds, as [nearest]'s filters are; where it measures every
+     * node, only the set is measured, and the answer is exact.
+     */
+    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement
+
+    /**
      * The search for the roots whose indexed text meets [text], by the full-text index that covers
      * [property]; null for the only one the fragment declares. [query] filters what the search finds,
      * and the [topK] best that score [threshold] or more come back.

@@ -58,6 +58,14 @@ internal class PostgresBackend(private val persistenceManager: PersistenceManage
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
 
+    /** Through the index for the label when one has been made, as [nearest] goes; else each root measures the others. */
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
+        val select = select(graphClass)
+        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        val dimensions = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))?.get("dimensions")?.let { (it as Number).toInt() }
+        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold, index.label, dimensions, searchK)
+    }
+
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")
