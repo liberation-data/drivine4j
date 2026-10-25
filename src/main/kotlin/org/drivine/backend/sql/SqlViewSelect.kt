@@ -107,8 +107,14 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
      *
      * A view that would be entered again past its depth is cut off, as an empty list or null, so a
      * cycle of views ends.
+     *
+     * [parentField] is the path to the view that holds the field, which a sort of the field names.
+     * [viewPath] is the path a view the field holds is named under by a sort below it: [parentField],
+     * but at a level of a recursive view the level's own, so a sort there orders every level alike.
      */
-    private fun relationship(parent: String, relationship: RelationshipModel, visits: Map<String, Int>, parentField: String?): String {
+    private fun relationship(
+        parent: String, relationship: RelationshipModel, visits: Map<String, Int>, parentField: String?, viewPath: String? = parentField,
+    ): String {
         val depth = depthOverrides[relationship.fieldName] ?: relationship.maxDepth
         val nothing = if (relationship.isCollection) emptyArray else "NULL"
         val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
@@ -130,7 +136,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
 
         val row = scope.row(relationship.fieldName)
         // A view this holds is reached by the path to this one and the field, which a sort below it names.
-        val target = element(row, targetType, visits, parentField?.let { "${it}_${relationship.fieldName}" } ?: relationship.fieldName)
+        val target = element(row, targetType, visits, viewPath?.let { "${it}_${relationship.fieldName}" } ?: relationship.fieldName)
         // A relationship fragment is the relationship's own properties, with the node it leads to under the target field.
         val value = if (relationship.isRelationshipFragment) withTarget(row, relationship.targetFieldName!!, target) else target
         return gathered(parent, Step.reaching(relationship, labels), row, value, relationship.isCollection, sort?.let { sorted(row, targetType, it) })
@@ -175,7 +181,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
         val entries = mutableListOf(nested.rootFragment.fieldName to document(row))
         nested.relationships
             .filter { !it.isRecursive && it.fieldName != relationship.fieldName }
-            .forEach { entries += it.fieldName to relationship(row, it, visits, relationship.fieldName) }
+            .forEach { entries += it.fieldName to relationship(row, it, visits, relationship.fieldName, viewPath = null) }
         entries += relationship.fieldName to
             if (depth >= max) (if (relationship.isCollection) emptyArray else "NULL") else recursive(row, relationship, labels, visits, depth + 1, max, sort)
         return gathered(

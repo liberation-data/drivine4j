@@ -27,6 +27,7 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
+import sample.mapped.view.DeletableSessionTreeDeep
 import sample.sortpath.SpOrgView
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -78,6 +79,40 @@ private fun verify(gom: StatelessGraphObjectManager, sortsNested: Boolean) {
         assertFailsWith<UnsupportedOperationException> { org { orderBy { query.groups.sub_teams.members.name.desc() } } }
     }
 }
+
+class SpAttachmentLevel(alias: String) {
+    val attachments = SpNameProperties("${alias}_attachments")
+}
+
+/** Hand-written query DSL for [DeletableSessionTreeDeep]: its messages' attachments. */
+class SpTreeQueryDsl {
+    val messages = SpAttachmentLevel("messages")
+}
+
+/**
+ * A sort beneath a recursive view's field names the field from the level, as at the root, so it
+ * orders the root's collection and each level's alike.
+ */
+private fun verifyRecursive(gom: StatelessGraphObjectManager) {
+    val roots = gom.loadAll(DeletableSessionTreeDeep::class.java, SpTreeQueryDsl()) { orderBy { query.messages.attachments.name.desc() } }
+    val names = listOf("a3", "a2", "a1")
+    assertEquals(names, roots.single { it.session.id == "s1" }.messages.single().attachments.map { it.name })
+    assertEquals(names, roots.single { it.session.id == "s0" }.parts.single().messages.single().attachments.map { it.name })
+}
+
+private const val TREE_SEED = """
+    CREATE (s0:Session {id: 's0'})
+    CREATE (s1:Session {id: 's1'})
+    CREATE (s1)-[:PART_OF]->(s0)
+    CREATE (m:Message {id: 'm'})
+    CREATE (s1)-[:HAS_MESSAGE]->(m)
+    CREATE (a2:Attachment {id: 'a2', name: 'a2'})
+    CREATE (a1:Attachment {id: 'a1', name: 'a1'})
+    CREATE (a3:Attachment {id: 'a3', name: 'a3'})
+    CREATE (m)-[:HAS_ATTACHMENT]->(a2)
+    CREATE (m)-[:HAS_ATTACHMENT]->(a1)
+    CREATE (m)-[:HAS_ATTACHMENT]->(a3)
+"""
 
 private const val SEED = """
     CREATE (o:SpOrg {id: 'o', name: 'org'})
@@ -232,6 +267,13 @@ class SortPathOracleTest {
 
     @Test
     fun `a collection sorts by a path a split on an underscore misreads on Oracle`() = verify(buildGom(pm, registry), sortsNested = true)
+
+    @Test
+    fun `a sort beneath a recursive view orders every level alike on Oracle`() {
+        OracleTestDatabase.clear(pm)
+        OracleTestDatabase.seed(pm, TREE_SEED)
+        verifyRecursive(buildGom(pm, registry))
+    }
 }
 
 @PostgresTests
@@ -247,6 +289,13 @@ class SortPathPostgresTest {
 
     @Test
     fun `a collection sorts by a path a split on an underscore misreads on Postgres`() = verify(buildGom(pm, registry), sortsNested = true)
+
+    @Test
+    fun `a sort beneath a recursive view orders every level alike on Postgres`() {
+        PostgresTestDatabase.clear(pm)
+        PostgresTestDatabase.seed(pm, TREE_SEED)
+        verifyRecursive(buildGom(pm, registry))
+    }
 }
 
 class SortPathSqliteTest {
@@ -261,4 +310,11 @@ class SortPathSqliteTest {
 
     @Test
     fun `a collection sorts by a path a split on an underscore misreads on SQLite`() = verify(buildGom(pm, registry), sortsNested = true)
+
+    @Test
+    fun `a sort beneath a recursive view orders every level alike on SQLite`() {
+        SqliteTestDatabase.clear(pm)
+        SqliteTestDatabase.seed(pm, TREE_SEED)
+        verifyRecursive(buildGom(pm, registry))
+    }
 }
