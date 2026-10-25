@@ -99,10 +99,10 @@ abstract class SqlCypherCompiler(graph: String) {
         val writer = Writer(
             Parameters(parameters, { name, _ -> nullIfJsonNull(propertyOf(PARAMS, name)) }, { number(propertyOf(PARAMS, it)) }, inObject = true, text = ::parameterText)
         )
-        val body = writer.procedure(query)
-        // The parameters' text is written before the procedure is: on Oracle, writing it is what says whether the procedure
-        // reads it as extended JSON.
+        // The parameters' text is written before the procedure's body is: on Oracle, writing it is what says whether the
+        // body reads it as extended JSON.
         val values = writer.parameters.values
+        val body = writer.procedure(query)
         return CompiledCypher(procedure(body), values)
     }
 
