@@ -1,6 +1,7 @@
 package org.drivine.codegen.java;
 
 import static com.google.testing.compile.CompilationSubject.assertThat;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 
 import com.google.testing.compile.Compilation;
 import com.google.testing.compile.Compiler;
@@ -281,15 +282,35 @@ class ViewShapesCodegenTest {
     void aStaticFieldIsNoProperty() {
         JavaFileObject view = source("PersonView",
             "package sample.vs;",
+            "import org.drivine.annotation.GraphRelationship;",
             "import org.drivine.annotation.GraphView;",
             "import org.drivine.annotation.Root;",
             "@GraphView",
             "public class PersonView {",
             "  public static final String NAME = \"person\";",
+            "  @GraphRelationship(type = \"FALLS_BACK_TO\") public static Company FALLBACK;",
             "  @Root public Person person;",
+            "  @GraphRelationship(type = \"HIRED\") public java.util.List<Hire> hires;",
+            "}");
+        JavaFileObject hire = source("Hire",
+            "package sample.vs;",
+            "import org.drivine.annotation.RelationshipFragment;",
+            "@RelationshipFragment",
+            "public class Hire {",
+            "  public static AuditView EXAMPLE;",
+            "  public String role;",
+            "  public Company target;",
+            "}");
+        JavaFileObject audit = source("AuditView",
+            "package sample.vs;",
+            "import org.drivine.annotation.GraphView;",
+            "import org.drivine.annotation.Root;",
+            "@GraphView",
+            "public class AuditView {",
+            "  @Root public Company company;",
             "}");
 
-        Compilation compilation = compile(view);
+        Compilation compilation = compile(view, hire, audit);
 
         assertThat(compilation).succeeded();
         assertThat(compilation)
@@ -300,5 +321,11 @@ class ViewShapesCodegenTest {
             .generatedSourceFile("sample.vs.PersonViewQueryDsl")
             .contentsAsUtf8String()
             .doesNotContain("NAME");
+        assertThat(compilation)
+            .generatedSourceFile("sample.vs.PersonViewQueryDsl")
+            .contentsAsUtf8String()
+            .doesNotContain("FALLBACK");
+        // A static field of a relationship fragment is no target: the view it names is held by none.
+        assertFalse(compilation.generatedSourceFile("sample.vs.AuditViewProperties").isPresent());
     }
 }
