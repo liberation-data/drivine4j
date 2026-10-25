@@ -19,6 +19,9 @@ package org.drivine.query.grammar
  *   Every hit the call yields is collected to normalize the scores and carried by each row after it,
  *   so this — not [topKParam] — is what bounds a search's memory; see
  *   [CypherGrammar.normalizedFullTextHead]
+ * @param labels the root's labels, which a hit must all have: the index is on the first alone, so it
+ *   yields nodes that are not the root's. They are checked before the scores are scaled, so the best
+ *   hit is one the search can return
  */
 data class FullTextQuerySpec(
     val label: String,
@@ -27,4 +30,5 @@ data class FullTextQuerySpec(
     val topKParam: String,
     val properties: List<String> = emptyList(),
     val indexLimitParam: String = topKParam,
+    val labels: List<String> = emptyList(),
 )

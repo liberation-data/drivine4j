@@ -5,11 +5,16 @@ import org.drivine.connection.FalkorDbConnectionProvider
 import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.oracle.OracleTestDatabase
+import org.drivine.oracle.OracleTests
+import org.drivine.postgres.PostgresTestDatabase
+import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.VectorIndexSpec
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.test.SharedFalkorDb
 import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
@@ -29,9 +34,9 @@ import kotlin.test.assertEquals
 
 /**
  * A search over a root with more than one label returns only nodes with all of them, as a load does,
- * on each graph engine. Its index is on the first label, so it also yields a node with that label
- * alone: here the draft, which ranks best and must not come back. A full-text search asks its index
- * for more than `topK` hits to make up for those it drops, so one wanted is still found.
+ * on each graph engine and each SQL store. Its index is on the first label, so it also yields a node
+ * with that label alone: here the draft, which ranks best and must not come back. A full-text search
+ * asks its index for more than `topK` hits to make up for those it drops, so one wanted is still found.
  */
 private val QUERY = listOf(1.0f, 0.0f, 0.0f, 0.0f)
 
@@ -75,6 +80,19 @@ private fun verify(gom: StatelessGraphObjectManager) {
         gom.loadMatching(PublishedPaper::class.java, PublishedPaperQueryDsl.INSTANCE, "kotlin", topK = 1) {
             where { query.id eq "published" }
         }.map { it.value.id },
+    )
+
+    // The draft outranks the paper, but is no PublishedPaper: the scores are scaled by the best hit the
+    // search can return, so the paper scores 1, as it does on a store that narrows by labels first, and
+    // a threshold just under 1 keeps it.
+    assertEquals(1.0, gom.loadMatching<PublishedPaper>("kotlin", topK = 5).single().score, 1e-9)
+    assertEquals(1.0, gom.loadMatching<PublishedPaperView>("kotlin", topK = 5).single().score, 1e-9)
+    assertEquals(listOf("published"), gom.loadMatching<PublishedPaper>("kotlin", topK = 5, threshold = 0.99).map { it.value.id })
+    assertEquals(
+        listOf(1.0),
+        gom.loadMatching(PublishedPaper::class.java, PublishedPaperQueryDsl.INSTANCE, "kotlin", topK = 5) {
+            where { query.id eq "published" }
+        }.map { it.score },
     )
 
     // A fragment's inherited label is checked, and counted when the search over-fetches.
@@ -187,4 +205,37 @@ class MultiLabelRootSearchMemgraphTest {
     }
 
     @Test fun `a search returns only nodes with every root label on Memgraph`() = verify(gom)
+}
+
+/** A SQL store narrows by the root's labels before it scales the scores: the graph engines are held to its answers. */
+class MultiLabelRootSearchSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @Test fun `a search returns only nodes with every root label on SQLite`() {
+        seed(SqliteTestDatabase.fixtures(pm), { it }, awaitIndexes = false)
+        verify(buildGom(pm, registry))
+    }
+}
+
+@PostgresTests
+class MultiLabelRootSearchPostgresTest {
+    private val registry = SubtypeRegistry()
+    private val pm = PostgresTestDatabase.graphManager("contracts", registry)
+
+    @Test fun `a search returns only nodes with every root label on Postgres`() {
+        seed(PostgresTestDatabase.fixtures(pm), { it }, awaitIndexes = false)
+        verify(buildGom(pm, registry))
+    }
+}
+
+@OracleTests
+class MultiLabelRootSearchOracleTest {
+    private val registry = SubtypeRegistry()
+    private val pm = OracleTestDatabase.graphManager("contracts", registry)
+
+    @Test fun `a search returns only nodes with every root label on Oracle`() {
+        seed(OracleTestDatabase.fixtures(pm), { it }, awaitIndexes = false)
+        verify(buildGom(pm, registry))
+    }
 }
