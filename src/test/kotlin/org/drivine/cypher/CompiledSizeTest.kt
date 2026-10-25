@@ -145,6 +145,9 @@ class CompiledSizeTest {
             fun tests(cypher: String, parameters: Map<String, Any?> = emptyMap()) = compiler.compile(cypher, parameters).sql.contains(test)
             assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, 2))), "${compiler::class.simpleName}")
             assertTrue(!tests("MATCH (c:Claim) WITH c, c.list AS l RETURN [1, 2] = [1, 2], c.a = c.b, l = c.b, c.list IN \$ls, {x: 1} <> {x: 2}, size(l) = 2", mapOf("ls" to listOf(listOf(1)))), "${compiler::class.simpleName}")
+            // An item unwound from a list that holds no null holds none.
+            assertTrue(!tests("UNWIND [[1, 2], [3]] AS l RETURN l = [1, 2]"), "${compiler::class.simpleName}")
+            assertTrue(tests("UNWIND [[1, null], [3]] AS l RETURN l = [1, 2]"), "${compiler::class.simpleName}")
             // Lists and maps written out are compared item by item.
             assertTrue(!tests("MATCH (c:Claim) WITH c.a AS a, c.b AS b RETURN [a, b] = [b, a], {x: a} = {x: b}, a IN [b, null]"), "${compiler::class.simpleName}")
             // A parameter's list that holds a null is compared item by item as the statement is compiled; a map is walked.
