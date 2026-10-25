@@ -325,7 +325,12 @@ internal class FragmentMergeBuilder(
             if (dropLabels.isNotEmpty()) append("\nREMOVE n").append(labelExpression(dropLabels))
         }
         val carried = fragmentModel.stampField?.let { allProps[it] as? String }
-        val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, expected, carried) }
+        val stampWrite = offered?.let {
+            StampWrite(
+                obj.javaClass, idValue, labels, nodeIdProperty, expected, carried,
+                fieldsCompared = fieldsAsLoaded.isNotEmpty(), wholeStampCompared = expected != null && wholeStamp,
+            )
+        }
         return MergeStatement(query, bindings, stampWrite)
     }
 
@@ -450,6 +455,13 @@ data class StampWrite(
      * data it may hold one itself, and is told whole here.
      */
     val labelNames: List<String> = labels.split(':'),
+    /** Whether a checked statement compares the node's fields with the object as it was loaded, as well as its stamp. */
+    val fieldsCompared: Boolean = false,
+    /**
+     * Whether a checked statement compares the whole stamp, the relationship token too, and not the
+     * node token alone.
+     */
+    val wholeStampCompared: Boolean = false,
 )
 
 /**

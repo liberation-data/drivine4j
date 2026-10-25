@@ -1,5 +1,6 @@
 package org.drivine.query.grammar
 
+import org.drivine.query.indexedNodeLabelCheck
 import org.drivine.query.sort.CollectionSortEmitter
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SimilarityFunction
@@ -256,12 +257,21 @@ interface CypherGrammar {
          *
          * @param callClause the full-text `CALL …` line for this engine (no trailing newline)
          * @param indexLimitParam the bound parameter carrying how many hits to keep
+         * @param labels the root's labels, each hit checked for all of them before it is kept or scaled:
+         *   the index is on the first alone, so a hit with that label only is no root, and the best of
+         *   the scale must be a hit the search can return
          */
-        fun normalizedFullTextHead(callClause: String, rootAlias: String, scoreAlias: String, indexLimitParam: String): String =
+        fun normalizedFullTextHead(
+            callClause: String,
+            rootAlias: String,
+            scoreAlias: String,
+            indexLimitParam: String,
+            labels: List<String> = emptyList(),
+        ): String =
             """
             |$callClause
             |YIELD node, score
-            |WITH node, score
+            |${indexedNodeLabelCheck("node", labels)?.let { "WITH node, score WHERE $it\n|" } ?: ""}WITH node, score
             |ORDER BY score DESC
             |LIMIT ${'$'}$indexLimitParam
             |WITH collect({node: node, score: score}) AS _ftResults, max(score) AS _ftMax
@@ -354,6 +364,7 @@ class Neo4j5Grammar(
             rootAlias,
             scoreAlias,
             spec.indexLimitParam,
+            spec.labels,
         )
 }
 
@@ -481,5 +492,6 @@ class FalkorDbCypherGrammar(
             rootAlias,
             scoreAlias,
             spec.indexLimitParam,
+            spec.labels,
         )
 }

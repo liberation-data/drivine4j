@@ -276,10 +276,12 @@ class OracleBackendTest {
 
         val asked = store.queried.single()
         assertEquals(
-            "SELECT object_name FROM g_schema WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL",
+            "SELECT object_name FROM g_schema WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL" +
+                " AND JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) = \$dimensions",
             asked.statement,
         )
-        assertEquals(mapOf<String, Any?>("kind" to "VECTOR_INDEX", "label" to "VecDoc", "properties" to "[\"embedding\"]"), asked.parameters)
+        // Only an index of the vector's size is searched: Oracle refuses to measure two sizes against each other.
+        assertEquals(mapOf<String, Any?>("kind" to "VECTOR_INDEX", "label" to "VecDoc", "properties" to "[\"embedding\"]", "dimensions" to 2), asked.parameters)
         assertContains(plan.cypher, "FROM g_v_made s")
         assertContains(plan.cypher, "FETCH APPROX FIRST")
         assertEquals(5, plan.requestedRows)
@@ -292,6 +294,8 @@ class OracleBackendTest {
 
         assertFalse("FETCH APPROX" in plan.cypher)
         assertContains(plan.cypher, "VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB))")
+        // Only the embeddings of the vector's size are measured: Oracle refuses to measure two sizes against each other.
+        assertContains(plan.cypher, "VECTOR_DIMENSION_COUNT(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB))) = 1")
         assertTrue(0.5 in plan.bindings.values, "the threshold is bound")
     }
 

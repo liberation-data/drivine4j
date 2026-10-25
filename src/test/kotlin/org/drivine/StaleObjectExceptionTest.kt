@@ -14,8 +14,10 @@ class StaleObjectExceptionTest {
 
     private val expected = "aaaaaaaaaaaaaaaa:bbbbbbbbbbbbbbbb"
 
-    private fun stale(expected: String = this.expected, found: String?, deleted: Boolean = false, bySameBatch: Boolean = false, cause: Throwable? = null) =
-        StaleObjectException(Claim::class.java, "c1", expected, found, deleted, bySameBatch, cause)
+    private fun stale(
+        expected: String = this.expected, found: String?, deleted: Boolean = false, bySameBatch: Boolean = false, cause: Throwable? = null,
+        fieldsDiffer: Boolean = false,
+    ) = StaleObjectException(Claim::class.java, "c1", expected, found, deleted, bySameBatch, cause, fieldsDiffer)
 
     private fun message(e: StaleObjectException): String = e.message.orEmpty()
 
@@ -36,6 +38,26 @@ class StaleObjectExceptionTest {
 
         assertContains(message(relinked), "Claim 'c1' had a relationship added or removed by another writer after it was loaded")
         assertContains(message(relinked), "Expected stamp $expected, found aaaaaaaaaaaaaaaa:cccccccccccccccc.")
+    }
+
+    @Test
+    fun `a node that carries the stamp compared and differs in a field says a field differs, and not that a relationship changed`() {
+        val sameStamp = stale(found = expected, fieldsDiffer = true)
+        val sameNodeToken = stale(found = "aaaaaaaaaaaaaaaa:cccccccccccccccc", fieldsDiffer = true)
+
+        for (e in listOf(sameStamp, sameNodeToken)) {
+            assertTrue(message(e).startsWith("Claim 'c1' has a field that is not as the object was loaded with, though its stamp says its own data is as the object was loaded with, so it was not saved."), message(e))
+            assertContains(message(e), "Another writer changed the field and left the stamp as it was, or the load read the node while another writer committed.")
+            assertFalse("relationship" in message(e), message(e))
+            assertTrue(e.fieldsDiffer)
+        }
+        assertContains(message(sameStamp), "Expected stamp $expected, found $expected.")
+        assertFalse(stale(found = expected).fieldsDiffer)
+    }
+
+    @Test
+    fun `a node that is gone was deleted, though a field was said to differ`() {
+        assertContains(message(stale(found = null, deleted = true, fieldsDiffer = true)), "was deleted by another writer")
     }
 
     @Test

@@ -91,6 +91,25 @@ class FullTextSearchGrammarTest {
     }
 
     @Test
+    fun `a root's labels are checked before the hits are cut and scaled, on every engine`() {
+        val labelled = spec().copy(labels = listOf("Article", "Published"))
+        listOf(
+            Neo4j5Grammar(ApocSortMapsEmitter()),
+            FalkorDbCypherGrammar(CallSubqueryEmitter()),
+            MemgraphGrammar(CallSubqueryEmitter()),
+        ).forEach { grammar ->
+            val head = grammar.fullTextSearchHead(labelled, "article", "_score")
+            // A WITH of its own: FalkorDB and Memgraph refuse a WHERE before ORDER BY in one WITH.
+            assertTrue(
+                head.contains("YIELD node, score\nWITH node, score WHERE node:`Article`:`Published`\nWITH node, score\nORDER BY score DESC\nLIMIT \$limit\n"),
+                head,
+            )
+        }
+        // A root of one label is no more than the index's, and is not checked.
+        assertNormalizedTail(Neo4j5Grammar(ApocSortMapsEmitter()).fullTextSearchHead(spec().copy(labels = listOf("Article")), "a", "_score"), "a", "_score")
+    }
+
+    @Test
     fun `the normalization guard is shared verbatim across engines`() {
         // Neo4j and Memgraph key by name, FalkorDB by label, but the [0,1] normalization tail — the
         // part that bit the consumers — is identical, produced by the single shared helper.

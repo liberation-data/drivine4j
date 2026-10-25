@@ -1017,8 +1017,10 @@ The index is resolved from a **`@FullTextIndex`** on the searched fragment (prop
 field, or class-level `@FullTextIndex(properties = ["title", "body"])` for a multi-property index) — the
 same annotation the schema feature uses to *create* it. `threshold` defaults to `0.0` (keep everything).
 `topK` bounds the index call as well as the rows returned: the scores are normalized over the hits
-the index yields, so the index is asked for its best `topK` hits, and an ordinary query that matches
-most of a corpus costs no more than those. Each result is a `Scored<T>(value, score)`, most relevant
+the index yields that have every one of the root's labels, so the index is asked for its best `topK`
+hits, and an ordinary query that matches most of a corpus costs no more than those. A node with the
+indexed label alone is no root, so it is dropped before the scores are scaled, and the best hit a
+search can return scores `1.0` on every store. Each result is a `Scored<T>(value, score)`, most relevant
 first, with polymorphic dispatch (a `loadMatching<SealedBase>` returns each hit as its concrete subtype).
 
 The query string is passed through to the engine's full-text language (Lucene syntax on Neo4j:
@@ -1035,7 +1037,8 @@ graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20) {
 ```
 
 The predicate, like a view's required relationships and a root's labels beyond the first (the one
-the index is on), is applied **after** the index yields. Where any of them filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
+the index is on), is applied **after** the index yields; the labels are checked before the scores
+are scaled, the predicate and relationships after. Where any of them filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
 and the filter keeps the best `topK` of those, so a filter that passes fewer than one in ten of the
 best hits can return fewer than `topK` rows while the index holds more that pass it. The DEBUG line
 `GraphObjectManager` logs for a short result says how many hits the index was asked for.
@@ -1981,7 +1984,7 @@ graphObjectManager.getEdges().unrelate(new NodeRef(Issue.class, a, Set.of()), ne
 - A `patch` from Java names its fields with `property.assign(value)` and `property.cleared()` in `spec.set(…)`, and its predicate with the conditions of the Java query builder: `spec.onlyIf(…)` joins them by `AND`, and `spec.onlyIfAny(…)` by `OR`. The DSL object above is the one the Kotlin code generator makes; one the Java generator makes is `PersonQueryDsl.INSTANCE`, with `name()` for `getName()`.
 - `@NodeStamp` goes on a `String` field of a Java class or on a `String` component of a record. A Java object whose fields can be set is given its new stamp in place, and `save` returns that same object. A record comes back as a copy.
 - `update`'s function may change the object it is given and return it, or return another.
-- A refused save throws `StaleObjectException`: `getDeleted()` says whether the node is gone, `getFoundStamp()` gives the stamp it carries now, and `getBySameBatch()` says whether a `saveAll` refused itself.
+- A refused save throws `StaleObjectException`: `getDeleted()` says whether the node is gone, `getFoundStamp()` gives the stamp it carries now, `getBySameBatch()` says whether a `saveAll` refused itself, and `getFieldsDiffer()` whether a field differed under the stamp compared.
 - `Stamps.setClause("p")` and `Stamps.linksClause("p")` give the `SET` items for Cypher of your own.
 
 #### Saves and transactions
@@ -2047,7 +2050,7 @@ Two cases are decided by the object, not by another writer:
 - The whole save is one statement, so it is one round trip and atomic, on an engine without transactions too. The statement takes the node's write lock before it compares, so of several writers holding the same stamp exactly one succeeds and the rest are refused.
 - In a view, the root is checked. A node reached through a relationship is written unchecked.
 - `update` is checked against the stamp it loaded, whatever the change does with the object's.
-- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each field of the root as it loaded it too, under the node's lock, and loads again if one differs: a declared field's value, a `@PropertyBag`'s keys and their values, the labels a `@NodeLabels` field reads. A field loaded as what a load gives a node without the property (a `@Default`, an `@EmptyWhenAbsent` empty collection, a constructor default where the load reads every property) is taken as the same where the node has no such property, so a node saved before the field was added can still be updated. A `@JsonPacked` field is compared as the text the load read, not as its value packed again, so JSON another library, raw Cypher or a migration packed with other spacing or escaping is not taken for a change; one the node held nothing for, whose value came from a default, is packed as a save packs it. A `save` checks the same when you give it the object as loaded, as [`from`](#saving-data): the text is kept beside the object a load returned, and beside the one an update returned for a packed field it did not write, for as long as each is, so a `from` no load made, such as a copy, has its packed field compared as a save packs it, and a node whose text was packed another way then has the save refused, though nothing changed. Without `from` it has only the stamp to go on, and in that moment it can write over the other writer's change: hold on to what you loaded and pass it, or change the node with `update`. Where only the stamp makes the round trip, as through a web form, the stamp is all there is. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
+- **On Neo4j a load can be handed a stamp newer than its data.** Neo4j reads under read committed, without a snapshot, so a load that runs while another writer commits can find that writer's stamp and the data from before its write. `update` therefore compares each field of the root as it loaded it too, under the node's lock, and loads again if one differs: a declared field's value, a `@PropertyBag`'s keys and their values, the labels a `@NodeLabels` field reads. A field loaded as what a load gives a node without the property (a `@Default`, an `@EmptyWhenAbsent` empty collection, a constructor default where the load reads every property) is taken as the same where the node has no such property, so a node saved before the field was added can still be updated. A `@JsonPacked` field is compared as the text the load read, not as its value packed again, so JSON another library, raw Cypher or a migration packed with other spacing or escaping is not taken for a change; one the node held nothing for, whose value came from a default, is packed as a save packs it. A `Set` field loads in the order the node holds its list, and is compared as the list the load read, so a list in another order than the set's, or holding an item twice, is not taken for a change either. A `save` checks the same when you give it the object as loaded, as [`from`](#saving-data): the text and the lists are kept beside the object a load returned, and beside the one an update or a save of named fields returned for a packed or set field it did not write, for as long as each is, so a `from` no load made, such as a copy, has its packed field compared as a save packs it, and a node whose text was packed another way then has the save refused, though nothing changed. A save refused because a field differs, where the node carries the stamp compared, says so, and `StaleObjectException.fieldsDiffer` is true. Without `from` it has only the stamp to go on, and in that moment it can write over the other writer's change: hold on to what you loaded and pass it, or change the node with `update`. Where only the stamp makes the round trip, as through a web form, the stamp is all there is. Memgraph and Neptune read from a snapshot, FalkorDB runs no read beside a write, and Oracle and Postgres read a statement whole, so on them the stamp is what was read.
 
 Handling a refusal:
 
@@ -3216,8 +3219,10 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   group that anchors the expression would make it the tenth, which POSIX does not have.
 - A vector index (`indexes.ensure(VectorIndexSpec(...))`, or `@VectorIndex` through schema management)
   is a table of embeddings beside the nodes, kept in step by a trigger, with an Oracle vector index
-  over it by neighbour partitions. `loadNearest` goes through it and is approximate, as on the graph
-  engines. With no index made, it measures every node of the label and is exact.
+  over it by neighbour partitions. The table holds the embeddings of the index's size; a node written
+  with another size is left out, not refused. `loadNearest` goes through it and is approximate, as on
+  the graph engines. With no index made, or one of another size than the vector's, it measures every
+  node of the label whose embedding is of the vector's size, and is exact.
 - A full-text index is a table of the indexed text beside the nodes, with an Oracle Text index over
   it. `loadMatching` reads words, a `"phrase"`, `+must`, `-not` and a `prefix*`. A backslash before
   punctuation or a space makes that character text: `prefix\*` is the word and `\-not` is not taken

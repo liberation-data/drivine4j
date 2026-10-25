@@ -170,8 +170,9 @@ interface GraphObjectOperations {
      * with one label has no such filter, so it returns the full top-K (minus any [threshold] cut).
      *
      * On Oracle the search goes through the vector index when one has been made for the label and
-     * property, and is approximate as on the graph engines; with none made it measures every node of
-     * the label, which is exact and is not refused.
+     * property for embeddings of the vector's size, and is approximate as on the graph engines; with
+     * none made, or one of another size, it measures every node of the label whose embedding is of the
+     * vector's size, which is exact and is not refused: a node of another size is left out.
      *
      * Example:
      * ```kotlin

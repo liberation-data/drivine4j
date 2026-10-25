@@ -11,6 +11,7 @@ import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.VectorIndexSpec
 import org.drivine.sqlite.SqliteTestDatabase
@@ -25,6 +26,7 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
 import sample.vector.DocNode
+import sample.vector.DocNodeQueryDsl
 import sample.vector.DocView
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
@@ -79,13 +81,33 @@ private fun seedAmong(pm: PersistenceManager, vec: (String) -> String) {
     )
 }
 
-/** Adds W, whose embedding has 3 dimensions where the index has 4. [vec] writes it as [seedAmong]'s does. */
+/**
+ * Adds W, whose embedding has 3 dimensions where the index has 4. [vec] writes it as [seedAmong]'s does.
+ * W has an author, so that a view leaves it out for its size and not for a missing relationship. W and
+ * A carry [PARTITION], so that a search partitioned by it has one node of each size to measure.
+ */
 private fun seedMisSized(pm: PersistenceManager, vec: (String) -> String) {
-    pm.execute(QuerySpecification.withStatement("CREATE (:Doc {id: 'W', title: 'Wrong size', embedding: ${vec("[1.0, 0.0, 0.0]")}})"))
+    pm.execute(
+        QuerySpecification.withStatement(
+            "MATCH (auth:Author {id: 'au1'}) " +
+                "CREATE (w:Doc:$PARTITION {id: 'W', title: 'Wrong size', embedding: ${vec("[1.0, 0.0, 0.0]")}}) CREATE (w)-[:WRITTEN_BY]->(auth)"
+        )
+    )
+    pm.execute(QuerySpecification.withStatement("MATCH (a:Doc {id: 'A'}) SET a:$PARTITION"))
 }
 
+/** The vector `loadNearest` searches by: A's own embedding, of the index's 4 dimensions. */
+private val QUERY = listOf(1.0f, 0.0f, 0.0f, 0.0f)
+
+/** W's own embedding, of 3 dimensions. */
+private val MIS_SIZED_QUERY = listOf(1.0f, 0.0f, 0.0f)
+
+/** A label no index is made for, so a search partitioned by it on Oracle or Postgres measures every node. */
+private const val PARTITION = "Corpus_sized"
+
 /**
- * The contract each store's subclass runs. [exact] for a store that measures every node rather than
+ * The contract each store's subclass runs. It also holds `loadNearest`'s case of an embedding of
+ * another size, as W gives it to both searches. [exact] for a store that measures every node rather than
  * asking an approximate index, where the default searchK changes nothing.
  */
 abstract class NearestAmongContract {
@@ -104,6 +126,9 @@ abstract class NearestAmongContract {
      * FalkorDB's vector procedures refuse a vector of another size, rather than leaving that id out.
      */
     protected open val refusesMisSized = false
+
+    /** Whether the store searches a label with no vector index by measuring its nodes, as the SQL stores do, rather than refusing. */
+    protected open val searchesWithoutIndex = true
 
     private fun ids(near: List<Scored<String>>?) = near?.map { it.value }
     private fun assertScores(expected: List<Double>, near: List<Scored<String>>?) {
@@ -168,6 +193,45 @@ abstract class NearestAmongContract {
         assertEquals(listOf("B"), ids(found["A"]))
         assertEquals(listOf("A"), ids(found["B"]))
         assertTrue(found["W"].isNullOrEmpty(), "W measured: $found")
+    }
+
+    @Test
+    fun `loadNearest leaves out a node whose embedding is of another size, plain, filtered or as a view`() {
+        assumeTrue(addMisSized(), "the store does not keep an embedding of another size")
+
+        val plain = gom.loadNearest(DocNode::class.java, QUERY, topK = WIDE, searchK = WIDE)
+        assertEquals(listOf("A", "X", "B", "C", "D"), plain.map { it.value.id })
+
+        val filtered = gom.loadNearest(DocNode::class.java, DocNodeQueryDsl.INSTANCE, QUERY, topK = WIDE, searchK = WIDE) {
+            where { query.title neq "Alpha" }
+        }
+        assertEquals(listOf("X", "B", "C", "D"), filtered.map { it.value.id })
+
+        // W has an author, as A, B and C do; D has none, so a view leaves it out.
+        val viewed = gom.loadNearest(DocView::class.java, QUERY, topK = WIDE, searchK = WIDE)
+        assertEquals(listOf("A", "B", "C"), viewed.map { it.value.doc.id })
+    }
+
+    @Test
+    fun `a vector of another size than the index's finds only the nodes of its size, or is refused`() {
+        assumeTrue(addMisSized(), "the store does not keep an embedding of another size")
+        val search = { gom.loadNearest(DocNode::class.java, MIS_SIZED_QUERY, topK = WIDE, searchK = WIDE) }
+        if (refusesMisSized) {
+            assertTrue(runCatching(search).isFailure, "a vector of another size is searched by")
+            return
+        }
+
+        // A store that has an index of another size measures every node instead, as one with none does.
+        assertEquals(listOf("W"), search().map { it.value.id })
+    }
+
+    @Test
+    fun `a search partitioned by a label with no index leaves out a node whose embedding is of another size`() {
+        assumeTrue(searchesWithoutIndex, "the store searches a partition only through its index")
+        assumeTrue(addMisSized(), "the store does not keep an embedding of another size")
+
+        val found = gom.loadNearest(DocNode::class.java, null, QUERY, topK = WIDE, threshold = null, searchK = null, partitionLabel = PARTITION)
+        assertEquals(listOf("A"), found.map { it.value.id })
     }
 
     @Test
@@ -261,6 +325,7 @@ class NearestAmongNeo4jTest : NearestAmongContract() {
     override val gom: GraphObjectOperations get() = manager
     override val exact = false
     override val refusesMisSized = true
+    override val searchesWithoutIndex = false
     override fun addMisSized() = true.also { seedMisSized(pm) { it } }
 
     @BeforeEach
@@ -303,6 +368,7 @@ class NearestAmongFalkorDbTest : NearestAmongContract() {
     override val exact = false
 
     override val refusesMisSized = true
+    override val searchesWithoutIndex = false
     override fun addMisSized() = true.also { seedMisSized(pm) { "vecf32($it)" } }
 
     /** FalkorDB indexes a vector only when it is stored as its own vector type. */
@@ -342,6 +408,8 @@ class NearestAmongMemgraphTest : NearestAmongContract() {
 
     override val gom: GraphObjectOperations get() = manager
     override val exact = false
+
+    override val searchesWithoutIndex = false
 
     /** Memgraph refuses to write an embedding of another size than its index's. */
     override fun addMisSized() = false

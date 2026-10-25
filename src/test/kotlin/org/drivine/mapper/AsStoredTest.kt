@@ -4,10 +4,11 @@ import org.junit.jupiter.api.Test
 import sample.stateless.Claim
 import sample.stateless.ClaimWithTagsView
 import sample.stateless.ClaimWithTags
+import sample.stateless.SetProbe
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
 
-class PackedTextTest {
+class AsStoredTest {
 
     private val stamp = "0123456789abcdef:fedcba9876543210"
 
@@ -23,24 +24,24 @@ class PackedTextTest {
 
         assertEquals(listOf("a", "b"), claim.tags)
         assertEquals(claim, equal)
-        assertEquals(mapOf("tags" to "[\"a\", \"b\"]"), PackedText.of(claim, stamp))
-        assertEquals(mapOf("tags" to "[\"a\",\"b\"]"), PackedText.of(equal, stamp))
-        assertNull(PackedText.of(claim.copy(), stamp), "no load made a copy")
+        assertEquals(mapOf("tags" to "[\"a\", \"b\"]"), AsStored.of(claim, stamp))
+        assertEquals(mapOf("tags" to "[\"a\",\"b\"]"), AsStored.of(equal, stamp))
+        assertNull(AsStored.of(claim.copy(), stamp), "no load made a copy")
     }
 
     @Test
     fun `a load of a view keeps the text beside its root`() {
         val view = loaded(ClaimWithTagsView::class.java, mapOf("claim" to mapOf("id" to "c1", "text" to "one", "stamp" to stamp, "tags" to "[\"a\"]"), "people" to emptyList<Any>()))
 
-        assertEquals(mapOf("tags" to "[\"a\"]"), PackedText.of(view.claim, stamp))
+        assertEquals(mapOf("tags" to "[\"a\"]"), AsStored.of(view.claim, stamp))
     }
 
     @Test
     fun `the text is given only to a fragment that carries the stamp it was loaded with`() {
         val claim = loaded(ClaimWithTags::class.java, mapOf("id" to "c1", "text" to "one", "stamp" to stamp, "tags" to "plain"))
 
-        assertEquals(mapOf("tags" to "plain"), PackedText.of(claim, stamp))
-        assertNull(PackedText.of(claim, "another"))
+        assertEquals(mapOf("tags" to "plain"), AsStored.of(claim, stamp))
+        assertNull(AsStored.of(claim, "another"))
     }
 
     @Test
@@ -49,8 +50,17 @@ class PackedTextTest {
         val unpacked = loaded(Claim::class.java, mapOf("id" to "c1", "text" to "one", "stamp" to stamp))
         val unstamped = loaded(ClaimWithTags::class.java, mapOf("id" to "c1", "text" to "one", "tags" to "[]"))
 
-        assertEquals(mapOf("tags" to null), PackedText.of(claim, stamp))
-        assertNull(PackedText.of(unpacked, stamp))
-        assertNull(PackedText.of(unstamped, null))
+        assertEquals(mapOf("tags" to null), AsStored.of(claim, stamp))
+        assertNull(AsStored.of(unpacked, stamp))
+        assertNull(AsStored.of(unstamped, null))
+    }
+
+    @Test
+    fun `a load keeps the list each set property held, in its order and with an item it holds twice, and loads the set in that order`() {
+        val probe = loaded(SetProbe::class.java, mapOf("id" to "p1", "name" to "one", "stamp" to stamp, "tags" to listOf("b", "a", "b", "c")))
+
+        assertEquals(listOf("b", "a", "c"), probe.tags.toList())
+        assertEquals(mapOf("tags" to listOf("b", "a", "b", "c")), AsStored.of(probe, stamp))
+        assertNull(AsStored.of(probe.copy(), stamp), "no load made a copy")
     }
 }
