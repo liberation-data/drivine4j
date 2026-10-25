@@ -242,7 +242,7 @@ class QueryDslGenerator(
                 return@forEach
             }
 
-            val propType = prop.type.resolve()
+            val propType = typeIn(relFragmentClass, prop)
 
             val propertyRefType = when {
                 propType.declaration.qualifiedName?.asString() == "kotlin.String" ->
@@ -404,7 +404,7 @@ class QueryDslGenerator(
         val bagPrefixes = mutableListOf<String>()
         // Every property the node stores, inherited ones among them, as the core library reads them.
         ModelReader.storedProperties(fragmentClass).forEach { prop ->
-            when (val emitted = addPropertyReference(classBuilder, prop, "\"n\"")) {
+            when (val emitted = addPropertyReference(classBuilder, fragmentClass, prop, "\"n\"")) {
                 is EmittedRef.Field -> {
                     fieldKeyPaths[emitted.logicalName] = emitted.onDiskName
                     fieldKeyPaths[emitted.onDiskName] = emitted.onDiskName
@@ -853,7 +853,7 @@ class QueryDslGenerator(
         // Property references read the constructor param when aliased, else the literal default alias.
         val aliasExpr = if (needsAliasConstructor) "alias" else "\"$defaultAlias\""
         ModelReader.storedProperties(fragmentClass).forEach { prop ->
-            addPropertyReference(classBuilder, prop, aliasExpr)
+            addPropertyReference(classBuilder, fragmentClass, prop, aliasExpr)
         }
 
         return classBuilder.build()
@@ -913,7 +913,12 @@ class QueryDslGenerator(
     }
 
     /** Emits one property reference, dispatching to the bag / string / scalar shape. */
-    private fun addPropertyReference(classBuilder: TypeSpec.Builder, prop: KSPropertyDeclaration, aliasExpr: String): EmittedRef {
+    private fun addPropertyReference(
+        classBuilder: TypeSpec.Builder,
+        fragmentClass: KSClassDeclaration,
+        prop: KSPropertyDeclaration,
+        aliasExpr: String,
+    ): EmittedRef {
         // @NodeLabels holds the node's labels, not a property: there is nothing to reference.
         if (prop.annotations.any { it.shortName.asString() == "NodeLabels" }) return EmittedRef.None
 
@@ -939,7 +944,7 @@ class QueryDslGenerator(
                 ?.arguments?.firstOrNull()?.value as? String
                 ?: propName
         }
-        val propType = prop.type.resolve()
+        val propType = typeIn(fragmentClass, prop)
         val propertyRefType = if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
             ClassName("org.drivine.query.dsl", "StringPropertyReference")
         } else {
@@ -956,6 +961,10 @@ class QueryDslGenerator(
         )
         return EmittedRef.Field(propName, onDiskName)
     }
+
+    /** [prop]'s type as a member of [owner], so a property a generic superclass declares has the type [owner] gives it. */
+    private fun typeIn(owner: KSClassDeclaration, prop: KSPropertyDeclaration): KSType =
+        prop.asMemberOf(owner.asStarProjectedType())
 
     /** Emits a `PropertyBagReference(alias, storedPrefix)`; returns the stored prefix (incl. delimiter). */
     private fun addPropertyBagReference(

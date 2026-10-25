@@ -338,7 +338,8 @@ public class QueryDslGenerator {
             if (hasAnnotation(field, "org.drivine.annotation.GraphTransient")) continue;
 
             String fieldName = field.getSimpleName().toString();
-            TypeMirror fieldType = field.asType();
+            // As a member of the fragment, so a field a generic superclass declares has the type the fragment gives it.
+            TypeMirror fieldType = typeUtils.asMemberOf((DeclaredType) fragmentClass.asType(), field);
 
             // A relationship fragment's target is the node it leads to, not one of the relationship's properties.
             if (hasAnnotation(fieldType, "org.drivine.annotation.NodeFragment")

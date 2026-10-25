@@ -129,4 +129,34 @@ class InheritedFieldsCodegenTest {
         assertThat(compilation).generatedSourceFile("sample.inh.CitesProperties").contentsAsUtf8String().contains("\"since\"");
         assertThat(compilation).generatedSourceFile("sample.inh.CitesProperties").contentsAsUtf8String().doesNotContain("scratch");
     }
+
+    @Test
+    void aFieldInheritedFromAGenericBaseHasTheTypeTheFragmentGivesIt() {
+        Compilation compilation = Compiler.javac().withProcessors(new GraphViewProcessor()).compile(
+            JavaFileObjects.forSourceLines("sample.inh.Held",
+                "package sample.inh;",
+                "import org.drivine.annotation.NodeId;",
+                "public abstract class Held<T> {",
+                "  @NodeId protected String id;",
+                "  protected T value;",
+                "}"),
+            JavaFileObjects.forSourceLines("sample.inh.Count",
+                "package sample.inh;",
+                "import org.drivine.annotation.NodeFragment;",
+                "@NodeFragment(labels = {\"Count\"})",
+                "public class Count extends Held<Integer> {}"),
+            JavaFileObjects.forSourceLines("sample.inh.CountView",
+                "package sample.inh;",
+                "import org.drivine.annotation.*;",
+                "@GraphView",
+                "public class CountView {",
+                "  @Root public Count count;",
+                "}"));
+
+        assertThat(compilation).succeeded();
+        for (String dsl : new String[] {"sample.inh.CountQueryDsl", "sample.inh.CountProperties"}) {
+            assertThat(compilation).generatedSourceFile(dsl).contentsAsUtf8String()
+                .contains("PropertyReference<Integer> value()");
+        }
+    }
 }

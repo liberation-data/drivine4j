@@ -194,4 +194,41 @@ class InheritedFieldsDslTest {
         assertTrue("loadMatching" in files.getValue("PageQueryDsl.kt"), "PageQueryDsl has no loadMatching")
         for (search in listOf("loadNearest", "loadMatching")) assertTrue(search in files.getValue("PageViewQueryDsl.kt"), "PageViewQueryDsl has no $search")
     }
+
+    @Test
+    fun `a property inherited from a generic base has the type the fragment gives it`() {
+        val files = generated(
+            SourceFile.java(
+                "Held.java",
+                """
+                package inh;
+                import org.drivine.annotation.*;
+                public abstract class Held<T> {
+                    @NodeId private String id;
+                    private T value;
+                }
+                """.trimIndent(),
+            ),
+            SourceFile.kotlin(
+                "Kinds.kt",
+                """
+                package inh
+                import org.drivine.annotation.*
+                abstract class Boxed<T>(val content: T)
+                @NodeFragment(labels = ["Count"]) class Count : Held<Int>()
+                @NodeFragment(labels = ["Box"]) class Box(content: Long) : Boxed<Long>(content)
+                @GraphView data class CountView(@Root val count: Count)
+                @GraphView data class BoxView(@Root val box: Box)
+                """.trimIndent(),
+            ),
+        )
+        for (dsl in listOf("CountQueryDsl", "CountProperties")) {
+            val code = classOf(files, dsl)
+            assertTrue("PropertyReference<kotlin.Int>(" in code, "$dsl lacks value as an Int:\n$code")
+        }
+        for (dsl in listOf("BoxQueryDsl", "BoxProperties")) {
+            val code = classOf(files, dsl)
+            assertTrue("PropertyReference<kotlin.Long>(" in code, "$dsl lacks content as a Long:\n$code")
+        }
+    }
 }
