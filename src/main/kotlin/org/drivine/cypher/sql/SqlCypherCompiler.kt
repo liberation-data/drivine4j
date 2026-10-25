@@ -336,6 +336,9 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The SQL number [sql] as the store works out a double: for a function, `sqrt` or `power`, that would give fewer digits. */
     protected open fun double(sql: String) = sql
 
+    /** `a ^ b` of the SQL numbers [a] and [b], a float, worked out as a double. */
+    protected open fun power(a: String, b: String) = float("power(${double(a)}, ${double(b)})")
+
     /** Where the kind of the JSON [json], an item of a list, comes among the others as Cypher orders them: as [kindOrder], null last. */
     protected fun itemRank(json: String): String = "COALESCE(${kindOrder(json)}, 6)"
 
@@ -2369,7 +2372,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     shared(a, b) { (x, y) -> "CASE WHEN ${integral(x)} AND ${integral(y)} THEN ${scalar(wholeQuotient(number(x), number(y)))} ELSE ${arithmetic(x, y, "/")} END" }
                 )
                 Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
-                Operator.POWER -> Value.Json(scalar(float("power(${double(number(a))}, ${double(number(b))})")))
+                Operator.POWER -> Value.Json(scalar(power(number(a), number(b))))
                 Operator.IN -> {
                     val i = alias("i")
                     // A node or a relationship is in a list of them where its id is.

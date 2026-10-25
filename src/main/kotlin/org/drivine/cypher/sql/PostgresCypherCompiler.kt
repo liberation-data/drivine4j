@@ -71,8 +71,29 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /**
      * The double [sql] is, as the `numeric` its text writes, its shortest, with a fraction: so a whole one is written `2.0`, as a
      * graph engine writes a float, and stays one in arithmetic, and one with a fraction has a double's digits, not `numeric`'s.
+     * A number a double rounds to 0, `1e-400`, is 0.0: Postgres fails its cast to `double precision` ("underflow"). One past the
+     * greatest double, `1e400`, is the `numeric` it is, with a fraction, as before doubles: Postgres fails that cast too
+     * ("overflow"), and its JSON reads back as an infinite double, as a graph engine gives it.
      */
-    override fun float(sql: String) = "(CAST(CAST(CAST($sql AS double precision) AS text) AS numeric) + 0.0)"
+    override fun float(sql: String) = shared(sql) { (s) ->
+        "CASE WHEN abs(CAST($s AS numeric)) <= $ROUNDS_TO_ZERO THEN 0.0 WHEN abs(CAST($s AS numeric)) > $GREATEST THEN CAST($s AS numeric) + 0.0 ELSE ${shortest(s)} END"
+    }
+
+    /** The double [sql] is, as the `numeric` its shortest text writes, with a fraction: see [float]. */
+    private fun shortest(sql: String) = "(CAST(CAST(CAST($sql AS double precision) AS text) AS numeric) + 0.0)"
+
+    /**
+     * The float [double] works out, of an operand it takes only where the condition it is given holds, where [exact], the same
+     * worked out in `numeric`, is a double, and with [small] a normal one; else [exact], made a float (see [float]). Postgres
+     * fails a product, a quotient or a power of doubles that is too small for a double ("underflow"), where Cypher gives 0.0,
+     * or the least doubles; and a result of doubles past the greatest ("overflow"), where Cypher gives an infinity. The
+     * operand is left out, not the double: Postgres works out a constant arm of a `CASE` as it plans it, whichever arm the row
+     * takes.
+     */
+    private fun inRange(exact: String, small: Boolean, double: (String) -> String) = shared(exact) { (r) ->
+        val within = (listOfNotNull("abs($r) >= $LEAST_NORMAL".takeIf { small }) + "abs($r) <= $GREATEST").joinToString(" AND ")
+        "COALESCE(${shortest(double(within))}, ${float(r)})"
+    }
 
     override fun double(sql: String) = "CAST($sql AS double precision)"
 
@@ -119,9 +140,17 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * Of two whole numbers, in `numeric`; of a float, in `double precision`, as Cypher works a float out, so `1.0 / 3` has a
      * double's digits and `0.1 + 0.2` is `0.30000000000000004`: `numeric` would give twenty digits, and the exact sum. See [float].
      */
-    override fun arithmetic(a: String, b: String, operator: String) =
-        "CASE WHEN ${integral(a)} AND ${integral(b)} THEN to_jsonb(${number(a)} $operator ${number(b)}) " +
-            "ELSE to_jsonb(${float("(${double(number(a))} $operator ${double(number(b))})")}) END"
+    override fun arithmetic(a: String, b: String, operator: String): String {
+        fun of(first: String) = "($first $operator ${double(number(b))})"
+        // Any may overflow; a sum or a difference of doubles too small for a double is none: only a product or a quotient underflows.
+        val float = inRange("(${number(a)} $operator ${number(b)})", small = operator == "*" || operator == "/") { within ->
+            of("CASE WHEN $within THEN ${double(number(a))} END")
+        }
+        return "CASE WHEN ${integral(a)} AND ${integral(b)} THEN to_jsonb(${number(a)} $operator ${number(b)}) ELSE to_jsonb($float) END"
+    }
+
+    override fun power(a: String, b: String) =
+        inRange("power($a, $b)", small = true) { within -> "power(CASE WHEN $within THEN ${double(a)} END, ${double(b)})" }
 
     override fun add(a: String, b: String) =
         "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN ${arithmetic(a, b, "+")} " +
@@ -362,5 +391,14 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private companion object {
         /** A text Postgres reads as a `numeric`, spaces around it allowed. */
         const val NUMERIC_TEXT = """^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$"""
+
+        /** Half the least double, 2^-1075, and less: a number a double rounds to 0. */
+        const val ROUNDS_TO_ZERO = "2.4703282292062328e-324"
+
+        /** The greatest double: one more overflows. */
+        const val GREATEST = "1.7976931348623157e308"
+
+        /** The least normal double, 2^-1022: one less is worked out with fewer digits, and may underflow. */
+        const val LEAST_NORMAL = "2.2250738585072014e-308"
     }
 }

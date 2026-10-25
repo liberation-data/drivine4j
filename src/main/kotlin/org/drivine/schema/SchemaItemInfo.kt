@@ -46,6 +46,14 @@ data class SchemaItemInfo(
         get() = status?.uppercase()?.contains("FAILED") == true
 
     /**
+     * Whether the engine reports that this item is still being built (FalkorDB's `UNDER CONSTRUCTION`): it has
+     * a status, and that status is neither `OPERATIONAL` nor failed. Such a constraint may yet fail, so it is
+     * waited on before it is taken as made.
+     */
+    internal val buildInProgress: Boolean
+        get() = status != null && status.uppercase() != "OPERATIONAL" && !buildFailed
+
+    /**
      * The physical vector parameters this item actually has, for logging what an engine chose when the
      * spec did not pin it. Omits anything the engine did not report. Empty for non-vector items.
      */

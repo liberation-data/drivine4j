@@ -12,6 +12,7 @@ import org.drivine.schema.ConstraintManager
 import org.drivine.schema.IndexManager
 import org.drivine.schema.SchemaExecutor
 import org.drivine.schema.SchemaGrammar
+import java.time.Duration
 import java.util.Optional
 
 /**
@@ -24,6 +25,7 @@ import java.util.Optional
  *
  * @param ddl the grammar the schema managers write with
  * @param schemaGrammar what the manager says its schema grammar is; null for a manager that has none
+ * @param asyncCreationTimeout how long [constraints] waits for a constraint's asynchronous build to end
  */
 class RecordingStore(
     override val type: DatabaseType,
@@ -31,6 +33,7 @@ class RecordingStore(
     override val schemaGrammar: SchemaGrammar? = ddl,
     override val graphName: String? = null,
     override val supportsSchemaManagement: Boolean = true,
+    asyncCreationTimeout: Duration = Duration.ofSeconds(30),
     private val answer: (Ran) -> Any? = { emptyList<Any?>() },
 ) : PersistenceManager {
 
@@ -91,7 +94,7 @@ class RecordingStore(
     override val database: String = "recording"
     override val grammar: CypherGrammar get() = CypherDialect.NEO4J_5.grammar()
     override val indexes: IndexManager = IndexManager(SchemaExecutor(provider), ddl)
-    override val constraints: ConstraintManager = ConstraintManager(SchemaExecutor(provider), ddl, indexes)
+    override val constraints: ConstraintManager = ConstraintManager(SchemaExecutor(provider), ddl, indexes, asyncCreationTimeout)
 
     @Suppress("UNCHECKED_CAST")
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
