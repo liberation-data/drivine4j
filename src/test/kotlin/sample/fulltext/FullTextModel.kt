@@ -1,6 +1,8 @@
 package sample.fulltext
 
+import org.drivine.annotation.Direction
 import org.drivine.annotation.FullTextIndex
+import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
@@ -41,6 +43,17 @@ data class MemoNode(
 @GraphView
 data class ArticleView(
     @Root val article: ArticleNode,
+)
+
+/**
+ * A view rooted on [ArticleNode] with a required relationship: its `IS NOT NULL` check removes the
+ * hits that have no author, so a search over it is filtered after the index.
+ */
+@GraphView
+data class AuthoredArticleView(
+    @Root val article: ArticleNode,
+    @GraphRelationship(type = "WROTE", direction = Direction.INCOMING)
+    val author: EntityNode,
 )
 
 /** Class-level multi-property index — one full-text index spanning `name` + `description`. */

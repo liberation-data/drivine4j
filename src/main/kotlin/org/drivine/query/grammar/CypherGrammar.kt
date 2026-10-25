@@ -236,15 +236,38 @@ interface CypherGrammar {
          * than dropped as NaN. The tail ends binding exactly [rootAlias] (the node) and [scoreAlias]
          * (the normalized similarity), the same shape a `vectorSearchHead` yields.
          *
+         * The hits are cut to the best [indexLimitParam] before they are collected, on every engine.
+         * The collected list is what a search's memory is made of: each row unwound from it carries
+         * it, so an operator that holds rows after the head — the sort that keeps the top `k` — is
+         * charged for the whole list once per row it holds. Measured on Neo4j 5.26 over 40,000
+         * matching chunks, a `k = 200` search with the hits uncut exhausted the 1.4 GiB transaction
+         * pool on its own; cut to 2,000 the whole query held 3.9 MB. An engine whose `CALL` takes a
+         * limit is given it as well ([Neo4j5Grammar], [MemgraphGrammar]), so the index stops
+         * producing rows instead of producing them to be dropped; the cut here is what holds where
+         * the `CALL` takes none.
+         *
+         * Ties at the cut are broken however the engine sorts, which is the same freedom the
+         * trailing `LIMIT` has always had.
+         *
+         * The tail yields its rows in descending score order: `collect` keeps the order of the sort
+         * before it, and `UNWIND` the order of the list. A fragment search limits its filtered rows
+         * with no sort of its own and relies on that order ([org.drivine.query.FragmentFullTextSearchBuilder]),
+         * so the sort stays even where the `CALL` already returns its hits best first.
+         *
          * @param callClause the full-text `CALL …` line for this engine (no trailing newline)
+         * @param indexLimitParam the bound parameter carrying how many hits to keep
          */
-        fun normalizedFullTextHead(callClause: String, rootAlias: String, scoreAlias: String): String =
-            "$callClause\n" +
-                "YIELD node, score\n" +
-                "WITH collect({node: node, score: score}) AS _ftResults, max(score) AS _ftMax\n" +
-                "UNWIND _ftResults AS _ftRow\n" +
-                "WITH _ftRow.node AS $rootAlias, " +
-                "(CASE WHEN _ftMax > 0 THEN _ftRow.score / _ftMax ELSE 1.0 END) AS $scoreAlias"
+        fun normalizedFullTextHead(callClause: String, rootAlias: String, scoreAlias: String, indexLimitParam: String): String =
+            """
+            |$callClause
+            |YIELD node, score
+            |WITH node, score
+            |ORDER BY score DESC
+            |LIMIT ${'$'}$indexLimitParam
+            |WITH collect({node: node, score: score}) AS _ftResults, max(score) AS _ftMax
+            |UNWIND _ftResults AS _ftRow
+            |WITH _ftRow.node AS $rootAlias, (CASE WHEN _ftMax > 0 THEN _ftRow.score / _ftMax ELSE 1.0 END) AS $scoreAlias
+            """.trimMargin()
     }
 }
 
@@ -321,15 +344,16 @@ class Neo4j5Grammar(
     override val supportsFullTextSearch: Boolean = true
 
     /**
-     * `db.index.fulltext.queryNodes(name, query)` — the full-text index is referenced by **name**.
-     * Neo4j returns an unbounded Lucene relevance score; [CypherGrammar.normalizedFullTextHead]
-     * normalizes it to `[0, 1]`.
+     * `db.index.fulltext.queryNodes(name, query, {limit: n})` — the full-text index is referenced by
+     * **name**, and asked for its best `n` hits so Lucene collects no more than that. Neo4j returns an
+     * unbounded Lucene relevance score; [CypherGrammar.normalizedFullTextHead] normalizes it to `[0, 1]`.
      */
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         CypherGrammar.normalizedFullTextHead(
-            "CALL db.index.fulltext.queryNodes('${spec.indexName}', \$${spec.queryParam})",
+            "CALL db.index.fulltext.queryNodes('${spec.indexName}', \$${spec.queryParam}, {limit: \$${spec.indexLimitParam}})",
             rootAlias,
             scoreAlias,
+            spec.indexLimitParam,
         )
 }
 
@@ -456,5 +480,6 @@ class FalkorDbCypherGrammar(
             "CALL db.idx.fulltext.queryNodes('${spec.label}', \$${spec.queryParam})",
             rootAlias,
             scoreAlias,
+            spec.indexLimitParam,
         )
 }

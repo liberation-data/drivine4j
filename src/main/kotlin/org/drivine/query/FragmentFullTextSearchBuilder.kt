@@ -11,10 +11,16 @@ import org.drivine.query.grammar.FullTextQuerySpec
  * (already score-normalized to `[0, 1]`) produces the matching nodes, which are projected with the
  * fragment's own field mapping (the same shape [FragmentQueryBuilder] uses for a load) and returned
  * as `{ value: <fragment>, score } AS row`, ordered by relevance and capped at `topK`. Fragments
- * have no relationships, so the only filter is the optional similarity threshold.
+ * have no relationships, so the filters are the optional similarity threshold and the caller's
+ * `where { }` over the node.
  *
- * Unlike vector search — where `topK` is the index `CALL`'s `k` — full-text `CALL`s take no `k`, so
- * `topK` is applied here as a trailing `LIMIT`.
+ * `topK` is taken from the filtered rows *before* the fragment is projected, so a node's properties
+ * — a chunk's text and its embedding among them — are read only for the rows returned, never for the
+ * hits the filters or the limit discard. The `LIMIT` there needs no sort of its own: the head yields
+ * its rows in descending score order (see [CypherGrammar.normalizedFullTextHead]) and a filter keeps
+ * the order it is given. A sort at that point would cost more than its rows: it holds each one, and
+ * each one carries the head's collected hits. The `ORDER BY` on the `RETURN` sorts the `topK` rows
+ * that remain, so the order of the result is stated rather than inherited.
  */
 internal class FragmentFullTextSearchBuilder(
     private val fragmentModel: FragmentModel,
@@ -52,7 +58,8 @@ internal class FragmentFullTextSearchBuilder(
         }
         val whereSection = if (filters.isEmpty()) "" else "\nWHERE " + filters.joinToString("\n  AND ")
 
-        val limit = "\nLIMIT \$${spec.topKParam}"
+        // The rows the result is made of, chosen before anything is projected from them.
+        val kept = "\nWITH $node, $scoreVar\nLIMIT \$${spec.topKParam}"
 
         // A bag fragment takes the `.*` path for the same reason FragmentQueryBuilder does: the open
         // prefixed properties have no single column to map, so the explicit projection would drop them.
@@ -90,6 +97,6 @@ RETURN {
 ORDER BY $scoreVar DESC"""
         }
 
-        return head + whereSection + returnClause + limit
+        return head + whereSection + kept + returnClause
     }
 }
