@@ -826,6 +826,16 @@ graphObjectManager.loadNearest<PropositionView>("titleEmbedding", queryEmbedding
 
 Each result is a `Scored<T>(value, score)`; the score is normalized to **similarity, higher = more
 similar** on every engine, so ordering and `threshold` mean the same thing regardless of backend.
+It is in `[0, 1]`: `(1 + cos) / 2` for a cosine index, and `1 / (1 + d²)` for a Euclidean one, where
+`d` is the distance. So a cosine of 0.6 scores 0.8, and `2 * score - 1` gives the cosine back.
+
+> **Changed on FalkorDB and Memgraph.** Before this release FalkorDB gave the cosine itself (-1 to 1)
+> and `1 / (1 + d)`, and Memgraph the absolute value of the cosine, so opposite vectors scored as
+> high as equal ones; Memgraph's Euclidean score was already `1 / (1 + d²)`. Both now give the scores
+> above, as Neo4j, Postgres, Oracle and SQLite do. A cosine score rises from `cos` to `(1 + cos) / 2`,
+> and a FalkorDB Euclidean score falls from `1 / (1 + d)` to `1 / (1 + d²)` where `d` is over 1 (and
+> rises where it is under), so a `threshold` chosen against the old scores keeps more or fewer results
+> than before: convert a cosine threshold `t` to `(1 + t) / 2`.
 
 **`topK` is the index's `k`, not a guaranteed result count.** When searching a **view**, its
 *required* relationships (and the optional `threshold`) are applied **after** the K-nearest search,

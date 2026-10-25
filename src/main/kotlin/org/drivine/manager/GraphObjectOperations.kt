@@ -153,7 +153,8 @@ interface GraphObjectOperations {
 
     /**
      * Loads the [topK] graph objects whose embedding is most similar to [vector], ordered most
-     * similar first, each paired with its normalized similarity [score][Scored.score].
+     * similar first, each paired with its normalized similarity [score][Scored.score]: `(1 + cos) / 2`
+     * for a cosine index and `1 / (1 + d²)` for a Euclidean one, the same on every store.
      *
      * Works on both a `@GraphView` (searches the **root fragment**'s embedding, returns the
      * projected view) and a plain `@NodeFragment` (searches and returns the fragment itself). The
