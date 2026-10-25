@@ -3094,7 +3094,10 @@ abstract class SqlCypherCompiler(graph: String) {
                     3 -> roundingMode(function.arguments[2])?.let { mode ->
                         Value.Json(scalar(float(roundTo(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1]), mode))))
                     } ?: Value.Json(literalJson(null))
-                    2 -> Value.Json(scalar(float(roundPlaces(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1])))))
+                    // To 0 places Neo4j rounds as round(x) does, half toward +infinity, as Java's Math.round; to more, half away from zero.
+                    2 -> Value.Json(scalar(float(shared(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1])) { (n, p) ->
+                        "CASE WHEN $p = 0 THEN FLOOR($n + 0.5) ELSE ${roundPlaces(n, p)} END"
+                    })))
                     else -> Value.Json(scalar(float("FLOOR(${number(comparable(json(one())))} + 0.5)")))
                 }
                 "floor", "ceil" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))
