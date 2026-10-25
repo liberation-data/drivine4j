@@ -77,22 +77,22 @@ class TransformPostProcessor<S, T>(
         } else {
             objectMapper.convertValue(data, targetType) as T
         }
-        keepPackedText(result, data)
+        keepAsStored(result, data)
         return result
     }
 
     /**
-     * Keeps, beside the root fragment of [result], the text its `@JsonPacked` properties held in
-     * [data], for a checked save to compare them as the node held them: see [PackedText].
+     * Keeps, beside the root fragment of [result], what its `@JsonPacked` and `Set` properties held in
+     * [data], for a checked save to compare them as the node held them: see [AsStored].
      */
-    private fun keepPackedText(result: Any?, data: Any?) {
+    private fun keepAsStored(result: Any?, data: Any?) {
         if (result == null || data !is Map<*, *>) return
         if (result.javaClass.isAnnotationPresent(GraphView::class.java)) {
             val root = GraphViewModel.from(result.javaClass).rootFragment.fieldName
             val fragment = read(result, root) ?: return
-            (data[root] as? Map<*, *>)?.let { PackedText.record(fragment, it, objectMapper) }
+            (data[root] as? Map<*, *>)?.let { AsStored.record(fragment, it, objectMapper) }
         } else if (result.javaClass.isAnnotationPresent(NodeFragment::class.java)) {
-            PackedText.record(result, data, objectMapper)
+            AsStored.record(result, data, objectMapper)
         }
     }
 

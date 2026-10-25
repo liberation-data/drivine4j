@@ -100,3 +100,11 @@ data class ClaimTagRemarks(
     @GraphRelationship(type = "TAG_REMARKS", direction = Direction.OUTGOING)
     val remarks: List<TagRemark> = emptyList(),
 )
+/** A stamped node with a set, which the store holds as a list. */
+@NodeFragment(labels = ["SetProbe"])
+data class SetProbe(
+    @NodeId val id: String,
+    val name: String,
+    val tags: Set<String> = emptySet(),
+    @NodeStamp val stamp: String? = null,
+)
