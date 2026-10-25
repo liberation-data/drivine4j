@@ -225,6 +225,30 @@ class CypherWriteOracleTest : CypherWriteContract() {
             connection.release()
         }
     }
+
+    @Test
+    fun `a parameter's property past 32 KB read and set on two nodes leaves the session open`() {
+        // Oracle crashed the session where a statement read a property past 32 KB of a parameter, for each of two rows,
+        // taking the parameter as JSON first and then the property from it (#256), by a property or by a subscript.
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+            connection.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
+        try {
+            query("CREATE (:CyWrite {id: 1}), (:CyWrite {id: 2})")
+            val text = "x".repeat(40_000)
+            val p = mapOf("p" to mapOf("text" to text))
+            val written = mutableMapOf<String, Any?>()
+            repeat(3) { i ->
+                assertEquals(listOf(text, text), query("MATCH (n:CyWrite) WHERE n.id > -$i RETURN \$p.text ORDER BY n.id", p))
+                assertEquals(listOf(text, text), query("MATCH (n:CyWrite) WHERE n.id > -$i RETURN \$p['text'] ORDER BY n.id", p))
+                query("MATCH (n:CyWrite) SET n.t$i = \$p.text", p)
+                written += mapOf("t$i" to text)
+                assertEquals(listOf(1L, 2L).map { mapOf("id" to it) + written }, query("MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"))
+            }
+        } finally {
+            connection.release()
+        }
+    }
 }
 
 class CypherWriteSqliteTest : CypherWriteContract() {
