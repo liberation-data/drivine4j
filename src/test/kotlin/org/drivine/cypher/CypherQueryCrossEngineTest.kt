@@ -549,6 +549,14 @@ abstract class CypherQueryContract {
         // A negative precision from data fails when the row is read, on every store, in both forms.
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')") }
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r)") }
+        // Zero too, whose places Oracle gives back without rounding.
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(n.z, n.r, 'HALF_UP')") }
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(n.z, n.r)") }
+        // The least doubles, whose last digits are short of the 400 places Postgres holds a precision to. Oracle's NUMBER holds none of them.
+        if (pm.type != DatabaseType.ORACLE) assertEquals(
+            listOf(listOf(2.225073858507201E-308, 2.2250738585072014E-308, 4.9E-324, 9.9E-324)),
+            query("RETURN [round(2.2250738585072014E-308, 323), round(2.2250738585072014E-308, 400), round(4.9E-324, 324, 'UP'), round(4.9E-324, 323, 'UP')]"),
+        )
     }
 
     @Test

@@ -399,7 +399,6 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun returnRows(query: String) = listOf("RETURN QUERY SELECT CAST(cy_q.result AS json) FROM (\n${indent(query)}\n) cy_q;")
 
-    /** A text that is no whole number, cast to one: Postgres fails with the text in its message. */
     /**
      * Places past [MOST_PLACES] change no double, the least of which is near 4.9E-324, and Postgres's `numeric` overflows
      * on a precision as large as a billion: so a precision is held to them, as Neo4j gives the number back. A CASE, not
@@ -411,6 +410,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     private fun heldPlaces(precision: String) = shared(precision) { (p) -> "CASE WHEN $p > $MOST_PLACES THEN $MOST_PLACES ELSE $p END" }
 
+    /** A text that is no whole number, cast to one: Postgres fails with the text in its message. */
     override fun failure(message: String, value: String) = "CAST(${literal("$message ")} || CAST($value AS text) AS integer)"
 
     override fun raise(message: String) = "RAISE EXCEPTION USING MESSAGE = ${literal(message)};"
