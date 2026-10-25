@@ -29,3 +29,27 @@ data class SibOfficeView(
     @Root val office: SibOffice,
     @GraphRelationship(type = "SEATS", direction = Direction.OUTGOING) val desks: List<SibDesk>,
 )
+
+@NodeFragment(labels = ["SibCampus"])
+data class SibCampus(@NodeId val id: String, val name: String)
+
+/** A view that holds [SibOfficeView]: its desks' sibling relationships are two levels down. */
+@GraphView
+data class SibCampusView(
+    @Root val campus: SibCampus,
+    @GraphRelationship(type = "HAS_OFFICE", direction = Direction.OUTGOING) val offices: List<SibOfficeView>,
+)
+
+/** A desk whose mentor is a [SibDesk]: one sibling leads a level further than the other. */
+@GraphView
+data class SibMentoredDesk(
+    @Root val staffer: SibStaffer,
+    @GraphRelationship(type = "WORKS_FOR", direction = Direction.OUTGOING) val employer: SibFirm?,
+    @GraphRelationship(type = "MENTORED_BY", direction = Direction.OUTGOING) val mentor: SibDesk?,
+)
+
+@GraphView
+data class SibMentoredOfficeView(
+    @Root val office: SibOffice,
+    @GraphRelationship(type = "SEATS", direction = Direction.OUTGOING) val desks: List<SibMentoredDesk>,
+)

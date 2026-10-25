@@ -11,7 +11,7 @@ import org.drivine.schema.SimilarityFunction
  * "unbounded variables" inside EXISTS and disallows EXISTS in a WITH clause. To stay compatible
  * with the widest Memgraph version range we fall back to inline pattern predicates (the
  * [OpenCypherGrammar] defaults), which Memgraph accepts everywhere. Filtered existence uses a
- * CALL-subquery + count prolog.
+ * size-of-pattern-comprehension check, nested for a where on a nested view's relationships.
  */
 class MemgraphGrammar(
     collectionSortEmitter: CollectionSortEmitter
@@ -29,18 +29,18 @@ class MemgraphGrammar(
         "Memgraph cannot use EXISTS inside WITH, which the check for a target's remaining relationships needs."
 
     /**
+     * Its check is a pattern comprehension in the `WHERE`, which holds another in its own; one
+     * comprehension takes a single path, so sibling relationships cannot be flattened into it.
+     */
+    override val nestsFilteredExistenceChecks: Boolean = true
+
+    /**
      * Memgraph cannot execute the `CALL { WITH rootAlias ... RETURN count(x) AS _ec0 }` pattern
      * that [OpenCypherGrammar.filteredExistenceCheck] emits — CALL-with-imported-variables
      * surfaces internally as an "Exists" AST node, and Memgraph errors with
      * "Not yet implemented: Exists cannot be used within WITH!". Use a size-of-pattern-
      * comprehension check instead: standard openCypher, no subquery, no variable imports.
      */
-    /**
-     * Its check is a pattern comprehension in the `WHERE`, which holds another in its own; one
-     * comprehension takes a single path, so sibling relationships cannot be flattened into it.
-     */
-    override val nestsFilteredExistenceChecks: Boolean = true
-
     override fun filteredExistenceCheck(
         relationshipPattern: String,
         whereClause: String,

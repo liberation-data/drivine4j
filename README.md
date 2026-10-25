@@ -631,7 +631,7 @@ graphObjectManager.loadAll<LocationHierarchy> {
 }
 ```
 
-**Querying a level below.** The generated DSL reaches each level, built only when it is read, so a where can test the targets of the targets: `where { subLocations.subLocations.location.name eq "France" }`. A where of a load reaches as deep as the DSL does, `subLocations.subLocations.subLocations` and below, each level checked in turn, on every store. In a scored search (`loadNearest`, `loadMatching`) on a graph engine it reaches two levels, the nested view's own relationships, as the projection is filtered: one deeper is refused with an `IllegalArgumentException`.
+**Querying a level below.** The generated DSL reaches each level, built only when it is read, so a where can test the targets of the targets: `where { subLocations.subLocations.location.name eq "France" }`. A where of a load reaches as deep as the DSL does, `subLocations.subLocations.subLocations` and below, each level checked in turn, on every store. Conditions on two relationships of one nested view hold of one node of it: `where { desks.employer.name eq "Acme"; desks.mentor.name eq "Ann" }` finds the offices with a desk that does both. Neo4j and Memgraph check each relationship within the check of the view; FalkorDB and Neptune match one pattern, with each relationship led from the node they share. In a scored search (`loadNearest`, `loadMatching`) on a graph engine it reaches two levels, the nested view's own relationships, as the projection is filtered: one deeper is refused with an `IllegalArgumentException`.
 
 **Chain cycles** (A → B → A) are also supported. When a relationship targets a `@GraphView` that forms a cycle through other types, Drivine tracks visit counts and terminates at `maxDepth`:
 

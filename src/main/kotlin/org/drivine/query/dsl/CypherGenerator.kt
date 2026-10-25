@@ -842,7 +842,7 @@ object CypherGenerator {
         }
 
         // Build nested relationship conditions
-        // An engine whose checks cannot nest (FalkorDB): flatten into one statement of patterns
+        // An engine whose checks cannot nest (FalkorDB, Neptune): flatten into one statement of patterns
         // Neo4j and Memgraph: nest a check of each nested relationship inside the view's
         val nestedWhere = if (nestedConditions.isNotEmpty()) {
             if (targetViewModel != null) {
@@ -871,7 +871,7 @@ object CypherGenerator {
                     bridgeVars.addAll(result.bridgeVariables)
                     return finalize(result.inlineCondition)
                 } else {
-                    // Neo4j: use nested EXISTS { } (original behavior)
+                    // Neo4j and Memgraph: a check of each nested relationship within the view's
                     nestedConditions.entries.joinToString(" AND ") { (nestedRelName, nestedConds) ->
                         buildNestedRelationshipCondition(
                             parentAlias = targetAlias,
@@ -896,7 +896,7 @@ object CypherGenerator {
             ""
         }
 
-        // Combine direct and nested WHERE clauses (Neo4j path only — openCypher returns early above)
+        // Combine direct and nested WHERE clauses (nested checks only — a flattened pattern returns early above)
         val combinedWhere = when {
             directWhere.isNotEmpty() && nestedWhere.isNotEmpty() -> "$directWhere AND $nestedWhere"
             directWhere.isNotEmpty() -> directWhere

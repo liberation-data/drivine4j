@@ -80,11 +80,14 @@ class DeepNestedWhereTest {
     fun `sibling relationships of a nested view each lead from the node they share`() {
         val view = GraphViewModel.from(sample.siblings.SibOfficeView::class.java)
         val conditions = listOf(eq("desks_employer.name", "Acme"), eq("desks_mentor.name", "Ann"))
-        val falkor = rendered(conditions, CypherDialect.FALKORDB, view)
-        assertTrue(
-            "(office)-[:SEATS]->(desks)-[:WORKS_FOR]->(desks_employer), (desks)-[:MENTORED_BY]->(desks_mentor)" in falkor,
-            falkor,
-        )
+        listOf(CypherDialect.FALKORDB, CypherDialect.NEPTUNE).forEach { dialect ->
+            val cypher = rendered(conditions, dialect, view)
+            assertTrue(
+                "OPTIONAL MATCH (office)-[:SEATS]->(desks)-[:WORKS_FOR]->(desks_employer), (desks)-[:MENTORED_BY]->(desks_mentor) WHERE" in cypher,
+                "$dialect: $cypher",
+            )
+            assertTrue("WITH office\n" in cypher, "$dialect: $cypher")
+        }
         listOf(CypherDialect.NEO4J_5, CypherDialect.MEMGRAPH).forEach { dialect ->
             val cypher = rendered(conditions, dialect, view)
             assertTrue("(desks)-[:WORKS_FOR]->(desks_employer)" in cypher, "$dialect: $cypher")

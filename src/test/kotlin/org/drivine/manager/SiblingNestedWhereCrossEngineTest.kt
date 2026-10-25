@@ -13,6 +13,9 @@ import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.NodeReference
 import org.drivine.query.dsl.StringPropertyReference
+import org.drivine.query.dsl.any
+import org.drivine.query.dsl.anyOf
+import org.drivine.query.dsl.none
 import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.sqlite.SqliteTestDatabase
@@ -25,6 +28,8 @@ import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
+import sample.siblings.SibCampusView
+import sample.siblings.SibMentoredOfficeView
 import sample.siblings.SibOfficeView
 import kotlin.test.assertEquals
 
@@ -33,7 +38,8 @@ class SibNameProperties(override val nodeAlias: String) : NodeReference {
     val name = StringPropertyReference(nodeAlias, "name")
 }
 
-class SibDeskLevel(alias: String) {
+class SibDeskLevel(alias: String) : NodeReference {
+    override val nodeAlias = alias
     val staffer = SibNameProperties(alias)
     val employer = SibNameProperties("${alias}_employer")
     val mentor = SibNameProperties("${alias}_mentor")
@@ -42,6 +48,26 @@ class SibDeskLevel(alias: String) {
 class SibOfficeQueryDsl {
     val office = SibNameProperties("office")
     val desks = SibDeskLevel("desks")
+}
+
+class SibOfficeLevel(alias: String) {
+    val office = SibNameProperties(alias)
+    val desks = SibDeskLevel("${alias}_desks")
+}
+
+class SibCampusQueryDsl {
+    val campus = SibNameProperties("campus")
+    val offices = SibOfficeLevel("offices")
+}
+
+class SibMentoredDeskLevel(alias: String) {
+    val employer = SibNameProperties("${alias}_employer")
+    val mentor = SibDeskLevel("${alias}_mentor")
+}
+
+class SibMentoredOfficeQueryDsl {
+    val office = SibNameProperties("office")
+    val desks = SibMentoredDeskLevel("desks")
 }
 
 /**
@@ -70,6 +96,44 @@ private fun verify(gom: StatelessGraphObjectManager) {
     // O3 has a desk at Acme and another mentored by Ann, but none that is both.
     assertEquals(setOf("O1", "O2", "O3"), offices { where { query.desks.employer.name eq "Acme" } })
     assertEquals(setOf("O1", "O3"), offices { where { query.desks.mentor.name eq "Ann" } })
+
+    // Both siblings in one `none { }`: no desk that is both.
+    assertEquals(setOf("O2", "O3"), offices {
+        where { query.desks.none { employer.name eq "Acme"; mentor.name eq "Ann" } }
+    })
+    // Both siblings in one `any { }` within an `or`.
+    assertEquals(setOf("O1", "O2"), offices {
+        where {
+            anyOf {
+                query.desks.any { employer.name eq "Acme"; mentor.name eq "Ann" }
+                query.office.name eq "O2"
+            }
+        }
+    })
+
+    // The siblings two levels down: C2's offices have a desk at Acme and one mentored by Ann, but none both.
+    assertEquals(setOf("C1"), gom.loadAll(SibCampusView::class.java, SibCampusQueryDsl()) {
+        where {
+            query.offices.desks.employer.name eq "Acme"
+            query.offices.desks.mentor.name eq "Ann"
+        }
+    }.map { it.campus.name }.toSet())
+
+    // One sibling leads a level further, written first or last: Joe's mentor works for Globex, but Joe for no one.
+    fun mentoredOffices(spec: GraphQuerySpec<SibMentoredOfficeQueryDsl>.() -> Unit): Set<String> =
+        gom.loadAll(SibMentoredOfficeView::class.java, SibMentoredOfficeQueryDsl(), spec).map { it.office.name }.toSet()
+    assertEquals(setOf("O1"), mentoredOffices {
+        where {
+            query.desks.employer.name eq "Acme"
+            query.desks.mentor.employer.name eq "Globex"
+        }
+    })
+    assertEquals(setOf("O1"), mentoredOffices {
+        where {
+            query.desks.mentor.employer.name eq "Globex"
+            query.desks.employer.name eq "Acme"
+        }
+    })
 }
 
 private const val SEED = """
@@ -77,6 +141,9 @@ private const val SEED = """
     CREATE (o2:SibOffice {id: 'o2', name: 'O2'})
     CREATE (o3:SibOffice {id: 'o3', name: 'O3'})
     CREATE (acme:SibFirm {id: 'acme', name: 'Acme'})
+    CREATE (globex:SibFirm {id: 'globex', name: 'Globex'})
+    CREATE (c1:SibCampus {id: 'c1', name: 'C1'})
+    CREATE (c2:SibCampus {id: 'c2', name: 'C2'})
     CREATE (ann:SibStaffer {id: 'ann', name: 'Ann'})
     CREATE (sam:SibStaffer {id: 'sam', name: 'Sam'})
     CREATE (lee:SibStaffer {id: 'lee', name: 'Lee'})
@@ -91,6 +158,10 @@ private const val SEED = """
     CREATE (kim)-[:WORKS_FOR]->(acme)
     CREATE (o3)-[:SEATS]->(joe)
     CREATE (joe)-[:MENTORED_BY]->(ann)
+    CREATE (ann)-[:WORKS_FOR]->(globex)
+    CREATE (c1)-[:HAS_OFFICE]->(o1)
+    CREATE (c2)-[:HAS_OFFICE]->(o2)
+    CREATE (c2)-[:HAS_OFFICE]->(o3)
 """
 
 private fun buildGom(pm: NonTransactionalPersistenceManager, registry: SubtypeRegistry) =
