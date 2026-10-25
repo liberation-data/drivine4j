@@ -35,6 +35,12 @@ class MemgraphGrammar(
      * "Not yet implemented: Exists cannot be used within WITH!". Use a size-of-pattern-
      * comprehension check instead: standard openCypher, no subquery, no variable imports.
      */
+    /**
+     * Its check is a pattern comprehension in the `WHERE`, which holds another in its own; one
+     * comprehension takes a single path, so sibling relationships cannot be flattened into it.
+     */
+    override val nestsFilteredExistenceChecks: Boolean = true
+
     override fun filteredExistenceCheck(
         relationshipPattern: String,
         whereClause: String,

@@ -7,7 +7,6 @@ import org.drivine.query.projectedKey
 import org.drivine.query.projectedKeyOrNull
 import org.drivine.query.grammar.CypherGrammar
 import org.drivine.query.grammar.Neo4j5Grammar
-import org.drivine.query.grammar.OpenCypherGrammar
 import org.drivine.query.sort.ApocSortMapsEmitter
 import org.drivine.schema.SchemaGrammar
 import java.util.IdentityHashMap
@@ -843,20 +842,22 @@ object CypherGenerator {
         }
 
         // Build nested relationship conditions
-        // For openCypher: flatten into compound MATCH pattern (no nested EXISTS)
-        // For Neo4j: nest EXISTS { } inside EXISTS { }
+        // An engine whose checks cannot nest (FalkorDB): flatten into one statement of patterns
+        // Neo4j and Memgraph: nest a check of each nested relationship inside the view's
         val nestedWhere = if (nestedConditions.isNotEmpty()) {
             if (targetViewModel != null) {
-                if (grammar is OpenCypherGrammar) {
-                    // Flatten: extend the relationship pattern with nested hops
-                    // and add all conditions to a single WHERE
+                if (!grammar.nestsFilteredExistenceChecks) {
+                    // Flatten: extend the relationship pattern with nested hops, a sibling's as a path
+                    // of its own from the node it shares, and add all conditions to a single WHERE
                     val compoundParts = mutableListOf<String>()
+                    val branches = mutableListOf<MutableList<String>>()
                     val nestedWhereClauses = mutableListOf<String>()
 
-                    flattenNestedConditions(targetAlias, nestedConditions, targetViewModel, indexOf, compoundParts, nestedWhereClauses)
+                    flattenNestedConditions(targetAlias, nestedConditions, targetViewModel, indexOf, compoundParts, nestedWhereClauses, branches)
 
-                    // Build compound pattern: (rootAlias)-[:REL]->(target)-[:NESTED_REL]->(nestedTarget)
-                    val compoundPattern = relationshipPattern + compoundParts.joinToString("")
+                    // Build compound pattern: (rootAlias)-[:REL]->(target)-[:A]->(target_a), (target)-[:B]->(target_b)
+                    val compoundPattern = relationshipPattern + compoundParts.joinToString("") +
+                        branches.joinToString("") { ", " + it.joinToString("") }
                     val allConditions = mutableListOf<String>()
                     if (directWhere.isNotEmpty()) allConditions.add(directWhere.removePrefix(" WHERE "))
                     allConditions.addAll(nestedWhereClauses)
@@ -1031,7 +1032,9 @@ object CypherGenerator {
     /**
      * Extends a flattened relationship pattern with the nested relationships [nested] names, a hop for
      * each, and each level below them in turn, adding their conditions to [whereClauses]: the
-     * openCypher form of [buildNestedRelationshipCondition]'s nested checks.
+     * flattened form of [buildNestedRelationshipCondition]'s nested checks. The first relationship
+     * extends [patternParts], the path that reached [parentAlias]; each sibling after it starts a path
+     * of its own from [parentAlias], added to [branches], so each leads from the node they share.
      */
     private fun flattenNestedConditions(
         parentAlias: String,
@@ -1040,8 +1043,10 @@ object CypherGenerator {
         indexOf: Map<WhereCondition, Int>,
         patternParts: MutableList<String>,
         whereClauses: MutableList<String>,
+        branches: MutableList<MutableList<String>>,
     ) {
-        nested.forEach { (nestedRelName, nestedConds) ->
+        nested.entries.forEachIndexed { i, (nestedRelName, nestedConds) ->
+            val path = if (i == 0) patternParts else mutableListOf("($parentAlias)").also { branches.add(it) }
             val nestedRel = parentViewModel.relationships.find { it.fieldName == nestedRelName }
                 ?: throw IllegalArgumentException(
                     "Nested relationship '$nestedRelName' not found in ${parentViewModel.className}. " +
@@ -1053,13 +1058,13 @@ object CypherGenerator {
                 org.drivine.annotation.Direction.INCOMING -> "<-[:${nestedRel.type}]-"
                 org.drivine.annotation.Direction.UNDIRECTED -> "-[:${nestedRel.type}]-"
             }
-            patternParts.add("${nestedDirection}($nestedAlias)")
+            path.add("${nestedDirection}($nestedAlias)")
             val nestedViewModel = runCatching { GraphViewModel.from(nestedRel.elementType) }.getOrNull()
             val (direct, deeper) = separateNestedConditions(nestedConds, nestedAlias, nestedViewModel)
             direct.forEach { cond -> whereClauses.add(buildPropertyCondition(cond as WhereCondition.PropertyCondition, indexOf.getValue(cond))) }
             if (deeper.isNotEmpty()) {
                 flattenNestedConditions(
-                    nestedAlias, deeper, nestedViewModel ?: throw notAView(nestedAlias, nestedRel), indexOf, patternParts, whereClauses,
+                    nestedAlias, deeper, nestedViewModel ?: throw notAView(nestedAlias, nestedRel), indexOf, path, whereClauses, branches,
                 )
             }
         }

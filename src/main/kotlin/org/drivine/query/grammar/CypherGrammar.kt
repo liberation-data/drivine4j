@@ -101,6 +101,15 @@ interface CypherGrammar {
         get() = false
 
     /**
+     * Whether a [filteredExistenceCheck] can be written within another's `WHERE`, so a where on a
+     * nested view's relationships is a check of each within the check of the view. An engine that
+     * cannot has them flattened into one statement of patterns instead: siblings, two relationships of
+     * one nested view, then each a path of their own from the node they share.
+     */
+    val nestsFilteredExistenceChecks: Boolean
+        get() = true
+
+    /**
      * Whether the node a `@GraphPath` field ends at is tested for its labels once the path is matched,
      * and not in the pattern that matches it.
      *
@@ -403,6 +412,9 @@ class Neo4j4Grammar(
 open class OpenCypherGrammar(
     override val collectionSortEmitter: CollectionSortEmitter
 ) : CypherGrammar {
+    /** Its check is a `CALL` subquery before the `WHERE`, which another check's `WHERE` cannot hold. */
+    override val nestsFilteredExistenceChecks: Boolean = false
+
     override fun existenceCheck(rootAlias: String, direction: String, targetLabels: String) =
         "($rootAlias)$direction(${labelled(targetLabels)})"
 
