@@ -1,5 +1,6 @@
 package org.drivine.codegen
 
+import org.drivine.codegen.model.ModelReader
 import com.google.devtools.ksp.getAllSuperTypes
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
@@ -234,14 +235,14 @@ class QueryDslGenerator(
 
         // Generate property references for each property in the RelationshipFragment
         // Skip the 'target' property since that's handled separately as a relationship
-        relFragmentClass.getAllProperties().forEach { prop ->
+        ModelReader.storedProperties(relFragmentClass).forEach { prop ->
             val propName = prop.simpleName.asString()
             if (propName == "target") {
                 // Skip - target is the node, we expose it separately
                 return@forEach
             }
 
-            val propType = prop.type.resolve()
+            val propType = typeIn(relFragmentClass, prop)
 
             val propertyRefType = when {
                 propType.declaration.qualifiedName?.asString() == "kotlin.String" ->
@@ -401,8 +402,9 @@ class QueryDslGenerator(
         // stored prefix. field(key) / predicateOn(key) consult these at query time.
         val fieldKeyPaths = LinkedHashMap<String, String>()
         val bagPrefixes = mutableListOf<String>()
-        fragmentClass.getAllProperties().forEach { prop ->
-            when (val emitted = addPropertyReference(classBuilder, prop, "\"n\"")) {
+        // Every property the node stores, inherited ones among them, as the core library reads them.
+        ModelReader.storedProperties(fragmentClass).forEach { prop ->
+            when (val emitted = addPropertyReference(classBuilder, fragmentClass, prop, "\"n\"")) {
                 is EmittedRef.Field -> {
                     fieldKeyPaths[emitted.logicalName] = emitted.onDiskName
                     fieldKeyPaths[emitted.onDiskName] = emitted.onDiskName
@@ -850,8 +852,8 @@ class QueryDslGenerator(
 
         // Property references read the constructor param when aliased, else the literal default alias.
         val aliasExpr = if (needsAliasConstructor) "alias" else "\"$defaultAlias\""
-        fragmentClass.getAllProperties().forEach { prop ->
-            addPropertyReference(classBuilder, prop, aliasExpr)
+        ModelReader.storedProperties(fragmentClass).forEach { prop ->
+            addPropertyReference(classBuilder, fragmentClass, prop, aliasExpr)
         }
 
         return classBuilder.build()
@@ -911,7 +913,12 @@ class QueryDslGenerator(
     }
 
     /** Emits one property reference, dispatching to the bag / string / scalar shape. */
-    private fun addPropertyReference(classBuilder: TypeSpec.Builder, prop: KSPropertyDeclaration, aliasExpr: String): EmittedRef {
+    private fun addPropertyReference(
+        classBuilder: TypeSpec.Builder,
+        fragmentClass: KSClassDeclaration,
+        prop: KSPropertyDeclaration,
+        aliasExpr: String,
+    ): EmittedRef {
         // @NodeLabels holds the node's labels, not a property: there is nothing to reference.
         if (prop.annotations.any { it.shortName.asString() == "NodeLabels" }) return EmittedRef.None
 
@@ -937,7 +944,7 @@ class QueryDslGenerator(
                 ?.arguments?.firstOrNull()?.value as? String
                 ?: propName
         }
-        val propType = prop.type.resolve()
+        val propType = typeIn(fragmentClass, prop)
         val propertyRefType = if (propType.declaration.qualifiedName?.asString() == "kotlin.String") {
             ClassName("org.drivine.query.dsl", "StringPropertyReference")
         } else {
@@ -954,6 +961,10 @@ class QueryDslGenerator(
         )
         return EmittedRef.Field(propName, onDiskName)
     }
+
+    /** [prop]'s type as a member of [owner], so a property a generic superclass declares has the type [owner] gives it. */
+    private fun typeIn(owner: KSClassDeclaration, prop: KSPropertyDeclaration): KSType =
+        prop.asMemberOf(owner.asStarProjectedType())
 
     /** Emits a `PropertyBagReference(alias, storedPrefix)`; returns the stored prefix (incl. delimiter). */
     private fun addPropertyBagReference(
@@ -1216,13 +1227,13 @@ class QueryDslGenerator(
             .build()
     }
 
-    /** Whether the view's `@Root` fragment declares a `@VectorIndex` property (so it is searchable). */
+    /** Whether the view's `@Root` fragment stores a `@VectorIndex` property, an inherited one among them (so it is searchable). */
     private fun rootFragmentHasVectorIndex(graphViewClass: KSClassDeclaration): Boolean {
         val rootProperty = graphViewClass.getAllProperties().find { prop ->
             prop.annotations.any { it.shortName.asString() == "Root" }
         } ?: return false
         val rootFragment = rootProperty.type.resolve().declaration as? KSClassDeclaration ?: return false
-        return rootFragment.getAllProperties().any { p ->
+        return ModelReader.storedProperties(rootFragment).any { p ->
             p.annotations.any { it.shortName.asString() == "VectorIndex" }
         }
     }
@@ -1240,10 +1251,10 @@ class QueryDslGenerator(
         return fragmentHasFullTextIndex(rootFragment)
     }
 
-    /** Whether a fragment carries a `@FullTextIndex` — property-level or class-level (multi-property). */
+    /** Whether a fragment carries a `@FullTextIndex` — on a property it stores, an inherited one among them, or class-level (multi-property). */
     private fun fragmentHasFullTextIndex(fragmentClass: KSClassDeclaration): Boolean {
         val classLevel = fragmentClass.annotations.any { it.shortName.asString() == "FullTextIndex" }
-        val propertyLevel = fragmentClass.getAllProperties().any { p ->
+        val propertyLevel = ModelReader.storedProperties(fragmentClass).any { p ->
             p.annotations.any { it.shortName.asString() == "FullTextIndex" }
         }
         return classLevel || propertyLevel

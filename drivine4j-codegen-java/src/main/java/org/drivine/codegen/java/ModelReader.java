@@ -136,7 +136,7 @@ final class ModelReader {
     }
 
     Map<String, Object> view(TypeElement type) {
-        List<VariableElement> fields = fields(type);
+        List<VariableElement> fields = instanceFields(type);
         // A view marks its root; one that does not has the one fragment no annotation maps.
         VariableElement root = fields.stream().filter(f -> has(f, "Root")).findFirst()
             .orElseGet(() -> fields.stream()
@@ -323,26 +323,43 @@ final class ModelReader {
 
     /** The fields a class stores: every instance field, its own and its superclasses', but `@GraphTransient` ones. */
     private List<VariableElement> storedFields(TypeElement type) {
-        return fields(type).stream().filter(f -> !has(f, "GraphTransient")).toList();
+        return instanceFields(type).stream().filter(f -> !has(f, "GraphTransient")).toList();
     }
 
     /**
      * The class's instance fields and those it inherits, a field hiding one above it in its place. A
      * superclass's private field is the class's state too, and the core library reads it, but only of a
-     * class Java compiled: of one Kotlin compiled, Kotlin's reflection leaves it out.
+     * class Java compiled: of one Kotlin compiled, Kotlin's reflection leaves it out. A Kotlin property's
+     * backing field is private whatever the property's visibility, so of a Kotlin class a private field
+     * with a getter that is not private is a property Kotlin's reflection reads. The query DSL generator
+     * reads a fragment's fields by the same rule.
      */
-    private List<VariableElement> fields(TypeElement type) {
+    static List<VariableElement> instanceFields(TypeElement type) {
         Map<String, VariableElement> fields = new LinkedHashMap<>();
         for (TypeElement current = type; current != null && !current.getQualifiedName().contentEquals("java.lang.Object");
-             current = element(current.getSuperclass())) {
+             current = QueryDslGenerator.getTypeElement(current.getSuperclass())) {
             for (Element member : current.getEnclosedElements()) {
                 if (member.getKind() == ElementKind.FIELD && !member.getModifiers().contains(Modifier.STATIC)
-                    && (current == type || !member.getModifiers().contains(Modifier.PRIVATE) || !isKotlin(current))) {
+                    && (current == type || !member.getModifiers().contains(Modifier.PRIVATE) || !isKotlin(current)
+                        || hasGetter(current, member.getSimpleName().toString()))) {
                     fields.putIfAbsent(member.getSimpleName().toString(), (VariableElement) member);
                 }
             }
         }
         return new ArrayList<>(fields.values());
+    }
+
+    /**
+     * Whether the Kotlin class has a getter, not private, for its property [name]: `getName`, or `isName`
+     * itself for a property named `isName`, either with an internal property's `$module` suffix.
+     */
+    private static boolean hasGetter(TypeElement type, String name) {
+        String getter = name.startsWith("is") && name.length() > 2 && Character.isUpperCase(name.charAt(2))
+            ? name : "get" + Character.toUpperCase(name.charAt(0)) + name.substring(1);
+        return type.getEnclosedElements().stream().anyMatch(it -> it.getKind() == ElementKind.METHOD
+            && !it.getModifiers().contains(Modifier.PRIVATE) && !it.getModifiers().contains(Modifier.STATIC)
+            && ((ExecutableElement) it).getParameters().isEmpty()
+            && (it.getSimpleName().contentEquals(getter) || it.getSimpleName().toString().startsWith(getter + "$")));
     }
 
     /** Whether Kotlin compiled the class, as its `kotlin.Metadata` annotation says. */
