@@ -347,6 +347,10 @@ cases:
         rows: [[[1], 1]]
       - cypher: "UNWIND [null, 'b', 'a'] AS x RETURN [min(x), max(x)]"
         rows: [["a", "b"]]
+      - note: "Of lists, item by item: Postgres's jsonb puts the shorter list first (drivine4j#220)."
+        cypher: "UNWIND [[1, 2], [3]] AS xs RETURN [min(xs), max(xs)]"
+        except: [postgres]
+        rows: [[[1, 2], [3]]]
 
   - name: "Nulls in ORDER BY"
     description: "ORDER BY puts null last ascending and first descending."

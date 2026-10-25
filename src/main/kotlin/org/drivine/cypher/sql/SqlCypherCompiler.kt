@@ -1743,21 +1743,30 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun casesFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             if (aggregatesCaseSubqueries) return null
             val arguments = linkedSetOf<Expression>()
+            // Those of a collect whose list is read, not only counted by size(): see below.
+            val gathered = linkedSetOf<Expression>()
             (items.map { it.expression } + projection.orderBy.map { it.expression }).forEach { term ->
+                val sized = mutableListOf<Expression>()
                 contains(term) { e ->
+                    if (e is Expression.Function && e.name.lowercase() == "size") sized += e.arguments
                     if (isAggregate(e) && e is Expression.Function) e.arguments.filter { argument ->
                         contains(argument) { it is Expression.Case } && unshared { json(expression(argument, select.scope)).sql }.contains("SELECT", ignoreCase = true)
-                    }.forEach { arguments += it }
+                    }.forEach {
+                        arguments += it
+                        if (e.name.lowercase() == "collect" && sized.none { s -> s === e }) gathered += it
+                    }
                     false
                 }
             }
             if (arguments.isEmpty()) return null
-            // Gathered, a list of nodes or relationships beside a value of another kind closes Oracle's (23.26) session (ORA-03113)
-            // wherever the CASE is worked out: refused, as Oracle gave an error of its own for it (ORA-00979) before.
-            arguments.forEach { argument ->
+            // Gathered by collect, a list of nodes or relationships beside a value of another kind, or the null of a CASE with no
+            // ELSE, closes Oracle's (23.26) session (ORA-03113) wherever the CASE is worked out: refused, as Oracle gave an error of
+            // its own for it (ORA-00979) before. Counted, by count() or the size() of the collect, it is read.
+            gathered.forEach { argument ->
                 contains(argument) { e ->
                     if (e is Expression.Case) {
-                        val kinds = (e.alternatives.map { it.second } + listOfNotNull(e.otherwise)).map { unshared { expression(it, select.scope) } is Value.Entities }
+                        val kinds = (e.alternatives.map { it.second } + listOfNotNull(e.otherwise)).map { unshared { expression(it, select.scope) } is Value.Entities } +
+                            listOfNotNull(false.takeIf { e.otherwise == null })
                         if (kinds.any { it } && !kinds.all { it }) unsupported("On Oracle, an aggregate of a CASE that gives a list of nodes or relationships beside a value of another kind")
                     }
                     false
@@ -2496,7 +2505,8 @@ abstract class SqlCypherCompiler(graph: String) {
             val identity = if (results.any { identityOf(it.second) != null }) written(::identified) else null
             // On Oracle a list of nodes or relationships, read from their rows in a subquery, beside a result that reads the row, as
             // `CASE WHEN … THEN [r] ELSE [m.title] END`, closes the session (ORA-03113): its results are worked out in a subquery first.
-            val sql = if (aggregatesCaseSubqueries || results.none { it.second is Value.Entities }) written { comparable(json(it)) } else {
+            // Not a CASE that reads an aggregate, which the subquery would aggregate again, over its one row.
+            val sql = if (aggregatesCaseSubqueries || results.none { it.second is Value.Entities } || contains(case, ::isAggregate)) written { comparable(json(it)) } else {
                 val values = results.map { comparable(json(it.second)) }
                 bound(*values.toTypedArray()) { bound ->
                     val byResult = results.map { it.second }.zip(bound).toMap()

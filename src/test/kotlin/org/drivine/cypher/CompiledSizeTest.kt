@@ -84,5 +84,7 @@ class CompiledSizeTest {
         assertEquals("NULLIF(p2.s1, 'null'::jsonb)", property)
         val list = compiler.compile("MATCH (c:Claim) WITH c.name AS n, collect(c.id) AS ids RETURN n ORDER BY ids").sql.substringAfter("ORDER BY ")
         assertTrue(list.contains("WITH RECURSIVE"), list)
+        // Its items as arrays unnested, which the planner takes for 10 items, not a set-returning function's 100: a 150th of the cost.
+        assertTrue(!list.contains("FROM jsonb_array_elements(") && list.contains("unnest(ARRAY(SELECT jsonb_array_elements("), list)
     }
 }

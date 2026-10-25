@@ -3486,9 +3486,21 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   as 1), where Postgres gives its text.
 - Temporal values are their ISO 8601 text, and a moment is compared and ordered as nanoseconds since
   the epoch, whatever offset it was written with.
-- SQLite has one writer at a time. A transaction takes the write lock as it begins; a save or a delete
-  the file stays locked against for longer than the wait, or that read before another connection
-  wrote, is run again, as a contended save is on the other stores.
+- SQLite has one writer at a time, and transactions are serializable:
+  - A transaction takes the file's write lock as it begins (`BEGIN IMMEDIATE`), so no write in it is
+    turned away part of the way through. Another writer, and another transaction even if it only reads,
+    waits for it to end: a Drivine connection for up to `busyTimeoutMillis` (30 seconds unless you set
+    it), and then fails as busy. Keep transactions short: one that holds the lock for more than 5 seconds
+    is logged as a warning when it ends.
+  - A read outside a transaction does not wait for a writer. The file is in WAL mode: a read sees what was committed
+    when it started, and nothing of a transaction still open.
+  - Outside a transaction, each statement is a transaction of its own. A save or a delete the file stays
+    locked against for longer than the wait, or that read before another connection wrote, is run again,
+    as a contended save is on the other stores.
+  - Each statement Drivine writes applies whole or not at all, in a transaction or outside one: a
+    statement that fails part of the way undoes what it wrote.
+  - A `DataSource` of your own is opened with none of this: `JdbcConnectionProvider.sqlite(…)` makes
+    the connections, with their write lock, WAL mode and the functions Drivine's statements call.
 - Index the id of each node type you save, with a uniqueness constraint or a range index: each is a
   partial index over the property for the nodes of one label.
 - `matches` takes a regular expression in Java's dialect, matched against the whole value. A leading

@@ -161,9 +161,12 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * their places, each list held in it as its kind, then its items, then its end, ranked 0.
      */
     private fun listKey(list: String): String {
-        val items = "SELECT ARRAY[ke.item_no] AS place, ke.item FROM jsonb_array_elements($list) WITH ORDINALITY ke (item, item_no) " +
+        // Each list's items as an array unnested: the planner takes an array it cannot see for 10 items, and a set-returning
+        // function's for 100, which it multiplies through the walk, to a cost 150 times as high.
+        fun items(json: String) = "unnest(ARRAY(SELECT jsonb_array_elements($json)))"
+        val items = "SELECT ARRAY[ke.item_no] AS place, ke.item FROM ${items(list)} WITH ORDINALITY ke (item, item_no) " +
             "UNION ALL SELECT kn.place || kc.item_no, kc.item FROM kn, " +
-            "jsonb_array_elements(CASE WHEN jsonb_typeof(kn.item) = 'array' THEN kn.item ELSE '[]'::jsonb END) WITH ORDINALITY kc (item, item_no)"
+            "${items("CASE WHEN jsonb_typeof(kn.item) = 'array' THEN kn.item ELSE '[]'::jsonb END")} WITH ORDINALITY kc (item, item_no)"
         val ends = "SELECT kn.place || CAST(jsonb_array_length(kn.item) + 1 AS bigint), 0, 'null' FROM kn WHERE jsonb_typeof(kn.item) = 'array'"
         val tokens = "SELECT kn.place, ${itemRank("kn.item")} AS rank, CASE WHEN jsonb_typeof(kn.item) = 'array' THEN 'null' ELSE CAST(kn.item AS text) END AS item " +
             "FROM kn UNION ALL $ends"
