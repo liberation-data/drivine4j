@@ -529,9 +529,9 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
         // Places past a number's digits give it back, where Oracle's NUMBER would overflow (#266); short of them, it rounds.
         assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
-        // Read from data, and so far past the digits that writing them all out would not finish; Postgres's ROUND overflows there.
+        // Read from data, and so far past the digits that writing them all out would not finish, where Postgres's numeric would overflow.
         assertEquals(listOf(listOf(2.5, 2.5)), query("MATCH (n:Round) RETURN [round(2.5, n.b), round(2.5, n.b, 'FLOOR')]"))
-        if (pm.type != DatabaseType.POSTGRES) assertEquals(listOf(listOf(2.5, 2.5)), query("RETURN [round(2.5, 1000000000), round(2.5, 1000000000, 'HALF_UP')]"))
+        assertEquals(listOf(listOf(2.5, 2.5)), query("RETURN [round(2.5, 1000000000), round(2.5, 1000000000, 'HALF_UP')]"))
         assertEquals(
             listOf(listOf(1.0E-100, 123.456, 1.0E100, 0.3333333333333333, 0.0, -2.5)),
             query("RETURN [round(1.0E-100, 120), round(123.456, 200, 'HALF_UP'), round(1.0E100, 30), round(1.0 / 3, 20), round(1.0E-100, 99), round(-2.5, 300, 'FLOOR')]"),
