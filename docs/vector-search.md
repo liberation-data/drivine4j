@@ -139,7 +139,8 @@ Full rationale: [0.0.79-vector-search-k.md](0.0.79-vector-search-k.md).
 **`partitionLabel`** — targets a per-partition index at runtime, so the search runs *inside* the
 partition rather than being post-filtered. The label is bound, not interpolated (one query plan for all
 partitions); the index name re-derives as `${label}_${property}_vector`, matching the create side.
-Targeting is not identity — the projection is unchanged.
+Targeting is not identity — the projection is unchanged, and a node the partition's index yields
+comes back only when it has every one of the fragment's labels.
 Full rationale: [0.0.79-vector-partitioning.md](0.0.79-vector-partitioning.md).
 
 **Short-yield reporting** — a vector search returning fewer rows than requested logs the numbers at

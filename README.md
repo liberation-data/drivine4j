@@ -843,8 +843,9 @@ It is in `[0, 1]`: `(1 + cos) / 2` for a cosine index, and `1 / (1 + d²)` for a
 *required* relationships (and the optional `threshold`) are applied **after** the K-nearest search,
 so a candidate that ranks in the top K but fails the filter is dropped — meaning **`loadNearest` can
 return fewer than `topK` results**. The same holds for a root with more than one label: the index is
-on its first label, so a node with that label alone is a candidate, and is dropped. A **fragment**
-with one label has no such filter, so it returns the full top K (minus any `threshold` cut).
+on its first label, so a node with that label alone is a candidate, and is dropped. So is a node of a
+`partitionLabel`'s index that lacks any of the root's labels. A **fragment** with one label, searched
+without a partition, has no such filter, so it returns the full top K (minus any `threshold` cut).
 
 **`k` is also the search beam width — this is the surprising part.** On Lucene-backed engines the
 result queue *is* the HNSW candidate queue, so `k` does not merely truncate a ranked list; it decides
