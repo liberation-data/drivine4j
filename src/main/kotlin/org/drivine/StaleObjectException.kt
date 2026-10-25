@@ -63,7 +63,7 @@ class StaleObjectException(
             """.trimIndent()
         fieldsDiffer && !deleted ->
             """
-            ${type.simpleName} '$id' has a field that is not as the object was loaded with, though it carries the stamp the object was loaded with, so it was not saved.
+            ${type.simpleName} '$id' has a field that is not as the object was loaded with, though its stamp says its own data is as the object was loaded with, so it was not saved.
             Another writer changed the field and left the stamp as it was, or the load read the node while another writer committed.
             Expected stamp $expectedStamp, found ${foundStamp ?: "none"}.
             Load it again and re-apply the change: StatelessGraphObjectManager.update does this.

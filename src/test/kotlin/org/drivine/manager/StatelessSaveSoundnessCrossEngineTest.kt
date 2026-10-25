@@ -898,6 +898,17 @@ abstract class StatelessSaveSoundnessContract {
     }
 
     @Test
+    fun `a save from the object a save of other fields returned compares a packed field it left as the node holds it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val loaded = assertNotNull(stateless.load<ClaimWithTags>("c1"))
+        val saved = stateless.saveFields(loaded.copy(text = "two"), except = setOf("tags"), from = loaded)
+
+        stateless.save(saved.copy(text = "three"), from = saved)
+
+        assertEquals("three", property("c1", "text"))
+    }
+
+    @Test
     fun `a save from a copy of the object as loaded compares a packed field as a save packs it`() {
         assumeReadsWithoutSnapshot()
         packedAs("'[\"a\", \"b\"]'")
@@ -1037,6 +1048,19 @@ abstract class StatelessSaveSoundnessContract {
     }
 
     @Test
+    fun `a save from the object a save of the set returned compares the set as that save wrote it`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        val saved = stateless.saveFields(loaded.copy(tags = setOf("c", "a")), only = setOf("tags"), from = loaded)
+        assertEquals(listOf("c", "a"), storedTags())
+
+        stateless.save(saved.copy(name = "two"), from = saved)
+
+        assertEquals("two", property("p1", "name"))
+    }
+
+    @Test
     fun `a save from the object as loaded is refused when another writer changed the set under the same stamp, and says a field differs`() {
         assumeReadsWithoutSnapshot()
         tagsStoredAs("['a', 'a', 'b']")
@@ -1047,9 +1071,45 @@ abstract class StatelessSaveSoundnessContract {
 
         assertTrue(refused.fieldsDiffer)
         val message = refused.message.orEmpty()
-        assertContains(message, "SetProbe 'p1' has a field that is not as the object was loaded with, though it carries the stamp the object was loaded with")
+        assertContains(message, "SetProbe 'p1' has a field that is not as the object was loaded with, though its stamp says its own data is as the object was loaded with")
         assertFalse("relationship" in message, message)
         assertEquals(listOf("a", "b", "theirs"), storedTags(), "the other writer's change stands")
+    }
+
+    @Test
+    fun `a save from the object as loaded, refused because another writer saved the node, says it was changed and not that a field differs`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        stateless.save(loaded.copy(name = "theirs"))
+
+        val refused = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(name = "two"), from = loaded) }
+
+        assertFalse(refused.fieldsDiffer, refused.message)
+        assertContains(refused.message.orEmpty(), "SetProbe 'p1' was changed by another writer")
+        assertEquals("theirs", property("p1", "name"), "the other writer's change stands")
+    }
+
+    @Test
+    fun `a save from the view as loaded that replaces a list, so compares the whole stamp, says a field differs only where the stamp is as loaded`() {
+        assumeReadsWithoutSnapshot()
+        val loaded = stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'theirs'")
+
+        val fieldChanged = assertFailsWith<StaleObjectException> {
+            stateless.save(loaded.copy(people = emptyList()), Replace(ClaimView::people), from = loaded)
+        }
+        assertTrue(fieldChanged.fieldsDiffer, fieldChanged.message)
+
+        val reloaded = assertNotNull(stateless.load<ClaimView>("c1"))
+        run("MATCH (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS]->(:Human {id: 'bob', name: 'Bob'}) SET ${Stamps.linksClause("c")}")
+
+        val relinked = assertFailsWith<StaleObjectException> {
+            stateless.save(reloaded.copy(people = emptyList()), Replace(ClaimView::people), from = reloaded)
+        }
+        assertFalse(relinked.fieldsDiffer, relinked.message)
+        assertContains(relinked.message.orEmpty(), "Claim 'c1' had a relationship added or removed by another writer")
+        assertEquals(listOf("c1->ada", "c1->bob"), edges("MENTIONS"))
     }
 
     // ----- Inside a transaction -----

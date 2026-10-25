@@ -46,7 +46,7 @@ class StaleObjectExceptionTest {
         val sameNodeToken = stale(found = "aaaaaaaaaaaaaaaa:cccccccccccccccc", fieldsDiffer = true)
 
         for (e in listOf(sameStamp, sameNodeToken)) {
-            assertTrue(message(e).startsWith("Claim 'c1' has a field that is not as the object was loaded with, though it carries the stamp the object was loaded with, so it was not saved."), message(e))
+            assertTrue(message(e).startsWith("Claim 'c1' has a field that is not as the object was loaded with, though its stamp says its own data is as the object was loaded with, so it was not saved."), message(e))
             assertContains(message(e), "Another writer changed the field and left the stamp as it was, or the load read the node while another writer committed.")
             assertFalse("relationship" in message(e), message(e))
             assertTrue(e.fieldsDiffer)

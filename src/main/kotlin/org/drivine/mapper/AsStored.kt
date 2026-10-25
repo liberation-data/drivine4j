@@ -55,9 +55,9 @@ internal object AsStored {
     }
 
     /**
-     * Keeps, for [fragment], what an update returned carrying [stamp], what [asLoaded], the fields the
-     * update compared, says each packed or set property held that the update did not write ([written]):
-     * the node holds that still, so a save from the object the update returned compares it so too.
+     * Keeps, for [fragment], what an update or a save of named fields returned carrying [stamp], what
+     * [asLoaded], the fields it compared, says each packed or set property held that it did not write
+     * ([written]): the node holds that still, so a save from the object it returned compares it so too.
      */
     fun carry(fragment: Any, stamp: String, asLoaded: Map<String, Any?>, written: Set<String>, objectMapper: ObjectMapper) {
         val fields = (keptFields(fragment.javaClass, objectMapper) - written).ifEmpty { return }
