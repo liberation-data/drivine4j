@@ -597,6 +597,8 @@ abstract class CypherQueryContract {
             // Bound, -1.5 is cut to -1, and 1.0E20 is past the greatest.
             Triple("RETURN left('hello', \$n)", mapOf("n" to -1.5), outOfRange("left", "length")),
             Triple("RETURN left('hello', \$n)", mapOf("n" to 1.0e20), outOfRange("left", "length")),
+            // Negated, a bound number is negated before it is cut: -2.7 is -2.
+            Triple("RETURN left('hello', -\$n)", mapOf("n" to 2.7), outOfRange("left", "length")),
         ).forEach { (statement, parameters, message) ->
             val failed = assertThrows<Exception>(statement) { query(statement, parameters) }
             if (compiles) assertTrue(failed.message!!.contains(message), "$statement: ${failed.message}")
@@ -609,13 +611,19 @@ abstract class CypherQueryContract {
             ),
         )
         assertEquals(
-            listOf(listOf(null, "he", "he", "el", empty, null, "he")),
+            listOf(listOf(null, "he", "he", "el", empty, null, "he", null, "h", empty)),
             query(
-                "RETURN [left(\$t, \$m), left('hello', \$i), left('hello', \$f), substring('hello', \$s, \$l), left('hello', \$q), right(\$t, \$f), left('hello', \$p.f)]",
+                "RETURN [left(\$t, \$m), left('hello', \$i), left('hello', \$f), substring('hello', \$s, \$l), left('hello', \$q), right(\$t, \$f), left('hello', \$p.f), left(\$p.none, \$m), left('hello', -\$m), left('hello', -\$q)]",
                 mapOf("t" to null, "m" to -1L, "i" to 2L, "f" to 2.7, "s" to 1.7, "l" to 2.6, "q" to -0.5, "p" to mapOf("f" to 2.7)),
             ),
         )
         assertEquals(listOf("he", null), query("UNWIND \$xs AS c RETURN left('hello', c)", mapOf("xs" to listOf(2.7, null))))
+        // The greatest start or length is taken: a start past the text gives the empty text, written, bound or from a list.
+        assertEquals(
+            listOf(listOf(empty, "hello", "hello", "ello", empty)),
+            query("RETURN [substring('hello', 2147483647), left('hello', 2147483647), right('hello', 2147483647), substring('hello', 1, 2147483647), substring('hello', \$m)]", mapOf("m" to 2147483647L)),
+        )
+        assertEquals(listOf(empty), query("UNWIND \$xs AS s RETURN substring('hello', s)", mapOf("xs" to listOf(2147483647L))))
     }
 
     @Test
@@ -624,7 +632,7 @@ abstract class CypherQueryContract {
         clear()
         seed(
             "CREATE (:Count {k: 1, f: 2.7, w: 2.0, q: -0.5, r: -1.5, m: -1, h: 2147483647.9, hp: 2147483648.5, t: 'hello'}), " +
-                "(:Count {k: 2, m: 1, t: 'hello'}), (:Count {k: 3, m: -1, r: -1.5})",
+                "(:Count {k: 2, m: 1, t: 'hello'}), (:Count {k: 3, m: -1, r: -1.5, hp: 2147483648.5})",
         )
         listOf(
             "MATCH (n:Count) RETURN left(n.t, n.m)" to outOfRange("left", "length"),
@@ -648,8 +656,20 @@ abstract class CypherQueryContract {
             listOf(listOf("he", "lo", "llo", "he", "hello", "he", null, empty)),
             query("MATCH (n:Count) WHERE n.k = 1 RETURN [left(n.t, n.f), right(n.t, n.w), substring(n.t, n.f), substring(n.t, n.q, n.f), left(n.t, n.h), left(n.t, n.f * 1), left(n.none, n.f), left(n.t, n.q)]"),
         )
+        assertEquals(
+            listOf(listOf(empty, "hello")),
+            query("MATCH (n:Count) WHERE n.k = 1 RETURN [substring(n.t, n.h), substring(n.t, 0, n.h)]"),
+        )
+        // Grouped by, as a key beside an aggregate.
+        assertEquals(listOf(listOf("ello", 1L)), query("MATCH (n:Count) WHERE n.k = 2 RETURN substring(n.t, n.m), count(*)"))
         // Out of range beside a null text is null, as in Neo4j, and so is a null start or length.
         assertEquals(listOf(listOf(null, null, null, null)), query("MATCH (n:Count) WHERE n.k = 3 RETURN [left(n.t, n.m), substring(n.t, n.m), left(n.t, -1), right(n.t, n.r)]"))
+        // A constant out of range, which the compiler does not read as given, and one past SQL's integer: null beside a null text,
+        // and not refused for the row filtered out.
+        assertEquals(
+            listOf(listOf(null, null, null, null)),
+            query("MATCH (n:Count) WHERE n.k = 3 RETURN [left(n.t, 1 - 3), substring(n.t, 0, 1 - 3), left(n.t, n.hp), left(n.t, 2147483647 + 1)]"),
+        )
         assertEquals(listOf(listOf(null, null, null)), query("MATCH (n:Count) WHERE n.k = 2 RETURN [left(n.t, n.none), substring(n.t, n.none), substring(n.t, 1, n.none)]"))
         assertEquals(listOf("none", "h", "none"), query("MATCH (n:Count) RETURN CASE WHEN n.m < 0 THEN 'none' ELSE left(n.t, n.m) END ORDER BY n.k"))
     }

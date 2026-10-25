@@ -3055,7 +3055,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     Value.Json(scalar(shared(text(comparable(json(arguments[0])))) { (text) ->
                         val start = countOf(function, 1, "start", arguments, text)
                         val length = if (arguments.size == 3) ", ${countOf(function, 2, "length", arguments, text)}" else ""
-                        "SUBSTR($text, $start + 1$length)"
+                        // The greatest start is past any text, so it is kept as it is rather than counted past Postgres's integer.
+                        val position = shared(start) { (s) -> "CASE WHEN $s < $MAX_COUNT THEN $s + 1 ELSE $s END" }
+                        "SUBSTR($text, $position$length)"
                     }))
                 }
                 "left", "right" -> {
@@ -3156,8 +3158,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 // A failure of constants alone may be worked out before any row: this one reads the text.
                 return "CASE WHEN $text IS NOT NULL THEN ${failure(outOfRange, "CASE WHEN $text IS NOT NULL THEN $whole END")} END"
             }
-            return shared("${temporalSql.trunc}(${number(comparable(json(arguments[index])))})") { (n) ->
-                "CASE WHEN $text IS NOT NULL AND ($n < 0 OR $n > $MAX_COUNT) THEN ${failure(outOfRange, n)} ELSE CAST($n AS INTEGER) END"
+            // Read only beside a text that is not null, so a number past SQL's integer beside a null text is null, and a
+            // constant out of range is not worked out before any row.
+            return shared("CASE WHEN $text IS NOT NULL THEN ${temporalSql.trunc}(${number(comparable(json(arguments[index])))}) END") { (n) ->
+                "CASE WHEN $n < 0 OR $n > $MAX_COUNT THEN ${failure(outOfRange, n)} ELSE CAST($n AS INTEGER) END"
             }
         }
 
