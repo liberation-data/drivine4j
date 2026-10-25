@@ -498,6 +498,21 @@ cases:
           - {id: 1, text: {$repeat: "x", times: 40000}, more: {$repeat: "é", times: 20000}, f: 2.0}
           - {id: 2, text: {$repeat: "x", times: 40000}, more: {$repeat: "é", times: 20000}, f: 2.0}
 
+  - name: "A parameter's property past 32 KB read on two nodes"
+    description: "A value past 32 KB in a map parameter is read for each of two rows, returned and set, alone and beside a float that is a whole number. On Oracle, a parameter that long taken as JSON, then the value from it, for each of two rows, crashed the session."
+    steps:
+      - cypher: "CREATE (:CyWrite {id: 1}), (:CyWrite {id: 2})"
+      - cypher: "MATCH (n:CyWrite) RETURN $p.text ORDER BY n.id"
+        parameters: {p: {text: {$repeat: "x", times: 40000}}}
+        rows: [{$repeat: "x", times: 40000}, {$repeat: "x", times: 40000}]
+      - cypher: "UNWIND [1, 2] AS i MATCH (n:CyWrite {id: i}) SET n.t = $p.text, n.f = $p.f"
+        parameters: {p: {text: {$repeat: "é", times: 20000}, f: 2.0}}
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"
+        rows:
+          - {id: 1, t: {$repeat: "é", times: 20000}, f: 2.0}
+          - {id: 2, t: {$repeat: "é", times: 20000}, f: 2.0}
+
   - name: "A float with no fraction"
     description: "A float that is a whole number, such as 2.0, is written and read back as a float, from a parameter nested or past 32 KB too, and toString() of it keeps its fraction."
     steps:

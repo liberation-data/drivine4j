@@ -58,6 +58,12 @@ internal object OracleSql {
         return literal("$.${step(key)}$suffix")
     }
 
+    /** The path of the property the keys [keys] lead to, each of a map in the one before, as a SQL literal: `'$.p.text'`. */
+    fun path(keys: List<String>): String = path(keys.first(), keys.drop(1).joinToString("") { key ->
+        require(key.isNotEmpty()) { "A property name is empty: an empty name is no property a statement can read." }
+        ".${step(key)}"
+    })
+
     /**
      * Whether the node [alias] carries [label], written so the index over labels can answer it: the
      * form for a statement that reads every node of a label. A label is data, so it is written into

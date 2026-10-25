@@ -98,13 +98,16 @@ abstract class SqlCypherCompiler(graph: String) {
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
-            val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText))
+            val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
             return withFunctions(CompiledCypher(writer.query(query), writer.parameters.values))
         }
         procedural = true
         // A procedure takes its parameters as one object, and reads each from it.
         val writer = Writer(
-            Parameters(parameters, { name, _ -> nullIfJsonNull(propertyOf(PARAMS, name)) }, { number(propertyOf(PARAMS, it)) }, inObject = true, text = ::parameterText)
+            Parameters(
+                parameters, { name, _ -> nullIfJsonNull(propertyOf(PARAMS, name)) }, { number(propertyOf(PARAMS, it)) }, inObject = true, text = ::parameterText,
+                asPath = parameterPath?.let { read -> { name, _, keys, value -> read(PARAMS, null, listOf(name) + keys, value) } },
+            )
         )
         // The parameters' text is written before the procedure's body is: on Oracle, writing it is what says whether the
         // body reads it as extended JSON.
@@ -175,7 +178,7 @@ abstract class SqlCypherCompiler(graph: String) {
         if (names.distinct().size > 1) {
             throw DrivineException("Each query of a UNION returns the same names, as in Cypher: ${names.joinToString(" and ") { it.joinToString(prefix = "(", postfix = ")") }}.")
         }
-        val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText))
+        val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
         val rows = parts.mapIndexed { i, clauses ->
             "SELECT ${i + 1} AS part, $rowNumber AS n, q.result FROM (\n${indent(writer.query(Query(clauses)))}\n) q"
         }.joinToString("\nUNION ALL\n")
@@ -196,6 +199,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** The parameter bound as [marker], the JSON text [text], as JSON. */
     protected abstract fun parameterJson(marker: String, text: String?): String
+
+    /**
+     * Where a store reads a value in a parameter that is a map, `${'$'}p.text`, straight from the text bound as [marker], the
+     * JSON text [text] (in a procedure, from [PARAMS], with the parameter's name first among [keys]): the value at [keys],
+     * [value] as the caller gave it, as JSON. Null where the store reads the parameter as JSON, then each key of it.
+     */
+    protected open val parameterPath: ((marker: String, text: String?, keys: List<String>, value: Any?) -> String)? = null
 
     /** The JSON text a parameter's [value] is bound as. */
     protected open fun parameterText(value: Any?): String = Neo4jObjectMapper.instance.writeValueAsString(value)
@@ -2093,7 +2103,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Parameter ->
                 givenParameters?.get(expression.name) ?: Value.Json(parameters.json(expression.name), temporal = Temporal.ofValue(parameters.value(expression.name)))
             is Expression.Variable -> scope[expression.name] ?: throw DrivineException("${expression.name} is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.")
-            is Expression.Property -> property(expression(expression.subject, scope), expression.key)
+            is Expression.Property -> inParameter(expression)?.let { Value.Json(it) } ?: property(expression(expression.subject, scope), expression.key)
             is Expression.HasLabels -> when (val subject = expression(expression.subject, scope)) {
                 is Value.Node -> Value.Bool("(${hasLabels(subject.labels, expression.labels)})")
                 else -> throw DrivineException("A label is tested of a node.")
@@ -2141,16 +2151,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 val listed by lazy { expression(expression.subject, scope) }
                 val subject = { comparable(json(listed)) }
                 val at = comparable(json(expression(index, scope)))
-                // An index written, or bound to a parameter, is known: a text is the property of that name, a number an item.
-                val known = when (index) {
-                    is Expression.Literal -> index.value
-                    is Expression.Parameter -> parameters.value(index.name)
-                    // `-1` is a negated number.
-                    is Expression.Unary -> (index.operand as? Expression.Literal)?.value?.takeIf { index.operator == Expression.Unary.Operator.NEGATE && it is Number }
-                    else -> null
-                }
+                val known = known(index)
                 when {
-                    known is String -> property(expression(expression.subject, scope), known)
+                    known is String -> inParameter(expression)?.let { Value.Json(it) } ?: property(expression(expression.subject, scope), known)
                     // An item of a list of nodes or relationships is the node or the relationship, so it is compared by its id;
                     // of one collect gathers in this query, its properties, for a store reads no aggregate from a subquery. A
                     // pattern comprehension gathers its properties too, but in a subquery of its own, so its item is read by id.
@@ -2292,6 +2295,37 @@ abstract class SqlCypherCompiler(graph: String) {
             patterns(inner, patterns)
             where?.let { inner.where += condition(it, inner.scope) }
             return Value.Bool("EXISTS (${(listOf("SELECT 1") + inner.from() + listOfNotNull(inner.whereClause())).joinToString(" ")})")
+        }
+
+        /** An index written, or bound to a parameter, is known: a text is the property of that name, a number an item. */
+        private fun known(index: Expression): Any? = when (index) {
+            is Expression.Literal -> index.value
+            is Expression.Parameter -> parameters.value(index.name)
+            // `-1` is a negated number.
+            is Expression.Unary -> (index.operand as? Expression.Literal)?.value?.takeIf { index.operator == Expression.Unary.Operator.NEGATE && it is Number }
+            else -> null
+        }
+
+        /**
+         * A value in a parameter that is a map, `${'$'}p.text`, `${'$'}p.a.b` or `${'$'}p['a'].b`, each key a property or an index
+         * [known] as a text, read at once from the text the parameter is bound as, where the store reads it so (see
+         * [Parameters.json]). Oracle crashed the session where a statement took a parameter past 32 KB as JSON, then the
+         * value from it, for each of two rows (#256).
+         */
+        private fun inParameter(value: Expression): String? {
+            val keys = mutableListOf<String>()
+            var subject: Expression = value
+            while (true) {
+                val (key, next) = when (subject) {
+                    is Expression.Property -> subject.key to subject.subject
+                    is Expression.Index -> (known(subject.index) as? String ?: break) to subject.subject
+                    else -> break
+                }
+                keys.add(0, key)
+                subject = next
+            }
+            if (subject !is Expression.Parameter || givenParameters?.containsKey(subject.name) == true) return null
+            return parameters.json(subject.name, keys)
         }
 
         private fun property(subject: Value, key: String): Value = when (subject) {
