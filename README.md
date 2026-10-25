@@ -1017,8 +1017,10 @@ The index is resolved from a **`@FullTextIndex`** on the searched fragment (prop
 field, or class-level `@FullTextIndex(properties = ["title", "body"])` for a multi-property index) — the
 same annotation the schema feature uses to *create* it. `threshold` defaults to `0.0` (keep everything).
 `topK` bounds the index call as well as the rows returned: the scores are normalized over the hits
-the index yields, so the index is asked for its best `topK` hits, and an ordinary query that matches
-most of a corpus costs no more than those. Each result is a `Scored<T>(value, score)`, most relevant
+the index yields that have every one of the root's labels, so the index is asked for its best `topK`
+hits, and an ordinary query that matches most of a corpus costs no more than those. A node with the
+indexed label alone is no root, so it is dropped before the scores are scaled, and the best hit a
+search can return scores `1.0` on every store. Each result is a `Scored<T>(value, score)`, most relevant
 first, with polymorphic dispatch (a `loadMatching<SealedBase>` returns each hit as its concrete subtype).
 
 The query string is passed through to the engine's full-text language (Lucene syntax on Neo4j:
@@ -1035,7 +1037,8 @@ graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20) {
 ```
 
 The predicate, like a view's required relationships and a root's labels beyond the first (the one
-the index is on), is applied **after** the index yields. Where any of them filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
+the index is on), is applied **after** the index yields; the labels are checked before the scores
+are scaled, the predicate and relationships after. Where any of them filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
 and the filter keeps the best `topK` of those, so a filter that passes fewer than one in ten of the
 best hits can return fewer than `topK` rows while the index holds more that pass it. The DEBUG line
 `GraphObjectManager` logs for a short result says how many hits the index was asked for.
