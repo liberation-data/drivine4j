@@ -2,6 +2,7 @@ package org.drivine.test
 
 import org.testcontainers.containers.Neo4jContainer
 import org.testcontainers.utility.DockerImageName
+import java.io.InputStream
 import java.nio.file.Paths
 import java.util.Properties
 
@@ -33,9 +34,9 @@ import java.util.Properties
  * Extended is mounted only into the default image, when its jar is in the local Maven or Gradle cache,
  * since an APOC Extended release does not load on every Neo4j release.
  *
- * Neo4j 5.26.1 to 5.26.3 and 2025.01 write the wrong relationship type for Cypher's dynamic
+ * Neo4j 5.26.0 to 5.26.3, 2025.01 and 2025.02 write the wrong relationship type for Cypher's dynamic
  * relationship type, `CREATE (a)-[r:$($type)]->(b)`, once the same statement has run with another
- * type (neo4j/neo4j#13597). Neo4j fixed it in 2025.03 and in a later 5.26 patch: 5.26.32 writes it right.
+ * type (neo4j/neo4j#13597). Neo4j fixed it in 2025.03 and 5.26.4.
  *
  * ### Using Local Neo4j Instance
  *
@@ -107,15 +108,22 @@ class DrivineTestContainer private constructor(
         private const val LOCAL_NEO4J_PASSWORD_ENV = "NEO4J_LOCAL_PASSWORD"
         private const val IMAGE_ENV = "NEO4J_TEST_IMAGE"
 
+        /** The image [DEFAULT_IMAGE] falls back to where the library's classpath lost the pin: the tag the pin stands for. */
+        private const val UNPINNED_IMAGE = "neo4j:latest"
+
         /**
          * The image the container runs unless told otherwise: the one `gradle/test-images.txt` pins
-         * for `neo4j:latest`, which the build writes into the library.
+         * for `neo4j:latest`, which the build writes into the library. A classpath that lost that
+         * resource (a repackaged jar, an IDE build that skipped the Gradle task) gets `neo4j:latest`
+         * rather than a companion that fails to initialize.
          */
         @JvmField
-        val DEFAULT_IMAGE: String = DrivineTestContainer::class.java
-            .getResourceAsStream("test-container-images.properties")
-            ?.use { stream -> Properties().apply { load(stream) }.getProperty("neo4j") }
-            ?: throw IllegalStateException("The library holds no test-container-images.properties: rebuild it")
+        val DEFAULT_IMAGE: String =
+            defaultImage(DrivineTestContainer::class.java.getResourceAsStream("test-container-images.properties"))
+
+        /** The `neo4j` entry of the build's `test-container-images.properties`, or `neo4j:latest` where there is none. */
+        internal fun defaultImage(images: InputStream?): String =
+            images?.use { stream -> Properties().apply { load(stream) }.getProperty("neo4j") } ?: UNPINNED_IMAGE
 
         /** The image the container runs: [DEFAULT_IMAGE], or the one `test.neo4j.image` or `NEO4J_TEST_IMAGE` names. */
         @JvmStatic

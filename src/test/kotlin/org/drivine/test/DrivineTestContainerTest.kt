@@ -6,6 +6,7 @@ import org.drivine.manager.PersistenceManager
 import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.query.QuerySpecification
 import org.drivine.query.transform
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Nested
 import org.junit.jupiter.api.Test
 import org.springframework.beans.factory.annotation.Autowired
@@ -62,9 +63,33 @@ class DrivineTestContainerTest @Autowired constructor(
                     .transform<String>()
             )
 
+            val server = persistenceManager.getOne(
+                QuerySpecification
+                    .withStatement("CALL dbms.components() YIELD name, versions WHERE name = 'Neo4j Kernel' RETURN versions[0] AS version")
+                    .transform<String>()
+            )
+
             assertNotNull(result, "APOC version should be available")
-            assertTrue(result.isNotBlank(), "APOC version should be given, got: $result")
+            // NEO4J_PLUGINS installs the APOC Core release of the server's own version, whatever the image.
+            assertEquals(server, result, "APOC Core should be the server's own release")
             println("APOC version: $result")
+        }
+
+        /**
+         * `apoc.text.clean` and `apoc.convert.fromJsonMap` below are in APOC Core, so they pass without
+         * APOC Extended. This one fails unless the APOC Extended release `build.gradle` downloads is
+         * mounted, and loads on the default image.
+         */
+        @Test
+        fun `APOC Extended is loaded on the default image`() {
+            assumeTrue(DrivineTestContainer.image() == DrivineTestContainer.DEFAULT_IMAGE, "APOC Extended is mounted into the default image only")
+            val extended = persistenceManager.getOne(
+                QuerySpecification
+                    .withStatement("CALL apoc.help('') YIELD core WHERE NOT core RETURN count(*) AS extended")
+                    .transform<Long>()
+            )
+
+            assertTrue(extended > 0, "APOC Extended should give procedures and functions beyond APOC Core")
         }
 
         @Test
@@ -97,7 +122,7 @@ class DrivineTestContainerTest @Autowired constructor(
     }
 
     /**
-     * Neo4j 5.26.1 to 5.26.3 and 2025.01 cache the plan of a statement with a dynamic relationship type
+     * Neo4j 5.26.0 to 5.26.3, 2025.01 and 2025.02 cache the plan of a statement with a dynamic relationship type
      * together with the first type it ran with, and write that type for every type after it
      * (neo4j/neo4j#13597). The container's image must not be one of them.
      */
