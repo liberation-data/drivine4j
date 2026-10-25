@@ -1,6 +1,7 @@
 package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
+import org.drivine.model.RelationshipModel
 import org.drivine.query.FragmentQueryBuilder
 import org.drivine.query.projectedKey
 import org.drivine.query.projectedKeyOrNull
@@ -154,10 +155,16 @@ object CypherGenerator {
      * `assignedTo.name`, and for `assignedTo_worksFor.name`, a relationship of the target — or null
      * when the path is the root's.
      */
-    private fun relationshipOf(propertyPath: String, relationshipNames: Set<String>): String? {
-        val alias = propertyPath.substringBefore(".")
-        return alias.takeIf { it in relationshipNames } ?: alias.substringBefore("_").takeIf { "_" in alias && it in relationshipNames }
-    }
+    private fun relationshipOf(propertyPath: String, relationshipNames: Set<String>): String? =
+        relationshipNamedFirst(propertyPath.substringBefore("."), relationshipNames)
+
+    /**
+     * The relationship of [relationshipNames] that [alias] names first: the longest that is the alias,
+     * or that it begins with before an `_`, as a relationship's name may hold an underscore. Null when
+     * none is.
+     */
+    internal fun relationshipNamedFirst(alias: String, relationshipNames: Collection<String>): String? =
+        relationshipNames.filter { alias == it || alias.startsWith("${it}_") }.maxByOrNull { it.length }
 
     /**
      * `NOT ( … )` — renders the (raw, un-regrouped) inner conditions AND-joined, then negates. A
@@ -218,20 +225,11 @@ object CypherGenerator {
                     // Extract alias from property path (e.g., "assignedTo.name" -> "assignedTo")
                     val alias = condition.propertyPath.substringBefore(".")
 
-                    if (alias in relationshipNames) {
-                        // This is a direct relationship target property
-                        relationshipConditions.getOrPut(alias) { mutableListOf() }.add(condition)
-                    } else if (alias.contains("_")) {
-                        // Possibly a nested relationship (e.g., "raisedBy_worksFor.name")
-                        val parentAlias = alias.substringBefore("_")
-                        if (parentAlias in relationshipNames) {
-                            // This is a nested relationship property
-                            // Group it under the parent relationship for now
-                            relationshipConditions.getOrPut(parentAlias) { mutableListOf() }.add(condition)
-                        } else {
-                            // Not a nested relationship, treat as root property
-                            grouped.add(condition)
-                        }
+                    // A relationship target's property ("assignedTo.name"), or a property of a view
+                    // nested below it ("raisedBy_worksFor.name"), is grouped under that relationship.
+                    val relationship = relationshipNamedFirst(alias, relationshipNames)
+                    if (relationship != null) {
+                        relationshipConditions.getOrPut(relationship) { mutableListOf() }.add(condition)
                     } else {
                         // This is a root fragment property
                         grouped.add(condition)
@@ -794,7 +792,9 @@ object CypherGenerator {
         }
 
         // Separate direct properties from nested relationship properties
-        val (directConditions, nestedConditions) = separateNestedConditions(condition.targetConditions, targetAlias)
+        val targetViewModel = runCatching { GraphViewModel.from(relationship.elementType) }.getOrNull()
+        val (directConditions, nestedConditions) =
+            separateNestedConditions(condition.targetConditions, targetAlias, targetViewModel)
 
         // Each target condition takes the index of its place among the block's parameters, as
         // [extractBindings] walks them. The direct conditions are rendered before the nested ones
@@ -846,12 +846,6 @@ object CypherGenerator {
         // For openCypher: flatten into compound MATCH pattern (no nested EXISTS)
         // For Neo4j: nest EXISTS { } inside EXISTS { }
         val nestedWhere = if (nestedConditions.isNotEmpty()) {
-            val targetViewModel = try {
-                GraphViewModel.from(relationship.elementType)
-            } catch (e: Exception) {
-                null
-            }
-
             if (targetViewModel != null) {
                 if (grammar is OpenCypherGrammar) {
                     // Flatten: extend the relationship pattern with nested hops
@@ -859,22 +853,7 @@ object CypherGenerator {
                     val compoundParts = mutableListOf<String>()
                     val nestedWhereClauses = mutableListOf<String>()
 
-                    nestedConditions.entries.forEach { (nestedRelName, nestedConds) ->
-                        val nestedRel = targetViewModel.relationships.find { it.fieldName == nestedRelName }
-                            ?: throw IllegalArgumentException("Nested relationship '$nestedRelName' not found")
-
-                        val nestedAlias = "${targetAlias}_${nestedRelName}"
-                        val nestedDirection = when (nestedRel.direction) {
-                            org.drivine.annotation.Direction.OUTGOING -> "-[:${nestedRel.type}]->"
-                            org.drivine.annotation.Direction.INCOMING -> "<-[:${nestedRel.type}]-"
-                            org.drivine.annotation.Direction.UNDIRECTED -> "-[:${nestedRel.type}]-"
-                        }
-                        compoundParts.add("${nestedDirection}($nestedAlias)")
-
-                        nestedConds.forEach { cond ->
-                            nestedWhereClauses.add(buildPropertyCondition(cond, indexOf.getValue(cond)))
-                        }
-                    }
+                    flattenNestedConditions(targetAlias, nestedConditions, targetViewModel, indexOf, compoundParts, nestedWhereClauses)
 
                     // Build compound pattern: (rootAlias)-[:REL]->(target)-[:NESTED_REL]->(nestedTarget)
                     val compoundPattern = relationshipPattern + compoundParts.joinToString("")
@@ -949,10 +928,16 @@ object CypherGenerator {
      * Example: For targetAlias="raisedBy":
      * - "raisedBy.name" -> direct
      * - "raisedBy_worksFor.name" -> nested (relationship="worksFor")
+     * - "raisedBy_worksFor_parent.name" -> nested (relationship="worksFor"), for its own level to separate
+     *
+     * A nested condition is keyed by the relationship of [targetViewModel] its alias names next: the
+     * longest of its relationship names the rest of the alias begins with, as a relationship's name may
+     * hold an underscore. With no view model, or none that matches, the rest of the alias is the name.
      */
     private fun separateNestedConditions(
         conditions: List<WhereCondition>,
-        targetAlias: String
+        targetAlias: String,
+        targetViewModel: GraphViewModel? = null,
     ): Pair<List<WhereCondition>, Map<String, List<WhereCondition.PropertyCondition>>> {
         val direct = mutableListOf<WhereCondition>()
         val nested = mutableMapOf<String, MutableList<WhereCondition.PropertyCondition>>()
@@ -963,7 +948,10 @@ object CypherGenerator {
                     val alias = condition.propertyPath.substringBefore(".")
                     if (alias.startsWith("${targetAlias}_")) {
                         // Nested relationship property (e.g., "raisedBy_worksFor.name")
-                        val nestedRelName = alias.substringAfter("${targetAlias}_")
+                        val rest = alias.substringAfter("${targetAlias}_")
+                        val nestedRelName = targetViewModel?.relationships
+                            ?.let { relationships -> relationshipNamedFirst(rest, relationships.map { it.fieldName }) }
+                            ?: rest
                         nested.getOrPut(nestedRelName) { mutableListOf() }.add(condition)
                     } else {
                         // Direct property (e.g., "raisedBy.name")
@@ -1015,16 +1003,71 @@ object CypherGenerator {
             org.drivine.annotation.Direction.UNDIRECTED -> "($parentAlias)-[:${nestedRel.type}]-($nestedAlias)"
         }
 
-        // Build WHERE clause for the nested conditions
-        val whereClauses = conditions.joinToString(" AND ") { condition ->
-            buildPropertyCondition(condition, indexOf.getValue(condition))
-        }
+        // Its own conditions, and those of the levels below it, each a check of its own within this one.
+        val nestedViewModel = runCatching { GraphViewModel.from(nestedRel.elementType) }.getOrNull()
+        val (direct, deeper) = separateNestedConditions(conditions, nestedAlias, nestedViewModel)
+        val clauses = direct.map { buildPropertyCondition(it as WhereCondition.PropertyCondition, indexOf.getValue(it)) } +
+            deeper.map { (deeperName, deeperConds) ->
+                buildNestedRelationshipCondition(
+                    parentAlias = nestedAlias,
+                    nestedRelationshipName = deeperName,
+                    conditions = deeperConds,
+                    targetViewModel = nestedViewModel ?: throw notAView(nestedAlias, nestedRel),
+                    indexOf = indexOf,
+                    grammar = grammar,
+                    ecCounter = ecCounter,
+                    prologs = prologs,
+                    bridgeVars = bridgeVars,
+                )
+            }
+        val whereClauses = clauses.joinToString(" AND ")
 
         val result = grammar.filteredExistenceCheck(relationshipPattern, whereClauses, ecCounter.getAndIncrement())
         result.prolog?.let { prologs.add(it) }
         bridgeVars.addAll(result.bridgeVariables)
         return result.inlineCondition
     }
+
+    /**
+     * Extends a flattened relationship pattern with the nested relationships [nested] names, a hop for
+     * each, and each level below them in turn, adding their conditions to [whereClauses]: the
+     * openCypher form of [buildNestedRelationshipCondition]'s nested checks.
+     */
+    private fun flattenNestedConditions(
+        parentAlias: String,
+        nested: Map<String, List<WhereCondition.PropertyCondition>>,
+        parentViewModel: GraphViewModel,
+        indexOf: Map<WhereCondition, Int>,
+        patternParts: MutableList<String>,
+        whereClauses: MutableList<String>,
+    ) {
+        nested.forEach { (nestedRelName, nestedConds) ->
+            val nestedRel = parentViewModel.relationships.find { it.fieldName == nestedRelName }
+                ?: throw IllegalArgumentException(
+                    "Nested relationship '$nestedRelName' not found in ${parentViewModel.className}. " +
+                    "Available relationships: ${parentViewModel.relationships.map { it.fieldName }}"
+                )
+            val nestedAlias = "${parentAlias}_${nestedRelName}"
+            val nestedDirection = when (nestedRel.direction) {
+                org.drivine.annotation.Direction.OUTGOING -> "-[:${nestedRel.type}]->"
+                org.drivine.annotation.Direction.INCOMING -> "<-[:${nestedRel.type}]-"
+                org.drivine.annotation.Direction.UNDIRECTED -> "-[:${nestedRel.type}]-"
+            }
+            patternParts.add("${nestedDirection}($nestedAlias)")
+            val nestedViewModel = runCatching { GraphViewModel.from(nestedRel.elementType) }.getOrNull()
+            val (direct, deeper) = separateNestedConditions(nestedConds, nestedAlias, nestedViewModel)
+            direct.forEach { cond -> whereClauses.add(buildPropertyCondition(cond as WhereCondition.PropertyCondition, indexOf.getValue(cond))) }
+            if (deeper.isNotEmpty()) {
+                flattenNestedConditions(
+                    nestedAlias, deeper, nestedViewModel ?: throw notAView(nestedAlias, nestedRel), indexOf, patternParts, whereClauses,
+                )
+            }
+        }
+    }
+
+    private fun notAView(alias: String, relationship: RelationshipModel) = IllegalArgumentException(
+        "Cannot filter on nested relationship '${alias}_*' because ${relationship.elementType.simpleName} is not a @GraphView"
+    )
 
     /**
      * Builds an OR condition by recursively generating sub-conditions.

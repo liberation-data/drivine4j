@@ -631,7 +631,7 @@ graphObjectManager.loadAll<LocationHierarchy> {
 }
 ```
 
-**Querying a level below.** The generated DSL reaches each level, built only when it is read, so a where can test the targets of the targets: `where { subLocations.subLocations.location.name eq "France" }`. A where reaches two levels: one three levels down, `subLocations.subLocations.subLocations`, is refused with an `IllegalArgumentException`.
+**Querying a level below.** The generated DSL reaches each level, built only when it is read, so a where can test the targets of the targets: `where { subLocations.subLocations.location.name eq "France" }`. A where of a load reaches as deep as the DSL does, `subLocations.subLocations.subLocations` and below, each level checked in turn, on every store. In a scored search (`loadNearest`, `loadMatching`) on a graph engine it reaches two levels, the nested view's own relationships, as the projection is filtered: one deeper is refused with an `IllegalArgumentException`.
 
 **Chain cycles** (A → B → A) are also supported. When a relationship targets a `@GraphView` that forms a cycle through other types, Drivine tracks visit counts and terminates at `maxDepth`:
 
