@@ -527,6 +527,13 @@ abstract class CypherQueryContract {
         )
         assertEquals(listOf(listOf(3.0, -2.0, 2.0, 3.0, 2.0, -3.0)), query("RETURN [round(2.5, 0, 'HALF_UP'), round(-2.5, 0, 'HALF_EVEN'), round(2.5, 0, 'DOWN'), round(2.1, 0, 'CEILING'), round(2.9, 0, 'FLOOR'), round(-2.1, 0, 'UP')]"))
         assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
+        // To 0 places, as round(x) rounds (#278): an integer as a float, a huge or tiny number, a precision from data, and the
+        // doubles that a binary sum with a half rounds up, the last below a half and the first odd past 2^52; round(x) likewise.
+        assertEquals(
+            listOf(listOf(3.0, -3.0, 1.0E20, -1.0E100, 0.0, 0.0, -2.0, 0.0, 4.503599627370497E15, 0.0, 4.503599627370497E15)),
+            query("MATCH (n:Round) RETURN [round(3, 0), round(-3, 0), round(1.0E20, 0), round(-1.0E100, 0), round(1.0E-120, 0), round(-1.0E-120, 0), round(-2.5, n.q), " +
+                "round(0.49999999999999994, 0), round(4503599627370497.0, 0), round(0.49999999999999994), round(4503599627370497.0)]"),
+        )
         // Places past a number's digits give it back, where Oracle's NUMBER would overflow (#266); short of them, it rounds.
         assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
         // Read from data, and so far past the digits that writing them all out would not finish, where Postgres's numeric would overflow.
