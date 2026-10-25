@@ -4069,7 +4069,7 @@ export USE_LOCAL_NEO4J=true
 - **Local Mode** (`USE_LOCAL_NEO4J=true`): Uses your application-test.yml settings as-is, connects to your local Neo4j
 - **CI Mode** (default): Starts a Neo4j Testcontainer automatically and overrides host/port/password from your properties
 
-The Testcontainer runs the Neo4j image Drivine's own suite runs (`DrivineTestContainer.DEFAULT_IMAGE`, the pin for `neo4j:latest` in `gradle/test-images.txt`). Choose another with `NEO4J_TEST_IMAGE` or `-Dtest.neo4j.image`, but not Neo4j 5.26.0 to 5.26.3, 2025.01 or 2025.02, which write the wrong relationship type for a dynamic relationship type ([neo4j/neo4j#13597](https://github.com/neo4j/neo4j/issues/13597)), fixed in 2025.03 and 5.26.4. See [TEST_CONTAINERS.md](TEST_CONTAINERS.md#neo4j).
+The Testcontainer runs `neo4j:latest` (`DrivineTestContainer.DEFAULT_IMAGE`), so a new Neo4j release reaches your tests as soon as it is out. Choose another with `NEO4J_TEST_IMAGE` or `-Dtest.neo4j.image`, but not Neo4j 5.26.0 to 5.26.3, 2025.01 or 2025.02, which write the wrong relationship type for a dynamic relationship type ([neo4j/neo4j#13597](https://github.com/neo4j/neo4j/issues/13597)), fixed in 2025.03 and 5.26.4. See [TEST_CONTAINERS.md](TEST_CONTAINERS.md#neo4j).
 
 **Benefits:**
 - ✅ One configuration works for both local dev and CI

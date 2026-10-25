@@ -3,8 +3,8 @@
 # Bump a line deliberately, and run the suite. The pin keeps a run reproducible: an engine's new
 # release changes nothing until a line moves, so a pull request's run fails only for its own change.
 # Keep each pin at the engine's current release, so a release's breakage shows up soon.
-# The pin for neo4j:latest is also the image the library's DrivineTestContainer runs: the build
-# writes it into the library, so @EnableDrivineTestConfig ships the Neo4j this suite has run.
+# The library's DrivineTestContainer runs neo4j:latest, which users get unpinned; the suite runs it
+# as the pin here. Its image can be overridden with NEO4J_TEST_IMAGE or -Dtest.neo4j.image.
 #
 # the image a test names        the image it runs
 neo4j:latest                    neo4j:2026.10.1

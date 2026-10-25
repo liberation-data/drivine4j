@@ -204,29 +204,6 @@ tasks.named('check') {
 	dependsOn standaloneTest
 }
 
-// DrivineTestContainer's Neo4j is the image the tests run for neo4j:latest, as gradle/test-images.txt
-// pins it, so the container the library ships is the Neo4j its own suite has run. The build writes the
-// pin into a resource of the library, and moving the pin moves the shipped default with it.
-def testContainerImages = tasks.register('testContainerImages') {
-	description = 'Writes the Neo4j image DrivineTestContainer runs, as gradle/test-images.txt pins it'
-	def neo4j = rootProject.file('gradle/test-images.txt').readLines()
-		.collect { it.trim() }.findAll { it && !it.startsWith('#') }
-		.collect { it.split(/\s+/) }
-		.find { it[0] == 'neo4j:latest' }?.getAt(1)
-	if (!neo4j) {
-		throw new GradleException('gradle/test-images.txt pins no image for neo4j:latest')
-	}
-	inputs.property('neo4j', neo4j)
-	def out = layout.buildDirectory.dir('generated/test-container-images')
-	outputs.dir(out)
-	doLast {
-		def file = out.get().file('org/drivine/test/test-container-images.properties').asFile
-		file.parentFile.mkdirs()
-		file.text = "neo4j=${neo4j}\n"
-	}
-}
-sourceSets.main.resources.srcDir(testContainerImages)
-
 // Task to download Neo4j plugins to Gradle cache (for DrivineTestContainer)
 tasks.register('downloadNeo4jPlugins') {
 	description = 'Downloads Neo4j plugins (APOC, GDS) to Gradle cache for test containers'
