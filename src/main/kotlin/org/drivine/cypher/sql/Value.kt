@@ -26,6 +26,12 @@ sealed interface Value {
         val list: Boolean = false,
         val itemLists: Boolean = false,
         /**
+         * Whether the statement makes it a text or null (a text written, `toString`, a string function, a `+` of texts), and
+         * with [texts] a list whose every item is: a `+` writes such a side as its own text, not as `toString` writes a float.
+         */
+        val text: Boolean = false,
+        val texts: Boolean = false,
+        /**
          * Whether it is known to hold no null in a list or a map, at any depth: a value of one kind, a property read from the
          * store, which holds none, or a list or map the statement writes or is given without one. It may itself be null. Two such
          * values compare as JSON; any other may hold a null, which makes Cypher's comparison of the two null where it is not false.
