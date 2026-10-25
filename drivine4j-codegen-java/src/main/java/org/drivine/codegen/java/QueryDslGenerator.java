@@ -332,11 +332,11 @@ public class QueryDslGenerator {
         ClassName propertyReference = ClassName.get("org.drivine.query.dsl", "PropertyReference");
         ClassName stringPropertyReference = ClassName.get("org.drivine.query.dsl", "StringPropertyReference");
 
-        for (Element member : fragmentClass.getEnclosedElements()) {
-            // A static field is the class's, not the node's: the core library stores none.
-            if (member.getKind() != ElementKind.FIELD || member.getModifiers().contains(Modifier.STATIC)) continue;
+        // Every field the node stores, inherited ones among them, as the core library reads them: no static
+        // field, which is the class's, and no @GraphTransient one, which is not stored.
+        for (VariableElement field : ModelReader.instanceFields(fragmentClass)) {
+            if (hasAnnotation(field, "org.drivine.annotation.GraphTransient")) continue;
 
-            VariableElement field = (VariableElement) member;
             String fieldName = field.getSimpleName().toString();
             TypeMirror fieldType = field.asType();
 

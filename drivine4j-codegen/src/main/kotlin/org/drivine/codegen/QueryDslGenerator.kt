@@ -1,5 +1,6 @@
 package org.drivine.codegen
 
+import org.drivine.codegen.model.ModelReader
 import com.google.devtools.ksp.getAllSuperTypes
 import com.google.devtools.ksp.processing.CodeGenerator
 import com.google.devtools.ksp.processing.Dependencies
@@ -234,7 +235,7 @@ class QueryDslGenerator(
 
         // Generate property references for each property in the RelationshipFragment
         // Skip the 'target' property since that's handled separately as a relationship
-        relFragmentClass.getAllProperties().forEach { prop ->
+        ModelReader.storedProperties(relFragmentClass).forEach { prop ->
             val propName = prop.simpleName.asString()
             if (propName == "target") {
                 // Skip - target is the node, we expose it separately
@@ -401,7 +402,8 @@ class QueryDslGenerator(
         // stored prefix. field(key) / predicateOn(key) consult these at query time.
         val fieldKeyPaths = LinkedHashMap<String, String>()
         val bagPrefixes = mutableListOf<String>()
-        fragmentClass.getAllProperties().forEach { prop ->
+        // Every property the node stores, inherited ones among them, as the core library reads them.
+        ModelReader.storedProperties(fragmentClass).forEach { prop ->
             when (val emitted = addPropertyReference(classBuilder, prop, "\"n\"")) {
                 is EmittedRef.Field -> {
                     fieldKeyPaths[emitted.logicalName] = emitted.onDiskName
@@ -850,7 +852,7 @@ class QueryDslGenerator(
 
         // Property references read the constructor param when aliased, else the literal default alias.
         val aliasExpr = if (needsAliasConstructor) "alias" else "\"$defaultAlias\""
-        fragmentClass.getAllProperties().forEach { prop ->
+        ModelReader.storedProperties(fragmentClass).forEach { prop ->
             addPropertyReference(classBuilder, prop, aliasExpr)
         }
 

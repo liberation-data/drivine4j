@@ -332,9 +332,14 @@ final class ModelReader {
      * class Java compiled: of one Kotlin compiled, Kotlin's reflection leaves it out.
      */
     private List<VariableElement> fields(TypeElement type) {
+        return instanceFields(type);
+    }
+
+    /** As {@link #fields}: the query DSL generator reads a fragment's fields by the same rule. */
+    static List<VariableElement> instanceFields(TypeElement type) {
         Map<String, VariableElement> fields = new LinkedHashMap<>();
         for (TypeElement current = type; current != null && !current.getQualifiedName().contentEquals("java.lang.Object");
-             current = element(current.getSuperclass())) {
+             current = QueryDslGenerator.getTypeElement(current.getSuperclass())) {
             for (Element member : current.getEnclosedElements()) {
                 if (member.getKind() == ElementKind.FIELD && !member.getModifiers().contains(Modifier.STATIC)
                     && (current == type || !member.getModifiers().contains(Modifier.PRIVATE) || !isKotlin(current))) {
