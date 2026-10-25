@@ -1,5 +1,6 @@
 package org.drivine.codegen.model
 
+import com.google.devtools.ksp.getDeclaredProperties
 import com.google.devtools.ksp.symbol.ClassKind
 import com.google.devtools.ksp.symbol.KSAnnotated
 import com.google.devtools.ksp.symbol.KSAnnotation
@@ -235,7 +236,32 @@ internal class ModelReader {
 
     /** The properties a class stores: every one but those marked `@GraphTransient`. */
     private fun storedProperties(decl: KSClassDeclaration): List<KSPropertyDeclaration> =
-        decl.getAllProperties().filter { it.drivine("GraphTransient") == null }.toList()
+        (decl.getAllProperties().toList() + javaPrivateProperties(decl)).filter { it.drivine("GraphTransient") == null }
+
+    /**
+     * The private fields of the class's Java superclasses, which `getAllProperties` leaves out as not inherited, and
+     * the core library reads all the same, as the class's state. A Kotlin superclass's are left out, as Kotlin's
+     * reflection leaves them out.
+     */
+    private fun javaPrivateProperties(decl: KSClassDeclaration): List<KSPropertyDeclaration> {
+        val found = mutableListOf<KSPropertyDeclaration>()
+        val names = decl.getAllProperties().map { it.simpleName.asString() }.toMutableSet()
+        var current = superclassOf(decl)
+        while (current != null && current.qualifiedName?.asString() != "kotlin.Any") {
+            if (current.isJava()) {
+                current.getDeclaredProperties()
+                    .filter { Modifier.PRIVATE in it.modifiers && Modifier.JAVA_STATIC !in it.modifiers }
+                    .filter { names.add(it.simpleName.asString()) }
+                    .forEach { found.add(it) }
+            }
+            current = superclassOf(current)
+        }
+        return found
+    }
+
+    private fun superclassOf(decl: KSClassDeclaration): KSClassDeclaration? =
+        decl.superTypes.mapNotNull { resolveAlias(it.resolve().declaration) as? KSClassDeclaration }
+            .firstOrNull { it.classKind == ClassKind.CLASS }
 
     /**
      * Whether [prop] is the node's id: `@NodeId` on it, its getter, or on the property it overrides,

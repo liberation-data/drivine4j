@@ -311,12 +311,17 @@ data class FragmentModel(
          */
         private fun extractFields(clazz: Class<*>): List<FragmentField> {
             // Try Kotlin reflection first
-            return try {
+            val kotlinFields = try {
                 extractKotlinFields(clazz)
             } catch (e: Exception) {
                 // Fall back to Java reflection for Java classes or if Kotlin reflection fails
-                extractJavaFields(clazz)
+                return extractJavaFields(clazz)
             }
+            // Kotlin reflection leaves out a Java superclass's private fields, which are the class's state all the
+            // same: a Java fragment that extends a base declaring `@NodeId private String id` would have no id.
+            val known = kotlinFields.map { it.name }.toSet()
+            val missed = extractJavaFields(clazz, onlyJavaClasses = true).filter { it.name !in known }
+            return (kotlinFields + missed).sortedBy { it.name }
         }
 
         /**
@@ -429,16 +434,23 @@ data class FragmentModel(
         }
 
         /**
-         * Extracts fields using Java reflection.
-         * Used for Java classes or as a fallback.
+         * Extracts fields using Java reflection: every instance field of the class and its superclasses, a subclass's
+         * over a superclass's of the same name, leaving out what is never stored, as Kotlin reflection does: static and
+         * synthetic fields, and `@GraphTransient` ones. With [onlyJavaClasses], only the fields of classes Kotlin did
+         * not compile, which Kotlin reflection may have left out.
          */
-        private fun extractJavaFields(clazz: Class<*>): List<FragmentField> {
+        private fun extractJavaFields(clazz: Class<*>, onlyJavaClasses: Boolean = false): List<FragmentField> {
             val fields = mutableListOf<FragmentField>()
+            val seen = mutableSetOf<String>()
             var currentClass: Class<*>? = clazz
 
             while (currentClass != null && currentClass != Any::class.java) {
+                val read = !onlyJavaClasses || !currentClass.isAnnotationPresent(Metadata::class.java)
                 currentClass.declaredFields
-                    .filterNot { it.isSynthetic }
+                    .filter { read }
+                    .filterNot { it.isSynthetic || Modifier.isStatic(it.modifiers) }
+                    .filterNot { it.isAnnotationPresent(GraphTransient::class.java) }
+                    .filter { seen.add(it.name) }
                     .forEach { field ->
                         val bag = field.getAnnotation(PropertyBag::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
                             ?: field.getAnnotation(CompositeProperty::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
@@ -484,6 +496,8 @@ data class FragmentModel(
             return try {
                 val kClass = clazz.kotlin
                 kClass.memberProperties.find { property -> hasNodeId(kClass, property) }?.name
+                    // A Java superclass's private `@NodeId` field, which Kotlin reflection leaves out.
+                    ?: findNodeIdFieldJava(clazz, onlyJavaClasses = true)
             } catch (e: Exception) {
                 // Fall back to Java reflection
                 findNodeIdFieldJava(clazz)
@@ -507,14 +521,17 @@ data class FragmentModel(
         }
 
         /**
-         * Finds the field annotated with @GraphNodeId using Java reflection.
+         * Finds the field annotated with @NodeId using Java reflection; with [onlyJavaClasses], only among the fields of
+         * classes Kotlin did not compile.
          */
-        private fun findNodeIdFieldJava(clazz: Class<*>): String? {
+        private fun findNodeIdFieldJava(clazz: Class<*>, onlyJavaClasses: Boolean = false): String? {
             var currentClass: Class<*>? = clazz
 
             while (currentClass != null && currentClass != Any::class.java) {
+                val read = !onlyJavaClasses || !currentClass.isAnnotationPresent(Metadata::class.java)
                 val field = currentClass.declaredFields
-                    .filterNot { it.isSynthetic }
+                    .filter { read }
+                    .filterNot { it.isSynthetic || Modifier.isStatic(it.modifiers) }
                     .find { it.isAnnotationPresent(NodeId::class.java) }
 
                 if (field != null) {

@@ -90,7 +90,7 @@ class ModelFileParityTest {
             public abstract class Shape { @NodeId public String id; }
         """,
         "Circle" to """@NodeFragment(labels = {"Circle"}) public final class Circle extends Shape { public double radius; }""",
-        // A superclass's private field is not the subclass's, as the core library reads it.
+        // A Java superclass's private field is the subclass's state, as the core library reads it.
         "Base" to "public abstract class Base { @NodeId private String id; protected String shared; }",
         "Probe" to """
             @NodeFragment(labels = {"Probe"})
@@ -173,6 +173,10 @@ class ModelFileParityTest {
         // Not two empty files alike: the whole domain is in it.
         assertEquals(listOf(10, 1, 3), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
         assertEquals(comparable(model), comparable(ModelJson.read(apt.readText())))
+        // Probe's id is its Java superclass's private field, which a load reads, as both say.
+        val probe = (model["fragments"] as List<*>).map { it as Map<*, *> }.single { it["name"] == "Probe" }
+        assertEquals("id", probe["nodeId"])
+        assertTrue((probe["properties"] as List<*>).any { (it as Map<*, *>)["name"] == "id" })
     }
 
     /** [value] without the two keys the processors may rightly differ on. */
