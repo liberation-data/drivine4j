@@ -374,6 +374,149 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `lists and maps that hold a null compare item by item, null where no pair differs`() {
+        // Not in the spec yet (#225): Cypher compares a list or a map item by item, so a null it holds makes the comparison null.
+        assertEquals(listOf(listOf(null, null, null)), query("RETURN [[null] = [null], {x: null} = {x: null}, [null, 1] = [null, 1]]"))
+        assertEquals(listOf(listOf(false, false, false, true)), query("RETURN [[1, null] = [2, null], [1, 2] = [1], [null] = [null, null], [] = []]"))
+        assertEquals(listOf(listOf(null, true, null)), query("RETURN [[null] <> [null], [1, null] <> [2, null], [null, 1] <> [null, 1]]"))
+        assertEquals(
+            listOf(listOf(false, false, null, false, false)),
+            query("RETURN [{x: null} = {y: null}, {x: 1, y: null} = {x: 2, y: null}, {x: null} = {x: 1}, {x: null} = {}, {a: 1} = {a: 1, b: null}]"),
+        )
+        assertEquals(
+            listOf(listOf(null, false, null, null, false, false)),
+            query("RETURN [[[null]] = [[null]], [[1, null]] = [[2, null]], [{x: null}] = [{x: null}], {a: [null]} = {a: [null]}, [1, [null]] = [2, [null]], [[null], 1] = [[null], 2]]"),
+        )
+        assertEquals(
+            listOf(listOf(false, null, false, false, true, null, null, null)),
+            query("RETURN [[1] = ['1'], [null] = [1], [[1]] = [1], [null, 'a'] = [1, 'b'], [1] = [1.0], [null] = [[1]], [null] = [{x: 1}], [null, 1] = [1, null]]"),
+        )
+        assertEquals("n", query("RETURN CASE [null] WHEN [null] THEN 'y' ELSE 'n' END").single())
+        // Lists that hold no null compare as before.
+        assertEquals(listOf(listOf(true, true, true, true, false)), query("RETURN [[1, 2] = [1, 2], [1, 2] <> [1, 3], {x: 1} = {x: 1}, 'a' IN ['a', 'b'], 'c' IN ['a', 'b']]"))
+    }
+
+    @Test
+    fun `IN compares a value with each item as equality does`() {
+        // Not in the spec yet (#225): true where an item is equal, else null where a comparison is null, else false.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        // A node with no name is in no list of names, nor out of one: NOT keeps it no more than the IN does.
+        assertEquals(listOf(3L, 1L), query("MATCH (n:CyTest) WHERE NOT (n.name IN ['Keanu']) RETURN count(*) UNION ALL MATCH (n:CyTest) WHERE n.name IN ['Keanu'] AND n.born > 0 OR n.name IN \$x RETURN count(*)", mapOf("x" to emptyList<String>())))
+        // A quantifier keeps an item where its condition is true, so one with no name is in all of no list of names.
+        assertEquals(listOf(1L), query("MATCH (n:CyTest) WHERE all(x IN [1] WHERE n.name IN ['Keanu']) RETURN count(*)"))
+        assertEquals(
+            listOf(listOf(null, null, null, true, null, false, false, null, false, true, null, null, null, null)),
+            query(
+                "RETURN [null IN [null], [null] IN [[null]], 1 IN [null], 1 IN [1, null], 2 IN [1, null], null IN [], [null] IN [[1, 2]], " +
+                    "[null] IN [[1]], [1, null] IN [[2, null]], [1] IN [[1], null], {x: null} IN [{x: null}], [1] IN [[2], null], [1] IN [[null]], null IN [1]]"
+            ),
+        )
+        assertEquals(
+            listOf(listOf(null, true, null, false, null)),
+            query(
+                "RETURN [\$x IN \$l, 2 IN \$l, \$a IN \$ls, \$a IN [[2, null]], 1 IN \$n]",
+                mapOf("x" to null, "l" to listOf(1, 2), "a" to listOf(1, null), "ls" to listOf(listOf(1, null), listOf(3)), "n" to null),
+            ),
+        )
+        // Read by a WHERE, a null is in no list that holds one: JSON's null is equal to such an item as JSON.
+        val nulls = mapOf("l" to listOf(null, 2), "m" to mapOf("x" to null))
+        assertEquals(emptyList<Any?>(), query("UNWIND [1] AS i WITH i WHERE null IN \$l OR \$m.x IN \$l RETURN i", nulls))
+        assertEquals(listOf(emptyList<Any?>()), query("RETURN [x IN [1] WHERE null IN \$l OR \$m.x IN \$l]", nulls))
+    }
+
+    @Test
+    fun `values that hold a null compare item by item where neither side is written out`() {
+        // Not in the spec yet (#225): parameters, values carried by a WITH and collected lists are compared as they are at run time.
+        assertEquals(
+            listOf(listOf(null, false, null, null, null, true)),
+            query(
+                "RETURN [\$a = \$b, \$a = \$c, \$a IN [\$b], \$a IN \$l, \$m = \$n, \$p = \$p]",
+                mapOf("a" to listOf(1, null), "b" to listOf(1, null), "c" to listOf(2, null), "l" to listOf(listOf(1, null), listOf(3)), "m" to mapOf("x" to null), "n" to mapOf("x" to 1), "p" to listOf(1, 2)),
+            ),
+        )
+        assertEquals(
+            listOf(listOf(null, false, true, null, null, false)),
+            query("WITH [1, null] AS a, [1, null] AS b, [2, null] AS c, [null, 1] AS d RETURN [a = b, a = c, a <> c, a = d, a IN [b, c], a IN [c]]"),
+        )
+        assertEquals(
+            listOf(listOf(false, null, null, false, true)),
+            query("WITH [[null], 1] AS a, [[null], 2] AS b, {k: [null]} AS m, {k: [1]} AS n, {k: [1], j: 2} AS o RETURN [a = b, m = n, m = m, m = o, n = n]"),
+        )
+        assertEquals(
+            listOf(listOf(null, false, null)),
+            query("UNWIND [[1, null], [2, null]] AS l WITH collect(l) AS ls RETURN [ls = [[1, null], [2, null]], ls[0] = ls[1], ls[0] IN ls]"),
+        )
+        assertEquals(listOf(listOf(3L)), query("UNWIND [[1, null], [2, null], [3]] AS l WITH l WHERE l = [1, null] OR l = [3] RETURN l"))
+        // A parameter's list compared item by item as the statement is compiled, at any depth.
+        assertEquals(
+            listOf(listOf(null, false, false, null, true, false)),
+            query(
+                "UNWIND [[1, [2, 3]], [1, [2]], 5] AS l WITH collect(l) AS ls RETURN [ls[0] = \$p, ls[1] = \$p, ls[2] = \$p, \$p = ls[0], ls[0] <> \$q, \$q = ls[1]]",
+                mapOf("p" to listOf(null, listOf(2, 3)), "q" to listOf(1, listOf(null, 4))),
+            ),
+        )
+    }
+
+    @Test
+    fun `a text that holds a null's text, and a value too long for a short text, compare as values that hold no null`() {
+        // Not in the spec yet (#225): Oracle reads whether a value holds a null from its JSON's text.
+        assertEquals(
+            List(6) { listOf(true, true, true) },
+            query("UNWIND ['a,null]', 'x:null}', 'null', 'a\\\",null]', 'é😀\\\",null]', 'a\\\\'] AS s WITH s, [s] AS v, [[s]] AS l, {k: s} AS m, [{k: s}] AS ms RETURN [v IN l, v = [s], m IN ms]"),
+        )
+        // A text that ends in a backslash ends where its quote does.
+        assertEquals(listOf(listOf(true, true)), query("UNWIND ['a\\\\'] AS s WITH s, [s, ',null]'] AS v RETURN [v = [s, ',null]'], v IN [[s, ',null]']]]"))
+        val long = "[x IN range(1, 600) | 'abcdefghij']"
+        assertEquals(listOf(listOf(true, true, false)), query("WITH $long AS v, $long AS w, [$long] AS l RETURN [v = w, v IN l, v <> w]"))
+        // A long value that holds a null is read whole, so the null is found.
+        assertEquals(
+            listOf(listOf(null, null, null, false)),
+            query("WITH $long + [null] AS v, $long + [null] AS w, [$long + [null]] AS l, ['z'] + $long + [null] AS u RETURN [v = w, v IN l, v <> w, v = u]"),
+        )
+        // In the step of a reduce, as in a statement that writes, on Oracle.
+        assertEquals(listOf(listOf("null", false)), query("WITH [1, null] AS a, [2, null] AS c RETURN reduce(acc = [], x IN [a, c] | acc + [coalesce(x = a, 'null')])"))
+        assertEquals(listOf(listOf(true, true)), query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l RETURN reduce(acc = [], x IN [v] | acc + [x = [s], x IN l])"))
+    }
+
+    @Test
+    fun `a null node or relationship in a list or a map makes its comparison null`() {
+        // Not in the spec yet (#225): a node or a relationship OPTIONAL MATCH finds none of is null in what holds it.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(listOf(null, null, null, null, null, null, null, null, false)),
+            query("OPTIONAL MATCH (x:Nope)-[r]->() RETURN [[r] = [r], {x: r} = {x: r}, [r] <> [r], r IN [r], [r] IN [[r]], x IN [x], [x] = [x], {x: x} = {x: x}, [r, 1] = [r, 2]]"),
+        )
+        assertEquals(
+            listOf(listOf(null, null, null, null, null, null, false)),
+            query(
+                "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->() OPTIONAL MATCH (:Person {name: 'Hugo'})-[r2:KNOWS]->() " +
+                    "WITH r1, r2, [r1, r2] AS a, {x: r2} AS m " +
+                    "RETURN [[r1, r2] = [r1, r2], {a: r1, b: r2} = {a: r1, b: r2}, a = a, m = m, a = [r1, r1], r1 IN [r2], a = [r1]]"
+            ),
+        )
+    }
+
+    @Test
+    fun `a statement that writes compares a list that holds a null as null where it is equal as JSON`() {
+        // Not in the spec yet (#225): on Oracle a procedure calls no function of its own, so values that differ as JSON are false there.
+        clear()
+        assertEquals(
+            listOf(listOf("null", false, true)),
+            query("CREATE (n:CyNullEquality) WITH n, [1, null] AS a, [1, null] AS b, [2, null] AS c SET n.same = coalesce(a = b, 'null'), n.other = a = c, n.unequal = a <> c RETURN [n.same, n.other, n.unequal]"),
+        )
+        // Values that hold no null compare as before, a text that holds a null's text and a long value among them.
+        val long = "[x IN range(1, 600) | 'abcdefghij']"
+        assertEquals(
+            listOf(listOf(true, true, true, true)),
+            query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l, $long AS w, [$long] AS ws CREATE (n:CyNullEquality) SET n.eq = v = [s], n.in = v IN l, n.longEq = w = $long, n.longIn = w IN ws RETURN [n.eq, n.in, n.longEq, n.longIn]"),
+        )
+        if (pm.type == DatabaseType.ORACLE) return
+        assertEquals(listOf("null"), query("CREATE (n:CyNullEquality) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
+    }
+
+    @Test
     fun `round() reads a precision from data, or a whole float, as a whole number toward zero, and a null as null`() {
         // Not in the spec yet: its round() case takes the precision as written or given.
         clear()

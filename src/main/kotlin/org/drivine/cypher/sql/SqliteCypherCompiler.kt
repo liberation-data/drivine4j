@@ -101,6 +101,11 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun jsonEquals(x: String, y: String) = "${SqliteFunctions.EQUAL}($x, $y)"
 
+    /** [SqliteFunctions.EQUAL] compares a value that holds a null as Cypher does, null where no item or entry differs. */
+    override fun holdsNull(json: String): String? = null
+
+    override fun nullsEqual(x: String, y: String, equals: (String, String) -> String) = equals(x, y)
+
     /** A text, a number or a truth value the statement gives is compared without the function that compares any two values. */
     override fun givenEquals(x: String, y: String, given: Any) = when (given) {
         is String -> shared(x, y) { (a, b) -> "(json_type($a) = 'text' AND ($a ->> '$') = ($b ->> '$'))" }
