@@ -469,9 +469,9 @@ internal class OracleSelect(
         return GraphStatement(Query(result, Derived(candidates, root), filters, best).text(), bindings())
     }
 
-    /** The root's nodes that also carry [also] and have [key], each with its columns and `score`, ordered and cut by [tail]. */
-    private fun candidates(also: List<String>, key: String?, score: String, tail: List<String>): String {
-        val has = listOfNotNull(hasLabels("c", rootLabels() + also, scanned = true), key?.let { OracleSql.hasProperty("c", it) }).joinToString(" AND ")
+    /** The root's nodes that also carry [also] and meet [where], each with its columns and `score`, ordered and cut by [tail]. */
+    private fun candidates(also: List<String>, where: List<String>, score: String, tail: List<String>): String {
+        val has = (listOf(hasLabels("c", rootLabels() + also, scanned = true)) + where).joinToString(" AND ")
         return Query("${OracleSql.columns("c")}, $score AS score", scanned("c", has), tail = tail).text()
     }
 
@@ -479,13 +479,16 @@ internal class OracleSelect(
     private fun scanned(row: String, has: String): GraphTable = rows.graphTable(OracleSql.node(row, has), GraphTable.node(row), row)
 
     /**
-     * The [nearest] nodes to [vector] by the embedding stored under [key]: every node of the label is
-     * measured, so the answer is exact. The score is the one the graph engines give: for cosine
+     * The [nearest] nodes to [vector] by the embedding stored under [key]: every node of the root's
+     * labels, and [partitionLabel] when there is one, that holds an embedding of the vector's size is
+     * measured, so the answer is exact. A node with another size is left out, as the other stores leave
+     * it out, rather than failing the statement. The score is the one the graph engines give: for cosine
      * `(1 + cos) / 2`, for Euclidean `1 / (1 + d²)`, each in `[0, 1]` with higher the nearer.
      */
     fun nearestTo(key: String, similarity: SimilarityFunction, partitionLabel: String?, vector: List<Float>, nearest: Int): String {
-        val score = OracleSql.score(similarity, "VECTOR_DISTANCE(${embedding("c", key)}, TO_VECTOR(${scope.bound(vector)}), ${OracleSql.metric(similarity)})")
-        return candidates(listOfNotNull(partitionLabel), key, score, listOf("ORDER BY score DESC, c.nid", "FETCH FIRST ${scope.bound(nearest)} ROWS ONLY"))
+        val score = OracleSql.score(similarity, "VECTOR_DISTANCE(${OracleSql.embedding("c", key)}, TO_VECTOR(${scope.bound(vector)}), ${OracleSql.metric(similarity)})")
+        val holds = listOf(OracleSql.hasProperty("c", key), OracleSql.holdsEmbedding("c", key, vector.size))
+        return candidates(listOfNotNull(partitionLabel), holds, score, listOf("ORDER BY score DESC, c.nid", "FETCH FIRST ${scope.bound(nearest)} ROWS ONLY"))
     }
 
     /**
@@ -503,9 +506,6 @@ internal class OracleSelect(
         """.trimIndent()
     }
 
-    /** The embedding stored under [key] of the node [row], as a vector. */
-    private fun embedding(row: String, key: String): String = "TO_VECTOR(JSON_QUERY($row.props, ${path(key)} RETURNING CLOB))"
-
     /**
      * For each root among [ids] that holds an embedding under [key], its [topK] nearest among the
      * others, as one document a root, `{seed, near}`: see [org.drivine.backend.GraphBackend.nearestAmong].
@@ -522,7 +522,7 @@ internal class OracleSelect(
     fun nearestAmong(key: String, similarity: SimilarityFunction, ids: List<String>, topK: Int, threshold: Double?, embeddings: String?, searchK: Int): GraphStatement {
         val idProperty = requireNotNull(rootModel.nodeIdProperty) { "${rootModel.className} does not have a @NodeId field" }
         val members = Query(
-            "c.nid, ${property("c", idProperty)} AS id, ${embedding("c", key)} AS embedding", Table(graph.nodes, "c"),
+            "c.nid, ${property("c", idProperty)} AS id, ${OracleSql.embedding("c", key)} AS embedding", Table(graph.nodes, "c"),
             listOfNotNull(
                 hasLabels("c", rootLabels()), OracleSql.hasProperty("c", key), "${property("c", idProperty)} IN (${OracleSql.values(scope.bound(ids), SqlKind.TEXT)})",
                 embeddings?.let { "c.nid IN (SELECT e.nid FROM $it e)" },

@@ -158,6 +158,16 @@ internal object OracleSql {
     fun hasProperty(alias: String, key: String): String =
         if (key == Stamps.PROPERTY) "$alias.stamp IS NOT NULL" else "JSON_EXISTS($alias.props, ${path(key)})"
 
+    /** The embedding stored under [key] of the node [alias], as a vector. */
+    fun embedding(alias: String, key: String): String = "TO_VECTOR(JSON_QUERY($alias.props, ${path(key)} RETURNING CLOB))"
+
+    /**
+     * Whether the embedding stored under [key] of [alias] is of [dimensions]: a search measures only
+     * those, as Oracle refuses to measure vectors of two sizes against each other, and a vector index
+     * holds only those, so a node written with another is left out of it and not refused.
+     */
+    fun holdsEmbedding(alias: String, key: String, dimensions: Int): String = "VECTOR_DIMENSION_COUNT(${embedding(alias, key)}) = $dimensions"
+
     /**
      * The node [alias] as the map a load returns for it: the `doc` property the graph gives each
      * node (see [OracleGraph]), which every row source of a node carries.

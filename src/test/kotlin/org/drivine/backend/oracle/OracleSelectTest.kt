@@ -496,10 +496,10 @@ class OracleSelectTest {
     }
 
     @Test
-    fun `the nearest by an exact measure reads every node that has the embedding`() {
+    fun `the nearest by an exact measure reads every node that has an embedding of the vector's size`() {
         val select = select(Shelf::class.java)
         val sql = select.nearestTo("embedding", SimilarityFunction.COSINE, null, listOf(0.1f, 0.2f), 7).squashed()
-        assertTrue(sql.startsWith("SELECT c.nid, c.labels, c.props, c.stamp, c.doc, (2 - VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB)), TO_VECTOR(\$_p0), COSINE)) / 2 AS score FROM GRAPH_TABLE (g MATCH (c IS node WHERE JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND JSON_EXISTS(c.props, '$.embedding'))"), sql)
+        assertTrue(sql.startsWith("SELECT c.nid, c.labels, c.props, c.stamp, c.doc, (2 - VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB)), TO_VECTOR(\$_p0), COSINE)) / 2 AS score FROM GRAPH_TABLE (g MATCH (c IS node WHERE JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND JSON_EXISTS(c.props, '$.embedding') AND VECTOR_DIMENSION_COUNT(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB))) = 2)"), sql)
         assertTrue(sql.endsWith("ORDER BY score DESC, c.nid FETCH FIRST \$_p1 ROWS ONLY"), sql)
         assertEquals(mapOf<String, Any?>("_p0" to listOf(0.1f, 0.2f), "_p1" to 7), select.bindings())
     }
