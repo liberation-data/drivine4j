@@ -317,11 +317,15 @@ class QueryDslGenerator(
                 // Relationship uses composite alias
                 val relationshipAlias = "\${alias}_${viewProp.name}"
                 val propClassName = ClassName(fragmentPackage, propPropertiesClassName)
-                classBuilder.addProperty(
-                    PropertySpec.builder(viewProp.name, propClassName)
-                        .initializer("%T(\"$relationshipAlias\")", propClassName)
-                        .build()
-                )
+                val property = PropertySpec.builder(viewProp.name, propClassName)
+                if (viewProp.isNestedView) {
+                    // Built when read, not with this one: a view that holds itself, or two that hold each
+                    // other, would otherwise build their Properties again in each constructor, without end.
+                    property.getter(FunSpec.getterBuilder().addStatement("return %T(\"$relationshipAlias\")", propClassName).build())
+                } else {
+                    property.initializer("%T(\"$relationshipAlias\")", propClassName)
+                }
+                classBuilder.addProperty(property.build())
             }
         }
 
