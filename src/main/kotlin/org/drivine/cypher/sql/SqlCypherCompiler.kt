@@ -2644,10 +2644,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
-                // Zoned values as the moments they are, whatever their offsets; of a temporal kind, still of it.
+                // Zoned values as the moments they are, whatever their offsets; of a temporal kind, still of it. A list the
+                // statement makes item by item, as an ORDER BY sorts it: a store's JSON may put the shorter list first.
                 "min", "max" -> {
                     val value = json(one())
                     val key = value.temporal?.takeIf { it.zoned }?.let { temporals.moment(text(comparable(value)), it) }
+                        ?: if (isList(one())) listSortKey(comparable(value)) else null
                     Value.Json(extreme(comparable(value), min = name == "min", key = key), temporal = value.temporal)
                 }
                 "range" -> {
