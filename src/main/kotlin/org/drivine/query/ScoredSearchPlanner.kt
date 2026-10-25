@@ -1,6 +1,7 @@
 package org.drivine.query
 
 import org.drivine.annotation.GraphView
+import org.drivine.backend.GraphStatement
 import org.drivine.annotation.NodeFragment
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
@@ -48,6 +49,8 @@ internal object VectorSearchPlanner {
     const val ROW_LIMIT_PARAM = "_vectorRowLimit"
     const val INDEX_NAME_PARAM = "_vectorIndexName"
     const val LABEL_PARAM = "_vectorLabel"
+    const val AMONG_IDS_PARAM = "_amongIds"
+    const val AMONG_TOP_K_PARAM = "_amongTopK"
 
     /** Unfiltered vector search over a `@GraphView` (projected) or a bare `@NodeFragment` (itself). */
     fun plan(
@@ -134,6 +137,47 @@ internal object VectorSearchPlanner {
             )
         }
         return ScoredSearchPlan(cypher, bindings(vector, topK, threshold, callerBindings, searchK, resolved), topK, searchK ?: topK)
+    }
+
+    /**
+     * The search, for each of [ids] whose node holds the embedding, for its [topK] nearest among the
+     * others: see [NearestAmongBuilder]. A view searches its root fragment, as [plan] does; its
+     * relationships play no part, as the set is named by id. The index is asked for [searchK] for each.
+     *
+     * The score is always measured afresh where the grammar can (Neo4j), as an over-fetched [plan]'s
+     * is: the set is a filter after the index, so this search always trims what the index found, and
+     * the index's own score does not order quite as the exact one does.
+     */
+    fun planAmong(
+        graphClass: Class<*>,
+        property: String?,
+        ids: List<String>,
+        topK: Int,
+        threshold: Double?,
+        searchK: Int,
+        grammar: CypherGrammar,
+    ): GraphStatement {
+        requireSupport(grammar)
+        val fragment = rootFragment(graphClass)
+        val resolved = VectorIndexResolver.resolve(fragment, property, TOP_K_PARAM, QUERY_PARAM, rowLimitParam = AMONG_TOP_K_PARAM)
+        val cypher = NearestAmongBuilder(FragmentModel.from(fragment), grammar)
+            .build(resolved, AMONG_IDS_PARAM, AMONG_TOP_K_PARAM, thresholdParam(threshold))
+        val bindings = buildMap<String, Any?> {
+            put(TOP_K_PARAM, searchK)
+            put(AMONG_IDS_PARAM, ids)
+            put(AMONG_TOP_K_PARAM, topK)
+            if (threshold != null) put(THRESHOLD_PARAM, threshold)
+        }
+        return GraphStatement(cypher, bindings)
+    }
+
+    /** The fragment whose embedding a search of [graphClass] measures: the class itself, or a view's root. */
+    private fun rootFragment(graphClass: Class<*>): Class<*> = when {
+        graphClass.isAnnotationPresent(GraphView::class.java) -> GraphViewModel.from(graphClass).rootFragment.fragmentType
+        graphClass.isAnnotationPresent(NodeFragment::class.java) -> graphClass
+        else -> throw IllegalArgumentException(
+            "loadNearestAmong requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
+        )
     }
 
     private fun requireSupport(grammar: CypherGrammar) {

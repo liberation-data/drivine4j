@@ -826,6 +826,16 @@ graphObjectManager.loadNearest<PropositionView>("titleEmbedding", queryEmbedding
 
 Each result is a `Scored<T>(value, score)`; the score is normalized to **similarity, higher = more
 similar** on every engine, so ordering and `threshold` mean the same thing regardless of backend.
+It is in `[0, 1]`: `(1 + cos) / 2` for a cosine index, and `1 / (1 + d²)` for a Euclidean one, where
+`d` is the distance. So a cosine of 0.6 scores 0.8, and `2 * score - 1` gives the cosine back.
+
+> **Changed on FalkorDB and Memgraph.** Before this release FalkorDB gave the cosine itself (-1 to 1)
+> and `1 / (1 + d)`, and Memgraph the absolute value of the cosine, so opposite vectors scored as
+> high as equal ones; Memgraph's Euclidean score was already `1 / (1 + d²)`. Both now give the scores
+> above, as Neo4j, Postgres, Oracle and SQLite do. A cosine score rises from `cos` to `(1 + cos) / 2`,
+> and a FalkorDB Euclidean score falls from `1 / (1 + d)` to `1 / (1 + d²)` where `d` is over 1 (and
+> rises where it is under), so a `threshold` chosen against the old scores keeps more or fewer results
+> than before: convert a cosine threshold `t` to `(1 + t) / 2`.
 
 **`topK` is the index's `k`, not a guaranteed result count.** When searching a **view**, its
 *required* relationships (and the optional `threshold`) are applied **after** the K-nearest search,
@@ -936,6 +946,52 @@ contain fewer rows). Property predicates filter the projected root; relationship
 (`any{}`/`none{}`) filter the projected relationship collection (`any(m IN mentions WHERE …)`).
 Multiple `any{}` AND together — "mentions *all* of these entities" is one `any{}` per id. Referencing
 a relationship the view does not project is an error.
+
+#### Nearest Neighbours Within a Set (`loadNearestAmong`)
+
+`loadNearestAmong` answers, for each of a set of ids, "which of the *other ids in this set* are
+nearest to it?" — the batched form of calling `loadNearest` once per id with that node's own
+embedding and keeping only the hits inside the set. It runs as one statement that each store answers
+natively, so it needs no store-specific Cypher:
+
+```kotlin
+val neighbours: Map<String, List<Scored<String>>> =
+    graphObjectManager.loadNearestAmong<PropositionNode>(batchIds, topK = 5, threshold = 0.8)
+
+neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
+```
+
+- **Keys** are the ids whose root node has the embedding, in the order the ids were given. An id with
+  no embedding, or no node, is not a key; an id whose neighbours were all dropped maps to an empty list.
+  An embedding of another size than the index's is measured against none of a different size: on
+  Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
+  fails, as their index search refuses a vector of another size.
+- **Values** are up to `topK` *other* ids from the set — never the id itself — most similar first, each
+  with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
+  Those below `threshold` are dropped.
+- It works on a `@NodeFragment` and on a `@GraphView` (searching the root fragment's embedding), and
+  resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
+  several. A view's relationships play no part: the set is named by id.
+
+**`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
+an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
+made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
+first), and the "among the set", self and `threshold` filters apply to those. An id whose nearest
+mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
+indexed nodes — needs a larger `searchK`. Where the store measures every node instead (SQLite, and
+Postgres or Oracle with no vector index made) only the set is measured, the answer is exact, and
+`searchK` changes nothing; every pair of the set is measured, so the cost grows with the square of
+the number of ids.
+
+| Store | How it is answered |
+|---|---|
+| Neo4j | `UNWIND` the ids, `db.index.vector.queryNodes` from each seed's embedding, rescored exactly with `vector.similarity.*` |
+| FalkorDB | `UNWIND` the ids, `db.idx.vector.queryNodes` from each seed's embedding |
+| Memgraph | `UNWIND` the ids, `vector_search.search` from each seed's embedding |
+| Postgres | one SQL statement: each seed's nearest through the pgvector index, or, with none made, measured against the other seeds |
+| Oracle | one SQL statement: each seed's nearest through the vector index (`CROSS APPLY … FETCH APPROX`), or, with none made, every pair of seeds measured and ranked |
+| SQLite | one SQL statement: every pair of seeds measured and ranked (exact) |
+| Neptune | refused with `UnsupportedOperationException`, as `loadNearest` is |
 
 #### Full-Text Search (`loadMatching`)
 
@@ -3870,7 +3926,7 @@ drivine:
 | Full-text indexes | `CREATE FULLTEXT INDEX … ON EACH […]` (+ analyzer) | `CREATE TEXT INDEX … ON :L(props)` | `CREATE FULLTEXT INDEX FOR (n:L) ON (n.prop)`, per-property, unnamed |
 | Range indexes | Named, composite supported | Label-property style | Per-label coverage; extended incrementally |
 | TEXT indexes | `CREATE TEXT INDEX … IF NOT EXISTS FOR (n:L) ON (n.prop)`, from Neo4j 4.4 | Refused: its `TEXT INDEX` is full-text, above | Refused |
-| Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build. A build FalkorDB marks `FAILED` is dropped, since it enforces nothing yet stays listed, and is a `Violation` when a key repeats. One found already in the store is dropped and built again, not taken as `AlreadyMatching`, and `drop` removes one |
+| Uniqueness | `REQUIRE … IS UNIQUE` | `ASSERT … IS UNIQUE` | **Redis command** `GRAPH.CONSTRAINT` (not Cypher) — Drivine issues it at driver level, auto-creates the required backing index, and polls the asynchronous build. A build FalkorDB marks `FAILED` is dropped, since it enforces nothing yet stays listed, and is a `Violation` when a key repeats. One found already in the store is dropped and built again, not taken as `AlreadyMatching`, and `drop` removes one. One found still `UNDER CONSTRUCTION` (another process's build, or an earlier run's) is waited on: `AlreadyMatching` once built, dropped and built again if its build fails |
 | Item names | Yes | Vector only | No |
 
 **Oracle.** Every item is an index over an expression, since a property is a path into a JSON column, and what Drivine made is recorded in the table `<graph>_schema`, which `ensure` and drift detection read. An item whose index or table was dropped by hand is made again by the next `ensure`.

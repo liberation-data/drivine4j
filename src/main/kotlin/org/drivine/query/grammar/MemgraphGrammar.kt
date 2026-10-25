@@ -1,6 +1,7 @@
 package org.drivine.query.grammar
 
 import org.drivine.query.sort.CollectionSortEmitter
+import org.drivine.schema.SimilarityFunction
 
 /**
  * Memgraph — openCypher engine with full ACID and working nested pattern comprehensions, but no
@@ -48,13 +49,23 @@ class MemgraphGrammar(
 
     /**
      * `vector_search.search(index_name, limit, query_vector)` — queried by index name, yielding
-     * `node`, `distance`, and `similarity`. Memgraph's `similarity` is already higher-is-closer
-     * (cosine similarity for the `cos` metric), so it carries through directly as the score.
+     * `node`, `distance`, and `similarity`. The score is made from `distance`, rescaled to the score
+     * Neo4j and the SQL stores give: for the `cos` metric the distance is `1 - cos`, so the score
+     * `(1 + cos) / 2` is `1 - distance / 2`; for `l2sq` it is `d²`, so the score `1 / (1 + d²)` is
+     * `1 / (1 + distance)`.
+     *
+     * Not from `similarity`: Memgraph gives the absolute value of `1 - distance` there, so a cosine
+     * of -0.6 has the similarity of 0.6, and opposite vectors score as high as equal ones.
      */
-    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
-        "CALL vector_search.search(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})\n" +
-            "YIELD node, similarity\n" +
-            "WITH node AS $rootAlias, similarity AS $scoreAlias"
+    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
+        val score = when (spec.similarity) {
+            SimilarityFunction.COSINE -> "1.0 - distance / 2.0"
+            SimilarityFunction.EUCLIDEAN -> "1.0 / (1.0 + distance)"
+        }
+        return "CALL vector_search.search(${spec.indexNameArgument()}, \$${spec.topKParam}, ${spec.vectorArgument()})\n" +
+            "YIELD node, distance\n" +
+            "WITH ${spec.carriedPrefix()}node AS $rootAlias, $score AS $scoreAlias"
+    }
 
     override val supportsFullTextSearch: Boolean = true
 
