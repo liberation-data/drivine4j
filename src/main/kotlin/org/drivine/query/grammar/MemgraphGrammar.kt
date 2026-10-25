@@ -88,6 +88,7 @@ class MemgraphGrammar(
             scoreAlias,
             spec.indexLimitParam,
             spec.labels,
+            spec.label,
         )
 
     companion object {

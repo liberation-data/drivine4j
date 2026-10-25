@@ -27,6 +27,9 @@ import sample.multilabel.Essay
 import sample.multilabel.PublishedClip
 import sample.multilabel.PublishedClipView
 import sample.multilabel.PublishedNote
+import sample.multilabel.Snippet
+import sample.multilabel.SnippetQueryDsl
+import sample.multilabel.SnippetView
 import sample.multilabel.PublishedPaper
 import sample.multilabel.PublishedPaperQueryDsl
 import sample.multilabel.PublishedPaperView
@@ -45,6 +48,7 @@ private fun seed(pm: PersistenceManager, vec: (String) -> String, awaitIndexes: 
     pm.indexes.ensure(VectorIndexSpec("Clip", "embedding", 4))
     pm.indexes.ensure(FullTextIndexSpec("Essay", "body"))
     pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
+    pm.indexes.ensure(VectorIndexSpec("Corpus_two", "embedding", 4))
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -57,6 +61,8 @@ private fun seed(pm: PersistenceManager, vec: (String) -> String, awaitIndexes: 
             CREATE (:Essay:Writing {id: 'published', body: 'kotlin grass grass grass grass grass'})
             CREATE (:Note:Corpus_one {id: 'draft', embedding: ${vec("[1.0, 0.0, 0.0, 0.0]")}})
             CREATE (:Note:Published:Corpus_one {id: 'published', embedding: ${vec("[0.6, 0.8, 0.0, 0.0]")}})
+            CREATE (:Corpus_two {id: 'stray', embedding: ${vec("[1.0, 0.0, 0.0, 0.0]")}})
+            CREATE (:Snippet:Corpus_two {id: 'kept', embedding: ${vec("[0.6, 0.8, 0.0, 0.0]")}})
             """.trimIndent()
         )
     )
@@ -107,6 +113,28 @@ private fun verify(gom: StatelessGraphObjectManager) {
     assertEquals(
         listOf("published"),
         gom.loadNearest(PublishedNote::class.java, QUERY, topK = 1, searchK = 5, partitionLabel = "Corpus_one").map { it.value.id },
+    )
+
+    // A partition's index is on its own label, so it holds a node with none of a one-label root's, which
+    // ranks best here and must not come back.
+    assertEquals(
+        listOf("kept"),
+        gom.loadNearest(Snippet::class.java, QUERY, topK = 5, partitionLabel = "Corpus_two").map { it.value.id },
+    )
+    assertEquals(
+        listOf("kept"),
+        gom.loadNearest(SnippetView::class.java, null, QUERY, topK = 5, threshold = null, searchK = null, partitionLabel = "Corpus_two")
+            .map { it.value.snippet.id },
+    )
+    assertEquals(
+        listOf("kept"),
+        gom.loadNearest(Snippet::class.java, QUERY, topK = 1, searchK = 5, partitionLabel = "Corpus_two").map { it.value.id },
+    )
+    assertEquals(
+        emptyList(),
+        gom.loadNearest(Snippet::class.java, SnippetQueryDsl.INSTANCE, QUERY, topK = 5, partitionLabel = "Corpus_two") {
+            where { query.id eq "stray" }
+        }.map { it.value.id },
     )
 
     // Among a set, a neighbour must have every root label too, though its id is one of the set's.

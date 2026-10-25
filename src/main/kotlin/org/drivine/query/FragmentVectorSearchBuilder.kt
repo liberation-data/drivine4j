@@ -42,10 +42,11 @@ internal class FragmentVectorSearchBuilder(
         // The grammar's CALL ... YIELD ... WITH establishes `node` and `scoreVar`.
         val head = grammar.vectorSearchHead(vectorSpec, node, scoreVar)
 
-        // A fragment's filters: its labels beyond the indexed one, the optional score threshold (a
-        // scalar — no relationships) and any caller `where { }` predicate over the node's properties.
+        // A fragment's filters: its labels, unless the index is on its one label; the optional score
+        // threshold (a scalar — no relationships); and any caller `where { }` predicate over the node's
+        // properties.
         val filters = buildList {
-            indexedNodeLabelCheck(node, fragmentModel.labels)?.let { add(it) }
+            indexedNodeLabelCheck(node, fragmentModel.labels, vectorSpec.label)?.let { add(it) }
             thresholdParam?.let { add("$scoreVar >= \$$it") }
             callerWhere?.let { add(it) }
         }

@@ -66,8 +66,8 @@ internal object VectorIndexResolver {
 
         // A runtime partition label targets a DIFFERENT index of the same shape — one vector index per
         // partition, all covering the same property. It replaces the label only for locating the index;
-        // the node this yields still carries the fragment's own label, so the WHERE and the projection
-        // downstream are untouched. That is what makes :Proposition:Corpus_abc work.
+        // the projection downstream is untouched. A node the partition's index yields need carry none of
+        // the fragment's labels, so the search checks it has them all: see indexedNodeLabelCheck.
         if (partitionLabel != null && chosen.name.isNotBlank()) {
             throw DrivineException(
                 "Cannot target partition '$partitionLabel' on ${fragmentClass.simpleName}.${chosen.property}: " +
