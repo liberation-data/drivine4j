@@ -42,7 +42,10 @@ internal class GraphViewFullTextSearchBuilder(
         val scoreVar = SCORE_VAR
 
         // The grammar's CALL ... normalize ... WITH establishes `rootFieldName` and `scoreVar`.
-        val head = grammar.fullTextSearchHead(spec, rootFieldName, scoreVar)
+        // A node the index yields may lack the root's other labels; it is checked while it is a node,
+        // before the projection binds the root's name to a map.
+        val head = grammar.fullTextSearchHead(spec, rootFieldName, scoreVar) +
+            (assembler.indexedRootLabelCheck()?.let { "\nWHERE $it" } ?: "")
 
         // Build the WITH projection first — it accumulates the prologs/bridge variables the prolog
         // section then reads. Carry the score through so the RETURN can reference it.

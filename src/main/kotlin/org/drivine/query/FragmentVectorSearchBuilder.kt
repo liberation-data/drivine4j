@@ -10,8 +10,9 @@ import org.drivine.query.grammar.VectorQuerySpec
  * The fragment counterpart to [GraphViewVectorSearchBuilder]: the grammar's vector `CALL` head
  * produces the matching nodes, which are projected with the fragment's own field mapping (the same
  * shape [FragmentQueryBuilder] uses for a load) and returned as `{ value: <fragment>, score } AS
- * row`, ordered by similarity. Fragments have no relationships, so the only filters are the optional
- * similarity threshold and an optional caller `where { }` predicate over the node's properties.
+ * row`, ordered by similarity. Fragments have no relationships, so the only filters are the
+ * fragment's labels beyond the indexed one, the optional similarity threshold and an optional caller
+ * `where { }` predicate over the node's properties.
  */
 internal class FragmentVectorSearchBuilder(
     private val fragmentModel: FragmentModel,
@@ -44,6 +45,7 @@ internal class FragmentVectorSearchBuilder(
         // A fragment's filters: the optional score threshold (a scalar — no relationships) and any
         // caller `where { }` predicate over the node's properties.
         val filters = buildList {
+            indexedNodeLabelCheck(node, fragmentModel.labels)?.let { add(it) }
             thresholdParam?.let { add("$scoreVar >= \$$it") }
             callerWhere?.let { add(it) }
         }

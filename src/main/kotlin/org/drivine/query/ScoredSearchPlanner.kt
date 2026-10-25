@@ -278,7 +278,7 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, hasRequiredRelationship(graphClass)))
+        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, prunedAfterIndex(graphClass)))
     }
 
     /** Full-text search over a view or fragment with a caller `where { }` predicate AND-ed in. */
@@ -324,7 +324,7 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        val filtered = querySpec.conditions.isNotEmpty() || hasRequiredRelationship(graphClass)
+        val filtered = querySpec.conditions.isNotEmpty() || prunedAfterIndex(graphClass)
         return plan(cypher, query, topK, threshold, callerBindings, FullTextSearchLimits.indexLimit(topK, filtered))
     }
 
@@ -341,6 +341,13 @@ internal object FullTextSearchPlanner {
      * collection — whose `IS NOT NULL` check prunes the hits after the index, as a caller filter does.
      * A view with none keeps every hit, as a fragment does, so its index is asked for `topK` alone.
      */
+    /**
+     * Whether the hits of [graphClass]'s index are pruned after it, as a caller filter prunes them: by a
+     * required relationship, or by the root's labels beyond the one the index is on.
+     */
+    private fun prunedAfterIndex(graphClass: Class<*>): Boolean =
+        hasRequiredRelationship(graphClass) || GraphTypeLabels.labelsForType(graphClass).size > 1
+
     private fun hasRequiredRelationship(graphClass: Class<*>): Boolean =
         graphClass.isAnnotationPresent(GraphView::class.java) &&
             GraphViewModel.from(graphClass).relationships.any { !it.isNullable && !it.isCollection }

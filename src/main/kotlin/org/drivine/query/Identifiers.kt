@@ -12,6 +12,15 @@ import org.drivine.schema.SchemaGrammar
 internal fun quotedIdentifier(name: String): String = SchemaGrammar.quoted(name)
 
 /**
+ * The check a search makes of each node its index yields, that it has every one of [labels], or null
+ * when [labels] is one label. An index is made and searched on a fragment's first label, so a node
+ * with that label alone is in it, and is no node of a fragment with more: a load, which matches every
+ * label, never returns it.
+ */
+internal fun indexedNodeLabelCheck(alias: String, labels: List<String>): String? =
+    if (labels.size < 2) null else alias + labels.joinToString("") { ":${quotedIdentifier(it)}" }
+
+/**
  * The property this field is stored under, as a load spells it after an alias: bare when it is a
  * plain identifier, backtick-quoted otherwise, by the one rule schema DDL and the query DSL spell
  * names by. A `@GraphProperty` may name anything, a dotted name included. The stamp's property is
