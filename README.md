@@ -4343,7 +4343,7 @@ public class Person {
 ```
 
 ```kotlin
-// Define GraphViews in Kotlin to get DSL generation
+// A GraphView in Kotlin gets its DSL from KSP; one in Java, from drivine4j-codegen-java
 @GraphView
 data class PersonContext(
     @Root val person: Person,  // References Java class!
