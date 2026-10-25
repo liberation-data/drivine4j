@@ -6,6 +6,7 @@ import org.drivine.connection.Neo4jConnectionProvider
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.QuerySpecification
+import org.drivine.query.dsl.query
 import org.drivine.query.grammar.CypherDialect
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.VectorIndexSpec
@@ -17,9 +18,12 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
+import sample.multilabel.Essay
 import sample.multilabel.PublishedClip
 import sample.multilabel.PublishedClipView
+import sample.multilabel.PublishedNote
 import sample.multilabel.PublishedPaper
+import sample.multilabel.PublishedPaperQueryDsl
 import sample.multilabel.PublishedPaperView
 import kotlin.test.assertEquals
 
@@ -34,6 +38,8 @@ private val QUERY = listOf(1.0f, 0.0f, 0.0f, 0.0f)
 private fun seed(pm: PersistenceManager, vec: (String) -> String, awaitIndexes: Boolean) {
     pm.indexes.ensure(FullTextIndexSpec("Paper", "body"))
     pm.indexes.ensure(VectorIndexSpec("Clip", "embedding", 4))
+    pm.indexes.ensure(FullTextIndexSpec("Essay", "body"))
+    pm.indexes.ensure(VectorIndexSpec("Corpus_one", "embedding", 4))
     pm.execute(QuerySpecification.withStatement("MATCH (n) DETACH DELETE n"))
     pm.execute(
         QuerySpecification.withStatement(
@@ -42,6 +48,10 @@ private fun seed(pm: PersistenceManager, vec: (String) -> String, awaitIndexes: 
             CREATE (:Paper:Published {id: 'published', body: 'kotlin grass grass grass grass grass'})
             CREATE (:Clip {id: 'draft', embedding: ${vec("[1.0, 0.0, 0.0, 0.0]")}})
             CREATE (:Clip:Published {id: 'published', embedding: ${vec("[0.6, 0.8, 0.0, 0.0]")}})
+            CREATE (:Essay {id: 'draft', body: 'kotlin'})
+            CREATE (:Essay:Writing {id: 'published', body: 'kotlin grass grass grass grass grass'})
+            CREATE (:Note:Corpus_one {id: 'draft', embedding: ${vec("[1.0, 0.0, 0.0, 0.0]")}})
+            CREATE (:Note:Published:Corpus_one {id: 'published', embedding: ${vec("[0.6, 0.8, 0.0, 0.0]")}})
             """.trimIndent()
         )
     )
@@ -58,6 +68,34 @@ private fun verify(gom: StatelessGraphObjectManager) {
 
     assertEquals(listOf("published"), gom.loadNearest(PublishedClip::class.java, QUERY, topK = 5).map { it.value.id })
     assertEquals(listOf("published"), gom.loadNearest(PublishedClipView::class.java, QUERY, topK = 5).map { it.value.clip.id })
+
+    // A caller filter over the multi-label root still drops the draft, and over-fetches with it.
+    assertEquals(
+        listOf("published"),
+        gom.loadMatching(PublishedPaper::class.java, PublishedPaperQueryDsl.INSTANCE, "kotlin", topK = 1) {
+            where { query.id eq "published" }
+        }.map { it.value.id },
+    )
+
+    // A fragment's inherited label is checked, and counted when the search over-fetches.
+    assertEquals(listOf("published"), gom.loadAll(Essay::class.java).map { it.id })
+    assertEquals(listOf("published"), gom.loadMatching<Essay>("kotlin", topK = 1).map { it.value.id })
+
+    // A partition's index is on the partition label, and a node in it must still have every root label.
+    assertEquals(
+        listOf("published"),
+        gom.loadNearest(PublishedNote::class.java, QUERY, topK = 5, partitionLabel = "Corpus_one").map { it.value.id },
+    )
+    assertEquals(
+        listOf("published"),
+        gom.loadNearest(PublishedNote::class.java, QUERY, topK = 1, searchK = 5, partitionLabel = "Corpus_one").map { it.value.id },
+    )
+
+    // Among a set, a neighbour must have every root label too, though its id is one of the set's.
+    assertEquals(
+        mapOf("published" to emptyList()),
+        gom.loadNearestAmong(PublishedClip::class.java, listOf("published", "draft"), topK = 5),
+    )
 }
 
 private fun buildGom(pm: PersistenceManager, registry: SubtypeRegistry) =

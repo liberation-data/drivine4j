@@ -97,14 +97,14 @@ internal class GraphViewProjectionAssembler(
     /** The root fragment's field name — the alias the root node is bound to throughout the query. */
     val rootFieldName: String get() = viewModel.rootFragment.fieldName
 
-    /**
-     * The colon-joined label string for the root fragment's `MATCH`, e.g. `Person:Mapped`.
-     * @throws IllegalArgumentException if the root fragment declares no labels
-     */
     /** The root's labels beyond the one its index is on, checked on the node a search's index yielded: see [indexedNodeLabelCheck]. */
     fun indexedRootLabelCheck(): String? =
         indexedNodeLabelCheck(rootFieldName, GraphTypeLabels.fragmentLabels(viewModel.rootFragment.fragmentType))
 
+    /**
+     * The colon-joined label string for the root fragment's `MATCH`, e.g. `Person:Mapped`.
+     * @throws IllegalArgumentException if the root fragment declares no labels
+     */
     fun matchLabelString(): String {
         val rootFragmentModel = viewModel.rootFragment
         val fragmentLabels = GraphTypeLabels.fragmentLabels(rootFragmentModel.fragmentType)
