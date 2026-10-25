@@ -483,6 +483,21 @@ cases:
       - cypher: "MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"
         rows: [{id: 1, text: {$repeat: "x", times: 40000}}, {id: 2, more: {$repeat: "z", times: 40000}}]
 
+  - name: "A parameter past 32 KB set on two nodes"
+    description: "A write that matches two nodes sets on each a parameter whose JSON is past 32 KB, alone and beside a float that is a whole number. On Oracle, a JSON variable that long read once for each row crashed the session."
+    steps:
+      - cypher: "CREATE (:CyWrite {id: 1}), (:CyWrite {id: 2})"
+      - cypher: "MATCH (n:CyWrite) SET n.text = $text"
+        parameters: {text: {$repeat: "x", times: 40000}}
+        rows: []
+      - cypher: "MATCH (n:CyWrite) SET n.more = $more, n.f = $f"
+        parameters: {more: {$repeat: "é", times: 20000}, f: 2.0}
+        rows: []
+      - cypher: "MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"
+        rows:
+          - {id: 1, text: {$repeat: "x", times: 40000}, more: {$repeat: "é", times: 20000}, f: 2.0}
+          - {id: 2, text: {$repeat: "x", times: 40000}, more: {$repeat: "é", times: 20000}, f: 2.0}
+
   - name: "A float with no fraction"
     description: "A float that is a whole number, such as 2.0, is written and read back as a float, from a parameter nested or past 32 KB too, and toString() of it keeps its fraction."
     steps:

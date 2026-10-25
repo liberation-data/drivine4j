@@ -44,18 +44,24 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     private val extended: MutableSet<String> = Collections.newSetFromMap(IdentityHashMap())
 
+    /** The names of a procedure's parameters that hold a float as Oracle's extended JSON writes one: see [propertyOf]. */
+    private val extendedParameters = mutableSetOf<String>()
+
     /**
      * A float that is a whole number, `2.0`, written as Oracle's extended JSON writes a double, `{"${'$'}numberDouble": "2.0"}`, which
      * `JSON(… EXTENDED)` reads as one: Oracle reads JSON's `2.0` as the number 2, a whole number, as it reads `2`. Not in a
      * value that holds a map with a key as extended JSON's are, `{"${'$'}numberLong": "5"}`, which `JSON(… EXTENDED)` would read as
      * the value it writes: such a value is written as JSON is, its floats that are whole numbers read as whole numbers. A
-     * statement that writes reads all its parameters as one value.
+     * statement that writes binds all its parameters as one text, and reads as extended JSON only those of them with such
+     * a double in them: see [propertyOf].
      */
     override fun parameterText(value: Any?): String {
         val tree = Neo4jObjectMapper.instance.valueToTree<JsonNode>(value)
         if (keyedAsExtended(tree)) return Neo4jObjectMapper.instance.writeValueAsString(tree)
         var doubled = false
         val written = doubles(tree) { doubled = true }
+        // A procedure's parameters are one map: those of its entries with a double in them are read as extended JSON.
+        if (doubled && written is ObjectNode) extendedParameters += written.properties().filter { keyedAsExtended(it.value) }.map { it.key }
         return Neo4jObjectMapper.instance.writeValueAsString(written).also { if (doubled) extended += it }
     }
 
@@ -113,7 +119,15 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun withEntries(json: String, entries: List<Pair<String, String>>) =
         if (entries.isEmpty()) json else "JSON_TRANSFORM($json, ${entries.joinToString(", ") { (key, value) -> "SET ${OracleSql.path(key)} = $value" }})"
 
-    override fun propertyOf(json: String, key: String) = "JSON_QUERY($json, ${OracleSql.path(key)} RETURNING JSON)"
+    /**
+     * A procedure's parameter is read from the text its parameters are bound as, each where it is read, and one that holds
+     * a double as extended JSON (see [parameterText]) from its own text, as extended JSON. Oracle crashes the session
+     * (ORA-07445 `ksmem_malloc`, then ORA-00600 `kghfrempty:ds`) where a statement run more than once reads a value past
+     * 32 KB from JSON it parsed, a `JSON` variable or `JSON(… EXTENDED)` of all the parameters, and not from the text.
+     */
+    override fun propertyOf(json: String, key: String) =
+        if (json == PARAMS && key in extendedParameters) "JSON(JSON_QUERY($PARAMS, ${OracleSql.path(key)} RETURNING CLOB) EXTENDED)"
+        else "JSON_QUERY($json, ${OracleSql.path(key)} RETURNING JSON)"
 
     /** Counted from the end where negative: a JSON path counts from the start. */
     override fun element(json: String, index: String) = shared(json, index) { (list, i) ->
@@ -447,7 +461,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** An anonymous block, which returns its rows as an implicit result. */
     override fun procedure(program: List<ProcedureStep>) = (listOf(
         "DECLARE",
-        "    $PARAMS JSON := JSON(\$${Parameters.OBJECT}${if (extended.isNotEmpty()) " EXTENDED" else ""});",
+        // Text, read as JSON where each parameter is read: see [propertyOf].
+        "    $PARAMS CLOB := \$${Parameters.OBJECT};",
         "    $ROWS JSON;",
         "    $OUT JSON;",
         "    $ROW JSON;",

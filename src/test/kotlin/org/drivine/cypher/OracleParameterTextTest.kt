@@ -20,4 +20,14 @@ class OracleParameterTextTest {
         assertEquals("{\"\$numberDouble\":\"3.0\"}", compiled.parameters["_cy_g"])
         assertTrue(!compiled.sql.contains("_cy_d EXTENDED") && compiled.sql.contains("_cy_f EXTENDED"), compiled.sql)
     }
+
+    @Test
+    fun `a write binds its parameters as text, and reads as extended JSON only those that hold a whole float`() {
+        val compiled = OracleCypherCompiler("g").compile("MATCH (n) SET n.a = \$a, n.f = \$f, n.p = \$p.x", mapOf("a" to "x", "f" to 2.0, "p" to mapOf("x" to listOf(1.0))))
+        val sql = compiled.sql
+        assertTrue(sql.contains("cy_params CLOB :=") && !sql.contains("cy_params JSON"), sql)
+        assertTrue(sql.contains("JSON_QUERY(cy_params, '\$.a' RETURNING JSON)") && !sql.contains("JSON_QUERY(cy_params, '\$.a' RETURNING CLOB)"), sql)
+        listOf("f", "p").forEach { assertTrue(sql.contains("JSON(JSON_QUERY(cy_params, '\$.$it' RETURNING CLOB) EXTENDED)"), sql) }
+        assertEquals("{\"a\":\"x\",\"f\":{\"\$numberDouble\":\"2.0\"},\"p\":{\"x\":[{\"\$numberDouble\":\"1.0\"}]}}", compiled.parameters["_cy_params"])
+    }
 }

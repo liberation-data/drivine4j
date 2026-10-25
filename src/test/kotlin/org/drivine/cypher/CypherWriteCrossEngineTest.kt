@@ -202,6 +202,29 @@ class CypherWriteOracleTest : CypherWriteContract() {
             connections.forEach { it.release() }
         }
     }
+
+    @Test
+    fun `a text past 32 KB set on two nodes, beside a whole float or not, leaves the session open`() {
+        // Oracle crashed the session as the block freed its parameters, held in a JSON variable it had read once for each
+        // row (#250). The crash could come after the rows did, so the session is asked again; and a block parsed before
+        // rarely crashed, so each statement is new. The nodes are read back whole: see "A parameter past 32 KB" in the spec.
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+            connection.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
+        try {
+            query("CREATE (:CyWrite {id: 1}), (:CyWrite {id: 2})")
+            val text = "x".repeat(40_000)
+            val written = mutableMapOf<String, Any?>()
+            repeat(3) { i ->
+                query("MATCH (n:CyWrite) SET n.a$i = \$a$i", mapOf("a$i" to text))
+                query("MATCH (n:CyWrite) SET n.b$i = \$b$i, n.f$i = \$f$i", mapOf("b$i" to text, "f$i" to 2.0 + i))
+                written += mapOf("a$i" to text, "b$i" to text, "f$i" to 2.0 + i)
+                assertEquals(listOf(1L, 2L).map { mapOf("id" to it) + written }, query("MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"))
+            }
+        } finally {
+            connection.release()
+        }
+    }
 }
 
 class CypherWriteSqliteTest : CypherWriteContract() {
