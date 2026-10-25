@@ -275,6 +275,23 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a whole float past 2 to the 53 written in the statement or given equals the same float worked out`() {
+        // Not in the spec yet: Postgres writes such a float out in full, by its shortest decimal, not the double's exact value.
+        assertEquals(listOf(listOf(true, true, true)), query("RETURN [toFloat('1e24') = 1e24, toFloat('1e300') = 1e300, toFloat('1e24') = \$x]", mapOf("x" to 1e24)))
+    }
+
+    @Test
+    fun `toString of a double past Oracle's NUMBER range writes its shortest digits`() {
+        // Not in the spec yet: Oracle writes such a double from its own text, not from TO_CHAR's 15 digits.
+        assertEquals(
+            listOf(listOf("1.7976931348623157E308", "1.5E300", "1.0E-310", "-2.5E-320", "-1.5E300")),
+            query("RETURN [toString(1.7976931348623157e308), toString(1.5e300), toString(1.0e-310), toString(\$a), toString(\$b)]", mapOf("a" to -2.5e-320, "b" to -1.5e300)),
+        )
+        // Postgres writes the least double as its shortest decimal, 5.0E-324, where Java writes 4.9E-324.
+        if (pm.type != DatabaseType.POSTGRES) assertEquals(listOf("4.9E-324"), query("RETURN toString(5e-324)"))
+    }
+
+    @Test
     fun `a UNION in CALL whose queries return a list with an identity beside one without compiles, as it did before identities`() {
         // Not in the spec yet: the queries are compiled again without identities, so their columns match.
         clear()

@@ -36,10 +36,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         return Neo4jObjectMapper.instance.writer().with(JsonGenerator.Feature.WRITE_BIGDECIMAL_AS_PLAIN).writeValueAsString(wholeFloats(tree))
     }
 
-    /** [node] with each float in it that is a whole number a decimal of one place, `10000000.0`. */
+    /**
+     * [node] with each float in it that is a whole number a decimal of one place, `10000000.0`, from its shortest decimal: the
+     * double's exact value, `999999999999999983222784.0` for `1e24`, is no number Postgres works out or reads as that float.
+     */
     private fun wholeFloats(node: JsonNode): JsonNode = when {
         (node.isDouble || node.isFloat) && node.doubleValue().let { it.isFinite() && it == Math.rint(it) } ->
-            DecimalNode(BigDecimal(node.doubleValue()).setScale(1))
+            DecimalNode(BigDecimal.valueOf(node.doubleValue()).setScale(1))
         node is ObjectNode -> node.apply { properties().toList().forEach { (key, value) -> set<JsonNode>(key, wholeFloats(value)) } }
         node is ArrayNode -> node.apply { (0 until size()).forEach { set(it, wholeFloats(get(it))) } }
         else -> node
@@ -150,7 +153,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * where its kind comes ([itemRank]), the item, and what follows it so written, the end an empty list. `jsonb` orders the
      * shorter of two lists first, and every list here but the last is of three. An item that is a list is followed by its own
      * items, at any depth, then by its end, which comes before any item. Any other value sorts as itself, as before. Only a
-     * value the statement makes a list sorts so: the planner costs the walk at millions, which brings in its JIT for any sort.
+     * value the statement makes a list sorts so: the planner costs the walk at thousands a row, which brings in its JIT for a
+     * sort of more than a few dozen rows.
      */
     override fun listSortKey(json: String) = shared(json) { (x) ->
         "CASE WHEN jsonb_typeof($x) = 'array' THEN CAST(${listKey(x)} AS jsonb) ELSE ${nullIfJsonNull(x)} END"

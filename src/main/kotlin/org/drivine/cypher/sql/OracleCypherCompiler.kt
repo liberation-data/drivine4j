@@ -191,15 +191,16 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float (a double, or a number with a
      * fraction) as Java writes a double, from the shortest decimal Oracle writes it as, with no exponent from 10^-3 up to
      * 10^7, and else as `1.0E7`, `1.2E-4`; NaN and the infinities by Java's names. A double past a `NUMBER`'s range,
-     * `1e300`, is written from its first 15 digits.
+     * `1e300`, is written from Oracle's own text of it, its shortest digits, `1E+300`.
      */
     private fun asText(json: String) = shared(json) { (x) ->
         val written = "JSON_VALUE($x, '\$')"
         val float = "${kind(x)} = 'double' OR (${kind(x)} = 'number' AND NOT ${integral(x)})"
         val n = "TO_NUMBER($written DEFAULT NULL ON CONVERSION ERROR)"
         val double = "JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE)"
-        // Past a NUMBER's range, which reads 1e-200 as 0, the double's own text.
-        val scientific = scientific("NVL(TO_CHAR(NULLIF($n, 0), 'FM9.9999999999999999EEEE'), TO_CHAR($double, 'FM9.99999999999999EEEE'))")
+        // Past a NUMBER's range, which reads 1e-200 as 0, the double's own text, with a point where it has none: `1E-310`.
+        // TO_CHAR of the double writes 15 digits, so 1e-310 as 9.99999999999997E-311.
+        val scientific = scientific("NVL(TO_CHAR(NULLIF($n, 0), 'FM9.9999999999999999EEEE'), REGEXP_REPLACE($written, '^(-?[0-9]+)E', '\\1.0E'))")
         "CASE WHEN ${kind(x)} = 'double' AND $written IN ('Nan', 'Inf', '-Inf') THEN DECODE($written, 'Nan', 'NaN', 'Inf', 'Infinity', '-Infinity') " +
             "WHEN $float THEN CASE WHEN $double = 0 THEN '0.0' WHEN ABS($n) >= 0.001 AND ABS($n) < 10000000 THEN TO_CHAR($n, '$PLAIN_FLOAT') ELSE $scientific END " +
             "ELSE $written END"

@@ -78,7 +78,8 @@ class CompiledSizeTest {
 
     @Test
     fun `a sort by a property on Postgres is by its JSON alone, and only a list the statement makes is keyed as a list`() {
-        // Keyed as a list, a term costs millions in the planner's estimate, which brings in its JIT for the whole statement.
+        // Keyed as a list, a term costs thousands a row in the planner's estimate, which brings in its JIT for the whole
+        // statement past a few dozen rows.
         val compiler = PostgresCypherCompiler("g")
         val property = compiler.compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql.substringAfter("ORDER BY ")
         assertEquals("NULLIF(p2.s1, 'null'::jsonb)", property)

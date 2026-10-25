@@ -61,6 +61,15 @@ class JdbcResultMapperTest {
     }
 
     @Test
+    fun `a whole number in JSON past a Long is a Double, at any depth, beside Longs and floats kept as they are`() {
+        // Postgres's jsonb writes a stored 1e20 as 100000000000000000000; no Cypher integer is that large.
+        val value = single(Column("DOC", "jsonb", Types.OTHER)) {
+            `when`(it.getString(1)).thenReturn("""[100000000000000000000, {"a": [-100000000000000000000, 7]}, 9223372036854775807, -1.5E-7, 36]""")
+        }
+        assertEquals(listOf(1e20, mapOf("a" to listOf(-1e20, 7L)), Long.MAX_VALUE, -1.5e-7, 36L), value)
+    }
+
+    @Test
     fun `a VECTOR column is read as the driver's float array, and given back as a list of doubles`() {
         val value = single(Column("EMBEDDING", "VECTOR", -105)) {
             `when`(it.getObject(1, FloatArray::class.java)).thenReturn(floatArrayOf(1f, 0.5f))
