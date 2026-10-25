@@ -2257,23 +2257,45 @@ abstract class SqlCypherCompiler(graph: String) {
                     Value.Json(scalar("(SELECT count(*) FROM (\n${indent(correlated(expression.query, scope, "COUNT { … }"))}\n) ${alias("q")})"))
             }
             is Expression.Quantifier -> {
+                // Read by a WHERE for its truth alone, a quantifier that is null may be false, as neither keeps a row.
+                val filter = filtered
                 val listed = expression(expression.list, scope)
                 val name = alias("q")
-                fun quantified(from: String, item: Value): String {
+                fun quantified(from: String, item: Value, listNull: String): String {
                     val inner = scope + (expression.variable to item)
-                    // Each item is kept where the condition is true, as a WHERE keeps a row, so an IN in it is false where it is null.
-                    val condition = expression.where?.let { condition(it, inner) } ?: "TRUE"
-                    return when (expression.kind) {
-                        Expression.Quantifier.Kind.ANY -> "EXISTS (SELECT 1 $from WHERE $condition)"
-                        Expression.Quantifier.Kind.ALL -> "NOT EXISTS (SELECT 1 $from WHERE NOT ($condition))"
-                        Expression.Quantifier.Kind.NONE -> "NOT EXISTS (SELECT 1 $from WHERE $condition)"
-                        Expression.Quantifier.Kind.SINGLE -> "(SELECT count(*) $from WHERE $condition) = 1"
+                    fun exists(condition: String) = "EXISTS (SELECT 1 $from WHERE $condition)"
+                    val kind = expression.kind
+                    val value = if (filter && kind != Expression.Quantifier.Kind.SINGLE) {
+                        // any() is true where an item's condition is true, and all() where each one's is: each is kept where its condition
+                        // is true, as a WHERE keeps a row, so an IN in it is false where it is null. none() is true where each one's is false.
+                        val condition = expression.where?.let { if (kind == Expression.Quantifier.Kind.NONE) bool(expression(it, inner)) else condition(it, inner) } ?: "TRUE"
+                        when (kind) {
+                            Expression.Quantifier.Kind.ANY -> exists(condition)
+                            Expression.Quantifier.Kind.ALL -> "NOT ${exists("CASE WHEN $condition THEN 0 ELSE 1 END = 1")}"
+                            else -> "NOT ${exists("CASE WHEN NOT ($condition) THEN 0 ELSE 1 END = 1")}"
+                        }
+                    } else {
+                        // Cypher's quantifiers are three-valued: an item whose condition is null decides nothing, and leaves null one no
+                        // item decides. Each item's is read once, in one pass, and counted: 1 is true, 0 false, and null null.
+                        val condition = expression.where?.let { bool(expression(it, inner)) } ?: "TRUE"
+                        val counts = alias("q")
+                        val (t, f, u) = listOf("$counts.v", "NOT $counts.v", "$counts.v IS NULL").map { "count(CASE WHEN $it THEN 1 END)" }
+                        val counted = when (kind) {
+                            Expression.Quantifier.Kind.ANY -> "WHEN $t > 0 THEN 1 WHEN $u > 0 THEN NULL ELSE 0"
+                            Expression.Quantifier.Kind.ALL -> "WHEN $f > 0 THEN 0 WHEN $u > 0 THEN NULL ELSE 1"
+                            Expression.Quantifier.Kind.NONE -> "WHEN $t > 0 THEN 0 WHEN $u > 0 THEN NULL ELSE 1"
+                            // Two items whose condition is true make single() false, whatever the others' are.
+                            Expression.Quantifier.Kind.SINGLE -> "WHEN $t > 1 THEN 0 WHEN $u > 0 THEN NULL WHEN $t = 1 THEN 1 ELSE 0"
+                        }
+                        "(SELECT CASE $counted END FROM (SELECT $condition AS v $from) $counts) = 1"
                     }
+                    // Of a null list, null, as in Cypher, and its items are not read, where it may be one.
+                    return if (present(expression.list)) value else "CASE WHEN NOT ($listNull) THEN $value END"
                 }
                 Value.Bool(
                     // Over a list of nodes or relationships, each item is the node or the relationship, read from its table.
-                    if (listed is Value.Entities) shared(listed.ids) { (ids) -> entityItems(ids, listed.relationships, name).let { (from, item) -> quantified(from, item) } }
-                    else quantified("FROM ${elements(comparable(json(listed)), name)}", Value.Json(item(name), temporal = itemsOf(listed)))
+                    if (listed is Value.Entities) shared(listed.ids) { (ids) -> entityItems(ids, listed.relationships, name).let { (from, item) -> quantified(from, item, "$ids IS NULL") } }
+                    else shared(comparable(json(listed))) { (items) -> quantified("FROM ${elements(items, name)}", Value.Json(item(name), temporal = itemsOf(listed)), isJsonNull(items)) }
                 )
             }
         }
