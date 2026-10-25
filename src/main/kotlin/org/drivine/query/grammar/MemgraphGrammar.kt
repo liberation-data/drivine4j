@@ -1,6 +1,7 @@
 package org.drivine.query.grammar
 
 import org.drivine.query.sort.CollectionSortEmitter
+import org.drivine.schema.SimilarityFunction
 
 /**
  * Memgraph — openCypher engine with full ACID and working nested pattern comprehensions, but no
@@ -48,13 +49,23 @@ class MemgraphGrammar(
 
     /**
      * `vector_search.search(index_name, limit, query_vector)` — queried by index name, yielding
-     * `node`, `distance`, and `similarity`. Memgraph's `similarity` is already higher-is-closer
-     * (cosine similarity for the `cos` metric), so it carries through directly as the score.
+     * `node`, `distance`, and `similarity`. The score is made from `distance`, rescaled to the score
+     * Neo4j and the SQL stores give: for the `cos` metric the distance is `1 - cos`, so the score
+     * `(1 + cos) / 2` is `1 - distance / 2`; for `l2sq` it is `d²`, so the score `1 / (1 + d²)` is
+     * `1 / (1 + distance)`.
+     *
+     * Not from `similarity`: Memgraph gives the absolute value of `1 - distance` there, so a cosine
+     * of -0.6 has the similarity of 0.6, and opposite vectors score as high as equal ones.
      */
-    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String =
-        "CALL vector_search.search(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})\n" +
-            "YIELD node, similarity\n" +
-            "WITH node AS $rootAlias, similarity AS $scoreAlias"
+    override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
+        val score = when (spec.similarity) {
+            SimilarityFunction.COSINE -> "1.0 - distance / 2.0"
+            SimilarityFunction.EUCLIDEAN -> "1.0 / (1.0 + distance)"
+        }
+        return "CALL vector_search.search(${spec.indexNameArgument()}, \$${spec.topKParam}, ${spec.vectorArgument()})\n" +
+            "YIELD node, distance\n" +
+            "WITH ${spec.carriedPrefix()}node AS $rootAlias, $score AS $scoreAlias"
+    }
 
     override val supportsFullTextSearch: Boolean = true
 
@@ -62,11 +73,28 @@ class MemgraphGrammar(
      * `text_search.search_all(index_name, query)` — Memgraph's text index (MAGE) is referenced by
      * **name** and `search_all` searches across every indexed property. It yields `node` and a
      * relevance `score`; [CypherGrammar.normalizedFullTextHead] normalizes it to `[0, 1]`.
+     *
+     * The `CALL` is given the search's index limit, because without one `text_search` yields its best
+     * 1,000 hits and no more: a search asking for 2,000 would see half of them. The limit is capped at
+     * [TEXT_SEARCH_LIMIT_CAP], because a limit near `Int.MAX_VALUE` (a `topK` meaning "every hit")
+     * takes the server down, however few hits there are.
      */
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         CypherGrammar.normalizedFullTextHead(
-            "CALL text_search.search_all('${spec.indexName}', \$${spec.queryParam})",
+            "CALL text_search.search_all('${spec.indexName}', \$${spec.queryParam}, " +
+                "{limit: CASE WHEN \$${spec.indexLimitParam} < $TEXT_SEARCH_LIMIT_CAP " +
+                "THEN \$${spec.indexLimitParam} ELSE $TEXT_SEARCH_LIMIT_CAP END})",
             rootAlias,
             scoreAlias,
+            spec.indexLimitParam,
         )
+
+    companion object {
+        /**
+         * The most hits a full-text `CALL` asks `text_search` for. Memgraph 3.14 accepts 100,000,000
+         * and crashes at 500,000,000; a million is far more than a search can normalize in memory
+         * and far below where the server fails.
+         */
+        internal const val TEXT_SEARCH_LIMIT_CAP: Int = 1_000_000
+    }
 }

@@ -69,33 +69,19 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN jsonb_typeof($x) = 'boolean' THEN CAST($x AS boolean) END" }
 
     /**
-     * The double [sql] is, as the `numeric` its text writes, its shortest, with a fraction: so a whole one is written `2.0`, as a
-     * graph engine writes a float, and stays one in arithmetic, and one with a fraction has a double's digits, not `numeric`'s.
-     * A number a double rounds to 0, `1e-400`, is 0.0: Postgres fails its cast to `double precision` ("underflow"). One past the
-     * greatest double, `1e400`, is the `numeric` it is, with a fraction, as before doubles: Postgres fails that cast too
-     * ("overflow"), and its JSON reads back as an infinite double, as a graph engine gives it.
+     * A `numeric` with a fraction, so a whole one is written `2.0`, as a graph engine writes a float, and stays one in arithmetic;
+     * without the zeros its scale leaves after its digits (`trim_scale`), so `avg` of whole numbers is `1999.0`, not
+     * `1999.0000000000000000`.
      */
-    override fun float(sql: String) = shared(sql) { (s) ->
-        "CASE WHEN abs(CAST($s AS numeric)) <= $ROUNDS_TO_ZERO THEN 0.0 WHEN abs(CAST($s AS numeric)) > $GREATEST THEN CAST($s AS numeric) + 0.0 ELSE ${shortest(s)} END"
-    }
-
-    /** The double [sql] is, as the `numeric` its shortest text writes, with a fraction: see [float]. */
-    private fun shortest(sql: String) = "(CAST(CAST(CAST($sql AS double precision) AS text) AS numeric) + 0.0)"
+    override fun float(sql: String) = "(trim_scale(CAST($sql AS numeric)) + 0.0)"
 
     /**
-     * The float [double] works out, of an operand it takes only where the condition it is given holds, where [exact], the same
-     * worked out in `numeric`, is a double, and with [small] a normal one; else [exact], made a float (see [float]). Postgres
-     * fails a product, a quotient or a power of doubles that is too small for a double ("underflow"), where Cypher gives 0.0,
-     * or the least doubles; and a result of doubles past the greatest ("overflow"), where Cypher gives an infinity. The
-     * operand is left out, not the double: Postgres works out a constant arm of a `CASE` as it plans it, whichever arm the row
-     * takes.
+     * As any store works it out, in `numeric`, and a quotient without the zeros `numeric`'s division leaves after its digits:
+     * `4.0 / 2` is `2.0`, not `2.0000000000000000`. Postgres works a float out exactly, so a result may differ from a double's
+     * in the last digits: `0.1 * 3` is `0.3`, where Cypher gives `0.30000000000000004` (#188).
      */
-    private fun inRange(exact: String, small: Boolean, double: (String) -> String) = shared(exact) { (r) ->
-        val within = (listOfNotNull("abs($r) >= $LEAST_NORMAL".takeIf { small }) + "abs($r) <= $GREATEST").joinToString(" AND ")
-        "COALESCE(${shortest(double(within))}, ${float(r)})"
-    }
-
-    override fun double(sql: String) = "CAST($sql AS double precision)"
+    override fun arithmetic(a: String, b: String, operator: String) =
+        if (operator == "/") scalar(float("(${number(a)} / ${number(b)})")) else super.arithmetic(a, b, operator)
 
     override fun jsonArray(items: List<String>) = "json_build_array(${items.joinToString(", ")})"
 
@@ -136,39 +122,25 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun extreme(value: String, min: Boolean, key: String?) =
         "(array_agg($value ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"}, ${key ?: value} ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
 
-    /**
-     * Of two whole numbers, in `numeric`; of a float, in `double precision`, as Cypher works a float out, so `1.0 / 3` has a
-     * double's digits and `0.1 + 0.2` is `0.30000000000000004`: `numeric` would give twenty digits, and the exact sum. See [float].
-     */
-    override fun arithmetic(a: String, b: String, operator: String): String {
-        fun of(first: String) = "($first $operator ${double(number(b))})"
-        // Any may overflow; a sum or a difference of doubles too small for a double is none: only a product or a quotient underflows.
-        val float = inRange("(${number(a)} $operator ${number(b)})", small = operator == "*" || operator == "/") { within ->
-            of("CASE WHEN $within THEN ${double(number(a))} END")
-        }
-        return "CASE WHEN ${integral(a)} AND ${integral(b)} THEN to_jsonb(${number(a)} $operator ${number(b)}) ELSE to_jsonb($float) END"
-    }
-
-    override fun power(a: String, b: String) =
-        inRange("power($a, $b)", small = true) { within -> "power(CASE WHEN $within THEN ${double(a)} END, ${double(b)})" }
-
     override fun add(a: String, b: String) =
-        "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN ${arithmetic(a, b, "+")} " +
+        "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN to_jsonb(${number(a)} + ${number(b)}) " +
             "WHEN jsonb_typeof($a) = 'array' AND jsonb_typeof($b) = 'array' THEN $a || $b " +
             "WHEN jsonb_typeof($a) = 'array' THEN $a || jsonb_build_array($b) " +
             "WHEN jsonb_typeof($b) = 'array' THEN jsonb_build_array($a) || $b " +
             "WHEN jsonb_typeof($a) IN ('string', 'number') AND jsonb_typeof($b) IN ('string', 'number') THEN to_jsonb(${asText(a)} || ${asText(b)}) END"
 
     /**
-     * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float as Java writes a double, from its
-     * shortest decimal, with no exponent from 10^-3 up to 10^7, and else as `1.0E7`, `1.2E-4`.
+     * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float, a `numeric` with a fraction, without
+     * the zeros `numeric`'s scale leaves after its digits (`trim_scale`), as Java writes a double: with no exponent from 10^-3 up
+     * to 10^7, a point and a digit after it at least, `2.0`, and else as `1.0E7`, `1.2E-4`. Postgres works a float out in
+     * `numeric`, exactly, so its digits may differ from a double's in the last places: `0.1 * 3` is `0.3`.
      */
     private fun asText(json: String) = shared(json) { (x) ->
-        val shortest = "CAST(CAST(CAST($x #>> '{}' AS double precision) AS text) AS numeric)"
-        "CASE WHEN jsonb_typeof($x) = 'number' AND NOT ${integral(x)} THEN ${shared(shortest) { (n) -> floatText(n) }} ELSE $x #>> '{}' END"
+        val exact = "trim_scale(CAST($x #>> '{}' AS numeric))"
+        "CASE WHEN jsonb_typeof($x) = 'number' AND NOT ${integral(x)} THEN ${shared(exact) { (n) -> floatText(n) }} ELSE $x #>> '{}' END"
     }
 
-    /** The `numeric` [n], a double's shortest decimal, as Java writes the double: see [asText]. */
+    /** The `numeric` [n], a float without trailing zeros, as Java writes a double: see [asText]. */
     private fun floatText(n: String): String {
         // `to_char` writes 17 digits and the exponent, ` 1.0000000000000000e+07`: the digits without the zeros after them, a point and one at least.
         val scientific = "to_char($n, '9.9999999999999999EEEE')"
@@ -236,6 +208,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private fun numeric(json: String) = shared(json) { (x) ->
         "CASE WHEN jsonb_typeof($x) = 'number' OR ($x #>> '{}') ~ ${literal(NUMERIC_TEXT)} THEN CAST($x #>> '{}' AS numeric) END"
     }
+
     override fun page(skip: String?, limit: String?) = listOfNotNull(skip?.let { "OFFSET $it" }, limit?.let { "LIMIT $it" })
 
     override fun ids(id: String) = "ARRAY[$id]"
@@ -339,6 +312,29 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun uuid() = "CAST(gen_random_uuid() AS text)"
 
+    /**
+     * Worked out as a `double precision`, as Neo4j works it out as a Java double, and written back as the text of that
+     * double: a cast to `numeric` would keep 15 of its digits. Postgres fails where Neo4j gives NaN or an infinity,
+     * `ln(0)`, `sqrt(-1)`, `asin(2)`, `exp(1000)` and `1 / tan(0)` among them, but for an exponent too small for a double,
+     * which Neo4j gives as 0.0, and Postgres would fail on as an underflow.
+     */
+    override fun math(name: String, numbers: List<String>): String {
+        val doubles = numbers.map { "CAST($it AS double precision)" }
+        val x = doubles[0]
+        val result = when (name) {
+            "exp" -> shared(x) { (d) -> "CASE WHEN $d < $EXP_UNDERFLOW THEN 0 ELSE exp($d) END" }
+            "log" -> "ln($x)"
+            "log10" -> "log($x)"
+            "cot" -> "(1 / tan($x))"
+            "haversin" -> "((1 - cos($x)) / 2)"
+            // By the ratio Java multiplies by, where Postgres divides by its inverse: see [RADIANS_TO_DEGREES].
+            "degrees" -> "($x * CAST($RADIANS_TO_DEGREES AS double precision))"
+            "atan2" -> "atan2($x, ${doubles[1]})"
+            else -> "$name($x)"
+        }
+        return float("CAST($result AS text)")
+    }
+
     override fun rightText(text: String, count: String) = "right($text, $count)"
 
     /**
@@ -392,13 +388,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         /** A text Postgres reads as a `numeric`, spaces around it allowed. */
         const val NUMERIC_TEXT = """^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$"""
 
-        /** Half the least double, 2^-1075, and less: a number a double rounds to 0. */
-        const val ROUNDS_TO_ZERO = "2.4703282292062328e-324"
-
-        /** The greatest double: one more overflows. */
-        const val GREATEST = "1.7976931348623157e308"
-
-        /** The least normal double, 2^-1022: one less is worked out with fewer digits, and may underflow. */
-        const val LEAST_NORMAL = "2.2250738585072014e-308"
+        /**
+         * Below it, `exp` is nearer 0 than the least double, half of 2^-1074, and Java gives 0.0: ln(2^-1075) is
+         * -745.13321910194120…, and this is the least double Java's `exp` gives more than 0.0 for.
+         */
+        const val EXP_UNDERFLOW = "-745.1332191019411"
     }
 }

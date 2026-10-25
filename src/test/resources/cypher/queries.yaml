@@ -1173,12 +1173,17 @@ cases:
   - name: "Float arithmetic"
     description: "Arithmetic of a float is a double's, as Cypher works it out: 0.1 + 0.2 is 0.30000000000000004, and 1.0 / 3, sqrt(2) and 2 ^ 0.5 have a double's digits."
     steps:
-      - cypher: "RETURN [4.0 / 2, 1.0 / 3, 0.1 + 0.2, 0.1 * 3, 1.5 - 0.2, 7 / 2.0, 2.0 * 3, 1.0 / 3 * 3, 1e10 * 1e10]"
+      - note: "Postgres works a float out in exact decimal, not a double (drivine4j#188): 0.1 + 0.2 is 0.3 there."
+        cypher: "RETURN [4.0 / 2, 1.0 / 3, 0.1 + 0.2, 0.1 * 3, 1.5 - 0.2, 7 / 2.0, 2.0 * 3, 1.0 / 3 * 3, 1e10 * 1e10]"
+        except: [postgres]
         rows: [[2.0, 0.3333333333333333, 0.30000000000000004, 0.30000000000000004, 1.3, 3.5, 6.0, 1.0, 1.0e+20]]
-      - cypher: "RETURN [toString(4.0 / 2), toString(1.0 / 3), toString(0.1 + 0.2), toString(1.5 - 0.2), toString(7 / 2.0), toString(10.0 / 4), toString(1.0 / 3 * 3)]"
+      - note: "Postgres works a float out in exact decimal, not a double (drivine4j#188), written without trailing zeros: 1.0 / 3 has twenty digits there."
+        cypher: "RETURN [toString(4.0 / 2), toString(1.0 / 3), toString(0.1 + 0.2), toString(1.5 - 0.2), toString(7 / 2.0), toString(10.0 / 4), toString(1.0 / 3 * 3)]"
+        except: [postgres]
         rows: [["2.0", "0.3333333333333333", "0.30000000000000004", "1.3", "3.5", "2.5", "1.0"]]
-      - note: "sqrt() and ^ work in doubles too, with a double's digits."
+      - note: "sqrt() and ^ work in doubles too, with a double's digits. On Postgres ^ is worked out in exact decimal (drivine4j#188)."
         cypher: "RETURN [sqrt(2), sqrt(2.0), 2 ^ 0.5, 2.0 ^ 0.5, 10 ^ -1, toString(sqrt(2))]"
+        except: [postgres]
         rows: [[1.4142135623730951, 1.4142135623730951, 1.4142135623730951, 1.4142135623730951, 0.1, "1.4142135623730951"]]
       - cypher: "MATCH (m:Movie) RETURN [toString(avg(m.released)), toString(sum(m.released * 1.5))]"
         rows: [["1999.0", "8995.5"]]
@@ -1195,7 +1200,7 @@ cases:
       - cypher: "RETURN [toString($f), toString($g), $f + 'a']"
         parameters: {f: 0.00012, g: 12345678.5}
         rows: [["1.2E-4", "1.23456785E7", "1.2E-4a"]]
-      - note: "JSON holds no NaN: Postgres's double precision fails a division by zero, and SQLite's gives null (drivine4j#201)."
+      - note: "JSON holds no NaN: Postgres fails a division by zero, and SQLite's gives null (drivine4j#201)."
         cypher: "RETURN [toString(0.0 / 0.0), toString(1.0 / 0), toString(-1.0 / 0)]"
         except: [postgres, sqlite]
         rows: [["NaN", "Infinity", "-Infinity"]]
@@ -1255,3 +1260,154 @@ cases:
         rows: [1, 0]
       - cypher: "WITH [[3], [1, 2]] AS ls UNWIND [0, 1] AS i RETURN i ORDER BY head(ls[i..]) DESC"
         rows: [0, 1]
+
+  - name: "Parameter named by a keyword"
+    description: "A parameter may be named by any word after $, a keyword among them, wherever a parameter goes."
+    steps:
+      - cypher: "MATCH (p:Person) RETURN p.name ORDER BY p.name SKIP $skip LIMIT $limit"
+        parameters: {skip: 1, limit: 2}
+        rows: ["Hugo", "Keanu"]
+      - cypher: "MATCH (p:Person) WHERE p.name = $match OR p.born = $order RETURN p.name ORDER BY p.name"
+        parameters: {match: "Hugo", order: 1961}
+        rows: ["Hugo", "Laurence"]
+      - cypher: "MATCH (m:Movie {released: $end}) RETURN m.title"
+        parameters: {end: 1999}
+        rows: ["The Matrix"]
+      - cypher: "UNWIND $count AS x RETURN x"
+        parameters: {count: [1, 2]}
+        rows: [1, 2]
+      - note: A keyword is a name in any case, as written.
+        cypher: "RETURN [$return, $where, $null, $true, $call, $yield, $Distinct, $exists, $as, $in]"
+        parameters: {"return": 1, "where": 2, "null": 3, "true": 4, "call": 5, "yield": 6, "Distinct": 7, "exists": 8, "as": 9, "in": 10}
+        rows: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
+
+  - name: "Functions of numbers"
+    description: "exp, log, log10, sqrt, e, pi, the trigonometric functions, degrees, radians and haversin give the floats Neo4j gives, and null for null."
+    steps:
+      - note: Rounded to 10 places, as a store's library and Java's may differ in a double's last digit.
+        cypher: |
+          RETURN [round(exp(1), 10), round(log(10), 10), round(log10(2), 10), round(sqrt(2), 10), round(sin(1), 10), round(cos(1), 10),
+                  round(tan(1), 10), round(cot(1), 10), round(asin(0.5), 10), round(acos(0.5), 10), round(atan(1), 10), round(atan2(1, 2), 10),
+                  round(degrees(1), 10), round(radians(1), 10), round(haversin(1), 10)]
+        rows: [[2.7182818285, 2.302585093, 0.3010299957, 1.4142135624, 0.8414709848, 0.5403023059, 1.5574077247, 0.6420926159, 0.5235987756, 1.0471975512, 0.7853981634, 0.463647609, 57.2957795131, 0.0174532925, 0.2298488471]]
+      - note: Exact where the double is. An exponent too small for a double is 0.0.
+        cypher: "RETURN [exp(0), log(1), log10(1000), sqrt(16), e(), pi(), sin(0), cos(0), atan2(0, 1), degrees(pi()), radians(180), haversin(0), exp(-1000), atan2(0, 0)]"
+        rows: [[1.0, 0.0, 3.0, 4.0, 2.718281828459045, 3.141592653589793, 0.0, 1.0, 0.0, 180.0, 3.141592653589793, 0.0, 0.0, 0.0]]
+      - cypher: "RETURN [exp(null), log(null), log10(null), sqrt(null), sin(null), cot(null), atan2(null, 1), atan2(1, null), degrees(null), haversin(null)]"
+        rows: [[null, null, null, null, null, null, null, null, null, null]]
+      - note: Of a property, a whole number.
+        cypher: "MATCH (m:Movie) RETURN round(log10(m.released), 6) ORDER BY m.released"
+        rows: [3.299943, 3.300813, 3.301681]
+      - cypher: "MATCH (p:Person) WHERE p.born IS NOT NULL RETURN p.name, round(sqrt(p.born - 1960), 4) ORDER BY p.name"
+        rows: [["Carrie", 2.6458], ["Keanu", 2.0], ["Laurence", 1.0]]
+      - note: randomUUID() bound by a WITH is one value however often it is read.
+        cypher: "UNWIND range(1, 3) AS i WITH randomUUID() AS u RETURN collect(u = u)"
+        rows: [[true, true, true]]
+      - note: Sorted by, it is sorted by the value given, not one made again.
+        cypher: "UNWIND range(1, 20) AS i WITH randomUUID() AS u ORDER BY u WITH collect(u) AS us RETURN all(k IN range(1, size(us) - 1) WHERE us[k - 1] <= us[k])"
+        rows: [true]
+      - note: As Java works them out in doubles, the cancellation in haversin of a small angle and all.
+        cypher: "RETURN [round(haversin(0.00001) * 100000000000, 8), degrees(0.5)]"
+        rows: [[2.50000021, 28.64788975654116]]
+      - note: By the ratio Java multiplies by, where 180 / π worked out otherwise differs in the last digit.
+        cypher: "RETURN [degrees(0.1), radians(30), radians(60)]"
+        rows: [[5.729577951308233, 0.5235987755982988, 1.0471975511965976]]
+      - note: An exponent whose double is below the least normal one.
+        except: [oracle]
+        cypher: "RETURN exp(-745)"
+        rows: [4.9e-324]
+      - note: An exponent just below the one whose double is the least, and 0.0.
+        cypher: "RETURN [exp(-745.1333), exp(-745.13325), exp(-745.1332191019412)]"
+        rows: [[0.0, 0.0, 0.0]]
+
+  - name: "Functions of numbers that give NaN or an infinity"
+    description: "Neo4j gives NaN and the infinities as Java does; JSON holds neither, so a SQL store fails rather than give another value."
+    steps:
+      - only: [neo4j]
+        cypher: "RETURN [toString(log(0)), toString(sqrt(-1)), toString(exp(1000)), toString(cot(0)), toString(asin(2)), toString(log10(-1))]"
+        rows: [["-Infinity", "NaN", "Infinity", "Infinity", "NaN", "NaN"]]
+      - only: [sql]
+        cypher: "RETURN log(0)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN sqrt(-1)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN exp(1000)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN cot(0)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN asin(2)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN log10(-1)"
+        error: true
+
+  - name: "Round by a mode"
+    description: "round(value, precision, mode) rounds in decimal by one of Java's rounding modes, as Neo4j does, so 2.345 is halfway; a null gives null."
+    steps:
+      - cypher: |
+          RETURN [round(2.345, 2, 'HALF_UP'), round(2.345, 2, 'HALF_DOWN'), round(2.345, 2, 'HALF_EVEN'), round(2.355, 2, 'HALF_EVEN'),
+                  round(-2.345, 2, 'UP'), round(-2.345, 2, 'DOWN'), round(-2.345, 2, 'CEILING'), round(-2.345, 2, 'FLOOR'),
+                  round(-2.5, 0, 'HALF_EVEN'), round(3, 1, 'UP'), round(1.25, 1, $mode), round(null, 1, 'UP'), round(1.5, null, 'UP'), round(1.5, 1, null)]
+        parameters: {mode: "HALF_UP"}
+        rows: [[2.35, 2.34, 2.34, 2.36, -2.35, -2.34, -2.34, -2.35, -2.0, 3.0, 1.3, null, null, null]]
+      - note: Halfway on a negative number, and to no places.
+        cypher: "RETURN [round(-2.5, 0, 'HALF_UP'), round(-2.5, 0, 'HALF_DOWN'), round(-3.5, 0, 'HALF_EVEN'), round(0.5, 0, 'HALF_EVEN'), round(1.15, 1, 'HALF_EVEN'), round(-1.25, 1, 'CEILING')]"
+        rows: [[-3.0, -2.0, -4.0, 0.0, 1.2, -1.2]]
+      - note: A float rounds as its shortest decimal reads, as Java's BigDecimal.valueOf reads it, though its double is below it.
+        cypher: "RETURN [round(1.005, 2, 'HALF_UP'), round(toFloat('1.005'), 2, 'HALF_UP'), round(2.675, 2, 'HALF_EVEN'), round(1.005 * 1, 2, 'HALF_DOWN'), round(pi(), 4, 'UP')]"
+        rows: [[1.01, 1.01, 2.68, 1.0, 3.1416]]
+      - note: Neo4j takes no negative precision.
+        cypher: "RETURN round(1250, -2, 'HALF_EVEN')"
+        error: true
+      - note: Neo4j names the modes it takes; the compiler's message is in refusals.yaml.
+        cypher: "RETURN round(2.5, 0, 'up')"
+        error: true
+
+  - name: "Labels and relationship types"
+    description: "CALL db.labels() and CALL db.relationshipTypes() give each label the graph's nodes have and each type its relationships have, once each, alone or within a query."
+    steps:
+      - cypher: "CALL db.labels()"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - cypher: "CALL db.labels() YIELD *"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - note: Called alone, a procedure may be named without its parentheses.
+        cypher: "CALL db.labels"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - cypher: "CALL db.relationshipTypes()"
+        unordered: true
+        rows: ["ACTED_IN", "KNOWS"]
+      - cypher: "CALL db.labels() YIELD label AS x"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - cypher: "CALL db.labels() YIELD label RETURN label ORDER BY label"
+        rows: ["Code", "CyTest", "Movie", "Person"]
+      - cypher: "CALL db.labels() YIELD label AS l WHERE l STARTS WITH 'C' RETURN l ORDER BY l"
+        rows: ["Code", "CyTest"]
+      - cypher: "CALL db.relationshipTypes() YIELD relationshipType AS t RETURN t ORDER BY t DESC"
+        rows: ["KNOWS", "ACTED_IN"]
+      - cypher: "CALL db.labels() YIELD label RETURN count(label)"
+        rows: [4]
+      - note: Within a query, its rows for each row, its WHERE reading the variables around it.
+        cypher: "MATCH (m:Movie) WHERE m.released < 1999 CALL db.relationshipTypes() YIELD relationshipType WHERE relationshipType <> 'KNOWS' RETURN m.title, relationshipType"
+        rows: [["Johnny Mnemonic", "ACTED_IN"]]
+      - cypher: "WITH 'Movie' AS wanted CALL db.labels() YIELD label WHERE label = wanted RETURN label"
+        rows: ["Movie"]
+      - cypher: "UNWIND [1, 2] AS i CALL db.relationshipTypes() YIELD relationshipType RETURN i, relationshipType ORDER BY i, relationshipType"
+        rows: [[1, "ACTED_IN"], [1, "KNOWS"], [2, "ACTED_IN"], [2, "KNOWS"]]
+      - cypher: "CALL db.labels() YIELD label RETURN label UNION CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType AS label"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code", "ACTED_IN", "KNOWS"]
+      - note: What it yields is a new variable, as any other a clause binds.
+        cypher: "WITH 'Movie' AS label CALL db.labels() YIELD label RETURN label"
+        error: true
+      - note: A variable around a CALL { … } that does not import it is not bound in it, so a CALL within it may yield its name.
+        cypher: "WITH 1 AS label CALL { CALL db.labels() YIELD label RETURN count(label) AS n } RETURN label, n"
+        rows: [[1, 4]]
+

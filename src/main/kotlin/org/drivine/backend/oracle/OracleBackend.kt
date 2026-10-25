@@ -65,6 +65,14 @@ internal class OracleBackend(
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
 
+    /** Through the index for the label when one has been made, as [nearest] goes; else each root measures the others. */
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
+        val select = select(graphClass)
+        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
+        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold, embeddings, searchK)
+    }
+
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")

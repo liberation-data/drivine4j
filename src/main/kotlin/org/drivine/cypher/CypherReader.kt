@@ -26,7 +26,8 @@ import java.math.BigInteger
  * Reads a Cypher statement into a [Query]: parsed with openCypher's grammar, then walked into the
  * syntax tree the compiler works from, which says what the statement means and no more of how it was
  * written. A statement that is not Cypher is refused with where it went wrong. A statement that is
- * Cypher the compiler does not take (a procedure call) is refused by name.
+ * Cypher the compiler does not take (a call of a procedure it does not know) is refused by name. A call of
+ * one it knows, `CALL db.labels()`, is read as the query that gives its rows: see [Procedure].
  */
 object CypherReader {
 
@@ -42,7 +43,49 @@ object CypherReader {
         return query(parser.oC_Cypher().oC_Statement().oC_Query())
     }
 
-    private fun query(context: OC_QueryContext): Query = regular(context.oC_RegularQuery() ?: refuse("A procedure call (CALL)"))
+    private fun query(context: OC_QueryContext): Query = context.oC_RegularQuery()?.let(::regular) ?: standalone(context.oC_StandaloneCall())
+
+    /**
+     * `CALL db.labels()` as the whole statement: the procedure's rows, each field under the name it is yielded as,
+     * or its own where it yields them all, by `YIELD *` or no `YIELD`.
+     */
+    private fun standalone(call: OC_StandaloneCallContext): Query {
+        val invocation = call.oC_ExplicitProcedureInvocation()
+        val procedure = procedure(invocation?.oC_ProcedureName() ?: call.oC_ImplicitProcedureInvocation().oC_ProcedureName())
+        val items = call.oC_YieldItems()
+        // As Neo4j refuses it: a WHERE filters rows a clause after it reads.
+        if (items?.oC_Where() != null) {
+            throw DrivineException("A CALL that is the whole statement takes no WHERE, as in Cypher: follow its YIELD with WITH or RETURN, as in CALL ${procedure.qualifiedName}() YIELD ${procedure.field} WHERE … RETURN ${procedure.field}.")
+        }
+        val yields = items?.let(::yields) ?: listOf(procedure.field to procedure.field)
+        return procedure.query(invocation?.oC_Expression()?.map(::expression).orEmpty(), yields, null)
+    }
+
+    /**
+     * `CALL db.labels() YIELD label` within a query: for each row, the procedure's rows, joined to it as a `CALL { … }`'s are,
+     * each field yielded bound for the clauses after.
+     */
+    private fun inQuery(call: OC_InQueryCallContext): Clause {
+        val invocation = call.oC_ExplicitProcedureInvocation()
+        val procedure = procedure(invocation.oC_ProcedureName())
+        // As Neo4j refuses it: within a query, what a procedure gives is named.
+        val items = call.oC_YieldItems()
+            ?: throw DrivineException("A CALL of a procedure within a query names what it yields, as in Cypher: CALL ${procedure.qualifiedName}() YIELD ${procedure.field}.")
+        val where = items.oC_Where()?.let { expression(it.oC_Expression()) }
+        return Clause.Call(false, procedure.query(invocation.oC_Expression().map(::expression), yields(items), where))
+    }
+
+    /** The procedure a call names, or the call refused where the compiler does not take it. */
+    private fun procedure(name: OC_ProcedureNameContext): Procedure {
+        val qualified = name.oC_Namespace().oC_SymbolicName().joinToString("") { symbolic(it) + "." } + symbolic(name.oC_SymbolicName())
+        return Procedure.named(qualified) ?: refuse("A procedure call (CALL)")
+    }
+
+    /** Each field a `YIELD` names, and the variable it is bound to: its own name, or the one after `AS`. */
+    private fun yields(items: OC_YieldItemsContext): List<Pair<String, String>> = items.oC_YieldItem().map { item ->
+        val variable = name(item.oC_Variable())
+        (item.oC_ProcedureResultField()?.oC_SymbolicName()?.let(::symbolic) ?: variable) to variable
+    }
 
     private fun regular(regular: OC_RegularQueryContext): Query =
         Query(single(regular.oC_SingleQuery()), regular.oC_Union().map { Union(it.ALL() != null, single(it.oC_SingleQuery())) })
@@ -125,7 +168,7 @@ object CypherReader {
             Clause.Match(match.OPTIONAL() != null, patterns(match.oC_Pattern()), match.oC_Where()?.let { expression(it.oC_Expression()) })
         }
         context.oC_Unwind() != null -> context.oC_Unwind().let { Clause.Unwind(expression(it.oC_Expression()), name(it.oC_Variable())) }
-        else -> refuse("A procedure call (CALL)")
+        else -> inQuery(context.oC_InQueryCall())
     }
 
     /** Reading clauses that return nothing, the body of an `EXISTS { … }` or a `COUNT { … }`. */
@@ -523,8 +566,10 @@ object CypherReader {
         context.oC_PropertyKeyName().zip(context.oC_Expression()).map { (key, value) -> name(key.oC_SchemaName()) to expression(value) }
     )
 
-    private fun parameter(context: OC_ParameterContext) =
-        Expression.Parameter(context.oC_SymbolicName()?.let(::symbolic) ?: context.DecimalInteger().text)
+    /** `$name`, `$1`, or a keyword, `$limit`, which names a parameter as any other word does. */
+    private fun parameter(context: OC_ParameterContext) = Expression.Parameter(
+        context.oC_SchemaName()?.let(::name) ?: context.DecimalInteger()?.text ?: context.getChild(1).text
+    )
 
     // ----- Names and literals -----
 

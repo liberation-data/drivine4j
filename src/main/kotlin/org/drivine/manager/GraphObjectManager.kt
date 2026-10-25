@@ -314,6 +314,30 @@ class GraphObjectManager internal constructor(
         return executeScoredSearch(graphClass, backend.nearest(graphClass, null, querySpec, vector, topK, threshold, searchK, partitionLabel))
     }
 
+    override fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        threshold: Double?,
+        property: String?,
+        searchK: Int?,
+    ): Map<String, List<Scored<String>>> {
+        requireValidSearchK(topK, searchK)
+        val set = ids.distinct()
+        // The index finds the seed itself first, so asking for one more than is kept is the least that
+        // can fill topK even when every other hit is in the set. Written even for no ids, so that a class,
+        // a property or a store the search refuses is refused alike.
+        val statement = backend.nearestAmong(graphClass, property, set, topK, threshold, searchK ?: (topK + 1))
+        if (set.isEmpty()) return emptyMap()
+        val found = persistenceManager.query(statement.spec().transform(Map::class.java)).associate { row ->
+            @Suppress("UNCHECKED_CAST")
+            val near = (row["near"] as List<Map<String, Any?>>).map { Scored(it["id"].toString(), (it["score"] as Number).toDouble()) }
+            row["seed"].toString() to near
+        }
+        // In the caller's order, which the store does not keep.
+        return set.filter { it in found }.associateWith { found.getValue(it) }
+    }
+
     /**
      * Guards the over-fetch knob. A [searchK] below [topK] would ask the index for fewer rows than the
      * caller wants back, which can only lose results — always a mistake rather than a tuning choice.
@@ -356,7 +380,7 @@ class GraphObjectManager internal constructor(
     }
 
     /**
-     * Reports a vector search that returned fewer rows than asked for.
+     * Reports a vector or full-text search that returned fewer rows than asked for.
      *
      * Filters run *after* the index yields, so a scoped search returns roughly `k × selectivity` rows —
      * ask for 40 against a 22%-selective filter and about 9 come back, drawn from the globally-nearest
@@ -374,9 +398,11 @@ class GraphObjectManager internal constructor(
         if (returned >= requested) return
         if (!logger.isDebugEnabled) return
         logger.debug(
-            "Vector search on {} returned {} of {} requested rows; the index was asked for {}. " +
-                "Filters apply after the index yields, so a scoped search thins the result — raise " +
-                "searchK to widen the search, or search a partition's own index.",
+            """
+            Search on {} returned {} of {} requested rows; the index was asked for {}. Filters apply
+            after the index yields, so a scoped search thins the result — for a vector search raise
+            searchK or search a partition's own index.
+            """.trimIndent().replace('\n', ' '),
             graphClass.simpleName, returned, requested, plan.indexK,
         )
     }

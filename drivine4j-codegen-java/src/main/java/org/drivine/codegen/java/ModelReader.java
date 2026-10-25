@@ -328,8 +328,8 @@ final class ModelReader {
 
     /**
      * The class's instance fields and those it inherits, a field hiding one above it in its place. A
-     * superclass's private field is not inherited, and the core library, reading the class with Kotlin's
-     * reflection, does not see it.
+     * superclass's private field is the class's state too, and the core library reads it, but only of a
+     * class Java compiled: of one Kotlin compiled, Kotlin's reflection leaves it out.
      */
     private List<VariableElement> fields(TypeElement type) {
         Map<String, VariableElement> fields = new LinkedHashMap<>();
@@ -337,12 +337,18 @@ final class ModelReader {
              current = element(current.getSuperclass())) {
             for (Element member : current.getEnclosedElements()) {
                 if (member.getKind() == ElementKind.FIELD && !member.getModifiers().contains(Modifier.STATIC)
-                    && (current == type || !member.getModifiers().contains(Modifier.PRIVATE))) {
+                    && (current == type || !member.getModifiers().contains(Modifier.PRIVATE) || !isKotlin(current))) {
                     fields.putIfAbsent(member.getSimpleName().toString(), (VariableElement) member);
                 }
             }
         }
         return new ArrayList<>(fields.values());
+    }
+
+    /** Whether Kotlin compiled the class, as its `kotlin.Metadata` annotation says. */
+    private static boolean isKotlin(TypeElement type) {
+        return type.getAnnotationMirrors().stream()
+            .anyMatch(it -> ((TypeElement) it.getAnnotationType().asElement()).getQualifiedName().contentEquals("kotlin.Metadata"));
     }
 
     private Object nullable(VariableElement field) {

@@ -1,5 +1,6 @@
 package org.drivine.codegen.model
 
+import com.google.testing.compile.Compilation
 import com.google.testing.compile.Compiler
 import com.google.testing.compile.JavaFileObjects
 import com.tschuchort.compiletesting.KotlinCompilation
@@ -19,8 +20,6 @@ import org.drivine.codegen.java.GraphViewProcessor as JavaProcessor
  * One Java domain through both code generators: the KSP processor, as a module with Kotlin in it runs
  * it, and the Java annotation processor, as a Java module does. The two read classes with different
  * compilers' models, and must describe them alike.
- *
- * A view that holds itself is left out: the Java processor's query DSL does not stop reading one.
  *
  * They differ only where Java says more than KSP can see of it: `source` names a type as Java writes
  * it (`java.lang.String`, `int`) where KSP gives Kotlin's names, and `nullable` is `false` for a
@@ -92,18 +91,24 @@ class ModelFileParityTest {
             public abstract class Shape { @NodeId public String id; }
         """,
         "Circle" to """@NodeFragment(labels = {"Circle"}) public final class Circle extends Shape { public double radius; }""",
-        // A superclass's private field is not the subclass's, as the core library reads it.
-        "Base" to "public abstract class Base { @NodeId private String id; protected String shared; }",
+        // A Java superclass's private field is the subclass's state, as the core library reads it.
+        "Base" to "public abstract class Base { @NodeId private String id; protected String shared; private String hidden; }",
         "Probe" to """
             @NodeFragment(labels = {"Probe"})
             @Unique(properties = {"code"})
             @RangeIndex(properties = {"code"})
             public final class Probe extends Base {
                 private String code;
+                @GraphTransient private String hidden;
                 public byte[] bytes;
                 public char[] chars;
                 public java.util.List<? super Integer> lower;
             }
+        """,
+        // A Kotlin superclass's private property is left out: Kotlin's reflection leaves it out.
+        "OverKotlin" to """
+            @NodeFragment(labels = {"OverKotlin"})
+            public final class OverKotlin extends org.drivine.codegen.model.KotlinBase { @NodeId public String id; }
         """,
         "Outer" to """
             public final class Outer {
@@ -139,6 +144,14 @@ class ModelFileParityTest {
                 @Aggregate(function = AggregateFunction.MAX, type = "HAS", property = "score") public Integer topScore;
             }
         """,
+        // A view that holds itself: both processors read it once.
+        "Org" to """
+            @GraphView
+            public final class Org {
+                @Root public Member head;
+                @GraphRelationship(type = "RUNS") public java.util.List<Org> units;
+            }
+        """,
     ).mapValues { (_, body) -> "package jx;\n\nimport org.drivine.annotation.*;\nimport org.drivine.schema.SimilarityFunction;\n\n${body.trimIndent()}\n" }
 
     @Test
@@ -161,14 +174,21 @@ class ModelFileParityTest {
         val compilation = Compiler.javac().withProcessors(JavaProcessor())
             .withOptions("-A${ModelFiles.FILE}=${apt.path}", "-A${ModelFiles.MODULE}=jx")
             .compile(domain.map { (name, text) -> JavaFileObjects.forSourceString("jx.$name", text) })
-        // The Java processor's query DSL compiles no relationship fragment yet, and the build fails on
-        // it; the model file is written all the same.
-        assertTrue(apt.isFile, compilation.diagnostics().toString())
+        assertEquals(Compilation.Status.SUCCESS, compilation.status(), compilation.diagnostics().toString())
 
         val model = ModelJson.read(ksp.readText()) as Map<*, *>
         // Not two empty files alike: the whole domain is in it.
-        assertEquals(listOf(10, 1, 2), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
+        assertEquals(listOf(11, 1, 3), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
         assertEquals(comparable(model), comparable(ModelJson.read(apt.readText())))
+        // Probe's id is its Java superclass's private field, which a load reads, as both say.
+        val probe = (model["fragments"] as List<*>).map { it as Map<*, *> }.single { it["name"] == "Probe" }
+        assertEquals("id", probe["nodeId"])
+        val names = (probe["properties"] as List<*>).map { (it as Map<*, *>)["name"] }
+        assertTrue("id" in names)
+        // Base's hidden field is hidden by Probe's transient one, so neither is stored.
+        assertTrue("hidden" !in names)
+        val overKotlin = (model["fragments"] as List<*>).map { it as Map<*, *> }.single { it["name"] == "OverKotlin" }
+        assertEquals(listOf("id", "shared"), (overKotlin["properties"] as List<*>).map { (it as Map<*, *>)["name"] }.sortedBy { it as String })
     }
 
     /** [value] without the two keys the processors may rightly differ on. */
@@ -177,4 +197,10 @@ class ModelFileParityTest {
         is List<*> -> value.map { comparable(it) }
         else -> value
     }
+}
+
+/** A Kotlin superclass of a Java fragment, on the classpath as a compiled Kotlin class: [secret] is no stored state. */
+abstract class KotlinBase {
+    @JvmField var shared: String = ""
+    private val secret: String = ""
 }

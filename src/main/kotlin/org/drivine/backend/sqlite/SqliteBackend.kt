@@ -52,6 +52,13 @@ internal class SqliteBackend(persistenceManager: PersistenceManager, objectMappe
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
     }
 
+    /** Each root measures the others, as there is no index to ask: exact, and [searchK] has nothing to widen. */
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
+        val select = select(graphClass)
+        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold)
+    }
+
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
         val select = select(graphClass)
         val index = FullTextIndexResolver.resolve(select.rootFragment, property, "_", "_")

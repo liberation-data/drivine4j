@@ -68,11 +68,11 @@ class VectorYieldReportingTest {
     }
 
     @Test
-    fun `a full-text plan carries no row counts`() {
-        // Full-text shares the executor but not this concern; null means "do not report".
+    fun `a full-text plan carries the rows asked for and the limit its index call was cut to`() {
+        // A fragment with no filter asks the index for exactly topK.
         val p = FullTextSearchPlanner.plan(TextNode::class.java, null, "hello", 10, 0.0, grammar)
 
-        assertNull(p.requestedRows)
-        assertNull(p.indexK)
+        assertEquals(10, p.requestedRows)
+        assertEquals(10, p.indexK)
     }
 }

@@ -4,6 +4,7 @@ import org.drivine.backend.sqlite.SqliteFunctions
 import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
+import java.math.RoundingMode
 
 /**
  * Compiles a Cypher statement to SQL over a graph's tables on SQLite: see [SqlCypherCompiler]. A statement it
@@ -288,6 +289,18 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override val rowNumber = "ROW_NUMBER() OVER ()"
 
     override fun uuid() = "${SqliteFunctions.UUID}()"
+
+    /** Materialized, as SQLite otherwise flattens the query into the one that reads it, and makes a `randomUUID()` again for each read. */
+    override fun once(query: String) = "WITH once AS MATERIALIZED (\n${indent(query)}\n)\nSELECT * FROM once"
+
+    /**
+     * By Java's `Math`, as Neo4j works these out: see [org.drivine.backend.sqlite.SqliteMathFunction]. SQLite's own give
+     * null where Neo4j gives NaN or negative infinity.
+     */
+    override fun math(name: String, numbers: List<String>) = "${SqliteFunctions.MATH}(${literal(name)}, ${numbers.joinToString(", ")})"
+
+    /** In decimal, as Neo4j rounds: see [org.drivine.backend.sqlite.SqliteRoundFunction]. SQLite's numbers are binary, and 2.345 is below 2.345 there. */
+    override fun roundTo(number: String, precision: String, mode: RoundingMode) = "${SqliteFunctions.ROUND}($number, $precision, ${literal(mode.name)})"
 
     override fun rightText(text: String, count: String) = shared(text, count) { (t, n) ->
         "CASE WHEN $t IS NULL OR $n IS NULL THEN NULL WHEN $n >= length($t) THEN $t WHEN $n > 0 THEN substr($t, -$n) ELSE '' END"

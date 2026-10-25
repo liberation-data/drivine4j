@@ -21,11 +21,12 @@ class FullTextSearchGrammarTest {
         indexName = "Article_body_fulltext",
         queryParam = "q",
         topKParam = "topK",
+        indexLimitParam = "limit",
     )
 
     /** The shared normalization tail every engine routes through. */
     private fun assertNormalizedTail(head: String, rootAlias: String, scoreAlias: String) {
-        assertTrue(head.contains("YIELD node, score"), head)
+        assertTrue(head.contains("YIELD node, score\nWITH node, score\nORDER BY score DESC\nLIMIT \$limit\n"), head)
         assertTrue(head.contains("WITH collect({node: node, score: score}) AS _ftResults, max(score) AS _ftMax"), head)
         assertTrue(head.contains("UNWIND _ftResults AS _ftRow"), head)
         assertTrue(
@@ -40,7 +41,7 @@ class FullTextSearchGrammarTest {
         assertTrue(grammar.supportsFullTextSearch)
 
         val head = grammar.fullTextSearchHead(spec(), rootAlias = "article", scoreAlias = "_score")
-        assertTrue(head.contains("CALL db.index.fulltext.queryNodes('Article_body_fulltext', \$q)"), head)
+        assertTrue(head.contains("CALL db.index.fulltext.queryNodes('Article_body_fulltext', \$q, {limit: \$limit})"), head)
         assertNormalizedTail(head, "article", "_score")
     }
 
@@ -61,7 +62,13 @@ class FullTextSearchGrammarTest {
         assertTrue(grammar.supportsFullTextSearch)
 
         val head = grammar.fullTextSearchHead(spec(), "article", "_score")
-        assertTrue(head.contains("CALL text_search.search_all('Article_body_fulltext', \$q)"), head)
+        assertTrue(
+            head.contains(
+                "CALL text_search.search_all('Article_body_fulltext', \$q, " +
+                    "{limit: CASE WHEN \$limit < 1000000 THEN \$limit ELSE 1000000 END})"
+            ),
+            head,
+        )
         assertNormalizedTail(head, "article", "_score")
     }
 

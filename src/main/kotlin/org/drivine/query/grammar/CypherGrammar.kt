@@ -145,8 +145,9 @@ interface CypherGrammar {
      * K nearest nodes bound to [rootAlias] and a **normalized similarity** bound to [scoreAlias]
      * (higher = more similar, the same convention on every engine — each grammar converts its
      * native distance/similarity output as needed). The head ends with a `WITH` that establishes
-     * exactly those two variables, so the rest of the load query (filters, projection, RETURN)
-     * composes on top of it unchanged.
+     * exactly those two variables, after any [VectorQuerySpec.carried] from before the head, so the
+     * rest of the load query (filters, projection, RETURN) composes on top of it unchanged. The query
+     * vector is [VectorQuerySpec.vectorSource] when set, else the bound [VectorQuerySpec.vectorParam].
      *
      * The default throws — engines without a native vector index inherit it.
      *
@@ -235,15 +236,38 @@ interface CypherGrammar {
          * than dropped as NaN. The tail ends binding exactly [rootAlias] (the node) and [scoreAlias]
          * (the normalized similarity), the same shape a `vectorSearchHead` yields.
          *
+         * The hits are cut to the best [indexLimitParam] before they are collected, on every engine.
+         * The collected list is what a search's memory is made of: each row unwound from it carries
+         * it, so an operator that holds rows after the head — the sort that keeps the top `k` — is
+         * charged for the whole list once per row it holds. Measured on Neo4j 5.26 over 40,000
+         * matching chunks, a `k = 200` search with the hits uncut exhausted the 1.4 GiB transaction
+         * pool on its own; cut to 2,000 the whole query held 3.9 MB. An engine whose `CALL` takes a
+         * limit is given it as well ([Neo4j5Grammar], [MemgraphGrammar]), so the index stops
+         * producing rows instead of producing them to be dropped; the cut here is what holds where
+         * the `CALL` takes none.
+         *
+         * Ties at the cut are broken however the engine sorts, which is the same freedom the
+         * trailing `LIMIT` has always had.
+         *
+         * The tail yields its rows in descending score order: `collect` keeps the order of the sort
+         * before it, and `UNWIND` the order of the list. A fragment search limits its filtered rows
+         * with no sort of its own and relies on that order ([org.drivine.query.FragmentFullTextSearchBuilder]),
+         * so the sort stays even where the `CALL` already returns its hits best first.
+         *
          * @param callClause the full-text `CALL …` line for this engine (no trailing newline)
+         * @param indexLimitParam the bound parameter carrying how many hits to keep
          */
-        fun normalizedFullTextHead(callClause: String, rootAlias: String, scoreAlias: String): String =
-            "$callClause\n" +
-                "YIELD node, score\n" +
-                "WITH collect({node: node, score: score}) AS _ftResults, max(score) AS _ftMax\n" +
-                "UNWIND _ftResults AS _ftRow\n" +
-                "WITH _ftRow.node AS $rootAlias, " +
-                "(CASE WHEN _ftMax > 0 THEN _ftRow.score / _ftMax ELSE 1.0 END) AS $scoreAlias"
+        fun normalizedFullTextHead(callClause: String, rootAlias: String, scoreAlias: String, indexLimitParam: String): String =
+            """
+            |$callClause
+            |YIELD node, score
+            |WITH node, score
+            |ORDER BY score DESC
+            |LIMIT ${'$'}$indexLimitParam
+            |WITH collect({node: node, score: score}) AS _ftResults, max(score) AS _ftMax
+            |UNWIND _ftResults AS _ftRow
+            |WITH _ftRow.node AS $rootAlias, (CASE WHEN _ftMax > 0 THEN _ftRow.score / _ftMax ELSE 1.0 END) AS $scoreAlias
+            """.trimMargin()
     }
 }
 
@@ -305,30 +329,31 @@ class Neo4j5Grammar(
      */
     override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
         val call =
-            "CALL db.index.vector.queryNodes(${spec.indexNameArgument()}, \$${spec.topKParam}, \$${spec.vectorParam})"
+            "CALL db.index.vector.queryNodes(${spec.indexNameArgument()}, \$${spec.topKParam}, ${spec.vectorArgument()})"
         if (spec.rowLimitParam == null) {
-            return "$call\nYIELD node, score\nWITH node AS $rootAlias, score AS $scoreAlias"
+            return "$call\nYIELD node, score\nWITH ${spec.carriedPrefix()}node AS $rootAlias, score AS $scoreAlias"
         }
         val similarityFunction = when (spec.similarity) {
             SimilarityFunction.COSINE -> "vector.similarity.cosine"
             SimilarityFunction.EUCLIDEAN -> "vector.similarity.euclidean"
         }
         return "$call\nYIELD node\n" +
-            "WITH node AS $rootAlias, $similarityFunction(node.${SchemaGrammar.identifier(spec.property)}, \$${spec.vectorParam}) AS $scoreAlias"
+            "WITH ${spec.carriedPrefix()}node AS $rootAlias, $similarityFunction(node.${SchemaGrammar.identifier(spec.property)}, ${spec.vectorArgument()}) AS $scoreAlias"
     }
 
     override val supportsFullTextSearch: Boolean = true
 
     /**
-     * `db.index.fulltext.queryNodes(name, query)` — the full-text index is referenced by **name**.
-     * Neo4j returns an unbounded Lucene relevance score; [CypherGrammar.normalizedFullTextHead]
-     * normalizes it to `[0, 1]`.
+     * `db.index.fulltext.queryNodes(name, query, {limit: n})` — the full-text index is referenced by
+     * **name**, and asked for its best `n` hits so Lucene collects no more than that. Neo4j returns an
+     * unbounded Lucene relevance score; [CypherGrammar.normalizedFullTextHead] normalizes it to `[0, 1]`.
      */
     override fun fullTextSearchHead(spec: FullTextQuerySpec, rootAlias: String, scoreAlias: String): String =
         CypherGrammar.normalizedFullTextHead(
-            "CALL db.index.fulltext.queryNodes('${spec.indexName}', \$${spec.queryParam})",
+            "CALL db.index.fulltext.queryNodes('${spec.indexName}', \$${spec.queryParam}, {limit: \$${spec.indexLimitParam}})",
             rootAlias,
             scoreAlias,
+            spec.indexLimitParam,
         )
 }
 
@@ -414,20 +439,25 @@ class FalkorDbCypherGrammar(
 
     /**
      * `db.idx.vector.queryNodes(label, attribute, k, vector)` — queried by label + property (FalkorDB
-     * has no index names), and the query vector must be wrapped in `vecf32(...)`. FalkorDB returns a
-     * raw *distance* (smaller = closer), so we convert to a higher-is-closer similarity to match the
-     * cross-engine convention: cosine distance `d → 1 - d`; euclidean distance `d → 1 / (1 + d)`
-     * (the same shape Neo4j applies to euclidean).
+     * has no index names), and the query vector must be wrapped in `vecf32(...)`. FalkorDB yields a
+     * *distance* (smaller = closer): for cosine `1 - cos`, in `[0, 2]`, and for euclidean the plain
+     * distance `d`, not its square (what `vec.cosineDistance` and `vec.euclideanDistance` give). Each
+     * is rescaled to the score Neo4j and the SQL stores give: cosine `(1 + cos) / 2`, as
+     * `1 - score / 2`, and euclidean `1 / (1 + d²)`, as `1 / (1 + score * score)`. The distance is
+     * exact for the vectors found, so an over-fetched search needs no rescoring as Neo4j's does.
+     *
+     * A vector read from a stored property ([VectorQuerySpec.vectorSource]) is not wrapped: it is
+     * already FalkorDB's vector type, and `vecf32` takes only a list.
      */
     override fun vectorSearchHead(spec: VectorQuerySpec, rootAlias: String, scoreAlias: String): String {
         val similarityExpr = when (spec.similarity) {
-            org.drivine.schema.SimilarityFunction.COSINE -> "1.0 - score"
-            org.drivine.schema.SimilarityFunction.EUCLIDEAN -> "1.0 / (1.0 + score)"
+            SimilarityFunction.COSINE -> "1.0 - score / 2.0"
+            SimilarityFunction.EUCLIDEAN -> "1.0 / (1.0 + score * score)"
         }
         return "CALL db.idx.vector.queryNodes(${spec.labelArgument()}, '${spec.property}', \$${spec.topKParam}, " +
-            "vecf32(\$${spec.vectorParam}))\n" +
+            "${spec.vectorSource ?: "vecf32(\$${spec.vectorParam})"})\n" +
             "YIELD node, score\n" +
-            "WITH node AS $rootAlias, $similarityExpr AS $scoreAlias"
+            "WITH ${spec.carriedPrefix()}node AS $rootAlias, $similarityExpr AS $scoreAlias"
     }
 
     /**
@@ -450,5 +480,6 @@ class FalkorDbCypherGrammar(
             "CALL db.idx.fulltext.queryNodes('${spec.label}', \$${spec.queryParam})",
             rootAlias,
             scoreAlias,
+            spec.indexLimitParam,
         )
 }

@@ -52,7 +52,7 @@ configurations {
 dependencies {
 	// Neo4j plugins for test containers - these are server-side plugins, not Java dependencies
 	// They get mounted into the Neo4j container's /plugins directory
-	neo4jPlugins 'org.neo4j.procedure:apoc-extended:5.26.0'
+	neo4jPlugins 'org.neo4j.procedure:apoc-extended:2026.04.0'
 	implementation 'org.neo4j.driver:neo4j-java-driver:5.28.9'
 
 	// The core depends on what it uses: the drivers, Jackson, HikariCP and SLF4J. Spring support is in

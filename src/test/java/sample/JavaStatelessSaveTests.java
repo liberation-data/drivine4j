@@ -6,6 +6,7 @@ import org.drivine.manager.NullPolicy;
 import org.drivine.manager.RemovedTargets;
 import org.drivine.manager.Replace;
 import org.drivine.manager.StatelessGraphObjectManager;
+import org.drivine.model.javafields.JavaProbe;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -48,6 +49,24 @@ public class JavaStatelessSaveTests {
 
         assertNotNull(saved.getStamp());
         assertEquals(saved.getStamp(), stateless.load(id, Claim.class).getStamp());
+    }
+
+    /** A fragment whose @NodeId is a private field of its Java superclass saves by it, and loads back (#193). */
+    @Test
+    public void savesByASuperclassPrivateNodeId() {
+        JavaProbe probe = new JavaProbe();
+        probe.setId(id);
+        probe.setName("first");
+        probe.setCreatedOn("2026-10-25");
+        stateless.save(probe);
+        probe.setName("second");
+        stateless.save(probe);
+
+        JavaProbe loaded = stateless.load(id, JavaProbe.class);
+        assertEquals("second", loaded.getName());
+        assertEquals("2026-10-25", loaded.getCreatedOn());
+        // Saved twice by one id: one node, not two.
+        assertEquals(1, stateless.loadAll(JavaProbe.class).stream().filter(it -> id.equals(it.getId())).count());
     }
 
     @Test

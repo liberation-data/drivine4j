@@ -281,19 +281,6 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `a product, a quotient or a power of floats too small for a double is 0,0`() {
-        // Not in the spec yet: Postgres fails such a double ("underflow"), and a constant one as it plans the statement.
-        assertEquals(
-            listOf(listOf(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, "0.0")),
-            query(
-                "RETURN [1e-200 * 1e-200, 5e-324 / 2, 1e-200 ^ 2, 0.9999 ^ 1000000000000, toFloat('1e-400'), \$a * \$b, " +
-                    "1e-200 * 1e-200 * 5, 1e-200 * 1e-200 + 1, toString(1e-200 * 1e-200)]",
-                mapOf("a" to 1e-200, "b" to 1e-200),
-            ),
-        )
-    }
-
-    @Test
     fun `toString of a double past Oracle's NUMBER range writes its shortest digits`() {
         // Not in the spec yet: Oracle writes such a double from its own text, not from TO_CHAR's 15 digits.
         assertEquals(
@@ -353,17 +340,6 @@ abstract class CypherQueryContract {
             listOf(listOf("Carrie", listOf("The Matrix", mapOf("role" to "Trinity"))), listOf("Keanu", listOf("Johnny Mnemonic", "The Matrix", mapOf("role" to "Neo"))), listOf("Laurence", listOf("The Matrix"))),
             query(gathered),
         )
-    }
-
-    @Test
-    fun `a float past the greatest double is infinite, not a failure`() {
-        // Not in the spec yet: JSON holds no infinity. Postgres works it out in numeric past a double, as it did before doubles,
-        // and that number reads back as an infinite double; Oracle fails it or gives null, as it did before. SQLite's sum is the
-        // text "Infinity", as it was before.
-        if (pm.type == DatabaseType.ORACLE) return
-        val row = query("RETURN [1.0000001 ^ 10000000000, toFloat('1e400'), 1e308 * 10, -1e308 * 10, 1e308 + 1e308, 2.0 ^ 2000]").single() as List<*>
-        val infinity = Double.POSITIVE_INFINITY
-        assertEquals(listOf(infinity, infinity, infinity, -infinity, infinity, infinity), row.map { (it as? Number)?.toDouble() ?: (it as String).toDouble() })
     }
 
     @Test

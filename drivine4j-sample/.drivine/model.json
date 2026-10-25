@@ -597,6 +597,25 @@
       ]
     },
     {
+      "id": "org.drivine.sample.view.OrgChart",
+      "name": "OrgChart",
+      "root": {
+        "field": "organization",
+        "fragment": "org.drivine.sample.fragment.Organization"
+      },
+      "relationships": [
+        {
+          "field": "units",
+          "type": "RUNS",
+          "direction": "OUTGOING",
+          "target": "org.drivine.sample.view.OrgChart",
+          "many": true,
+          "required": false,
+          "maxDepth": 3
+        }
+      ]
+    },
+    {
       "id": "org.drivine.sample.view.PersonCareer",
       "name": "PersonCareer",
       "root": {

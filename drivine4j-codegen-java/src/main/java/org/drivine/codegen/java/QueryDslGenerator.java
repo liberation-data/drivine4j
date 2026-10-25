@@ -69,19 +69,28 @@ public class QueryDslGenerator {
             generateFragmentDsl(fragmentClass);
         }
 
-        // First pass: collect all fragment types
+        // First pass: collect every fragment, nested view and relationship fragment the views reach
         Map<String, FragmentInfo> allFragments = new LinkedHashMap<>();
+        Map<String, TypeElement> nestedViews = new LinkedHashMap<>();
+        Map<String, TypeElement> relationshipFragments = new LinkedHashMap<>();
         Map<TypeElement, List<ViewProperty>> viewStructures = new LinkedHashMap<>();
 
         for (TypeElement graphViewClass : graphViewClasses) {
             List<ViewProperty> structure = analyzeGraphViewStructure(graphViewClass);
             viewStructures.put(graphViewClass, structure);
-            collectFragmentTypes(structure, allFragments);
+            collectFragmentTypes(structure, allFragments, nestedViews, relationshipFragments);
         }
 
-        // Generate properties classes for all fragments
+        // Generate properties classes for all fragments, and for the nested views and relationship
+        // fragments a view's fields hold, as the KSP generator does
         for (FragmentInfo fragmentInfo : allFragments.values()) {
             generatePropertiesClass(fragmentInfo);
+        }
+        for (TypeElement nestedView : nestedViews.values()) {
+            generateViewPropertiesClass(nestedView);
+        }
+        for (TypeElement relationshipFragment : relationshipFragments.values()) {
+            generatePropertiesClass(new FragmentInfo(relationshipFragment, relationshipFragment.getSimpleName().toString()));
         }
 
         // Generate QueryDsl class for each view
@@ -98,7 +107,7 @@ public class QueryDslGenerator {
         List<ViewProperty> properties = new ArrayList<>();
 
         for (Element member : graphViewClass.getEnclosedElements()) {
-            if (member.getKind() != ElementKind.FIELD) {
+            if (member.getKind() != ElementKind.FIELD || member.getModifiers().contains(Modifier.STATIC)) {
                 continue;
             }
 
@@ -138,9 +147,12 @@ public class QueryDslGenerator {
     }
 
     /**
-     * Collects all fragment types from view properties.
+     * Collects the fragments a view's fields reach, and the nested views and relationship fragments
+     * they hold, each once. A nested view is read once however often it is reached, so a view that
+     * holds itself, or two that hold each other, end.
      */
-    private void collectFragmentTypes(List<ViewProperty> structure, Map<String, FragmentInfo> fragments) {
+    private void collectFragmentTypes(List<ViewProperty> structure, Map<String, FragmentInfo> fragments,
+                                      Map<String, TypeElement> nestedViews, Map<String, TypeElement> relationshipFragments) {
         for (ViewProperty prop : structure) {
             TypeElement typeElement = getTypeElement(prop.type);
             if (typeElement == null) continue;
@@ -150,10 +162,95 @@ public class QueryDslGenerator {
             if (hasAnnotation(prop.type, "org.drivine.annotation.NodeFragment")) {
                 fragments.putIfAbsent(qualifiedName, new FragmentInfo(typeElement, prop.name));
             } else if (prop.nestedViewClass != null) {
-                // Recursively collect from nested views
-                List<ViewProperty> nestedStructure = analyzeGraphViewStructure(prop.nestedViewClass);
-                collectFragmentTypes(nestedStructure, fragments);
+                if (nestedViews.putIfAbsent(qualifiedName, prop.nestedViewClass) == null) {
+                    List<ViewProperty> nestedStructure = analyzeGraphViewStructure(prop.nestedViewClass);
+                    collectFragmentTypes(nestedStructure, fragments, nestedViews, relationshipFragments);
+                }
+            } else if (hasAnnotation(prop.type, "org.drivine.annotation.RelationshipFragment")) {
+                if (relationshipFragments.putIfAbsent(qualifiedName, typeElement) == null) {
+                    collectTargetTypes(typeElement, fragments, nestedViews, relationshipFragments);
+                }
             }
+        }
+    }
+
+    /** Collects what a relationship fragment's target holds: a fragment, or a view and all it reaches. */
+    private void collectTargetTypes(TypeElement relationshipFragment, Map<String, FragmentInfo> fragments,
+                                    Map<String, TypeElement> nestedViews, Map<String, TypeElement> relationshipFragments) {
+        List<ViewProperty> targets = new ArrayList<>();
+        for (Element member : relationshipFragment.getEnclosedElements()) {
+            if (member.getKind() != ElementKind.FIELD || member.getModifiers().contains(Modifier.STATIC)) continue;
+            TypeMirror type = member.asType();
+            boolean view = hasAnnotation(type, "org.drivine.annotation.GraphView");
+            if (view || hasAnnotation(type, "org.drivine.annotation.NodeFragment")) {
+                targets.add(new ViewProperty(member.getSimpleName().toString(), type, false, true,
+                    view ? getTypeElement(type) : null));
+            }
+        }
+        collectFragmentTypes(targets, fragments, nestedViews, relationshipFragments);
+    }
+
+    /**
+     * Generates the Properties class of a view that another view's field holds: a NodeReference at
+     * the alias it is given, with a field for its root, at the same alias, and one for each of its
+     * relationships, at the alias and the relationship's name, as the KSP generator writes it. A
+     * relationship to another view is a method, so building one view's Properties never loops.
+     */
+    private void generateViewPropertiesClass(TypeElement viewClass) {
+        String propertiesClassName = viewClass.getSimpleName().toString() + "Properties";
+        String packageName = getPackageName(viewClass);
+        if (!generatedPropertiesClasses.add(packageName + "." + propertiesClassName)) {
+            return;
+        }
+        ClassName nodeReference = ClassName.get("org.drivine.query.dsl", "NodeReference");
+        TypeSpec.Builder classBuilder = TypeSpec.classBuilder(propertiesClassName)
+            .addModifiers(Modifier.PUBLIC)
+            .addSuperinterface(nodeReference);
+        classBuilder.addField(String.class, "alias", Modifier.PRIVATE, Modifier.FINAL);
+        MethodSpec.Builder constructor = MethodSpec.constructorBuilder()
+            .addModifiers(Modifier.PUBLIC)
+            .addParameter(String.class, "alias")
+            .addStatement("this.alias = alias");
+        for (ViewProperty prop : analyzeGraphViewStructure(viewClass)) {
+            TypeElement typeElement = prop.nestedViewClass != null ? prop.nestedViewClass : getTypeElement(prop.type);
+            if (typeElement == null) continue;
+            ClassName propertiesType = ClassName.get(getPackageName(typeElement),
+                typeElement.getSimpleName().toString() + "Properties");
+            if (prop.nestedViewClass != null) {
+                // A method, not a field: a view that holds itself, or one that holds it back, would
+                // otherwise build its own Properties again in each one's constructor, without end.
+                classBuilder.addMethod(MethodSpec.methodBuilder(prop.name)
+                    .addModifiers(Modifier.PUBLIC)
+                    .returns(propertiesType)
+                    .addStatement("return new $T(alias + $S)", propertiesType, "_" + prop.name)
+                    .build());
+                continue;
+            }
+            classBuilder.addField(FieldSpec.builder(propertiesType, prop.name)
+                .addModifiers(Modifier.PUBLIC, Modifier.FINAL)
+                .build());
+            if (prop.isRoot) {
+                constructor.addStatement("this.$N = new $T(alias)", prop.name, propertiesType);
+            } else {
+                constructor.addStatement("this.$N = new $T(alias + $S)", prop.name, propertiesType, "_" + prop.name);
+            }
+        }
+        classBuilder.addMethod(constructor.build());
+        classBuilder.addMethod(MethodSpec.methodBuilder("getNodeAlias")
+            .addModifiers(Modifier.PUBLIC)
+            .addAnnotation(Override.class)
+            .returns(String.class)
+            .addStatement("return alias")
+            .build());
+        try {
+            JavaFile.builder(packageName, classBuilder.build())
+                .addFileComment("Generated by Drivine4j Java codegen - do not modify")
+                .build()
+                .writeTo(filer);
+            messager.printMessage(Diagnostic.Kind.NOTE, "Generated " + propertiesClassName + " in " + packageName);
+        } catch (IOException e) {
+            messager.printMessage(Diagnostic.Kind.ERROR,
+                "Failed to generate " + propertiesClassName + ": " + e.getMessage());
         }
     }
 
@@ -236,11 +333,16 @@ public class QueryDslGenerator {
         ClassName stringPropertyReference = ClassName.get("org.drivine.query.dsl", "StringPropertyReference");
 
         for (Element member : fragmentClass.getEnclosedElements()) {
-            if (member.getKind() != ElementKind.FIELD) continue;
+            // A static field is the class's, not the node's: the core library stores none.
+            if (member.getKind() != ElementKind.FIELD || member.getModifiers().contains(Modifier.STATIC)) continue;
 
             VariableElement field = (VariableElement) member;
             String fieldName = field.getSimpleName().toString();
             TypeMirror fieldType = field.asType();
+
+            // A relationship fragment's target is the node it leads to, not one of the relationship's properties.
+            if (hasAnnotation(fieldType, "org.drivine.annotation.NodeFragment")
+                || hasAnnotation(fieldType, "org.drivine.annotation.GraphView")) continue;
 
             // @NodeLabels holds the node's labels, not a property: there is nothing to reference.
             if (getAnnotation(field, "org.drivine.annotation.NodeLabels") != null) continue;

@@ -1,6 +1,7 @@
 package org.drivine.test
 
 import org.testcontainers.containers.Neo4jContainer
+import org.testcontainers.utility.DockerImageName
 import java.nio.file.Paths
 
 /**
@@ -22,6 +23,17 @@ import java.nio.file.Paths
  *     }
  * }
  * ```
+ *
+ * ### The image
+ *
+ * `neo4j:latest`, [DEFAULT_IMAGE], so a new Neo4j release reaches the tests that use it at once.
+ * Choose another with `NEO4J_TEST_IMAGE` or `-Dtest.neo4j.image`. APOC Core is installed in any image.
+ * APOC Extended is mounted only into the default image, when its jar is in the local Maven or Gradle
+ * cache, since an APOC Extended release does not load on every Neo4j release.
+ *
+ * Neo4j 5.26.0 to 5.26.3, 2025.01 and 2025.02 write the wrong relationship type for Cypher's dynamic
+ * relationship type, `CREATE (a)-[r:$($type)]->(b)`, once the same statement has run with another
+ * type (neo4j/neo4j#13597). Neo4j fixed it in 2025.03 and 5.26.4.
  *
  * ### Using Local Neo4j Instance
  *
@@ -75,19 +87,33 @@ import java.nio.file.Paths
  * DrivineTestContainer.forDatabase(GraphDatabase.NEO4J) // Default
  * ```
  */
-class DrivineTestContainer private constructor(imageName: String) : Neo4jContainer<DrivineTestContainer>(imageName) {
+class DrivineTestContainer private constructor(
+    imageName: DockerImageName
+) : Neo4jContainer<DrivineTestContainer>(imageName) {
 
     companion object {
         private const val USE_LOCAL_NEO4J_PROPERTY = "test.neo4j.use-local"
         private const val LOCAL_NEO4J_URL_PROPERTY = "test.neo4j.local.url"
         private const val LOCAL_NEO4J_USERNAME_PROPERTY = "test.neo4j.local.username"
         private const val LOCAL_NEO4J_PASSWORD_PROPERTY = "test.neo4j.local.password"
+        private const val IMAGE_PROPERTY = "test.neo4j.image"
 
         // Environment variable alternatives for easier CI/local dev setup
         private const val USE_LOCAL_NEO4J_ENV = "USE_LOCAL_NEO4J"
         private const val LOCAL_NEO4J_URL_ENV = "NEO4J_LOCAL_URL"
         private const val LOCAL_NEO4J_USERNAME_ENV = "NEO4J_LOCAL_USERNAME"
         private const val LOCAL_NEO4J_PASSWORD_ENV = "NEO4J_LOCAL_PASSWORD"
+        private const val IMAGE_ENV = "NEO4J_TEST_IMAGE"
+
+        /**
+         * The image the container runs unless told otherwise. It follows `neo4j:latest`, so a new
+         * Neo4j release shows up in the tests that use the container as soon as it is out.
+         */
+        const val DEFAULT_IMAGE = "neo4j:latest"
+
+        /** The image the container runs: [DEFAULT_IMAGE], or the one `test.neo4j.image` or `NEO4J_TEST_IMAGE` names. */
+        @JvmStatic
+        fun image(): String = System.getProperty(IMAGE_PROPERTY) ?: System.getenv(IMAGE_ENV) ?: DEFAULT_IMAGE
 
         /**
          * Singleton test container instance.
@@ -151,11 +177,12 @@ class DrivineTestContainer private constructor(imageName: String) : Neo4jContain
             }
         }
 
-        private const val NEO4J_VERSION = "5.26.1"
-        private const val APOC_EXTENDED_VERSION = "5.26.0"
+        /** The APOC Extended release mounted into [DEFAULT_IMAGE]: build.gradle's `neo4jPlugins` downloads it. */
+        private const val APOC_EXTENDED_VERSION = "2026.04.0"
 
         private fun createTestContainer(): DrivineTestContainer {
-            val container = DrivineTestContainer("neo4j:$NEO4J_VERSION-community")
+            val image = image()
+            val container = DrivineTestContainer(DockerImageName.parse(image).asCompatibleSubstituteFor("neo4j"))
                 .withNeo4jConfig("dbms.logs.query.enabled", "INFO")
                 .withNeo4jConfig("dbms.logs.query.parameter_logging_enabled", "true")
                 .withAdminPassword("testpassword")
@@ -163,11 +190,16 @@ class DrivineTestContainer private constructor(imageName: String) : Neo4jContain
                 .withEnv("NEO4J_PLUGINS", "[\"apoc\"]")
                 .withNeo4jConfig("dbms.security.procedures.unrestricted", "apoc.*,gds.*")
 
-            // Mount APOC Extended from .m2 if available
-            findPluginJar("org.neo4j.procedure", "apoc-extended", APOC_EXTENDED_VERSION)?.let { jarPath ->
-                container.withFileSystemBind(jarPath, "/plugins/apoc-extended-$APOC_EXTENDED_VERSION.jar")
-                println("Mounted APOC Extended from: $jarPath")
-            } ?: println("APOC Extended not found in .m2 - run './gradlew dependencies' to download")
+            // Mount APOC Extended from .m2 if available, into the default image only: another Neo4j
+            // may not load this release of it.
+            if (image == DEFAULT_IMAGE) {
+                findPluginJar("org.neo4j.procedure", "apoc-extended", APOC_EXTENDED_VERSION)?.let { jarPath ->
+                    container.withFileSystemBind(jarPath, "/plugins/apoc-extended-$APOC_EXTENDED_VERSION.jar")
+                    println("Mounted APOC Extended from: $jarPath")
+                } ?: println("APOC Extended not found in .m2 - run './gradlew dependencies' to download")
+            } else {
+                println("APOC Extended not mounted: $image is not the default image, $DEFAULT_IMAGE")
+            }
 
             container.start()
             return container
@@ -178,7 +210,7 @@ class DrivineTestContainer private constructor(imageName: String) : Neo4jContain
          *
          * @param groupId Maven group ID (e.g., "org.neo4j.procedure")
          * @param artifactId Maven artifact ID (e.g., "apoc-extended")
-         * @param version Version (e.g., "5.26.0")
+         * @param version Version (e.g., "2026.04.0")
          * @return Path to the JAR file, or null if not found
          */
         private fun findPluginJar(groupId: String, artifactId: String, version: String): String? {

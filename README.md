@@ -631,6 +631,8 @@ graphObjectManager.loadAll<LocationHierarchy> {
 }
 ```
 
+**Querying a level below.** The generated DSL reaches each level, built only when it is read, so a where can test the targets of the targets: `where { subLocations.subLocations.location.name eq "France" }`. A where reaches two levels: one three levels down, `subLocations.subLocations.subLocations`, is refused with an `IllegalArgumentException`.
+
 **Chain cycles** (A → B → A) are also supported. When a relationship targets a `@GraphView` that forms a cycle through other types, Drivine tracks visit counts and terminates at `maxDepth`:
 
 ```kotlin
@@ -826,12 +828,23 @@ graphObjectManager.loadNearest<PropositionView>("titleEmbedding", queryEmbedding
 
 Each result is a `Scored<T>(value, score)`; the score is normalized to **similarity, higher = more
 similar** on every engine, so ordering and `threshold` mean the same thing regardless of backend.
+It is in `[0, 1]`: `(1 + cos) / 2` for a cosine index, and `1 / (1 + d²)` for a Euclidean one, where
+`d` is the distance. So a cosine of 0.6 scores 0.8, and `2 * score - 1` gives the cosine back.
+
+> **Changed on FalkorDB and Memgraph.** Before this release FalkorDB gave the cosine itself (-1 to 1)
+> and `1 / (1 + d)`, and Memgraph the absolute value of the cosine, so opposite vectors scored as
+> high as equal ones; Memgraph's Euclidean score was already `1 / (1 + d²)`. Both now give the scores
+> above, as Neo4j, Postgres, Oracle and SQLite do. A cosine score rises from `cos` to `(1 + cos) / 2`,
+> and a FalkorDB Euclidean score falls from `1 / (1 + d)` to `1 / (1 + d²)` where `d` is over 1 (and
+> rises where it is under), so a `threshold` chosen against the old scores keeps more or fewer results
+> than before: convert a cosine threshold `t` to `(1 + t) / 2`.
 
 **`topK` is the index's `k`, not a guaranteed result count.** When searching a **view**, its
 *required* relationships (and the optional `threshold`) are applied **after** the K-nearest search,
 so a candidate that ranks in the top K but fails the filter is dropped — meaning **`loadNearest` can
-return fewer than `topK` results**. A **fragment** search has no relationship filter, so it returns
-the full top K (minus any `threshold` cut).
+return fewer than `topK` results**. The same holds for a root with more than one label: the index is
+on its first label, so a node with that label alone is a candidate, and is dropped. A **fragment**
+with one label has no such filter, so it returns the full top K (minus any `threshold` cut).
 
 **`k` is also the search beam width — this is the surprising part.** On Lucene-backed engines the
 result queue *is* the HNSW candidate queue, so `k` does not merely truncate a ranked list; it decides
@@ -937,6 +950,52 @@ contain fewer rows). Property predicates filter the projected root; relationship
 Multiple `any{}` AND together — "mentions *all* of these entities" is one `any{}` per id. Referencing
 a relationship the view does not project is an error.
 
+#### Nearest Neighbours Within a Set (`loadNearestAmong`)
+
+`loadNearestAmong` answers, for each of a set of ids, "which of the *other ids in this set* are
+nearest to it?" — the batched form of calling `loadNearest` once per id with that node's own
+embedding and keeping only the hits inside the set. It runs as one statement that each store answers
+natively, so it needs no store-specific Cypher:
+
+```kotlin
+val neighbours: Map<String, List<Scored<String>>> =
+    graphObjectManager.loadNearestAmong<PropositionNode>(batchIds, topK = 5, threshold = 0.8)
+
+neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
+```
+
+- **Keys** are the ids whose root node has the embedding, in the order the ids were given. An id with
+  no embedding, or no node, is not a key; an id whose neighbours were all dropped maps to an empty list.
+  An embedding of another size than the index's is measured against none of a different size: on
+  Postgres or Oracle with a vector index made it is not a key, and on Neo4j and FalkorDB the search
+  fails, as their index search refuses a vector of another size.
+- **Values** are up to `topK` *other* ids from the set — never the id itself — most similar first, each
+  with the same normalized score `loadNearest` gives that pair on the same store, so the two agree.
+  Those below `threshold` are dropped.
+- It works on a `@NodeFragment` and on a `@GraphView` (searching the root fragment's embedding), and
+  resolves the embedding from `@VectorIndex` as `loadNearest` does; pass `property` when there are
+  several. A view's relationships play no part: the set is named by id.
+
+**`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
+an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
+made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
+first), and the "among the set", self, root label and `threshold` filters apply to those. An id whose nearest
+mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
+indexed nodes — needs a larger `searchK`. Where the store measures every node instead (SQLite, and
+Postgres or Oracle with no vector index made) only the set is measured, the answer is exact, and
+`searchK` changes nothing; every pair of the set is measured, so the cost grows with the square of
+the number of ids.
+
+| Store | How it is answered |
+|---|---|
+| Neo4j | `UNWIND` the ids, `db.index.vector.queryNodes` from each seed's embedding, rescored exactly with `vector.similarity.*` |
+| FalkorDB | `UNWIND` the ids, `db.idx.vector.queryNodes` from each seed's embedding |
+| Memgraph | `UNWIND` the ids, `vector_search.search` from each seed's embedding |
+| Postgres | one SQL statement: each seed's nearest through the pgvector index, or, with none made, measured against the other seeds |
+| Oracle | one SQL statement: each seed's nearest through the vector index (`CROSS APPLY … FETCH APPROX`), or, with none made, every pair of seeds measured and ranked |
+| SQLite | one SQL statement: every pair of seeds measured and ranked (exact) |
+| Neptune | refused with `UnsupportedOperationException`, as `loadNearest` is |
+
 #### Full-Text Search (`loadMatching`)
 
 `loadMatching` is the full-text mirror of `loadNearest`: it finds the `topK` nodes most relevant to a
@@ -956,8 +1015,10 @@ graphObjectManager.loadMatching<ChunkView>("graph databases", topK = 20)
 
 The index is resolved from a **`@FullTextIndex`** on the searched fragment (property-level for a single
 field, or class-level `@FullTextIndex(properties = ["title", "body"])` for a multi-property index) — the
-same annotation the schema feature uses to *create* it. `threshold` defaults to `0.0` (keep everything);
-`topK` is applied as a trailing `LIMIT`. Each result is a `Scored<T>(value, score)`, most relevant
+same annotation the schema feature uses to *create* it. `threshold` defaults to `0.0` (keep everything).
+`topK` bounds the index call as well as the rows returned: the scores are normalized over the hits
+the index yields, so the index is asked for its best `topK` hits, and an ordinary query that matches
+most of a corpus costs no more than those. Each result is a `Scored<T>(value, score)`, most relevant
 first, with polymorphic dispatch (a `loadMatching<SealedBase>` returns each hit as its concrete subtype).
 
 The query string is passed through to the engine's full-text language (Lucene syntax on Neo4j:
@@ -972,6 +1033,12 @@ graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
+
+The predicate, like a view's required relationships and a root's labels beyond the first (the one
+the index is on), is applied **after** the index yields. Where any of them filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
+and the filter keeps the best `topK` of those, so a filter that passes fewer than one in ten of the
+best hits can return fewer than `topK` rows while the index holds more that pass it. The DEBUG line
+`GraphObjectManager` logs for a short result says how many hits the index was asked for.
 
 > Engine note: full-text search runs on Neo4j (`db.index.fulltext`), FalkorDB (`db.idx.fulltext`, by
 > label), and Memgraph (`text_search`, GA — no experimental flag needed).
@@ -3090,6 +3157,11 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   engine commits each batch as it goes. A list of nodes or relationships (`collect(n)`, `nodes(p)`, `[(a)-->(m) | m]`) is given as
   their properties, and unwound to the nodes themselves, so `FOREACH (n IN nodes(p) | SET …)` writes to them; compared,
   indexed, searched with `IN` or iterated, its items are the nodes themselves too, so two with equal properties differ.
+  `CALL db.labels()` and `CALL db.relationshipTypes()` compile, alone or within a query with `YIELD`, and give each
+  label and type something has now, read from the nodes and relationships; any other procedure is refused. A parameter
+  may be named by a keyword (`$limit`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
+  mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
+  statement fails: JSON holds neither.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
@@ -3330,6 +3402,9 @@ relationships with it.
 - A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle: a read is a query,
   and a write a function made for the statement in `pg_temp`, applied whole or not at all.
 - Temporal values are their ISO 8601 text, as on Oracle.
+- Compiled Cypher works float arithmetic out in exact decimal (`numeric`), not as a double, so a result can
+  differ from a graph engine's in its last digits: `0.1 * 3` is `0.3`, where Neo4j gives `0.30000000000000004`.
+  A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
@@ -3998,6 +4073,8 @@ export USE_LOCAL_NEO4J=true
 - **Local Mode** (`USE_LOCAL_NEO4J=true`): Uses your application-test.yml settings as-is, connects to your local Neo4j
 - **CI Mode** (default): Starts a Neo4j Testcontainer automatically and overrides host/port/password from your properties
 
+The Testcontainer runs `neo4j:latest` (`DrivineTestContainer.DEFAULT_IMAGE`), so a new Neo4j release reaches your tests as soon as it is out. Choose another with `NEO4J_TEST_IMAGE` or `-Dtest.neo4j.image`, but not Neo4j 5.26.0 to 5.26.3, 2025.01 or 2025.02, which write the wrong relationship type for a dynamic relationship type ([neo4j/neo4j#13597](https://github.com/neo4j/neo4j/issues/13597)), fixed in 2025.03 and 5.26.4. See [TEST_CONTAINERS.md](TEST_CONTAINERS.md#neo4j).
+
 **Benefits:**
 - ✅ One configuration works for both local dev and CI
 - ✅ Zero boilerplate - no manual container setup
@@ -4230,6 +4307,12 @@ The Java methods are named differently from their Kotlin counterparts (`isEqualT
 from Kotlin 2.3 two members sharing a name are ambiguous there, so each language gets its own. Renamed in
 0.0.87 — see [0.0.87-java-dsl-names.md](docs/0.0.87-java-dsl-names.md) for the old → new table.
 
+The Java annotation processor, `drivine4j-codegen-java`, gives a view held by another view's field, and a
+`@RelationshipFragment`, a Properties class of its own, as KSP does: `dsl.staff.employer.title()`. Inside a held
+view, a relationship to a further view is a method, not a field, so a view that holds itself, or two that hold
+each other, can be built: `dsl.reports.reports().person.name()`. A relationship fragment's Properties class holds
+the relationship's own properties; its target is not among them.
+
 | Operation | Example |
 |-----------|---------|
 | Equality | `.isEqualTo("value")`, `.isNotEqualTo("value")` |
@@ -4248,9 +4331,9 @@ from Kotlin 2.3 two members sharing a name are ambiguous there, so each language
 
 ### DSL Generation Note
 
-The code generator (KSP) only processes **Kotlin source files**. For the best experience:
-- Define your `@GraphView` classes in Kotlin to get the generated type-safe DSL
-- Your `@NodeFragment` classes can be in Java or Kotlin
+KSP generates the type-safe DSL in a module with Kotlin in it; a Java module gets it from the
+annotation processor, `drivine4j-codegen-java`:
+- Your `@GraphView` and `@NodeFragment` classes can be in Java or Kotlin
 - At runtime, both Java and Kotlin classes work fully with the object manager
 
 ### Recommended Pattern
@@ -4267,8 +4350,10 @@ public class Person {
 }
 ```
 
+A fragment may extend a Java base class that keeps its fields private, `@NodeId private String id;` among them: they are the fragment's state, saved and loaded with its own, and the base's schema annotations, such as `@Unique`, are declared. A field the subclass declares again, `@GraphTransient` or not, hides the base's. A Kotlin base class's private properties are not stored, as Kotlin's reflection leaves them out.
+
 ```kotlin
-// Define GraphViews in Kotlin to get DSL generation
+// A GraphView in Kotlin gets its DSL from KSP; one in Java, from drivine4j-codegen-java
 @GraphView
 data class PersonContext(
     @Root val person: Person,  // References Java class!
@@ -4295,7 +4380,7 @@ List<PersonContext> results = JavaQueryBuilderKt
 | `@GraphView` runtime | ✅ Full | Loading, saving, polymorphism all work |
 | Type-safe DSL | ✅ Full | Use `filterWith()` API from Java |
 | `instanceOf()` | ✅ Full | Filter by `@NodeFragment` subtype |
-| DSL generation | ⚠️ Kotlin only | Define `@GraphView` in Kotlin |
+| DSL generation | ✅ Full | KSP for Kotlin modules, `drivine4j-codegen-java` for Java ones |
 | Generic collections | ✅ Full | Java reflection handles `List<T>`, `Set<T>` |
 | Polymorphic types | ✅ Full | Works with sealed classes or `@JsonSubTypes` |
 

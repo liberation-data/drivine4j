@@ -23,6 +23,8 @@ import java.sql.Connection
  *   [SqliteContainsFunction], [SqliteCanonicalFunction] and [SqliteAddFunction].
  * - [UPPER], [SPLIT], [REVERSE] and [UUID] are Cypher's `toUpper`, `split`, `reverse` and `randomUUID`: see
  *   [SqliteUpperFunction], [SqliteSplitFunction], [SqliteReverseFunction] and [SqliteUuidFunction].
+ * - [MATH] and [ROUND] work out Cypher's functions of numbers, `exp`, `log`, `sin` …, and `round` by a mode, as
+ *   Neo4j does: see [SqliteMathFunction] and [SqliteRoundFunction].
  * - [REGEX_GROUP] and [REGEX_REPLACE] read and replace what a regular expression matches: see
  *   [SqliteRegexGroupFunction] and [SqliteRegexReplaceFunction].
  * - [FLOAT_TEXT] writes a float as Java does, for `toString`, and [SORT_KEY] orders a list as Cypher does: see
@@ -58,6 +60,8 @@ internal object SqliteFunctions {
     const val TEMPORAL = "drivine_temporal"
     const val FLOAT_TEXT = "drivine_float_text"
     const val SORT_KEY = "drivine_sort_key"
+    const val MATH = "drivine_math"
+    const val ROUND = "drivine_round"
 
     /** The name SQLite's `X REGEXP Y` calls, as `regexp(Y, X)`. */
     const val REGEXP = "regexp"
@@ -87,7 +91,9 @@ internal object SqliteFunctions {
         Function.create(connection, TO_CHAR, SqliteToCharFunction(), 2, Function.FLAG_DETERMINISTIC)
         Function.create(connection, FLOAT_TEXT, SqliteFloatTextFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, SORT_KEY, SqliteSortKeyFunction(), 1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, ROUND, SqliteRoundFunction(), 3, Function.FLAG_DETERMINISTIC)
         // Of as many arguments as its operation takes.
         Function.create(connection, TEMPORAL, SqliteTemporalFunction(), -1, Function.FLAG_DETERMINISTIC)
+        Function.create(connection, MATH, SqliteMathFunction(), -1, Function.FLAG_DETERMINISTIC)
     }
 }
