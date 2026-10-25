@@ -403,6 +403,8 @@ abstract class CypherQueryContract {
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         // A node with no name is in no list of names, nor out of one: NOT keeps it no more than the IN does.
         assertEquals(listOf(3L, 1L), query("MATCH (n:CyTest) WHERE NOT (n.name IN ['Keanu']) RETURN count(*) UNION ALL MATCH (n:CyTest) WHERE n.name IN ['Keanu'] AND n.born > 0 OR n.name IN \$x RETURN count(*)", mapOf("x" to emptyList<String>())))
+        // A quantifier keeps an item where its condition is true, so one with no name is in all of no list of names.
+        assertEquals(listOf(1L), query("MATCH (n:CyTest) WHERE all(x IN [1] WHERE n.name IN ['Keanu']) RETURN count(*)"))
         assertEquals(
             listOf(listOf(null, null, null, true, null, false, false, null, false, true, null, null, null, null)),
             query(
@@ -417,6 +419,10 @@ abstract class CypherQueryContract {
                 mapOf("x" to null, "l" to listOf(1, 2), "a" to listOf(1, null), "ls" to listOf(listOf(1, null), listOf(3)), "n" to null),
             ),
         )
+        // Read by a WHERE, a null is in no list that holds one: JSON's null is equal to such an item as JSON.
+        val nulls = mapOf("l" to listOf(null, 2), "m" to mapOf("x" to null))
+        assertEquals(emptyList<Any?>(), query("UNWIND [1] AS i WITH i WHERE null IN \$l OR \$m.x IN \$l RETURN i", nulls))
+        assertEquals(listOf(emptyList<Any?>()), query("RETURN [x IN [1] WHERE null IN \$l OR \$m.x IN \$l]", nulls))
     }
 
     @Test
@@ -453,6 +459,27 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text that holds a null's text, and a value too long for a short text, compare as values that hold no null`() {
+        // Not in the spec yet (#225): Oracle reads whether a value holds a null from its JSON's text.
+        assertEquals(
+            List(6) { listOf(true, true, true) },
+            query("UNWIND ['a,null]', 'x:null}', 'null', 'a\\\",null]', 'é😀\\\",null]', 'a\\\\'] AS s WITH s, [s] AS v, [[s]] AS l, {k: s} AS m, [{k: s}] AS ms RETURN [v IN l, v = [s], m IN ms]"),
+        )
+        // A text that ends in a backslash ends where its quote does.
+        assertEquals(listOf(listOf(true, true)), query("UNWIND ['a\\\\'] AS s WITH s, [s, ',null]'] AS v RETURN [v = [s, ',null]'], v IN [[s, ',null]']]]"))
+        val long = "[x IN range(1, 600) | 'abcdefghij']"
+        assertEquals(listOf(listOf(true, true, false)), query("WITH $long AS v, $long AS w, [$long] AS l RETURN [v = w, v IN l, v <> w]"))
+        // A long value that holds a null is read whole, so the null is found.
+        assertEquals(
+            listOf(listOf(null, null, null, false)),
+            query("WITH $long + [null] AS v, $long + [null] AS w, [$long + [null]] AS l, ['z'] + $long + [null] AS u RETURN [v = w, v IN l, v <> w, v = u]"),
+        )
+        // In the step of a reduce, as in a statement that writes, on Oracle.
+        assertEquals(listOf(listOf("null", false)), query("WITH [1, null] AS a, [2, null] AS c RETURN reduce(acc = [], x IN [a, c] | acc + [coalesce(x = a, 'null')])"))
+        assertEquals(listOf(listOf(true, true)), query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l RETURN reduce(acc = [], x IN [v] | acc + [x = [s], x IN l])"))
+    }
+
+    @Test
     fun `a null node or relationship in a list or a map makes its comparison null`() {
         // Not in the spec yet (#225): a node or a relationship OPTIONAL MATCH finds none of is null in what holds it.
         clear()
@@ -478,6 +505,12 @@ abstract class CypherQueryContract {
         assertEquals(
             listOf(listOf("null", false, true)),
             query("CREATE (n:CyNullEquality) WITH n, [1, null] AS a, [1, null] AS b, [2, null] AS c SET n.same = coalesce(a = b, 'null'), n.other = a = c, n.unequal = a <> c RETURN [n.same, n.other, n.unequal]"),
+        )
+        // Values that hold no null compare as before, a text that holds a null's text and a long value among them.
+        val long = "[x IN range(1, 600) | 'abcdefghij']"
+        assertEquals(
+            listOf(listOf(true, true, true, true)),
+            query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l, $long AS w, [$long] AS ws CREATE (n:CyNullEquality) SET n.eq = v = [s], n.in = v IN l, n.longEq = w = $long, n.longIn = w IN ws RETURN [n.eq, n.in, n.longEq, n.longIn]"),
         )
         if (pm.type == DatabaseType.ORACLE) return
         assertEquals(listOf("null"), query("CREATE (n:CyNullEquality) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))

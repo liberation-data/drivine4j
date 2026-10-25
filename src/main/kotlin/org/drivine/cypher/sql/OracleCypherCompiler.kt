@@ -234,16 +234,20 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun idTokens(ids: String, key: String) = "JSON(REGEXP_REPLACE(JSON_SERIALIZE($ids RETURNING CLOB), '(-?[0-9]+)', ${literal("{\"$key\": \\1}")}))"
 
-    /**
-     * A null as JSON's text writes one in a list or a map: Oracle's JSON path walks no descendants. A text that holds such a
-     * null's text (`"a,null]"`) says so too, and so does a value whose text is past 4,000 bytes, which is read as a
-     * `VARCHAR2` faster than as a `CLOB`: [nullsEqual] compares them exactly.
-     */
     override fun itemAt(json: String, index: Int) = "JSON_QUERY($json, '\$[$index]' RETURNING JSON)"
 
     override fun listSize(json: String) = "JSON_VALUE($json, '\$.size()' RETURNING NUMBER)"
 
-    override fun holdsNull(json: String) = "REGEXP_LIKE(NVL(JSON_SERIALIZE($json RETURNING VARCHAR2(4000) NULL ON ERROR), '[null]'), '[[,:]null[],}]')"
+    /**
+     * A null as JSON's text writes one in a list or a map, its texts and keys taken out first, so a text that holds a null's
+     * text (`"a,null]"`) does not say so: Oracle's JSON path walks no descendants. Read as a `VARCHAR2`, faster than as a
+     * `CLOB`, which a value whose text is past 4,000 bytes is read as instead. It is exact, as a procedure's [nullsEqual] needs.
+     */
+    override fun holdsNull(json: String): String {
+        fun nulls(text: String) = "REGEXP_LIKE(REGEXP_REPLACE($text, '\"([^\"\\\\]|\\\\.)*\"', '\"\"'), '[[,:]null[],}]')"
+        val short = "JSON_SERIALIZE($json RETURNING VARCHAR2(4000) NULL ON ERROR)"
+        return "($short IS NOT NULL AND ${nulls(short)} OR $short IS NULL AND ${nulls("JSON_SERIALIZE($json RETURNING CLOB)")})"
+    }
 
     /**
      * By a function the query declares (see [reduce]), which walks the two together: Oracle's recursive queries take no `JSON`.

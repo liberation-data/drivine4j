@@ -116,9 +116,33 @@ class CompiledSizeTest {
         compilers.forEach { compiler ->
             val sql = compiler.compile("MATCH (c:Claim) WHERE c.a IN \$l AND (c.b IN [1, 2] OR c.c > 1) RETURN c.id", mapOf("l" to listOf(1, 2))).sql
             assertTrue(!sql.contains("ELSE FALSE") && !sql.contains("THEN FALSE"), "${compiler::class.simpleName}: $sql")
+            // Nor of the list being null or holding a null, beside a value that holds none.
+            val nullable = compiler.compile("MATCH (c:Claim) WHERE 'a' IN c.tags AND c.a IN \$l RETURN c.id", mapOf("l" to listOf(1, null))).sql
+            assertTrue(!nullable.contains("ELSE FALSE") && !nullable.contains("THEN FALSE"), "${compiler::class.simpleName}: $nullable")
+            // Nor in a quantified path pattern's WHERE, which keeps a step where it is true.
+            val stepped = compiler.compile("MATCH (a:Claim) ((x)-[:R]->(y) WHERE y.a IN [1, 2]){1,3} (b) RETURN b.id").sql
+            assertTrue(!stepped.contains("ELSE FALSE") && !stepped.contains("THEN FALSE"), "${compiler::class.simpleName}: $stepped")
             val returned = compiler.compile("MATCH (c:Claim) RETURN c.a IN \$l", mapOf("l" to listOf(1, 2))).sql
             assertTrue(returned.contains("THEN FALSE"), "${compiler::class.simpleName}: $returned")
         }
+    }
+
+    @Test
+    fun `an IN of an IN compiles to a statement that grows with each, not exponentially`() {
+        fun nested(times: Int, list: String) = "MATCH (c:Claim) RETURN " + "(".repeat(times) + "c.a" + (1..times).joinToString("") { " IN $list)" }
+        compilers.forEach { compiler ->
+            listOf("[true]", "c.list").forEach { list ->
+                val (two, four) = listOf(2, 4).map { compiler.compile(nested(it, list)).sql.length }
+                assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
+            }
+        }
+    }
+
+    @Test
+    fun `values that may hold a null are walked on Postgres over arrays unnested, which the planner costs low`() {
+        // As the sort key's walk is: a set-returning function's 100 rows, multiplied through the walk, bring in its JIT.
+        val sql = PostgresCypherCompiler("g").compile("MATCH (c:Claim) WITH [c.a] AS l, [c.b] AS m RETURN l = m").sql
+        assertTrue(sql.contains("WITH RECURSIVE") && !sql.contains("FROM jsonb_array_elements(") && !sql.contains("jsonb_each("), sql)
     }
 
     @Test

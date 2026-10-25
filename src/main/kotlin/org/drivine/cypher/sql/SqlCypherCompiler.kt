@@ -282,8 +282,8 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun identityEquals(x: String, y: String) = jsonEquals(x, y)
 
     /**
-     * Whether the JSON value [json], not null, holds a null in a list or a map, at any depth: it may say so of one that holds
-     * none, which [nullsEqual] then compares. Null where the store's [jsonEquals] is already null for a value that holds one,
+     * Whether the JSON value [json], not null, holds a null in a list or a map, at any depth: exactly, as an `IN` takes a
+     * value that holds one to be equal to no item. Null where the store's [jsonEquals] is already null for a value that holds one,
      * as Cypher's comparison is, so no test is needed.
      */
     protected abstract fun holdsNull(json: String): String?
@@ -1057,7 +1057,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     )
                 } + inner.relationships.zip(links).flatMap { (relationship, edge) ->
                     listOfNotNull(types("$edge.type", relationship.types), relationship.properties?.let { propertiesMatch("$edge.props", it, within) })
-                } + listOfNotNull(group.where?.let { bool(expression(it, within)) })
+                } + listOfNotNull(group.where?.let { condition(it, within) })
             } finally {
                 stepping = outer
             }
@@ -2225,7 +2225,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 val name = alias("q")
                 fun quantified(from: String, item: Value): String {
                     val inner = scope + (expression.variable to item)
-                    val condition = expression.where?.let { bool(expression(it, inner)) } ?: "TRUE"
+                    // Each item is kept where the condition is true, as a WHERE keeps a row, so an IN in it is false where it is null.
+                    val condition = expression.where?.let { condition(it, inner) } ?: "TRUE"
                     return when (expression.kind) {
                         Expression.Quantifier.Kind.ANY -> "EXISTS (SELECT 1 $from WHERE $condition)"
                         Expression.Quantifier.Kind.ALL -> "NOT EXISTS (SELECT 1 $from WHERE NOT ($condition))"
@@ -2762,23 +2763,28 @@ abstract class SqlCypherCompiler(graph: String) {
             val whole = id != null || scalar(binary.left, scope) || isFlat(left)
             val given = (binary.right as? Expression.Parameter)?.let { parameterTree(it.name) }
             val filled = (binary.right as? Expression.ListLiteral)?.items?.isNotEmpty() == true || (given != null && given.size() > 0)
-            // Null and false keep no row alike, and a value that holds no null is null beside such a list only where it is null.
-            if ((present(binary.left) || filter) && present(binary.right) && within && whole) {
+            // Null and false keep no row alike, and a value that holds no null is null beside such a list only where it is null:
+            // beside any list, read by a WHERE for its truth alone, it is equal as JSON only to an item Cypher finds equal.
+            if (whole && (filter || (present(binary.left) && present(binary.right) && within))) {
                 val i = alias("i")
-                return "EXISTS (SELECT 1 FROM ${elements(list, i)} WHERE ${matches(item(i), x)})"
+                // But JSON's null is equal as JSON to an item that is, so a value that may be JSON's null (not a property read from
+                // the store, which is SQL's null where it is not there) is in a list that may hold a null only where it is not null.
+                val nullable = !within && id == null && !present(binary.left) && !stored(binary.left, scope) && holdsNull("x") != null
+                if (!nullable) return "EXISTS (SELECT 1 FROM ${elements(list, i)} WHERE ${matches(item(i), x)})"
+                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elements(l, i)} WHERE ${matches(item(i), v)}) AND NOT ${isJsonNull(v)})" }
             }
             // A value that may be null, in a list that is not and holds none: in where an item is equal, null where the value is
             // null, else not, written so the store still answers the first as it did, as a semi-join.
             if (present(binary.right) && within && whole && filled) {
                 val i = alias("i")
-                return "(EXISTS (SELECT 1 FROM ${elements(list, i)} WHERE ${matches(item(i), x)}) OR CASE WHEN NOT ${isNull(left)} THEN FALSE END)"
+                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elements(l, i)} WHERE ${matches(item(i), v)}) OR CASE WHEN NOT ${isJsonNull(v)} THEN FALSE END)" }
             }
             return shared(list, x) { (l, v) ->
                 val (i, j) = alias("i") to alias("i")
                 val cases = mutableListOf<String>()
-                if (!present(binary.right)) cases += "WHEN ${isNull(right)} THEN NULL"
+                if (!present(binary.right)) cases += "WHEN ${isJsonNull(l)} THEN NULL"
                 // Null is compared with each item, and is in no empty list.
-                if (!present(binary.left)) cases += "WHEN ${isNull(left)} THEN " +
+                if (!present(binary.left)) cases += "WHEN ${isJsonNull(v)} THEN " +
                     if (filled) "NULL" else "CASE WHEN EXISTS (SELECT 1 FROM ${elements(l, j)}) THEN NULL ELSE FALSE END"
                 // A value that holds a null is equal to no item.
                 val held = if (whole) null else holdsNull(v)

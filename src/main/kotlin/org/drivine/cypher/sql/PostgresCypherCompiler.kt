@@ -114,12 +114,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * The pairs of [x]'s and [y]'s items, and of their items', at any depth, walked together: a list's by place, a map's by key, where
-     * the two are lists or maps both. A place or a key that one has and the other has not pairs a value with SQL's null.
+     * the two are lists or maps both. A place or a key that one has and the other has not pairs a value with SQL's null. Each
+     * one's items and keys are arrays unnested, as [listKey]'s are, so the planner's estimate brings in no JIT.
      */
     override fun nullsEqual(x: String, y: String, equals: (String, String) -> String): String {
         fun entries(json: String, alias: String) =
-            "SELECT CAST(${alias}e.n AS text) AS k, ${alias}e.v FROM jsonb_array_elements(CASE WHEN jsonb_typeof($json) = 'array' THEN $json END) WITH ORDINALITY ${alias}e (v, n) " +
-                "UNION ALL SELECT ${alias}o.key, ${alias}o.value FROM jsonb_each(CASE WHEN jsonb_typeof($json) = 'object' THEN $json END) ${alias}o"
+            "SELECT CAST(${alias}e.n AS text) AS k, ${alias}e.v FROM unnest(ARRAY(SELECT jsonb_array_elements(CASE WHEN jsonb_typeof($json) = 'array' THEN $json END))) WITH ORDINALITY ${alias}e (v, n) " +
+                "UNION ALL SELECT ${alias}o.key, $json -> ${alias}o.key FROM unnest(ARRAY(SELECT jsonb_object_keys(CASE WHEN jsonb_typeof($json) = 'object' THEN $json END))) ${alias}o (key)"
         val pair = "CASE WHEN eqw.a IS NULL OR eqw.b IS NULL THEN FALSE WHEN jsonb_typeof(eqw.a) = 'null' OR jsonb_typeof(eqw.b) = 'null' THEN NULL " +
             "WHEN jsonb_typeof(eqw.a) <> jsonb_typeof(eqw.b) THEN FALSE WHEN jsonb_typeof(eqw.a) IN ('array', 'object') THEN TRUE ELSE ${equals("eqw.a", "eqw.b")} END"
         return "(WITH RECURSIVE eqw (a, b) AS (SELECT $x, $y UNION ALL " +
