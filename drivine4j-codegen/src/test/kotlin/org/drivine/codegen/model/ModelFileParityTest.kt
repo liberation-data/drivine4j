@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 import org.drivine.codegen.java.GraphViewProcessor as JavaProcessor
 
 /**
@@ -90,18 +91,24 @@ class ModelFileParityTest {
             public abstract class Shape { @NodeId public String id; }
         """,
         "Circle" to """@NodeFragment(labels = {"Circle"}) public final class Circle extends Shape { public double radius; }""",
-        // A superclass's private field is not the subclass's, as the core library reads it.
-        "Base" to "public abstract class Base { @NodeId private String id; protected String shared; }",
+        // A Java superclass's private field is the subclass's state, as the core library reads it.
+        "Base" to "public abstract class Base { @NodeId private String id; protected String shared; private String hidden; }",
         "Probe" to """
             @NodeFragment(labels = {"Probe"})
             @Unique(properties = {"code"})
             @RangeIndex(properties = {"code"})
             public final class Probe extends Base {
                 private String code;
+                @GraphTransient private String hidden;
                 public byte[] bytes;
                 public char[] chars;
                 public java.util.List<? super Integer> lower;
             }
+        """,
+        // A Kotlin superclass's private property is left out: Kotlin's reflection leaves it out.
+        "OverKotlin" to """
+            @NodeFragment(labels = {"OverKotlin"})
+            public final class OverKotlin extends org.drivine.codegen.model.KotlinBase { @NodeId public String id; }
         """,
         "Outer" to """
             public final class Outer {
@@ -171,8 +178,17 @@ class ModelFileParityTest {
 
         val model = ModelJson.read(ksp.readText()) as Map<*, *>
         // Not two empty files alike: the whole domain is in it.
-        assertEquals(listOf(10, 1, 3), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
+        assertEquals(listOf(11, 1, 3), listOf("fragments", "relationshipFragments", "views").map { (model[it] as List<*>).size })
         assertEquals(comparable(model), comparable(ModelJson.read(apt.readText())))
+        // Probe's id is its Java superclass's private field, which a load reads, as both say.
+        val probe = (model["fragments"] as List<*>).map { it as Map<*, *> }.single { it["name"] == "Probe" }
+        assertEquals("id", probe["nodeId"])
+        val names = (probe["properties"] as List<*>).map { (it as Map<*, *>)["name"] }
+        assertTrue("id" in names)
+        // Base's hidden field is hidden by Probe's transient one, so neither is stored.
+        assertTrue("hidden" !in names)
+        val overKotlin = (model["fragments"] as List<*>).map { it as Map<*, *> }.single { it["name"] == "OverKotlin" }
+        assertEquals(listOf("id", "shared"), (overKotlin["properties"] as List<*>).map { (it as Map<*, *>)["name"] }.sortedBy { it as String })
     }
 
     /** [value] without the two keys the processors may rightly differ on. */
@@ -181,4 +197,10 @@ class ModelFileParityTest {
         is List<*> -> value.map { comparable(it) }
         else -> value
     }
+}
+
+/** A Kotlin superclass of a Java fragment, on the classpath as a compiled Kotlin class: [secret] is no stored state. */
+abstract class KotlinBase {
+    @JvmField var shared: String = ""
+    private val secret: String = ""
 }
