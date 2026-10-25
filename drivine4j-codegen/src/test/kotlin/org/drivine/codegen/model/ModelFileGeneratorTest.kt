@@ -304,6 +304,52 @@ class ModelFileGeneratorTest {
     }
 
     @Test
+    fun `a Kotlin fragment takes a Java base's private fields and @NodeId, and not a Kotlin base's private ones`() {
+        val model = generate(
+            SourceFile.java(
+                "JavaBase.java",
+                """
+                package kx;
+
+                import org.drivine.annotation.*;
+
+                public abstract class JavaBase {
+                    @NodeId private String id;
+                    private String createdOn;
+                    @GraphTransient private String cache;
+                    private static final String KIND = "base";
+                    public String getId() { return id; }
+                }
+                """.trimIndent(),
+            ),
+            SourceFile.kotlin(
+                "Over.kt",
+                """
+                package kx
+
+                import org.drivine.annotation.*
+
+                @NodeFragment(labels = ["OverJava"])
+                class OverJava : JavaBase() { var title: String = "" }
+
+                abstract class KotlinBase { @NodeId val key: String = ""; private val secret: String = "" }
+
+                @NodeFragment(labels = ["OverKotlin"])
+                class OverKotlin : KotlinBase() { var title: String = "" }
+                """.trimIndent(),
+            ),
+        )
+
+        val overJava = fragment(model, "kx.OverJava")
+        assertEquals("id", overJava["nodeId"].asText())
+        assertEquals(setOf("createdOn", "id", "title"), overJava["properties"].map { it["name"].asText() }.toSet())
+        // Kotlin's reflection leaves a Kotlin superclass's private property out, and so does the file.
+        val overKotlin = fragment(model, "kx.OverKotlin")
+        assertEquals("key", overKotlin["nodeId"].asText())
+        assertEquals(setOf("key", "title"), overKotlin["properties"].map { it["name"].asText() }.toSet())
+    }
+
+    @Test
     fun `a Java domain says where it cannot tell null`() {
         val model = generate(javaNullable, javaTicket, javaView)
         assertEquals("java", model["generator"]["language"].asText())

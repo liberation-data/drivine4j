@@ -4342,6 +4342,8 @@ public class Person {
 }
 ```
 
+A fragment may extend a Java base class that keeps its fields private, `@NodeId private String id;` among them: they are the fragment's state, saved and loaded with its own, and the base's schema annotations, such as `@Unique`, are declared. A field the subclass declares again, `@GraphTransient` or not, hides the base's. A Kotlin base class's private properties are not stored, as Kotlin's reflection leaves them out.
+
 ```kotlin
 // Define GraphViews in Kotlin to get DSL generation
 @GraphView
