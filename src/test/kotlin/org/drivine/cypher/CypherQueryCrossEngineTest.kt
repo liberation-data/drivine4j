@@ -397,7 +397,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `min() and max() of lists the statement makes compare them item by item, whatever their lengths`() {
-        // Not in the spec yet beyond one step: a nested list, DISTINCT and a grouping WITH (#220).
+        // Not in the spec yet: a nested list (#220). The spec holds DISTINCT and the grouping WITH from v0.6.3.
         assertEquals(listOf(listOf(listOf(listOf(1L), listOf(2L)), listOf(listOf(3L)))), query("UNWIND [[[1, 2]], [[3]], [[1], [2]]] AS xs RETURN [min(xs), max(xs)]"))
         assertEquals(listOf(listOf(listOf(1L, 5L), listOf(10L))), query("UNWIND [[2], [1, 5], [1, 5], [10]] AS xs RETURN [min(DISTINCT xs), max(DISTINCT xs)]"))
         assertEquals(
