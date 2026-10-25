@@ -486,7 +486,7 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
 
-    /** A text that is no number, read as one: Oracle fails with ORA-01722, which names no text. */
+    /** A text that is no number, read as one: Oracle fails with ORA-01722, whose ORA-03302 detail gives the text. */
     override fun failure(message: String, value: String) = "TO_NUMBER(${literal("$message ")} || TO_CHAR($value))"
 
     override fun raise(message: String) = "RAISE_APPLICATION_ERROR(-20000, ${literal(message)});"
