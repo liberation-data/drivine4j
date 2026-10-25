@@ -122,12 +122,15 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun extreme(value: String, min: Boolean, key: String?) =
         "(array_agg($value ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"}, ${key ?: value} ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
 
-    override fun add(a: String, b: String) =
+    override fun add(a: String, b: String, given: Pair<Any?, Any?>) =
         "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN to_jsonb(${number(a)} + ${number(b)}) " +
             "WHEN jsonb_typeof($a) = 'array' AND jsonb_typeof($b) = 'array' THEN $a || $b " +
             "WHEN jsonb_typeof($a) = 'array' THEN $a || jsonb_build_array($b) " +
             "WHEN jsonb_typeof($b) = 'array' THEN jsonb_build_array($a) || $b " +
-            "WHEN jsonb_typeof($a) IN ('string', 'number') AND jsonb_typeof($b) IN ('string', 'number') THEN to_jsonb(${asText(a)} || ${asText(b)}) END"
+            "WHEN jsonb_typeof($a) IN ('string', 'number') AND jsonb_typeof($b) IN ('string', 'number') THEN to_jsonb(${summedText(a, given)} || ${summedText(b, given.second to given.first)}) END"
+
+    /** The side [json] of a `+` whose sides the statement gives as [given], this side first, as text: see [summedText]. */
+    private fun summedText(json: String, given: Pair<Any?, Any?>) = summedText(json, given.first, given.second, { "($it #>> '{}')" }, ::asText)
 
     /**
      * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float, a `numeric` with a fraction, without

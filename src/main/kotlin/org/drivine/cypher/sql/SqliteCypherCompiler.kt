@@ -141,7 +141,7 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "CASE WHEN $x IS NOT NULL THEN (SELECT json_group_array(CASE WHEN t.type = 'null' THEN json('null') ELSE json_object(${literal(key)}, t.value) END ORDER BY t.key) FROM json_each($x) t) END"
     }
 
-    override fun add(a: String, b: String) = "${SqliteFunctions.ADD}($a, $b)"
+    override fun add(a: String, b: String, given: Pair<Any?, Any?>) = "${SqliteFunctions.ADD}($a, $b)"
 
     /** `%` of two whole numbers, and of any other two `mod`, which keeps the fraction: SQLite's `%` takes whole numbers alone. */
     override fun modulo(a: String, b: String) = shared(a, b) { (x, y) -> "CASE WHEN typeof($x) = 'integer' AND typeof($y) = 'integer' THEN $x % $y ELSE mod($x, $y) END" }

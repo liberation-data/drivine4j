@@ -343,8 +343,28 @@ abstract class SqlCypherCompiler(graph: String) {
     /** Where the kind of the JSON [json], an item of a list, comes among the others as Cypher orders them: as [kindOrder], null last. */
     protected fun itemRank(json: String): String = "COALESCE(${kindOrder(json)}, 6)"
 
-    /** `a + b` of the JSON values [a] and [b]: numbers added, lists joined, texts put together. */
-    protected abstract fun add(a: String, b: String): String
+    /**
+     * `a + b` of the JSON values [a] and [b]: numbers added, lists joined, texts put together. [given] is what the statement
+     * gives each as, where it does: see [summedText].
+     */
+    protected abstract fun add(a: String, b: String, given: Pair<Any?, Any?> = null to null): String
+
+    /**
+     * The text the JSON [json], a side of a `+` that may put a number and a text together, is written as there: by [written],
+     * as `toString` writes it, a float as Java writes a double. Where the statement gives it a number, [given], it is that
+     * number's text, worked out here; and where it gives the other side, [other], a number, or this side a text, it is its own
+     * text, [plain], for a side is put together with a number only where it is a text. So only a side the statement gives
+     * neither way is written as `toString` writes it, which is long: `c.name + 1` compiles as it did before floats were so written.
+     * NaN and the infinities count as given neither way: Postgres binds them as texts, so a number may be added to one as text.
+     */
+    protected fun summedText(json: String, given: Any?, other: Any?, plain: (String) -> String, written: (String) -> String): String = when {
+        isGivenNumber(given) -> literal(given.toString())
+        given is String || isGivenNumber(other) -> plain(json)
+        else -> written(json)
+    }
+
+    /** Whether [value], given by the statement, is a number JSON holds as one: NaN and the infinities it holds as none. */
+    private fun isGivenNumber(value: Any?) = value is Long || value is Int || (value is Double && value.isFinite())
 
     /** `a op b` of the JSON numbers [a] and [b], as JSON: [operator] is `+`, `-`, `*` or `/`. */
     protected open fun arithmetic(a: String, b: String, operator: String): String = scalar("(${number(a)} $operator ${number(b)})")
@@ -2414,7 +2434,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 } else {
                     // Two lists of items of one kind are, together, a list of that kind.
                     Value.Json(
-                        shared(a, b) { (x, y) -> add(x, y) }, items = itemsOf(left)?.takeIf { it == itemsOf(right) },
+                        shared(a, b) { (x, y) -> add(x, y, given(binary.left) to given(binary.right)) }, items = itemsOf(left)?.takeIf { it == itemsOf(right) },
                         list = isList(left) || isList(right), itemLists = holdsLists(left) && (holdsLists(right) || !isList(right)),
                     )
                 }

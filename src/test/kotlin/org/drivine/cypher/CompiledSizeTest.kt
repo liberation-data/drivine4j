@@ -77,6 +77,22 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `a sum writes a side as toString writes a float only where the statement gives neither side`() {
+        // A number the statement gives is written out at compile time, and a side added to one is a text where the sum is one.
+        val written = mapOf("PostgresCypherCompiler" to "to_char(", "OracleCypherCompiler" to "TO_CHAR(")
+        compilers.filter { it::class.simpleName in written }.forEach { compiler ->
+            fun writes(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+                compiler.compile(cypher, parameters).sql.split(written.getValue(compiler::class.simpleName!!)).size - 1
+            val once = writes("MATCH (c:Claim) RETURN c.a + c.b") / 2
+            assertTrue(once > 0, "${compiler::class.simpleName}")
+            assertEquals(0, writes("MATCH (c:Claim) RETURN c.a + 1, 2.5 + c.b, c.a + \$n", mapOf("n" to 1.5)), "${compiler::class.simpleName}")
+            assertEquals(once, writes("MATCH (c:Claim) RETURN 'x' + c.b"), "${compiler::class.simpleName}")
+            // NaN and the infinities are bound as texts on Postgres, so both sides of a sum with one are written as toString writes them.
+            assertEquals(2 * once, writes("MATCH (c:Claim) RETURN c.a + \$n", mapOf("n" to Double.NaN)), "${compiler::class.simpleName}")
+        }
+    }
+
+    @Test
     fun `a sort by a property on Postgres is by its JSON alone, and only a list the statement makes is keyed as a list`() {
         // Keyed as a list, a term costs thousands a row in the planner's estimate, which brings in its JIT for the whole
         // statement past a few dozen rows.

@@ -180,12 +180,15 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "THEN JSON_SCALAR(TO_BINARY_DOUBLE(${number(a)}) $operator TO_BINARY_DOUBLE(${number(b)})) " +
             "ELSE JSON_SCALAR(${number(a)} $operator ${number(b)}) END"
 
-    override fun add(a: String, b: String) =
+    override fun add(a: String, b: String, given: Pair<Any?, Any?>) =
         "CASE WHEN ${typeOf(a)} = 'number' AND ${typeOf(b)} = 'number' THEN ${arithmetic(a, b, "+")} " +
             "WHEN ${kind(a)} = 'array' AND ${kind(b)} = 'array' THEN JSON_QUERY(JSON_ARRAY($a, $b RETURNING JSON), '\$[*][*]' RETURNING JSON WITH ARRAY WRAPPER) " +
             "WHEN ${kind(a)} = 'array' THEN JSON_TRANSFORM($a, APPEND '\$' = $b) " +
             "WHEN ${kind(b)} = 'array' THEN JSON_TRANSFORM($b, INSERT '\$[0]' = $a) " +
-            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN JSON_SCALAR(${asText(a)} || ${asText(b)}) END"
+            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN JSON_SCALAR(${summedText(a, given)} || ${summedText(b, given.second to given.first)}) END"
+
+    /** The side [json] of a `+` whose sides the statement gives as [given], this side first, as text: see [summedText]. */
+    private fun summedText(json: String, given: Pair<Any?, Any?>) = summedText(json, given.first, given.second, { "JSON_VALUE($it, '\$')" }, ::asText)
 
     /**
      * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float (a double, or a number with a
