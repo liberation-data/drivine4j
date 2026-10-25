@@ -12,13 +12,13 @@ By default, tests start a Testcontainer for whichever backend(s) the suite targe
 
 A test names an engine's image by its moving tag, such as `neo4j:latest` or `falkordb/falkordb:latest`, and Drivine's suite runs it as the image `gradle/test-images.txt` pins for it. The build hands each pin to the tests, and the Testcontainers image substitutor `PinnedImages` swaps it in. A pull request's run takes the pins, so when it fails, the change broke something and not an engine's new release.
 
-The workflow `nightly-latest.yml` runs CI's jobs each night with no pins, so each moving tag pulls the engine's latest release. Each job's first step pulls its images and says which release each one is, with its digest, the version tags Docker Hub gives that digest, and when it was built; the job's summary shows the same table. A scheduled run that fails opens an issue titled "The nightly run on the latest engine images fails", unless one with that title is open. To run it by hand, start the workflow from the Actions tab. To run unpinned locally, pass `-Ptest.images.unpinned=true` or set `TEST_IMAGES_UNPINNED=true`:
+The workflow `nightly-latest.yml` runs CI's jobs each night with no pins, so each moving tag pulls the engine's latest release. Before it builds, each job pulls its images and says which release each one is, with its digest, the version tags Docker Hub gives that digest, and when it was built; the job's summary shows the same table. A scheduled run that fails opens an issue titled "The nightly run on the latest engine images fails", unless one with that title is open. To run it by hand, start the workflow from the Actions tab. To run unpinned locally, pass `-Ptest.images.unpinned=true` or set `TEST_IMAGES_UNPINNED=true`:
 
 ```bash
 ./gradlew test -Ptest.images.unpinned=true
 ```
 
-When the nightly run fails, open the failed job and read which release its first step names. Fix Drivine for that release, or file the engine's bug upstream and work around it. Then move the image's line in `gradle/test-images.txt` to the release, so the pull requests run it too, and close the issue. The Postgres and Oracle images, `pgvector/pgvector:pg17` and `gvenzl/oracle-free:23-faststart`, have no pin, so pull requests and the nightly run take the same image.
+When the nightly run fails, open the failed job and read which release the step that pulls its images names. Fix Drivine for that release, or file the engine's bug upstream and work around it. Then move the image's line in `gradle/test-images.txt` to the release, so the pull requests run it too, and close the issue. The Postgres and Oracle images, `pgvector/pgvector:pg17` and `gvenzl/oracle-free:23-faststart`, have no pin, so pull requests and the nightly run take the same image.
 
 ## Neo4j
 

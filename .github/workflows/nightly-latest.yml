@@ -1,7 +1,7 @@
 # The jobs of ci.yml, run each night on the images the tests name and not on the pins in
 # gradle/test-images.txt: neo4j:latest is the latest Neo4j, and so on. A pull request's run keeps the
-# pins, so it fails only for its own change; this run is where an engine's new release shows up. Each
-# job says first which release each image is. See TEST_CONTAINERS.md, "Pinned images and the nightly run".
+# pins, so it fails only for its own change; this run is where an engine's new release shows up. Before
+# it builds, each test job says which release each image is. See TEST_CONTAINERS.md, "Pinned images and the nightly run".
 #
 # Keep the jobs in step with ci.yml. They leave out its test report, coverage and model file check,
 # which say nothing of an engine's release.
@@ -482,5 +482,5 @@ jobs:
           if [ -n "$open" ]; then
             echo "#$open is open for it."
           else
-            gh issue create --title "$TITLE" --body "$RUN failed. Each job's first step names the release of each image it ran. Fix Drivine for the new release, move its pin in gradle/test-images.txt, and close this issue: the next failure opens another. See TEST_CONTAINERS.md, \"Pinned images and the nightly run\"."
+            gh issue create --title "$TITLE" --body "$RUN failed. In each job, the step that pulls the images names the release of each one. Fix Drivine for the new release, move its pin in gradle/test-images.txt, and close this issue: the next failure opens another. See TEST_CONTAINERS.md, \"Pinned images and the nightly run\"."
           fi
