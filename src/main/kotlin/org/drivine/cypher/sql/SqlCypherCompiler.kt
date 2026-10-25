@@ -2788,6 +2788,8 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * Refuses a precision for `round()` that is below 0 as a whole number toward zero, as Neo4j refuses it,
          * where it is written, negated or not, or a parameter's value: -0.5 is 0 places, and -1.2 is refused.
+         * One read from data is not known here, and SQL has no way to fail on it, so it rounds to tens or hundreds
+         * where Neo4j fails.
          */
         private fun refuseNegativePrecision(precision: Expression) {
             val negated = precision is Expression.Unary && precision.operator == Expression.Unary.Operator.NEGATE
