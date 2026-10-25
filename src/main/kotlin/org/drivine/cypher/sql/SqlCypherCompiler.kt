@@ -2693,7 +2693,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     val value = json(one())
                     val key = value.temporal?.takeIf { it.zoned }?.let { temporals.moment(text(comparable(value)), it) }
                         ?: if (extremesByListKey && isList(one())) listSortKey(comparable(value)) else null
-                    Value.Json(extreme(comparable(value), min = name == "min", key = key), temporal = value.temporal)
+                    Value.Json(extreme(comparable(value), min = name == "min", key = key), temporal = value.temporal, text = isText(value))
                 }
                 "range" -> {
                     if (arguments.size !in 2..3) throw DrivineException("range() takes a start, an end and a step.")

@@ -111,6 +111,28 @@ class CompiledSizeTest {
             assertEquals(once, writes("MATCH (c:Claim) RETURN c.s + 'b'"), name)
             assertEquals(once, writes("MATCH (c:Claim) RETURN toUpper(c.s) + c.f"), name)
             assertEquals(2 * once, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i) + c.f"), name)
+            // A CASE, a coalesce and a list written are a text, or hold texts, where each of theirs is; a text unwound is one.
+            assertEquals(0, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN toUpper(c.s) ELSE 'n' END + coalesce(toLower(c.s), 'z') + ['a', toUpper(c.s)][1]"), name)
+            assertEquals(0, writes("MATCH (c:Claim) RETURN ltrim(c.s) + rtrim(c.s) + right(c.s, 2)"), name)
+            assertEquals(0, writes("MATCH (c:Claim) UNWIND toUpper(c.s) AS u RETURN u + 'x'"), name)
+            // A list of texts kept distinct, sliced, its tail, its last, and an item an expression names, still holds texts.
+            assertEquals(0, writes("MATCH (c:Claim) WITH collect(DISTINCT toUpper(c.s)) AS ts RETURN last(ts) + ts[1..][0] + tail(ts)[0] + ts[size(ts) - 1]"), name)
+            assertEquals(0, writes("MATCH (c:Claim) WITH collect(toUpper(c.s)) AS ts RETURN reverse(ts)[0] + coalesce(ts, split('a,b', ','))[0]"), name)
+            // Joined to texts, too: the join writes its sides as any `+` does, and its item, added to a text, is written as it is.
+            val joined = "MATCH (c:Claim) WITH collect(toUpper(c.s)) AS ts, collect(c.f) AS fs RETURN (ts + ['a'])[0], ('b' + ts)[0], (ts + fs)[0]"
+            assertEquals(writes(joined), writes(joined.replace("[0],", "[0] + 'x',")), name)
+            assertEquals(writes(joined) + once, writes("$joined + 'x'"), name)
+            // Each query of a CALL's UNION makes it a text, and a write carries it on.
+            assertEquals(0, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN 'n' AS v } RETURN v + 'x'"), name)
+            assertEquals(0, writes("MATCH (c:Claim) WITH c, toUpper(c.s) AS t SET c.t = t RETURN t + 'x'"), name)
+            // Where any one of them may be a float, it is written as toString writes it.
+            assertEquals(once, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN 'a' ELSE c.f END + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN coalesce(toUpper(c.s), c.f) + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN ['a', c.f][1] + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN c.f AS v } RETURN v + 'x'"), name)
+            // The least and the greatest of texts are a text; of a property, which may hold a float, not.
+            assertEquals(0, writes("MATCH (c:Claim) WITH min(toUpper(c.s)) AS lo, max(toLower(c.s)) AS hi RETURN lo + hi + 'x'"), name)
+            assertEquals(once, writes("MATCH (c:Claim) WITH max(c.f) AS hi RETURN hi + 'x'"), name)
         }
     }
 
