@@ -236,9 +236,9 @@ interface GraphObjectOperations {
      *
      * **Result count semantics:** on a store that searches through an approximate index (Neo4j,
      * FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been made), the index is asked
-     * for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion and the
-     * [threshold] then apply to those, so **fewer than [topK] may come back** for an id whose nearest
-     * mostly lie outside the set. A selective set — few ids among many indexed nodes — needs a larger
+     * for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion, the root's
+     * labels beyond the first (the one the index is on) and the [threshold] then apply to those, so
+     * **fewer than [topK] may come back** for an id whose nearest mostly lie outside the set. A selective set — few ids among many indexed nodes — needs a larger
      * [searchK], exactly as a filtered [loadNearest] does. Where the store measures every node instead
      * (SQLite, and Postgres or Oracle with no vector index made) only the set is measured, the answer
      * is exact, and [searchK] changes nothing; it measures every pair of the set, so its cost grows
