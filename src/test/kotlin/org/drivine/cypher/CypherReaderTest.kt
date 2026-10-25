@@ -124,8 +124,8 @@ class CypherReaderTest {
         assertEquals(Expression.Literal("it's \"quoted\"\n"), returned("""RETURN 'it\'s "quoted"\n'"""))
         assertEquals(Expression.Property(Expression.Variable("my var"), "odd`key"), returned("RETURN `my var`.`odd``key`"))
         assertEquals(Expression.Parameter("1"), returned("RETURN $1"))
-        // Strict openCypher: a parameter is not named with a reserved word.
-        assertThrows<DrivineException> { CypherReader.read("RETURN \$skip") }
+        // As in Neo4j, and not strict openCypher: a parameter may be named with a reserved word.
+        assertEquals(Expression.Parameter("skip"), returned("RETURN \$skip"))
         assertEquals(Expression.Literal(255L), returned("RETURN 0xff"))
         assertEquals(Expression.Literal(1.5e3), returned("RETURN 1.5e3"))
         // The least whole number is its digits negated, which alone are past the greatest.
@@ -241,10 +241,41 @@ class CypherReaderTest {
     }
 
     @Test
+    fun `a parameter is named by any word, a keyword among them, in a page, a condition, a map, an unwind and a set`() {
+        listOf("limit", "skip", "order", "match", "count", "end", "call", "yield", "Return", "null", "foreach").forEach { word ->
+            val parameter = Expression.Parameter(word)
+            assertEquals(parameter, returned("RETURN \$$word"))
+            val (match, unwind, ret) = CypherReader.read("MATCH (n {k: \$$word}) WHERE n.x = \$$word UNWIND \$$word AS i RETURN i SKIP \$$word LIMIT \$$word").clauses
+            assertEquals(parameter, ((match as Clause.Match).patterns.single().nodes.single().properties as Expression.MapLiteral).entries.single().second)
+            assertEquals(parameter, ((match.where as Expression.Binary).right))
+            assertEquals(parameter, (unwind as Clause.Unwind).list)
+            assertEquals(listOf(parameter, parameter), (ret as Clause.Return).projection.let { listOf(it.skip, it.limit) })
+            val set = CypherReader.read("MATCH (n) SET n.x = \$$word, n += \$$word").clauses.last() as Clause.Set
+            assertEquals(listOf(SetItem.Property("n", "x", parameter), SetItem.Add("n", parameter)), set.items)
+        }
+    }
+
+    @Test
+    fun `a call of db labels or db relationshipTypes reads as the query that gives its rows`() {
+        val labels = CypherReader.read("CALL db.labels()")
+        assertEquals(Expression.Function("labels", false, listOf(Expression.Variable("#procedure"))), (labels.clauses[1] as Clause.Unwind).list)
+        val projection = (labels.clauses.last() as Clause.Return).projection
+        assertTrue(projection.distinct)
+        assertEquals(listOf("label"), projection.items.map { it.name })
+        // Within a query, a CALL { … } of its own, its WHERE a WITH's in it, and what it yields named as the YIELD names it.
+        val call = CypherReader.read("MATCH (m) CALL db.relationshipTypes() YIELD relationshipType AS t WHERE t <> m.x RETURN t").clauses[1] as Clause.Call
+        val (_, with, ret) = call.query.clauses
+        assertEquals(Expression.Function("type", false, listOf(Expression.Variable("#procedure"))), (with as Clause.With).projection.items.single().expression)
+        assertEquals(listOf("t"), with.projection.items.map { it.name })
+        assertEquals(Expression.Variable("t"), ((with.where as Expression.Binary).left))
+        assertEquals(listOf("t"), (ret as Clause.Return).projection.items.map { it.name })
+    }
+
+    @Test
     fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
         assertEquals(
             "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.",
-            assertThrows<DrivineException> { CypherReader.read("CALL db.labels()") }.message,
+            assertThrows<DrivineException> { CypherReader.read("CALL db.indexes()") }.message,
         )
         val syntax = assertThrows<DrivineException> { CypherReader.read("MATCH (n RETURN n") }.message!!
         assertTrue(syntax.startsWith("The statement is not Cypher, at line 1, column "), syntax)

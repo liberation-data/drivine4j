@@ -381,6 +381,31 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** Oracle's GUID, in a UUID's form: unique, though not random as a version 4 UUID is. */
     override fun uuid() = "LOWER(REGEXP_REPLACE(RAWTOHEX(SYS_GUID()), '(.{8})(.{4})(.{4})(.{4})(.{12})', '\\1-\\2-\\3-\\4-\\5'))"
 
+    /**
+     * Worked out as a `NUMBER`, then made the nearest double: Oracle fails where Neo4j gives NaN or an infinity, `LN(0)`,
+     * `SQRT(-1)`, `ASIN(2)` and `1 / TAN(0)` among them, and where a `NUMBER` overflows, past 1e126, as `EXP(300)` does.
+     * One too small for a `NUMBER`, below 1e-130, is 0, as `EXP(-1000)` is in Java, and `EXP(-300)` is not.
+     * A `BINARY_DOUBLE` would give NaN or an infinity, which JSON holds neither of.
+     */
+    override fun math(name: String, numbers: List<String>): String {
+        val x = numbers[0]
+        return float(
+            when (name) {
+                "log" -> "LN($x)"
+                "log10" -> "LOG(10, $x)"
+                "cot" -> "(1 / TAN($x))"
+                // In doubles from the one nearest the cosine, as Java works it out: near 0, that loses digits a NUMBER keeps.
+                "haversin" -> "((1 - TO_BINARY_DOUBLE(COS($x))) / 2)"
+                // In doubles, by the ratio Java multiplies by: see [RADIANS_TO_DEGREES].
+                "degrees" -> "(TO_BINARY_DOUBLE($x) * $RADIANS_TO_DEGREES)"
+                "radians" -> "(TO_BINARY_DOUBLE($x) * $DEGREES_TO_RADIANS)"
+                // Oracle overflows at ATAN2(0, 0), which Java gives as 0.0: a NUMBER has no negative zero to give π for.
+                "atan2" -> shared(x, numbers[1]) { (y, z) -> "CASE WHEN $y = 0 AND $z = 0 THEN 0 ELSE ATAN2($y, $z) END" }
+                else -> "${name.uppercase()}($x)"
+            }
+        )
+    }
+
     /** SUBSTR from the end gives null where it is asked for more than there is. */
     override fun rightText(text: String, count: String) =
         shared(text, count) { (t, n) -> "CASE WHEN $n >= LENGTH($t) THEN $t WHEN $n > 0 THEN SUBSTR($t, -$n) END" }
