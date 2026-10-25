@@ -386,13 +386,9 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(null, null, null, null)), query("RETURN [round(null, 2), round(2.5, null), round(null, 2, 'UP'), round(2.5, null, 'UP')]"))
         // Oracle overflows on a precision past its NUMBER range.
         if (pm.type != DatabaseType.ORACLE) assertEquals(listOf(listOf(2.5, 2.5, 2.5)), query("RETURN [round(2.5, 400), round(2.5, 400, 'HALF_UP'), round(2.5, 400, 'CEILING')]"))
-        // A negative precision from data fails on Neo4j, at run time; SQL has no way to fail there, so it rounds to tens or hundreds.
-        val negative = "MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')"
-        if (!compiles) {
-            assertThrows<Exception> { query(negative) }
-            return
-        }
-        assertEquals(listOf(1200.0), query(negative))
+        // A negative precision from data fails when the row is read, on every store, in both forms.
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')") }
+        assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r)") }
     }
 
     @Test

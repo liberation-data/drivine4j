@@ -32,6 +32,7 @@ import java.sql.Connection
  * - [TRUNC], [TO_CHAR] and [TEMPORAL] work out temporal values: see [SqliteTruncFunction], [SqliteToCharFunction]
  *   and [SqliteTemporalFunction].
  * - [CYPHER] carries out the procedure a statement that writes compiles to: see [SqliteCypherFunction].
+ * - [FAIL] fails the statement with its text, where Neo4j fails on a value it reads: see [SqliteFailFunction].
  *
  * A function that reads only its arguments is registered as deterministic, so SQLite may index an
  * expression over it.
@@ -62,6 +63,7 @@ internal object SqliteFunctions {
     const val SORT_KEY = "drivine_sort_key"
     const val MATH = "drivine_math"
     const val ROUND = "drivine_round"
+    const val FAIL = "drivine_fail"
 
     /** The name SQLite's `X REGEXP Y` calls, as `regexp(Y, X)`. */
     const val REGEXP = "regexp"
@@ -92,6 +94,8 @@ internal object SqliteFunctions {
         Function.create(connection, FLOAT_TEXT, SqliteFloatTextFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, SORT_KEY, SqliteSortKeyFunction(), 1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, ROUND, SqliteRoundFunction(), 3, Function.FLAG_DETERMINISTIC)
+        // Not deterministic: SQLite must not work it out before a row that needs it.
+        Function.create(connection, FAIL, SqliteFailFunction(), 1, 0)
         // Of as many arguments as its operation takes.
         Function.create(connection, TEMPORAL, SqliteTemporalFunction(), -1, Function.FLAG_DETERMINISTIC)
         Function.create(connection, MATH, SqliteMathFunction(), -1, Function.FLAG_DETERMINISTIC)
