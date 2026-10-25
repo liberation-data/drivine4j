@@ -23,6 +23,12 @@ class Parameters(
     private val inObject: Boolean = false,
     /** The JSON text a value is bound as: the store's, see [SqlCypherCompiler.parameterText]. */
     private val text: (Any?) -> String,
+    /**
+     * The value at a path of keys in a parameter that is a map, read straight from the text it is bound as: given the
+     * marker and the text as [asJson] is given them, the keys, and the value at them as the caller gave it; null where
+     * the store reads the parameter, then each key of it.
+     */
+    private val asPath: ((String, String?, List<String>, Any?) -> String)? = null,
 ) {
     private val bound = linkedMapOf<String, Any?>()
 
@@ -38,6 +44,23 @@ class Parameters(
         val written = given(name)?.let(text)
         bound[key] = written
         return asJson("\$$key", written)
+    }
+
+    /**
+     * The value at [keys] in the parameter [name], as JSON, where the store reads it from the text the parameter is
+     * bound as (see [asPath]) and the parameter is a map that holds a map at each key but the last; null otherwise.
+     */
+    fun json(name: String, keys: List<String>): String? {
+        val read = asPath ?: return null
+        var map = given(name)
+        for (key in keys.dropLast(1)) map = (map as? Map<*, *>)?.get(key)
+        if (map !is Map<*, *>) return null
+        val value = map[keys.last()]
+        if (inObject) return read(name, null, keys, value)
+        val key = "_cy_$name"
+        val written = text(given(name))
+        bound[key] = written
+        return read("\$$key", written, keys, value)
     }
 
     /** The parameter [name], as a whole number. */

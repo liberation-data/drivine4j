@@ -129,6 +129,25 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         if (json == PARAMS && key in extendedParameters) "JSON(JSON_QUERY($PARAMS, ${OracleSql.path(key)} RETURNING CLOB) EXTENDED)"
         else "JSON_QUERY($json, ${OracleSql.path(key)} RETURNING JSON)"
 
+    /**
+     * A value in a parameter that is a map, `${'$'}p.text`, read with one path from the text the parameter is bound as, and
+     * not from the parameter read as JSON first: Oracle crashed the session (#256) where a statement read a value from a
+     * parameter past 32 KB, taken as JSON, for each of two rows. Read as extended JSON where the parameter is (see
+     * [parameterText]) and the value holds such a double.
+     */
+    override val parameterPath = { marker: String, text: String?, keys: List<String>, value: Any? ->
+        val readsExtended = if (marker == PARAMS) keys.first() in extendedParameters else text != null && text in extended
+        val path = OracleSql.path(keys)
+        if (readsExtended && doubled(value)) "JSON(JSON_QUERY($marker, $path RETURNING CLOB) EXTENDED)" else "JSON_QUERY($marker, $path RETURNING JSON)"
+    }
+
+    /** Whether [value] holds a float that is a whole number, as extended JSON's double: see [doubles]. */
+    private fun doubled(value: Any?): Boolean {
+        var doubled = false
+        doubles(Neo4jObjectMapper.instance.valueToTree(value)) { doubled = true }
+        return doubled
+    }
+
     /** Counted from the end where negative: a JSON path counts from the start. */
     override fun element(json: String, index: String) = shared(json, index) { (list, i) ->
         val at = "JSON_VALUE($i, '$' RETURNING NUMBER)"
