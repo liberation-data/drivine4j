@@ -842,8 +842,9 @@ It is in `[0, 1]`: `(1 + cos) / 2` for a cosine index, and `1 / (1 + d²)` for a
 **`topK` is the index's `k`, not a guaranteed result count.** When searching a **view**, its
 *required* relationships (and the optional `threshold`) are applied **after** the K-nearest search,
 so a candidate that ranks in the top K but fails the filter is dropped — meaning **`loadNearest` can
-return fewer than `topK` results**. A **fragment** search has no relationship filter, so it returns
-the full top K (minus any `threshold` cut).
+return fewer than `topK` results**. The same holds for a root with more than one label: the index is
+on its first label, so a node with that label alone is a candidate, and is dropped. A **fragment**
+with one label has no such filter, so it returns the full top K (minus any `threshold` cut).
 
 **`k` is also the search beam width — this is the surprising part.** On Lucene-backed engines the
 result queue *is* the HNSW candidate queue, so `k` does not merely truncate a ranked list; it decides
@@ -978,7 +979,7 @@ neighbours["p-1"]  // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
 **`searchK` matters here as it does for a filtered `loadNearest`.** Where the store searches through
 an approximate index — Neo4j, FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been
 made — the index is asked for `searchK` candidates per id (default `topK + 1`: the id itself is found
-first), and the "among the set", self and `threshold` filters apply to those. An id whose nearest
+first), and the "among the set", self, root label and `threshold` filters apply to those. An id whose nearest
 mostly lie outside the set can get fewer than `topK` back, so a selective set — a few ids among many
 indexed nodes — needs a larger `searchK`. Where the store measures every node instead (SQLite, and
 Postgres or Oracle with no vector index made) only the set is measured, the answer is exact, and
@@ -1033,8 +1034,8 @@ graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20) {
 }
 ```
 
-The predicate, like a view's required relationships, is applied **after** the index yields. Where
-either filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
+The predicate, like a view's required relationships and a root's labels beyond the first (the one
+the index is on), is applied **after** the index yields. Where any of them filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
 and the filter keeps the best `topK` of those, so a filter that passes fewer than one in ten of the
 best hits can return fewer than `topK` rows while the index holds more that pass it. The DEBUG line
 `GraphObjectManager` logs for a short result says how many hits the index was asked for.

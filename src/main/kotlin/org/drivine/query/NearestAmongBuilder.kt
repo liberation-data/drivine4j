@@ -47,11 +47,14 @@ internal class NearestAmongBuilder(
         val embedding = "$SEED.${SchemaGrammar.identifier(vectorSpec.property)}"
         val head = grammar.vectorSearchHead(vectorSpec.copy(vectorSource = embedding, carried = listOf(SEED_ID)), NODE, SCORE)
         val kept = listOfNotNull("m.id IN \$$idsParam", "m.id <> $SEED_ID", thresholdParam?.let { "m.score >= \$$it" })
+        // The index is on the first label, so a neighbour with that label alone is in it, and is no node
+        // of the set, though it may have an id the caller passed.
+        val labelled = indexedNodeLabelCheck(NODE, fragmentModel.labels)?.let { "\nWHERE $it" } ?: ""
         return """
             |UNWIND ${'$'}$idsParam AS $SEED_ID
             |MATCH ($SEED:${fragmentModel.labels.joinToString(":")})
             |WHERE $SEED.$id = $SEED_ID AND $embedding IS NOT NULL
-            |$head
+            |$head$labelled
             |WITH $SEED_ID, $NODE, $SCORE
             |ORDER BY $SCORE DESC
             |WITH $SEED_ID, collect({id: $NODE.$id, score: $SCORE}) AS _found
