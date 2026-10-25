@@ -13,9 +13,9 @@ import org.drivine.query.grammar.VectorQuerySpec
  * are layered on top. Results are wrapped as `{ value: <view>, score: _score } AS row` and ordered
  * by similarity, highest first.
  *
- * Filtering is **post-search**: required relationships (and the optional threshold) prune the K
- * candidates the index returned, so the query can yield fewer than K rows. That is the deliberate
- * semantics — `topK` is the index's `k`, not a guaranteed result count.
+ * Filtering is **post-search**: the root's labels beyond the indexed one, required relationships (and
+ * the optional threshold) prune the K candidates the index returned, so the query can yield fewer than
+ * K rows. That is the deliberate semantics — `topK` is the index's `k`, not a guaranteed result count.
  *
  * This builder owns only the vector-specific composition (the `CALL` head, the score-carrying
  * prolog wiring, and the scored RETURN); everything else is shared with [GraphViewLoadBuilder].

@@ -14,9 +14,9 @@ import org.drivine.query.grammar.FullTextQuerySpec
  * on top. Results are wrapped as `{ value: <view>, score: _score } AS row`, ordered by relevance
  * (highest first) and capped at `topK` by a trailing `LIMIT`.
  *
- * Filtering is **post-search**: required relationships (and the optional threshold / caller `where`)
- * prune the candidates the index returned — no more than [FullTextSearchLimits.indexLimit] of them —
- * so the query can yield fewer than `topK` rows.
+ * Filtering is **post-search**: the root's labels beyond the indexed one, required relationships (and
+ * the optional threshold / caller `where`) prune the candidates the index returned — no more than
+ * [FullTextSearchLimits.indexLimit] of them — so the query can yield fewer than `topK` rows.
  */
 internal class GraphViewFullTextSearchBuilder(
     viewModel: GraphViewModel,
