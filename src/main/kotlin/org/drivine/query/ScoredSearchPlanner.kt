@@ -278,7 +278,7 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, hasRequiredRelationship(graphClass)))
+        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, prunedAfterIndex(graphClass)))
     }
 
     /** Full-text search over a view or fragment with a caller `where { }` predicate AND-ed in. */
@@ -324,7 +324,7 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        val filtered = querySpec.conditions.isNotEmpty() || hasRequiredRelationship(graphClass)
+        val filtered = querySpec.conditions.isNotEmpty() || prunedAfterIndex(graphClass)
         return plan(cypher, query, topK, threshold, callerBindings, FullTextSearchLimits.indexLimit(topK, filtered))
     }
 
@@ -334,6 +334,19 @@ internal object FullTextSearchPlanner {
                 "Full-text search is not supported on this backend (${grammar::class.simpleName} has no native full-text index)."
             )
         }
+    }
+
+    /**
+     * Whether the hits of [graphClass]'s index are pruned after it, as a caller filter prunes them: by a
+     * required relationship, or by the root's labels beyond the one the index is on. The labels are
+     * those the search checks: a fragment's with those it inherits, as [FragmentFullTextSearchBuilder]
+     * checks them, and a view root's own, as a load of the view matches them.
+     */
+    private fun prunedAfterIndex(graphClass: Class<*>): Boolean {
+        val rootLabels =
+            if (graphClass.isAnnotationPresent(NodeFragment::class.java)) FragmentModel.labelsFor(graphClass)
+            else GraphTypeLabels.labelsForType(graphClass)
+        return hasRequiredRelationship(graphClass) || rootLabels.size > 1
     }
 
     /**
@@ -372,10 +385,10 @@ internal object FullTextSearchPlanner {
  * How many hits a full-text index `CALL` may yield for a search that wants `topK` rows.
  *
  * Where nothing removes a hit after the index — a fragment, or a view without a required
- * relationship, searched with at most a score threshold, which keeps a prefix of the ranking — the
- * best `topK` hits are the answer, and the index is asked for exactly those. Where something does — a
- * caller `where { }`, or a view's required relationships —
- * the index is asked for [FILTERED_OVER_FETCH] times as many, and the filters choose the `topK` among
+ * relationship, whose root has one label, searched with at most a score threshold, which keeps a
+ * prefix of the ranking — the best `topK` hits are the answer, and the index is asked for exactly
+ * those. Where something does — a caller `where { }`, a view's required relationships, or a root's
+ * labels beyond the first, which the index is on — the index is asked for [FILTERED_OVER_FETCH] times as many, and the filters choose the `topK` among
  * them. A filter that keeps fewer than one hit in [FILTERED_OVER_FETCH] of the best can then return
  * fewer than `topK` rows while the index holds more that pass it; a result that is short of `topK`
  * while the index yielded its whole limit is the one that may be missing rows.

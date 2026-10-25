@@ -11,8 +11,8 @@ import org.drivine.query.grammar.FullTextQuerySpec
  * (already score-normalized to `[0, 1]`) produces the matching nodes, which are projected with the
  * fragment's own field mapping (the same shape [FragmentQueryBuilder] uses for a load) and returned
  * as `{ value: <fragment>, score } AS row`, ordered by relevance and capped at `topK`. Fragments
- * have no relationships, so the filters are the optional similarity threshold and the caller's
- * `where { }` over the node.
+ * have no relationships, so the filters are the fragment's labels beyond the indexed one, the
+ * optional similarity threshold and the caller's `where { }` over the node.
  *
  * `topK` is taken from the filtered rows *before* the fragment is projected, so a node's properties
  * — a chunk's text and its embedding among them — are read only for the rows returned, never for the
@@ -50,9 +50,10 @@ internal class FragmentFullTextSearchBuilder(
         // The grammar's CALL ... normalize ... WITH establishes `node` and `scoreVar`.
         val head = grammar.fullTextSearchHead(spec, node, scoreVar)
 
-        // A fragment's filters: the optional score threshold (a scalar — no relationships) and any
-        // caller `where { }` predicate over the node's properties.
+        // A fragment's filters: its labels beyond the indexed one, the optional score threshold (a
+        // scalar — no relationships) and any caller `where { }` predicate over the node's properties.
         val filters = buildList {
+            indexedNodeLabelCheck(node, fragmentModel.labels)?.let { add(it) }
             thresholdParam?.let { add("$scoreVar >= \$$it") }
             callerWhere?.let { add(it) }
         }

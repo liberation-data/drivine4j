@@ -165,8 +165,9 @@ interface GraphObjectOperations {
      * **Result count semantics:** `topK` is the index's `k` — the number of candidates the
      * nearest-neighbour search returns. For a view, the required-relationship filters (and an
      * optional [threshold]) are applied *afterwards*, so **fewer than [topK] results may come back**;
-     * raise [topK] if your view is selective. A fragment search has no relationship filters, so it
-     * returns the full top-K (minus any [threshold] cut).
+     * raise [topK] if your view is selective. So is a root's labels beyond the first: the index is on
+     * the first, so a node with that label alone is a candidate, and is dropped. A fragment search
+     * with one label has no such filter, so it returns the full top-K (minus any [threshold] cut).
      *
      * On Oracle the search goes through the vector index when one has been made for the label and
      * property, and is approximate as on the graph engines; with none made it measures every node of
@@ -235,9 +236,9 @@ interface GraphObjectOperations {
      *
      * **Result count semantics:** on a store that searches through an approximate index (Neo4j,
      * FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been made), the index is asked
-     * for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion and the
-     * [threshold] then apply to those, so **fewer than [topK] may come back** for an id whose nearest
-     * mostly lie outside the set. A selective set — few ids among many indexed nodes — needs a larger
+     * for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion, the root's
+     * labels beyond the first (the one the index is on) and the [threshold] then apply to those, so
+     * **fewer than [topK] may come back** for an id whose nearest mostly lie outside the set. A selective set — few ids among many indexed nodes — needs a larger
      * [searchK], exactly as a filtered [loadNearest] does. Where the store measures every node instead
      * (SQLite, and Postgres or Oracle with no vector index made) only the set is measured, the answer
      * is exact, and [searchK] changes nothing; it measures every pair of the set, so its cost grows
@@ -316,7 +317,8 @@ interface GraphObjectOperations {
      *
      * Works on a `@GraphView` (searches its root fragment's text index, returns the projected view)
      * and on a bare `@NodeFragment` (searches and returns itself). As with [loadNearest], a view's
-     * required-relationship filters apply *after* the search, so **fewer than [topK] rows may return**.
+     * required-relationship filters, and a root's labels beyond the first (the one the index is on),
+     * apply *after* the search, so **fewer than [topK] rows may return**.
      *
      * The [query] is passed through to the engine's full-text query language (Lucene syntax on Neo4j:
      * `AND`/`OR`/`"phrase"`/`field:term`). Raw user input is **not** escaped here — wrap or escape it
@@ -331,8 +333,8 @@ interface GraphObjectOperations {
      * @param query the full-text query string
      * @param topK the maximum number of results to return. On Neo4j, FalkorDB and Memgraph it also
      *   bounds the hits the index yields: `topK` of them, or `topK` times
-     *   [org.drivine.query.FullTextSearchLimits.FILTERED_OVER_FETCH] when a required relationship or
-     *   a caller `where { }` filters them, since every hit is held to normalize the scores. Memgraph's
+     *   [org.drivine.query.FullTextSearchLimits.FILTERED_OVER_FETCH] when a required relationship, a
+     *   root label beyond the first or a caller `where { }` filters them, since every hit is held to normalize the scores. Memgraph's
      *   index is asked for no more than 1,000,000 hits, however large `topK` is
      * @param threshold minimum normalized relevance in `[0, 1]`; results below it are dropped (default
      *   `0.0` keeps everything)
