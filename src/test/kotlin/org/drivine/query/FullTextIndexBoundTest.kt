@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test
 import sample.fulltext.ArticleNode
 import sample.fulltext.ArticleNodeQueryDsl
 import sample.fulltext.ArticleView
+import sample.fulltext.AuthoredArticleView
 import sample.fulltext.MemoNode
 
 /**
@@ -75,10 +76,42 @@ class FullTextIndexBoundTest {
     }
 
     @Test
+    fun `a filtered call whose where is empty asks the index for exactly topK`() {
+        // No condition was given, so nothing removes a hit after the index.
+        val plan = FullTextSearchPlanner.planFiltered(
+            ArticleNode::class.java, GraphQuerySpec(ArticleNodeQueryDsl.INSTANCE), "graph", 8, 0.0, neo4j,
+        )
+
+        assertEquals(8, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+    }
+
+    @Test
+    fun `a filtered call over a view over-fetches for its required relationships alone`() {
+        val authored = FullTextSearchPlanner.planFiltered(
+            AuthoredArticleView::class.java, GraphQuerySpec(ArticleNodeQueryDsl.INSTANCE), "graph", 8, 0.0, neo4j,
+        )
+        val unauthored = FullTextSearchPlanner.planFiltered(
+            ArticleView::class.java, GraphQuerySpec(ArticleNodeQueryDsl.INSTANCE), "graph", 8, 0.0, neo4j,
+        )
+
+        assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, authored.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8, unauthored.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+    }
+
+    @Test
     fun `a view search over-fetches, because its required relationships filter the hits`() {
-        val plan = FullTextSearchPlanner.plan(ArticleView::class.java, null, "graph", 8, 0.0, neo4j)
+        val plan = FullTextSearchPlanner.plan(AuthoredArticleView::class.java, null, "graph", 8, 0.0, neo4j)
 
         assertEquals(8 * FullTextSearchLimits.FILTERED_OVER_FETCH, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+    }
+
+    @Test
+    fun `a view without a required relationship asks the index for exactly topK`() {
+        // Nothing prunes its hits after the index, so it is bounded as a fragment is.
+        val plan = FullTextSearchPlanner.plan(ArticleView::class.java, null, "graph", 8, 0.0, neo4j)
+
+        assertEquals(8, plan.bindings[FullTextSearchPlanner.INDEX_LIMIT_PARAM])
+        assertEquals(8, plan.indexK)
     }
 
     @Test

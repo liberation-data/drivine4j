@@ -1012,8 +1012,10 @@ graphObjectManager.loadMatching<ChunkView>("graph databases", topK = 20)
 
 The index is resolved from a **`@FullTextIndex`** on the searched fragment (property-level for a single
 field, or class-level `@FullTextIndex(properties = ["title", "body"])` for a multi-property index) — the
-same annotation the schema feature uses to *create* it. `threshold` defaults to `0.0` (keep everything);
-`topK` is applied as a trailing `LIMIT`. Each result is a `Scored<T>(value, score)`, most relevant
+same annotation the schema feature uses to *create* it. `threshold` defaults to `0.0` (keep everything).
+`topK` bounds the index call as well as the rows returned: the scores are normalized over the hits
+the index yields, so the index is asked for its best `topK` hits, and an ordinary query that matches
+most of a corpus costs no more than those. Each result is a `Scored<T>(value, score)`, most relevant
 first, with polymorphic dispatch (a `loadMatching<SealedBase>` returns each hit as its concrete subtype).
 
 The query string is passed through to the engine's full-text language (Lucene syntax on Neo4j:
@@ -1028,6 +1030,12 @@ graphObjectManager.loadMatching<ChunkNode>("graph databases", topK = 20) {
     where { query.containerSectionId eq "sec-1" }
 }
 ```
+
+The predicate, like a view's required relationships, is applied **after** the index yields. Where
+either filters, the index is asked for `topK × FullTextSearchLimits.FILTERED_OVER_FETCH` (10) hits
+and the filter keeps the best `topK` of those, so a filter that passes fewer than one in ten of the
+best hits can return fewer than `topK` rows while the index holds more that pass it. The DEBUG line
+`GraphObjectManager` logs for a short result says how many hits the index was asked for.
 
 > Engine note: full-text search runs on Neo4j (`db.index.fulltext`), FalkorDB (`db.idx.fulltext`, by
 > label), and Memgraph (`text_search`, GA — no experimental flag needed).

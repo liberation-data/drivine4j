@@ -242,11 +242,17 @@ interface CypherGrammar {
          * charged for the whole list once per row it holds. Measured on Neo4j 5.26 over 40,000
          * matching chunks, a `k = 200` search with the hits uncut exhausted the 1.4 GiB transaction
          * pool on its own; cut to 2,000 the whole query held 3.9 MB. An engine whose `CALL` takes a
-         * limit is given it as well ([Neo4j5Grammar]), so the index stops producing rows instead of
-         * producing them to be dropped; the cut here is what holds where the `CALL` takes none.
+         * limit is given it as well ([Neo4j5Grammar], [MemgraphGrammar]), so the index stops
+         * producing rows instead of producing them to be dropped; the cut here is what holds where
+         * the `CALL` takes none.
          *
          * Ties at the cut are broken however the engine sorts, which is the same freedom the
          * trailing `LIMIT` has always had.
+         *
+         * The tail yields its rows in descending score order: `collect` keeps the order of the sort
+         * before it, and `UNWIND` the order of the list. A fragment search limits its filtered rows
+         * with no sort of its own and relies on that order ([org.drivine.query.FragmentFullTextSearchBuilder]),
+         * so the sort stays even where the `CALL` already returns its hits best first.
          *
          * @param callClause the full-text `CALL …` line for this engine (no trailing newline)
          * @param indexLimitParam the bound parameter carrying how many hits to keep

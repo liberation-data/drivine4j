@@ -62,7 +62,13 @@ class FullTextSearchGrammarTest {
         assertTrue(grammar.supportsFullTextSearch)
 
         val head = grammar.fullTextSearchHead(spec(), "article", "_score")
-        assertTrue(head.contains("CALL text_search.search_all('Article_body_fulltext', \$q)"), head)
+        assertTrue(
+            head.contains(
+                "CALL text_search.search_all('Article_body_fulltext', \$q, " +
+                    "{limit: CASE WHEN \$limit < 1000000 THEN \$limit ELSE 1000000 END})"
+            ),
+            head,
+        )
         assertNormalizedTail(head, "article", "_score")
     }
 

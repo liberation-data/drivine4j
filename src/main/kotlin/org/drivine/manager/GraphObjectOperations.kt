@@ -329,7 +329,11 @@ interface GraphObjectOperations {
      *
      * @param graphClass the `@GraphView` or `@NodeFragment` class to load
      * @param query the full-text query string
-     * @param topK the maximum number of results to return (applied as a `LIMIT`)
+     * @param topK the maximum number of results to return. On Neo4j, FalkorDB and Memgraph it also
+     *   bounds the hits the index yields: `topK` of them, or `topK` times
+     *   [org.drivine.query.FullTextSearchLimits.FILTERED_OVER_FETCH] when a required relationship or
+     *   a caller `where { }` filters them, since every hit is held to normalize the scores. Memgraph's
+     *   index is asked for no more than 1,000,000 hits, however large `topK` is
      * @param threshold minimum normalized relevance in `[0, 1]`; results below it are dropped (default
      *   `0.0` keeps everything)
      * @return scored instances, most relevant first, of length `<= topK`
@@ -374,6 +378,11 @@ interface GraphObjectOperations {
      *     where { query.containerSectionId eq "sec-1" }
      * }
      * ```
+     *
+     * The predicate applies after the index yields, and on Neo4j, FalkorDB and Memgraph the index is
+     * asked for `topK` times [org.drivine.query.FullTextSearchLimits.FILTERED_OVER_FETCH] hits. A predicate
+     * that passes fewer than one in that many of the best hits can return fewer than `topK` rows while
+     * the index holds more that pass it.
      *
      * @param queryObject the generated query DSL object providing property references
      * @param query the full-text query string

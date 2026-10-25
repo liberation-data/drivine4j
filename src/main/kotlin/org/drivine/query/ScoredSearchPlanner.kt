@@ -278,9 +278,7 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        // A view's required relationships prune the hits after the index, as a caller filter does.
-        val filtered = graphClass.isAnnotationPresent(GraphView::class.java)
-        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, filtered))
+        return plan(cypher, query, topK, threshold, emptyMap(), FullTextSearchLimits.indexLimit(topK, hasRequiredRelationship(graphClass)))
     }
 
     /** Full-text search over a view or fragment with a caller `where { }` predicate AND-ed in. */
@@ -326,7 +324,7 @@ internal object FullTextSearchPlanner {
                 "loadMatching requires a @GraphView or @NodeFragment; ${graphClass.simpleName} is neither"
             )
         }
-        val filtered = querySpec.conditions.isNotEmpty() || graphClass.isAnnotationPresent(GraphView::class.java)
+        val filtered = querySpec.conditions.isNotEmpty() || hasRequiredRelationship(graphClass)
         return plan(cypher, query, topK, threshold, callerBindings, FullTextSearchLimits.indexLimit(topK, filtered))
     }
 
@@ -337,6 +335,15 @@ internal object FullTextSearchPlanner {
             )
         }
     }
+
+    /**
+     * Whether [graphClass] is a view with a required relationship — one neither nullable nor a
+     * collection — whose `IS NOT NULL` check prunes the hits after the index, as a caller filter does.
+     * A view with none keeps every hit, as a fragment does, so its index is asked for `topK` alone.
+     */
+    private fun hasRequiredRelationship(graphClass: Class<*>): Boolean =
+        graphClass.isAnnotationPresent(GraphView::class.java) &&
+            GraphViewModel.from(graphClass).relationships.any { !it.isNullable && !it.isCollection }
 
     private fun resolveSpec(fragmentClass: Class<*>, property: String?): FullTextQuerySpec =
         FullTextIndexResolver.resolve(fragmentClass, property, QUERY_PARAM, TOP_K_PARAM)
@@ -364,9 +371,10 @@ internal object FullTextSearchPlanner {
 /**
  * How many hits a full-text index `CALL` may yield for a search that wants `topK` rows.
  *
- * Where nothing removes a hit after the index — a fragment searched with at most a score threshold,
- * which keeps a prefix of the ranking — the best `topK` hits are the answer, and the index is asked
- * for exactly those. Where something does — a caller `where { }`, or a view's required relationships —
+ * Where nothing removes a hit after the index — a fragment, or a view without a required
+ * relationship, searched with at most a score threshold, which keeps a prefix of the ranking — the
+ * best `topK` hits are the answer, and the index is asked for exactly those. Where something does — a
+ * caller `where { }`, or a view's required relationships —
  * the index is asked for [FILTERED_OVER_FETCH] times as many, and the filters choose the `topK` among
  * them. A filter that keeps fewer than one hit in [FILTERED_OVER_FETCH] of the best can then return
  * fewer than `topK` rows while the index holds more that pass it; a result that is short of `topK`
