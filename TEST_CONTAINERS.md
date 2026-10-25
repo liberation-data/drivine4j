@@ -8,6 +8,15 @@ By default, tests start a Testcontainer for whichever backend(s) the suite targe
 ./gradlew test
 ```
 
+## Neo4j
+
+`@EnableDrivineTestConfig` starts its Neo4j with `org.drivine.test.DrivineTestContainer`, once for the test JVM, with APOC.
+
+- **The image** is the Neo4j community image the suite runs for `neo4j:latest`, as `gradle/test-images.txt` pins it (`neo4j:2026.10.1` now). The build writes that pin into the library, so moving the pin moves the shipped default too: `DrivineTestContainer.DEFAULT_IMAGE` gives it. Choose another with `NEO4J_TEST_IMAGE` or `-Dtest.neo4j.image`.
+- **APOC Core** is installed in any image. **APOC Extended** (`org.neo4j.procedure:apoc-extended`, the version `build.gradle`'s `neo4jPlugins` names) is mounted from the local Maven or Gradle cache into the default image only, since a release of it does not load on every Neo4j.
+- **Avoid Neo4j 5.26.1 to 5.26.3 and 2025.01.** They write the wrong relationship type for Cypher's dynamic relationship type, `CREATE (a)-[r:$($type)]->(b)`, once the same statement has run with another type ([neo4j/neo4j#13597](https://github.com/neo4j/neo4j/issues/13597)). Neo4j fixed it in 2025.03 and in a later 5.26 patch: 5.26.32, which `neo4j:5.26-community` gives now, writes it right. An image of that tag pulled before the fix still has the bug. `DrivineTestContainerTest` checks the image the container runs.
+- **Your own container** works as well: start any Neo4j yourself (a Testcontainers `Neo4jContainer`, say), set `test.neo4j.use-local=true` in the Spring environment, and give the datasource its host, port and password, from a `@DynamicPropertySource` for instance. `@EnableDrivineTestConfig` then starts no container of its own and uses those properties as they are.
+
 ## The core on its own classpath
 
 The root module's tests run in Spring contexts, through the starter. `./gradlew standaloneTest` runs the tests in

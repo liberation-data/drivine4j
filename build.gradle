@@ -52,7 +52,7 @@ configurations {
 dependencies {
 	// Neo4j plugins for test containers - these are server-side plugins, not Java dependencies
 	// They get mounted into the Neo4j container's /plugins directory
-	neo4jPlugins 'org.neo4j.procedure:apoc-extended:5.26.0'
+	neo4jPlugins 'org.neo4j.procedure:apoc-extended:2026.04.0'
 	implementation 'org.neo4j.driver:neo4j-java-driver:5.28.9'
 
 	// The core depends on what it uses: the drivers, Jackson, HikariCP and SLF4J. Spring support is in
@@ -203,6 +203,29 @@ def standaloneTest = tasks.register('standaloneTest', Test) {
 tasks.named('check') {
 	dependsOn standaloneTest
 }
+
+// DrivineTestContainer's Neo4j is the image the tests run for neo4j:latest, as gradle/test-images.txt
+// pins it, so the container the library ships is the Neo4j its own suite has run. The build writes the
+// pin into a resource of the library, and moving the pin moves the shipped default with it.
+def testContainerImages = tasks.register('testContainerImages') {
+	description = 'Writes the Neo4j image DrivineTestContainer runs, as gradle/test-images.txt pins it'
+	def neo4j = rootProject.file('gradle/test-images.txt').readLines()
+		.collect { it.trim() }.findAll { it && !it.startsWith('#') }
+		.collect { it.split(/\s+/) }
+		.find { it[0] == 'neo4j:latest' }?.getAt(1)
+	if (!neo4j) {
+		throw new GradleException('gradle/test-images.txt pins no image for neo4j:latest')
+	}
+	inputs.property('neo4j', neo4j)
+	def out = layout.buildDirectory.dir('generated/test-container-images')
+	outputs.dir(out)
+	doLast {
+		def file = out.get().file('org/drivine/test/test-container-images.properties').asFile
+		file.parentFile.mkdirs()
+		file.text = "neo4j=${neo4j}\n"
+	}
+}
+sourceSets.main.resources.srcDir(testContainerImages)
 
 // Task to download Neo4j plugins to Gradle cache (for DrivineTestContainer)
 tasks.register('downloadNeo4jPlugins') {
