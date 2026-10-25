@@ -186,7 +186,11 @@ internal object FragmentSchemaScanner {
      * their backing fields), then Java field reflection as fallback.
      */
     private fun annotatedProperties(clazz: Class<*>): Map<String, List<Annotation>> {
-        kotlinAnnotatedProperties(clazz)?.let { return it }
+        // Kotlin reflection leaves out a Java superclass's private fields, which FragmentModel stores: add theirs.
+        kotlinAnnotatedProperties(clazz)?.let { kotlin ->
+            val known = clazz.kotlin.memberProperties.map { it.name }.toSet()
+            return javaAnnotatedFields(clazz, onlyJavaClasses = true).filterKeys { it !in known } + kotlin
+        }
         return javaAnnotatedFields(clazz)
     }
 
@@ -204,13 +208,16 @@ internal object FragmentSchemaScanner {
         null
     }
 
-    private fun javaAnnotatedFields(clazz: Class<*>): Map<String, List<Annotation>> {
+    /** With [onlyJavaClasses], only the fields of classes Kotlin did not compile, which Kotlin reflection may leave out. */
+    private fun javaAnnotatedFields(clazz: Class<*>, onlyJavaClasses: Boolean = false): Map<String, List<Annotation>> {
         val result = mutableMapOf<String, List<Annotation>>()
+        val seen = mutableSetOf<String>()
         var current: Class<*>? = clazz
         while (current != null && current != Any::class.java) {
-            current.declaredFields.forEach { field ->
+            if (!onlyJavaClasses || !current.isAnnotationPresent(Metadata::class.java)) current.declaredFields.forEach { field ->
                 val annotations = field.annotations.filter { isSchemaAnnotation(it) }
-                if (annotations.isNotEmpty() && !result.containsKey(field.name)) {
+                // A field hides a superclass's of its name, and the superclass's annotations with it.
+                if (seen.add(field.name) && annotations.isNotEmpty()) {
                     result[field.name] = annotations
                 }
             }

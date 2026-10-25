@@ -319,7 +319,8 @@ data class FragmentModel(
             }
             // Kotlin reflection leaves out a Java superclass's private fields, which are the class's state all the
             // same: a Java fragment that extends a base declaring `@NodeId private String id` would have no id.
-            val known = kotlinFields.map { it.name }.toSet()
+            // A transient Kotlin property hides a base field of its name all the same.
+            val known = clazz.kotlin.memberProperties.map { it.name }.toSet()
             val missed = extractJavaFields(clazz, onlyJavaClasses = true).filter { it.name !in known }
             return (kotlinFields + missed).sortedBy { it.name }
         }
@@ -449,8 +450,9 @@ data class FragmentModel(
                 currentClass.declaredFields
                     .filter { read }
                     .filterNot { it.isSynthetic || Modifier.isStatic(it.modifiers) }
-                    .filterNot { it.isAnnotationPresent(GraphTransient::class.java) }
+                    // A transient field hides a superclass's of its name, which is not stored either.
                     .filter { seen.add(it.name) }
+                    .filterNot { it.isAnnotationPresent(GraphTransient::class.java) }
                     .forEach { field ->
                         val bag = field.getAnnotation(PropertyBag::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter, it.flat) }
                             ?: field.getAnnotation(CompositeProperty::class.java)?.let { PropertyBagSpec(it.prefix, it.delimiter, it.flat) }

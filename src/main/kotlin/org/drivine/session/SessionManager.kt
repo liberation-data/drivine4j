@@ -183,9 +183,10 @@ class SessionManager @JvmOverloads constructor(
     fun extractIdValue(obj: Any, fragmentModel: FragmentModel): Any? {
         val nodeIdField = fragmentModel.nodeIdField ?: return null
 
-        // Use reflection to get the field value
-        val field = obj.javaClass.declaredFields.find { it.name == nodeIdField }
-            ?: obj.javaClass.fields.find { it.name == nodeIdField }
+        // Use reflection to get the field value, wherever in the class hierarchy it is declared: a Java
+        // fragment's id may be its superclass's private field.
+        val field = generateSequence<Class<*>>(obj.javaClass) { it.superclass }
+            .firstNotNullOfOrNull { type -> type.declaredFields.find { it.name == nodeIdField } }
             ?: return null
 
         field.isAccessible = true
