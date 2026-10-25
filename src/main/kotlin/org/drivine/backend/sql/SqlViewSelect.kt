@@ -129,7 +129,8 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
         }
 
         val row = scope.row(relationship.fieldName)
-        val target = element(row, targetType, visits, relationship.fieldName)
+        // A view this holds is reached by the path to this one and the field, which a sort below it names.
+        val target = element(row, targetType, visits, parentField?.let { "${it}_${relationship.fieldName}" } ?: relationship.fieldName)
         // A relationship fragment is the relationship's own properties, with the node it leads to under the target field.
         val value = if (relationship.isRelationshipFragment) withTarget(row, relationship.targetFieldName!!, target) else target
         return gathered(parent, Step.reaching(relationship, labels), row, value, relationship.isCollection, sort?.let { sorted(row, targetType, it) })

@@ -33,13 +33,10 @@ internal object RelationshipConditions {
         return kept
     }
 
-    /** The sort of [collectionSorts] for [relationship]: by its own name at the top, by its parent's and its own beneath. */
-    fun sortOf(collectionSorts: List<CollectionSortSpec>, relationship: RelationshipModel, parentField: String?): CollectionSortSpec? =
-        collectionSorts.find {
-            if (parentField == null) {
-                !it.isNested() && it.relationshipPath == relationship.fieldName
-            } else {
-                it.isNested() && it.parentRelationship() == parentField && it.nestedRelationship() == relationship.fieldName
-            }
-        }
+    /**
+     * The sort of [collectionSorts] for [relationship]: by its own name at the top, beneath by [parentPath],
+     * the path to the view that holds it, and its own name, as [CollectionSortSpec.isFor] reads a path.
+     */
+    fun sortOf(collectionSorts: List<CollectionSortSpec>, relationship: RelationshipModel, parentPath: String?): CollectionSortSpec? =
+        collectionSorts.find { it.isFor(parentPath?.let { path -> "${path}_${relationship.fieldName}" } ?: relationship.fieldName) }
 }
