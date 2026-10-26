@@ -9,7 +9,8 @@ import kotlin.test.assertTrue
 /**
  * On Oracle, a property that is an item of a `RETURN` or a `WITH` is read through its text, as extended JSON: Oracle
  * crashed the session where a statement took a text past 32 KB from the properties as JSON for each of two rows (#255).
- * Elsewhere a property is read as it was.
+ * So is a text a write takes from the row it is writing, to work out what it writes (#309). Elsewhere a property is read
+ * as it was.
  */
 class OracleItemPropertyTest {
 
@@ -64,6 +65,28 @@ class OracleItemPropertyTest {
     fun `a property a write returns is read through its text`() {
         val sql = OracleCypherCompiler("g").compile("MATCH (n:Doc) SET n.b = 1 RETURN n.a").sql
         assertTrue(sql.contains("KEEP '\$.a') RETURNING CLOB EXTENDED), '\$.a' RETURNING CLOB) EXTENDED) AS c1"), sql)
+    }
+
+    @Test
+    fun `a text a write takes from its row is read through the row's text, and a pattern it matches tests it as it was`() {
+        fun read(path: String) =
+            "CASE WHEN JSON_VALUE(cy_row, '$path.type()') = 'string' THEN JSON(JSON_QUERY(JSON_SERIALIZE(cy_row RETURNING CLOB), '$path' RETURNING CLOB)) " +
+                "ELSE JSON_QUERY(cy_row, '$path' RETURNING JSON) END"
+        val set = OracleCypherCompiler("g").compile("UNWIND \$ts AS t MATCH (n:Doc {id: t.id}) SET n.a = t.a, n.b = t, n.c = t.m.`k.j`", mapOf("ts" to emptyList<Any>())).sql
+        assertTrue(set.contains("SELECT ${read("\$.v1.a")} INTO cy_value"), set)
+        assertTrue(set.contains("SELECT ${read("\$.v1")} INTO cy_value"), set)
+        assertTrue(set.contains("SELECT ${read("\$.v1.m.\"k.j\"")} INTO cy_value"), set)
+        assertTrue(!set.contains("JSON_QUERY(JSON_QUERY(cy_row"), set)
+        val merged = OracleCypherCompiler("g").compile("UNWIND \$ts AS t MERGE (n:Doc {id: t.id}) ON CREATE SET n.a = t.a", mapOf("ts" to emptyList<Any>())).sql
+        assertTrue(merged.contains("= JSON_QUERY(JSON_QUERY(cy_row, '\$.v1' RETURNING JSON), '\$.id' RETURNING JSON)"), merged)
+        assertTrue(merged.contains("JSON_OBJECT('id' VALUE ${read("\$.v1.id")} NULL ON NULL RETURNING JSON) INTO cy_value"), merged)
+        assertTrue(merged.contains("SELECT ${read("\$.v1.a")} INTO cy_value"), merged)
+    }
+
+    @Test
+    fun `on Postgres a value a write takes from its row is read as elsewhere`() {
+        val sql = PostgresCypherCompiler("g").compile("UNWIND \$ts AS t MATCH (n:Doc {id: t.id}) SET n.a = t.a", mapOf("ts" to emptyList<Any>())).sql
+        assertTrue(!sql.contains("SERIALIZE") && sql.contains("'v1'") , sql)
     }
 
     @Test

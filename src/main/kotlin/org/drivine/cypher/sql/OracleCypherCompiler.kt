@@ -160,7 +160,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * the session over this form in the more involved statements a walk writes. Only an item that is the property itself
      * is read so: a property inside an item (`[n.a]`, `collect(n.a)`) is read as [propertyOf] reads it, and isn't worked
      * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
-     * (ORA-40180), as it does any JSON that large, and the session stays open.
+     * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
+     * it takes a text from the row it is writing: see [rowValue].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -168,6 +169,32 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun itemProperty(props: String, key: String) =
         "JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM($props, KEEP ${OracleSql.path(key)}) RETURNING CLOB EXTENDED), ${OracleSql.path(key)} RETURNING CLOB) EXTENDED)"
+
+    /**
+     * A value that a write takes from the row it is writing, to work out what it writes (`SET n.a = t.a`, `CREATE (:X {a:
+     * t.a})`, `MERGE … SET n.a = t.a`, where `t` is an item of an unwound parameter): a text read with one path from the
+     * row written out as text, anything else with that path from the row as JSON, as before.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#309), to be removed with it.** The block crashed the session where
+     * it took a text past 32 KB from the row, a `JSON` variable, with `JSON_QUERY(JSON_QUERY(cy_row, '$.v1' RETURNING JSON),
+     * '$.a' RETURNING JSON)`, for each of two or more rows. Read as [itemProperty] reads a property, through
+     * `JSON_TRANSFORM(cy_row, KEEP …)`, it crashed too; written out whole, `JSON_SERIALIZE(cy_row …)`, it didn't. A text is
+     * read from text that isn't extended JSON, which has no float to keep; anything else is read as JSON, as before, so a map
+     * of the row with a key as extended JSON's are (`{"${'$'}numberLong": "5"}`) stays a map. A list or a map that holds a long
+     * text is so read as JSON, which didn't crash: `SET n += t` sets such a map whole. The `CASE` on the value's type, which
+     * in a read made Oracle drop a label test (see [itemProperty]), doesn't here: it reads the row variable, one value for the
+     * whole statement, after the rows were matched, and a labelled pattern in a subquery of that statement keeps its test
+     * (`CypherWriteContract`'s "an unwound item's text … written only to the nodes a labelled pattern matches").
+     *
+     * To remove it, delete this override, so the value is read as [propertyOf] reads each key, once an Oracle release no
+     * longer crashes on the repro in `docs/oracle-long-json-string-crash.md`, and `CypherWriteOracleTest`'s "a text past
+     * 32 KB set from an unwound parameter" test still passes without it.
+     */
+    override fun rowValue(keys: List<String>): String {
+        val path = OracleSql.path(keys)
+        return "CASE WHEN JSON_VALUE($ROW, ${OracleSql.path(keys, ".type()")}) = 'string' " +
+            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($ROW RETURNING CLOB), $path RETURNING CLOB)) ELSE JSON_QUERY($ROW, $path RETURNING JSON) END"
+    }
 
     /**
      * A value in a parameter that is a map, `${'$'}p.text`, read with one path from the text the parameter is bound as, and

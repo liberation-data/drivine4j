@@ -93,6 +93,62 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `an unwound item's text, short or past 32 KB, is written only to the nodes a labelled pattern matches`() {
+        // On Oracle such a text is read in a CASE on its type (#309), and such a CASE in a read made Oracle drop a label test
+        // (see OracleCypherCompiler.itemProperty): each node a label rules out, on either end of the pattern, is left alone.
+        for (text in listOf("s", "x".repeat(40_000))) {
+            clear()
+            query(
+                "UNWIND [1, 2, 3] AS id CREATE (:CyWrite {id: id, o: id * 2})-[:R]->(:CyOther {name: 'k'}), " +
+                    "(:CyWrite {id: id, o: id * 2 + 1})-[:R]->(:CyDecoy {name: 'k'}), (:CyNope {id: id})-[:R]->(:CyOther {name: 'k'})",
+            )
+            val given = mapOf("texts" to (1..3).map { mapOf("id" to it, "a" to text, "s" to "s", "k" to "k") })
+            query("UNWIND \$texts AS t MATCH (n:CyWrite {id: t.id})-[r]->(k:CyOther) SET n.a = t.a", given)
+            // A value of the item's worked out beside the node the pattern reached. The `+` is of the short text: on Oracle a
+            // `+` of a text past 4,000 bytes leaves that text out, with or without #309's change (#314 fixes it).
+            query("UNWIND \$texts AS t MATCH (n:CyWrite {id: t.id})-[r]->(k:CyOther) SET n.b = CASE k.name WHEN 'k' THEN t.a END, n.e = t.s + k.name", given)
+            query("UNWIND \$texts AS t MERGE (n:CyWrite {id: t.id, o: t.id * 2}) SET n.c = t.a", given)
+            // A labelled pattern in a subquery of the statement that works the value out, beside the item's text in the CASE.
+            query("UNWIND \$texts AS t MATCH (n:CyWrite {id: t.id}) SET n.f = COUNT { (n)-->(:CyOther {name: t.k}) }", given)
+            val matched = { value: String -> (1..3).flatMap { listOf(value, null) } }
+            assertEquals(matched(text), query("MATCH (n:CyWrite) RETURN n.a ORDER BY n.o"))
+            assertEquals(matched(text), query("MATCH (n:CyWrite) RETURN n.b ORDER BY n.o"))
+            assertEquals(matched("sk"), query("MATCH (n:CyWrite) RETURN n.e ORDER BY n.o"))
+            assertEquals(matched(text), query("MATCH (n:CyWrite) RETURN n.c ORDER BY n.o"))
+            assertEquals((1..3).flatMap { listOf(1L, 0L) }, query("MATCH (n:CyWrite) RETURN n.f ORDER BY n.o"))
+            assertEquals(listOf(6L), query("MATCH (n:CyWrite) RETURN count(n)"))
+            assertEquals(listOf(0L), query("MATCH (n:CyNope) WHERE n.a IS NOT NULL OR n.b IS NOT NULL OR n.c IS NOT NULL OR n.e IS NOT NULL RETURN count(n)"))
+        }
+    }
+
+    @Test
+    fun `an unwound parameter's items are written as they are given, by SET, CREATE, MERGE and SET +=`() {
+        // On Oracle such a value is read through its text (#309): a whole float stays a float, a null or a missing key
+        // writes no property, and a list, a key of a map in the item and a short text are written as they were.
+        val items = listOf(
+            mapOf("id" to 1, "s" to "short", "f" to 5.0, "i" to 5, "l" to listOf(1, 2), "fl" to listOf(1.0, 2.5), "m" to mapOf("k" to 2.0), "z" to null),
+            mapOf("id" to 2, "s" to "x'\"y", "f" to -0.5, "i" to 0, "l" to emptyList<Any>(), "fl" to listOf(3.0), "m" to mapOf("k" to "v")),
+        )
+        val given = mapOf("items" to items)
+        query("UNWIND \$items AS t CREATE (:CyWrite {id: t.id, s: t.s, f: t.f, i: t.i, l: t.l, fl: t.fl, k: t.m.k, z: t.z, w: t.nothing})", given)
+        query("UNWIND \$items AS t MATCH (n:CyWrite {id: t.id}) SET n.s2 = t.s, n.f2 = t.f, n.z2 = t.z, n.w2 = t.nothing", given)
+        query("UNWIND \$items AS t MERGE (n:CyWrite {id: t.id}) SET n.f3 = t.f", given)
+        query("UNWIND \$items AS t MERGE (n:CyWrite {id: t.id + 10}) ON CREATE SET n.f = t.f, n.m = t.m.k", given)
+        query("UNWIND \$added AS t MATCH (n:CyWrite {id: t.id}) SET n += t", mapOf("added" to listOf(mapOf("id" to 1, "g" to 7.0, "s" to null), mapOf("id" to 2, "g" to 8))))
+        query("UNWIND \$floats AS f CREATE (:CyWrite {id: 20, f: f})", mapOf("floats" to listOf(6.0)))
+        assertEquals(
+            listOf(
+                mapOf("id" to 1L, "f" to 5.0, "i" to 5L, "l" to listOf(1L, 2L), "fl" to listOf(1.0, 2.5), "k" to 2.0, "s2" to "short", "f2" to 5.0, "f3" to 5.0, "g" to 7.0),
+                mapOf("id" to 2L, "s" to "x'\"y", "f" to -0.5, "i" to 0L, "l" to emptyList<Any>(), "fl" to listOf(3.0), "k" to "v", "s2" to "x'\"y", "f2" to -0.5, "f3" to -0.5, "g" to 8L),
+                mapOf("id" to 11L, "f" to 5.0, "m" to 2.0),
+                mapOf("id" to 12L, "f" to -0.5, "m" to "v"),
+                mapOf("id" to 20L, "f" to 6.0),
+            ),
+            query("MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"),
+        )
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>
@@ -261,6 +317,55 @@ class CypherWriteOracleTest : CypherWriteContract() {
         } finally {
             connection.release()
         }
+    }
+
+    @Test
+    fun `a text past 32 KB set from an unwound parameter on two nodes leaves the session open`() {
+        // Oracle crashed the session where the block took a text past 32 KB from an item of an unwound parameter, as JSON,
+        // for each of two rows (#309). The compiler reads a text a write takes from its row through the row's text to work
+        // round it: see OracleCypherCompiler.rowValue. As above, each statement is new, and the session is asked again after it.
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+            connection.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
+        try {
+            val texts = listOf("x", "y", "z").map { it.repeat(40_000) }
+            val items = mapOf("items" to texts.mapIndexed { i, a -> mapOf("id" to i + 1, "a" to a, "f" to 5.0) })
+            query("UNWIND range(1, 3) AS id CREATE (:CyWrite {id: id})")
+            val written = mutableListOf<String>()
+            repeat(3) { i ->
+                query("UNWIND \$items AS t MATCH (n:CyWrite {id: t.id}) SET n.a$i = t.a", items)
+                query("UNWIND \$items AS t MERGE (n:CyWrite {id: t.id}) SET n.m$i = t.a", items)
+                query("UNWIND \$items AS t CREATE (:CyMade {id: t.id, a: t.a, i: $i})", items)
+                query("UNWIND \$texts AS t CREATE (:CyBare {a: t, i: $i})", mapOf("texts" to texts))
+                written += listOf("a$i", "m$i")
+                assertEquals(
+                    texts.mapIndexed { j, a -> mapOf("id" to (j + 1).toLong()) + written.associateWith { a } },
+                    query("MATCH (n:CyWrite) WHERE n.id > -$i RETURN properties(n) ORDER BY n.id"),
+                )
+                // Each read as an item of its own: one inside a list isn't worked around (see itemProperty).
+                assertEquals(texts, query("MATCH (n:CyMade {i: $i}) RETURN n.a ORDER BY n.id"))
+                assertEquals(texts.toSet(), query("MATCH (n:CyBare {i: $i}) RETURN n.a").toSet())
+                assertEquals(listOf(3L), query("MATCH (n:CyWrite) RETURN count(n) AS c$i"))
+            }
+            // A map item that holds the long text, set whole: its whole float stays a float.
+            query("UNWIND \$items AS t MATCH (n:CyWrite {id: t.id}) SET n += t", items)
+            assertEquals(texts, query("MATCH (n:CyWrite) RETURN n.a ORDER BY n.id"))
+            assertEquals(listOf(5.0, 5.0, 5.0), query("MATCH (n:CyWrite) RETURN n.f ORDER BY n.id"))
+        } finally {
+            connection.release()
+        }
+    }
+
+    @Test
+    fun `a map an unwound item holds, with a key as extended JSON's, is written as the map it is`() {
+        // Only a text a write takes from its row is read through the row's text (#309): a map is read as JSON, as before, and
+        // not from extended JSON, which would read {"${'$'}numberLong": "5"} as the number 5.
+        val items = listOf(mapOf("id" to 1, "m" to mapOf("\$numberLong" to "5")), mapOf("id" to 2, "m" to mapOf("\$numberDouble" to "2.0")))
+        pm.query(QuerySpecification.withStatement(CypherStatement("UNWIND \$items AS t CREATE (:CyWrite {id: t.id, m: t.m})")).bind(mapOf("items" to items)))
+        assertEquals(
+            items.map { mapOf("id" to (it["id"] as Int).toLong(), "m" to it["m"]) },
+            pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:CyWrite) RETURN properties(n) ORDER BY n.id"))),
+        )
     }
 
     @Test
