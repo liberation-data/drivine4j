@@ -154,6 +154,12 @@ class CompiledSizeTest {
             assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, null, listOf(null, 2)))), "${compiler::class.simpleName}")
             assertTrue(tests("MATCH (c:Claim) WHERE c.map = \$p RETURN c.id", mapOf("p" to mapOf("x" to null))), "${compiler::class.simpleName}")
             assertTrue(tests("MATCH (c:Claim) WITH c, [c.a] AS l RETURN l = [c.b]"), "${compiler::class.simpleName}")
+            // As is a parameter's list with an item too long to write in the statement (#303).
+            assertTrue(tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf("x".repeat(2000), null))), "${compiler::class.simpleName}")
+            // Up to LITERAL_BYTES of JSON's text, its quotes and each character's UTF-8 bytes counted, an item is written.
+            listOf("x".repeat(998) to false, "x".repeat(999) to true, "é".repeat(499) to false, "é".repeat(500) to true).forEach { (text, walked) ->
+                assertEquals(walked, tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(listOf(text), null))), "${compiler::class.simpleName}: ${text.length}")
+            }
         }
     }
 
@@ -238,6 +244,17 @@ class CompiledSizeTest {
             // To 1 place or more, it rounds by places alone, and grows as the number does, not twice over at each level.
             val read = size(", toInteger('1')")
             listOf(size(", 1"), size(", \$p", mapOf("p" to 1.0))).forEach { places -> assertTrue(places < read, "$name: $places, then $read characters") }
+        }
+    }
+
+    @Test
+    fun `a sign() nested under an aggregate compiles to about the statement a ceil() does, reading its number once`() {
+        // Under an aggregate nothing is bound, so a sign that read its number twice wrote it out twice at each level:
+        // on Oracle, where a sign is not SIGN alone (#294), four deep was 14 times the statement a ceil() is.
+        fun nested(function: String) = "UNWIND [1.5] AS x RETURN " + "$function(".repeat(4) + "sum(x)" + ")".repeat(4)
+        compilers.forEach { compiler ->
+            val (sign, ceil) = listOf("sign", "ceil").map { compiler.compile(nested(it), emptyMap()).sql.length }
+            assertTrue(sign < ceil * 1.1, "${compiler::class.simpleName}: sign $sign, ceil $ceil characters")
         }
     }
 }

@@ -255,6 +255,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The value of [key] in the JSON map [json]; null where there is none. */
     protected abstract fun propertyOf(json: String, key: String): String
 
+    /**
+     * The property [key] of the node or relationship whose properties are [props], where it is an item of a `RETURN` or a
+     * `WITH`, returned or passed on: as [propertyOf] reads it, but on a store that must read such an item apart.
+     */
+    protected open fun itemProperty(props: String, key: String): String = propertyOf(props, key)
+
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
@@ -609,6 +615,9 @@ abstract class SqlCypherCompiler(graph: String) {
     /** `round(x, p)` of two arguments: [number] to [precision] places, half away from zero, as SQL's `ROUND` rounds. */
     protected open fun roundPlaces(number: String, precision: String): String = "ROUND($number, $precision)"
 
+    /** The sign of the SQL number [number]: 1, -1 or 0, as SQL's `SIGN` gives it, and null where it is null. */
+    protected open fun signOf(number: String): String = "SIGN($number)"
+
     /**
      * `round(value, precision, mode)`: the SQL number [number] rounded to [precision] decimal places by [mode], as a SQL
      * number. Worked out in decimal, as Neo4j works it out with Java's `BigDecimal`, so 2.345 is halfway between 2.34 and
@@ -629,7 +638,7 @@ abstract class SqlCypherCompiler(graph: String) {
         when (mode) {
             RoundingMode.CEILING -> "(CEIL($n * $scale) / $scale)"
             RoundingMode.FLOOR -> "(FLOOR($n * $scale) / $scale)"
-            else -> "(SIGN($n) * $magnitude / $scale)"
+            else -> "(${signOf(n)} * $magnitude / $scale)"
         }
     }
 
@@ -1806,7 +1815,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 )
             }
             rowOrder = orderOf(select)
-            val compiled = items.map { item -> item.name to aggregating(item.expression) { expression(item.expression, select.scope) } }
+            val compiled = items.map { item -> item.name to aggregating(item.expression) { item(item.expression, select) } }
             val aggregating = items.any { contains(it.expression, ::isAggregate) }
             // Where rows are compared (DISTINCT, GROUP BY), JSON is compared as what compares.
             val compared = projection.distinct || aggregating
@@ -2392,6 +2401,24 @@ abstract class SqlCypherCompiler(graph: String) {
             return parameters.json(subject.name, keys)
         }
 
+        /**
+         * The item [expression] of a `RETURN` or a `WITH` over [select]: a property of a node or a relationship, the item
+         * itself, read as [itemProperty] reads it, but beside a variable-length walk; anything else as elsewhere. A node or a
+         * relationship is compiled once here: compiling the item over it again lost the rows of statements that match a
+         * relationship.
+         */
+        private fun item(expression: Expression, select: Select): Value {
+            if (expression is Expression.Property && !select.walks) {
+                // A property of a node or a relationship holds no null in a list, as expression() marks it (see flat).
+                when (val subject = expression(expression.subject, select.scope)) {
+                    is Value.Node -> if (expression.key != Stamps.PROPERTY) return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    is Value.Relationship -> return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    else -> {}
+                }
+            }
+            return expression(expression, select.scope)
+        }
+
         private fun property(subject: Value, key: String): Value = when (subject) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
@@ -2812,12 +2839,13 @@ abstract class SqlCypherCompiler(graph: String) {
          * An equality of [left] and [right], written as [leftWritten] and [rightWritten], where one is a parameter bound to a list
          * that holds a null, lists within it among its items and no map: the other compared with it item by item, each item
          * as the statement is compiled with it, as [itemwise] compares a list written out, so no store walks the two. Null
-         * where neither is such a parameter, or the store's own comparison compares a null as Cypher does.
+         * where neither is such a parameter, or the store's own comparison compares a null as Cypher does. Nor where an item is
+         * too long to write in the statement (see [short]): such a list is walked as any other.
          */
         private fun givenItemwise(leftWritten: Expression, left: Value, rightWritten: Expression, right: Value): String? {
             if (holdsNull("x") == null) return null
             fun given(expression: Expression) = (expression as? Expression.Parameter)?.let { parameterTree(it.name) }
-                ?.takeIf { it.isArray && !holdsNoNull(it) && arrays(it) }
+                ?.takeIf { it.isArray && !holdsNoNull(it) && arrays(it) && short(it) }
             fun other(value: Value) = (value as? Value.Json)?.takeIf { it.identity == null && it.temporal == null }
             given(rightWritten)?.let { list -> other(left)?.let { return itemsEqual(comparable(it), list) } }
             given(leftWritten)?.let { list -> other(right)?.let { return itemsEqual(comparable(it), list) } }
@@ -2826,6 +2854,14 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether the JSON [node] holds no map, at any depth. */
         private fun arrays(node: JsonNode): Boolean = !node.isObject && (!node.isArray || node.all(::arrays))
+
+        /**
+         * Whether each text, number and truth value the JSON [node], a list that holds no map, holds is short enough to write in
+         * the statement: see [LITERAL_BYTES].
+         */
+        private fun short(node: JsonNode): Boolean =
+            if (node.isArray) node.all(::short)
+            else Neo4jObjectMapper.instance.writeValueAsString(scalarOf(node)).toByteArray(Charsets.UTF_8).size <= LITERAL_BYTES
 
         /**
          * Whether the JSON value [json] is equal to [given], a list that may hold a null and lists, as Cypher compares them: the
@@ -3127,7 +3163,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 // Java's constants, which Neo4j gives, written as the floats they are.
                 "e", "pi" -> if (arguments.isEmpty()) Value.Json(literalJson(if (name == "e") Math.E else Math.PI))
                     else throw DrivineException("${function.name}() takes no argument.")
-                "sign" -> Value.Json(scalar("SIGN(${number(comparable(json(one())))})"))
+                "sign" -> Value.Json(scalar(signOf(number(comparable(json(one()))))))
                 "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"), text = true)
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.
@@ -3412,6 +3448,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The greatest start or length `substring()`, `left()` and `right()` take, as Neo4j takes them: Java's greatest `int`. */
         const val MAX_COUNT = Int.MAX_VALUE.toLong()
+
+        /**
+         * The most bytes of JSON's text, in UTF-8, an item of a parameter's list is written in the statement in, as
+         * `givenItemwise` writes it: Oracle takes no text literal past 4,000 bytes (ORA-01704), a text's JSON is written in a
+         * literal of its own, and each quote in it is doubled there.
+         */
+        const val LITERAL_BYTES = 1000
 
         /** [sql] as the select-list entry of the column [name]: the column itself where [sql] reads one of that name. */
         fun named(sql: String, name: String) = if (sql.endsWith(".$name")) sql else "$sql AS $name"

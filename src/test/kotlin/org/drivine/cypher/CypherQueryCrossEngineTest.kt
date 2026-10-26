@@ -485,6 +485,16 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `texts past 32 KB in a parameter's lists that hold a null compare as texts`() {
+        // A parameter's list with such a text is walked, not written in the statement item by item, past the literal Oracle
+        // takes (ORA-01704) (#303).
+        val text = "x".repeat(40_000)
+        val given = mapOf("a" to listOf(text, null), "b" to listOf(text, null), "c" to listOf(text + "y", null))
+        assertEquals(listOf(listOf(null, false, null, false)), query("RETURN [\$a = \$b, \$a = \$c, \$a IN [\$b], \$a IN [\$c]]", given))
+        assertEquals(listOf(listOf(null, false, null)), query("WITH \$a AS a, \$b AS b, \$c AS c RETURN [a = b, a = c, {k: a} = {k: b}]", given))
+    }
+
+    @Test
     fun `a null node or relationship in a list or a map makes its comparison null`() {
         // Beside the spec's cases since v0.6.6 (#225): a node or a relationship OPTIONAL MATCH finds none of is null in what holds it.
         clear()
@@ -577,6 +587,34 @@ abstract class CypherQueryContract {
             listOf(listOf(2.225073858507201E-308, 2.2250738585072014E-308, 4.9E-324, 9.9E-324)),
             query("RETURN [round(2.2250738585072014E-308, 323), round(2.2250738585072014E-308, 400), round(4.9E-324, 324, 'UP'), round(4.9E-324, 323, 'UP')]"),
         )
+    }
+
+    @Test
+    fun `round() by a mode and sign() take the least positive numbers as positive, where Oracle's SIGN gives 0`() {
+        // Oracle's SIGN gives 0 for a positive number from 1.0E-130 to under 1.0E-128 (#294); UP, DOWN and the HALF_ modes round by the sign.
+        assertEquals(
+            listOf(listOf(0.01, 1.0, -0.01, 0.0, 0.0, 0.01, 0.01, 1.0E-129)),
+            query("RETURN [round(1.0E-129, 2, 'UP'), round(1.0E-129, 0, 'UP'), round(-1.0E-129, 2, 'UP'), round(1.0E-129, 2, 'DOWN'), round(-1.0E-129, 2, 'DOWN'), round(1.0E-130, 2, 'UP'), round(1.0E-129, 2, 'CEILING'), round(1.0E-129, 129, 'UP')]"),
+        )
+        assertEquals(
+            listOf(listOf(1.0E-129, 0.0, 0.0, 2.0E-129, -1.0E-129, 1.0E-128)),
+            query("RETURN [round(5.0E-130, 129, 'HALF_UP'), round(5.0E-130, 129, 'HALF_DOWN'), round(5.0E-130, 129, 'HALF_EVEN'), round(1.5E-129, 129, 'HALF_EVEN'), round(-5.0E-130, 129, 'HALF_UP'), round(9.0E-129, 128, 'HALF_UP')]"),
+        )
+        assertEquals(
+            listOf(listOf(1L, -1L, 0L, null, 1L, 1L, 1L)),
+            query("RETURN [sign(1.0E-129), sign(-1.0E-129), sign(0.0), sign(null), sign(1.0E-130), sign(9.99E-129), sign(\$x)]", mapOf("x" to 1.0E-129)),
+        )
+        // Read from a row, beside 0, -0.0 and null, whose sign the rounding does not ask, and under an aggregate.
+        assertEquals(
+            listOf(listOf(1L, 0.01, 1.0E-129, 0.0), listOf(-1L, -0.01, -1.0E-129, 0.0), listOf(0L, 0.0, 0.0, 0.0), listOf(0L, 0.0, 0.0, 0.0), listOf(null, null, null, null)),
+            query("UNWIND [1.0E-129, -1.0E-129, 0.0, -0.0, null] AS x RETURN [sign(x), round(x, 2, 'UP'), round(x, 129, 'HALF_EVEN'), round(x, 0, 'DOWN')]"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L, 1L, 0.01, 1L)),
+            query("UNWIND [1.0E-129, 5.0E-130] AS x RETURN [sign(sum(x)), sum(sign(x)), sign(min(x)), round(max(x), 2, 'UP'), sign(sign(sign(min(x))))]"),
+        )
+        // Numbers near NUMBER's greatest, which a sign told by a multiple of them would overflow.
+        assertEquals(listOf(listOf(1L, -1L, 1L, -1L, 1L)), query("RETURN [sign(9.0E125), sign(-9.0E125), sign(7), sign(-0.5), sign(0.5)]"))
     }
 
     @Test
