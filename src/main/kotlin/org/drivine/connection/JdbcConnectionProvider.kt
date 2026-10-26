@@ -13,6 +13,8 @@ import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.UnsupportedSchemaGrammar
+import java.util.Collections
+import java.util.WeakHashMap
 import javax.sql.DataSource
 
 /**
@@ -47,7 +49,38 @@ class JdbcConnectionProvider(
     override val nativeDriver: DataSource
         get() = dataSource
 
-    override fun connect(): Connection = JdbcConnection(dataSource.connection, JdbcResultMapper(subtypeRegistry), type, graphName)
+    /**
+     * Whether each session of [dataSource] is already set to make no adaptive plan on Oracle: a pool this provider made,
+     * or a HikariCP pool that runs [NO_ADAPTIVE_PLANS] as it opens a session, as [pooled] makes one.
+     */
+    private val sessionsSet: Boolean =
+        type != DatabaseType.ORACLE || ownsDataSource || (dataSource as? HikariDataSource)?.connectionInitSql == NO_ADAPTIVE_PLANS
+
+    /**
+     * The sessions of the application's [dataSource] that [connect] has set, by the driver's connection behind a pool's
+     * handle, so a session a pool hands out again is not set again. Weak, so a session the pool closes is let go.
+     */
+    private val setSessions: MutableSet<java.sql.Connection> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
+
+    override fun connect(): Connection = JdbcConnection(withoutAdaptivePlans(dataSource.connection), JdbcResultMapper(subtypeRegistry), type, graphName)
+
+    /**
+     * Sets a session of the application's Oracle data source to make no adaptive plan, once (see [NO_ADAPTIVE_PLANS]).
+     * A session that cannot be set is closed and its error thrown, rather than given out unset.
+     */
+    private fun withoutAdaptivePlans(connection: java.sql.Connection): java.sql.Connection {
+        if (sessionsSet) return connection
+        val session = runCatching { connection.unwrap(java.sql.Connection::class.java) }.getOrNull() ?: connection
+        if (session in setSessions) return connection
+        try {
+            connection.createStatement().use { it.execute(NO_ADAPTIVE_PLANS) }
+        } catch (e: Exception) {
+            runCatching { connection.close() }.exceptionOrNull()?.let(e::addSuppressed)
+            throw e
+        }
+        setSessions.add(session)
+        return connection
+    }
 
     override fun end() {
         if (ownsDataSource) (dataSource as? AutoCloseable)?.close()
@@ -56,6 +89,15 @@ class JdbcConnectionProvider(
     companion object {
         /** The graph of a provider that is given no name for one. */
         const val DEFAULT_GRAPH = "drivine"
+
+        /**
+         * Run in each Oracle session Drivine opens or is given: Oracle makes no adaptive plan in it. An adaptive plan
+         * picks its joins as it runs, and once the graph's tables had grown and shrunk without statistics, one gave no
+         * rows for a join that filters a node by a label and a property, where the same plan, fixed, gave them all
+         * (liberation-data/drivine4j#289). A walk's step already asks for no adaptive plan (#182); this covers every
+         * statement. One statement can ask for an adaptive plan again: `/*+ OPT_PARAM('optimizer_adaptive_plans' 'true') */`.
+         */
+        const val NO_ADAPTIVE_PLANS = "ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE"
 
         /** The statements the Oracle driver keeps prepared on each connection. */
         private const val STATEMENT_CACHE = 64
@@ -85,6 +127,9 @@ class JdbcConnectionProvider(
                 idleTimeoutMillis?.let { idleTimeout = it.toLong() }
                 // A save is the same block each time. Kept by the driver, it is neither sent nor parsed again.
                 if (type == DatabaseType.ORACLE) addDataSourceProperty("oracle.jdbc.implicitStatementCacheSize", STATEMENT_CACHE.toString())
+                // Each session the pool opens makes no adaptive plan. One whose statement fails is a connection that
+                // failed: the pool closes it, and never hands it out.
+                if (type == DatabaseType.ORACLE) connectionInitSql = NO_ADAPTIVE_PLANS
                 // A string is sent with no type, as a literal is, so the statement says what it is: `jsonb`, a number, a date.
                 if (type == DatabaseType.POSTGRES) addDataSourceProperty("stringtype", "unspecified")
             }

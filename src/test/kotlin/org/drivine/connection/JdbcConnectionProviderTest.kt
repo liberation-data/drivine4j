@@ -43,10 +43,41 @@ class JdbcConnectionProviderTest {
         override fun isWrapperFor(iface: Class<*>?): Boolean = false
     }
 
-    private val jdbc = Mockito.mock(java.sql.Connection::class.java)
+    private val statement = Mockito.mock(java.sql.Statement::class.java)
+    private val jdbc = Mockito.mock(java.sql.Connection::class.java).also { `when`(it.createStatement()).thenReturn(statement) }
     private val dataSource = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(jdbc) }
 
     // ----- The provider -----
+
+    @Test
+    fun `a session of the application's Oracle data source is set to make no adaptive plan, once`() {
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource)
+
+        provider.connect()
+        provider.connect()
+
+        // The data source hands out the same session twice, as a pool does: it is set the first time only.
+        verify(statement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        verify(statement, times(1)).close()
+    }
+
+    @Test
+    fun `a session of the application's Oracle data source that cannot be set is closed, and not given out`() {
+        val refused = SQLException("ORA-02248: invalid option for ALTER SESSION")
+        `when`(statement.execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)).thenThrow(refused)
+
+        assertSame(refused, assertFailsWith<SQLException> { JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource).connect() })
+        verify(jdbc).close()
+    }
+
+    @Test
+    fun `a session of a pool the provider made, or of another store, is not set again on connect`() {
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource, ownsDataSource = true).connect()
+        JdbcConnectionProvider("default", DatabaseType.POSTGRES, dataSource).connect()
+        JdbcConnectionProvider("default", DatabaseType.SQLITE, dataSource).connect()
+
+        verify(jdbc, never()).createStatement()
+    }
 
     @Test
     fun `the thin-driver URL of an Oracle service names the host, the port and the service`() {
