@@ -771,6 +771,9 @@ abstract class CypherQueryContract {
         assertEquals(listOf(emptyList<Any>()), query("MATCH (n:Round) WHERE n.k = 1 RETURN collect(CASE WHEN n.k = 2 THEN round(n.x, -2, 'UP') END)"))
         assertEquals(emptyList(), query("MATCH (n:Round) WHERE n.k = 3 RETURN [round(1.5, -2), round(1.5, \$p, 'UP')]", mapOf("p" to 1.0e20)))
         assertEquals(emptyList(), query("UNWIND [] AS x RETURN round(1.5, -2)"))
+        // Nor in an ORDER BY whose round() reads nothing of the row. Not in a WHERE: Neo4j may test a condition that reads
+        // nothing of a row before the rows' own, and Postgres does.
+        assertEquals(emptyList(), query("MATCH (n:Round) WHERE n.k = 3 RETURN n.k ORDER BY round(1.5, -2), round(1.5, \$p, 'UP')", mapOf("p" to 1.0e20)))
     }
 
     @Test
