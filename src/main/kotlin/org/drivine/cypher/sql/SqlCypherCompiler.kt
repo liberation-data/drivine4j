@@ -603,9 +603,6 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The sign of the SQL number [number]: 1, -1 or 0, as SQL's `SIGN` gives it, and null where it is null. */
     protected open fun signOf(number: String): String = "SIGN($number)"
 
-    /** [signOf] where any sign of 0 will do, as where it multiplies 0, so a store may tell it more cheaply. */
-    protected open fun signOfNonZero(number: String): String = signOf(number)
-
     /**
      * `round(value, precision, mode)`: the SQL number [number] rounded to [precision] decimal places by [mode], as a SQL
      * number. Worked out in decimal, as Neo4j works it out with Java's `BigDecimal`, so 2.345 is halfway between 2.34 and
@@ -626,7 +623,7 @@ abstract class SqlCypherCompiler(graph: String) {
         when (mode) {
             RoundingMode.CEILING -> "(CEIL($n * $scale) / $scale)"
             RoundingMode.FLOOR -> "(FLOOR($n * $scale) / $scale)"
-            else -> "(${signOfNonZero(n)} * $magnitude / $scale)"
+            else -> "(${signOf(n)} * $magnitude / $scale)"
         }
     }
 

@@ -604,6 +604,17 @@ abstract class CypherQueryContract {
             listOf(listOf(1L, -1L, 0L, null, 1L, 1L, 1L)),
             query("RETURN [sign(1.0E-129), sign(-1.0E-129), sign(0.0), sign(null), sign(1.0E-130), sign(9.99E-129), sign(\$x)]", mapOf("x" to 1.0E-129)),
         )
+        // Read from a row, beside 0, -0.0 and null, whose sign the rounding does not ask, and under an aggregate.
+        assertEquals(
+            listOf(listOf(1L, 0.01, 1.0E-129, 0.0), listOf(-1L, -0.01, -1.0E-129, 0.0), listOf(0L, 0.0, 0.0, 0.0), listOf(0L, 0.0, 0.0, 0.0), listOf(null, null, null, null)),
+            query("UNWIND [1.0E-129, -1.0E-129, 0.0, -0.0, null] AS x RETURN [sign(x), round(x, 2, 'UP'), round(x, 129, 'HALF_EVEN'), round(x, 0, 'DOWN')]"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L, 1L, 0.01, 1L)),
+            query("UNWIND [1.0E-129, 5.0E-130] AS x RETURN [sign(sum(x)), sum(sign(x)), sign(min(x)), round(max(x), 2, 'UP'), sign(sign(sign(min(x))))]"),
+        )
+        // Numbers near NUMBER's greatest, which a sign told by a multiple of them would overflow.
+        assertEquals(listOf(listOf(1L, -1L, 1L, -1L, 1L)), query("RETURN [sign(9.0E125), sign(-9.0E125), sign(7), sign(-0.5), sign(0.5)]"))
     }
 
     @Test

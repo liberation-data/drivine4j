@@ -597,13 +597,11 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * Oracle's `SIGN` gives 0 for a positive number under 1.0E-128, from 1.0E-130 up, which NUMBER holds and compares
-     * as greater than 0, so a positive number is told by comparing it with 0. `SIGN` is right for the rest: a negative
-     * number, 0, and null.
+     * as greater than 0, and is right from 1.0E-128 up, for a negative number, 0, and null. So the number is held to
+     * between -1 and 1, where a thousand times it cannot overflow, and that is signed, past 1.0E-128 where it is not 0:
+     * [number] is read once, so a sign of a sign does not write it out twice at each level.
      */
-    override fun signOf(number: String) = shared(number) { (n) -> "CASE WHEN $n > 0 THEN 1 ELSE SIGN($n) END" }
-
-    /** [signOf], reading [number] once: 1 for 0, whose sign this does not ask. */
-    override fun signOfNonZero(number: String) = "CASE WHEN $number < 0 THEN -1 ELSE 1 END"
+    override fun signOf(number: String) = "SIGN(GREATEST(LEAST($number, 1), -1) * 1000)"
 
     override fun roundPlaces(number: String, precision: String) = pastItsDigits(number, precision) { n, p -> super.roundPlaces(n, p) }
 
