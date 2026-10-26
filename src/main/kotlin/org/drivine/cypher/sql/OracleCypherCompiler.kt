@@ -321,6 +321,20 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         return "${if (min) "MIN" else "MAX"}(${nullIfJsonNull(value)}) KEEP (DENSE_RANK FIRST ORDER BY ${kindOrder(value)} $direction NULLS LAST${key?.let { ", $it $direction NULLS LAST" }.orEmpty()})"
     }
 
+    /**
+     * A float, `BINARY_DOUBLE`, where any value summed is one, a double or a number with a fraction, as in Cypher: `NUMBER`
+     * keeps no such kind, so a sum of floats that is whole, 0.5 + 1.0 + 0.5, would be the integer 2. Summed as `NUMBER`, as
+     * the other stores sum, then made a float. Nothing is bound under an aggregate, so each value is written out where it
+     * is read: each read is one path that tests the value's kind itself, a text not summed and a number with a fraction
+     * written with a point, so a sum reads it three times, as [number] alone does. A path compares no item to another.
+     */
+    override fun sum(json: String, distinct: String): String {
+        val number = "JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING NUMBER)"
+        val summed = "sum($distinct$number)"
+        val float = "MAX(JSON_VALUE($json, '\$?(@.type() == \"double\" || (@.type() == \"number\" && @.string() has substring \".\"))')) IS NOT NULL"
+        return "CASE WHEN $float THEN JSON_SCALAR(TO_BINARY_DOUBLE($summed)) ELSE JSON_SCALAR(COALESCE($summed, 0)) END"
+    }
+
     /** In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. */
     override fun arithmetic(a: String, b: String, operator: String) =
         "CASE WHEN ${kind(a)} = 'double' OR ${kind(b)} = 'double' " +
