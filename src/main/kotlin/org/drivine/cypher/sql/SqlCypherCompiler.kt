@@ -261,6 +261,12 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun itemProperty(props: String, key: String): String = propertyOf(props, key)
 
+    /**
+     * The value at [keys], each of a map in the one before, in the row a write is making ([ROW]), where a statement of the
+     * write reads it to work out what it writes: as [propertyOf] reads each key, but on a store that must read it apart.
+     */
+    protected open fun rowValue(keys: List<String>): String = keys.fold(ROW, ::propertyOf)
+
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
@@ -1403,10 +1409,14 @@ abstract class SqlCypherCompiler(graph: String) {
          * The row in [ROW] alone, as a statement of a write reads it, with the variables [needed] bound: a row
          * may hold many, and each node or relationship bound is a join.
          */
-        private fun row(needed: Set<String>?): Select = Select(emptyMap()).also { bindRow(it, ROW, needed) }
+        private fun row(needed: Set<String>?, written: Boolean = false): Select = Select(emptyMap()).also { bindRow(it, ROW, needed, written) }
 
-        /** Binds into [select] each variable the row [row] holds, of [needed] where given: a node or a relationship is read from its table, as it is now. */
-        private fun bindRow(select: Select, row: String, needed: Set<String>? = null) {
+        /**
+         * Binds into [select] each variable the row [row] holds, of [needed] where given: a node or a relationship is read from
+         * its table, as it is now. With [written], [row] is [ROW], and a value and each property of it are read as [rowValue]
+         * reads them, for a statement that works out what a write writes.
+         */
+        private fun bindRow(select: Select, row: String, needed: Set<String>? = null, written: Boolean = false) {
             kinds.filterKeys { needed == null || it in needed }.forEach { (variable, kind) ->
                 val key = key(variable)
                 when (kind) {
@@ -1423,9 +1433,10 @@ abstract class SqlCypherCompiler(graph: String) {
                     Kind.VALUE -> select.bind(
                         variable,
                         Value.Json(
-                            propertyOf(row, key), temporal = carried[variable]?.temporal, items = carried[variable]?.items,
+                            if (written) rowValue(listOf(key)) else propertyOf(row, key), temporal = carried[variable]?.temporal, items = carried[variable]?.items,
                             list = carried[variable]?.list == true, itemLists = carried[variable]?.itemLists == true,
                             text = carried[variable]?.text == true, texts = carried[variable]?.texts == true,
+                            rowKeys = if (written) listOf(key) else null,
                         ),
                     )
                     // A list or a path that is null is held as JSON's null, and read as SQL's.
@@ -1445,7 +1456,7 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun evaluate(variable: String, vararg expressions: Expression?, value: (Map<String, Value>) -> String) {
             val read = expressions.filterNotNull()
-            val select = row(if (read.any(::holdsSubquery)) null else read.flatMap(::variablesIn).toSet())
+            val select = row(if (read.any(::holdsSubquery)) null else read.flatMap(::variablesIn).toSet(), written = true)
             step(ProcedureStep.Select(variable, value(select.scope), from(select).joinToString("") { "\n$it" }))
         }
 
@@ -2425,9 +2436,10 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
-            is Value.Json -> temporalField(subject, key) ?: propertyOf(comparable(subject), key).let { taken ->
-                Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) })
-            }
+            is Value.Json -> temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key) }
+                ?: propertyOf(comparable(subject), key).let { taken ->
+                    Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) })
+                }
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
         }

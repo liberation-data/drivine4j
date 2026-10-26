@@ -3322,6 +3322,11 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   [docs/oracle-long-json-string-crash.md](docs/oracle-long-json-string-crash.md). Such a text still can't be sorted
   by, grouped by or made `DISTINCT`: Oracle sorts and groups JSON only up to about 32 KB, and refuses the statement
   (ORA-40180), leaving the session open.
+- Writes are worked around for the same bug: a text that a write takes from an unwound parameter's item, or from
+  another value of its rows, to write it (`UNWIND $rows AS r MATCH (n {id: r.id}) SET n.a = r.a`, `CREATE (:X {a:
+  r.a})`, `MERGE … SET n.a = r.a`) is read from the row's text, at no cost measured: 1,000 rows set by one statement
+  take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. A value
+  such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`) isn't worked around yet.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
