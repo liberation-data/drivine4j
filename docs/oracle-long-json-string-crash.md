@@ -7,9 +7,9 @@ release of Oracle no longer fails this repro.
 ## Summary
 
 Selecting a string value longer than about 32 KB out of a `JSON` column with `JSON_QUERY(… RETURNING JSON)`, over two
-or more rows, corrupts the server process's memory. The first such statement returns the right rows but logs
-ORA-00600 `[17114]` in the alert log; a few statements later the server process dies, and the client gets ORA-03113.
-The ORA-07445 that kills it faults at the address `0x78787878787878`: the bytes of the string, `xxxxxxx`, read as a
+or more rows, corrupts the server process's memory. The server process dies, during that statement or a few statements
+later, and the client gets ORA-03113; where it survives the statement, the alert log already has ORA-00600 `[17114]`.
+The ORA-07445 that kills it faults at an address such as `0x78787878787878`: the bytes of the string, `xxxxxxx`, read as a
 pointer, so the long value has been written over the heap.
 
 - **Seen on:** Oracle AI Database 26ai Free, Release 23.26.3.0.0 (container image `gvenzl/oracle-free:23-faststart`,
@@ -34,7 +34,7 @@ INSERT INTO repro_node (props)
 SELECT JSON_TRANSFORM(JSON('{"id":' || level || '}'), SET '$.a' = RPAD(TO_CLOB('x'), 40000, 'x'))
 FROM dual CONNECT BY level <= 2;
 COMMIT;
--- The same read three times: each returns both rows, and the first already logs ORA-00600 [17114].
+-- The same read three times. The session is lost on one of them or at EXIT (see Actual).
 SELECT JSON_QUERY(props, '$.a' RETURNING JSON) AS a FROM repro_node;
 SELECT 'session alive 1' AS status FROM dual;
 SELECT JSON_QUERY(props, '$.a' RETURNING JSON) AS a FROM repro_node WHERE nid > 0;
@@ -56,25 +56,30 @@ Each `SELECT` returns the two strings, the session stays open, and the alert log
 
 ## Actual
 
-The selects return their rows, but the session is lost, here at `EXIT`, and the alert log has internal errors:
+The server process dies, and the alert log has internal errors. Where it dies varies from run to run. In a fresh
+container, one run of this script lost the session on the first `SELECT`:
 
 ```
+Table created.
+2 rows created.
+Commit complete.
 ERROR:
 ORA-03113: end-of-file on communication channel
-Process ID: 0
-Session ID: 162 Serial number: 41718
+Process ID: 265
+Session ID: 57 Serial number: 38176
 ```
 
 ```
-ORA-00600: internal error code, arguments: [17114], [0xFFFFB87D4088], [], [], [], [], [], [], [], [], [], []
-ORA-00600: internal error code, arguments: [17114], [0xFFFFB87D4088], [], [], [], [], [], [], [], [], [], []
-ORA-07445: exception encountered: core dump [kxsFreePages()+152] [SIGSEGV] [ADDR:0x78787878787878] [PC:0xF70A16C] [Address not mapped to object] []
+ORA-07445: exception encountered: core dump [kghsrch_new()+148] [SIGSEGV] [ADDR:0x78787878787868] [PC:0xFC738C4] [Address not mapped to object] []
+ORA-07445: exception encountered: core dump [kghsrch_new()+148] [SIGSEGV] [ADDR:0x78787878787868] [PC:0xFC738C4] [Address not mapped to object] []
+ORA-07445: exception encountered: core dump [kghxhal()+40] [SIGSEGV] [ADDR:0x78787878787878] [PC:0xFC94D78] [Address not mapped to object] []
 ```
 
-Where the process dies varies with what the session does next. Other runs, through JDBC and in statements that feed the
-value on through a subquery and an `ORDER BY`, lost the session in the middle of the statement (ORA-03113 on the
-`SELECT` itself), and logged ORA-00600 `[kghfrh1]`, `[17147]` or `[17182]`, and ORA-07445 in `kghalo`, `kghsrch_new` or
-`kgscFreeCachedCursor`, the last again at `ADDR:0x78787878787880`.
+Two other runs, each in a fresh container, returned the rows of all three selects, logged ORA-00600 `[17114]` twice,
+and lost the session at `EXIT`, with ORA-07445 in `kxsFreePages` at `ADDR:0x78787878787878`. Other runs, through JDBC
+and in statements that feed the value on through a subquery and an `ORDER BY`, logged ORA-00600 `[kghfrh1]`, `[17147]`
+or `[17182]`, and ORA-07445 in `kghalo` or `kgscFreeCachedCursor`. Each ORA-07445 faults at an address made of the
+string's bytes.
 
 With 30,000 characters in place of 40,000, or `CONNECT BY level <= 1` in place of `2`, the same script runs clean.
 
