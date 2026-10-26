@@ -437,6 +437,111 @@ cases:
       - cypher: "MATCH (p:Person) RETURN DISTINCT p {.born} AS b ORDER BY b.born"
         rows: [{born: 1961}, {born: 1964}, {born: 1967}, {born: null}]
 
+  - name: "Texts in code point order"
+    description: "Texts compare and sort by their code points, as Cypher has them, not by a locale's collation: a capital before every small letter, and a space before a letter."
+    steps:
+      - cypher: "UNWIND ['John Wick', 'Johnny Mnemonic', 'b', 'B', 'a', 'A', 'é', 'e', 'z', 'Z', '~', '_', '-', ' ', 'a b', 'ab', 'a-c'] AS t RETURN t ORDER BY t"
+        rows: [" ", "-", "A", "B", "John Wick", "Johnny Mnemonic", "Z", "_", "a", "a b", "a-c", "ab", "b", "e", "z", "~", "é"]
+      - cypher: "UNWIND ['John Wick', 'Johnny Mnemonic', 'b', 'B', 'a', 'é'] AS t WITH t ORDER BY t DESC RETURN collect(t)"
+        rows: [["é", "b", "a", "Johnny Mnemonic", "John Wick", "B"]]
+      - cypher: "UNWIND ['b', 'B', 'b', 'a', 'B'] AS t RETURN DISTINCT t ORDER BY t"
+        rows: ["B", "a", "b"]
+      - cypher: "RETURN ['a' < 'B', 'John Wick' < 'Johnny Mnemonic', 'é' > 'f', 'Z' < '_', 'a' >= 'B', 'ab' <= 'a b']"
+        rows: [[false, true, true, true, true, false]]
+      - cypher: "UNWIND ['b', 'B', 'a', 'é'] AS t RETURN min(t), max(t)"
+        rows: [["B", "é"]]
+      - cypher: "UNWIND ['b', 'B', 'a', 'B'] AS t RETURN min(DISTINCT t), max(DISTINCT t)"
+        rows: [["B", "b"]]
+      - note: "A text given compares as one written."
+        cypher: "UNWIND $ts AS t RETURN t ORDER BY t"
+        parameters: {ts: ["b", "B", "John Wick", "Johnny Mnemonic", "a"]}
+        rows: ["B", "John Wick", "Johnny Mnemonic", "a", "b"]
+      - note: "A sort key long enough that Postgres works it out once, in a subquery, sorts so too."
+        cypher: "UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY coalesce(toLower(toUpper(trim(t))), toUpper(t), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz') + t"
+        rows: ["a", "B", "b"]
+      - cypher: "UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY coalesce(toLower(toUpper(trim(t))), toUpper(t), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz') + t DESC"
+        rows: ["b", "B", "a"]
+
+  - name: "Properties in code point order"
+    description: "A text property compares with a text, and sorts, by code points: 'The Matrix' is before 'The matrix', which a locale puts first."
+    steps:
+      - cypher: "MATCH (m:Movie) WHERE m.title < $t RETURN m.title ORDER BY m.title"
+        parameters: {t: "The matrix"}
+        rows: ["Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"]
+      - cypher: "MATCH (m:Movie) WHERE m.title >= 'the' RETURN m.title"
+        rows: []
+      - cypher: "MATCH (m:Movie) WITH m.title AS t ORDER BY toLower(t) + 'A' DESC RETURN collect(t)"
+        rows: [["The Matrix", "The Matrix Reloaded", "Johnny Mnemonic"]]
+      - cypher: "MATCH (m:Movie) WITH CASE WHEN m.released < 1996 THEN toLower(m.title) ELSE m.title END AS t RETURN min(t), max(t)"
+        rows: [["The Matrix", "johnny mnemonic"]]
+      - cypher: "MATCH (p:Person), (q:Person) WHERE toLower(p.name) < q.name RETURN count(*)"
+        rows: [0]
+
+  - name: "Lists of texts in code point order"
+    description: "A sort by a list, and min and max of lists, compare the texts in them by code points."
+    steps:
+      - cypher: "UNWIND [['a', 'b'], ['a', 'B'], ['B'], ['b'], ['John Wick'], ['Johnny Mnemonic'], ['a', 'é'], ['a', '~']] AS l RETURN l ORDER BY l"
+        rows: [["B"], ["John Wick"], ["Johnny Mnemonic"], ["a", "B"], ["a", "b"], ["a", "~"], ["a", "é"], ["b"]]
+      - cypher: "UNWIND [['a', 'b'], ['a', 'B'], ['B'], ['b']] AS l RETURN min(l), max(l)"
+        rows: [[["B"], ["b"]]]
+      - cypher: "MATCH (m:Movie) WITH m ORDER BY m.released WITH collect(toLower(m.title)) + ['The Matrix'] AS ts UNWIND [ts, ['the matrix'], ['The matrix']] AS l RETURN l ORDER BY l DESC"
+        rows: [["the matrix"], ["johnny mnemonic", "the matrix", "the matrix reloaded", "The Matrix"], ["The matrix"]]
+
+  - name: "Long texts in a list in code point order"
+    description: "A text in a list sorts by its code points up to its 500th character and past it, whether that character is of one byte in UTF-8, two or four."
+    steps:
+      - cypher: "UNWIND [[$a + 'b', '3'], [$a + 'B', '2'], [$a, '1'], [$a + $c + 'b', '5'], [$a + $c, '4']] AS g WITH [g[0], g[1]] AS l RETURN l[1] ORDER BY l"
+        parameters: {a: {$repeat: "a", times: 499}, c: {$repeat: "a", times: 101}}
+        rows: ["1", "2", "4", "5", "3"]
+      - cypher: "UNWIND [[$a + 'aB', 3], [$a + 'a', 2], [$a + 'é', 5], [$a + 'b', 4], [$a + 'B', 1]] AS g WITH [g[0]] AS l, g[1] AS k RETURN k ORDER BY l"
+        parameters: {a: {$repeat: "a", times: 499}}
+        rows: [1, 2, 3, 4, 5]
+      - note: "500 characters of four bytes are 16,000 bits, near the 16,383 that Postgres keys a text in a list by."
+        cypher: "WITH reduce(s = '', i IN range(1, 499) | s + '😀') AS s UNWIND [[s + '😀b', 6], [s, 1], [s + '～', 3], [s + '😀a', 5], [s + 'a', 2], [s + '😀', 4]] AS g WITH [g[0]] AS l, g[1] AS k RETURN k ORDER BY l"
+        rows: [1, 2, 3, 4, 5, 6]
+      - cypher: "WITH reduce(s = '', i IN range(1, 499) | s + '😀') AS s UNWIND [[s + '😀b', 6], [s, 1], [s + '～', 3], [s + '😀a', 5], [s + 'a', 2], [s + '😀', 4]] AS g WITH [g[0]] AS l, g[1] AS k RETURN k ORDER BY l DESC"
+        rows: [6, 5, 4, 3, 2, 1]
+
+  - name: "Texts beside nulls and other kinds"
+    description: "A text sorts beside a null and a value of another kind as Cypher orders them, and by its code points among the texts."
+    steps:
+      - cypher: "UNWIND ['b', null, 'B'] AS t RETURN t ORDER BY t"
+        rows: ["B", "b", null]
+      - cypher: "UNWIND ['b', null, 'B', 'b'] AS t RETURN DISTINCT t ORDER BY t DESC"
+        rows: [null, "b", "B"]
+      - note: "A text before a number, as Cypher orders kinds. Oracle and SQLite sort a number first."
+        cypher: "UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t"
+        except: [oracle, sqlite]
+        rows: ["B", "b", 1, 2, null]
+      - cypher: "UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t DESC"
+        except: [oracle, sqlite]
+        rows: [null, 2, 1, "b", "B"]
+      - note: "A text compared with a value of another kind, or with null, is null; one that coalesce() or CASE gives compares by its code points."
+        cypher: "RETURN ['a' < 1, 'B' > null, 1 >= 'a', coalesce(null, 'a') < 'B', CASE WHEN true THEN 'a' END < 'B']"
+        rows: [[null, null, null, false, false]]
+      - cypher: "UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t < 'a' RETURN t"
+        rows: ["B"]
+      - cypher: "UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t > 0 RETURN t"
+        rows: [1]
+      - note: "min() takes the least text by its code points, and max() the greatest number, as Cypher orders kinds."
+        cypher: "UNWIND ['b', 1, 'B', 2, true] AS t RETURN min(t), max(t)"
+        rows: [["B", 2]]
+
+  - name: "Texts beyond the Basic Multilingual Plane in code point order"
+    description: "A character above U+FFFF sorts after every one below it, as its code point says, though UTF-16, by which Java and JavaScript compare texts, puts it before U+E000 to U+FFFF."
+    steps:
+      - cypher: "UNWIND ['😀', '～', '', 'a', '퟿'] AS t RETURN t ORDER BY t"
+        rows: ["a", "퟿", "", "～", "😀"]
+      - cypher: "RETURN ['😀' < '～', '😀' > '', '😀' > '퟿']"
+        rows: [[false, true, true]]
+      - cypher: "UNWIND [['😀'], ['～']] AS l RETURN l ORDER BY l"
+        rows: [["～"], ["😀"]]
+      - note: "Neo4j compares a text given as a parameter by its UTF-16 code units, where it compares one written or stored by its code points (neo4j/neo4j#13997). The other stores give these rows."
+        cypher: "UNWIND $ts AS t RETURN min(t), max(t)"
+        parameters: {ts: ["😀", "～", ""]}
+        except: [neo4j]
+        rows: [["", "😀"]]
+
   - name: "Floats stay floats"
     description: "Negating or taking abs() of a float keeps it a float."
     steps:
