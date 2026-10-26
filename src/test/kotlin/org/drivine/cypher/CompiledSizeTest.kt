@@ -206,12 +206,16 @@ class CompiledSizeTest {
     }
 
     @Test
-    fun `a sort by a property on Postgres is by its JSON alone, and only a list the statement makes is keyed as a list`() {
+    fun `a sort by a property on Postgres is by its JSON and its text, and only a list the statement makes is keyed as a list`() {
         // Keyed as a list, a term costs thousands a row in the planner's estimate, which brings in its JIT for the whole
-        // statement past a few dozen rows.
+        // statement past a few dozen rows. A text sorts by its code points (#273), in the same row, with no subquery.
         val compiler = PostgresCypherCompiler("g")
         val property = compiler.compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql.substringAfter("ORDER BY ")
-        assertEquals("NULLIF(p2.s1, 'null'::jsonb)", property)
+        assertEquals(
+            "ROW(CASE WHEN jsonb_typeof(p2.s1) = 'string' THEN '\"\"'::jsonb ELSE NULLIF(p2.s1, 'null'::jsonb) END, " +
+                "(CASE WHEN jsonb_typeof(p2.s1) = 'string' THEN (p2.s1 #>> '{}') END) COLLATE \"C\")",
+            property,
+        )
         val list = compiler.compile("MATCH (c:Claim) WITH c.name AS n, collect(c.id) AS ids RETURN n ORDER BY ids").sql.substringAfter("ORDER BY ")
         assertTrue(list.contains("WITH RECURSIVE"), list)
         // Its items as arrays unnested, which the planner takes for 10 items, not a set-returning function's 100: a 150th of the cost.

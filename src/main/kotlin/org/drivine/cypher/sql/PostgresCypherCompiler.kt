@@ -103,7 +103,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /** The property's text, as a range index or a uniqueness constraint reads it with `->>`, compared with the value's. */
     override fun indexedEquality(property: String, value: String): String? =
-        Regex("""^\(([\w.]+) -> ('(?:[^']|'')*')\)$""").matchEntire(property)?.let { "(${it.groupValues[1]} ->> ${it.groupValues[2]}) = ($value #>> '{}')" }
+        PROPERTY_READ.matchEntire(property)?.let { "(${it.groupValues[1]} ->> ${it.groupValues[2]}) = ($value #>> '{}')" }
+
+    /** The JSON [json]'s text, where it is a text: a property's read with `->>`, which costs less than `#>>`. */
+    private fun textOf(json: String) = PROPERTY_READ.matchEntire(json)?.let { "(${it.groupValues[1]} ->> ${it.groupValues[2]})" } ?: "($json #>> '{}')"
 
     override fun elements(json: String, alias: String) = "jsonb_array_elements($json) WITH ORDINALITY $alias (item, item_no)"
 
@@ -142,9 +145,36 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "(SELECT ${aggregateList("v.item", "v.item_no")} FROM ${elements(list, "v")} " +
             "JOIN (SELECT min(e.item_no) AS first FROM ${elements(identities, "e")} GROUP BY e.item) f ON f.first = v.item_no)"
 
-    // Postgres has no min or max of jsonb, which orders: the first of the values in order is the least.
-    override fun extreme(value: String, min: Boolean, key: String?) =
-        "(array_agg($value ORDER BY ${kindOrder(value)} ${if (min) "ASC" else "DESC"}, ${key ?: value} ${if (min) "ASC" else "DESC"}) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
+    /**
+     * Postgres has no min or max of jsonb, which orders: the first of the values in order is the least. Texts are first ordered
+     * by their code points ([codePointText]), as Cypher orders them, where `jsonb` orders them by the database's collation.
+     */
+    override fun extreme(value: String, min: Boolean, key: String?): String {
+        val direction = if (min) "ASC" else "DESC"
+        val order = listOfNotNull(kindOrder(value), codePointText(value).takeIf { key == null }, key ?: value).joinToString(", ") { "$it $direction" }
+        return "(array_agg($value ORDER BY $order) FILTER (WHERE COALESCE(jsonb_typeof($value), 'null') <> 'null'))[1]"
+    }
+
+    /**
+     * The JSON [json]'s text, where it is one, by its code points, as Cypher compares texts: `jsonb`, and text of the database's
+     * collation, compare them as the locale does (`'a' < 'B'`, and `'John Wick'` after `'Johnny Mnemonic'`). The `C` collation
+     * compares a text's bytes in the database's encoding: in a UTF-8 database, as `initdb` and Postgres's images make one, they
+     * order as its code points do; in another, as that encoding's bytes do. Null where [json] is not a text.
+     */
+    private fun codePointText(json: String) = "(CASE WHEN jsonb_typeof($json) = 'string' THEN ${textOf(json)} END) COLLATE \"C\""
+
+    /** Texts by their code points ([codePointText]); values of any other kind as `jsonb` compares them. */
+    override fun ordered(x: String, operator: String, y: String) =
+        "CASE WHEN jsonb_typeof($x) = 'string' THEN ${textOf(x)} COLLATE \"C\" $operator ${textOf(y)} ELSE $x $operator $y END"
+
+    /**
+     * A value as `jsonb` orders it, but a text after the other texts by its code points ([codePointText]): a row of the value, each
+     * text in it the empty text, which comes where texts come among the other kinds, then its text by its code points, null for
+     * any other kind. A row of nulls, a null's, comes after every other ascending, and before them descending, as null does.
+     */
+    override fun sortKey(json: String) = shared(json) { (x) ->
+        "ROW(CASE WHEN jsonb_typeof($x) = 'string' THEN '\"\"'::jsonb ELSE ${nullIfJsonNull(x)} END, ${codePointText(x)})"
+    }
 
     override fun add(a: String, b: String, given: Pair<Any?, Any?>) =
         "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN to_jsonb(${number(a)} + ${number(b)}) " +
@@ -178,7 +208,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * A list as `jsonb` that Postgres orders as Cypher orders lists, item by item: each item, from the first, a list of three, of
-     * where its kind comes ([itemRank]), the item, and what follows it so written, the end an empty list. `jsonb` orders the
+     * where its kind comes ([itemRank]), the item (a text by its code points, as [codePoints] writes it), and what follows it so
+     * written, the end an empty list. `jsonb` orders the
      * shorter of two lists first, and every list here but the last is of three. An item that is a list is followed by its own
      * items, at any depth, then by its end, which comes before any item. Any other value sorts as itself, as before. Only a
      * value the statement makes a list sorts so: the planner costs the walk at thousands a row, which brings in its JIT for a
@@ -200,10 +231,25 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "UNION ALL SELECT kn.place || kc.item_no, kc.item FROM kn, " +
             "${items("CASE WHEN jsonb_typeof(kn.item) = 'array' THEN kn.item ELSE '[]'::jsonb END")} WITH ORDINALITY kc (item, item_no)"
         val ends = "SELECT kn.place || CAST(jsonb_array_length(kn.item) + 1 AS bigint), 0, 'null' FROM kn WHERE jsonb_typeof(kn.item) = 'array'"
-        val tokens = "SELECT kn.place, ${itemRank("kn.item")} AS rank, CASE WHEN jsonb_typeof(kn.item) = 'array' THEN 'null' ELSE CAST(kn.item AS text) END AS item " +
-            "FROM kn UNION ALL $ends"
+        val tokens = "SELECT kn.place, ${itemRank("kn.item")} AS rank, CASE jsonb_typeof(kn.item) WHEN 'array' THEN 'null' " +
+            "WHEN 'string' THEN ${codePoints("(kn.item #>> '{}')")} ELSE CAST(kn.item AS text) END AS item FROM kn UNION ALL $ends"
         return "(WITH RECURSIVE kn (place, item) AS ($items) " +
             "SELECT COALESCE(string_agg('[' || kt.rank || ', ' || kt.item || ', ', '' ORDER BY kt.place), '') || '[]' || repeat(']', COUNT(*)::int) FROM ($tokens) kt)"
+    }
+
+    /**
+     * The text [text] as JSON text that `jsonb` orders as Cypher orders texts, by their code points, where `jsonb` orders a text by
+     * the database's collation: a list of a number and what follows it. The number is 0, a point, and the bits of the UTF-8 bytes
+     * of the text's first [CODE_POINT_PREFIX] characters, which order as its code points do; a text that is the start of another
+     * comes first, as the other's next byte has a bit set. What follows is an empty list, or one of the rest of the text, which
+     * `jsonb` orders by the collation: past [CODE_POINT_PREFIX] characters, where a number would have more places than Postgres
+     * holds. Of strings, not a subquery a character: the planner costs a subquery for each item, and so brings in its JIT for
+     * the sort, and `jsonb` compares lists nested a character deep ten times slower.
+     */
+    private fun codePoints(text: String): String {
+        val bits = "CAST(CAST('x' || encode(convert_to(left($text, $CODE_POINT_PREFIX), 'UTF8'), 'hex') AS varbit) AS text)"
+        return "'[' || CASE WHEN $text = '' THEN '0' ELSE '0.' || $bits END || ', ' || " +
+            "CASE WHEN length($text) > $CODE_POINT_PREFIX THEN '[' || CAST(to_jsonb(substr($text, ${CODE_POINT_PREFIX + 1})) AS text) || ']' ELSE '[]' END || ']'"
     }
 
     override fun idTokens(ids: String, key: String) = "CAST(regexp_replace(CAST($ids AS text), '(-?[0-9]+)', ${literal("{\"$key\": \\1}")}, 'g') AS jsonb)"
@@ -426,6 +472,15 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun withoutLabel(labels: String, label: String) = "($labels - ${literal(label)})"
 
     private companion object {
+        /** A property read, `(n1.props -> 'name')`: the row's column, and the key. */
+        val PROPERTY_READ = Regex("""^\(([\w.]+) -> ('(?:[^']|'')*')\)$""")
+
+        /**
+         * The characters of a text in a list that [codePoints] orders by their code points: at most 4 bytes each, 32 bits, which
+         * are 16,000 places, and Postgres holds 16,383 after a number's point.
+         */
+        const val CODE_POINT_PREFIX = 500
+
         /** The most places `round()` rounds to: past them, a double, the least of which is near 4.9E-324, has no digit. */
         const val MOST_PLACES = 400
 

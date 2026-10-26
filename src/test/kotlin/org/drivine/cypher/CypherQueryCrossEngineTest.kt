@@ -735,6 +735,124 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `texts compare and sort by their code points, not by a locale's collation`() {
+        // Not in the spec yet (#273): Postgres compared and sorted texts by the database's collation.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        assertEquals(
+            listOf(" ", "-", "A", "B", "John Wick", "Johnny Mnemonic", "Z", "_", "a", "a b", "a-c", "ab", "b", "e", "z", "~", "é"),
+            query("UNWIND ['John Wick', 'Johnny Mnemonic', 'b', 'B', 'a', 'A', 'é', 'e', 'z', 'Z', '~', '_', '-', ' ', 'a b', 'ab', 'a-c'] AS t RETURN t ORDER BY t"),
+        )
+        assertEquals(
+            listOf(listOf("é", "b", "a", "Johnny Mnemonic", "John Wick", "B")),
+            query("UNWIND ['John Wick', 'Johnny Mnemonic', 'b', 'B', 'a', 'é'] AS t WITH t ORDER BY t DESC RETURN collect(t)"),
+        )
+        assertEquals(listOf("B", "a", "b"), query("UNWIND ['b', 'B', 'b', 'a', 'B'] AS t RETURN DISTINCT t ORDER BY t"))
+        assertEquals(
+            listOf(listOf(false, true, true, true, true, false)),
+            query("RETURN ['a' < 'B', 'John Wick' < 'Johnny Mnemonic', 'é' > 'f', 'Z' < '_', 'a' >= 'B', 'ab' <= 'a b']"),
+        )
+        assertEquals(listOf(listOf("B", "é")), query("UNWIND ['b', 'B', 'a', 'é'] AS t RETURN min(t), max(t)"))
+        assertEquals(
+            listOf("B", "John Wick", "Johnny Mnemonic", "a", "b"),
+            query("UNWIND \$ts AS t RETURN t ORDER BY t", mapOf("ts" to listOf("b", "B", "John Wick", "Johnny Mnemonic", "a"))),
+        )
+        // A property compared with a text, and sorted: 'The Matrix' is before 'The matrix', which a locale puts first.
+        assertEquals(
+            listOf("Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"),
+            query("MATCH (m:Movie) WHERE m.title < \$t RETURN m.title ORDER BY m.title", mapOf("t" to "The matrix")),
+        )
+        assertEquals(emptyList(), query("MATCH (m:Movie) WHERE m.title >= 'the' RETURN m.title"))
+        assertEquals(
+            listOf(listOf("The Matrix", "The Matrix Reloaded", "Johnny Mnemonic")),
+            query("MATCH (m:Movie) WITH m.title AS t ORDER BY toLower(t) + 'A' DESC RETURN collect(t)"),
+        )
+        assertEquals(
+            listOf(listOf("The Matrix", "johnny mnemonic")),
+            query("MATCH (m:Movie) WITH CASE WHEN m.released < 1996 THEN toLower(m.title) ELSE m.title END AS t RETURN min(t), max(t)"),
+        )
+        assertEquals(listOf(0L), query("MATCH (p:Person), (q:Person) WHERE toLower(p.name) < q.name RETURN count(*)"))
+        // A sort by a list, and min and max of lists, compare the texts in them so too.
+        assertEquals(
+            listOf(listOf("B"), listOf("John Wick"), listOf("Johnny Mnemonic"), listOf("a", "B"), listOf("a", "b"), listOf("a", "~"), listOf("a", "é"), listOf("b")),
+            query("UNWIND [['a', 'b'], ['a', 'B'], ['B'], ['b'], ['John Wick'], ['Johnny Mnemonic'], ['a', 'é'], ['a', '~']] AS l RETURN l ORDER BY l"),
+        )
+        assertEquals(listOf(listOf(listOf("B"), listOf("b"))), query("UNWIND [['a', 'b'], ['a', 'B'], ['B'], ['b']] AS l RETURN min(l), max(l)"))
+        // Long texts too: Postgres keys the first 500 characters of a text in a list by their code points.
+        val (a499, a600) = "a".repeat(499) to "a".repeat(600)
+        assertEquals(
+            listOf("1", "2", "4", "5", "3"),
+            query(
+                "UNWIND \$ls AS g WITH [g[0], g[1]] AS l RETURN l[1] ORDER BY l",
+                mapOf("ls" to listOf(listOf(a499 + "b", "3"), listOf(a499 + "B", "2"), listOf(a499, "1"), listOf(a600 + "b", "5"), listOf(a600, "4"))),
+            ),
+        )
+        assertEquals(
+            listOf(listOf("the matrix"), listOf("johnny mnemonic", "the matrix", "the matrix reloaded", "The Matrix"), listOf("The matrix")),
+            query(
+                "MATCH (m:Movie) WITH m ORDER BY m.released WITH collect(toLower(m.title)) + ['The Matrix'] AS ts " +
+                    "UNWIND [ts, ['the matrix'], ['The matrix']] AS l RETURN l ORDER BY l DESC"
+            ),
+        )
+    }
+
+    @Test
+    fun `a character above U+FFFF sorts after every one below it, as its code point says`() {
+        // Not in the spec yet (#273): Java's UTF-16 puts such a character before U+E000 to U+FFFF, as Neo4j compares a text given.
+        val (smile, tilde, privateUse) = listOf("\uD83D\uDE00", "\uFF5E", "\uE000")
+        assertEquals(listOf("a", "\uD7FF", privateUse, tilde, smile), query("UNWIND ['$smile', '$tilde', '$privateUse', 'a', '\uD7FF'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(listOf(false, true, true)), query("RETURN ['$smile' < '$tilde', '$smile' > '$privateUse', '$smile' > '\uD7FF']"))
+        assertEquals(listOf(listOf(tilde), listOf(smile)), query("UNWIND [['$smile'], ['$tilde']] AS l RETURN l ORDER BY l"))
+        // Neo4j compares a text given by its UTF-16 code units, where it compares one written or stored by its code points (neo4j/neo4j#13997).
+        if (pm.type != DatabaseType.NEO4J) {
+            assertEquals(listOf(listOf(privateUse, smile)), query("UNWIND \$ts AS t RETURN min(t), max(t)", mapOf("ts" to listOf(smile, tilde, privateUse))))
+        }
+    }
+
+    @Test
+    fun `a text in a list sorts by its code points up to and across its 500th character`() {
+        // Not in the spec yet (#273): Postgres keys a text in a list by the bits of its first 500 characters, then by the rest. 500
+        // characters of four bytes are 16,000 bits, near the 16,383 places Postgres holds; the 500th may be of 1 to 4 bytes.
+        val smile = "😀"
+        val (s499, s500) = smile.repeat(499) to smile.repeat(500)
+        val texts = listOf(s499, s499 + "a", s499 + "～", s500, s500 + "a", s500 + "b")
+        val written = texts.reversed().joinToString(", ") { "['$it']" }
+        assertEquals(texts.map { listOf(it) }, query("UNWIND [$written] AS l RETURN l ORDER BY l"))
+        assertEquals(texts.reversed().map { listOf(it) }, query("UNWIND [$written] AS l RETURN l ORDER BY l DESC"))
+        val (a499, a500) = "a".repeat(499) to "a".repeat(500)
+        assertEquals(
+            listOf(listOf(a499 + "B"), listOf(a500), listOf(a500 + "B"), listOf(a499 + "b"), listOf(a499 + "é")),
+            query("UNWIND [['${a500}B'], ['$a500'], ['${a499}é'], ['${a499}b'], ['${a499}B']] AS l RETURN l ORDER BY l"),
+        )
+    }
+
+    @Test
+    fun `a text sorts beside a null and a number as before, and by its code points among the texts`() {
+        // Not in the spec yet (#273): Postgres sorts by a row of the value, each text blanked, and of the text by its code points.
+        assertEquals(listOf("B", "b", null), query("UNWIND ['b', null, 'B'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(null, "b", "B"), query("UNWIND ['b', null, 'B', 'b'] AS t RETURN DISTINCT t ORDER BY t DESC"))
+        // Oracle and SQLite sort a number before a text, by their own order of kinds.
+        if (pm.type == DatabaseType.NEO4J || pm.type == DatabaseType.POSTGRES) {
+            assertEquals(listOf("B", "b", 1L, 2L, null), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t"))
+            assertEquals(listOf(null, 2L, 1L, "b", "B"), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t DESC"))
+        }
+        // A text compared with a value of another kind is null, and min and max of several kinds take the least text by its code points.
+        assertEquals(listOf(listOf(null, null, null, false, false)), query("RETURN ['a' < 1, 'B' > null, 1 >= 'a', coalesce(null, 'a') < 'B', CASE WHEN true THEN 'a' END < 'B']"))
+        assertEquals(listOf("B"), query("UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t < 'a' RETURN t"))
+        assertEquals(listOf(1L), query("UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t > 0 RETURN t"))
+        assertEquals(listOf(listOf("B", "b")), query("UNWIND ['b', 'B', 'a', 'B'] AS t RETURN min(DISTINCT t), max(DISTINCT t)"))
+        assertEquals(listOf(listOf("B", 2L)), query("UNWIND ['b', 1, 'B', 2, true] AS t RETURN min(t), max(t)"))
+    }
+
+    @Test
+    fun `a text sorts by its code points where its sort key is long enough to be worked out in a subquery`() {
+        // Not in the spec yet (#273): Postgres binds a long term once in a subquery, which gives its sort key as a row.
+        val key = "coalesce(toLower(toUpper(trim(t))), toUpper(t), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz') + t"
+        assertEquals(listOf("a", "B", "b"), query("UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY $key"))
+        assertEquals(listOf("b", "B", "a"), query("UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY $key DESC"))
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
