@@ -689,7 +689,7 @@ abstract class CypherQueryContract {
             "MATCH (n:Round) WHERE n.r IS NOT NULL WITH n.x AS x, n.r AS r RETURN r, round(min(x), r, 'HALF_UP')",
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
-            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), "$statement: $failed")
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
         }
     }
 
@@ -731,7 +731,7 @@ abstract class CypherQueryContract {
             "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.k, n.r, 'UP')",
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
-            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), failed)
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), failed)
         }
         assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.r >= 0 RETURN round(1234.5, n.r)"))
         assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.k = 2 RETURN sum(round(1234.5, n.r))"))
@@ -744,6 +744,33 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(-2L, null, null)), query("UNWIND [null, null] AS x WITH x, -2 AS r RETURN r, round(min(x), r), round(max(x), r, 'UP')"))
         // So far below 0 that the digits a number holds past them, 10^(17 - p), would overflow Oracle's NUMBER.
         assertEquals(listOf(listOf(null, null)), query("UNWIND [-1000] AS p RETURN [round(null, p), round(null, p, 'HALF_EVEN')]"))
+    }
+
+    @Test
+    fun `a precision written below 0 or past 2147483647 fails only on a row that rounds a number by it, with the compiler's message`() {
+        // The spec's cases since #290 and #305, here in a WHERE, an aggregate and a CASE, on rows filtered out, and by a
+        // parameter no YAML holds.
+        clear()
+        seed("CREATE (:Round {x: 1.5, k: 1}), (:Round {k: 2})")
+        listOf(
+            "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.x, -2)" to emptyMap(),
+            "MATCH (n:Round) WHERE round(n.x, 2147483648, 'UP') > 0 RETURN n.k" to emptyMap(),
+            "MATCH (n:Round) RETURN sum(round(n.x, -\$p))" to mapOf("p" to 2),
+            "MATCH (n:Round) RETURN collect(round(n.x, \$p, 'HALF_UP'))" to mapOf("p" to 1.0e20),
+            "RETURN round(1.5, \$p)" to mapOf("p" to Double.POSITIVE_INFINITY),
+            "RETURN round(1.5, \$p, 'UP')" to mapOf("p" to Double.NEGATIVE_INFINITY),
+            "RETURN round(1.5, -9223372036854775808)" to emptyMap(),
+        ).forEach { (statement, parameters) ->
+            val failed = assertThrows<Exception>(statement) { query(statement, parameters) }.message!!
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
+        }
+        // A row that holds no number rounds to null, and a row the CASE does not round, or no row at all, fails nothing.
+        assertEquals(listOf(listOf(null, null, null)), query("MATCH (n:Round) WHERE n.k = 2 RETURN [round(n.x, -2), round(n.x, 2147483648, 'UP'), round(n.x, \$p)]", mapOf("p" to 1.0e20)))
+        assertEquals(listOf(listOf(null, null)), query("RETURN [round(null, \$p), round(null, \$p, 'FLOOR')]", mapOf("p" to Double.POSITIVE_INFINITY)))
+        assertEquals(listOf(0.0, 0.0), query("MATCH (n:Round) RETURN CASE WHEN n.k > 0 THEN 0.0 ELSE round(1.5, -2) + round(n.x, 2147483648) END ORDER BY n.k"))
+        assertEquals(listOf(emptyList<Any>()), query("MATCH (n:Round) WHERE n.k = 1 RETURN collect(CASE WHEN n.k = 2 THEN round(n.x, -2, 'UP') END)"))
+        assertEquals(emptyList(), query("MATCH (n:Round) WHERE n.k = 3 RETURN [round(1.5, -2), round(1.5, \$p, 'UP')]", mapOf("p" to 1.0e20)))
+        assertEquals(emptyList(), query("UNWIND [] AS x RETURN round(1.5, -2)"))
     }
 
     @Test
