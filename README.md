@@ -3302,6 +3302,15 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   may be named by a keyword (`$limit`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails: JSON holds neither.
+- A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
+  costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
+  This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed
+  on into more SQL, crashes the session (ORA-03113, with ORA-00600 [17114] or ORA-07445 in the alert log) over two or more rows. Only
+  an item that is the property itself is read so: one inside an item (`RETURN [n.name]`, `collect(n.name)`) is read as
+  JSON, as before, and isn't worked around. It goes once an Oracle release no longer crashes on the repro in
+  [docs/oracle-long-json-string-crash.md](docs/oracle-long-json-string-crash.md). Such a text still can't be sorted
+  by, grouped by or made `DISTINCT`: Oracle sorts and groups JSON only up to about 32 KB, and refuses the statement
+  (ORA-40180), leaving the session open.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
