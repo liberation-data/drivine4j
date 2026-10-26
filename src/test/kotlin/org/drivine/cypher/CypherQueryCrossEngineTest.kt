@@ -736,7 +736,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
-        // Not in the spec yet (#273): Postgres compared and sorted texts by the database's collation.
+        // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()
         seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
         assertEquals(
@@ -798,7 +798,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a character above U+FFFF sorts after every one below it, as its code point says`() {
-        // Not in the spec yet (#273): Java's UTF-16 puts such a character before U+E000 to U+FFFF, as Neo4j compares a text given.
+        // Beside the spec's cases since v0.6.10 (#273): Java's UTF-16 puts such a character before U+E000 to U+FFFF, as Neo4j compares a text given.
         val (smile, tilde, privateUse) = listOf("\uD83D\uDE00", "\uFF5E", "\uE000")
         assertEquals(listOf("a", "\uD7FF", privateUse, tilde, smile), query("UNWIND ['$smile', '$tilde', '$privateUse', 'a', '\uD7FF'] AS t RETURN t ORDER BY t"))
         assertEquals(listOf(listOf(false, true, true)), query("RETURN ['$smile' < '$tilde', '$smile' > '$privateUse', '$smile' > '\uD7FF']"))
@@ -811,7 +811,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a text in a list sorts by its code points up to and across its 500th character`() {
-        // Not in the spec yet (#273): Postgres keys a text in a list by the bits of its first 500 characters, then by the rest. 500
+        // Beside the spec's cases since v0.6.10 (#273): Postgres keys a text in a list by the bits of its first 500 characters, then by the rest. 500
         // characters of four bytes are 16,000 bits, near the 16,383 places Postgres holds; the 500th may be of 1 to 4 bytes.
         val smile = "😀"
         val (s499, s500) = smile.repeat(499) to smile.repeat(500)
@@ -828,7 +828,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a text sorts beside a null and a number as before, and by its code points among the texts`() {
-        // Not in the spec yet (#273): Postgres sorts by a row of the value, each text blanked, and of the text by its code points.
+        // Beside the spec's cases since v0.6.10 (#273): Postgres sorts by a row of the value, each text blanked, and of the text by its code points.
         assertEquals(listOf("B", "b", null), query("UNWIND ['b', null, 'B'] AS t RETURN t ORDER BY t"))
         assertEquals(listOf(null, "b", "B"), query("UNWIND ['b', null, 'B', 'b'] AS t RETURN DISTINCT t ORDER BY t DESC"))
         // Oracle and SQLite sort a number before a text, by their own order of kinds.
@@ -846,7 +846,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a text sorts by its code points where its sort key is long enough to be worked out in a subquery`() {
-        // Not in the spec yet (#273): Postgres binds a long term once in a subquery, which gives its sort key as a row.
+        // Beside the spec's cases since v0.6.10 (#273): Postgres binds a long term once in a subquery, which gives its sort key as a row.
         val key = "coalesce(toLower(toUpper(trim(t))), toUpper(t), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz') + t"
         assertEquals(listOf("a", "B", "b"), query("UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY $key"))
         assertEquals(listOf("b", "B", "a"), query("UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY $key DESC"))
