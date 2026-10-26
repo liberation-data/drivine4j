@@ -357,8 +357,10 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /**
      * A whole number that fails the statement when it is worked out, with [message] and the SQL value [value] it names:
-     * what a compiled statement does where Neo4j fails on a value it reads. It reads [value], so no store works it out
-     * before a row that needs it, as one may a failing expression of constants alone.
+     * what a compiled statement does where Neo4j fails on a value it reads. No store works it out before a row that
+     * needs it, even where [value] is a constant, as a store may work out a failing expression of constants alone. But
+     * in a WHERE, one that reads nothing of a row is tested before any row on Postgres, which tests such a condition
+     * once, first: as it does any expression that fails, such as `1 / 0`.
      */
     protected abstract fun failure(message: String, value: String): String
 
@@ -3293,14 +3295,15 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * `round()` of [value] to [precision] places, by [places] over the value as a SQL number and the precision as a whole
          * number toward zero, written in the statement as [written]: -0.5 is 0 places. Given [whole], to 0 places it rounds
-         * by that instead. A precision below 0 is refused, as Neo4j refuses it: when compiling, where it is written, negated
-         * or not, or a parameter's value; and else when the row is read, by [failure], on every store alike, but for a null
-         * value, which Neo4j rounds to null whatever the precision.
+         * by that instead. A precision below 0 or past [MAX_COUNT] fails, as Neo4j fails it: only on a row that rounds a
+         * number by it, by [failure], on every store alike, whether it is written, negated or not, a parameter's value or
+         * read from data. Neo4j reads the precision only when it rounds, so a null value rounds to null by any precision,
+         * and with no row, nothing fails.
          *
          * Places known when compiling pick the rounding then, [whole] below 1 place: under an aggregate, where nothing is
          * bound, a CASE of both would write the number out in each, at each round() nested in another. Places from data
-         * are told apart as the statement runs, in one CASE over the value and the places, where a negative one is refused
-         * before either rounding: so the precision each rounding writes out, more than once on a store, is the places
+         * are told apart as the statement runs, in one CASE over the value and the places, where places out of range are
+         * failed before either rounding: so the precision each rounding writes out, more than once on a store, is the places
          * alone, and the value is asked of its kind, whose test writes it out fewer times than its number does.
          */
         private fun rounded(value: Value, precision: Value, written: Expression, whole: ((String) -> String)? = null, places: (String, String) -> String): String {
@@ -3308,18 +3311,30 @@ abstract class SqlCypherCompiler(graph: String) {
             val given = (given(if (negated) (written as Expression.Unary).operand else written) as? Number)?.toDouble()
             if (given != null) {
                 val signed = if (negated) -given else given
-                if (kotlin.math.truncate(signed) < 0) throw DrivineException(NEGATIVE_PRECISION)
+                val cut = kotlin.math.truncate(signed)
+                // Not `cut in 0..MAX_COUNT`, which NaN fails: Neo4j casts NaN to 0 places, as Java casts it to a long.
+                if (cut < 0 || cut > MAX_COUNT) {
+                    val named = if (cut.isInfinite()) signed.toString() else java.math.BigDecimal(cut).toBigInteger().toString()
+                    return outOfPlaces(comparable(json(value)), literal(named))
+                }
                 val number = number(comparable(json(value)))
-                // Not `signed < 1`, which NaN fails: Neo4j casts NaN to 0 places, as Java casts it to a long.
+                // Not `signed < 1`, which NaN fails.
                 if (whole != null && !(signed >= 1)) return whole(number)
                 return places(number, if (signed.isNaN()) "CAST(0 AS INTEGER)" else truncatedWhole(precision))
             }
             return shared(comparable(json(value)), "${temporalSql.trunc}(${number(comparable(json(precision)))})") { (x, t) ->
                 val toWhole = whole?.let { "WHEN $t = 0 THEN ${it(number(x))} " } ?: ""
-                // A null value, as anything else that is no number, rounds by its negative places to null.
-                "CASE ${toWhole}WHEN $t < 0 AND ${typeOf(x)} = 'number' THEN ${failure(NEGATIVE_PRECISION, t)} ELSE ${places(number(x), "CAST($t AS INTEGER)")} END"
+                // Out of range, places are not cast, which Postgres's integer would fail on beside a null value.
+                "CASE ${toWhole}WHEN $t NOT BETWEEN 0 AND $MAX_COUNT THEN ${outOfPlaces(x, t)} ELSE ${places(number(x), "CAST($t AS INTEGER)")} END"
             }
         }
+
+        /**
+         * `round()` of the JSON value [x] to [precision] places out of range: it fails where [x] is a number, and is null
+         * where it is not, as a null rounds to null by any precision in Neo4j.
+         */
+        private fun outOfPlaces(x: String, precision: String) =
+            "CASE WHEN ${typeOf(x)} = 'number' THEN ${failure(PRECISION_OUT_OF_RANGE, precision)} END"
 
         /** The values [value] of a group, gathered as `collect` gathers them, as JSON. */
         private fun collected(value: Value) = collect(collectable(value), rowOrder)
@@ -3443,10 +3458,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
         fun literal(text: String) = "'${text.replace("'", "''")}'"
 
-        /** What `round()` is refused with, as Neo4j refuses it, a precision below 0. */
-        const val NEGATIVE_PRECISION = "round() takes a precision of 0 or more, as in Neo4j."
+        /** What `round()` fails with, as Neo4j fails it, a precision below 0 or past [MAX_COUNT]. */
+        const val PRECISION_OUT_OF_RANGE = "round() takes a precision from 0 to 2147483647, as in Neo4j."
 
-        /** The greatest start or length `substring()`, `left()` and `right()` take, as Neo4j takes them: Java's greatest `int`. */
+        /**
+         * The greatest start or length `substring()`, `left()` and `right()` take, and the greatest precision `round()`
+         * takes, as Neo4j takes them: Java's greatest `int`.
+         */
         const val MAX_COUNT = Int.MAX_VALUE.toLong()
 
         /**
