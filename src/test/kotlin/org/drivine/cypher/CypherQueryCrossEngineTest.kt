@@ -558,6 +558,14 @@ abstract class CypherQueryContract {
             listOf(listOf(123.456, 123.456, 123.456, -123.456, 1234.5678901234567, 1234.567890123457)),
             query("RETURN [round(123.456, 14, 'UP'), round(123.456, 15, 'UP'), round(123.456, 16, 'UP'), round(-123.456, 14, 'FLOOR'), round(1234.5678901234567, 13), round(1234.5678901234567, 12, 'HALF_EVEN')]"),
         )
+        // A null number past its digits, and numbers near NUMBER's least, whose digits Oracle's LOG cannot count (#292).
+        assertEquals(
+            listOf(listOf(null, null, null, 0.0, -0.01, 1.0E-130, -1.0E-125, 1.234567890123457E-130, 6.0E-128, 0.0)),
+            query(
+                "MATCH (n:Round) RETURN [round(null, 400), round(n.none, 400, 'UP'), round(n.none, n.b), round(1.0E-129, 2), round(-1.0E-129, 2, 'FLOOR'), round(1.0E-130, 140), " +
+                    "round(-1.0E-125, 141, 'HALF_EVEN'), round(1.2345678901234567E-130, 145), round(5.5E-128, 128, 'HALF_EVEN'), round(1.0E-130, 2)]"
+            ),
+        )
         // A negative precision from data fails when the row is read, on every store, in both forms.
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r, 'HALF_UP')") }
         assertThrows<Exception> { query("MATCH (n:Round) RETURN round(1234.5, n.r)") }
@@ -569,6 +577,53 @@ abstract class CypherQueryContract {
             listOf(listOf(2.225073858507201E-308, 2.2250738585072014E-308, 4.9E-324, 9.9E-324)),
             query("RETURN [round(2.2250738585072014E-308, 323), round(2.2250738585072014E-308, 400), round(4.9E-324, 324, 'UP'), round(4.9E-324, 323, 'UP')]"),
         )
+    }
+
+    @Test
+    fun `round() of zero, which has no digits to count, gives zero, or null to a null precision, and fails on a negative one`() {
+        // #292: zero, among rows that are not zero, wherever it is read.
+        clear()
+        seed("CREATE (:Round {x: 0.0}), (:Round {x: 1.25}), (:Round {x: 0.0}), (:Round {x: -2.5})")
+        assertEquals(listOf(2L), query("MATCH (n:Round) WHERE round(n.x, 400) = 0 RETURN count(*)"))
+        assertEquals(listOf(2L), query("MATCH (n:Round) WHERE round(n.x, 2) = 0 AND round(n.x, 1, 'UP') = 0 RETURN count(*)"))
+        assertEquals(
+            listOf(listOf(-2.5, 1L), listOf(0.0, 2L), listOf(1.3, 1L)),
+            query("MATCH (n:Round) RETURN round(n.x, 1) AS r, count(*) AS c ORDER BY r"),
+        )
+        assertEquals(listOf(1.25, 0.0, 0.0, -2.5), query("MATCH (n:Round) RETURN n.x ORDER BY round(n.x, 1, 'UP') DESC"))
+        assertEquals(
+            listOf(listOf(0.0, 0.0, 0.0, 0.0)),
+            query("UNWIND [0.0, 0.0] AS x RETURN [round(sum(x), 2), round(avg(x), 400), round(min(x), 2, 'HALF_UP'), round(sum(x), 1, 'CEILING')]"),
+        )
+        assertEquals(
+            listOf(listOf(0.0, 0.0, 0.0)),
+            query("MATCH (n:Round) WITH n.x AS x WHERE round(x, 2) = 0 RETURN [round(sum(x), 2), round(avg(x), 400), round(sum(x), 1, 'CEILING')]"),
+        )
+        // As numbers: Oracle gives a sum of floats that is whole as an integer.
+        assertEquals(
+            listOf(listOf(1500.0, 2000.0, 2000.0, 3000.0)),
+            query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x RETURN [sum(round(x, 400)), sum(round(x, 0)), sum(round(x, 0, 'UP')), count(*)]")
+                .map { row -> (row as List<*>).map { (it as Number).toDouble() } },
+        )
+        assertEquals(listOf(3000L), query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x WHERE round(x, 2) = 0 OR round(x, 400, 'UP') > 0 RETURN count(*)"))
+        assertEquals(listOf(listOf(0.0, 1.6, 0.0)), query("RETURN [x IN [0.0, 1.55, 0.0] | round(x, 1)]"))
+        assertEquals(listOf(listOf(0.0, 0.0, 0.0, 0.0)), query("RETURN [round(\$z, 2), round(\$z, 400, 'FLOOR'), round(0, 2), round(0.0, 2, 'UP')]", mapOf("z" to 0.0)))
+        // The precision is read before zero is given back: a null one gives null, and a negative one from data fails, under an
+        // aggregate too, where it is written out where it is read.
+        assertEquals(
+            listOf(listOf(null, null, null, null), listOf(null, null, null, null)),
+            query("MATCH (n:Round) WHERE n.x = 0 RETURN [round(0.0, null), round(0, null, 'HALF_UP'), round(n.x, n.none), round(n.x, n.none, 'UP')]"),
+        )
+        seed("CREATE (:Round {x: 0.0, r: -2})")
+        listOf(
+            "UNWIND [0.0, 0.0] AS x WITH x, -2 AS r RETURN r, round(sum(x), r)",
+            "UNWIND [0.0, 0.0] AS x WITH x, -2 AS r RETURN r, round(sum(x), r, 'UP')",
+            "MATCH (n:Round) WHERE n.r IS NOT NULL WITH n.x AS x, n.r AS r RETURN r, round(sum(x), r)",
+            "MATCH (n:Round) WHERE n.r IS NOT NULL WITH n.x AS x, n.r AS r RETURN r, round(min(x), r, 'HALF_UP')",
+        ).forEach { statement ->
+            val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), "$statement: $failed")
+        }
     }
 
     @Test
