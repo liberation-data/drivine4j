@@ -221,4 +221,23 @@ class CompiledSizeTest {
         // Its items as arrays unnested, which the planner takes for 10 items, not a set-returning function's 100: a 150th of the cost.
         assertTrue(!list.contains("FROM jsonb_array_elements(") && list.contains("unnest(ARRAY(SELECT jsonb_array_elements("), list)
     }
+
+    @Test
+    fun `a round() to places the statement gives, nested under an aggregate, compiles one rounding, not both`() {
+        // #301: under an aggregate nothing is bound, so a CASE of both roundings, nested four deep, wrote the number out in
+        // both at each level. The places, written or given, pick the rounding when compiling.
+        fun nested(precision: String) = "UNWIND [1.5] AS x RETURN " + "round(".repeat(4) + "sum(x)" + "$precision)".repeat(4)
+        compilers.forEach { compiler ->
+            val name = compiler::class.simpleName
+            fun size(precision: String, parameters: Map<String, Any?> = emptyMap()) = compiler.compile(nested(precision), parameters).sql.length
+            val whole = size("")
+            listOf(", 0", ", -0.5", ", 0.9", ", -\$p").forEach { assertEquals(whole, size(it, mapOf("p" to 0.5)), "$name: round(x$it)") }
+            // A parameter, its key, and NaN, which Neo4j casts to 0 places.
+            listOf(0L, 0, 0.7, Double.NaN).forEach { assertEquals(whole, size(", \$p", mapOf("p" to it)), "$name: \$p = $it") }
+            assertEquals(whole, size(", \$m.p", mapOf("m" to mapOf("p" to 0L))), "$name")
+            // To 1 place or more, it rounds by places alone, and grows as the number does, not twice over at each level.
+            val read = size(", toInteger('1')")
+            listOf(size(", 1"), size(", \$p", mapOf("p" to 1.0))).forEach { places -> assertTrue(places < read, "$name: $places, then $read characters") }
+        }
+    }
 }
