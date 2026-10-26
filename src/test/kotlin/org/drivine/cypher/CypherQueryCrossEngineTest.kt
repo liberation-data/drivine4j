@@ -611,8 +611,8 @@ abstract class CypherQueryContract {
 
     @Test
     fun `substring(), left() and right() refuse a written float, even a whole one, and a given start or length out of range, as Neo4j does`() {
-        // Not in the spec yet: a start or a length (#263). Neo4j refuses a float it knows to be one whatever the text; a bound one
-        // it cuts toward zero. It refuses one out of range only where the text is not null.
+        // Beside the spec's cases since v0.6.9 (#263): a start or a length. Neo4j refuses a float it knows to be one whatever the text;
+        // a bound one it cuts toward zero. It refuses one out of range only where the text is not null.
         listOf(
             Triple("RETURN left('hello', 2.7)", emptyMap<String, Any?>(), float("left", "length")),
             Triple("RETURN left('hello', 2.0)", emptyMap(), float("left", "length")),

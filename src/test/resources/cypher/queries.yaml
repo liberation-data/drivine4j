@@ -449,6 +449,114 @@ cases:
       - cypher: "MATCH (m:Movie {title: 'The Matrix'}) RETURN [substring(m.title, 6), substring(m.title, 6, 2), left('Matrix', 2), right('Matrix', 3), right(m.title, 50), replace(m.title, 'a', '_')]"
         rows: [["trix", "tr", "Ma", "rix", "The Matrix", "The M_trix"]]
 
+  - name: "Start and length of a text function"
+    description: "substring(), left() and right() refuse a written float and a start or length outside 0 to 2147483647, and cut a bound float toward zero, as Neo4j does."
+    steps:
+      - note: "A written float is refused whatever the text, a whole one too."
+        cypher: "RETURN left('hello', 2.7)"
+        error: true
+      - cypher: "RETURN left('hello', 2.0)"
+        error: true
+      - cypher: "RETURN substring('hello', 1.0)"
+        error: true
+      - cypher: "RETURN substring('hello', 1, 2.6)"
+        error: true
+      - cypher: "RETURN right(null, 2.7)"
+        error: true
+      - note: "Below 0, written, bound or read from data, it fails."
+        cypher: "RETURN left('hello', -1)"
+        error: true
+      - cypher: "RETURN substring('hello', -1, 2)"
+        error: true
+      - cypher: "RETURN substring('hello', 1, -1)"
+        error: true
+      - cypher: "RETURN right('hello', $n)"
+        parameters: {n: -1}
+        error: true
+      - cypher: "UNWIND [-1] AS n RETURN left('hello', n)"
+        error: true
+      - note: "A negated parameter is negated first."
+        cypher: "RETURN left('hello', -$n)"
+        parameters: {n: 1}
+        error: true
+      - cypher: "RETURN [left('hello', -$m), substring('hello', -$m, -$l)]"
+        parameters: {m: -1, l: -2}
+        rows: [["h", "el"]]
+      - note: "Past 2147483647 it fails, and up to it, it is taken. Memgraph and FalkorDB take a greater one."
+        only: [neo4j, sql]
+        cypher: "RETURN left('hello', $n)"
+        parameters: {n: 2147483648}
+        error: true
+      - cypher: "RETURN [left('hello', 2147483647), right('hello', 2147483647), substring('hello', 1, 2147483647), left('hello', $m), substring('hello', 1, $m)]"
+        parameters: {m: 2147483647}
+        rows: [["hello", "hello", "ello", "hello", "ello"]]
+      - except: [oracle]
+        cypher: "UNWIND [2147483647] AS s RETURN [substring('hello', s), substring('hello', $m)]"
+        parameters: {m: 2147483647}
+        rows: [["", ""]]
+      - note: "Oracle's empty text is null."
+        only: [oracle]
+        cypher: "UNWIND [2147483647] AS s RETURN [substring('hello', s), substring('hello', $m)]"
+        parameters: {m: 2147483647}
+        rows: [[null, null]]
+      - note: "Beside a null text it is null. Memgraph refuses it."
+        except: [memgraph]
+        cypher: "RETURN [left(null, -1), right(null, -1), substring(null, 1, -1)]"
+        rows: [[null, null, null]]
+      - except: [memgraph]
+        cypher: "UNWIND [-1] AS n RETURN left(null, n)"
+        rows: [null]
+      - note: "Past 2147483647, beside a null text, it is null too."
+        cypher: "RETURN [left($t, 2147483648), substring($t, 0, 9223372036854775807), right($t, $n)]"
+        parameters: {t: null, n: 9223372036854775807}
+        rows: [[null, null, null]]
+      - note: "A null start or length is null. FalkorDB refuses it, and Memgraph refuses it in substring()."
+        except: [falkordb]
+        cypher: "RETURN [left('hello', null), right('hello', null)]"
+        rows: [[null, null]]
+      - except: [memgraph, falkordb]
+        cypher: "RETURN [substring('hello', null), substring('hello', 1, null)]"
+        rows: [[null, null]]
+      - note: "A key a parameter doesn't have is null. FalkorDB refuses it as a length."
+        cypher: "RETURN [left($p.none, $p.i), substring($p.none, 1), left('hello', $p.i)]"
+        parameters: {p: {i: 2}}
+        rows: [[null, null, "he"]]
+      - except: [falkordb]
+        cypher: "RETURN [left('hello', $p.none), right('hello', $p.none)]"
+        parameters: {p: {i: 2}}
+        rows: [[null, null]]
+      - note: "Bound or read from data, a float is cut toward zero: 2.7 is 2, -0.5 is 0, and -1.5 is -1, which fails. Memgraph and FalkorDB refuse it."
+        only: [neo4j, postgres, sqlite]
+        cypher: "RETURN [left('hello', $f), right('hello', $f), substring('hello', $s, $f), left('hello', $q)]"
+        parameters: {f: 2.7, s: 1.7, q: -0.5}
+        rows: [["he", "lo", "el", ""]]
+      - note: "Oracle's empty text is null."
+        only: [oracle]
+        cypher: "RETURN [left('hello', $f), right('hello', $f), substring('hello', $s, $f), left('hello', $q)]"
+        parameters: {f: 2.7, s: 1.7, q: -0.5}
+        rows: [["he", "lo", "el", null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND $xs AS n RETURN [left('hello', n), substring('hello', n)]"
+        parameters: {xs: [2.7, 2.0, null]}
+        rows: [["he", "llo"], ["he", "llo"], [null, null]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [left('hello', $p.f), left('hello', -$g)]"
+        parameters: {p: {f: 2.7}, g: -2.7}
+        rows: [["he", "he"]]
+      - note: "Cut toward zero, -1.5 is -1, -2.7 is -2, and 1.0E20 is past 2147483647, so each fails. Memgraph and FalkorDB refuse any bound float."
+        cypher: "RETURN left('hello', $n)"
+        parameters: {n: -1.5}
+        error: true
+      - cypher: "RETURN left('hello', -$n)"
+        parameters: {n: 2.7}
+        error: true
+      - cypher: "RETURN left('hello', $n)"
+        parameters: {n: 1.0e+20}
+        error: true
+      - cypher: "UNWIND $xs AS n RETURN left('hello', n)"
+        parameters: {xs: [-1.5]}
+        error: true
+
   - name: "keys()"
     description: "keys() gives a map's or node's keys, whatever they're called."
     steps:
