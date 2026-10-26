@@ -154,6 +154,12 @@ class CompiledSizeTest {
             assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, null, listOf(null, 2)))), "${compiler::class.simpleName}")
             assertTrue(tests("MATCH (c:Claim) WHERE c.map = \$p RETURN c.id", mapOf("p" to mapOf("x" to null))), "${compiler::class.simpleName}")
             assertTrue(tests("MATCH (c:Claim) WITH c, [c.a] AS l RETURN l = [c.b]"), "${compiler::class.simpleName}")
+            // As is a parameter's list with an item too long to write in the statement (#303).
+            assertTrue(tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf("x".repeat(2000), null))), "${compiler::class.simpleName}")
+            // Up to LITERAL_BYTES of JSON's text, its quotes and each character's UTF-8 bytes counted, an item is written.
+            listOf("x".repeat(998) to false, "x".repeat(999) to true, "é".repeat(499) to false, "é".repeat(500) to true).forEach { (text, walked) ->
+                assertEquals(walked, tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(listOf(text), null))), "${compiler::class.simpleName}: ${text.length}")
+            }
         }
     }
 

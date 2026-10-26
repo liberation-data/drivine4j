@@ -485,6 +485,16 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `texts past 32 KB in a parameter's lists that hold a null compare as texts`() {
+        // A parameter's list with such a text is walked, not written in the statement item by item, past the literal Oracle
+        // takes (ORA-01704) (#303).
+        val text = "x".repeat(40_000)
+        val given = mapOf("a" to listOf(text, null), "b" to listOf(text, null), "c" to listOf(text + "y", null))
+        assertEquals(listOf(listOf(null, false, null, false)), query("RETURN [\$a = \$b, \$a = \$c, \$a IN [\$b], \$a IN [\$c]]", given))
+        assertEquals(listOf(listOf(null, false, null)), query("WITH \$a AS a, \$b AS b, \$c AS c RETURN [a = b, a = c, {k: a} = {k: b}]", given))
+    }
+
+    @Test
     fun `a null node or relationship in a list or a map makes its comparison null`() {
         // Beside the spec's cases since v0.6.6 (#225): a node or a relationship OPTIONAL MATCH finds none of is null in what holds it.
         clear()
