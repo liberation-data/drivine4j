@@ -732,6 +732,11 @@ cases:
             sqrt: 3.0
             sign: -1
             trimmed: ["a ", " b"]
+      - note: "The least positive numbers a store's decimal holds, from 1.0E-130 to under 1.0E-128, are positive, as is one read from a parameter; Oracle's SIGN gives 0 for them."
+        only: [neo4j, sql]
+        cypher: "RETURN [sign(1.0E-129), sign(-1.0E-129), sign(0.0), sign(null), sign(1.0E-130), sign(9.99E-129), sign($x)]"
+        parameters: {x: 1.0e-129}
+        rows: [[1, -1, 0, null, 1, 1, 1]]
       - cypher: "UNWIND tail([1, 2, 3]) AS x RETURN x"
         rows: [2, 3]
       - cypher: "RETURN split('a', null)"
@@ -1733,6 +1738,13 @@ cases:
       - note: Halfway on a negative number, and to no places.
         cypher: "RETURN [round(-2.5, 0, 'HALF_UP'), round(-2.5, 0, 'HALF_DOWN'), round(-3.5, 0, 'HALF_EVEN'), round(0.5, 0, 'HALF_EVEN'), round(1.15, 1, 'HALF_EVEN'), round(-1.25, 1, 'CEILING')]"
         rows: [[-3.0, -2.0, -4.0, 0.0, 1.2, -1.2]]
+      - note: "The least positive numbers a store's decimal holds, rounded away from zero, toward it, and halfway, keep their sign, though Oracle's SIGN gives 0 for them."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(1.0E-129, 2, 'UP'), round(1.0E-129, 0, 'UP'), round(-1.0E-129, 2, 'UP'), round(1.0E-129, 2, 'DOWN'), round(-1.0E-129, 2, 'DOWN'), round(1.0E-130, 2, 'UP'), round(1.0E-129, 2, 'CEILING'), round(1.0E-129, 129, 'UP')]"
+        rows: [[0.01, 1.0, -0.01, 0.0, 0.0, 0.01, 0.01, 1.0e-129]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [round(5.0E-130, 129, 'HALF_UP'), round(5.0E-130, 129, 'HALF_DOWN'), round(5.0E-130, 129, 'HALF_EVEN'), round(1.5E-129, 129, 'HALF_EVEN'), round(-5.0E-130, 129, 'HALF_UP'), round(9.0E-129, 128, 'HALF_UP')]"
+        rows: [[1.0e-129, 0.0, 0.0, 2.0e-129, -1.0e-129, 1.0e-128]]
       - note: A float rounds as its shortest decimal reads, as Java's BigDecimal.valueOf reads it, though its double is below it.
         cypher: "RETURN [round(1.005, 2, 'HALF_UP'), round(toFloat('1.005'), 2, 'HALF_UP'), round(2.675, 2, 'HALF_EVEN'), round(1.005 * 1, 2, 'HALF_DOWN'), round(pi(), 4, 'UP')]"
         rows: [[1.01, 1.01, 2.68, 1.0, 3.1416]]

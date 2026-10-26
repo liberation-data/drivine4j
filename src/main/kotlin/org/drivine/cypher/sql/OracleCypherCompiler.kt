@@ -595,6 +595,14 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
 
+    /**
+     * Oracle's `SIGN` gives 0 for a positive number under 1.0E-128, from 1.0E-130 up, which NUMBER holds and compares
+     * as greater than 0, and is right from 1.0E-128 up, for a negative number, 0, and null. So the number is held to
+     * between -1 and 1, where a thousand times it cannot overflow, and that is signed, past 1.0E-128 where it is not 0:
+     * [number] is read once, so a sign of a sign does not write it out twice at each level.
+     */
+    override fun signOf(number: String) = "SIGN(GREATEST(LEAST($number, 1), -1) * 1000)"
+
     override fun roundPlaces(number: String, precision: String) = pastItsDigits(number, precision) { n, p -> super.roundPlaces(n, p) }
 
     override fun roundTo(number: String, precision: String, mode: RoundingMode) = pastItsDigits(number, precision) { n, p -> super.roundTo(n, p, mode) }
