@@ -580,6 +580,35 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `round() to places the statement gives picks its rounding when compiling, as Neo4j reads them, NaN as 0`() {
+        // #301: either side of 0, the first odd double past 2^52 and numbers near NUMBER's greatest, to 0 places written,
+        // picked when compiling, and from an expression, by the CASE.
+        listOf("0", "toInteger('0')").forEach { places ->
+            assertEquals(
+                listOf(listOf(0.0, 0.0, 0.0, -4.503599627370497E15, 9.0E125, -9.0E125)),
+                query("RETURN [round(-0.0, $places), round(-0.4, $places), round(-0.49999999999999994, $places), round(-4503599627370497.0, $places), round(9.0E125, $places), round(-9.0E125, $places)]"),
+                places,
+            )
+        }
+        // Places a parameter or a parameter's key gives: a fraction, -0.5, negated, or NaN is 0 places, as Neo4j casts NaN
+        // to 0, and 1.0 is 1; a mode rounds by them alone, NaN too.
+        assertEquals(
+            listOf(listOf(-2.0, -2.0, -2.0, -2.0, -2.0, -2.5, -2.6, -2.0, -2.5, -3.0, -3.0, -2.0, -2.0, -2.0, -3.0, -2.0)),
+            query(
+                "RETURN [round(-2.5, \$p), round(-2.5, \$q), round(-2.5, -\$r), round(-2.5, \$z), round(-2.5, \$n), round(-2.5, \$o), round(-2.55, \$o), round(-2.5, 0.9999), " +
+                    "round(-2.5, 1.0), round(-2.5, \$p, 'HALF_UP'), round(-2.5, 0, 'HALF_UP'), round(-2.5, \$m.z), round(-2.5, -0.5), round(-2.5, -0.9999), " +
+                    "round(-2.5, \$n, 'HALF_UP'), round(-2.5, \$n, 'HALF_DOWN')]",
+                mapOf("p" to 0.7, "q" to -0.5, "r" to 0.5, "z" to 0L, "n" to Double.NaN, "o" to 1.0, "m" to mapOf("z" to 0L)),
+            ),
+        )
+        // Over an aggregate, where nothing is shared, written or read from a row.
+        assertEquals(
+            listOf(listOf(0L, listOf(-2.0, -2.0, -2.5, -2.0))),
+            query("UNWIND [-1.0, -1.5] AS x WITH x, 0 AS p RETURN p, [round(sum(x), 0), round(sum(x), p), round(sum(x), 1), round(avg(x) * 2, p)]"),
+        )
+    }
+
+    @Test
     fun `round() of zero, which has no digits to count, gives zero, or null to a null precision, and fails on a negative one`() {
         // #292: zero, among rows that are not zero, wherever it is read.
         clear()

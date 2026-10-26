@@ -3246,19 +3246,22 @@ abstract class SqlCypherCompiler(graph: String) {
          * or not, or a parameter's value; and else when the row is read, by [failure], on every store alike, but for a null
          * value, which Neo4j rounds to null whatever the precision.
          *
-         * Places from data are told apart as the statement runs, in one CASE over the value and the places, where a negative
-         * one is refused before either rounding: so the precision each rounding writes out, more than once on a store, is
-         * the places alone, and the value is asked of its kind, whose test writes it out fewer times than its number does.
+         * Places known when compiling pick the rounding then, [whole] below 1 place: under an aggregate, where nothing is
+         * bound, a CASE of both would write the number out in each, at each round() nested in another. Places from data
+         * are told apart as the statement runs, in one CASE over the value and the places, where a negative one is refused
+         * before either rounding: so the precision each rounding writes out, more than once on a store, is the places
+         * alone, and the value is asked of its kind, whose test writes it out fewer times than its number does.
          */
         private fun rounded(value: Value, precision: Value, written: Expression, whole: ((String) -> String)? = null, places: (String, String) -> String): String {
             val negated = written is Expression.Unary && written.operator == Expression.Unary.Operator.NEGATE
             val given = (given(if (negated) (written as Expression.Unary).operand else written) as? Number)?.toDouble()
             if (given != null) {
-                if (kotlin.math.truncate(if (negated) -given else given) < 0) throw DrivineException(NEGATIVE_PRECISION)
+                val signed = if (negated) -given else given
+                if (kotlin.math.truncate(signed) < 0) throw DrivineException(NEGATIVE_PRECISION)
                 val number = number(comparable(json(value)))
-                return if (whole == null) places(number, truncatedWhole(precision)) else shared(number, truncatedWhole(precision)) { (n, p) ->
-                    "CASE WHEN $p = 0 THEN ${whole(n)} ELSE ${places(n, p)} END"
-                }
+                // Not `signed < 1`, which NaN fails: Neo4j casts NaN to 0 places, as Java casts it to a long.
+                if (whole != null && !(signed >= 1)) return whole(number)
+                return places(number, if (signed.isNaN()) "CAST(0 AS INTEGER)" else truncatedWhole(precision))
             }
             return shared(comparable(json(value)), "${temporalSql.trunc}(${number(comparable(json(precision)))})") { (x, t) ->
                 val toWhole = whole?.let { "WHEN $t = 0 THEN ${it(number(x))} " } ?: ""
