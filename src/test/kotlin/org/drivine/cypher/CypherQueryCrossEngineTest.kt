@@ -667,6 +667,11 @@ abstract class CypherQueryContract {
         assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.k = 2 RETURN sum(round(1234.5, n.r))"))
         assertEquals(listOf(0.0, 1234.5), query("MATCH (n:Round) RETURN CASE WHEN n.r < 0 THEN 0.0 ELSE round(1234.5, n.r) END ORDER BY n.k"))
         assertEquals(listOf(listOf(1234.5, 1234.5)), query("RETURN [round(1234.5, 3 - 1), round(1234.5, toInteger('2'))]"))
+        // A null rounds to null whatever the precision, a negative one too (#288): from data, worked out by the store, and
+        // under an aggregate, where nothing is shared.
+        assertEquals(listOf(listOf(null, null)), query("MATCH (n:Round) WHERE n.k = 1 RETURN [round(n.none, n.r), round(n.none, n.r, 'HALF_UP')]"))
+        assertEquals(listOf(listOf(null, null, null)), query("RETURN [round(null, toInteger('-2')), round(null, toInteger('-2'), 'CEILING'), round(null, 1 - 3)]"))
+        assertEquals(listOf(listOf(-2L, null, null)), query("UNWIND [null, null] AS x WITH x, -2 AS r RETURN r, round(min(x), r), round(max(x), r, 'UP')"))
     }
 
     @Test

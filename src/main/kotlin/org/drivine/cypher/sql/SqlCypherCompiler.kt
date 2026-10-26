@@ -3099,12 +3099,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 // The precision is read as a whole number toward zero, as Neo4j reads it: 1.7 places is 1.
                 "round" -> when (arguments.size) {
                     3 -> roundingMode(function.arguments[2])?.let { mode ->
-                        Value.Json(scalar(float(roundTo(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1]), mode))))
+                        Value.Json(scalar(float(rounded(arguments[0], arguments[1], function.arguments[1]) { n, p -> roundTo(n, p, mode) })))
                     } ?: Value.Json(literalJson(null))
                     // To 0 places Neo4j rounds as round(x) does, half toward +infinity, as Java's Math.round; to more, half away from zero.
-                    2 -> Value.Json(scalar(float(shared(number(comparable(json(arguments[0]))), precisionOf(arguments[1], function.arguments[1])) { (n, p) ->
-                        "CASE WHEN $p = 0 THEN ${roundWhole(n)} ELSE ${roundPlaces(n, p)} END"
-                    })))
+                    2 -> Value.Json(scalar(float(rounded(arguments[0], arguments[1], function.arguments[1], { roundWhole(it) }) { n, p -> roundPlaces(n, p) })))
                     else -> Value.Json(scalar(float(roundWhole(number(comparable(json(one())))))))
                 }
                 "floor", "ceil" -> Value.Json(scalar(float("${name.uppercase()}(${number(comparable(json(one())))})")))
@@ -3242,19 +3240,30 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun truncatedWhole(value: Value): String = "CAST(${temporalSql.trunc}(${number(comparable(json(value)))}) AS INTEGER)"
 
         /**
-         * `round()`'s precision [value], written in the statement as [precision], as a whole number toward zero: -0.5
-         * is 0 places. One below 0 is refused, as Neo4j refuses it: when compiling, where it is written, negated or
-         * not, or a parameter's value; and else when the row is read, by [failure], on every store alike.
+         * `round()` of [value] to [precision] places, by [places] over the value as a SQL number and the precision as a whole
+         * number toward zero, written in the statement as [written]: -0.5 is 0 places. Given [whole], to 0 places it rounds
+         * by that instead. A precision below 0 is refused, as Neo4j refuses it: when compiling, where it is written, negated
+         * or not, or a parameter's value; and else when the row is read, by [failure], on every store alike, but for a null
+         * value, which Neo4j rounds to null whatever the precision.
+         *
+         * Places from data are told apart as the statement runs, in one CASE over the value and the places, where a negative
+         * one is refused before either rounding: so the precision each rounding writes out, more than once on a store, is
+         * the places alone, and the value is asked of its kind, whose test writes it out fewer times than its number does.
          */
-        private fun precisionOf(value: Value, precision: Expression): String {
-            val negated = precision is Expression.Unary && precision.operator == Expression.Unary.Operator.NEGATE
-            val given = (given(if (negated) (precision as Expression.Unary).operand else precision) as? Number)?.toDouble()
+        private fun rounded(value: Value, precision: Value, written: Expression, whole: ((String) -> String)? = null, places: (String, String) -> String): String {
+            val negated = written is Expression.Unary && written.operator == Expression.Unary.Operator.NEGATE
+            val given = (given(if (negated) (written as Expression.Unary).operand else written) as? Number)?.toDouble()
             if (given != null) {
                 if (kotlin.math.truncate(if (negated) -given else given) < 0) throw DrivineException(NEGATIVE_PRECISION)
-                return truncatedWhole(value)
+                val number = number(comparable(json(value)))
+                return if (whole == null) places(number, truncatedWhole(precision)) else shared(number, truncatedWhole(precision)) { (n, p) ->
+                    "CASE WHEN $p = 0 THEN ${whole(n)} ELSE ${places(n, p)} END"
+                }
             }
-            return shared("${temporalSql.trunc}(${number(comparable(json(value)))})") { (places) ->
-                "CASE WHEN $places < 0 THEN ${failure(NEGATIVE_PRECISION, places)} ELSE CAST($places AS INTEGER) END"
+            return shared(comparable(json(value)), "${temporalSql.trunc}(${number(comparable(json(precision)))})") { (x, t) ->
+                val toWhole = whole?.let { "WHEN $t = 0 THEN ${it(number(x))} " } ?: ""
+                // A null value, as anything else that is no number, rounds by its negative places to null.
+                "CASE ${toWhole}WHEN $t < 0 AND ${typeOf(x)} = 'number' THEN ${failure(NEGATIVE_PRECISION, t)} ELSE ${places(number(x), "CAST($t AS INTEGER)")} END"
             }
         }
 
