@@ -138,6 +138,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun collect(value: String, order: String?) =
         "COALESCE(json_agg($value${order?.let { " ORDER BY $it" }.orEmpty()}) FILTER (WHERE $value IS NOT NULL), '[]'::json)"
 
+    override fun joinedTexts(text: String, order: String) = "string_agg($text, '' ORDER BY $order)"
+
     override fun distinctItems(list: String) =
         "(SELECT COALESCE(json_agg(d.item ORDER BY d.first), '[]'::json) FROM (SELECT min(e.item_no) AS first, e.item FROM ${elements(list, "e")} GROUP BY e.item) d)"
 
@@ -162,6 +164,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * order as its code points do; in another, as that encoding's bytes do. Null where [json] is not a text.
      */
     private fun codePointText(json: String) = "(CASE WHEN jsonb_typeof($json) = 'string' THEN ${textOf(json)} END) COLLATE \"C\""
+
+    override fun bytewise(text: String) = "($text) COLLATE \"C\""
 
     /** Texts by their code points ([codePointText]); values of any other kind as `jsonb` compares them. */
     override fun ordered(x: String, operator: String, y: String) =

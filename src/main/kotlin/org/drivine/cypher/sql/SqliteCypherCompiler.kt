@@ -130,6 +130,8 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun collect(value: String, order: String?) =
         "json_group_array(json($value)${order?.let { " ORDER BY $it" }.orEmpty()}) FILTER (WHERE $value IS NOT NULL)"
 
+    override fun joinedTexts(text: String, order: String) = "group_concat($text, '' ORDER BY $order)"
+
     override fun distinctItems(list: String) =
         "(SELECT json_group_array(json(d.item) ORDER BY d.first) FROM (SELECT min(${itemNo("e")}) AS first, ${item("e")} AS item " +
             "FROM ${elements(list, "e")} GROUP BY ${SqliteFunctions.CANONICAL}(${item("e")})) d)"

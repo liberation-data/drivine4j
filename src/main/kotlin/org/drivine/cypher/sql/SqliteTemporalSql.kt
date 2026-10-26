@@ -29,6 +29,9 @@ class SqliteTemporalSql(shared: (List<String>, (List<String>) -> String) -> Stri
 
     override fun number(text: String) = "CAST(NULLIF($text, '') AS NUMERIC)"
 
+    /** A timestamp is such a text already. */
+    override fun sortable(timestamp: String) = timestamp
+
     override fun micros(timestamp: String) = "substr($timestamp, 21, 6)"
 
     override fun dayOfWeek(timestamp: String) = "((CAST(strftime('%w', $timestamp) AS INTEGER) + 6) % 7 + 1)"

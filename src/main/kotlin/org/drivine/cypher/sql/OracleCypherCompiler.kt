@@ -218,6 +218,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun collect(value: String, order: String?) =
         "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} RETURNING JSON), JSON('[]'))"
 
+    /** At most 4,000 bytes, as a `VARCHAR2`: the rest is left off, where it would fail the statement. */
+    override fun joinedTexts(text: String, order: String) = "LISTAGG($text ON OVERFLOW TRUNCATE '' WITHOUT COUNT) WITHIN GROUP (ORDER BY $order)"
+
     /**
      * Each item where it is first among those equal to it as `JSON` compares them, kept as it is: not by its text, which is
      * at most 4,000 bytes and keeps a map's keys in the order written, and not read back from it, which would read a float

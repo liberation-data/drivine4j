@@ -26,6 +26,8 @@ class PostgresTemporalSql(shared: (List<String>, (List<String>) -> String) -> St
 
     override fun number(text: String) = "CAST(NULLIF($text, '') AS numeric)"
 
+    override fun sortable(timestamp: String) = "to_char($timestamp, 'YYYY-MM-DD\"T\"HH24:MI:SS.US')"
+
     override fun micros(timestamp: String) = "to_char($timestamp, 'US')"
 
     override fun dayOfWeek(timestamp: String) = "CAST(EXTRACT(ISODOW FROM $timestamp) AS numeric)"

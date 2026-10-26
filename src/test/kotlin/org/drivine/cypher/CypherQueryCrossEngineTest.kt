@@ -714,6 +714,33 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a list of zoned values, and a list of lists of them, sort and compare item by item as the moments they are, whatever their offsets`() {
+        // Not in the spec yet (#199). As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
+        val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
+        val hours = listOf(10L, 8L, 9L)
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
+        assertEquals(hours.reversed(), query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts DESC"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, collect(t) AS ts RETURN h ORDER BY ts"))
+        assertEquals(hours, query("UNWIND [[$b], [$a], [$c]] AS ts RETURN ts[0].hour ORDER BY ts"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [[t]] AS l RETURN l[0][0].hour ORDER BY l"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, collect([t]) AS l RETURN h ORDER BY l"))
+        // A list that starts another comes first; a null item after any moment.
+        assertEquals(listOf(1L, 2L), query("WITH [$a] AS x, [$a, $b] AS y UNWIND [y, x] AS l RETURN size(l) ORDER BY l"))
+        assertEquals(listOf(0L, 1L), query("WITH [$a, null] AS x, [$a, $b] AS y UNWIND [x, y] AS l RETURN size([i IN l WHERE i IS NULL]) ORDER BY l"))
+        // A list whose key is past Oracle's 4,000 bytes.
+        assertEquals(listOf(1L, 0L), query("UNWIND [0, 1] AS k WITH k, [x IN range(1, 200) | $b + duration({minutes: x - k})] AS l RETURN k ORDER BY l"))
+        // min() and max() of them.
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [[$b], [$a], [$c]] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [$b, $a, $c] AS t WITH [[t]] AS l RETURN [min(l)[0][0].hour, max(l)[0][0].hour]"))
+        // A time of day with an offset, as a moment.
+        val times = "[time('10:00:00+02:00'), time('09:00:00Z'), time('08:30:00Z')]"
+        assertEquals(hours, query("UNWIND $times AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND $times AS t WITH [t] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
+        // Taken from a list kept in order, by head() and last().
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [$b, $a, $c] AS t WITH t ORDER BY t WITH collect(t) AS ts RETURN [head(ts).hour, last(ts).hour]"))
+    }
+
+    @Test
     fun `a negative precision from data fails only on a row that reads it, in a WHERE and an aggregate too, with the compiler's message`() {
         // The spec reads a precision from data since v0.6.4; here, in a WHERE and an aggregate, and on rows filtered out.
         clear()
