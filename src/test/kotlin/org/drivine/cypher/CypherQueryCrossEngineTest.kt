@@ -688,6 +688,9 @@ abstract class CypherQueryContract {
             // A constant the compiler does not read as given is worked out by the store, as one from data.
             "RETURN round(1234.5, 1 - 3)",
             "RETURN round(1234.5, toInteger('-2'))",
+            // An integer is a number too, whose kind each store names apart from a float's.
+            "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.k, n.r)",
+            "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.k, n.r, 'UP')",
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
             if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), failed)
@@ -701,6 +704,8 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(null, null)), query("MATCH (n:Round) WHERE n.k = 1 RETURN [round(n.none, n.r), round(n.none, n.r, 'HALF_UP')]"))
         assertEquals(listOf(listOf(null, null, null)), query("RETURN [round(null, toInteger('-2')), round(null, toInteger('-2'), 'CEILING'), round(null, 1 - 3)]"))
         assertEquals(listOf(listOf(-2L, null, null)), query("UNWIND [null, null] AS x WITH x, -2 AS r RETURN r, round(min(x), r), round(max(x), r, 'UP')"))
+        // So far below 0 that the digits a number holds past them, 10^(17 - p), would overflow Oracle's NUMBER.
+        assertEquals(listOf(listOf(null, null)), query("UNWIND [-1000] AS p RETURN [round(null, p), round(null, p, 'HALF_EVEN')]"))
     }
 
     @Test
