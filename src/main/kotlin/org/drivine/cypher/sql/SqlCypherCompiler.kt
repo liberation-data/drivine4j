@@ -600,6 +600,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** `round(x, p)` of two arguments: [number] to [precision] places, half away from zero, as SQL's `ROUND` rounds. */
     protected open fun roundPlaces(number: String, precision: String): String = "ROUND($number, $precision)"
 
+    /** The sign of the SQL number [number]: 1, -1 or 0, as SQL's `SIGN` gives it, and null where it is null. */
+    protected open fun signOf(number: String): String = "SIGN($number)"
+
+    /** [signOf] where any sign of 0 will do, as where it multiplies 0, so a store may tell it more cheaply. */
+    protected open fun signOfNonZero(number: String): String = signOf(number)
+
     /**
      * `round(value, precision, mode)`: the SQL number [number] rounded to [precision] decimal places by [mode], as a SQL
      * number. Worked out in decimal, as Neo4j works it out with Java's `BigDecimal`, so 2.345 is halfway between 2.34 and
@@ -620,7 +626,7 @@ abstract class SqlCypherCompiler(graph: String) {
         when (mode) {
             RoundingMode.CEILING -> "(CEIL($n * $scale) / $scale)"
             RoundingMode.FLOOR -> "(FLOOR($n * $scale) / $scale)"
-            else -> "(SIGN($n) * $magnitude / $scale)"
+            else -> "(${signOfNonZero(n)} * $magnitude / $scale)"
         }
     }
 
@@ -3121,7 +3127,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 // Java's constants, which Neo4j gives, written as the floats they are.
                 "e", "pi" -> if (arguments.isEmpty()) Value.Json(literalJson(if (name == "e") Math.E else Math.PI))
                     else throw DrivineException("${function.name}() takes no argument.")
-                "sign" -> Value.Json(scalar("SIGN(${number(comparable(json(one())))})"))
+                "sign" -> Value.Json(scalar(signOf(number(comparable(json(one()))))))
                 "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"), text = true)
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.

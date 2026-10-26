@@ -595,6 +595,16 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun returnRows(query: String) = listOf("OPEN $CURSOR FOR\n${indent(query)};", "DBMS_SQL.RETURN_RESULT($CURSOR);")
 
+    /**
+     * Oracle's `SIGN` gives 0 for a positive number under 1.0E-128, from 1.0E-130 up, which NUMBER holds and compares
+     * as greater than 0, so a positive number is told by comparing it with 0. `SIGN` is right for the rest: a negative
+     * number, 0, and null.
+     */
+    override fun signOf(number: String) = shared(number) { (n) -> "CASE WHEN $n > 0 THEN 1 ELSE SIGN($n) END" }
+
+    /** [signOf], reading [number] once: 1 for 0, whose sign this does not ask. */
+    override fun signOfNonZero(number: String) = "CASE WHEN $number < 0 THEN -1 ELSE 1 END"
+
     override fun roundPlaces(number: String, precision: String) = pastItsDigits(number, precision) { n, p -> super.roundPlaces(n, p) }
 
     override fun roundTo(number: String, precision: String, mode: RoundingMode) = pastItsDigits(number, precision) { n, p -> super.roundTo(n, p, mode) }
