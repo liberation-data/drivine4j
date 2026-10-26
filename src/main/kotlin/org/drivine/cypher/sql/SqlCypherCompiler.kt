@@ -3461,7 +3461,10 @@ abstract class SqlCypherCompiler(graph: String) {
         /** What `round()` fails with, as Neo4j fails it, a precision below 0 or past [MAX_COUNT]. */
         const val PRECISION_OUT_OF_RANGE = "round() takes a precision from 0 to 2147483647, as in Neo4j."
 
-        /** The greatest start or length `substring()`, `left()` and `right()` take, as Neo4j takes them: Java's greatest `int`. */
+        /**
+         * The greatest start or length `substring()`, `left()` and `right()` take, and the greatest precision `round()`
+         * takes, as Neo4j takes them: Java's greatest `int`.
+         */
         const val MAX_COUNT = Int.MAX_VALUE.toLong()
 
         /**
