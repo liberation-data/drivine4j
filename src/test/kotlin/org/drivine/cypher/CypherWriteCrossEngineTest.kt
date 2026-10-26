@@ -227,6 +227,43 @@ class CypherWriteOracleTest : CypherWriteContract() {
     }
 
     @Test
+    fun `a property past 32 KB read on two nodes leaves the session open`() {
+        // Oracle crashed the session where a statement took a text past 32 KB from the properties with JSON_QUERY as JSON,
+        // and fed it on into further SQL, for each of two rows (#255). The compiler reads a property a RETURN or a WITH
+        // gives through its text to work round it: see OracleCypherCompiler.itemProperty. As above, each statement is
+        // new, and the session is asked again after it.
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+            connection.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
+        try {
+            val texts = listOf("x", "y", "z").map { it.repeat(40_000) }
+            query("UNWIND range(1, 3) AS id CREATE (:CyWrite {id: id})")
+            // Each set by a statement of its own: a write that reads a long text from an unwound parameter, for each of two
+            // rows, is not what this test is about.
+            texts.forEachIndexed { i, a -> query("MATCH (n:CyWrite {id: \$id}) SET n.a = \$a", mapOf("id" to i + 1, "a" to a)) }
+            query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CREATE (a)-[:CY_LONG {a: \$a}]->(b), (b)-[:CY_LONG {a: \$a}]->(a)", mapOf("a" to texts[0]))
+            repeat(3) { i ->
+                assertEquals(texts.toSet(), query("MATCH (n:CyWrite) WHERE n.id > -$i RETURN n.a").toSet())
+                assertEquals(texts, query("MATCH (n:CyWrite) WHERE n.id > -$i RETURN n.a ORDER BY n.id"))
+                // Not worked around: Oracle sorts and groups JSON only up to about 32 KB. It refuses the statement (ORA-40180),
+                // and the session stays open for the statements after it.
+                listOf("RETURN n.a ORDER BY n.a", "RETURN DISTINCT n.a").forEach { rest ->
+                    val refused = assertFailsWith<Exception> { query("MATCH (n:CyWrite) WHERE n.id > -$i $rest") }
+                    assertTrue(generateSequence<Throwable>(refused) { it.cause }.any { "ORA-40180" in it.message.orEmpty() }, refused.toString())
+                }
+                assertEquals(
+                    texts.mapIndexed { j, a -> listOf((j + 1).toLong(), a) },
+                    query("MATCH (n:CyWrite) WITH n.id AS id, n.a AS a WHERE id > -$i RETURN [id, a] ORDER BY id"),
+                )
+                assertEquals(listOf(texts[0], texts[0]), query("MATCH ()-[r:CY_LONG]->() RETURN r.a AS a$i"))
+                assertEquals(listOf(3L), query("MATCH (n:CyWrite) RETURN count(n) AS c$i"))
+            }
+        } finally {
+            connection.release()
+        }
+    }
+
+    @Test
     fun `a parameter's property past 32 KB read and set on two nodes leaves the session open`() {
         // Oracle crashed the session where a statement read a property past 32 KB of a parameter, for each of two rows,
         // taking the parameter as JSON first and then the property from it (#256), by a property or by a subscript.

@@ -131,6 +131,36 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         else "JSON_QUERY($json, ${OracleSql.path(key)} RETURNING JSON)"
 
     /**
+     * A property returned or passed on by a `RETURN` or a `WITH`, read through its text: only the key is kept
+     * (`JSON_TRANSFORM … KEEP`), written out as extended JSON, then read back from that text as extended JSON, so a float
+     * that is a whole number stays a float.
+     *
+     * **A workaround for an Oracle server bug (#255), to be removed once Oracle fixes it.** Seen on Oracle 23.26.3
+     * (gvenzl/oracle-free 23). Where a statement takes a string value past about 32 KB from a node's properties with
+     * `JSON_QUERY(props, '$.a' RETURNING JSON)` over two or more rows, as the compiled SQL does and then feeds it on
+     * (an outer `SELECT`, an `ORDER BY`, a `JSON_ARRAY`), the long value is written over the server process's heap and
+     * the process dies: the client sees ORA-03113 (end-of-file on communication channel), and the alert log shows
+     * ORA-00600 `[17114]` and `[kghfrh1]`, and ORA-07445 in `kghalo`, `kghsrch_new` or `kxsFreePages`, faulting at
+     * `0x78787878787878`, the bytes of the string. One row doesn't crash it, nor 30,000 characters, nor a long list,
+     * nor a map that holds the long string. A plain-SQL repro is in `docs/oracle-long-json-string-crash.md`.
+     *
+     * It costs about 2.4 to 3.8 times the plain read on short values: 100,000 rows of `RETURN n.name` took 493 ms against
+     * 147 ms. Cheaper forms were tried and rejected: each crashed, read a CLOB column back as text (5.0 as 5), or, as a
+     * `CASE` on `$.a.type()` or on the value's length that reads the properties twice, made Oracle drop the row's label
+     * test and return nodes it had ruled out. Beside a variable-length walk the plain read is kept: Oracle has closed
+     * the session over this form in the more involved statements a walk writes. Only an item that is the property itself
+     * is read so: a property inside an item (`[n.a]`, `collect(n.a)`) is read as [propertyOf] reads it, and isn't worked
+     * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
+     * (ORA-40180), as it does any JSON that large, and the session stays open.
+     *
+     * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
+     * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
+     * two nodes" test still passes without it. `OracleItemPropertyTest`, which pins this SQL, goes with it.
+     */
+    override fun itemProperty(props: String, key: String) =
+        "JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM($props, KEEP ${OracleSql.path(key)}) RETURNING CLOB EXTENDED), ${OracleSql.path(key)} RETURNING CLOB) EXTENDED)"
+
+    /**
      * A value in a parameter that is a map, `${'$'}p.text`, read with one path from the text the parameter is bound as, and
      * not from the parameter read as JSON first: Oracle crashed the session (#256) where a statement read a value from a
      * parameter past 32 KB, taken as JSON, for each of two rows. Read as extended JSON where the parameter is (see

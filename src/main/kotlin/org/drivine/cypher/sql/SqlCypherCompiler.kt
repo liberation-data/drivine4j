@@ -255,6 +255,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The value of [key] in the JSON map [json]; null where there is none. */
     protected abstract fun propertyOf(json: String, key: String): String
 
+    /**
+     * The property [key] of the node or relationship whose properties are [props], where it is an item of a `RETURN` or a
+     * `WITH`, returned or passed on: as [propertyOf] reads it, but on a store that must read such an item apart.
+     */
+    protected open fun itemProperty(props: String, key: String): String = propertyOf(props, key)
+
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
@@ -1797,7 +1803,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 )
             }
             rowOrder = orderOf(select)
-            val compiled = items.map { item -> item.name to aggregating(item.expression) { expression(item.expression, select.scope) } }
+            val compiled = items.map { item -> item.name to aggregating(item.expression) { item(item.expression, select) } }
             val aggregating = items.any { contains(it.expression, ::isAggregate) }
             // Where rows are compared (DISTINCT, GROUP BY), JSON is compared as what compares.
             val compared = projection.distinct || aggregating
@@ -2375,6 +2381,24 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             if (subject !is Expression.Parameter || givenParameters?.containsKey(subject.name) == true) return null
             return parameters.json(subject.name, keys)
+        }
+
+        /**
+         * The item [expression] of a `RETURN` or a `WITH` over [select]: a property of a node or a relationship, the item
+         * itself, read as [itemProperty] reads it, but beside a variable-length walk; anything else as elsewhere. A node or a
+         * relationship is compiled once here: compiling the item over it again lost the rows of statements that match a
+         * relationship.
+         */
+        private fun item(expression: Expression, select: Select): Value {
+            if (expression is Expression.Property && !select.walks) {
+                // A property of a node or a relationship holds no null in a list, as expression() marks it (see flat).
+                when (val subject = expression(expression.subject, select.scope)) {
+                    is Value.Node -> if (expression.key != Stamps.PROPERTY) return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    is Value.Relationship -> return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    else -> {}
+                }
+            }
+            return expression(expression, select.scope)
         }
 
         private fun property(subject: Value, key: String): Value = when (subject) {
