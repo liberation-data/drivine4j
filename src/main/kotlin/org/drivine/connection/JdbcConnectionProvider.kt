@@ -23,8 +23,11 @@ import javax.sql.DataSource
  *
  * The JDBC driver is the application's to supply. For Oracle that is `com.oracle.database.jdbc:ojdbc11`,
  * for Postgres `org.postgresql:postgresql`, and for SQLite `org.xerial:sqlite-jdbc` (see [sqlite]).
+ *
+ * Java sees a constructor for each arity, so a caller compiled against fewer parameters still builds after one is added
+ * last.
  */
-class JdbcConnectionProvider(
+class JdbcConnectionProvider @JvmOverloads constructor(
     override val name: String,
     override val type: DatabaseType,
     private val dataSource: DataSource,
@@ -33,6 +36,13 @@ class JdbcConnectionProvider(
     private val ownsDataSource: Boolean = false,
     /** The graph the object managers read and write: it names the property graph and its tables. */
     override val graphName: String = DEFAULT_GRAPH,
+    /**
+     * Whether [connect] sets each Oracle session of the application's [dataSource] to make no adaptive plan, the first
+     * time it connects with it (see [NO_ADAPTIVE_PLANS]). On by default: an adaptive plan can give a read of the graph
+     * no rows (#289). False leaves the application's sessions as it set them. A pool this provider made runs the
+     * statement as it opens a session either way.
+     */
+    private val setsNoAdaptivePlans: Boolean = true,
 ) : ConnectionProvider, NativeDriverSource<DataSource> {
 
     /** Oracle, Postgres and SQLite keep a graph's indexes and constraints over its tables; another JDBC store has no graph. */
@@ -50,11 +60,12 @@ class JdbcConnectionProvider(
         get() = dataSource
 
     /**
-     * Whether each session of [dataSource] is already set to make no adaptive plan on Oracle: a pool this provider made,
-     * or a HikariCP pool that runs [NO_ADAPTIVE_PLANS] as it opens a session, as [pooled] makes one.
+     * Whether [connect] leaves each session of [dataSource] as it is: not Oracle, already set to make no adaptive plan (a
+     * pool this provider made, or a HikariCP pool that runs [NO_ADAPTIVE_PLANS] as it opens a session, as [pooled] makes
+     * one), or the application asked for its sessions to be left alone ([setsNoAdaptivePlans]).
      */
-    private val sessionsSet: Boolean =
-        type != DatabaseType.ORACLE || ownsDataSource || (dataSource as? HikariDataSource)?.connectionInitSql == NO_ADAPTIVE_PLANS
+    private val leavesSessions: Boolean =
+        !setsNoAdaptivePlans || type != DatabaseType.ORACLE || ownsDataSource || (dataSource as? HikariDataSource)?.connectionInitSql == NO_ADAPTIVE_PLANS
 
     /**
      * The sessions of the application's [dataSource] that [connect] has set, by the driver's connection behind a pool's
@@ -69,7 +80,7 @@ class JdbcConnectionProvider(
      * A session that cannot be set is closed and its error thrown, rather than given out unset.
      */
     private fun withoutAdaptivePlans(connection: java.sql.Connection): java.sql.Connection {
-        if (sessionsSet) return connection
+        if (leavesSessions) return connection
         val session = runCatching { connection.unwrap(java.sql.Connection::class.java) }.getOrNull() ?: connection
         if (session in setSessions) return connection
         try {

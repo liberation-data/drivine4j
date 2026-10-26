@@ -103,6 +103,25 @@ class OracleAdaptivePlansTest {
     }
 
     @Test
+    fun `a session of the application's own data source is left adaptive when the application asks Drivine to leave it`() {
+        val sessions = mutableListOf<java.sql.Connection>()
+        val plain = oracle.jdbc.pool.OracleDataSource().apply {
+            url = OracleTestContainer.getJdbcUrl()
+            user = OracleTestContainer.getConnectionUsername()
+            setPassword(OracleTestContainer.getConnectionPassword())
+        }
+        val applications = object : DataSource by plain {
+            override fun getConnection(): java.sql.Connection = plain.connection.also { sessions += it }
+        }
+        val connection = JdbcConnectionProvider(graph, DatabaseType.ORACLE, applications, graphName = graph, setsNoAdaptivePlans = false).connect()
+        try {
+            assertContains(notesOf(sessions.single(), read), "this is an adaptive plan")
+        } finally {
+            connection.release()
+        }
+    }
+
+    @Test
     fun `the read gives its rows`() {
         assertEquals(
             listOf<Any?>("Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"),
