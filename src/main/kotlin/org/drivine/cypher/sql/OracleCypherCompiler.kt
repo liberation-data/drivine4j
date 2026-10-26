@@ -18,8 +18,9 @@ import java.util.IdentityHashMap
  *
  * A value is Oracle's `JSON`, which compares, groups and orders as JSON and keeps a map's keys in the
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
- * number the statement writes, or a parameter's that is a whole number, is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
- * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` is a function the query
+ * number the statement writes, or a parameter's that is a whole number, is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is a
+ * `VARCHAR2` of at most 4,000 bytes, and one longer is read as a CLOB where it is measured, cut, changed or searched (see [texts]), but for
+ * `reverse()`, which still gives null. An empty text is null, as Oracle's empty text is. `reduce` is a function the query
  * declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
@@ -88,7 +89,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun comparable(value: Value.Json) = value.sql
 
-    override fun scalar(sql: String) = "JSON_SCALAR($sql)"
+    /** A CLOB that [texts] gives its body is null where it is empty, as a `VARCHAR2` is, and as Oracle's empty text is. */
+    override fun scalar(sql: String) = if (long) "JSON_SCALAR(CASE WHEN LENGTH($sql) > 0 THEN $sql END)" else "JSON_SCALAR($sql)"
 
     /** A floating-point number is a number, as JSON has it. */
     override fun typeOf(json: String) = shared(json) { (x) -> "DECODE(${kind(x)}, 'double', 'number', 'float', 'number', ${kind(x)})" }
@@ -104,7 +106,30 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "(${kind(x)} = 'number' AND JSON_VALUE($x, '$' RETURNING NUMBER) = TRUNC(JSON_VALUE($x, '$' RETURNING NUMBER)))"
     }
 
+    /** A `VARCHAR2`, which holds 4,000 bytes: a longer text is null. See [texts], which reads one as a CLOB. */
     override fun text(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'string' THEN JSON_VALUE($x, '$') END" }
+
+    /** The JSON [json] as a CLOB, where it is a string: a text of any length, slower to read than [text]'s `VARCHAR2`. */
+    private fun longText(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'string' THEN JSON_VALUE($x, '$' RETURNING CLOB) END" }
+
+    /**
+     * [body] over the texts as [text] reads them, `VARCHAR2`s, and where it gives null, over them as CLOBs (#298). A text
+     * past 4,000 bytes is null as a `VARCHAR2`, where Neo4j measures it, cuts it and searches it whole. [body] gives null
+     * where a text it is given is null, and where what it gives would not fit in a `VARCHAR2`: see [replaceText] and
+     * [split]. A short text is not read as a CLOB, which is slower: `COALESCE` reads its second value only where the first
+     * is null. [body] knows which it is given by [long].
+     */
+    override fun texts(vararg jsons: String, body: (List<String>) -> String) = shared(*jsons) { xs ->
+        // Within a body given CLOBs, as CLOBs alone.
+        if (long) return@shared body(xs.map(::longText))
+        val read = body(xs.map(::text))
+        long = true
+        val whole = try { body(xs.map(::longText)) } finally { long = false }
+        "COALESCE($read, $whole)"
+    }
+
+    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [split] and [replaceText], which read them otherwise. */
+    private var long = false
 
     override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'boolean' THEN JSON_VALUE($x, '$' RETURNING BOOLEAN) END" }
 
@@ -219,10 +244,33 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "WHEN ${kind(a)} = 'array' AND ${kind(b)} = 'array' THEN JSON_QUERY(JSON_ARRAY($a, $b RETURNING JSON), '\$[*][*]' RETURNING JSON WITH ARRAY WRAPPER) " +
             "WHEN ${kind(a)} = 'array' THEN JSON_TRANSFORM($a, APPEND '\$' = $b) " +
             "WHEN ${kind(b)} = 'array' THEN JSON_TRANSFORM($b, INSERT '\$[0]' = $a) " +
-            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN JSON_SCALAR(${summedText(a, given)} || ${summedText(b, given.second to given.first)}) END"
+            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN ${textSum(a, b, given)} END"
 
-    /** The side [json] of a `+` whose sides the statement gives as [given], this side first, as text: see [summedText]. */
-    private fun summedText(json: String, given: Pair<Any?, Any?>) = summedText(json, given.first, given.second, { "JSON_VALUE($it, '\$')" }, ::asText)
+    /**
+     * Two texts put together, as `VARCHAR2`s where both are read so and their sum fits in one, 4,000 bytes; else as a CLOB
+     * (#298), where a text past 4,000 bytes was left out as null, and a longer sum failed. Whether they fit is told from the
+     * sides' own texts, short to read: a number may be written otherwise ([asText]), though in at most [NUMBER_TEXT] bytes.
+     * A text the statement gives is as long as it is, and not read for each row.
+     */
+    private fun textSum(a: String, b: String, given: Pair<Any?, Any?>): String {
+        val swapped = given.second to given.first
+        fun bytes(json: String, given: Any?) = (given as? String)?.toByteArray(Charsets.UTF_8)?.size?.toString() ?: "LENGTHB(JSON_VALUE($json, '\$'))"
+        val fits = "${bytes(a, given.first)} + ${bytes(b, given.second)} <= ${SHORT_TEXT - 2 * NUMBER_TEXT}"
+        val short = "${summedText(a, given, short = true)} || ${summedText(b, swapped, short = true)}"
+        val whole = "TO_CLOB(${summedText(a, given, short = false)}) || ${summedText(b, swapped, short = false)}"
+        // Two empty texts are null together, as Oracle's empty text is, and not an empty CLOB.
+        val empty = "JSON_VALUE($a, '\$.length()') = 0 AND JSON_VALUE($b, '\$.length()') = 0"
+        return "CASE WHEN $fits THEN JSON_SCALAR($short) WHEN $empty THEN NULL ELSE JSON_SCALAR($whole) END"
+    }
+
+    /**
+     * The side [json] of a `+` whose sides the statement gives as [given], this side first, as text: see [summedText]. A text
+     * as a `VARCHAR2` where [short], null past 4,000 bytes, and else as a CLOB; a number's text is short.
+     */
+    private fun summedText(json: String, given: Pair<Any?, Any?>, short: Boolean) =
+        summedText(json, given.first, given.second, { if (short) "JSON_VALUE($it, '\$')" else "JSON_VALUE($it, '\$' RETURNING CLOB)" }) {
+            if (short) asText(it) else "CASE WHEN ${kind(it)} = 'string' THEN JSON_VALUE($it, '\$' RETURNING CLOB) ELSE TO_CLOB(${asText(it)}) END"
+        }
 
     /**
      * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float (a double, or a number with a
@@ -348,18 +396,27 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun modulo(a: String, b: String) = "MOD($a, $b)"
 
-    override fun startsWith(a: String, b: String) = shared(b) { (x) -> "(SUBSTR($a, 1, LENGTH($x)) = $x)" }
+    /** CLOBs, which `=` does not compare (ORA-22848), by `DBMS_LOB.COMPARE`: see [texts]. */
+    override fun startsWith(a: String, b: String) = shared(b) { (x) ->
+        if (long) "(DBMS_LOB.COMPARE($a, $x, LENGTH($x), 1, 1) = 0)" else "(SUBSTR($a, 1, LENGTH($x)) = $x)"
+    }
 
-    override fun endsWith(a: String, b: String) = shared(b) { (x) -> "(SUBSTR($a, -LENGTH($x)) = $x)" }
+    override fun endsWith(a: String, b: String) =
+        if (long) shared(a, b) { (t, x) -> "(LENGTH($t) >= LENGTH($x) AND DBMS_LOB.COMPARE($t, $x, LENGTH($x), LENGTH($t) - LENGTH($x) + 1, 1) = 0)" }
+        else shared(b) { (x) -> "(SUBSTR($a, -LENGTH($x)) = $x)" }
 
+    /** Of CLOBs too (see [texts]), though `INSTR` looks for no text past 32 KB (ORA-22828). */
     override fun containsText(a: String, b: String) = "(INSTR($a, $b) > 0)"
 
     override fun function(name: String, json: String): String? = when (name) {
-        "size" -> "CASE ${kind(json)} WHEN 'array' THEN JSON_SCALAR(JSON_VALUE($json, '\$.size()' RETURNING NUMBER)) WHEN 'string' THEN JSON_SCALAR(LENGTH(JSON_VALUE($json, '\$'))) END"
-        "tolower" -> "JSON_SCALAR(LOWER(${text(json)}))"
-        "toupper" -> "JSON_SCALAR(UPPER(${text(json)}))"
-        "trim" -> "JSON_SCALAR(TRIM(${text(json)}))"
-        "tostring" -> "JSON_SCALAR(${asText(json)})"
+        // A text past 4,000 bytes, null as a VARCHAR2, is measured as a CLOB (#298).
+        "size" -> "CASE ${kind(json)} WHEN 'array' THEN JSON_SCALAR(JSON_VALUE($json, '\$.size()' RETURNING NUMBER)) " +
+            "WHEN 'string' THEN JSON_SCALAR(COALESCE(LENGTH(JSON_VALUE($json, '\$')), LENGTH(JSON_VALUE($json, '\$' RETURNING CLOB)))) END"
+        "tolower" -> texts(json) { (t) -> scalar("LOWER($t)") }
+        "toupper" -> texts(json) { (t) -> scalar("UPPER($t)") }
+        "trim" -> texts(json) { (t) -> scalar("TRIM($t)") }
+        // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
+        "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
         "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"
@@ -523,11 +580,31 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "REGEXP_LIKE($text, '\\A(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\\z', NVL(REPLACE($flags, 's', 'n'), 'c'))"
     }
 
-    /** The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next. */
+    /**
+     * The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next.
+     * A `VARCHAR2` is cut off past 4,000 bytes where `REPLACE` makes it longer, so a text is split as one only where what it
+     * is made cannot be longer, each of its bytes written as six at most (`\u0001`), and else as a CLOB: see [texts].
+     */
     override fun split(text: String, separator: String) = shared(text, separator) { (t, s) ->
-        val written = "JSON_SERIALIZE(JSON_SCALAR($t))"
+        val written = if (long) "JSON_SERIALIZE(JSON_SCALAR($t) RETURNING CLOB)" else "JSON_SERIALIZE(JSON_SCALAR($t))"
         val separatorWritten = "SUBSTR(JSON_SERIALIZE(JSON_SCALAR($s)), 2, LENGTH(JSON_SERIALIZE(JSON_SCALAR($s))) - 2)"
-        "CASE WHEN $t IS NOT NULL AND $s IS NOT NULL THEN JSON('[' || REPLACE($written, $separatorWritten, '\",\"') || ']') END"
+        val fits = if (long) "" else " AND LENGTHB($t) <= ${(SHORT_TEXT - 2) / 6}"
+        "CASE WHEN $t IS NOT NULL AND $s IS NOT NULL$fits THEN JSON('[' || REPLACE($written, $separatorWritten, '\",\"') || ']') END"
+    }
+
+    /**
+     * A `VARCHAR2` is cut off past 4,000 bytes where `REPLACE` makes it longer: as one only where it cannot be, as each
+     * [search] made [replacement] grows the text by their ratio at most, and else null, so [texts] replaces in a CLOB. Their
+     * lengths are worked out here where the statement gives them, and not for each row.
+     */
+    override fun replaceText(text: String, search: String, replacement: String, searchBytes: Int?, replacementBytes: Int?): String {
+        val replaced = "REPLACE($text, $search, $replacement)"
+        if (long) return replaced
+        if (searchBytes != null && replacementBytes != null) {
+            return if (replacementBytes <= searchBytes) replaced else "CASE WHEN LENGTHB($text) * $replacementBytes <= ${SHORT_TEXT * searchBytes} THEN $replaced END"
+        }
+        val (s, r) = (searchBytes?.toString() ?: "LENGTHB($search)") to (replacementBytes?.toString() ?: "LENGTHB($replacement)")
+        return "CASE WHEN $r <= $s OR LENGTHB($text) * $r <= $SHORT_TEXT * $s THEN $replaced END"
     }
 
     /** Oracle has no reverse of a text that it documents: its characters, read from the last. */
@@ -638,6 +715,12 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private companion object {
         /** The cursor a procedure returns its rows by. */
         const val CURSOR = "cy_cursor"
+
+        /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
+        const val SHORT_TEXT = 4000
+
+        /** The most bytes [asText] writes a number in: Java's text of a double, `-2.2250738585072014E-308`, and some to spare. */
+        const val NUMBER_TEXT = 32
 
         /** The key of a double in Oracle's extended JSON. */
         const val DOUBLE = "\$numberDouble"

@@ -237,6 +237,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The JSON [json] as text, where it is a string. */
     protected abstract fun text(json: String): String
 
+    /**
+     * [body] over the texts of the JSON values [jsons], each read as [text] reads it where it is a string. A store whose
+     * text read from JSON holds only so much reads a longer one otherwise: see Oracle's.
+     */
+    protected open fun texts(vararg jsons: String, body: (List<String>) -> String): String = body(jsons.map(::text))
+
     /** The JSON [json] as a condition, where it is `true` or `false`. */
     protected abstract fun boolOf(json: String): String
 
@@ -442,6 +448,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** `split`: the SQL text [text] cut at each [separator], a SQL text, as a JSON list of texts. */
     protected abstract fun split(text: String, separator: String): String
+
+    /**
+     * `replace`: the SQL text [text] with each [search] in it made [replacement]; [searchBytes] and [replacementBytes] are
+     * how long they are in UTF-8, where the statement gives them.
+     */
+    protected open fun replaceText(text: String, search: String, replacement: String, searchBytes: Int? = null, replacementBytes: Int? = null) =
+        "REPLACE($text, $search, $replacement)"
 
     /** The SQL text [text], its characters backwards. */
     protected abstract fun reverseText(text: String): String
@@ -2643,10 +2656,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
                 Operator.IN -> Value.Bool(membership(binary, left, right, scope, filter))
-                Operator.STARTS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> startsWith(x, y) })
-                Operator.MATCHES -> Value.Bool(matches(text(a), text(b)))
-                Operator.ENDS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> endsWith(x, y) })
-                Operator.CONTAINS -> Value.Bool(containsText(text(a), text(b)))
+                Operator.STARTS_WITH -> Value.Bool(texts(a, b) { texts -> shared(*texts.toTypedArray()) { (x, y) -> startsWith(x, y) } })
+                // A pattern is short: only the text is read as a long one where it is.
+                Operator.MATCHES -> Value.Bool(texts(a) { (x) -> matches(x, text(b)) })
+                Operator.ENDS_WITH -> Value.Bool(texts(a, b) { texts -> shared(*texts.toTypedArray()) { (x, y) -> endsWith(x, y) } })
+                Operator.CONTAINS -> Value.Bool(texts(a, b) { (x, y) -> containsText(x, y) })
                 else -> error("logical operators are handled above")
             }
         }
@@ -3082,8 +3096,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 "split" -> {
                     if (arguments.size != 2) throw DrivineException("split() takes a text and a separator.")
-                    val (text, separator) = arguments.map { text(comparable(json(it))) }
-                    Value.Json(split(text, separator), list = true, texts = true)
+                    Value.Json(texts(*arguments.map { comparable(json(it)) }.toTypedArray()) { (text, separator) -> split(text, separator) }, list = true, texts = true)
                 }
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
@@ -3122,30 +3135,37 @@ abstract class SqlCypherCompiler(graph: String) {
                 "e", "pi" -> if (arguments.isEmpty()) Value.Json(literalJson(if (name == "e") Math.E else Math.PI))
                     else throw DrivineException("${function.name}() takes no argument.")
                 "sign" -> Value.Json(scalar("SIGN(${number(comparable(json(one())))})"))
-                "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"), text = true)
+                "ltrim", "rtrim" -> Value.Json(texts(comparable(json(one()))) { (t) -> scalar("${name.uppercase()}($t)") }, text = true)
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.
                 "substring" -> {
                     if (arguments.size !in 2..3) throw DrivineException("substring() takes a text, a start and a length.")
-                    Value.Json(scalar(shared(text(comparable(json(arguments[0])))) { (text) ->
-                        val start = countOf(function, 1, "start", arguments, text)
-                        val length = if (arguments.size == 3) ", ${countOf(function, 2, "length", arguments, text)}" else ""
-                        // The greatest start is past any text, so it is kept as it is rather than counted past Postgres's integer.
-                        val position = shared(start) { (s) -> "CASE WHEN $s < $MAX_COUNT THEN $s + 1 ELSE $s END" }
-                        "SUBSTR($text, $position$length)"
-                    }), text = true)
+                    Value.Json(texts(comparable(json(arguments[0]))) { read ->
+                        scalar(shared(read.single()) { (text) ->
+                            val start = countOf(function, 1, "start", arguments, text)
+                            val length = if (arguments.size == 3) ", ${countOf(function, 2, "length", arguments, text)}" else ""
+                            // The greatest start is past any text, so it is kept as it is rather than counted past Postgres's integer.
+                            val position = shared(start) { (s) -> "CASE WHEN $s < $MAX_COUNT THEN $s + 1 ELSE $s END" }
+                            "SUBSTR($text, $position$length)"
+                        })
+                    }, text = true)
                 }
                 "left", "right" -> {
                     if (arguments.size != 2) throw DrivineException("${function.name}() takes a text and a length.")
-                    Value.Json(scalar(shared(text(comparable(json(arguments[0])))) { (text) ->
-                        val count = countOf(function, 1, "length", arguments, text)
-                        if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)
-                    }), text = true)
+                    Value.Json(texts(comparable(json(arguments[0]))) { read ->
+                        scalar(shared(read.single()) { (text) ->
+                            val count = countOf(function, 1, "length", arguments, text)
+                            if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)
+                        })
+                    }, text = true)
                 }
                 "replace" -> {
                     if (arguments.size != 3) throw DrivineException("replace() takes a text, what to replace, and what with.")
-                    val (text, search, replacement) = arguments.map { text(comparable(json(it))) }
-                    Value.Json(scalar("REPLACE($text, $search, $replacement)"), text = true)
+                    // How long what to replace, and what with, are, in bytes, where the statement gives them.
+                    val (searchBytes, replacementBytes) = function.arguments.drop(1).map { (given(it) as? String)?.toByteArray(Charsets.UTF_8)?.size }
+                    Value.Json(texts(*arguments.map { comparable(json(it)) }.toTypedArray()) { (text, search, replacement) ->
+                        scalar(replaceText(text, search, replacement, searchBytes, replacementBytes))
+                    }, text = true)
                 }
                 "date", "localtime", "time", "localdatetime", "datetime", "duration" -> temporal(Temporal.ofFunction(name)!!, function, arguments, scope)
                 "timestamp" -> if (arguments.isEmpty()) Value.Json(scalar(temporals.field(temporals.now(Temporal.DATE_TIME), Temporal.DATE_TIME, "epochMillis")!!.sql))
