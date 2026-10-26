@@ -968,17 +968,90 @@ abstract class CypherQueryContract {
         // Beside the spec's cases since v0.6.10 (#273): Postgres sorts by a row of the value, each text blanked, and of the text by its code points.
         assertEquals(listOf("B", "b", null), query("UNWIND ['b', null, 'B'] AS t RETURN t ORDER BY t"))
         assertEquals(listOf(null, "b", "B"), query("UNWIND ['b', null, 'B', 'b'] AS t RETURN DISTINCT t ORDER BY t DESC"))
-        // Oracle and SQLite sort a number before a text, by their own order of kinds.
-        if (pm.type == DatabaseType.NEO4J || pm.type == DatabaseType.POSTGRES) {
-            assertEquals(listOf("B", "b", 1L, 2L, null), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t"))
-            assertEquals(listOf(null, 2L, 1L, "b", "B"), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t DESC"))
-        }
+        assertEquals(listOf("B", "b", 1L, 2L, null), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(null, 2L, 1L, "b", "B"), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t DESC"))
         // A text compared with a value of another kind is null, and min and max of several kinds take the least text by its code points.
         assertEquals(listOf(listOf(null, null, null, false, false)), query("RETURN ['a' < 1, 'B' > null, 1 >= 'a', coalesce(null, 'a') < 'B', CASE WHEN true THEN 'a' END < 'B']"))
         assertEquals(listOf("B"), query("UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t < 'a' RETURN t"))
         assertEquals(listOf(1L), query("UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t > 0 RETURN t"))
         assertEquals(listOf(listOf("B", "b")), query("UNWIND ['b', 'B', 'a', 'B'] AS t RETURN min(DISTINCT t), max(DISTINCT t)"))
         assertEquals(listOf(listOf("B", 2L)), query("UNWIND ['b', 1, 'B', 2, true] AS t RETURN min(t), max(t)"))
+    }
+
+    @Test
+    fun `values of several kinds sort as Cypher orders their kinds, a map, a list, a text, a truth value, a number, then null`() {
+        // Not in the spec yet (#299): Oracle and SQLite sort first by where a value's kind comes, then by the value.
+        // Postgres takes jsonb's order for every kind but a text: a number before a truth value, a map and a list last (#307).
+        if (pm.type == DatabaseType.POSTGRES) return
+        val values = "[1, {a: 1}, 'b', true, [2], 2.5, null, false, 'A', [1, 2], -1]"
+        val ascending = listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A", "b", false, true, -1L, 1L, 2.5, null)
+        assertEquals(ascending, query("UNWIND $values AS t RETURN t ORDER BY t"))
+        assertEquals(ascending.reversed(), query("UNWIND $values AS t RETURN t ORDER BY t DESC"))
+        // Carried out of a WITH that pages them, kept distinct, and beside another term.
+        assertEquals(listOf("A", "b", false, true), query("UNWIND $values AS t WITH t ORDER BY t SKIP 3 LIMIT 4 RETURN t"))
+        assertEquals(listOf("b", true, 2L), query("UNWIND [2, 'b', true, 2, 'b'] AS t RETURN DISTINCT t ORDER BY t"))
+        assertEquals(
+            listOf(listOf(1L, "a"), listOf(1L, 3L), listOf(2L, false), listOf(2L, 0L)),
+            query("UNWIND [[2, 0], [1, 3], [2, false], [1, 'a']] AS p RETURN p ORDER BY p[0], p[1]"),
+        )
+        // A truth value before a number, though SQLite reads it as 1 or 0.
+        assertEquals(listOf(false, true, 0L, 1L), query("UNWIND [1, true, 0, false] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(listOf(mapOf("a" to 1L), 1L)), query("UNWIND [true, 1, 'b', [1], {a: 1}] AS t RETURN min(t), max(t)"))
+        // Carried out of a CALL { … }, grouped by, kept distinct by another name, and sorted by when it is not returned.
+        assertEquals(listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A"), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
+        assertEquals(
+            listOf(listOf(listOf(1L), 1L), listOf("b", 2L), listOf(true, 1L), listOf(2L, 2L)),
+            query("UNWIND [2, 'b', true, 2, 'b', [1]] AS t RETURN t, count(*) ORDER BY t"),
+        )
+        assertEquals(listOf(2L, true, "b"), query("UNWIND [2, 'b', true, 2] AS t RETURN DISTINCT t AS u ORDER BY u DESC"))
+        assertEquals(listOf("b", "true", "2"), query("UNWIND [2, 'b', true] AS t RETURN toString(t) AS s ORDER BY t"))
+        // Among their own kind: texts by their code points, and whole and floating-point numbers as numbers.
+        assertEquals(listOf("a", "～", "😀", 1L), query("UNWIND ['😀', '～', 1, 'a'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(true, 0L, 0.5, 1L, 1.5), query("UNWIND [1, 0.5, true, 1.5, 0] AS t RETURN t ORDER BY t"))
+        // Paged by the query that returns them, and nulls first descending, carried out of a CALL { … }.
+        assertEquals(listOf(listOf(2L), "A", "b", false, true), query("UNWIND $values AS t RETURN t ORDER BY t SKIP 2 LIMIT 5"))
+        assertEquals(listOf(2.5, 1L, -1L, true), query("UNWIND $values AS t RETURN t ORDER BY t DESC SKIP 1 LIMIT 4"))
+        assertEquals(listOf(null, null, 1L), query("CALL { UNWIND [1, null, 'a', true, null, [1]] AS t RETURN t ORDER BY t DESC LIMIT 3 } RETURN t"))
+        // Collected in the order a WITH gives them, and indexed or iterated there.
+        assertEquals(listOf(ascending.dropLast(1).reversed()), query("UNWIND $values AS t WITH t ORDER BY t DESC WITH collect(t) AS xs RETURN xs"))
+        assertEquals(listOf(ascending.take(3)), query("UNWIND $values AS t WITH t ORDER BY t RETURN [x IN collect(t) | x][0..3]"))
+        assertEquals(listOf(listOf(listOf(2L), "A", "b", false, true)), query("UNWIND $values AS t WITH t ORDER BY t SKIP 2 LIMIT 5 RETURN collect(t)"))
+        // The last query of a UNION sorted, and a UNION carried out of a CALL { … } sorted and paged.
+        assertEquals(listOf(2L, "b", true, mapOf("a" to 1L), listOf(1L), "a", null), query("UNWIND [2, 'b', true] AS t RETURN t UNION UNWIND [[1], {a: 1}, null, 'a'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(listOf(1L), "b", true, 2L, null), query("CALL { UNWIND [2, 'b'] AS t RETURN t UNION UNWIND [true, [1], null] AS t RETURN t } RETURN t ORDER BY t"))
+        assertEquals(listOf(2L, true, "b"), query("CALL { UNWIND [2, 'b'] AS t RETURN t UNION UNWIND [true, [1], null] AS t RETURN t } WITH t ORDER BY t DESC SKIP 1 LIMIT 3 RETURN t"))
+    }
+
+    @Test
+    fun `a property stored as several kinds sorts as Cypher orders their kinds`() {
+        // Not in the spec yet (#299): a property read from the store may be of any kind, so its kind is ranked first.
+        // Postgres puts a number before a truth value, and a list last (#307).
+        if (pm.type == DatabaseType.POSTGRES) return
+        clear()
+        seed("CREATE (:Kind {v: 2}), (:Kind {v: 'b'}), (:Kind {v: true}), (:Kind {v: [1]}), (:Kind {v: 1.5}), (:Kind {v: 'B'}), (:Kind {v: false}), (:Kind)")
+        val ascending = listOf(listOf(1L), "B", "b", false, true, 1.5, 2L, null)
+        assertEquals(ascending, query("MATCH (k:Kind) RETURN k.v ORDER BY k.v"))
+        assertEquals(ascending.reversed(), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC"))
+        assertEquals(listOf("b", false), query("MATCH (k:Kind) WITH k ORDER BY k.v SKIP 2 LIMIT 2 RETURN k.v"))
+        assertEquals(listOf(null, 2L), query("CALL { MATCH (k:Kind) RETURN k.v AS v ORDER BY v DESC LIMIT 2 } RETURN v"))
+        assertEquals(listOf(listOf(listOf(1L), "B", "b", false, true, 1.5, 2L)), query("MATCH (k:Kind) WITH k ORDER BY k.v WITH collect(k.v) AS vs RETURN vs"))
+        assertEquals(listOf(2L, 1.5, true), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC SKIP 1 LIMIT 3"))
+    }
+
+    @Test
+    fun `lists of several kinds of item, nested, sort item by item among values of other kinds`() {
+        // Not in the spec yet (#299): a list sorts first among values of other kinds, and among lists item by item, the
+        // items of each as Cypher orders their kinds at any depth. Postgres takes jsonb's order (#307), and Oracle puts a
+        // number before a text and a null first within a list (#205).
+        if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.ORACLE) return
+        val values = "[[1, 'a'], 'x', [[2], 1], [[2], 'b'], [1, null], 3, [1], [[2], [1]], [{a: 1}], [true]]"
+        val ascending = listOf(
+            listOf(mapOf("a" to 1L)), listOf(listOf(2L), listOf(1L)), listOf(listOf(2L), "b"), listOf(listOf(2L), 1L),
+            listOf(true), listOf(1L), listOf(1L, "a"), listOf(1L, null), "x", 3L,
+        )
+        assertEquals(ascending, query("UNWIND $values AS t RETURN t ORDER BY t"))
+        assertEquals(ascending.reversed(), query("UNWIND $values AS t RETURN t ORDER BY t DESC"))
+        assertEquals(ascending.take(4), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
     }
 
     @Test
