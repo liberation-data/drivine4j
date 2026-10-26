@@ -474,6 +474,11 @@ abstract class CypherQueryContract {
             listOf(listOf(null, null, null, false)),
             query("WITH $long + [null] AS v, $long + [null] AS w, [$long + [null]] AS l, ['z'] + $long + [null] AS u RETURN [v = w, v IN l, v <> w, v = u]"),
         )
+        // A text past 32 KB beside a null is compared whole (#293).
+        assertEquals(
+            listOf(listOf(null, false)),
+            query("WITH [null, \$t] AS a, [null, \$t] AS b, [null, \$t + 'y'] AS c RETURN [a = b, a = c]", mapOf("t" to "x".repeat(40000))),
+        )
         // In the step of a reduce, as in a statement that writes, on Oracle.
         assertEquals(listOf(listOf("null", false)), query("WITH [1, null] AS a, [2, null] AS c RETURN reduce(acc = [], x IN [a, c] | acc + [coalesce(x = a, 'null')])"))
         assertEquals(listOf(listOf(true, true)), query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l RETURN reduce(acc = [], x IN [v] | acc + [x = [s], x IN l])"))
