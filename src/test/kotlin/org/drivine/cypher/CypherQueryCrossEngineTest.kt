@@ -857,7 +857,10 @@ abstract class CypherQueryContract {
                 "ltrim(t)" to t.trimStart(), "rtrim(t)" to t.trimEnd(), "substring(t, 1, size(t) - 2)" to t.substring(1, length - 1),
                 "substring(t, 2)" to t.substring(2), "left(t, size(t) - 1)" to t.dropLast(1), "right(t, size(t) - 1)" to t.drop(1),
                 "replace(t, 'B', 'bb')" to t.replace("B", "bb"), "split(t, 'B')" to t.split("B"),
+                // A separator past 4,000 bytes, too, but within 32 KB, past which Oracle's REPLACE looks for none.
+                "split('x' + t + 'y', left(t, 4100))" to ("x" + t + "y").split(t.take(4100)), "split('x', left(t, 4100))" to listOf("x"),
                 "t STARTS WITH ' aB'" to true, "t STARTS WITH 'x'" to false, "t STARTS WITH t" to true, "t ENDS WITH 'B '" to true, "t ENDS WITH t" to true,
+                "left(t, 10) STARTS WITH t" to false, "left(t, 10) ENDS WITH t" to false,
                 // INSTR looks for no text past 32 KB on Oracle.
                 "t CONTAINS 'BaB'" to true, "t CONTAINS 'z'" to false, "t CONTAINS left(t, 4100)" to true, "t =~ ' (aB)+ '" to true,
                 "t + 'z'" to t + "z", "'z' + t" to "z" + t, "t + t" to t + t, "t + 1" to t + "1", "toString(t)" to t, "isEmpty(t)" to false,
@@ -876,6 +879,20 @@ abstract class CypherQueryContract {
         }
         // Two short texts whose sum is past 4,000 bytes.
         assertEquals(listOf(6_000L), query("WITH \$a AS a RETURN size(a + a)", mapOf("a" to "é".repeat(3_000))))
+        // Sums at and around 4,000 bytes, of texts of two-byte characters and of a float, put together short on Oracle only where they fit.
+        val sides = listOf("é".repeat(1_000) to "é".repeat(1_000), "a".repeat(1_968) to "a".repeat(1_968), "a".repeat(1_969) to "a".repeat(1_968), "a".repeat(2_000) to "a".repeat(2_001), "a".repeat(3_999) to 1.5)
+        for ((a, b) in sides) assertEquals(listOf("$a$b"), query("WITH \$a AS a, \$b AS b RETURN a + b", mapOf("a" to a, "b" to b)), "${a.length} + $b")
+        // What to replace, and what with, made by the statement, so their lengths are measured for each row: a short text made
+        // past 4,000 bytes, made shorter, and made no longer.
+        val twoByte = mapOf("a" to "é".repeat(1_500))
+        assertEquals(listOf(listOf("é".repeat(3_000), "é".repeat(750), "é".repeat(1_500))),
+            query("WITH \$a AS a RETURN replace(a, left(a, 1), left(a, 2)), replace(a, left(a, 2), left(a, 1)), replace(a, left(a, 1), right(a, 1))", twoByte))
+        // A null text, and a function of a short text that gives Oracle's empty text, null, are not read again as long ones to give another value.
+        for (function in listOf("toUpper(n)", "trim(n)", "substring(n, 1)", "replace(n, 'a', 'b')", "split(n, ',')", "size(n)", "toString(n)", "n + 'a'", "n STARTS WITH 'a'", "n ENDS WITH 'a'", "n CONTAINS 'a'", "n =~ 'a'")) {
+            assertEquals(listOf(null), query("WITH \$n AS n RETURN $function", mapOf("n" to null)), function)
+        }
+        val empty = if (pm.type == DatabaseType.ORACLE) null else ""
+        assertEquals(listOf(listOf(empty, empty, empty, empty)), query("WITH \$s AS s, \$w AS w RETURN substring(s, 5), left(s, 0), replace(s, 'abc', ''), trim(w)", mapOf("s" to "abc", "w" to "   ")))
         // Two empty texts put together are empty: on Oracle null, as its empty text is, and not read as a long one.
         assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN e + e", mapOf("e" to "")))
     }

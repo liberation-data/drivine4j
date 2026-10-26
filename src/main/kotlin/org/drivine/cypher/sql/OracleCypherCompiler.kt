@@ -586,8 +586,10 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * is made cannot be longer, each of its bytes written as six at most (`\u0001`), and else as a CLOB: see [texts].
      */
     override fun split(text: String, separator: String) = shared(text, separator) { (t, s) ->
-        val written = if (long) "JSON_SERIALIZE(JSON_SCALAR($t) RETURNING CLOB)" else "JSON_SERIALIZE(JSON_SCALAR($t))"
-        val separatorWritten = "SUBSTR(JSON_SERIALIZE(JSON_SCALAR($s)), 2, LENGTH(JSON_SERIALIZE(JSON_SCALAR($s))) - 2)"
+        // A separator past 4,000 bytes is a CLOB too, and written as one (ORA-40478).
+        fun serialized(x: String) = if (long) "JSON_SERIALIZE(JSON_SCALAR($x) RETURNING CLOB)" else "JSON_SERIALIZE(JSON_SCALAR($x))"
+        val written = serialized(t)
+        val separatorWritten = "SUBSTR(${serialized(s)}, 2, LENGTH(${serialized(s)}) - 2)"
         val fits = if (long) "" else " AND LENGTHB($t) <= ${(SHORT_TEXT - 2) / 6}"
         "CASE WHEN $t IS NOT NULL AND $s IS NOT NULL$fits THEN JSON('[' || REPLACE($written, $separatorWritten, '\",\"') || ']') END"
     }

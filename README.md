@@ -568,7 +568,8 @@ place in the statement it stands at.
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
 - [Postgres](#postgres) works float arithmetic out in exact decimal: `0.1 + 0.2` is `0.3` there.
-- [Oracle](#oracle) reads an empty text as null, and a text read out of JSON is at most 4,000 bytes.
+- [Oracle](#oracle) reads an empty text as null. A text past 4,000 bytes is measured, cut, changed and searched whole, but
+  `reverse()` gives null for one.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
 - Text is ordered by the database's collation on [Postgres](#postgres), and by `BINARY` on [SQLite](#sqlite).
@@ -3279,7 +3280,8 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   [Cypher on a relational database](#cypher-on-a-relational-database)) and gives the rows a graph engine
   gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
-  each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
+  each row. A text read out of JSON past 4,000 bytes is read whole where it is measured, cut, changed or searched, but by
+  `reverse()`, which gives null for one; an empty text is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
   Two lists or maps that may hold a null are compared item by item, as Cypher compares them, by a function the query
   declares too; in a statement that writes, or the step of a `reduce`, two that are equal as JSON compare as null and any
