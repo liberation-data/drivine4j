@@ -353,6 +353,15 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun sortKey(json: String) = nullIfJsonNull(json)
 
     /**
+     * What an order sorts the JSON value [json] by where the statement leaves its kind open, a term after another: values of
+     * several kinds as Cypher orders their kinds ([kindOrder]), null last, and those of one kind among themselves. As [sortKey]
+     * where a store does not override it: Postgres's takes `jsonb`'s order of kinds, a number before a truth value, which is
+     * not yet Cypher's (#307). Oracle's and SQLite's JSON orders put a number before a text, so their terms are where the kind
+     * comes, then the value. A value the statement makes of one kind sorts by [sortKey] alone.
+     */
+    protected open fun openSortKey(json: String): List<String> = listOf(sortKey(json))
+
+    /**
      * A whole number that fails the statement when it is worked out, with [message] and the SQL value [value] it names:
      * what a compiled statement does where Neo4j fails on a value it reads. It reads [value], so no store works it out
      * before a row that needs it, as one may a failing expression of constants alone.
@@ -1830,11 +1839,11 @@ abstract class SqlCypherCompiler(graph: String) {
             // Where rows are compared, an order term of the items that is no item is read over their columns, once compared:
             // a group is keyed by an item, and by no part of one.
             val itemColumns = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(name, pair.first) }
-            val after = mutableMapOf<String, String>()
+            val after = mutableMapOf<String, List<String>>()
             // A term worked out in the query is sorted by in the query that reads it: the value carried out as a column, and
             // what sorts it (JSON's null as SQL's) worked out of that column. Oracle (23.26), sorting by a value that reads
             // the row more than once beside a variable-length walk, closes the session.
-            val sorted = mutableMapOf<String, (String) -> String>()
+            val sorted = mutableMapOf<String, (String) -> List<String>>()
             // An item made anew for each row, randomUUID(), is sorted by of its column, as it is given, not made again: see [once].
             val anew = items.filter { contains(it.expression, ::isAnew) }.map { it.name }.toSet()
             var sortsAnew = false
@@ -1888,27 +1897,33 @@ abstract class SqlCypherCompiler(graph: String) {
                 if (groupBy.isNotEmpty()) add("GROUP BY ${groupBy.joinToString(", ")}")
             }.joinToString("\n")
             // What sorts a term in the query that reads this one: worked out there, of the column carried out, or that column.
-            fun sortedBy(column: String) = after[column] ?: sorted[column]?.invoke("$name.$column") ?: "$name.$column"
+            // Each is named for the query after it, which sorts by them in turn: the last by the term's column, any before it,
+            // where its kind comes ([openSortKey]), by that column with a number after it.
+            fun sortedBy(column: String): List<Pair<String, String>> =
+                (after[column] ?: sorted[column]?.invoke("$name.$column") ?: listOf("$name.$column")).let { terms ->
+                    terms.mapIndexed { i, term -> (if (i == terms.lastIndex) column else "${column}_${i + 1}") to term }
+                }
+            val order = sorts.flatMap { (column, descending) -> sortedBy(column).map { (named, _) -> named to descending } }
             val outerColumns = if (final) {
                 val values = columns.map { (column, value) -> json(value.columnsOf(name, column)) }
                 val result = if (values.size == 1) values.single().sql else jsonArray(values.map { it.sql })
                 "$result AS result"
             } else {
                 (columns.flatMap { (column, value) -> value.columns(column).map { "$name.${it.substringAfterLast(" AS ")}" } } +
-                    sorts.map { (column, _) -> "${sortedBy(column)} AS $column" }).joinToString(", ")
+                    sorts.flatMap { (column, _) -> sortedBy(column).map { (named, term) -> "$term AS $named" } }).joinToString(", ")
             }
             val outer = buildList {
                 add("SELECT $outerColumns")
                 add("FROM (\n${indent(if (sortsAnew) once(inner) else inner)}\n) $name")
                 if (sorts.isNotEmpty()) {
-                    add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> orderTerm(sortedBy(column), descending) }}")
+                    add("ORDER BY ${sorts.flatMap { (column, descending) -> sortedBy(column).map { (_, term) -> orderTerm(term, descending) } }.joinToString(", ")}")
                 }
                 addAll(page(projection.skip?.let(::count), projection.limit?.let(::count)))
             }.joinToString("\n")
             // What each item is bound to in the query that reads this one: its columns, which that query names.
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
-            val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + sorts.map { (column, _) -> column to false }
-            return Projected(outer, scope, sorts, kinds)
+            val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + order.map { (column, _) -> column to false }
+            return Projected(outer, scope, order, kinds)
         }
 
         /**
@@ -3376,16 +3391,21 @@ abstract class SqlCypherCompiler(graph: String) {
          * What an order sorts a value by: JSON's order for a value, a node by its properties. JSON's null, as a map
          * or a list the statement builds holds it, is SQL's null, which comes last, as a graph engine orders null.
          */
-        private fun sortable(value: Value): String = sortTerm(value).let { (carried, sorts) -> sorts(carried) }
+        private fun sortable(value: Value): List<String> = sortTerm(value).let { (carried, sorts) -> sorts(carried) }
 
-        /** What [sortable] sorts [value] by, in two: the value as a column carries it, and what sorts it, of that column. */
-        private fun sortTerm(value: Value): Pair<String, (String) -> String> = when {
-            value is Value.Bool -> value.sql to { it }
+        /**
+         * What [sortable] sorts [value] by, in two: the value as a column carries it, and the terms that sort it, of that column.
+         * A value whose kind the statement leaves open sorts as [openSortKey] has it, where its kind comes first; one it makes a
+         * truth value, a temporal value, a text, a list or a node is of one kind, and sorts by [sortKey] alone.
+         */
+        private fun sortTerm(value: Value): Pair<String, (String) -> List<String>> = when {
+            value is Value.Bool -> value.sql to { listOf(it) }
             // A zoned value the statement makes sorts as the moment it is, whatever its offset.
-            value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { temporals.moment(text(it), value.temporal) }
+            value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { listOf(temporals.moment(text(it), value.temporal)) }
             // A list the statement makes sorts as Cypher sorts lists, item by item; any other value as the store sorts its JSON.
-            isList(value) -> comparable(json(value)) to { listSortKey(it) }
-            else -> comparable(json(value)) to { sortKey(it) }
+            isList(value) -> comparable(json(value)) to { listOf(listSortKey(it)) }
+            value !is Value.Json || value.temporal != null || isText(value) -> comparable(json(value)) to { listOf(sortKey(it)) }
+            else -> comparable(json(value)) to { openSortKey(it) }
         }
     }
 

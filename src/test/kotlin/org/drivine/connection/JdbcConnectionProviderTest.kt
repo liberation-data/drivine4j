@@ -43,10 +43,95 @@ class JdbcConnectionProviderTest {
         override fun isWrapperFor(iface: Class<*>?): Boolean = false
     }
 
-    private val jdbc = Mockito.mock(java.sql.Connection::class.java)
+    private val statement = Mockito.mock(java.sql.Statement::class.java)
+    private val jdbc = Mockito.mock(java.sql.Connection::class.java).also { `when`(it.createStatement()).thenReturn(statement) }
     private val dataSource = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(jdbc) }
 
     // ----- The provider -----
+
+    @Test
+    fun `a session of the application's Oracle data source is set to make no adaptive plan, once`() {
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource)
+
+        provider.connect()
+        provider.connect()
+
+        // The data source hands out the same session twice, as a pool does: it is set the first time only.
+        verify(statement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        verify(statement, times(1)).close()
+    }
+
+    @Test
+    fun `a session of the application's Oracle data source that cannot be set is closed, and not given out`() {
+        val refused = SQLException("ORA-02248: invalid option for ALTER SESSION")
+        `when`(statement.execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)).thenThrow(refused)
+
+        assertSame(refused, assertFailsWith<SQLException> { JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource).connect() })
+        verify(jdbc).close()
+    }
+
+    @Test
+    fun `a session of a pool the provider made, or of another store, is not set again on connect`() {
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource, ownsDataSource = true).connect()
+        JdbcConnectionProvider("default", DatabaseType.POSTGRES, dataSource).connect()
+        JdbcConnectionProvider("default", DatabaseType.SQLITE, dataSource).connect()
+
+        verify(jdbc, never()).createStatement()
+    }
+
+    @Test
+    fun `a session of the application's Oracle data source is left as it is when the application asks for that`() {
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource, setsNoAdaptivePlans = false).connect()
+
+        verify(jdbc, never()).createStatement()
+    }
+
+    @Test
+    fun `a session of the application's Oracle data source is set when the application asks for that, as by default`() {
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource, setsNoAdaptivePlans = true).connect()
+
+        verify(statement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+    }
+
+    @Test
+    fun `a session a pool hands out under a new handle is known by the driver's connection behind it, and set once`() {
+        val handles = List(2) { Mockito.mock(java.sql.Connection::class.java) }
+        handles.forEach {
+            `when`(it.unwrap(java.sql.Connection::class.java)).thenReturn(jdbc)
+            `when`(it.createStatement()).thenReturn(statement)
+        }
+        val pool = Mockito.mock(DataSource::class.java)
+        `when`(pool.connection).thenReturn(handles[0], handles[1])
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, pool)
+
+        provider.connect()
+        provider.connect()
+
+        verify(statement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+    }
+
+    @Test
+    fun `a session that could not be set, handed out again by the application's pool, is set on the next connect`() {
+        `when`(statement.execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)).thenThrow(SQLException("ORA-03113")).thenReturn(false)
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource)
+
+        assertFailsWith<SQLException> { provider.connect() }
+        provider.connect()
+        provider.connect()
+
+        verify(statement, times(2)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+    }
+
+    @Test
+    fun `a session of the application's HikariCP pool that already runs the statement as it opens one is not set again`() {
+        val pool = object : com.zaxxer.hikari.HikariDataSource() {
+            override fun getConnection(): java.sql.Connection = jdbc
+        }.apply { connectionInitSql = JdbcConnectionProvider.NO_ADAPTIVE_PLANS }
+
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, pool).connect()
+
+        verify(jdbc, never()).createStatement()
+    }
 
     @Test
     fun `the thin-driver URL of an Oracle service names the host, the port and the service`() {

@@ -3253,7 +3253,8 @@ nor parsed again.
 To use a `DataSource` the application already has, register a provider in code:
 `registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
 Drivine does not close a `DataSource` it was given, and does not configure it: turn the driver's
-statement cache on there yourself. For a pool of Drivine's own (HikariCP) without the YAML:
+statement cache on there yourself. It does set each of its sessions, the first time it connects with one, to make no
+adaptive plan, unless you ask it not to (see the notes below). For a pool of Drivine's own (HikariCP) without the YAML:
 
 ```kotlin
 val provider = JdbcConnectionProvider.pooled(
@@ -3273,6 +3274,16 @@ relationships with it. A third table, `<graph>_schema`, records the indexes and 
 made: see [Schema Management](#schema-management-indexes--constraints).
 
 **Notes:**
+- Each Oracle session Drivine uses makes no adaptive plan (`ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE`).
+  Drivine's pool runs it as it opens a session, and drops a session it fails in; a session of a `DataSource` you gave
+  Drivine is set when Drivine first connects with it. Once a graph's tables had grown and shrunk without statistics,
+  Oracle's adaptive join plan gave no rows for a read that filters a node by a label and a property, where the same
+  plan, fixed, gave them all ([#289](https://github.com/liberation-data/drivine4j/issues/289)). A statement of yours
+  that relies on an adaptive plan can ask for one with the hint `/*+ OPT_PARAM('optimizer_adaptive_plans' 'true') */`.
+  To have Drivine leave the sessions of your `DataSource` as you set them, pass `setsNoAdaptivePlans = false` to
+  `JdbcConnectionProvider`. It is on by default because, without it, a read can come back with no rows and no error;
+  if you turn it off, run that statement in each session yourself (HikariCP's `connectionInitSql`, say).
+  Drivine's own pool sets its sessions either way.
 - A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
   bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
   `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.

@@ -99,6 +99,15 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun nullIfJsonNull(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} <> 'null' THEN $x END" }
 
+    /**
+     * Where the kind comes, as [kindOrder] ranks them and null for null, then the value as `JSON` orders it, which is Cypher's
+     * order within a kind: `JSON` orders a number before a text, a truth value after both, and a map and a list last. A null
+     * is ranked null, so the value needs no [nullIfJsonNull], which would read it again: as fast as [sortKey] over 100,000 rows.
+     */
+    override fun openSortKey(json: String) = shared(json) { (x) ->
+        "DECODE(${kind(x)}, 'object', 1, 'array', 2, 'string', 3, 'boolean', 4, 'number', 5, 'double', 5, 'float', 5)"
+    }.let { rank -> listOf(rank, json) }
+
     override fun number(json: String) = shared(json) { (x) -> "CASE WHEN ${typeOf(x)} = 'number' THEN JSON_VALUE($x, '$' RETURNING NUMBER) END" }
 
     /** A whole number, and no floating-point number, as Cypher has an integer. */
@@ -121,11 +130,33 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun texts(vararg jsons: String, body: (List<String>) -> String) = shared(*jsons) { xs ->
         // Within a body given CLOBs, as CLOBs alone.
-        if (long) return@shared body(xs.map(::longText))
-        val read = body(xs.map(::text))
+        if (long) return@shared body(xs.map { textOf(it, clob = true) })
+        val read = body(xs.map { textOf(it, clob = false) })
         long = true
-        val whole = try { body(xs.map(::longText)) } finally { long = false }
+        val whole = try { body(xs.map { textOf(it, clob = true) }) } finally { long = false }
         "COALESCE($read, $whole)"
+    }
+
+    /** The JSON [json] as text, where it is a string: a CLOB where [clob], else as [text] reads it; a property by its own path (see [direct]). */
+    private fun textOf(json: String, clob: Boolean) = direct(if (clob) longText(json) else text(json), json)
+
+    /** The properties and the path of [json] where it is a property as [propertyOf] reads it, `JSON_QUERY(props, '$.a' RETURNING JSON)`. */
+    private fun propertyRead(json: String): Pair<String, String>? =
+        PROPERTY_READ.matchEntire(json)?.takeIf { balanced(it.groupValues[1]) }?.let { it.groupValues[1] to it.groupValues[2] }
+
+    /** Whether [sql]'s parentheses outside its literals close each other: so it is the one argument, not two calls. */
+    private fun balanced(sql: String): Boolean {
+        var depth = 0
+        var quoted = false
+        for (c in sql) {
+            when {
+                c == '\'' -> quoted = !quoted
+                quoted -> {}
+                c == '(' -> depth++
+                c == ')' -> if (--depth < 0) return false
+            }
+        }
+        return depth == 0 && !quoted
     }
 
     /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [split] and [replaceText], which read them otherwise. */
@@ -269,12 +300,26 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             "THEN JSON_SCALAR(TO_BINARY_DOUBLE(${number(a)}) $operator TO_BINARY_DOUBLE(${number(b)})) " +
             "ELSE JSON_SCALAR(${number(a)} $operator ${number(b)}) END"
 
-    override fun add(a: String, b: String, given: Pair<Any?, Any?>) =
+    /** A side that is a property is read from the properties by its own path: see [direct]. */
+    override fun add(a: String, b: String, given: Pair<Any?, Any?>) = direct(direct(
         "CASE WHEN ${typeOf(a)} = 'number' AND ${typeOf(b)} = 'number' THEN ${arithmetic(a, b, "+")} " +
             "WHEN ${kind(a)} = 'array' AND ${kind(b)} = 'array' THEN JSON_QUERY(JSON_ARRAY($a, $b RETURNING JSON), '\$[*][*]' RETURNING JSON WITH ARRAY WRAPPER) " +
             "WHEN ${kind(a)} = 'array' THEN JSON_TRANSFORM($a, APPEND '\$' = $b) " +
             "WHEN ${kind(b)} = 'array' THEN JSON_TRANSFORM($b, INSERT '\$[0]' = $a) " +
-            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN ${textSum(a, b, given)} END"
+            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN ${textSum(a, b, given)} END",
+        a), b)
+
+    /**
+     * [sql] with each value it reads out of the JSON [json] with `JSON_VALUE(json, '$…')` read from the properties by the
+     * property's own path instead, where [json] is a property as [propertyOf] reads it, `JSON_QUERY(props, '$.a' RETURNING
+     * JSON)`. Oracle closed the session (ORA-03113) on statements, one row each, that took a text past 32 KB out of a
+     * node's properties so and read it as a CLOB or put it together with another, and a later statement in the session lost
+     * its rows: the memory corruption of #255. A value used whole, as a list a sum joins, still takes the property out.
+     */
+    private fun direct(sql: String, json: String): String {
+        val (props, path) = propertyRead(json) ?: return sql
+        return sql.replace("JSON_VALUE($json, '\$", "JSON_VALUE($props, ${path.dropLast(1)}")
+    }
 
     /**
      * Two texts put together, as `VARCHAR2`s where both are read so and their sum fits in one, 4,000 bytes; else as a CLOB
@@ -438,13 +483,17 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** Of CLOBs too (see [texts]), though `INSTR` looks for no text past 32 KB (ORA-22828). */
     override fun containsText(a: String, b: String) = "(INSTR($a, $b) > 0)"
 
-    override fun function(name: String, json: String): String? = when (name) {
+    /** Of a property, read from the properties by its own path: see [direct]. */
+    override fun function(name: String, json: String): String? = functionOf(name, json)?.let { direct(it, json) }
+
+    private fun functionOf(name: String, json: String): String? = when (name) {
         // A text past 4,000 bytes, null as a VARCHAR2, is measured as a CLOB (#298).
         "size" -> "CASE ${kind(json)} WHEN 'array' THEN JSON_SCALAR(JSON_VALUE($json, '\$.size()' RETURNING NUMBER)) " +
             "WHEN 'string' THEN JSON_SCALAR(COALESCE(LENGTH(JSON_VALUE($json, '\$')), LENGTH(JSON_VALUE($json, '\$' RETURNING CLOB)))) END"
         "tolower" -> texts(json) { (t) -> scalar("LOWER($t)") }
         "toupper" -> texts(json) { (t) -> scalar("UPPER($t)") }
         "trim" -> texts(json) { (t) -> scalar("TRIM($t)") }
+        // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
         // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
         "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
@@ -755,6 +804,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     private companion object {
         /** The cursor a procedure returns its rows by. */
         const val CURSOR = "cy_cursor"
+
+        /** A property as [propertyOf] reads it, its properties and its path: see [propertyRead]. */
+        val PROPERTY_READ = Regex("""JSON_QUERY\((.+), ('\$[^']*') RETURNING JSON\)""")
 
         /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
         const val SHORT_TEXT = 4000
