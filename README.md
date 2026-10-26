@@ -3440,6 +3440,11 @@ relationships with it.
 - Text is ordered by the database's collation, so a page of mixed-case text may not be in the order
   Neo4j gives (`a, b, B` rather than `B, a, b`). The range indexes are made in that collation, so an
   order and a seek are read through them.
+- Compiled Cypher compares and sorts text by its code points, as Cypher does (`B, a, b`), not by the
+  database's collation: in the `C` collation, whose byte order is code point order in a UTF-8 database.
+  In a list the statement makes, such as `ORDER BY [n.last, n.first]`, a text is ordered by its code
+  points over its first 500 characters, and past them by the database's collation. A list read from
+  a property, and a map, still order the texts in them by the database's collation (`ORDER BY n.tags`).
 - Index the id of each node type you save, `constraints.ensure(UniquenessConstraintSpec("Person", "id"))`,
   or with a range index: without one a save reads the label's nodes to find the one it writes.
 - `matches` takes a regular expression in Postgres's dialect, matched against the whole value. A

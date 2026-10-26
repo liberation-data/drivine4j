@@ -158,7 +158,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /**
      * The JSON [json]'s text, where it is one, by its code points, as Cypher compares texts: `jsonb`, and text of the database's
      * collation, compare them as the locale does (`'a' < 'B'`, and `'John Wick'` after `'Johnny Mnemonic'`). The `C` collation
-     * compares a text's UTF-8 bytes, which order as its code points do. Null where [json] is not a text.
+     * compares a text's bytes in the database's encoding: in a UTF-8 database, as `initdb` and Postgres's images make one, they
+     * order as its code points do; in another, as that encoding's bytes do. Null where [json] is not a text.
      */
     private fun codePointText(json: String) = "(CASE WHEN jsonb_typeof($json) = 'string' THEN ${textOf(json)} END) COLLATE \"C\""
 
@@ -207,7 +208,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * A list as `jsonb` that Postgres orders as Cypher orders lists, item by item: each item, from the first, a list of three, of
-     * where its kind comes ([itemRank]), the item, and what follows it so written, the end an empty list. `jsonb` orders the
+     * where its kind comes ([itemRank]), the item (a text by its code points, as [codePoints] writes it), and what follows it so
+     * written, the end an empty list. `jsonb` orders the
      * shorter of two lists first, and every list here but the last is of three. An item that is a list is followed by its own
      * items, at any depth, then by its end, which comes before any item. Any other value sorts as itself, as before. Only a
      * value the statement makes a list sorts so: the planner costs the walk at thousands a row, which brings in its JIT for a
