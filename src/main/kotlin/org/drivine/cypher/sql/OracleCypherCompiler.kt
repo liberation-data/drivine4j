@@ -604,17 +604,17 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * stops near 10^126, so `ROUND(n, 400)`, and the scale `10^p` a mode rounds by, overflow (ORA-01426) where Neo4j gives
      * the number back. Neo4j rounds a double, of [DOUBLE_DIGITS] significant digits at most, so rounding it to places past
      * its last digit changes nothing; a number Oracle holds to more digits is a double again once rounded. Oracle works
-     * out only the branch of a CASE a row takes, so the overflowing one is never reached. The precision is read first, in a
-     * WHEN of its own, as a CASE tests its WHENs in order: so one below 0 fails on 0 too, and a null one gives null, not the
-     * 0. The digits are compared in decimal, not by `LOG(10, ABS(n))`, which fails (ORA-01428) on 0 and on the least numbers
-     * NUMBER holds, near 1.0E-130; zero is given back where `10^(17 - p)` underflows to it, and rounded to 0 short of that.
+     * out only the branch of a CASE a row takes, so the overflowing one is never reached. A null precision makes the test
+     * null, so the row takes the rounding, which gives null. The digits are compared in decimal, not by `LOG(10, ABS(n))`,
+     * which fails (ORA-01428) on 0 and on the least numbers NUMBER holds, near 1.0E-130; zero is given back where
+     * `10^(17 - p)` underflows to it, and rounded to 0 short of that.
      * Short of its digits, a tiny number may still take more than [MOST_PLACES] places, as 1.0E-120 to 130 does: it is
      * rounded moved that many places fewer to the right, then moved back, which is exact in decimal.
      */
     private fun pastItsDigits(number: String, precision: String, round: (String, String) -> String) = shared(number, precision) { (n, p) ->
         val past = "GREATEST($p - $MOST_PLACES, 0)"
         val shift = "POWER(10, $past)"
-        "CASE WHEN $p IS NULL THEN NULL WHEN ABS($n) >= POWER(10, $DOUBLE_DIGITS - $p) THEN $n ELSE ${round("($n * $shift)", "($p - $past)")} / $shift END"
+        "CASE WHEN ABS($n) >= POWER(10, $DOUBLE_DIGITS - $p) THEN $n ELSE ${round("($n * $shift)", "($p - $past)")} / $shift END"
     }
 
     /** A text that is no number, read as one: Oracle fails with ORA-01722, whose ORA-03302 detail gives the text. */
