@@ -249,4 +249,15 @@ class CompiledSizeTest {
             listOf(size(", 1"), size(", \$p", mapOf("p" to 1.0))).forEach { places -> assertTrue(places < read, "$name: $places, then $read characters") }
         }
     }
+
+    @Test
+    fun `a sign() nested under an aggregate compiles to about the statement a ceil() does, reading its number once`() {
+        // Under an aggregate nothing is bound, so a sign that read its number twice wrote it out twice at each level:
+        // on Oracle, where a sign is not SIGN alone (#294), four deep was 14 times the statement a ceil() is.
+        fun nested(function: String) = "UNWIND [1.5] AS x RETURN " + "$function(".repeat(4) + "sum(x)" + ")".repeat(4)
+        compilers.forEach { compiler ->
+            val (sign, ceil) = listOf("sign", "ceil").map { compiler.compile(nested(it), emptyMap()).sql.length }
+            assertTrue(sign < ceil * 1.1, "${compiler::class.simpleName}: sign $sign, ceil $ceil characters")
+        }
+    }
 }

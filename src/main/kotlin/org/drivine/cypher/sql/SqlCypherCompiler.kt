@@ -261,6 +261,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The value of [key] in the JSON map [json]; null where there is none. */
     protected abstract fun propertyOf(json: String, key: String): String
 
+    /**
+     * The property [key] of the node or relationship whose properties are [props], where it is an item of a `RETURN` or a
+     * `WITH`, returned or passed on: as [propertyOf] reads it, but on a store that must read such an item apart.
+     */
+    protected open fun itemProperty(props: String, key: String): String = propertyOf(props, key)
+
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
@@ -613,6 +619,9 @@ abstract class SqlCypherCompiler(graph: String) {
     /** `round(x, p)` of two arguments: [number] to [precision] places, half away from zero, as SQL's `ROUND` rounds. */
     protected open fun roundPlaces(number: String, precision: String): String = "ROUND($number, $precision)"
 
+    /** The sign of the SQL number [number]: 1, -1 or 0, as SQL's `SIGN` gives it, and null where it is null. */
+    protected open fun signOf(number: String): String = "SIGN($number)"
+
     /**
      * `round(value, precision, mode)`: the SQL number [number] rounded to [precision] decimal places by [mode], as a SQL
      * number. Worked out in decimal, as Neo4j works it out with Java's `BigDecimal`, so 2.345 is halfway between 2.34 and
@@ -633,7 +642,7 @@ abstract class SqlCypherCompiler(graph: String) {
         when (mode) {
             RoundingMode.CEILING -> "(CEIL($n * $scale) / $scale)"
             RoundingMode.FLOOR -> "(FLOOR($n * $scale) / $scale)"
-            else -> "(SIGN($n) * $magnitude / $scale)"
+            else -> "(${signOf(n)} * $magnitude / $scale)"
         }
     }
 
@@ -1810,7 +1819,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 )
             }
             rowOrder = orderOf(select)
-            val compiled = items.map { item -> item.name to aggregating(item.expression) { expression(item.expression, select.scope) } }
+            val compiled = items.map { item -> item.name to aggregating(item.expression) { item(item.expression, select) } }
             val aggregating = items.any { contains(it.expression, ::isAggregate) }
             // Where rows are compared (DISTINCT, GROUP BY), JSON is compared as what compares.
             val compared = projection.distinct || aggregating
@@ -2388,6 +2397,24 @@ abstract class SqlCypherCompiler(graph: String) {
             }
             if (subject !is Expression.Parameter || givenParameters?.containsKey(subject.name) == true) return null
             return parameters.json(subject.name, keys)
+        }
+
+        /**
+         * The item [expression] of a `RETURN` or a `WITH` over [select]: a property of a node or a relationship, the item
+         * itself, read as [itemProperty] reads it, but beside a variable-length walk; anything else as elsewhere. A node or a
+         * relationship is compiled once here: compiling the item over it again lost the rows of statements that match a
+         * relationship.
+         */
+        private fun item(expression: Expression, select: Select): Value {
+            if (expression is Expression.Property && !select.walks) {
+                // A property of a node or a relationship holds no null in a list, as expression() marks it (see flat).
+                when (val subject = expression(expression.subject, select.scope)) {
+                    is Value.Node -> if (expression.key != Stamps.PROPERTY) return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    is Value.Relationship -> return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    else -> {}
+                }
+            }
+            return expression(expression, select.scope)
         }
 
         private fun property(subject: Value, key: String): Value = when (subject) {
@@ -3134,7 +3161,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 // Java's constants, which Neo4j gives, written as the floats they are.
                 "e", "pi" -> if (arguments.isEmpty()) Value.Json(literalJson(if (name == "e") Math.E else Math.PI))
                     else throw DrivineException("${function.name}() takes no argument.")
-                "sign" -> Value.Json(scalar("SIGN(${number(comparable(json(one())))})"))
+                "sign" -> Value.Json(scalar(signOf(number(comparable(json(one()))))))
                 "ltrim", "rtrim" -> Value.Json(texts(comparable(json(one()))) { (t) -> scalar("${name.uppercase()}($t)") }, text = true)
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.

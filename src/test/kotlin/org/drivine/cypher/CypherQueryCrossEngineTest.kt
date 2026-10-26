@@ -590,6 +590,34 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `round() by a mode and sign() take the least positive numbers as positive, where Oracle's SIGN gives 0`() {
+        // Oracle's SIGN gives 0 for a positive number from 1.0E-130 to under 1.0E-128 (#294); UP, DOWN and the HALF_ modes round by the sign.
+        assertEquals(
+            listOf(listOf(0.01, 1.0, -0.01, 0.0, 0.0, 0.01, 0.01, 1.0E-129)),
+            query("RETURN [round(1.0E-129, 2, 'UP'), round(1.0E-129, 0, 'UP'), round(-1.0E-129, 2, 'UP'), round(1.0E-129, 2, 'DOWN'), round(-1.0E-129, 2, 'DOWN'), round(1.0E-130, 2, 'UP'), round(1.0E-129, 2, 'CEILING'), round(1.0E-129, 129, 'UP')]"),
+        )
+        assertEquals(
+            listOf(listOf(1.0E-129, 0.0, 0.0, 2.0E-129, -1.0E-129, 1.0E-128)),
+            query("RETURN [round(5.0E-130, 129, 'HALF_UP'), round(5.0E-130, 129, 'HALF_DOWN'), round(5.0E-130, 129, 'HALF_EVEN'), round(1.5E-129, 129, 'HALF_EVEN'), round(-5.0E-130, 129, 'HALF_UP'), round(9.0E-129, 128, 'HALF_UP')]"),
+        )
+        assertEquals(
+            listOf(listOf(1L, -1L, 0L, null, 1L, 1L, 1L)),
+            query("RETURN [sign(1.0E-129), sign(-1.0E-129), sign(0.0), sign(null), sign(1.0E-130), sign(9.99E-129), sign(\$x)]", mapOf("x" to 1.0E-129)),
+        )
+        // Read from a row, beside 0, -0.0 and null, whose sign the rounding does not ask, and under an aggregate.
+        assertEquals(
+            listOf(listOf(1L, 0.01, 1.0E-129, 0.0), listOf(-1L, -0.01, -1.0E-129, 0.0), listOf(0L, 0.0, 0.0, 0.0), listOf(0L, 0.0, 0.0, 0.0), listOf(null, null, null, null)),
+            query("UNWIND [1.0E-129, -1.0E-129, 0.0, -0.0, null] AS x RETURN [sign(x), round(x, 2, 'UP'), round(x, 129, 'HALF_EVEN'), round(x, 0, 'DOWN')]"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L, 1L, 0.01, 1L)),
+            query("UNWIND [1.0E-129, 5.0E-130] AS x RETURN [sign(sum(x)), sum(sign(x)), sign(min(x)), round(max(x), 2, 'UP'), sign(sign(sign(min(x))))]"),
+        )
+        // Numbers near NUMBER's greatest, which a sign told by a multiple of them would overflow.
+        assertEquals(listOf(listOf(1L, -1L, 1L, -1L, 1L)), query("RETURN [sign(9.0E125), sign(-9.0E125), sign(7), sign(-0.5), sign(0.5)]"))
+    }
+
+    @Test
     fun `round() to places the statement gives picks its rounding when compiling, as Neo4j reads them, NaN as 0`() {
         // #301: either side of 0, the first odd double past 2^52 and numbers near NUMBER's greatest, to 0 places written,
         // picked when compiling, and from an expression, by the CASE.
@@ -895,6 +923,24 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(empty, empty, empty, empty)), query("WITH \$s AS s, \$w AS w RETURN substring(s, 5), left(s, 0), replace(s, 'abc', ''), trim(w)", mapOf("s" to "abc", "w" to "   ")))
         // Two empty texts put together are empty: on Oracle null, as its empty text is, and not read as a long one.
         assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN e + e", mapOf("e" to "")))
+    }
+
+    @Test
+    fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
+        // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a
+        // CLOB (#298): the two together. One node: Oracle crashes on a long property read from two rows (#255).
+        clear()
+        val t = "aB".repeat(20_000)
+        query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+        val functions = listOf(
+            "size(#)" to 40_000L, "toUpper(#)" to t.uppercase(), "substring(#, 2)" to t.substring(2), "replace(#, 'B', 'b')" to t.lowercase(),
+            "# ENDS WITH 'aB'" to true, "size(# + 'z')" to 40_001L, "toString(#)" to t,
+        )
+        for ((function, expected) in functions) {
+            assertEquals(listOf(expected), query("MATCH (n:CyLongText) WITH n.t AS t RETURN ${function.replace("#", "t")}"), "$function, passed on")
+            assertEquals(listOf(expected), query("MATCH (n:CyLongText) RETURN ${function.replace("#", "n.t")}"), "$function, read where used")
+        }
+        clear()
     }
 
     @Test
