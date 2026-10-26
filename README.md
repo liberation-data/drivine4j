@@ -9,7 +9,8 @@
 
 A graph database client library for Java and Kotlin supporting **Neo4j**, **FalkorDB**, **Amazon Neptune**, **Memgraph**, **Oracle** (SQL/PGQ), **Postgres** (plain SQL, with pgvector for vector search) and **SQLite** (a file, no server) with two approaches to graph mapping:
 
-1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach)
+1. **PersistenceManager** - Low-level API with manual Cypher queries (classic Drivine approach). Cypher runs on every
+   engine, compiled to SQL on Oracle, Postgres and SQLite: see [Cypher on a relational database](#cypher-on-a-relational-database).
 2. **Object manager** (`StatelessGraphObjectManager`) - High-level API with annotated models and type-safe DSL.
 
 Drivine4j is the graph database client library for [Embabel](https://hub.embabel.com) - Agentic AI for the JVM. 
@@ -457,6 +458,130 @@ RETURN {
 ```
 
 This way `.transform(MyDto::class.java)` can map the result directly to a data class.
+
+## Cypher on a relational database
+
+Write a statement in Cypher once, and run it on any store Drivine supports. Neo4j, FalkorDB, Memgraph and Neptune run
+it as written. On Postgres, Oracle and SQLite, Drivine compiles it to SQL over the node and edge tables it keeps the
+graph in, and it gives the rows a graph engine gives.
+
+### Configuration
+
+SQLite is the quickest to try: the graph is a file, with no server to run. Add `org.xerial:sqlite-jdbc` and name the
+file:
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: SQLITE
+      database-name: /var/data/app.db  # the file, made if it is not there
+```
+
+On Postgres, add `org.postgresql:postgresql`:
+
+```yaml
+database:
+  datasources:
+    graph:
+      type: POSTGRES
+      host: localhost
+      port: 5432
+      database-name: app
+      user-name: app
+      password: secret
+```
+
+Oracle takes `type: ORACLE` and the properties in [Oracle](#oracle). Without Spring, give `Drivine` the same
+properties:
+
+```kotlin
+val drivine = Drivine(DataSourceMap(mapOf(
+    "graph" to ConnectionProperties(type = DatabaseType.SQLITE, databaseName = "/var/data/app.db")
+)))
+drivine.graphObjectManager("graph")    // makes the graph's tables in a new store
+val manager = drivine.persistenceManager("graph")
+```
+
+The tables are made when an object manager is first made for the datasource. In a new store that you only send
+Cypher to, make one once, as above (in Spring, `factory.stateless("graph")` on the `GraphObjectManagerFactory`), or
+the first statement finds no tables ([#296](https://github.com/liberation-data/drivine4j/issues/296)).
+
+### A write and a read
+
+Wrap the text in a `CypherStatement`. A plain string is Cypher to a graph engine but SQL to Postgres, Oracle and
+SQLite, so the `CypherStatement` is what lets one statement run on every store.
+
+```kotlin
+data class Person(val name: String, val city: String)
+
+manager.execute(
+    QuerySpecification
+        .withStatement(CypherStatement(
+            "MERGE (p:Person {name: \$name}) SET p.city = \$city " +
+            "MERGE (c:City {name: \$city}) " +
+            "MERGE (p)-[:LIVES_IN]->(c)"
+        ))
+        .bind(mapOf("name" to "Ada", "city" to "London"))
+)
+
+val londoners: List<Person> = manager.query(
+    QuerySpecification
+        .withStatement(CypherStatement(
+            "MATCH (p:Person)-[:LIVES_IN]->(:City {name: \$city}) " +
+            "RETURN properties(p) AS person ORDER BY person.name"
+        ))
+        .bind(mapOf("city" to "London"))
+        .transform(Person::class.java)
+)   // [Person(name=Ada, city=London)]
+```
+
+The write is applied whole or not at all on each SQL store. The same read from Java:
+
+```java
+List<Person> londoners = manager.query(
+    QuerySpecification
+        .withStatement(new CypherStatement(
+            "MATCH (p:Person)-[:LIVES_IN]->(:City {name: $city}) " +
+            "RETURN properties(p) AS person ORDER BY person.name"))
+        .bind(Map.of("city", "London"))
+        .transform(Person.class));
+```
+
+Return one map or one value, as [RETURN Clause Best Practices](#important-return-clause-best-practices) says: a
+`RETURN` of several items gives a list of them for each row.
+
+### What is compiled
+
+What each statement gives on each store is set out in
+[drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec), which all three Drivine libraries run in
+their tests. drivine4j 0.3.0 passes v0.6.6 of it; `src/test/resources/cypher/VERSION` names the version a checkout
+runs. It covers reads and writes (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`), `OPTIONAL MATCH`, aggregation,
+`UNION`, `CALL { … }`, `EXISTS { … }`, `FOREACH`, variable-length relationships, quantified path patterns,
+`shortestPath`, list comprehensions and openCypher's temporal values.
+
+Cypher the compiler doesn't take is refused by name before anything is sent, with a `DrivineException` such as
+`SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the
+place in the statement it stands at.
+
+### Where the stores differ
+
+- A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
+- [Postgres](#postgres) works float arithmetic out in exact decimal: `0.1 + 0.2` is `0.3` there.
+- [Oracle](#oracle) reads an empty text as null, and a text read out of JSON is at most 4,000 bytes.
+- Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
+  as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
+- Text is ordered by the database's collation on [Postgres](#postgres), and by `BINARY` on [SQLite](#sqlite).
+- `CALL { … } IN TRANSACTIONS` is one statement, applied whole, where a graph engine commits each batch as it goes.
+- On Oracle, a quantified path pattern's `WHERE` reads no variable from outside it.
+
+The store sections ([Oracle](#oracle), [Postgres](#postgres), [SQLite](#sqlite)) give the rest.
+
+### Or no Cypher at all
+
+The object manager, `StatelessGraphObjectManager`, loads, saves and queries annotated models on every store with no
+Cypher to write. Use it where it does what you need, and keep Cypher for the queries it doesn't: see
+[Object Manager](#object-manager---type-safe-graph-mapping).
 
 ## Object Manager - Type-Safe Graph Mapping
 
@@ -3150,7 +3275,8 @@ made: see [Schema Management](#schema-management-indexes--constraints).
 - A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
   bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
   `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.
-- A `CypherStatement` is compiled to SQL over the graph's tables and gives the rows a graph engine
+- A `CypherStatement` is compiled to SQL over the graph's tables (see
+  [Cypher on a relational database](#cypher-on-a-relational-database)) and gives the rows a graph engine
   gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
   each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
@@ -3416,7 +3542,8 @@ relationships with it.
   `SELECT jsonb_build_object(…)` hydrates with `.transform(MyView::class.java)`. A function body in
   dollar quotes, `$fn$ … $fn$`, is left as it is.
 - A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle: a read is a query,
-  and a write a function made for the statement in `pg_temp`, applied whole or not at all.
+  and a write a function made for the statement in `pg_temp`, applied whole or not at all. See
+  [Cypher on a relational database](#cypher-on-a-relational-database).
 - Temporal values are their ISO 8601 text, as on Oracle.
 - Compiled Cypher works float arithmetic out in exact decimal (`numeric`), not as a double, so a result can
   differ from a graph engine's in its last digits: `0.1 * 3` is `0.3`, where Neo4j gives `0.30000000000000004`.
@@ -3563,8 +3690,8 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
 **Notes:**
 - A statement written by hand is SQL. SQLite has no JSON type, so JSON a statement of your own returns is
   text; one that opens with `/* drivine:json */` has each of its text values read as the JSON it is.
-- A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle and Postgres, and gives the
-  rows a graph engine gives. A read is a query; a write is a procedure of steps, as on the other stores,
+- A `CypherStatement` is compiled to SQL over the graph's tables, as on Oracle and Postgres (see
+  [Cypher on a relational database](#cypher-on-a-relational-database)), and gives the rows a graph engine gives. A read is a query; a write is a procedure of steps, as on the other stores,
   which the function `drivine_cypher` carries out on the statement's connection under a savepoint, so it is
   applied whole or not at all. A value is JSON text: two compare as Cypher compares them (`1` equal to `1.0`,
   a map to a map of the same entries in any order) by functions Drivine registers, which also add lists and
