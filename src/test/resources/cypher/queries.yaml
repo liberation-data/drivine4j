@@ -780,6 +780,47 @@ cases:
       - only: [neo4j, sql]
         cypher: "UNWIND [0, -0.5, 1, null] AS p RETURN round(-2.5, p)"
         rows: [-2.0, -2.0, -2.5, null]
+      - note: "Places past a number's digits give it back: a double holds 17 significant digits at most, so rounding it past its last changes nothing, however many places, where a store's decimal would overflow. Short of them, it rounds."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(1.5, 400), round(2.5, 1000000000), round(2.5, 400, 'HALF_UP'), round(-2.5, 300, 'FLOOR'), round(1.0E-100, 120), round(1.0E-100, 99), round(1.0E-120, 130, 'HALF_UP'), round(-1.0E-120, 136, 'CEILING')]"
+        rows: [[1.5, 2.5, 2.5, -2.5, 1.0e-100, 0.0, 1.0e-120, -1.0e-120]]
+      - note: "Either side of the last place a double holds, and short of it, where a mode still rounds."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(123.456, 14, 'UP'), round(123.456, 15, 'UP'), round(123.456, 16, 'UP'), round(-123.456, 14, 'FLOOR'), round(1234.5678901234567, 13), round(1234.5678901234567, 12, 'HALF_EVEN')]"
+        rows: [[123.456, 123.456, 123.456, -123.456, 1234.5678901234567, 1234.567890123457]]
+      - note: "Places past the digits read from data, in both forms."
+        only: [neo4j, sql]
+        cypher: "UNWIND [400, 1000000000] AS p RETURN [round(2.5, p), round(2.5, p, 'FLOOR')]"
+        rows: [[2.5, 2.5], [2.5, 2.5]]
+      - note: "Numbers near the least a store's decimal holds, short of their digits and past them."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(1.0E-129, 2), round(-1.0E-129, 2, 'FLOOR'), round(1.0E-130, 140), round(-1.0E-125, 141, 'HALF_EVEN'), round(1.2345678901234567E-130, 145), round(5.5E-128, 128, 'HALF_EVEN')]"
+        rows: [[0.0, -0.01, 1.0e-130, -1.0e-125, 1.234567890123457e-130, 6.0e-128]]
+      - note: "Zero, which has no digits to count, rounds to zero however many places, and to null where the precision is null, written or read from data."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(0.0, 400), round(0, 2, 'UP'), round(0.0, null), round(0, null, 'HALF_UP')]"
+        rows: [[0.0, 0.0, null, null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [null] AS p RETURN [round(0.0, p), round(0.0, p, 'UP')]"
+        rows: [[null, null]]
+      - note: "A negative precision from data fails on zero too, over an aggregate as anywhere."
+        only: [neo4j, sql]
+        cypher: "UNWIND [0.0, 0.0] AS x WITH x, -2 AS r RETURN r, round(sum(x), r)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [0.0, 0.0] AS x WITH x, -2 AS r RETURN r, round(sum(x), r, 'UP')"
+        error: true
+      - note: "A null rounds to null whatever the precision, one below 0 read from data too."
+        only: [neo4j, sql]
+        cypher: "UNWIND [-2] AS p RETURN [round(null, p), round(null, p, 'HALF_UP')]"
+        rows: [[null, null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [-1000] AS p RETURN [round(null, p), round(null, p, 'UP')]"
+        rows: [[null, null]]
+      - note: "A whole number by a negative precision from data fails, as a float does."
+        only: [neo4j, sql]
+        cypher: "UNWIND [-2] AS p RETURN round(5, p)"
+        error: true
 
   - name: "EXISTS and COUNT subqueries"
     description: "EXISTS { } and COUNT { } take a pattern, clauses or a whole query, evaluated per row."
