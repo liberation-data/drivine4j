@@ -3270,7 +3270,14 @@ they do elsewhere. To SQL written by hand the graph has one vertex label, `node`
 `edge`; a Cypher label is a test on `labels` and a relationship type a test on `type`. A node's stamp is
 the `stamp` column, and a load returns it as `__drivine.stamp`. Deleting a node's row deletes its
 relationships with it. A third table, `<graph>_schema`, records the indexes and constraints Drivine
-made: see [Schema Management](#schema-management-indexes--constraints).
+made: see [Schema Management](#schema-management-indexes--constraints). Beside the tables the graph is made with
+one function, `<graph>_nulls_equal`, which a compiled Cypher statement compares two lists or maps that may hold a null
+by (see the notes below). Making it takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
+`CREATE TABLE` the tables take. A store an earlier version made gains it when a manager next speaks to the graph. Where the
+user that makes the graph may not make a function, the graph is made without it, and Drivine logs a warning once
+for the graph when a statement would call it: a statement that writes, or the step of a `reduce`, then compares two
+lists or maps that hold a null and differ as JSON as false, where Cypher may give null (`[null] = [1]`), and a read
+declares the function itself.
 
 **Notes:**
 - Each Oracle session Drivine uses makes no adaptive plan (`ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE`).
@@ -3292,9 +3299,9 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
   each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
-  Two lists or maps that may hold a null are compared item by item, as Cypher compares them, by a function the query
-  declares too; in a statement that writes, or the step of a `reduce`, two that are equal as JSON compare as null and any
-  other two as false, so `[null] = [1]` is false there, where Cypher's comparison is null. `list[i]` reads an item where an expression gives
+  Two lists or maps that may hold a null are compared item by item, as Cypher compares them: two equal as JSON are null
+  at once, and any other two are walked by the graph's function `<graph>_nulls_equal` (see above), in a statement that
+  writes and the step of a `reduce` too. `list[i]` reads an item where an expression gives
   the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
   What is not compiled yet (a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the

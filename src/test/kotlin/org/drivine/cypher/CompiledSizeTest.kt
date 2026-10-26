@@ -199,6 +199,28 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `values that may hold a null are walked on Oracle by the store's function where they differ as JSON, and by none where the store has none`() {
+        // #270: a procedure's queries, and a reduce's step's, call no function of their own, so the store keeps it.
+        val write = "MATCH (c:Claim) WITH c, [c.a, null] AS l, [c.b] AS m SET c.e = l = m"
+        val stored = OracleCypherCompiler("g")
+        val sql = stored.compile(write).sql
+        assertTrue(stored.callsStoredNullsEqual && "THEN NULL ELSE (g_nulls_equal(" in sql && "cy_nulls_equal" !in sql, sql)
+        val folded = OracleCypherCompiler("g")
+        val reduced = folded.compile("MATCH (c:Claim) WITH [c.a, null] AS l RETURN reduce(acc = true, x IN [[1]] | acc AND x = l)").sql
+        assertTrue(folded.callsStoredNullsEqual && "THEN NULL ELSE (g_nulls_equal(" in reduced && "cy_nulls_equal" !in reduced, reduced)
+        // Without it, two that differ as JSON are false in a procedure, and a read declares the function itself.
+        val none = OracleCypherCompiler("g", nullsEqualStored = false)
+        val fallback = none.compile(write).sql
+        assertTrue(!none.callsStoredNullsEqual && "nulls_equal" !in fallback && "THEN NULL ELSE FALSE END" in fallback, fallback)
+        val read = OracleCypherCompiler("g", nullsEqualStored = false).compile("MATCH (c:Claim) WITH [c.a, null] AS l, [c.b] AS m RETURN l = m").sql
+        assertTrue(read.startsWith("WITH\nFUNCTION cy_nulls_equal(") && "THEN NULL ELSE (cy_nulls_equal(" in read, read)
+        // A statement that compares no value that may hold a null calls no function.
+        val flat = OracleCypherCompiler("g")
+        flat.compile("MATCH (c:Claim) SET c.e = c.a = c.b, c.f = c.list = [1]")
+        assertTrue(!flat.callsStoredNullsEqual)
+    }
+
+    @Test
     fun `lists and maps written out that may hold a null are compared item by item, not built and compared whole`() {
         val built = mapOf(
             "PostgresCypherCompiler" to listOf("json_build_"), "OracleCypherCompiler" to listOf("JSON_ARRAY(", "JSON_OBJECT("), "SqliteCypherCompiler" to listOf("json_array(", "json_object("),

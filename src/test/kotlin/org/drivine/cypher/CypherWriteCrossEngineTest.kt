@@ -1,5 +1,6 @@
 package org.drivine.cypher
 
+import org.drivine.backend.oracle.OracleGraph
 import org.drivine.connection.DatabaseType
 import org.drivine.cypher.spec.CypherSpec
 import org.drivine.connection.Neo4jConnectionProvider
@@ -100,6 +101,21 @@ abstract class CypherWriteContract {
         assertTrue((millis as Long) in before..after, "$millis")
         assertTrue((stamp as Long) in before..after, "$stamp")
     }
+
+    @Test
+    fun `lists and maps that hold a null and differ as JSON compare item by item in a statement that writes`() {
+        // Beside the spec's step since v0.6.14 (#270): on Oracle a procedure declares no function of its own, so the store's walks them.
+        assertEquals(listOf("null"), query("CREATE (n:CyWrite) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
+        assertEquals(
+            listOf(listOf(null, null, false, true, null, false, null, true)),
+            query(
+                "CREATE (n:CyWrite) WITH n, [null, 1] AS a, [2, 1] AS b, {x: null} AS m, {x: 1} AS o, [[null], 1] AS c, [[1], 2] AS d " +
+                    "RETURN [a = b, m = o, c = d, a <> [1, 2], a IN [b, [3]], a IN [[3]], {k: [null]} = {k: [2]}, m <> {y: 1}]"
+            ),
+        )
+        // A node OPTIONAL MATCH finds none of is null in the list that holds it, beside one the statement made.
+        assertEquals(listOf(listOf(null, null)), query("OPTIONAL MATCH (x:Nope) CREATE (n:CyWrite) WITH n, [x] AS a, [n] AS b RETURN [a = b, a = a]"))
+    }
 }
 
 class CypherWriteNeo4jTest : CypherWriteContract() {
@@ -169,6 +185,24 @@ class CypherWriteOracleTest : CypherWriteContract() {
     override val compiles = true
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
+    @Test
+    fun `a store without the function that compares values holding a null compares them as before, until the graph is ensured again`() {
+        // A store an earlier version made, or whose user may not make a function (#270): a read declares the function itself.
+        val graph = "cy_no_fn"
+        val noFunction = OracleTestDatabase.graphManager(graph)
+        OracleTestDatabase.drop("FUNCTION ${OracleGraph(graph).nullsEqual}")
+        fun query(cypher: String) = noFunction.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        val write = "CREATE (n:CyWrite) WITH n, [null] AS a, [1] AS b, [null] AS c RETURN [coalesce(a = b, 'null'), coalesce(a = c, 'null')]"
+        try {
+            assertEquals(listOf(listOf(false, "null")), query(write))
+            assertEquals(listOf(listOf("null", "null")), query("WITH [null] AS a, [1] AS b, [null] AS c RETURN [coalesce(a = b, 'null'), coalesce(a = c, 'null')]"))
+            OracleGraph(graph).ensure(noFunction)
+            assertEquals(listOf(listOf("null", "null")), query(write))
+        } finally {
+            OracleTestDatabase.clear(noFunction)
+        }
+    }
 
     @Test
     fun `nodes of two labels a transaction has made and not yet committed are found by both`() {

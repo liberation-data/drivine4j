@@ -514,8 +514,8 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `a statement that writes compares a list that holds a null as null where it is equal as JSON`() {
-        // Beside the spec's cases since v0.6.6 (#225): on Oracle a procedure calls no function of its own, so values that differ as JSON are false there.
+    fun `a statement that writes compares a list that holds a null item by item`() {
+        // Beside the spec's cases since v0.6.6 (#225); on Oracle a procedure calls no function of its own, so the store's walks them (#270).
         clear()
         assertEquals(
             listOf(listOf("null", false, true)),
@@ -527,8 +527,16 @@ abstract class CypherQueryContract {
             listOf(listOf(true, true, true, true)),
             query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l, $long AS w, [$long] AS ws CREATE (n:CyNullEquality) SET n.eq = v = [s], n.in = v IN l, n.longEq = w = $long, n.longIn = w IN ws RETURN [n.eq, n.in, n.longEq, n.longIn]"),
         )
-        if (pm.type == DatabaseType.ORACLE) return
         assertEquals(listOf("null"), query("CREATE (n:CyNullEquality) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
+    }
+
+    @Test
+    fun `the step of a reduce compares lists and maps that hold a null and differ as JSON item by item`() {
+        // Beside the spec's cases since v0.6.14 (#270): on Oracle a reduce's step calls no function of the query's, so the store's walks them.
+        assertEquals(listOf(listOf(false, null, null)), query("WITH [2, null] AS c RETURN reduce(acc = [], x IN [[1, null], [2, null], [null, 1]] | acc + [x = c])"))
+        assertEquals(listOf(listOf(null, false, false)), query("RETURN reduce(acc = [], m IN [{x: null}, {x: 1, y: 2}, {x: 2}] | acc + [m = {x: 1}])"))
+        assertEquals(listOf(listOf(null, false)), query("WITH [[null], 1] AS a RETURN reduce(acc = [], x IN [[[1], 1], [[1], 2]] | acc + [x = a])"))
+        assertEquals(listOf(null), query("RETURN reduce(acc = true, x IN [[null]] | acc AND x = [1])"))
     }
 
     @Test

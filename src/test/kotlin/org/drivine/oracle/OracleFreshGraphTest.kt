@@ -1,9 +1,11 @@
 package org.drivine.oracle
 
+import org.drivine.backend.oracle.OracleGraph
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.mapper.SubtypeRegistry
+import org.drivine.query.QuerySpecification
 import org.drivine.schema.SchemaVersionStore
 import org.drivine.store.StoreIdentityResolver
 import org.junit.jupiter.api.BeforeEach
@@ -27,7 +29,7 @@ class OracleFreshGraphTest {
 
     @BeforeEach
     fun dropGraph() {
-        OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema")
+        OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema", "FUNCTION ${graph}_nulls_equal")
     }
 
     @Test
@@ -57,6 +59,14 @@ class OracleFreshGraphTest {
         assertEquals("v1", store.storedVersion())
         assertEquals(listOf("a", "b"), store.storedInventory())
         assertNull(SchemaVersionStore(manager).storedInventory(), "another owner's marker is its own")
+    }
+
+    @Test
+    fun `the graph is made with the function a Cypher statement compares values that may hold a null by`() {
+        OracleGraph(graph).ensure(manager)
+        val f = OracleGraph(graph).nullsEqual
+        val compared = "NVL(TO_CHAR($f(JSON('[null]'), JSON('[1]'))), 'null') || ',' || TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) || ',' || TO_CHAR($f(JSON('{\"x\": [1]}'), JSON('{\"x\": [1]}')))"
+        assertEquals(listOf("null,0,1"), manager.query(QuerySpecification.withStatement("SELECT $compared AS r FROM DUAL")))
     }
 
     @Test
