@@ -315,6 +315,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * JSON)`. Oracle closed the session (ORA-03113) on statements, one row each, that took a text past 32 KB out of a
      * node's properties so and read it as a CLOB or put it together with another, and a later statement in the session lost
      * its rows: the memory corruption of #255. A value used whole, as a list a sum joins, still takes the property out.
+     * It costs about a quarter more on short texts: 100,000 rows of `size(n.name)` took 208 ms against 162 ms, and of
+     * `toUpper(n.name)` 196 ms against 164 ms.
      */
     private fun direct(sql: String, json: String): String {
         val (props, path) = propertyRead(json) ?: return sql
@@ -493,7 +495,6 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "tolower" -> texts(json) { (t) -> scalar("LOWER($t)") }
         "toupper" -> texts(json) { (t) -> scalar("UPPER($t)") }
         "trim" -> texts(json) { (t) -> scalar("TRIM($t)") }
-        // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
         // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
         "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
@@ -805,8 +806,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         /** The cursor a procedure returns its rows by. */
         const val CURSOR = "cy_cursor"
 
-        /** A property as [propertyOf] reads it, its properties and its path: see [propertyRead]. */
-        val PROPERTY_READ = Regex("""JSON_QUERY\((.+), ('\$[^']*') RETURNING JSON\)""")
+        /** A property as [propertyOf] reads it, its properties and its path, a literal whose quotes are doubled: see [propertyRead]. */
+        val PROPERTY_READ = Regex("""JSON_QUERY\((.+), ('\$(?:[^']|'')*') RETURNING JSON\)""")
 
         /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
         const val SHORT_TEXT = 4000
