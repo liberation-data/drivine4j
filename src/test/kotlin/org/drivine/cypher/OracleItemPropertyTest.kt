@@ -30,6 +30,28 @@ class OracleItemPropertyTest {
     }
 
     @Test
+    fun `a property a text function or a sum reads is read from the properties by its own path, and not taken out as JSON first`() {
+        // Taken out with JSON_QUERY and read as a CLOB or summed, a text past 32 KB closed the session, one row a statement,
+        // and a later statement lost its rows (#298).
+        val sql = OracleCypherCompiler("g").compile("MATCH (n:Doc) RETURN [toUpper(n.a), size(n.a), substring(n.a, 1), n.a STARTS WITH 'x', n.a + 'x', toString(n.a)]").sql
+        assertTrue(!Regex("JSON_VALUE\\(JSON_QUERY\\(n1.props, '\\$.a' RETURNING JSON\\)").containsMatchIn(sql), sql)
+        assertTrue(sql.contains("JSON_VALUE(n1.props, '\$.a' RETURNING CLOB)") && sql.contains("JSON_VALUE(n1.props, '\$.a.type()')"), sql)
+        assertTrue(sql.contains("JSON_VALUE(n1.props, '\$.a.size()' RETURNING NUMBER)"), sql)
+    }
+
+    @Test
+    fun `a property whose key is quoted in its path, or is in a map, is read by its own path too`() {
+        fun read(cypher: String) = OracleCypherCompiler("g").compile(cypher).sql.also { assertTrue(!it.contains("JSON_VALUE(JSON_QUERY(n1.props, '\$.\""), it) }
+        val quoted = read("MATCH (n:Doc) RETURN [size(n.`it's`), toUpper(n.`a b`), size(n.`x' RETURNING JSON) y`)]")
+        assertTrue(quoted.contains("JSON_VALUE(n1.props, '\$.\"it''s\".size()' RETURNING NUMBER)"), quoted)
+        assertTrue(quoted.contains("JSON_VALUE(n1.props, '\$.\"a b\"' RETURNING CLOB)"), quoted)
+        assertTrue(quoted.contains("JSON_VALUE(n1.props, '\$.\"x'' RETURNING JSON) y\".type()')"), quoted)
+        // A key in a map is read by its path in the map, the map taken out of the properties as it was.
+        val nested = read("MATCH (n:Doc) RETURN size(n.m.a)")
+        assertTrue(nested.contains("JSON_VALUE(JSON_QUERY(n1.props, '\$.m' RETURNING JSON), '\$.a.size()' RETURNING NUMBER)"), nested)
+    }
+
+    @Test
     fun `a property returned beside a variable-length walk is read as elsewhere`() {
         val sql = OracleCypherCompiler("g").compile("MATCH (:Doc {id: 1})-[:R*]->(n) RETURN n.a").sql
         assertTrue(!sql.contains("RETURNING CLOB") && sql.contains(".a' RETURNING JSON)"), sql)
