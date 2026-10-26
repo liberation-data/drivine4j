@@ -2797,12 +2797,13 @@ abstract class SqlCypherCompiler(graph: String) {
          * An equality of [left] and [right], written as [leftWritten] and [rightWritten], where one is a parameter bound to a list
          * that holds a null, lists within it among its items and no map: the other compared with it item by item, each item
          * as the statement is compiled with it, as [itemwise] compares a list written out, so no store walks the two. Null
-         * where neither is such a parameter, or the store's own comparison compares a null as Cypher does.
+         * where neither is such a parameter, or the store's own comparison compares a null as Cypher does. Nor where an item is
+         * too long to write in the statement (see [short]): such a list is walked as any other.
          */
         private fun givenItemwise(leftWritten: Expression, left: Value, rightWritten: Expression, right: Value): String? {
             if (holdsNull("x") == null) return null
             fun given(expression: Expression) = (expression as? Expression.Parameter)?.let { parameterTree(it.name) }
-                ?.takeIf { it.isArray && !holdsNoNull(it) && arrays(it) }
+                ?.takeIf { it.isArray && !holdsNoNull(it) && arrays(it) && short(it) }
             fun other(value: Value) = (value as? Value.Json)?.takeIf { it.identity == null && it.temporal == null }
             given(rightWritten)?.let { list -> other(left)?.let { return itemsEqual(comparable(it), list) } }
             given(leftWritten)?.let { list -> other(right)?.let { return itemsEqual(comparable(it), list) } }
@@ -2811,6 +2812,14 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether the JSON [node] holds no map, at any depth. */
         private fun arrays(node: JsonNode): Boolean = !node.isObject && (!node.isArray || node.all(::arrays))
+
+        /**
+         * Whether each text, number and truth value the JSON [node], a list that holds no map, holds is short enough to write in
+         * the statement: see [LITERAL_BYTES].
+         */
+        private fun short(node: JsonNode): Boolean =
+            if (node.isArray) node.all(::short)
+            else Neo4jObjectMapper.instance.writeValueAsString(scalarOf(node)).toByteArray(Charsets.UTF_8).size <= LITERAL_BYTES
 
         /**
          * Whether the JSON value [json] is equal to [given], a list that may hold a null and lists, as Cypher compares them: the
@@ -3392,6 +3401,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The greatest start or length `substring()`, `left()` and `right()` take, as Neo4j takes them: Java's greatest `int`. */
         const val MAX_COUNT = Int.MAX_VALUE.toLong()
+
+        /**
+         * The most bytes of JSON's text, in UTF-8, an item of a parameter's list is written in the statement in, as
+         * `givenItemwise` writes it: Oracle takes no text literal past 4,000 bytes (ORA-01704), a text's JSON is written in a
+         * literal of its own, and each quote in it is doubled there.
+         */
+        const val LITERAL_BYTES = 1000
 
         /** [sql] as the select-list entry of the column [name]: the column itself where [sql] reads one of that name. */
         fun named(sql: String, name: String) = if (sql.endsWith(".$name")) sql else "$sql AS $name"
