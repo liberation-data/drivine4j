@@ -959,6 +959,29 @@ abstract class CypherQueryContract {
         // A truth value before a number, though SQLite reads it as 1 or 0.
         assertEquals(listOf(false, true, 0L, 1L), query("UNWIND [1, true, 0, false] AS t RETURN t ORDER BY t"))
         assertEquals(listOf(listOf(mapOf("a" to 1L), 1L)), query("UNWIND [true, 1, 'b', [1], {a: 1}] AS t RETURN min(t), max(t)"))
+        // Carried out of a CALL { … }, grouped by, kept distinct by another name, and sorted by when it is not returned.
+        assertEquals(listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A"), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
+        assertEquals(
+            listOf(listOf(listOf(1L), 1L), listOf("b", 2L), listOf(true, 1L), listOf(2L, 2L)),
+            query("UNWIND [2, 'b', true, 2, 'b', [1]] AS t RETURN t, count(*) ORDER BY t"),
+        )
+        assertEquals(listOf(2L, true, "b"), query("UNWIND [2, 'b', true, 2] AS t RETURN DISTINCT t AS u ORDER BY u DESC"))
+        assertEquals(listOf("b", "true", "2"), query("UNWIND [2, 'b', true] AS t RETURN toString(t) AS s ORDER BY t"))
+        // Among their own kind: texts by their code points, and whole and floating-point numbers as numbers.
+        assertEquals(listOf("a", "～", "😀", 1L), query("UNWIND ['😀', '～', 1, 'a'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(true, 0L, 0.5, 1L, 1.5), query("UNWIND [1, 0.5, true, 1.5, 0] AS t RETURN t ORDER BY t"))
+        // Paged by the query that returns them, and nulls first descending, carried out of a CALL { … }.
+        assertEquals(listOf(listOf(2L), "A", "b", false, true), query("UNWIND $values AS t RETURN t ORDER BY t SKIP 2 LIMIT 5"))
+        assertEquals(listOf(2.5, 1L, -1L, true), query("UNWIND $values AS t RETURN t ORDER BY t DESC SKIP 1 LIMIT 4"))
+        assertEquals(listOf(null, null, 1L), query("CALL { UNWIND [1, null, 'a', true, null, [1]] AS t RETURN t ORDER BY t DESC LIMIT 3 } RETURN t"))
+        // Collected in the order a WITH gives them, and indexed or iterated there.
+        assertEquals(listOf(ascending.dropLast(1).reversed()), query("UNWIND $values AS t WITH t ORDER BY t DESC WITH collect(t) AS xs RETURN xs"))
+        assertEquals(listOf(ascending.take(3)), query("UNWIND $values AS t WITH t ORDER BY t RETURN [x IN collect(t) | x][0..3]"))
+        assertEquals(listOf(listOf(listOf(2L), "A", "b", false, true)), query("UNWIND $values AS t WITH t ORDER BY t SKIP 2 LIMIT 5 RETURN collect(t)"))
+        // The last query of a UNION sorted, and a UNION carried out of a CALL { … } sorted and paged.
+        assertEquals(listOf(2L, "b", true, mapOf("a" to 1L), listOf(1L), "a", null), query("UNWIND [2, 'b', true] AS t RETURN t UNION UNWIND [[1], {a: 1}, null, 'a'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(listOf(1L), "b", true, 2L, null), query("CALL { UNWIND [2, 'b'] AS t RETURN t UNION UNWIND [true, [1], null] AS t RETURN t } RETURN t ORDER BY t"))
+        assertEquals(listOf(2L, true, "b"), query("CALL { UNWIND [2, 'b'] AS t RETURN t UNION UNWIND [true, [1], null] AS t RETURN t } WITH t ORDER BY t DESC SKIP 1 LIMIT 3 RETURN t"))
     }
 
     @Test
@@ -972,6 +995,25 @@ abstract class CypherQueryContract {
         assertEquals(ascending, query("MATCH (k:Kind) RETURN k.v ORDER BY k.v"))
         assertEquals(ascending.reversed(), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC"))
         assertEquals(listOf("b", false), query("MATCH (k:Kind) WITH k ORDER BY k.v SKIP 2 LIMIT 2 RETURN k.v"))
+        assertEquals(listOf(null, 2L), query("CALL { MATCH (k:Kind) RETURN k.v AS v ORDER BY v DESC LIMIT 2 } RETURN v"))
+        assertEquals(listOf(listOf(listOf(1L), "B", "b", false, true, 1.5, 2L)), query("MATCH (k:Kind) WITH k ORDER BY k.v WITH collect(k.v) AS vs RETURN vs"))
+        assertEquals(listOf(2L, 1.5, true), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC SKIP 1 LIMIT 3"))
+    }
+
+    @Test
+    fun `lists of several kinds of item, nested, sort item by item among values of other kinds`() {
+        // Not in the spec yet (#299): a list sorts first among values of other kinds, and among lists item by item, the
+        // items of each as Cypher orders their kinds at any depth. Postgres takes jsonb's order (#307), and Oracle puts a
+        // number before a text and a null first within a list (#205).
+        if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.ORACLE) return
+        val values = "[[1, 'a'], 'x', [[2], 1], [[2], 'b'], [1, null], 3, [1], [[2], [1]], [{a: 1}], [true]]"
+        val ascending = listOf(
+            listOf(mapOf("a" to 1L)), listOf(listOf(2L), listOf(1L)), listOf(listOf(2L), "b"), listOf(listOf(2L), 1L),
+            listOf(true), listOf(1L), listOf(1L, "a"), listOf(1L, null), "x", 3L,
+        )
+        assertEquals(ascending, query("UNWIND $values AS t RETURN t ORDER BY t"))
+        assertEquals(ascending.reversed(), query("UNWIND $values AS t RETURN t ORDER BY t DESC"))
+        assertEquals(ascending.take(4), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
     }
 
     @Test
