@@ -54,7 +54,43 @@ class OracleZonedListSortTest {
         }
         assertFalse(OracleCypherCompiler("g").compile("UNWIND [1, 1] AS k RETURN collect(DISTINCT k)").sql.contains("PASSING"))
     }
+
+    @Test
+    fun `on Oracle a coalesce of a list of temporal values, and a list that holds them deeper, is read item by item too`() {
+        // coalesce(l, []) is of l's kind (#347).
+        val coalesced = OracleCypherCompiler("g").compile("$repro RETURN k ORDER BY size([x IN coalesce(l, []) WHERE x IS NOT NULL])").sql
+        assertTrue(coalesced.contains("PASSING x6_r.n - 1"), coalesced)
+        assertFalse(coalesced.contains("JSON_TABLE(w4.c2"), coalesced)
+        // A list of lists of lists, or of maps, of temporal values, as collect(DISTINCT …) gathers it.
+        for (deep in deepRepros) {
+            val sql = OracleCypherCompiler("g").compile(deep).sql
+            assertTrue(sql.contains("PASSING e_r.n - 1"), sql)
+            assertFalse(sql.contains(Regex("JSON_TABLE\\(w\\d+\\.")), sql)
+        }
+        // A list of maps of them unwound, and such a list taken back out of a map.
+        for (unwound in listOf("$repro UNWIND [x IN l | {t: x}] AS m RETURN count(m.t)", "$repro WITH k, {l: l} AS m UNWIND m.l AS t RETURN count(t)")) {
+            val sql = OracleCypherCompiler("g").compile(unwound).sql
+            assertTrue(sql.contains(Regex("PASSING u\\d+_r\\.n - 1")), sql)
+        }
+        // Not a list of lists of lists of other values, or a coalesce of them.
+        for (other in listOf(
+            "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | i + k] AS l RETURN collect(DISTINCT [l, l])",
+            "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | i + k] AS l RETURN size([x IN coalesce(l, []) WHERE x > 1])",
+        )) {
+            val sql = OracleCypherCompiler("g").compile(other).sql
+            assertFalse(sql.contains("PASSING"), sql)
+        }
+    }
 }
+
+/** Statements that collect, once each, lists that hold #331's temporal values two levels down, or in maps: see #347. */
+private val deepRepros = listOf(
+    "$repro RETURN collect(DISTINCT [l, l])",
+    "$repro RETURN collect(DISTINCT [x IN l | [x]])",
+    "$repro RETURN collect(DISTINCT [x IN l | [x, null]])",
+    "$repro WITH k, [l, l] AS ll RETURN collect(DISTINCT ll)",
+    "$repro RETURN collect(DISTINCT [x IN l | {t: x}])",
+)
 
 /** #331's statement: a list worked out item by item with temporal arithmetic, by a comprehension. */
 private const val repro = "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i})] AS l"
@@ -93,6 +129,20 @@ class OracleZonedListSortRunTest {
         assertEquals(listOf("10"), rows("$repro WITH k, l WHERE k = 0 UNWIND l AS t RETURN count(t)"))
         assertEquals(listOf("[10,2]"), rows("$repro WITH k, l WHERE k = 0 RETURN [reverse(l)[0].minute, tail(l)[0].minute]"))
         assertEquals(listOf("[1,10]"), rows("$repro WITH collect(DISTINCT l) AS ls RETURN [size(ls), size(ls[0])]"))
+    }
+
+    @Test
+    fun `a coalesce of such a list, and a list of lists of them or of maps of them, are read in moments`() {
+        // 21 to 106 seconds each, before #347.
+        assertEquals(listOf("[0,10]", "[1,10]"), rows("$repro RETURN [k, size([x IN coalesce(l, []) WHERE x IS NOT NULL])] ORDER BY k"))
+        assertEquals(setOf("0", "1"), rows("$repro RETURN k ORDER BY size([x IN coalesce(l, []) WHERE x IS NOT NULL])").toSet())
+        for (deep in deepRepros) {
+            val row = rows(deep).single()
+            assertTrue(row.startsWith("[[") && row.contains("2024-03-15T10:10:00"), row)
+        }
+        assertEquals(listOf("[1,2,10]"), rows("$repro WITH collect(DISTINCT [l, l]) AS ls RETURN [size(ls), size(ls[0]), size(ls[0][0])]"))
+        assertEquals(listOf("10"), rows("$repro WITH k, [x IN l | {t: x}] AS ms WHERE k = 0 UNWIND ms AS m RETURN count(m.t)"))
+        assertEquals(listOf("10"), rows("$repro WITH k, {l: l} AS m WHERE k = 0 UNWIND m.l AS t RETURN count(t)"))
     }
 
     @Test

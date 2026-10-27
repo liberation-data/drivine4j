@@ -903,6 +903,37 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a coalesce of a list of temporal values worked out on each row, and lists or maps that hold such a list deeper, read item by item`() {
+        // Not in the spec yet: Oracle reads these by their places too, not with JSON_TABLE (#347). Of 0, 1 and 2 items, at 10:01, 10:02.
+        val at = "localdatetime('2024-03-15T10:00:00')"
+        val rows = "UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, k) | $at + duration({minutes: i})] AS l"
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), 0L), listOf(1L, listOf(1L), 1L), listOf(2L, listOf(1L, 2L), 2L)),
+            query("$rows RETURN k, [x IN coalesce(l, []) | x.minute], size([x IN coalesce(l, []) WHERE x IS NOT NULL]) ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, emptyList<Long>())),
+            query("$rows WITH k, CASE WHEN k = 1 THEN l END AS m RETURN k, [x IN coalesce(m, []) | x.minute] ORDER BY k"),
+        )
+        // collect(DISTINCT …) of lists of lists, and of lists of maps, that hold such a list, each once where first.
+        val twice = "UNWIND [2, 1, 2] AS k WITH k, [i IN range(1, k) | $at + duration({minutes: i})] AS l"
+        assertEquals(
+            listOf(listOf(listOf(listOf(1L, 2L), listOf(1L, 2L)), listOf(listOf(1L), listOf(1L)))),
+            query("$twice WITH collect(DISTINCT [l, l]) AS ls RETURN [x IN ls | [y IN x | [z IN y | z.minute]]]"),
+        )
+        assertEquals(listOf(listOf(listOf(1L, 2L), listOf(1L))), query("$twice WITH collect(DISTINCT [x IN l | [x]]) AS ls RETURN [x IN ls | [y IN x | y[0].minute]]"))
+        assertEquals(
+            listOf(listOf(listOf(listOf(1L, null), listOf(2L, null)), listOf(listOf(1L, null)))),
+            query("$twice WITH collect(DISTINCT [x IN l | [x, null]]) AS ls RETURN [x IN ls | [y IN x | [y[0].minute, y[1]]]]"),
+        )
+        assertEquals(listOf(listOf(2L, 1L)), query("$twice WITH k, [l, l] AS ll WITH collect(DISTINCT ll) AS lls RETURN [x IN lls | size(x[0])]"))
+        assertEquals(listOf(listOf(listOf(1L, 2L), listOf(1L))), query("$twice WITH collect(DISTINCT [x IN l | {t: x}]) AS ms RETURN [x IN ms | [y IN x | y.t.minute]]"))
+        assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows UNWIND [x IN l | {t: x}] AS m RETURN k, collect(m.t.minute) ORDER BY k"))
+        // A list taken back out of a map that holds it.
+        assertEquals(listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows WITH k, {l: l} AS m RETURN k, [x IN m.l | x.minute] ORDER BY k"))
+    }
+
+    @Test
     fun `a negative precision from data fails only on a row that reads it, in a WHERE and an aggregate too, with the compiler's message`() {
         // The spec reads a precision from data since v0.6.4; here, in a WHERE and an aggregate, and on rows filtered out.
         clear()

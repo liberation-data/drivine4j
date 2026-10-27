@@ -24,6 +24,13 @@ sealed interface Value {
         val identity: String? = null,
         /** Where the statement makes it a list whose every item is a list of [items] of one kind, that kind: an item taken from it has it as its [items]. */
         val itemItems: Temporal? = null,
+        /**
+         * Whether the statement makes it a list or a map that holds, at any depth, a value it makes temporal: deeper than [items]
+         * and [itemItems] tell, or beside values of other kinds, as in `[l, l]` of a list `l` of them. Of an item taken from such a
+         * list, that it may hold one. Oracle reads the items of such a list by their places (#331, #347): see
+         * [SqlCypherCompiler.temporalElements].
+         */
+        val temporals: Boolean = false,
         /** Whether the statement makes it a list, and with [itemLists] a list of lists: a store may sort a list as Cypher does only then. */
         val list: Boolean = false,
         val itemLists: Boolean = false,
