@@ -705,6 +705,8 @@ abstract class CypherQueryContract {
             "UNWIND [1, 2] AS x RETURN sum(x)" to 3L,
             "UNWIND [] AS x RETURN sum(x)" to 0L,
             "UNWIND [1.0, 1.0] AS x RETURN sum(DISTINCT x)" to 1.0,
+            // Summed as doubles: past a NUMBER's range, 1e300 is no NUMBER.
+            "UNWIND [1e300, 1.0] AS x RETURN sum(x)" to 1e300,
             "UNWIND [0.5, 1.5] AS x RETURN avg(x)" to 1.0,
             "UNWIND [1, 3] AS x RETURN avg(x)" to 2.0,
             "UNWIND [] AS x RETURN avg(x)" to null,
@@ -719,6 +721,8 @@ abstract class CypherQueryContract {
         ).map { (statement, value) -> Triple(statement, emptyMap<String, Any?>(), value) } + listOf(
             // Parameters: a whole float is bound so it stays one, and a fraction is a number on Oracle.
             listOf(0.5, 1.0, 0.5) to 2.0, listOf(0.5, 0.5) to 1.0, listOf(1.0) to 1.0, listOf(2L, 3L) to 5L,
+            // Oracle writes a fraction of more than 40 digits with an exponent and no point.
+            listOf(1e-41, -1e-41) to 0.0,
         ).map { (xs, sum) -> Triple("UNWIND \$xs AS x RETURN sum(x)", mapOf("xs" to xs), sum) }
         // Each that differs, so a store's every difference shows at once.
         val differing = cases.mapNotNull { (statement, parameters, value) ->
@@ -742,6 +746,7 @@ abstract class CypherQueryContract {
             }
         }
     }
+
 
     @Test
     fun `min() and max() of lists the statement makes compare them item by item, whatever their lengths`() {
