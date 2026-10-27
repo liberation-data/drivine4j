@@ -118,6 +118,12 @@ jobs:
             echo "::error::$version isn't X.Y.Z (or X.Y.Z-suffix), so it can't be released."
             exit 1
           fi
+          # A bump that merged but wasn't released leaves build.gradle at the version asked for, and there would be
+          # nothing to commit.
+          if [[ "$version" == "$current" ]]; then
+            echo "::error::$version is already the version in build.gradle. Pick a later version, or re-run release.yml for it."
+            exit 1
+          fi
           if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
             echo "::error::$tag is already tagged. Pick a later version."
             exit 1
