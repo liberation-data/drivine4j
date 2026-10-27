@@ -674,11 +674,9 @@ abstract class CypherQueryContract {
             listOf(listOf(0.0, 0.0, 0.0)),
             query("MATCH (n:Round) WITH n.x AS x WHERE round(x, 2) = 0 RETURN [round(sum(x), 2), round(avg(x), 400), round(sum(x), 1, 'CEILING')]"),
         )
-        // As numbers: Oracle gives a sum of floats that is whole as an integer.
         assertEquals(
-            listOf(listOf(1500.0, 2000.0, 2000.0, 3000.0)),
-            query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x RETURN [sum(round(x, 400)), sum(round(x, 0)), sum(round(x, 0, 'UP')), count(*)]")
-                .map { row -> (row as List<*>).map { (it as Number).toDouble() } },
+            listOf(listOf(1500.0, 2000.0, 2000.0, 3000L)),
+            query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x RETURN [sum(round(x, 400)), sum(round(x, 0)), sum(round(x, 0, 'UP')), count(*)]"),
         )
         assertEquals(listOf(3000L), query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x WHERE round(x, 2) = 0 OR round(x, 400, 'UP') > 0 RETURN count(*)"))
         assertEquals(listOf(listOf(0.0, 1.6, 0.0)), query("RETURN [x IN [0.0, 1.55, 0.0] | round(x, 1)]"))
@@ -700,6 +698,66 @@ abstract class CypherQueryContract {
             if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
         }
     }
+
+    @Test
+    fun `an aggregate of floats gives a float, whole or not, and a sum of integers an integer`() {
+        // #304: Oracle's NUMBER keeps no kind, so a sum of floats that was whole came back an integer there. Each value is
+        // checked with its kind: 2.0 is not 2.
+        clear()
+        seed("CREATE (:F {k: 'a', x: 0.5}), (:F {k: 'a', x: 1.0}), (:F {k: 'a', x: 0.5}), (:F {k: 'b', x: 1}), (:F {k: 'b', x: 2})")
+        fun kinds(value: Any?): Any? = if (value is List<*>) value.map(::kinds) else value?.let { it to it::class.simpleName }
+        val cases = listOf(
+            "UNWIND [0.5, 1.0, 0.5] AS x RETURN sum(x)" to 2.0,
+            "UNWIND [1, 1.0] AS x RETURN sum(x)" to 2.0,
+            "UNWIND [1, 0.5, 0.5] AS x RETURN sum(x)" to 2.0,
+            "UNWIND [1, 2] AS x RETURN sum(x)" to 3L,
+            "UNWIND [] AS x RETURN sum(x)" to 0L,
+            "UNWIND [1.0, 1.0] AS x RETURN sum(DISTINCT x)" to 1.0,
+            // Summed as doubles: past a NUMBER's range, 1e300 is no NUMBER.
+            "UNWIND [1e300, 1.0] AS x RETURN sum(x)" to 1e300,
+            // An integer among floats is summed as a double too, as Neo4j sums it, and a computed float is one.
+            "UNWIND [9223372036854775807, 0.5] AS x RETURN sum(x)" to 9.223372036854776E18,
+            "UNWIND [0.5, 2] AS x RETURN sum(x * 10)" to 25.0,
+            "UNWIND [0.5, 1.5] AS x RETURN avg(x)" to 1.0,
+            "UNWIND [1, 3] AS x RETURN avg(x)" to 2.0,
+            "UNWIND [] AS x RETURN avg(x)" to null,
+            "UNWIND [2.0, 3.5] AS x RETURN min(x)" to 2.0,
+            "UNWIND [2.0, 1.5] AS x RETURN max(x)" to 2.0,
+            "UNWIND [1, 2.0] AS x RETURN max(x)" to 2.0,
+            "UNWIND [0.5, 1.0, 0.5] AS x RETURN [toString(sum(x)), sum(x) + 1, sum(x) * 2]" to listOf("2.0", 3.0, 4.0),
+            "UNWIND [['a', 0.5], ['a', 1.5], ['b', 1], ['b', 1]] AS r WITH r[0] AS k, r[1] AS x WITH k, [sum(x), avg(x), min(x), max(x)] AS a ORDER BY k RETURN collect(a)"
+                to listOf(listOf(2.0, 1.0, 0.5, 1.5), listOf(2L, 1.0, 1L, 1L)),
+            "MATCH (n:F) WITH n.k AS k, sum(n.x) AS s ORDER BY k RETURN collect(s)" to listOf(2.0, 3L),
+            "MATCH (n:F) WHERE n.k = 'a' AND n.x = 1.0 RETURN sum(n.x)" to 1.0,
+        ).map { (statement, value) -> Triple(statement, emptyMap<String, Any?>(), value) } + listOf(
+            // Parameters: a whole float is bound so it stays one, and a fraction is a number on Oracle.
+            listOf(0.5, 1.0, 0.5) to 2.0, listOf(0.5, 0.5) to 1.0, listOf(1.0) to 1.0, listOf(2L, 3L) to 5L,
+            // Oracle writes a fraction of more than 40 digits with an exponent and no point.
+            listOf(1e-41, -1e-41) to 0.0,
+        ).map { (xs, sum) -> Triple("UNWIND \$xs AS x RETURN sum(x)", mapOf("xs" to xs), sum) }
+        // Each that differs, so a store's every difference shows at once.
+        val differing = cases.mapNotNull { (statement, parameters, value) ->
+            val given = kinds(query(statement, parameters).single())
+            if (given == kinds(value)) null else "$statement $parameters: $given, not ${kinds(value)}"
+        }
+        assertEquals(emptyList(), differing)
+        // Not compiled to SQL yet, so they give no integer for a float.
+        listOf(
+            "UNWIND [2.0, 3.0] AS x RETURN percentileDisc(x, 0.5)" to 2.0,
+            "UNWIND [1.0, 3.0] AS x RETURN percentileCont(x, 0.5)" to 2.0,
+            "UNWIND [1.0, 3.0] AS x RETURN stDevP(x)" to 1.0,
+            "UNWIND [1.0, 3.0] AS x RETURN stDev(x)" to 1.4142135623730951,
+            "UNWIND [1, 3] AS x RETURN percentileDisc(x, 0.5)" to 1L,
+        ).forEach { (statement, value) ->
+            if (compiles) {
+                val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+                assertTrue(failed.contains("is Cypher, and is not compiled to SQL yet."), "$statement: $failed")
+            } else {
+                assertEquals(kinds(value), kinds(query(statement).single()), statement)
+            }
+        }
+    }
+
 
     @Test
     fun `min() and max() of lists the statement makes compare them item by item, whatever their lengths`() {

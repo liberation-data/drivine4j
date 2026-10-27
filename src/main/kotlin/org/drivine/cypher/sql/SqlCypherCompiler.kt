@@ -411,6 +411,12 @@ abstract class SqlCypherCompiler(graph: String) {
     protected abstract fun extreme(value: String, min: Boolean, key: String? = null): String
 
     /**
+     * `sum` of the JSON values [json] of a group, [distinct] each once where it is `DISTINCT `: 0 where there are none.
+     * A store whose numbers keep whether they are floats sums them as they are: a float where any is one, as in Cypher.
+     */
+    protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
+
+    /**
      * Where the JSON [json]'s kind comes among the others, as Cypher orders values of several kinds: a map,
      * a list, a text, a truth value, then a number. JSON orders them otherwise on each store.
      */
@@ -3135,7 +3141,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     } ?: Value.Json(distinctItems(comparable(list)), ordered = true, items = list.items, list = true, itemLists = list.itemLists, texts = list.texts)
                     else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
                 }
-                "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
+                "sum" -> Value.Json(sum(comparable(json(one())), distinct))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
                 // Zoned values as the moments they are, whatever their offsets; of a temporal kind, still of it. A list the
                 // statement makes item by item, as an ORDER BY sorts it: a store's JSON may put the shorter list first.
