@@ -103,10 +103,12 @@ internal class OracleGraph(name: String) : SqlGraph(name, "Oracle", MAX_OBJECT_N
 
     /**
      * Makes the store if it is not there. Schema statements commit as they run, so they go on a
-     * connection of their own and never on the caller's transaction.
+     * connection of their own and never on the caller's transaction. A session found to call none of
+     * the [functions] is asked again (see [OracleStoredFunctions]).
      */
     override fun ensure(persistenceManager: PersistenceManager) {
         persistenceManager.indexes.run(ensuring)
+        OracleStoredFunctions.ensured(name)
     }
 
     companion object {

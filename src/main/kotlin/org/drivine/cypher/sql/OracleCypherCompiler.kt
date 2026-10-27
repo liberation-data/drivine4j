@@ -675,6 +675,11 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
          * walks the two together with `JSON_ELEMENT_T`, list item by list item and map key by map key, at any depth. A
          * query declares it with `WITH FUNCTION`; the store keeps it, made with the graph, as `CREATE OR REPLACE` of the same
          * text (see `OracleGraph`), which Drivine for TypeScript and for Python make byte for byte alike.
+         *
+         * The store's copy is part of the store layout the three libraries share (see AGENTS.md): it is
+         * `CREATE OR REPLACE ` and this text with [name] as [nullsEqualName] gives it, the graph's name as written and then
+         * `_nulls_equal`, its lines joined by `\n` with no newline after the last (the `//` comment below is not in it).
+         * Changing a byte of it changes the layout for all three, so it changes in all three together.
          */
         internal fun nullsEqualFunction(name: String): String = listOf(
             "FUNCTION $name(cy_x JSON, cy_y JSON) RETURN NUMBER IS",

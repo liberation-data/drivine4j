@@ -3275,7 +3275,7 @@ one function, `<graph>_nulls_equal`, which a compiled Cypher statement compares 
 by (see the notes below). Making it takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
 `CREATE TABLE` the tables take. A store an earlier version made gains it when a manager next speaks to the graph. Where the
 user that makes the graph may not make a function, the graph is made without it, and Drivine logs a warning once
-for the graph when a statement would call it: a statement that writes, or the step of a `reduce`, then compares two
+for the graph when a statement would call it, and looks for it again a minute later: a statement that writes, or the step of a `reduce`, then compares two
 lists or maps that hold a null and differ as JSON as false, where Cypher may give null (`[null] = [1]`), and a read
 declares the function itself.
 
@@ -3299,8 +3299,8 @@ declares the function itself.
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
   each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
-  Two lists or maps that may hold a null are compared item by item, as Cypher compares them: two equal as JSON are null
-  at once, and any other two are walked by the graph's function `<graph>_nulls_equal` (see above), in a statement that
+  Two lists or maps that may hold a null are compared item by item, as Cypher compares them: where one holds a null, two
+  written as the same JSON are null at once, and any other two are walked by the graph's function `<graph>_nulls_equal` (see above), in a statement that
   writes and the step of a `reduce` too. `list[i]` reads an item where an expression gives
   the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
   What is not compiled yet (a path returned whole, `SKIP` of an expression…) is refused by

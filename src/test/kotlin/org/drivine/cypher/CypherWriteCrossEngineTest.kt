@@ -116,6 +116,19 @@ abstract class CypherWriteContract {
         // A node OPTIONAL MATCH finds none of is null in the list that holds it, beside one the statement made.
         assertEquals(listOf(listOf(null, null)), query("OPTIONAL MATCH (x:Nope) CREATE (n:CyWrite) WITH n, [x] AS a, [n] AS b RETURN [a = b, a = a]"))
     }
+
+    @Test
+    fun `values that may hold a null are null where written alike only when one holds one, and walked where written otherwise`() {
+        // #270: on Oracle two written as the same JSON text are null with no walk, so the text must be written alike only where one holds a null.
+        assertEquals(
+            listOf(listOf(true, null, null, null, null, null)),
+            query(
+                "CREATE (n:CyWrite) WITH n, CASE WHEN n.x IS NULL THEN [1, 2] ELSE [null] END AS a, CASE WHEN n.x IS NULL THEN [1, null] ELSE [2] END AS c " +
+                    "RETURN [a = [1, 2], c = [1, null], c = [1.0, null], {a: 1, b: c[1]} = {b: null, a: 1}, ['é', c[1]] = ['\\u00e9', null], " +
+                    "[[1, 2], c] = [[1, 2], [1, null]]]"
+            ),
+        )
+    }
 }
 
 class CypherWriteNeo4jTest : CypherWriteContract() {
