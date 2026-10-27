@@ -41,3 +41,6 @@ out/
 .kotlin
 
 .envrc
+
+# Left by python3 scripts/test_release_version.py.
+__pycache__/
