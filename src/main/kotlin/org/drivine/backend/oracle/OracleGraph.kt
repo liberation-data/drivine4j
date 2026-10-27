@@ -1,6 +1,7 @@
 package org.drivine.backend.oracle
 
 import org.drivine.backend.sql.SqlGraph
+import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.manager.PersistenceManager
 
 /**
@@ -60,32 +61,54 @@ internal class OracleGraph(name: String) : SqlGraph(name, "Oracle", MAX_OBJECT_N
     ).map { it.trimIndent() }
 
     /**
+     * The function a compiled Cypher statement compares two values that may hold a null by, list item by list item and
+     * map key by map key (see `OracleCypherCompiler.nullsEqual`): a statement that writes is a PL/SQL block, whose queries
+     * call no function of its own, so the store keeps it. Drivine for TypeScript and for Python make it byte for byte alike.
+     */
+    val nullsEqual: String = OracleCypherCompiler.nullsEqualName(name)
+
+    /** What makes [nullsEqual]: safe to run again. */
+    val functions: List<String> = listOf("CREATE OR REPLACE ${OracleCypherCompiler.nullsEqualFunction(nullsEqual)}")
+
+    /**
      * The block that makes the store when it is not there, and does nothing when it is. The
      * property graph is made last, so one that is there, with the `doc` property this version gives
      * it, says the rest is. It is looked for before anything is run: a schema statement wants its
      * table to itself, and would be turned away by a writer at work on a store that needs nothing
      * made. A graph made by an earlier version is replaced, and keeps its tables. One that another
      * process made in the meantime (`ORA-00955`) is taken as made.
+     *
+     * The [functions] are made where they are not there, or not valid, so a store an earlier version made gains them. A user
+     * who may not make a function (`ORA-01031`: making one takes `CREATE PROCEDURE`, which the `RESOURCE` role grants) still
+     * has the store made: a statement then compares as it would without them (see `JdbcConnection`).
      */
     val ensuring: String = """
         DECLARE
             v_made NUMBER;
             e_exists EXCEPTION;
             PRAGMA EXCEPTION_INIT(e_exists, -955);
+            e_denied EXCEPTION;
+            PRAGMA EXCEPTION_INIT(e_denied, -1031);
         BEGIN
             SELECT COUNT(*) INTO v_made FROM user_pg_prop_definitions WHERE graph_name = '${name.uppercase()}' AND property_name = 'DOC';
             IF v_made = 0 THEN
         ${ddl.joinToString("\n") { "        BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(it)}; EXCEPTION WHEN e_exists THEN NULL; END;" }}
+            END IF;
+            SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = '${nullsEqual.uppercase()}' AND status = 'VALID';
+            IF v_made = 0 THEN
+        ${functions.joinToString("\n") { "        BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(it)}; EXCEPTION WHEN e_denied THEN NULL; END;" }}
             END IF;
         END;
     """.trimIndent()
 
     /**
      * Makes the store if it is not there. Schema statements commit as they run, so they go on a
-     * connection of their own and never on the caller's transaction.
+     * connection of their own and never on the caller's transaction. A session found to call none of
+     * the [functions] is asked again (see [OracleStoredFunctions]).
      */
     override fun ensure(persistenceManager: PersistenceManager) {
         persistenceManager.indexes.run(ensuring)
+        OracleStoredFunctions.ensured(name)
     }
 
     companion object {

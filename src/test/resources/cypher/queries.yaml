@@ -747,7 +747,7 @@ cases:
         rows: [[["a", "b", "c"], [""]]]
 
   - name: "Round to a fractional or negative precision"
-    description: "round() reads its precision as a whole number toward zero, as Neo4j does, and refuses one below 0."
+    description: "round() reads its precision as a whole number toward zero, as Neo4j does, and fails on a row it rounds a number on by one below 0 or past 2147483647."
     steps:
       - note: "1.7 is read as 1, not rounded to 2: 2.555 to 2 places would be 2.56. -0.5 is read as 0. Memgraph and FalkorDB take no precision."
         only: [neo4j, sql]
@@ -767,6 +767,20 @@ cases:
         cypher: "RETURN round(1234.5, $p)"
         parameters: {p: -2}
         error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(5, -$q, 'UP')"
+        parameters: {q: 2}
+        error: true
+      - note: "Neo4j reads the precision only when it rounds a number, so one written below 0 gives null for a null, as one from data does, written, negated or a parameter's value."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(null, -2), round(null, -2, 'UP'), round(null, $p), round(null, -$q, 'HALF_UP'), round(null, -2.5)]"
+        parameters: {p: -2, q: 2}
+        rows: [[null, null, null, null, null]]
+      - note: "And with no row to round, nothing fails."
+        only: [neo4j, sql]
+        cypher: "MATCH (p:Person) WHERE p.name = 'Nobody' RETURN round(1.5, -2), round(1.5, -2, 'UP'), round(1.5, $p)"
+        parameters: {p: -2}
+        rows: []
       - note: "A precision read from data below 0 fails the statement when the row is read, as Neo4j fails it, in both forms."
         only: [neo4j, sql]
         cypher: "UNWIND [-2] AS p RETURN round(1234.5, p)"
@@ -826,6 +840,55 @@ cases:
         only: [neo4j, sql]
         cypher: "UNWIND [-2] AS p RETURN round(5, p)"
         error: true
+      - note: "Neo4j takes a precision up to 2147483647, Java's greatest int, cut toward zero, written, a parameter's value or read from data, in both forms."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(2.5, 2147483647), round(2.5, 2147483647, 'UP'), round(2.5, $p), round(-2.5, $p, 'FLOOR'), round(2.5, 2147483647.5)]"
+        parameters: {p: 2147483647}
+        rows: [[2.5, 2.5, 2.5, -2.5, 2.5]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483647, 2147483647.5] AS p RETURN [round(2.5, p), round(2.5, p, 'HALF_EVEN')]"
+        rows: [[2.5, 2.5], [2.5, 2.5]]
+      - note: "Past 2147483647, it fails on a row it rounds a number on, written, a parameter's value or read from data, in both forms, and as far below 0 too."
+        only: [neo4j, sql]
+        cypher: "RETURN round(2.5, 2147483648)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(2.5, 2147483648, 'UP')"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(5, $p)"
+        parameters: {p: 2147483648}
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(2.5, 1.0E10)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(2.5, -2147483649)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483648] AS p RETURN round(2.5, p)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483648] AS p RETURN round(2.5, p, 'UP')"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [1.0E10] AS p RETURN round(5, p, 'HALF_EVEN')"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [-2147483649] AS p RETURN round(2.5, p)"
+        error: true
+      - note: "A null rounds to null by such a precision, and with no row to round, nothing fails."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(null, 2147483648), round(null, 2147483648, 'UP'), round(null, $p), round(null, 1.0E10)]"
+        parameters: {p: 2147483648}
+        rows: [[null, null, null, null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483648, 1.0E10] AS p RETURN [round(null, p), round(null, p, 'UP')]"
+        rows: [[null, null], [null, null]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (p:Person) WHERE p.name = 'Nobody' RETURN round(1.5, 2147483648), round(1.5, 2147483648, 'UP'), round(1.5, $p)"
+        parameters: {p: 2147483648}
+        rows: []
 
   - name: "EXISTS and COUNT subqueries"
     description: "EXISTS { } and COUNT { } take a pattern, clauses or a whole query, evaluated per row."
@@ -1568,6 +1631,56 @@ cases:
         rows: [[1.4142135623730951, 1.4142135623730951]]
       - cypher: "MATCH (m:Movie) RETURN [toString(avg(m.released)), toString(sum(m.released * 1.5))]"
         rows: [["1999.0", "8995.5"]]
+
+  - name: "Aggregates of floats"
+    description: "An aggregate of floats is a float, whole or not, and a sum is a float where any value it sums is one: 2.0 is not 2."
+    steps:
+      - note: "Oracle's NUMBER keeps no kind, so a sum of floats that is whole was an integer there (drivine4j#304)."
+        only: [neo4j, sql]
+        cypher: "UNWIND [0.5, 1.0, 0.5] AS x RETURN sum(x)"
+        rows: [2.0]
+      - note: "A float among integers makes the sum a float; integers alone, or none, sum to an integer."
+        only: [neo4j, sql]
+        cypher: "UNWIND [['a', 1], ['a', 1.0], ['b', 1], ['b', 0.5], ['b', 0.5], ['c', 1], ['c', 2]] AS r WITH r[0] AS k, sum(r[1]) AS s ORDER BY k RETURN collect(s)"
+        rows: [[2.0, 2.0, 3]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [] AS x RETURN sum(x)"
+        rows: [0]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [1.0, 1.0] AS x RETURN sum(DISTINCT x)"
+        rows: [1.0]
+      - note: "avg() is a float, of integers too; min() and max() keep the kind of the value they pick."
+        only: [neo4j, sql]
+        cypher: "UNWIND [['a', 0.5], ['a', 1.5], ['b', 1], ['b', 1]] AS r WITH r[0] AS k, r[1] AS x WITH k, [sum(x), avg(x), min(x), max(x)] AS a ORDER BY k RETURN collect(a)"
+        rows: [[[2.0, 1.0, 0.5, 1.5], [2, 1.0, 1, 1]]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [1, 2.0] AS x RETURN [max(x), avg(x), sum(x)]"
+        rows: [[2.0, 1.5, 3.0]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [0.5, 1.0, 0.5] AS x RETURN [toString(sum(x)), sum(x) + 1]"
+        rows: [["2.0", 3.0]]
+      - note: "A parameter's fraction, and its whole float, are floats summed."
+        only: [neo4j, sql]
+        cypher: "UNWIND $xs AS x RETURN sum(x)"
+        parameters: {xs: [0.5, 0.5]}
+        rows: [1.0]
+      - only: [neo4j, sql]
+        cypher: "UNWIND $xs AS x RETURN sum(x)"
+        parameters: {xs: [0.5, 1.0, 0.5]}
+        rows: [2.0]
+      - note: "A float too small for a store's decimal to write with a point is still a float."
+        only: [neo4j, sql]
+        cypher: "UNWIND $xs AS x RETURN sum(x)"
+        parameters: {xs: [1.0e-41, -1.0e-41]}
+        rows: [0.0]
+      - note: "A float past a store's decimal is summed as a double, not dropped."
+        only: [neo4j, sql]
+        cypher: "UNWIND [1e300, 1.0] AS x RETURN sum(x)"
+        rows: [1.0e+300]
+      - note: "An integer summed with a float is summed as a double."
+        only: [neo4j, sql]
+        cypher: "UNWIND [9223372036854775807, 0.5] AS x RETURN sum(x)"
+        rows: [9.223372036854776e+18]
 
   - name: "Floats written as text"
     description: "A float is written as Java writes a double: from 10^7, or under 10^-3, in scientific notation, as returned, by toString() and added to a text."

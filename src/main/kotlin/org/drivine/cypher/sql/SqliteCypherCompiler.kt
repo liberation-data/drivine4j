@@ -119,6 +119,17 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** A list as [SqliteFunctions.SORT_KEY] writes it, which orders as Cypher orders lists; any other value as the SQL value `->>` reads. */
     override fun sortKey(json: String) = shared(json) { (x) -> "CASE WHEN json_type($x) = 'array' THEN ${SqliteFunctions.SORT_KEY}($x) ELSE ($x ->> '$') END" }
 
+    /**
+     * Where the kind comes, then the SQL value `->>` reads, which orders a number before a text, and a truth value, 1 or 0, among
+     * the numbers. The first term is a text: the kind's rank, a list's followed by itself as [SqliteFunctions.SORT_KEY] writes
+     * it, so a list is ordered by it; and null for null. The value is read once more, not twice, as [sortKey] reads it, and
+     * each term is a value JSON holds, as a `CALL { … }` carries it out.
+     */
+    override fun openSortKey(json: String) = shared(json) { (x) ->
+        "CASE json_type($x) WHEN 'object' THEN '1' WHEN 'array' THEN '2' || ${SqliteFunctions.SORT_KEY}($x) WHEN 'text' THEN '3' " +
+            "WHEN 'true' THEN '4' WHEN 'false' THEN '4' WHEN 'integer' THEN '5' WHEN 'real' THEN '5' END"
+    }.let { rank -> listOf(rank, shared(json) { (x) -> "($x ->> '$')" }) }
+
     /** SQLite puts null first when ascending, and Cypher last. */
     override fun orderTerm(term: String, descending: Boolean) = if (descending) "$term DESC NULLS FIRST" else "$term NULLS LAST"
 

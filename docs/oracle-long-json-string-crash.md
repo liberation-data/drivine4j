@@ -95,3 +95,28 @@ FROM repro_node;
 ```
 
 It costs about 2.4 to 3.8 times the plain `JSON_QUERY` on short values (100,000 rows: 493 ms against 147 ms).
+
+## In a PL/SQL block, from a `JSON` variable
+
+The workaround above doesn't hold where the JSON is a PL/SQL `JSON` variable that a block sets once for each row it
+loops over (liberation-data/drivine4j#309). Drivine's block for `UNWIND $rows AS r MATCH (n {id: r.id}) SET n.a = r.a`
+loops over the rows, sets a `JSON` variable to each, and reads `r.a` from it in a `SELECT … INTO` of its own. Over three
+rows of 40,000 characters, on the image above, each of these crashed the session (ORA-03113, with ORA-00600 `[17114]`
+and ORA-07445 faulting at the string's bytes in the alert log):
+
+```sql
+SELECT JSON_QUERY(JSON_QUERY(row_, '$.v1' RETURNING JSON), '$.a' RETURNING JSON) INTO value_ FROM dual;
+SELECT JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM(row_, KEEP '$.v1.a') RETURNING CLOB EXTENDED),
+                       '$.v1.a' RETURNING CLOB) EXTENDED) INTO value_ FROM dual;
+```
+
+Serializing the whole variable, and reading the value from that text, ran clean in each of a few fresh containers:
+
+```sql
+SELECT JSON(JSON_QUERY(JSON_SERIALIZE(row_ RETURNING CLOB), '$.v1.a' RETURNING CLOB)) INTO value_ FROM dual;
+```
+
+So did serializing it with `EXTENDED` and reading it back as extended JSON. Drivine reads a text so, and a value of any
+other type with the plain `JSON_QUERY`, which didn't crash for a list or a map that holds a long text (see
+`OracleCypherCompiler.rowValue`). Unlike the repro above, these were seen only through Drivine's blocks, not in a
+standalone script.

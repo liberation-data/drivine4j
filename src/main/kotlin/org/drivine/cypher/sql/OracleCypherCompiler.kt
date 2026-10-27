@@ -18,16 +18,30 @@ import java.util.IdentityHashMap
  *
  * A value is Oracle's `JSON`, which compares, groups and orders as JSON and keeps a map's keys in the
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
- * number the statement writes, or a parameter's that is a whole number, is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is at
- * most 4,000 bytes, and an empty one is null, as Oracle's empty text is. `reduce` is a function the query
+ * number the statement writes, or a parameter's that is a whole number, is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is a
+ * `VARCHAR2` of at most 4,000 bytes, and one longer is read as a CLOB where it is measured, cut, changed or searched (see [texts]), but for
+ * `reverse()`, which still gives null. An empty text is null, as Oracle's empty text is. `reduce` is a function the query
  * declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
  * takes no `JSON` that changes from row to row. A recursive query reads no row outside it, so a walk
  * starts from every node that meets what the node walked from meets of its own, and carries the node
  * it started from.
+ *
+ * @param nullsEqualStored whether two values that may hold a null are compared by the function the store keeps
+ * beside the graph's tables, [nullsEqualName]: see [nullsEqual].
  */
-class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
+class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean = true) : SqlCypherCompiler(graph) {
+
+    /** The function the store keeps that compares two values that may hold a null: see [nullsEqual]. */
+    private val storedNullsEqual = nullsEqualName(graph)
+
+    /**
+     * Whether the statement compiled calls [nullsEqualName]'s function, which a store made by an earlier version, or by a
+     * user who may not make a function, does not have: compiled again with `nullsEqualStored = false`, it calls none.
+     */
+    var callsStoredNullsEqual = false
+        private set
 
     override fun literalJson(value: Any?) =
         if (value is Double) "JSON_SCALAR(TO_BINARY_DOUBLE(${literal(value.toString())}))"
@@ -88,7 +102,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun comparable(value: Value.Json) = value.sql
 
-    override fun scalar(sql: String) = "JSON_SCALAR($sql)"
+    /** A CLOB that [texts] gives its body is null where it is empty, as a `VARCHAR2` is, and as Oracle's empty text is. */
+    override fun scalar(sql: String) = if (long) "JSON_SCALAR(CASE WHEN LENGTH($sql) > 0 THEN $sql END)" else "JSON_SCALAR($sql)"
 
     /** A floating-point number is a number, as JSON has it. */
     override fun typeOf(json: String) = shared(json) { (x) -> "DECODE(${kind(x)}, 'double', 'number', 'float', 'number', ${kind(x)})" }
@@ -97,6 +112,15 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun nullIfJsonNull(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} <> 'null' THEN $x END" }
 
+    /**
+     * Where the kind comes, as [kindOrder] ranks them and null for null, then the value as `JSON` orders it, which is Cypher's
+     * order within a kind: `JSON` orders a number before a text, a truth value after both, and a map and a list last. A null
+     * is ranked null, so the value needs no [nullIfJsonNull], which would read it again: as fast as [sortKey] over 100,000 rows.
+     */
+    override fun openSortKey(json: String) = shared(json) { (x) ->
+        "DECODE(${kind(x)}, 'object', 1, 'array', 2, 'string', 3, 'boolean', 4, 'number', 5, 'double', 5, 'float', 5)"
+    }.let { rank -> listOf(rank, json) }
+
     override fun number(json: String) = shared(json) { (x) -> "CASE WHEN ${typeOf(x)} = 'number' THEN JSON_VALUE($x, '$' RETURNING NUMBER) END" }
 
     /** A whole number, and no floating-point number, as Cypher has an integer. */
@@ -104,7 +128,52 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "(${kind(x)} = 'number' AND JSON_VALUE($x, '$' RETURNING NUMBER) = TRUNC(JSON_VALUE($x, '$' RETURNING NUMBER)))"
     }
 
+    /** A `VARCHAR2`, which holds 4,000 bytes: a longer text is null. See [texts], which reads one as a CLOB. */
     override fun text(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'string' THEN JSON_VALUE($x, '$') END" }
+
+    /** The JSON [json] as a CLOB, where it is a string: a text of any length, slower to read than [text]'s `VARCHAR2`. */
+    private fun longText(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'string' THEN JSON_VALUE($x, '$' RETURNING CLOB) END" }
+
+    /**
+     * [body] over the texts as [text] reads them, `VARCHAR2`s, and where it gives null, over them as CLOBs (#298). A text
+     * past 4,000 bytes is null as a `VARCHAR2`, where Neo4j measures it, cuts it and searches it whole. [body] gives null
+     * where a text it is given is null, and where what it gives would not fit in a `VARCHAR2`: see [replaceText] and
+     * [split]. A short text is not read as a CLOB, which is slower: `COALESCE` reads its second value only where the first
+     * is null. [body] knows which it is given by [long].
+     */
+    override fun texts(vararg jsons: String, body: (List<String>) -> String) = shared(*jsons) { xs ->
+        // Within a body given CLOBs, as CLOBs alone.
+        if (long) return@shared body(xs.map { textOf(it, clob = true) })
+        val read = body(xs.map { textOf(it, clob = false) })
+        long = true
+        val whole = try { body(xs.map { textOf(it, clob = true) }) } finally { long = false }
+        "COALESCE($read, $whole)"
+    }
+
+    /** The JSON [json] as text, where it is a string: a CLOB where [clob], else as [text] reads it; a property by its own path (see [direct]). */
+    private fun textOf(json: String, clob: Boolean) = direct(if (clob) longText(json) else text(json), json)
+
+    /** The properties and the path of [json] where it is a property as [propertyOf] reads it, `JSON_QUERY(props, '$.a' RETURNING JSON)`. */
+    private fun propertyRead(json: String): Pair<String, String>? =
+        PROPERTY_READ.matchEntire(json)?.takeIf { balanced(it.groupValues[1]) }?.let { it.groupValues[1] to it.groupValues[2] }
+
+    /** Whether [sql]'s parentheses outside its literals close each other: so it is the one argument, not two calls. */
+    private fun balanced(sql: String): Boolean {
+        var depth = 0
+        var quoted = false
+        for (c in sql) {
+            when {
+                c == '\'' -> quoted = !quoted
+                quoted -> {}
+                c == '(' -> depth++
+                c == ')' -> if (--depth < 0) return false
+            }
+        }
+        return depth == 0 && !quoted
+    }
+
+    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [split] and [replaceText], which read them otherwise. */
+    private var long = false
 
     override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'boolean' THEN JSON_VALUE($x, '$' RETURNING BOOLEAN) END" }
 
@@ -151,7 +220,8 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * the session over this form in the more involved statements a walk writes. Only an item that is the property itself
      * is read so: a property inside an item (`[n.a]`, `collect(n.a)`) is read as [propertyOf] reads it, and isn't worked
      * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
-     * (ORA-40180), as it does any JSON that large, and the session stays open.
+     * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
+     * it takes a text from the row it is writing: see [rowValue].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -159,6 +229,32 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun itemProperty(props: String, key: String) =
         "JSON(JSON_QUERY(JSON_SERIALIZE(JSON_TRANSFORM($props, KEEP ${OracleSql.path(key)}) RETURNING CLOB EXTENDED), ${OracleSql.path(key)} RETURNING CLOB) EXTENDED)"
+
+    /**
+     * A value that a write takes from the row it is writing, to work out what it writes (`SET n.a = t.a`, `CREATE (:X {a:
+     * t.a})`, `MERGE … SET n.a = t.a`, where `t` is an item of an unwound parameter): a text read with one path from the
+     * row written out as text, anything else with that path from the row as JSON, as before.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#309), to be removed with it.** The block crashed the session where
+     * it took a text past 32 KB from the row, a `JSON` variable, with `JSON_QUERY(JSON_QUERY(cy_row, '$.v1' RETURNING JSON),
+     * '$.a' RETURNING JSON)`, for each of two or more rows. Read as [itemProperty] reads a property, through
+     * `JSON_TRANSFORM(cy_row, KEEP …)`, it crashed too; written out whole, `JSON_SERIALIZE(cy_row …)`, it didn't. A text is
+     * read from text that isn't extended JSON, which has no float to keep; anything else is read as JSON, as before, so a map
+     * of the row with a key as extended JSON's are (`{"${'$'}numberLong": "5"}`) stays a map. A list or a map that holds a long
+     * text is so read as JSON, which didn't crash: `SET n += t` sets such a map whole. The `CASE` on the value's type, which
+     * in a read made Oracle drop a label test (see [itemProperty]), doesn't here: it reads the row variable, one value for the
+     * whole statement, after the rows were matched, and a labelled pattern in a subquery of that statement keeps its test
+     * (`CypherWriteContract`'s "an unwound item's text … written only to the nodes a labelled pattern matches").
+     *
+     * To remove it, delete this override, so the value is read as [propertyOf] reads each key, once an Oracle release no
+     * longer crashes on the repro in `docs/oracle-long-json-string-crash.md`, and `CypherWriteOracleTest`'s "a text past
+     * 32 KB set from an unwound parameter" test still passes without it.
+     */
+    override fun rowValue(keys: List<String>): String {
+        val path = OracleSql.path(keys)
+        return "CASE WHEN JSON_VALUE($ROW, ${OracleSql.path(keys, ".type()")}) = 'string' " +
+            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($ROW RETURNING CLOB), $path RETURNING CLOB)) ELSE JSON_QUERY($ROW, $path RETURNING JSON) END"
+    }
 
     /**
      * A value in a parameter that is a map, `${'$'}p.text`, read with one path from the text the parameter is bound as, and
@@ -241,21 +337,76 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         return "${if (min) "MIN" else "MAX"}(${nullIfJsonNull(value)}) KEEP (DENSE_RANK FIRST ORDER BY ${kindOrder(value)} $direction NULLS LAST${key?.let { ", $it $direction NULLS LAST" }.orEmpty()})"
     }
 
+    /**
+     * A float, `BINARY_DOUBLE`, where any value summed is one, a double or a number with a fraction, as in Cypher: `NUMBER`
+     * keeps no such kind, so a sum of floats that is whole, 0.5 + 1.0 + 0.5, would be the integer 2. Floats are summed as
+     * doubles, as Neo4j sums them: as `NUMBER`s, 1e300 would be dropped, and 0.1 + 0.2 would be 0.3. Nothing is bound under
+     * an aggregate, so each value is written out where it is read: each read is one path that tests the value's kind
+     * itself, a text not summed and a number with a fraction written with a point, or with a negative exponent, `1E-41`,
+     * as Oracle writes one of more than 40 digits, so a sum reads it three times, as [number] alone does. A path compares
+     * no item to another, `@ != @.floor()` failing with ORA-40597, so a fraction is told by how it is written.
+     */
+    override fun sum(json: String, distinct: String): String {
+        fun summed(type: String) = "sum(${distinct}JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING $type))"
+        val fraction = "@.string() has substring \".\" || @.string() has substring \"E-\""
+        val float = "MAX(JSON_VALUE($json, '\$?(@.type() == \"double\" || (@.type() == \"number\" && ($fraction)))')) IS NOT NULL"
+        return "CASE WHEN $float THEN JSON_SCALAR(${summed("BINARY_DOUBLE")}) ELSE JSON_SCALAR(COALESCE(${summed("NUMBER")}, 0)) END"
+    }
+
     /** In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. */
     override fun arithmetic(a: String, b: String, operator: String) =
         "CASE WHEN ${kind(a)} = 'double' OR ${kind(b)} = 'double' " +
             "THEN JSON_SCALAR(TO_BINARY_DOUBLE(${number(a)}) $operator TO_BINARY_DOUBLE(${number(b)})) " +
             "ELSE JSON_SCALAR(${number(a)} $operator ${number(b)}) END"
 
-    override fun add(a: String, b: String, given: Pair<Any?, Any?>) =
+    /** A side that is a property is read from the properties by its own path: see [direct]. */
+    override fun add(a: String, b: String, given: Pair<Any?, Any?>) = direct(direct(
         "CASE WHEN ${typeOf(a)} = 'number' AND ${typeOf(b)} = 'number' THEN ${arithmetic(a, b, "+")} " +
             "WHEN ${kind(a)} = 'array' AND ${kind(b)} = 'array' THEN JSON_QUERY(JSON_ARRAY($a, $b RETURNING JSON), '\$[*][*]' RETURNING JSON WITH ARRAY WRAPPER) " +
             "WHEN ${kind(a)} = 'array' THEN JSON_TRANSFORM($a, APPEND '\$' = $b) " +
             "WHEN ${kind(b)} = 'array' THEN JSON_TRANSFORM($b, INSERT '\$[0]' = $a) " +
-            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN JSON_SCALAR(${summedText(a, given)} || ${summedText(b, given.second to given.first)}) END"
+            "WHEN ${typeOf(a)} IN ('string', 'number') AND ${typeOf(b)} IN ('string', 'number') THEN ${textSum(a, b, given)} END",
+        a), b)
 
-    /** The side [json] of a `+` whose sides the statement gives as [given], this side first, as text: see [summedText]. */
-    private fun summedText(json: String, given: Pair<Any?, Any?>) = summedText(json, given.first, given.second, { "JSON_VALUE($it, '\$')" }, ::asText)
+    /**
+     * [sql] with each value it reads out of the JSON [json] with `JSON_VALUE(json, '$…')` read from the properties by the
+     * property's own path instead, where [json] is a property as [propertyOf] reads it, `JSON_QUERY(props, '$.a' RETURNING
+     * JSON)`. Oracle closed the session (ORA-03113) on statements, one row each, that took a text past 32 KB out of a
+     * node's properties so and read it as a CLOB or put it together with another, and a later statement in the session lost
+     * its rows: the memory corruption of #255. A value used whole, as a list a sum joins, still takes the property out.
+     * It costs about a quarter more on short texts: 100,000 rows of `size(n.name)` took 208 ms against 162 ms, and of
+     * `toUpper(n.name)` 196 ms against 164 ms.
+     */
+    private fun direct(sql: String, json: String): String {
+        val (props, path) = propertyRead(json) ?: return sql
+        return sql.replace("JSON_VALUE($json, '\$", "JSON_VALUE($props, ${path.dropLast(1)}")
+    }
+
+    /**
+     * Two texts put together, as `VARCHAR2`s where both are read so and their sum fits in one, 4,000 bytes; else as a CLOB
+     * (#298), where a text past 4,000 bytes was left out as null, and a longer sum failed. Whether they fit is told from the
+     * sides' own texts, short to read: a number may be written otherwise ([asText]), though in at most [NUMBER_TEXT] bytes.
+     * A text the statement gives is as long as it is, and not read for each row.
+     */
+    private fun textSum(a: String, b: String, given: Pair<Any?, Any?>): String {
+        val swapped = given.second to given.first
+        fun bytes(json: String, given: Any?) = (given as? String)?.toByteArray(Charsets.UTF_8)?.size?.toString() ?: "LENGTHB(JSON_VALUE($json, '\$'))"
+        val fits = "${bytes(a, given.first)} + ${bytes(b, given.second)} <= ${SHORT_TEXT - 2 * NUMBER_TEXT}"
+        val short = "${summedText(a, given, short = true)} || ${summedText(b, swapped, short = true)}"
+        val whole = "TO_CLOB(${summedText(a, given, short = false)}) || ${summedText(b, swapped, short = false)}"
+        // Two empty texts are null together, as Oracle's empty text is, and not an empty CLOB.
+        val empty = "JSON_VALUE($a, '\$.length()') = 0 AND JSON_VALUE($b, '\$.length()') = 0"
+        return "CASE WHEN $fits THEN JSON_SCALAR($short) WHEN $empty THEN NULL ELSE JSON_SCALAR($whole) END"
+    }
+
+    /**
+     * The side [json] of a `+` whose sides the statement gives as [given], this side first, as text: see [summedText]. A text
+     * as a `VARCHAR2` where [short], null past 4,000 bytes, and else as a CLOB; a number's text is short.
+     */
+    private fun summedText(json: String, given: Pair<Any?, Any?>, short: Boolean) =
+        summedText(json, given.first, given.second, { if (short) "JSON_VALUE($it, '\$')" else "JSON_VALUE($it, '\$' RETURNING CLOB)" }) {
+            if (short) asText(it) else "CASE WHEN ${kind(it)} = 'string' THEN JSON_VALUE($it, '\$' RETURNING CLOB) ELSE TO_CLOB(${asText(it)}) END"
+        }
 
     /**
      * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float (a double, or a number with a
@@ -313,74 +464,29 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     }
 
     /**
-     * By a function the query declares (see [reduce]), which walks the two together: Oracle's recursive queries take no `JSON`.
-     * A procedure's queries call no function it declares, nor do a `reduce`'s step's: there, two values equal as JSON are
-     * null, as each holds a null, and any other two false, as before null was compared item by item: `[null] = [1]` is false
-     * there, where Cypher's is null.
+     * Two values written as the same JSON text are null, as one holds a null and so its pair in the other does: that needs
+     * no walk. The text is read as a `VARCHAR2`, as [holdsNull] reads it; a value past 4,000 bytes has none, and `=` and
+     * `JSON_EQUAL` fail on one past about 32 KB (ORA-40180), so such a value is walked. Any other two are walked together by a
+     * function, as Oracle's recursive queries take no `JSON`: the store's own ([nullsEqualName]), which the graph is made
+     * with, so a procedure's queries and a `reduce`'s step's call it too. Where the store has none (see
+     * [callsStoredNullsEqual]), a query declares it (see [reduce]); a procedure's queries call no function it declares, nor
+     * do a `reduce`'s step's, so there two equal as JSON are null and any other two false, as before null was compared item
+     * by item: `[null] = [1]` is false there, where Cypher's is null.
      */
     override fun nullsEqual(x: String, y: String, equals: (String, String) -> String): String {
-        if (procedural || folding) return "CASE WHEN ${equals(x, y)} THEN NULL ELSE FALSE END"
-        if (!nullsCompared) {
-            nullsCompared = true
-            declare(
-                listOf(
-                    "FUNCTION $NULLS_EQUAL(cy_x JSON, cy_y JSON) RETURN NUMBER IS",
-                    "    FUNCTION eq(a JSON_ELEMENT_T, b JSON_ELEMENT_T) RETURN NUMBER IS",
-                    "        r NUMBER := 1;",
-                    "        e NUMBER;",
-                    "        la JSON_ARRAY_T;",
-                    "        lb JSON_ARRAY_T;",
-                    "        oa JSON_OBJECT_T;",
-                    "        ob JSON_OBJECT_T;",
-                    "        ks JSON_KEY_LIST;",
-                    "        too_long EXCEPTION;",
-                    "        PRAGMA EXCEPTION_INIT(too_long, -40478);",
-                    "    BEGIN",
-                    "        IF a.is_Null OR b.is_Null THEN RETURN NULL; END IF;",
-                    "        IF a.is_Array AND b.is_Array THEN",
-                    "            la := TREAT(a AS JSON_ARRAY_T);",
-                    "            lb := TREAT(b AS JSON_ARRAY_T);",
-                    "            IF la.get_Size <> lb.get_Size THEN RETURN 0; END IF;",
-                    "            FOR i IN 0 .. la.get_Size - 1 LOOP",
-                    "                e := eq(la.get(i), lb.get(i));",
-                    "                IF e = 0 THEN RETURN 0; END IF;",
-                    "                IF e IS NULL THEN r := NULL; END IF;",
-                    "            END LOOP;",
-                    "            RETURN r;",
-                    "        END IF;",
-                    "        IF a.is_Object AND b.is_Object THEN",
-                    "            oa := TREAT(a AS JSON_OBJECT_T);",
-                    "            ob := TREAT(b AS JSON_OBJECT_T);",
-                    "            IF oa.get_Size <> ob.get_Size THEN RETURN 0; END IF;",
-                    "            ks := oa.get_Keys;",
-                    "            FOR i IN 1 .. ks.COUNT LOOP",
-                    "                IF NOT ob.has(ks(i)) THEN RETURN 0; END IF;",
-                    "                e := eq(oa.get(ks(i)), ob.get(ks(i)));",
-                    "                IF e = 0 THEN RETURN 0; END IF;",
-                    "                IF e IS NULL THEN r := NULL; END IF;",
-                    "            END LOOP;",
-                    "            RETURN r;",
-                    "        END IF;",
-                    "        IF a.is_Number AND b.is_Number THEN RETURN CASE WHEN a.to_Number = b.to_Number THEN 1 ELSE 0 END; END IF;",
-                    // As VARCHAR2s, about 3.5 times as fast as CLOBs; as CLOBs where one is past 32 KB, which to_String
-                    // raises on (ORA-40478).
-                    "        IF a.is_String AND b.is_String THEN",
-                    "            BEGIN",
-                    "                RETURN CASE WHEN a.to_String = b.to_String THEN 1 ELSE 0 END;",
-                    "            EXCEPTION WHEN too_long THEN",
-                    "                RETURN CASE WHEN DBMS_LOB.COMPARE(a.to_Clob, b.to_Clob) = 0 THEN 1 ELSE 0 END;",
-                    "            END;",
-                    "        END IF;",
-                    "        IF a.is_Boolean AND b.is_Boolean THEN RETURN CASE WHEN a.to_Boolean = b.to_Boolean THEN 1 ELSE 0 END; END IF;",
-                    "        RETURN 0;",
-                    "    END;",
-                    "BEGIN",
-                    "    RETURN eq(JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_x RETURNING CLOB)), JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_y RETURNING CLOB)));",
-                    "END;",
-                ).joinToString("\n")
-            )
+        if (!nullsEqualStored && (procedural || folding)) return "CASE WHEN ${equals(x, y)} THEN NULL ELSE FALSE END"
+        val walked = if (nullsEqualStored) {
+            callsStoredNullsEqual = true
+            "($storedNullsEqual($x, $y) = 1)"
+        } else {
+            if (!nullsCompared) {
+                nullsCompared = true
+                declare(nullsEqualFunction(NULLS_EQUAL))
+            }
+            "($NULLS_EQUAL($x, $y) = 1)"
         }
-        return "($NULLS_EQUAL($x, $y) = 1)"
+        fun text(json: String) = "JSON_SERIALIZE($json RETURNING VARCHAR2(4000) NULL ON ERROR)"
+        return "CASE WHEN ${text(x)} = ${text(y)} THEN NULL ELSE $walked END"
     }
 
     /** Whether the query declares [NULLS_EQUAL]: see [nullsEqual]. */
@@ -388,18 +494,30 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun modulo(a: String, b: String) = "MOD($a, $b)"
 
-    override fun startsWith(a: String, b: String) = shared(b) { (x) -> "(SUBSTR($a, 1, LENGTH($x)) = $x)" }
+    /** CLOBs, which `=` does not compare (ORA-22848), by `DBMS_LOB.COMPARE`: see [texts]. */
+    override fun startsWith(a: String, b: String) = shared(b) { (x) ->
+        if (long) "(DBMS_LOB.COMPARE($a, $x, LENGTH($x), 1, 1) = 0)" else "(SUBSTR($a, 1, LENGTH($x)) = $x)"
+    }
 
-    override fun endsWith(a: String, b: String) = shared(b) { (x) -> "(SUBSTR($a, -LENGTH($x)) = $x)" }
+    override fun endsWith(a: String, b: String) =
+        if (long) shared(a, b) { (t, x) -> "(LENGTH($t) >= LENGTH($x) AND DBMS_LOB.COMPARE($t, $x, LENGTH($x), LENGTH($t) - LENGTH($x) + 1, 1) = 0)" }
+        else shared(b) { (x) -> "(SUBSTR($a, -LENGTH($x)) = $x)" }
 
+    /** Of CLOBs too (see [texts]), though `INSTR` looks for no text past 32 KB (ORA-22828). */
     override fun containsText(a: String, b: String) = "(INSTR($a, $b) > 0)"
 
-    override fun function(name: String, json: String): String? = when (name) {
-        "size" -> "CASE ${kind(json)} WHEN 'array' THEN JSON_SCALAR(JSON_VALUE($json, '\$.size()' RETURNING NUMBER)) WHEN 'string' THEN JSON_SCALAR(LENGTH(JSON_VALUE($json, '\$'))) END"
-        "tolower" -> "JSON_SCALAR(LOWER(${text(json)}))"
-        "toupper" -> "JSON_SCALAR(UPPER(${text(json)}))"
-        "trim" -> "JSON_SCALAR(TRIM(${text(json)}))"
-        "tostring" -> "JSON_SCALAR(${asText(json)})"
+    /** Of a property, read from the properties by its own path: see [direct]. */
+    override fun function(name: String, json: String): String? = functionOf(name, json)?.let { direct(it, json) }
+
+    private fun functionOf(name: String, json: String): String? = when (name) {
+        // A text past 4,000 bytes, null as a VARCHAR2, is measured as a CLOB (#298).
+        "size" -> "CASE ${kind(json)} WHEN 'array' THEN JSON_SCALAR(JSON_VALUE($json, '\$.size()' RETURNING NUMBER)) " +
+            "WHEN 'string' THEN JSON_SCALAR(COALESCE(LENGTH(JSON_VALUE($json, '\$')), LENGTH(JSON_VALUE($json, '\$' RETURNING CLOB)))) END"
+        "tolower" -> texts(json) { (t) -> scalar("LOWER($t)") }
+        "toupper" -> texts(json) { (t) -> scalar("UPPER($t)") }
+        "trim" -> texts(json) { (t) -> scalar("TRIM($t)") }
+        // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
+        "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
         "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"
@@ -563,11 +681,33 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "REGEXP_LIKE($text, '\\A(' || REGEXP_REPLACE($p, '^\\(\\?[a-z]+\\)', '') || ')\\z', NVL(REPLACE($flags, 's', 'n'), 'c'))"
     }
 
-    /** The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next. */
+    /**
+     * The text as JSON writes it, with each separator as JSON writes it made the end of one string and the start of the next.
+     * A `VARCHAR2` is cut off past 4,000 bytes where `REPLACE` makes it longer, so a text is split as one only where what it
+     * is made cannot be longer, each of its bytes written as six at most (`\u0001`), and else as a CLOB: see [texts].
+     */
     override fun split(text: String, separator: String) = shared(text, separator) { (t, s) ->
-        val written = "JSON_SERIALIZE(JSON_SCALAR($t))"
-        val separatorWritten = "SUBSTR(JSON_SERIALIZE(JSON_SCALAR($s)), 2, LENGTH(JSON_SERIALIZE(JSON_SCALAR($s))) - 2)"
-        "CASE WHEN $t IS NOT NULL AND $s IS NOT NULL THEN JSON('[' || REPLACE($written, $separatorWritten, '\",\"') || ']') END"
+        // A separator past 4,000 bytes is a CLOB too, and written as one (ORA-40478).
+        fun serialized(x: String) = if (long) "JSON_SERIALIZE(JSON_SCALAR($x) RETURNING CLOB)" else "JSON_SERIALIZE(JSON_SCALAR($x))"
+        val written = serialized(t)
+        val separatorWritten = "SUBSTR(${serialized(s)}, 2, LENGTH(${serialized(s)}) - 2)"
+        val fits = if (long) "" else " AND LENGTHB($t) <= ${(SHORT_TEXT - 2) / 6}"
+        "CASE WHEN $t IS NOT NULL AND $s IS NOT NULL$fits THEN JSON('[' || REPLACE($written, $separatorWritten, '\",\"') || ']') END"
+    }
+
+    /**
+     * A `VARCHAR2` is cut off past 4,000 bytes where `REPLACE` makes it longer: as one only where it cannot be, as each
+     * [search] made [replacement] grows the text by their ratio at most, and else null, so [texts] replaces in a CLOB. Their
+     * lengths are worked out here where the statement gives them, and not for each row.
+     */
+    override fun replaceText(text: String, search: String, replacement: String, searchBytes: Int?, replacementBytes: Int?): String {
+        val replaced = "REPLACE($text, $search, $replacement)"
+        if (long) return replaced
+        if (searchBytes != null && replacementBytes != null) {
+            return if (replacementBytes <= searchBytes) replaced else "CASE WHEN LENGTHB($text) * $replacementBytes <= ${SHORT_TEXT * searchBytes} THEN $replaced END"
+        }
+        val (s, r) = (searchBytes?.toString() ?: "LENGTHB($search)") to (replacementBytes?.toString() ?: "LENGTHB($replacement)")
+        return "CASE WHEN $r <= $s OR LENGTHB($text) * $r <= $SHORT_TEXT * $s THEN $replaced END"
     }
 
     /** Oracle has no reverse of a text that it documents: its characters, read from the last. */
@@ -683,20 +823,100 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** The kind of the JSON [json] as Oracle names it, a floating-point number by its own name. */
     private fun kind(json: String) = "JSON_VALUE($json, '\$.type()')"
 
-    private companion object {
+    companion object {
         /** The cursor a procedure returns its rows by. */
-        const val CURSOR = "cy_cursor"
+        private const val CURSOR = "cy_cursor"
+
+        /** A property as [propertyOf] reads it, its properties and its path, a literal whose quotes are doubled: see [propertyRead]. */
+        val PROPERTY_READ = Regex("""JSON_QUERY\((.+), ('\$(?:[^']|'')*') RETURNING JSON\)""")
+
+        /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
+        const val SHORT_TEXT = 4000
+
+        /** The most bytes [asText] writes a number in: Java's text of a double, `-2.2250738585072014E-308`, and some to spare. */
+        const val NUMBER_TEXT = 32
 
         /** The key of a double in Oracle's extended JSON. */
-        const val DOUBLE = "\$numberDouble"
+        private const val DOUBLE = "\$numberDouble"
 
-        /** The function a query declares that compares two values that may hold a null: see [nullsEqual]. */
-        const val NULLS_EQUAL = "cy_nulls_equal"
+        /** The function a query declares that compares two values that may hold a null, where the store keeps none: see [nullsEqual]. */
+        private const val NULLS_EQUAL = "cy_nulls_equal"
 
         /** How many significant digits a double holds at most, as Neo4j rounds one. */
-        const val DOUBLE_DIGITS = 17
+        private const val DOUBLE_DIGITS = 17
 
         /** The most places [pastItsDigits] rounds to, whose scale `10^p` is well inside the NUMBER range. */
-        const val MOST_PLACES = 100
+        private const val MOST_PLACES = 100
+
+        /** The function the store keeps beside the graph [graph]'s tables that compares two values that may hold a null: see [nullsEqual]. */
+        internal fun nullsEqualName(graph: String) = "${graph}_nulls_equal"
+
+        /**
+         * The function [name], which compares two JSON values as Cypher compares values that may hold a null: 1 where
+         * they are equal, 0 where they differ, and null where a pair of their items holds a null and no pair differs. It
+         * walks the two together with `JSON_ELEMENT_T`, list item by list item and map key by map key, at any depth. A
+         * query declares it with `WITH FUNCTION`; the store keeps it, made with the graph, as `CREATE OR REPLACE` of the same
+         * text (see `OracleGraph`), which Drivine for TypeScript and for Python make byte for byte alike.
+         *
+         * The store's copy is part of the store layout the three libraries share (see AGENTS.md): it is
+         * `CREATE OR REPLACE ` and this text with [name] as [nullsEqualName] gives it, the graph's name as written and then
+         * `_nulls_equal`, its lines joined by `\n` with no newline after the last (the `//` comment below is not in it).
+         * Changing a byte of it changes the layout for all three, so it changes in all three together.
+         */
+        internal fun nullsEqualFunction(name: String): String = listOf(
+            "FUNCTION $name(cy_x JSON, cy_y JSON) RETURN NUMBER IS",
+            "    FUNCTION eq(a JSON_ELEMENT_T, b JSON_ELEMENT_T) RETURN NUMBER IS",
+            "        r NUMBER := 1;",
+            "        e NUMBER;",
+            "        la JSON_ARRAY_T;",
+            "        lb JSON_ARRAY_T;",
+            "        oa JSON_OBJECT_T;",
+            "        ob JSON_OBJECT_T;",
+            "        ks JSON_KEY_LIST;",
+            "        too_long EXCEPTION;",
+            "        PRAGMA EXCEPTION_INIT(too_long, -40478);",
+            "    BEGIN",
+            "        IF a.is_Null OR b.is_Null THEN RETURN NULL; END IF;",
+            "        IF a.is_Array AND b.is_Array THEN",
+            "            la := TREAT(a AS JSON_ARRAY_T);",
+            "            lb := TREAT(b AS JSON_ARRAY_T);",
+            "            IF la.get_Size <> lb.get_Size THEN RETURN 0; END IF;",
+            "            FOR i IN 0 .. la.get_Size - 1 LOOP",
+            "                e := eq(la.get(i), lb.get(i));",
+            "                IF e = 0 THEN RETURN 0; END IF;",
+            "                IF e IS NULL THEN r := NULL; END IF;",
+            "            END LOOP;",
+            "            RETURN r;",
+            "        END IF;",
+            "        IF a.is_Object AND b.is_Object THEN",
+            "            oa := TREAT(a AS JSON_OBJECT_T);",
+            "            ob := TREAT(b AS JSON_OBJECT_T);",
+            "            IF oa.get_Size <> ob.get_Size THEN RETURN 0; END IF;",
+            "            ks := oa.get_Keys;",
+            "            FOR i IN 1 .. ks.COUNT LOOP",
+            "                IF NOT ob.has(ks(i)) THEN RETURN 0; END IF;",
+            "                e := eq(oa.get(ks(i)), ob.get(ks(i)));",
+            "                IF e = 0 THEN RETURN 0; END IF;",
+            "                IF e IS NULL THEN r := NULL; END IF;",
+            "            END LOOP;",
+            "            RETURN r;",
+            "        END IF;",
+            "        IF a.is_Number AND b.is_Number THEN RETURN CASE WHEN a.to_Number = b.to_Number THEN 1 ELSE 0 END; END IF;",
+            // As VARCHAR2s, about 3.5 times as fast as CLOBs; as CLOBs where one is past 32 KB, which to_String
+            // raises on (ORA-40478).
+            "        IF a.is_String AND b.is_String THEN",
+            "            BEGIN",
+            "                RETURN CASE WHEN a.to_String = b.to_String THEN 1 ELSE 0 END;",
+            "            EXCEPTION WHEN too_long THEN",
+            "                RETURN CASE WHEN DBMS_LOB.COMPARE(a.to_Clob, b.to_Clob) = 0 THEN 1 ELSE 0 END;",
+            "            END;",
+            "        END IF;",
+            "        IF a.is_Boolean AND b.is_Boolean THEN RETURN CASE WHEN a.to_Boolean = b.to_Boolean THEN 1 ELSE 0 END; END IF;",
+            "        RETURN 0;",
+            "    END;",
+            "BEGIN",
+            "    RETURN eq(JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_x RETURNING CLOB)), JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_y RETURNING CLOB)));",
+            "END;",
+        ).joinToString("\n")
     }
 }

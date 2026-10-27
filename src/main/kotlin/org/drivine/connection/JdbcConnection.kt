@@ -1,7 +1,9 @@
 package org.drivine.connection
 
 import org.drivine.DrivineException
+import org.drivine.backend.oracle.OracleStoredFunctions
 import org.drivine.backend.sqlite.SqliteSql
+import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.cypher.sql.OracleCypherCompiler
 import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
@@ -116,12 +118,23 @@ class JdbcConnection(
         if (spec.statement!!.language != QueryLanguage.CYPHER) return spec
         val compiled = when (type) {
             DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
-            DatabaseType.ORACLE -> OracleCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
+            DatabaseType.ORACLE -> oracleCompiled(spec.statement!!.text, spec.parameters)
             // Its text values are JSON: see JdbcResultMapper.sqliteRows.
             DatabaseType.SQLITE -> SqliteCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
             else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
         }
         return spec.withSql(compiled.sql, compiled.parameters)
+    }
+
+    /**
+     * [cypher] compiled for Oracle, calling the functions the graph's store keeps where the statement needs one and the
+     * session may call it, and compiled again to call none where it may not: see [OracleStoredFunctions].
+     */
+    private fun oracleCompiled(cypher: String, parameters: Map<String, Any?>): CompiledCypher {
+        val compiler = OracleCypherCompiler(graphName)
+        val compiled = compiler.compile(cypher, parameters)
+        if (!compiler.callsStoredNullsEqual || OracleStoredFunctions.nullsEqual(connection, graphName)) return compiled
+        return OracleCypherCompiler(graphName, nullsEqualStored = false).compile(cypher, parameters)
     }
 
     /** Binds [value] to the marker at [index], counted from one. */

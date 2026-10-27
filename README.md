@@ -567,8 +567,13 @@ place in the statement it stands at.
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
-- [Postgres](#postgres) works float arithmetic out in exact decimal: `0.1 + 0.2` is `0.3` there.
-- [Oracle](#oracle) reads an empty text as null, and a text read out of JSON is at most 4,000 bytes.
+- [Postgres](#postgres) works float arithmetic, `sum()` and `avg()` out in exact decimal, so it is more accurate:
+  `0.1 + 0.2` is `0.3` there, where doubles give `0.30000000000000004`. A result differs from Neo4j's only around its
+  16th significant digit, and still comes back as a float.
+- [SQLite](#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
+  adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
+- [Oracle](#oracle) reads an empty text as null. A text past 4,000 bytes is measured, cut, changed and searched whole, but
+  `reverse()` gives null for one.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
 - Text is ordered by the database's collation on [Postgres](#postgres), and by `BINARY` on [SQLite](#sqlite).
@@ -1836,8 +1841,9 @@ Where Oracle differs, and stays different:
 - `min` and `max` of a text skip a value stored as `""`, which Oracle reads as no value. A key does not: `""` is a key of its own everywhere.
 - `min` and `max` of a property no field declares compare it as text, so `"10"` is less than `"9"`. A key no field declares reads as a number where a number is stored.
 - A key no field declares is text or a number there: a boolean reads as `"true"`, a whole `10.0` as `10`, and a list, a map or a text past 4000 bytes as no value.
-- A `sum` or an `avg` of a `Double` is decimal arithmetic, so 0.1 + 0.2 is 0.3 there and 0.30000000000000004 on the graph engines.
 - A text key is ordered by the session's `NLS_SORT`, which is binary unless it has been set otherwise.
+
+On Oracle and Postgres, a `sum` or an `avg` of a `Double` is worked out in exact decimal, so it is more accurate: 0.1 + 0.2 is 0.3 there, where doubles give 0.30000000000000004. It differs from a graph engine's only around its 16th significant digit, and is still a `Double`.
 
 **What is refused**, before anything is sent, where the compiler does not refuse it first: a read with no `key` (a count of everything is `count`); a `@GraphView` as the source; a `where` or a filter that names anything but the source's own properties; `key` on a property declared nullable, and `key` or an aggregate on one that holds a list; a `path` with no hops, to a class that is no `@NodeFragment`, or whose last hop asks for a label the class does not carry.
 
@@ -3252,7 +3258,8 @@ nor parsed again.
 To use a `DataSource` the application already has, register a provider in code:
 `registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
 Drivine does not close a `DataSource` it was given, and does not configure it: turn the driver's
-statement cache on there yourself. For a pool of Drivine's own (HikariCP) without the YAML:
+statement cache on there yourself. It does set each of its sessions, the first time it connects with one, to make no
+adaptive plan, unless you ask it not to (see the notes below). For a pool of Drivine's own (HikariCP) without the YAML:
 
 ```kotlin
 val provider = JdbcConnectionProvider.pooled(
@@ -3269,9 +3276,26 @@ they do elsewhere. To SQL written by hand the graph has one vertex label, `node`
 `edge`; a Cypher label is a test on `labels` and a relationship type a test on `type`. A node's stamp is
 the `stamp` column, and a load returns it as `__drivine.stamp`. Deleting a node's row deletes its
 relationships with it. A third table, `<graph>_schema`, records the indexes and constraints Drivine
-made: see [Schema Management](#schema-management-indexes--constraints).
+made: see [Schema Management](#schema-management-indexes--constraints). Beside the tables the graph is made with
+one function, `<graph>_nulls_equal`, which a compiled Cypher statement compares two lists or maps that may hold a null
+by (see the notes below). Making it takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
+`CREATE TABLE` the tables take. A store an earlier version made gains it when a manager next speaks to the graph. Where the
+user that makes the graph may not make a function, the graph is made without it, and Drivine logs a warning once
+for the graph when a statement would call it, and looks for it again a minute later: a statement that writes, or the step of a `reduce`, then compares two
+lists or maps that hold a null and differ as JSON as false, where Cypher may give null (`[null] = [1]`), and a read
+declares the function itself.
 
 **Notes:**
+- Each Oracle session Drivine uses makes no adaptive plan (`ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE`).
+  Drivine's pool runs it as it opens a session, and drops a session it fails in; a session of a `DataSource` you gave
+  Drivine is set when Drivine first connects with it. Once a graph's tables had grown and shrunk without statistics,
+  Oracle's adaptive join plan gave no rows for a read that filters a node by a label and a property, where the same
+  plan, fixed, gave them all ([#289](https://github.com/liberation-data/drivine4j/issues/289)). A statement of yours
+  that relies on an adaptive plan can ask for one with the hint `/*+ OPT_PARAM('optimizer_adaptive_plans' 'true') */`.
+  To have Drivine leave the sessions of your `DataSource` as you set them, pass `setsNoAdaptivePlans = false` to
+  `JdbcConnectionProvider`. It is on by default because, without it, a read can come back with no rows and no error;
+  if you turn it off, run that statement in each session yourself (HikariCP's `connectionInitSql`, say).
+  Drivine's own pool sets its sessions either way.
 - A statement written by hand is SQL. Parameters are named `$name` as in Cypher. A collection is
   bound as JSON, for `JSON_TABLE` to read. A column of the JSON type comes back as a map, so
   `SELECT JSON_OBJECT(… RETURNING JSON)` hydrates with `.transform(MyView::class.java)`.
@@ -3279,11 +3303,12 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   [Cypher on a relational database](#cypher-on-a-relational-database)) and gives the rows a graph engine
   gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
-  each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
+  each row. A text read out of JSON past 4,000 bytes is read whole where it is measured, cut, changed or searched, but by
+  `reverse()`, which gives null for one; an empty text is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
-  Two lists or maps that may hold a null are compared item by item, as Cypher compares them, by a function the query
-  declares too; in a statement that writes, or the step of a `reduce`, two that are equal as JSON compare as null and any
-  other two as false, so `[null] = [1]` is false there, where Cypher's comparison is null. `list[i]` reads an item where an expression gives
+  Two lists or maps that may hold a null are compared item by item, as Cypher compares them: where one holds a null, two
+  written as the same JSON are null at once, and any other two are walked by the graph's function `<graph>_nulls_equal` (see above), in a statement that
+  writes and the step of a `reduce` too. `list[i]` reads an item where an expression gives
   the index, and `map[key]` reads null where an expression gives the key: Oracle's paths read no key so.
   What is not compiled yet (a path returned whole, `SKIP` of an expression…) is refused by
   name before anything is sent. What the grammar does not read is refused as not Cypher, with the
@@ -3311,6 +3336,11 @@ made: see [Schema Management](#schema-management-indexes--constraints).
   [docs/oracle-long-json-string-crash.md](docs/oracle-long-json-string-crash.md). Such a text still can't be sorted
   by, grouped by or made `DISTINCT`: Oracle sorts and groups JSON only up to about 32 KB, and refuses the statement
   (ORA-40180), leaving the session open.
+- Writes are worked around for the same bug: a text that a write takes from an unwound parameter's item, or from
+  another value of its rows, to write it (`UNWIND $rows AS r MATCH (n {id: r.id}) SET n.a = r.a`, `CREATE (:X {a:
+  r.a})`, `MERGE … SET n.a = r.a`) is read from the row's text, at no cost measured: 1,000 rows set by one statement
+  take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. A value
+  such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`) isn't worked around yet.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
@@ -3559,9 +3589,11 @@ relationships with it.
   and a write a function made for the statement in `pg_temp`, applied whole or not at all. See
   [Cypher on a relational database](#cypher-on-a-relational-database).
 - Temporal values are their ISO 8601 text, as on Oracle.
-- Compiled Cypher works float arithmetic out in exact decimal (`numeric`), not as a double, so a result can
-  differ from a graph engine's in its last digits: `0.1 * 3` is `0.3`, where Neo4j gives `0.30000000000000004`.
-  A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
+- Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
+  so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs
+  from a graph engine's only around its 16th significant digit, and still comes back as a float. It shows only
+  where a result is compared for exact equality with one worked out in doubles, which is fragile with floats
+  anyway. A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
@@ -3718,6 +3750,11 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   `CALL { … }`, a variable-length walk, a shortest path) is gathered as JSON and joined with `json_each`, as
   SQLite joins no lateral query. Text compares and sorts by SQLite's `BINARY` collation; `toLower` and
   `toUpper` change the case of any letter, where SQLite's own `lower` and `upper` change ASCII alone.
+- `sum()` and `avg()` add floats as doubles, as Neo4j does, so `0.1 + 0.2` sums to `0.30000000000000004` here
+  too. SQLite also corrects for rounding as it adds (Kahan–Babuška summation), so a long sum of floats, or one that
+  mixes an integer past 2^53 with a float, can be more accurate than Neo4j's in its last digit: `9007199254740993`
+  and `0.5` sum to `9.007199254740994E15`, where Neo4j gives `9.007199254740992E15`. A result still comes back as a
+  float.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.

@@ -30,8 +30,9 @@ class CompiledSizeTest {
         fun added(times: Int) = "MATCH (c:Claim) RETURN " + "(".repeat(times) + "c.day" + (1..times).joinToString("") { " + duration('P1D'))" }
         compilers.forEach { compiler ->
             val (one, two, four) = listOf(1, 2, 4).map { compiler.compile(added(it)).sql.length }
-            // A sum that may be a text writes each side as toString does, a float as Java writes it.
-            assertTrue(one < 25_000, "${compiler::class.simpleName}: $one characters")
+            // A sum that may be a text writes each side as toString does, a float as Java writes it: on Oracle twice, the
+            // second time for a text past 4,000 bytes (#298).
+            assertTrue(one < 30_000, "${compiler::class.simpleName}: $one characters")
             assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
         }
     }
@@ -107,10 +108,12 @@ class CompiledSizeTest {
             assertEquals(0, writes("MATCH (c:Claim)-[r]->() RETURN split(c.s, ',')[0] + reverse(toLower(c.s)) + type(r)"), name)
             // Carried through a WITH, a collect and an UNWIND, still a text.
             assertEquals(0, writes("MATCH (c:Claim) WITH toLower(c.s) AS t, collect(toUpper(c.s)) AS ts UNWIND ts AS u RETURN t + u + ts[0] + head(ts)"), name)
-            // A property may hold a float: it is written as toString writes it, beside a text or not.
-            assertEquals(once, writes("MATCH (c:Claim) RETURN c.s + 'b'"), name)
-            assertEquals(once, writes("MATCH (c:Claim) RETURN toUpper(c.s) + c.f"), name)
-            assertEquals(2 * once, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i) + c.f"), name)
+            // A property may hold a float: it is written as toString writes it, beside a text or not. Oracle's sum writes such a
+            // side twice, the second time in the branch it takes for a text past 4,000 bytes (#298).
+            val side = if (compiler is OracleCypherCompiler) 2 * once else once
+            assertEquals(side, writes("MATCH (c:Claim) RETURN c.s + 'b'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) RETURN toUpper(c.s) + c.f"), name)
+            assertEquals(once + side, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i) + c.f"), name)
             // A CASE, a coalesce and a list written are a text, or hold texts, where each of theirs is; a text unwound is one.
             assertEquals(0, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN toUpper(c.s) ELSE 'n' END + coalesce(toLower(c.s), 'z') + ['a', toUpper(c.s)][1]"), name)
             assertEquals(0, writes("MATCH (c:Claim) RETURN ltrim(c.s) + rtrim(c.s) + right(c.s, 2)"), name)
@@ -121,18 +124,18 @@ class CompiledSizeTest {
             // Joined to texts, too: the join writes its sides as any `+` does, and its item, added to a text, is written as it is.
             val joined = "MATCH (c:Claim) WITH collect(toUpper(c.s)) AS ts, collect(c.f) AS fs RETURN (ts + ['a'])[0], ('b' + ts)[0], (ts + fs)[0]"
             assertEquals(writes(joined), writes(joined.replace("[0],", "[0] + 'x',")), name)
-            assertEquals(writes(joined) + once, writes("$joined + 'x'"), name)
+            assertEquals(writes(joined) + side, writes("$joined + 'x'"), name)
             // Each query of a CALL's UNION makes it a text, and a write carries it on.
             assertEquals(0, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN 'n' AS v } RETURN v + 'x'"), name)
             assertEquals(0, writes("MATCH (c:Claim) WITH c, toUpper(c.s) AS t SET c.t = t RETURN t + 'x'"), name)
             // Where any one of them may be a float, it is written as toString writes it.
-            assertEquals(once, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN 'a' ELSE c.f END + 'x'"), name)
-            assertEquals(once, writes("MATCH (c:Claim) RETURN coalesce(toUpper(c.s), c.f) + 'x'"), name)
-            assertEquals(once, writes("MATCH (c:Claim) RETURN ['a', c.f][1] + 'x'"), name)
-            assertEquals(once, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN c.f AS v } RETURN v + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN 'a' ELSE c.f END + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) RETURN coalesce(toUpper(c.s), c.f) + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) RETURN ['a', c.f][1] + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN c.f AS v } RETURN v + 'x'"), name)
             // The least and the greatest of texts are a text; of a property, which may hold a float, not.
             assertEquals(0, writes("MATCH (c:Claim) WITH min(toUpper(c.s)) AS lo, max(toLower(c.s)) AS hi RETURN lo + hi + 'x'"), name)
-            assertEquals(once, writes("MATCH (c:Claim) WITH max(c.f) AS hi RETURN hi + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) WITH max(c.f) AS hi RETURN hi + 'x'"), name)
         }
     }
 
@@ -199,6 +202,28 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `values that may hold a null are walked on Oracle by the store's function where they differ as JSON, and by none where the store has none`() {
+        // #270: a procedure's queries, and a reduce's step's, call no function of their own, so the store keeps it.
+        val write = "MATCH (c:Claim) WITH c, [c.a, null] AS l, [c.b] AS m SET c.e = l = m"
+        val stored = OracleCypherCompiler("g")
+        val sql = stored.compile(write).sql
+        assertTrue(stored.callsStoredNullsEqual && "THEN NULL ELSE (g_nulls_equal(" in sql && "cy_nulls_equal" !in sql, sql)
+        val folded = OracleCypherCompiler("g")
+        val reduced = folded.compile("MATCH (c:Claim) WITH [c.a, null] AS l RETURN reduce(acc = true, x IN [[1]] | acc AND x = l)").sql
+        assertTrue(folded.callsStoredNullsEqual && "THEN NULL ELSE (g_nulls_equal(" in reduced && "cy_nulls_equal" !in reduced, reduced)
+        // Without it, two that differ as JSON are false in a procedure, and a read declares the function itself.
+        val none = OracleCypherCompiler("g", nullsEqualStored = false)
+        val fallback = none.compile(write).sql
+        assertTrue(!none.callsStoredNullsEqual && "nulls_equal" !in fallback && "THEN NULL ELSE FALSE END" in fallback, fallback)
+        val read = OracleCypherCompiler("g", nullsEqualStored = false).compile("MATCH (c:Claim) WITH [c.a, null] AS l, [c.b] AS m RETURN l = m").sql
+        assertTrue(read.startsWith("WITH\nFUNCTION cy_nulls_equal(") && "THEN NULL ELSE (cy_nulls_equal(" in read, read)
+        // A statement that compares no value that may hold a null calls no function.
+        val flat = OracleCypherCompiler("g")
+        flat.compile("MATCH (c:Claim) SET c.e = c.a = c.b, c.f = c.list = [1]")
+        assertTrue(!flat.callsStoredNullsEqual)
+    }
+
+    @Test
     fun `lists and maps written out that may hold a null are compared item by item, not built and compared whole`() {
         val built = mapOf(
             "PostgresCypherCompiler" to listOf("json_build_"), "OracleCypherCompiler" to listOf("JSON_ARRAY(", "JSON_OBJECT("), "SqliteCypherCompiler" to listOf("json_array(", "json_object("),
@@ -255,6 +280,22 @@ class CompiledSizeTest {
         compilers.forEach { compiler ->
             val (sign, ceil) = listOf("sign", "ceil").map { compiler.compile(nested(it), emptyMap()).sql.length }
             assertTrue(sign < ceil * 1.1, "${compiler::class.simpleName}: sign $sign, ceil $ceil characters")
+        }
+    }
+
+    @Test
+    fun `a sum reads each value it sums as often as an avg does, and grows under functions as an avg does`() {
+        // #304: on Oracle a sum tests whether any value it sums is a float. Nothing is bound under an aggregate, so a test
+        // that read each value as number() does, three times more, made a sum over nested functions twice the statement.
+        fun over(aggregate: String) = "MATCH (c:Claim) RETURN $aggregate(" + "ceil(".repeat(3) + "c.p" + ")".repeat(3) + ")"
+        fun under(aggregate: String, depth: Int) = "UNWIND [1.5] AS x RETURN " + "sign(".repeat(depth) + "$aggregate(x)" + ")".repeat(depth)
+        compilers.forEach { compiler ->
+            val name = compiler::class.simpleName
+            fun size(cypher: String) = compiler.compile(cypher, emptyMap()).sql.length
+            val (sum, avg) = listOf("sum", "avg").map { size(over(it)) }
+            assertTrue(sum < avg * 1.1, "$name: ${over("sum")}: sum $sum, avg $avg characters")
+            val (sumGrowth, avgGrowth) = listOf("sum", "avg").map { size(under(it, 4)).toDouble() / size(under(it, 2)) }
+            assertTrue(sumGrowth < avgGrowth * 1.1, "$name: from 2 levels to 4, sum grew $sumGrowth times, avg $avgGrowth")
         }
     }
 }

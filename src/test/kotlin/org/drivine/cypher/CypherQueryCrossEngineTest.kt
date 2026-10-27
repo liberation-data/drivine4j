@@ -514,8 +514,8 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `a statement that writes compares a list that holds a null as null where it is equal as JSON`() {
-        // Beside the spec's cases since v0.6.6 (#225): on Oracle a procedure calls no function of its own, so values that differ as JSON are false there.
+    fun `a statement that writes compares a list that holds a null item by item`() {
+        // Beside the spec's cases since v0.6.6 (#225); on Oracle a procedure calls no function of its own, so the store's walks them (#270).
         clear()
         assertEquals(
             listOf(listOf("null", false, true)),
@@ -527,8 +527,16 @@ abstract class CypherQueryContract {
             listOf(listOf(true, true, true, true)),
             query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l, $long AS w, [$long] AS ws CREATE (n:CyNullEquality) SET n.eq = v = [s], n.in = v IN l, n.longEq = w = $long, n.longIn = w IN ws RETURN [n.eq, n.in, n.longEq, n.longIn]"),
         )
-        if (pm.type == DatabaseType.ORACLE) return
         assertEquals(listOf("null"), query("CREATE (n:CyNullEquality) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
+    }
+
+    @Test
+    fun `the step of a reduce compares lists and maps that hold a null and differ as JSON item by item`() {
+        // Beside the spec's cases since v0.6.14 (#270): on Oracle a reduce's step calls no function of the query's, so the store's walks them.
+        assertEquals(listOf(listOf(false, null, null)), query("WITH [2, null] AS c RETURN reduce(acc = [], x IN [[1, null], [2, null], [null, 1]] | acc + [x = c])"))
+        assertEquals(listOf(listOf(null, false, false)), query("RETURN reduce(acc = [], m IN [{x: null}, {x: 1, y: 2}, {x: 2}] | acc + [m = {x: 1}])"))
+        assertEquals(listOf(listOf(null, false)), query("WITH [[null], 1] AS a RETURN reduce(acc = [], x IN [[[1], 1], [[1], 2]] | acc + [x = a])"))
+        assertEquals(listOf(null), query("RETURN reduce(acc = true, x IN [[null]] | acc AND x = [1])"))
     }
 
     @Test
@@ -666,11 +674,9 @@ abstract class CypherQueryContract {
             listOf(listOf(0.0, 0.0, 0.0)),
             query("MATCH (n:Round) WITH n.x AS x WHERE round(x, 2) = 0 RETURN [round(sum(x), 2), round(avg(x), 400), round(sum(x), 1, 'CEILING')]"),
         )
-        // As numbers: Oracle gives a sum of floats that is whole as an integer.
         assertEquals(
-            listOf(listOf(1500.0, 2000.0, 2000.0, 3000.0)),
-            query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x RETURN [sum(round(x, 400)), sum(round(x, 0)), sum(round(x, 0, 'UP')), count(*)]")
-                .map { row -> (row as List<*>).map { (it as Number).toDouble() } },
+            listOf(listOf(1500.0, 2000.0, 2000.0, 3000L)),
+            query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x RETURN [sum(round(x, 400)), sum(round(x, 0)), sum(round(x, 0, 'UP')), count(*)]"),
         )
         assertEquals(listOf(3000L), query("UNWIND range(0, 2999) AS i WITH toFloat(i % 3) * 0.5 AS x WHERE round(x, 2) = 0 OR round(x, 400, 'UP') > 0 RETURN count(*)"))
         assertEquals(listOf(listOf(0.0, 1.6, 0.0)), query("RETURN [x IN [0.0, 1.55, 0.0] | round(x, 1)]"))
@@ -689,9 +695,69 @@ abstract class CypherQueryContract {
             "MATCH (n:Round) WHERE n.r IS NOT NULL WITH n.x AS x, n.r AS r RETURN r, round(min(x), r, 'HALF_UP')",
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
-            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), "$statement: $failed")
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
         }
     }
+
+    @Test
+    fun `an aggregate of floats gives a float, whole or not, and a sum of integers an integer`() {
+        // #304: Oracle's NUMBER keeps no kind, so a sum of floats that was whole came back an integer there. Each value is
+        // checked with its kind: 2.0 is not 2.
+        clear()
+        seed("CREATE (:F {k: 'a', x: 0.5}), (:F {k: 'a', x: 1.0}), (:F {k: 'a', x: 0.5}), (:F {k: 'b', x: 1}), (:F {k: 'b', x: 2})")
+        fun kinds(value: Any?): Any? = if (value is List<*>) value.map(::kinds) else value?.let { it to it::class.simpleName }
+        val cases = listOf(
+            "UNWIND [0.5, 1.0, 0.5] AS x RETURN sum(x)" to 2.0,
+            "UNWIND [1, 1.0] AS x RETURN sum(x)" to 2.0,
+            "UNWIND [1, 0.5, 0.5] AS x RETURN sum(x)" to 2.0,
+            "UNWIND [1, 2] AS x RETURN sum(x)" to 3L,
+            "UNWIND [] AS x RETURN sum(x)" to 0L,
+            "UNWIND [1.0, 1.0] AS x RETURN sum(DISTINCT x)" to 1.0,
+            // Summed as doubles: past a NUMBER's range, 1e300 is no NUMBER.
+            "UNWIND [1e300, 1.0] AS x RETURN sum(x)" to 1e300,
+            // An integer among floats is summed as a double too, as Neo4j sums it, and a computed float is one.
+            "UNWIND [9223372036854775807, 0.5] AS x RETURN sum(x)" to 9.223372036854776E18,
+            "UNWIND [0.5, 2] AS x RETURN sum(x * 10)" to 25.0,
+            "UNWIND [0.5, 1.5] AS x RETURN avg(x)" to 1.0,
+            "UNWIND [1, 3] AS x RETURN avg(x)" to 2.0,
+            "UNWIND [] AS x RETURN avg(x)" to null,
+            "UNWIND [2.0, 3.5] AS x RETURN min(x)" to 2.0,
+            "UNWIND [2.0, 1.5] AS x RETURN max(x)" to 2.0,
+            "UNWIND [1, 2.0] AS x RETURN max(x)" to 2.0,
+            "UNWIND [0.5, 1.0, 0.5] AS x RETURN [toString(sum(x)), sum(x) + 1, sum(x) * 2]" to listOf("2.0", 3.0, 4.0),
+            "UNWIND [['a', 0.5], ['a', 1.5], ['b', 1], ['b', 1]] AS r WITH r[0] AS k, r[1] AS x WITH k, [sum(x), avg(x), min(x), max(x)] AS a ORDER BY k RETURN collect(a)"
+                to listOf(listOf(2.0, 1.0, 0.5, 1.5), listOf(2L, 1.0, 1L, 1L)),
+            "MATCH (n:F) WITH n.k AS k, sum(n.x) AS s ORDER BY k RETURN collect(s)" to listOf(2.0, 3L),
+            "MATCH (n:F) WHERE n.k = 'a' AND n.x = 1.0 RETURN sum(n.x)" to 1.0,
+        ).map { (statement, value) -> Triple(statement, emptyMap<String, Any?>(), value) } + listOf(
+            // Parameters: a whole float is bound so it stays one, and a fraction is a number on Oracle.
+            listOf(0.5, 1.0, 0.5) to 2.0, listOf(0.5, 0.5) to 1.0, listOf(1.0) to 1.0, listOf(2L, 3L) to 5L,
+            // Oracle writes a fraction of more than 40 digits with an exponent and no point.
+            listOf(1e-41, -1e-41) to 0.0,
+        ).map { (xs, sum) -> Triple("UNWIND \$xs AS x RETURN sum(x)", mapOf("xs" to xs), sum) }
+        // Each that differs, so a store's every difference shows at once.
+        val differing = cases.mapNotNull { (statement, parameters, value) ->
+            val given = kinds(query(statement, parameters).single())
+            if (given == kinds(value)) null else "$statement $parameters: $given, not ${kinds(value)}"
+        }
+        assertEquals(emptyList(), differing)
+        // Not compiled to SQL yet, so they give no integer for a float.
+        listOf(
+            "UNWIND [2.0, 3.0] AS x RETURN percentileDisc(x, 0.5)" to 2.0,
+            "UNWIND [1.0, 3.0] AS x RETURN percentileCont(x, 0.5)" to 2.0,
+            "UNWIND [1.0, 3.0] AS x RETURN stDevP(x)" to 1.0,
+            "UNWIND [1.0, 3.0] AS x RETURN stDev(x)" to 1.4142135623730951,
+            "UNWIND [1, 3] AS x RETURN percentileDisc(x, 0.5)" to 1L,
+        ).forEach { (statement, value) ->
+            if (compiles) {
+                val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+                assertTrue(failed.contains("is Cypher, and is not compiled to SQL yet."), "$statement: $failed")
+            } else {
+                assertEquals(kinds(value), kinds(query(statement).single()), statement)
+            }
+        }
+    }
+
 
     @Test
     fun `min() and max() of lists the statement makes compare them item by item, whatever their lengths`() {
@@ -808,7 +874,7 @@ abstract class CypherQueryContract {
             "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.k, n.r, 'UP')",
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
-            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), failed)
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), failed)
         }
         assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.r >= 0 RETURN round(1234.5, n.r)"))
         assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.k = 2 RETURN sum(round(1234.5, n.r))"))
@@ -821,6 +887,36 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(-2L, null, null)), query("UNWIND [null, null] AS x WITH x, -2 AS r RETURN r, round(min(x), r), round(max(x), r, 'UP')"))
         // So far below 0 that the digits a number holds past them, 10^(17 - p), would overflow Oracle's NUMBER.
         assertEquals(listOf(listOf(null, null)), query("UNWIND [-1000] AS p RETURN [round(null, p), round(null, p, 'HALF_EVEN')]"))
+    }
+
+    @Test
+    fun `a precision written below 0 or past 2147483647 fails only on a row that rounds a number by it, with the compiler's message`() {
+        // The spec's cases since #290 and #305, here in a WHERE, an aggregate and a CASE, on rows filtered out, and by a
+        // parameter no YAML holds.
+        clear()
+        seed("CREATE (:Round {x: 1.5, k: 1}), (:Round {k: 2})")
+        listOf(
+            "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.x, -2)" to emptyMap(),
+            "MATCH (n:Round) WHERE round(n.x, 2147483648, 'UP') > 0 RETURN n.k" to emptyMap(),
+            "MATCH (n:Round) RETURN sum(round(n.x, -\$p))" to mapOf("p" to 2),
+            "MATCH (n:Round) RETURN collect(round(n.x, \$p, 'HALF_UP'))" to mapOf("p" to 1.0e20),
+            "RETURN round(1.5, \$p)" to mapOf("p" to Double.POSITIVE_INFINITY),
+            "RETURN round(1.5, \$p, 'UP')" to mapOf("p" to Double.NEGATIVE_INFINITY),
+            "RETURN round(1.5, -9223372036854775808)" to emptyMap(),
+        ).forEach { (statement, parameters) ->
+            val failed = assertThrows<Exception>(statement) { query(statement, parameters) }.message!!
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
+        }
+        // A row that holds no number rounds to null, and a row the CASE does not round, or no row at all, fails nothing.
+        assertEquals(listOf(listOf(null, null, null)), query("MATCH (n:Round) WHERE n.k = 2 RETURN [round(n.x, -2), round(n.x, 2147483648, 'UP'), round(n.x, \$p)]", mapOf("p" to 1.0e20)))
+        assertEquals(listOf(listOf(null, null)), query("RETURN [round(null, \$p), round(null, \$p, 'FLOOR')]", mapOf("p" to Double.POSITIVE_INFINITY)))
+        assertEquals(listOf(0.0, 0.0), query("MATCH (n:Round) RETURN CASE WHEN n.k > 0 THEN 0.0 ELSE round(1.5, -2) + round(n.x, 2147483648) END ORDER BY n.k"))
+        assertEquals(listOf(emptyList<Any>()), query("MATCH (n:Round) WHERE n.k = 1 RETURN collect(CASE WHEN n.k = 2 THEN round(n.x, -2, 'UP') END)"))
+        assertEquals(emptyList(), query("MATCH (n:Round) WHERE n.k = 3 RETURN [round(1.5, -2), round(1.5, \$p, 'UP')]", mapOf("p" to 1.0e20)))
+        assertEquals(emptyList(), query("UNWIND [] AS x RETURN round(1.5, -2)"))
+        // Nor in an ORDER BY whose round() reads nothing of the row. Not in a WHERE: Neo4j may test a condition that reads
+        // nothing of a row before the rows' own, and Postgres does.
+        assertEquals(emptyList(), query("MATCH (n:Round) WHERE n.k = 3 RETURN n.k ORDER BY round(1.5, -2), round(1.5, \$p, 'UP')", mapOf("p" to 1.0e20)))
     }
 
     @Test
@@ -949,6 +1045,78 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 4,000 bytes is measured, cut, changed, searched and added to whole, as a short one is`() {
+        // Oracle read a text from JSON as a VARCHAR2, which holds 4,000 bytes, and a longer one as null (#298). One function a
+        // statement. Past 32 KB, given only: Oracle closes the session (ORA-03113) after statements that read such a text from a
+        // property and from a parameter in turn, much as it does for one read over two rows (#255), and its sessions hold more of
+        // its memory for each statement that reads one the statement makes, up to the instance's limit (ORA-04036).
+        clear()
+        for (length in listOf(5_000, 40_000)) {
+            val t = " " + "aB".repeat((length - 2) / 2) + " "
+            val functions = mapOf(
+                "size(t)" to length.toLong(), "toUpper(t)" to t.uppercase(), "toLower(t)" to t.lowercase(), "trim(t)" to t.trim(),
+                "ltrim(t)" to t.trimStart(), "rtrim(t)" to t.trimEnd(), "substring(t, 1, size(t) - 2)" to t.substring(1, length - 1),
+                "substring(t, 2)" to t.substring(2), "left(t, size(t) - 1)" to t.dropLast(1), "right(t, size(t) - 1)" to t.drop(1),
+                "replace(t, 'B', 'bb')" to t.replace("B", "bb"), "split(t, 'B')" to t.split("B"),
+                // A separator past 4,000 bytes, too, but within 32 KB, past which Oracle's REPLACE looks for none.
+                "split('x' + t + 'y', left(t, 4100))" to ("x" + t + "y").split(t.take(4100)), "split('x', left(t, 4100))" to listOf("x"),
+                "t STARTS WITH ' aB'" to true, "t STARTS WITH 'x'" to false, "t STARTS WITH t" to true, "t ENDS WITH 'B '" to true, "t ENDS WITH t" to true,
+                "left(t, 10) STARTS WITH t" to false, "left(t, 10) ENDS WITH t" to false,
+                // INSTR looks for no text past 32 KB on Oracle.
+                "t CONTAINS 'BaB'" to true, "t CONTAINS 'z'" to false, "t CONTAINS left(t, 4100)" to true, "t =~ ' (aB)+ '" to true,
+                "t + 'z'" to t + "z", "'z' + t" to "z" + t, "t + t" to t + t, "t + 1" to t + "1", "toString(t)" to t, "isEmpty(t)" to false,
+            )
+            val short = length < 32_000
+            if (short) query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+            val parts = mapOf("a" to t.substring(0, length / 2), "b" to t.substring(length / 2))
+            for ((function, expected) in functions) {
+                // Given, and stored and read in one row, and made by the statement.
+                assertEquals(listOf(expected), query("WITH \$t AS t RETURN $function", mapOf("t" to t)), "$function given, $length")
+                if (!short) continue
+                assertEquals(listOf(expected), query("MATCH (n:CyLongText) WITH n.t AS t RETURN $function"), "$function stored, $length")
+                assertEquals(listOf(expected), query("WITH \$a + \$b AS t RETURN $function", parts), "$function made, $length")
+            }
+            clear()
+        }
+        // Two short texts whose sum is past 4,000 bytes.
+        assertEquals(listOf(6_000L), query("WITH \$a AS a RETURN size(a + a)", mapOf("a" to "é".repeat(3_000))))
+        // Sums at and around 4,000 bytes, of texts of two-byte characters and of a float, put together short on Oracle only where they fit.
+        val sides = listOf("é".repeat(1_000) to "é".repeat(1_000), "a".repeat(1_968) to "a".repeat(1_968), "a".repeat(1_969) to "a".repeat(1_968), "a".repeat(2_000) to "a".repeat(2_001), "a".repeat(3_999) to 1.5)
+        for ((a, b) in sides) assertEquals(listOf("$a$b"), query("WITH \$a AS a, \$b AS b RETURN a + b", mapOf("a" to a, "b" to b)), "${a.length} + $b")
+        // What to replace, and what with, made by the statement, so their lengths are measured for each row: a short text made
+        // past 4,000 bytes, made shorter, and made no longer.
+        val twoByte = mapOf("a" to "é".repeat(1_500))
+        assertEquals(listOf(listOf("é".repeat(3_000), "é".repeat(750), "é".repeat(1_500))),
+            query("WITH \$a AS a RETURN replace(a, left(a, 1), left(a, 2)), replace(a, left(a, 2), left(a, 1)), replace(a, left(a, 1), right(a, 1))", twoByte))
+        // A null text, and a function of a short text that gives Oracle's empty text, null, are not read again as long ones to give another value.
+        for (function in listOf("toUpper(n)", "trim(n)", "substring(n, 1)", "replace(n, 'a', 'b')", "split(n, ',')", "size(n)", "toString(n)", "n + 'a'", "n STARTS WITH 'a'", "n ENDS WITH 'a'", "n CONTAINS 'a'", "n =~ 'a'")) {
+            assertEquals(listOf(null), query("WITH \$n AS n RETURN $function", mapOf("n" to null)), function)
+        }
+        val empty = if (pm.type == DatabaseType.ORACLE) null else ""
+        assertEquals(listOf(listOf(empty, empty, empty, empty)), query("WITH \$s AS s, \$w AS w RETURN substring(s, 5), left(s, 0), replace(s, 'abc', ''), trim(w)", mapOf("s" to "abc", "w" to "   ")))
+        // Two empty texts put together are empty: on Oracle null, as its empty text is, and not read as a long one.
+        assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN e + e", mapOf("e" to "")))
+    }
+
+    @Test
+    fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
+        // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a
+        // CLOB (#298): the two together. One node: Oracle crashes on a long property read from two rows (#255).
+        clear()
+        val t = "aB".repeat(20_000)
+        query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+        val functions = listOf(
+            "size(#)" to 40_000L, "toUpper(#)" to t.uppercase(), "substring(#, 2)" to t.substring(2), "replace(#, 'B', 'b')" to t.lowercase(),
+            "# ENDS WITH 'aB'" to true, "size(# + 'z')" to 40_001L, "toString(#)" to t,
+        )
+        for ((function, expected) in functions) {
+            assertEquals(listOf(expected), query("MATCH (n:CyLongText) WITH n.t AS t RETURN ${function.replace("#", "t")}"), "$function, passed on")
+            assertEquals(listOf(expected), query("MATCH (n:CyLongText) RETURN ${function.replace("#", "n.t")}"), "$function, read where used")
+        }
+        clear()
+    }
+
+    @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
         // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()
@@ -1045,17 +1213,90 @@ abstract class CypherQueryContract {
         // Beside the spec's cases since v0.6.10 (#273): Postgres sorts by a row of the value, each text blanked, and of the text by its code points.
         assertEquals(listOf("B", "b", null), query("UNWIND ['b', null, 'B'] AS t RETURN t ORDER BY t"))
         assertEquals(listOf(null, "b", "B"), query("UNWIND ['b', null, 'B', 'b'] AS t RETURN DISTINCT t ORDER BY t DESC"))
-        // Oracle and SQLite sort a number before a text, by their own order of kinds.
-        if (pm.type == DatabaseType.NEO4J || pm.type == DatabaseType.POSTGRES) {
-            assertEquals(listOf("B", "b", 1L, 2L, null), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t"))
-            assertEquals(listOf(null, 2L, 1L, "b", "B"), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t DESC"))
-        }
+        assertEquals(listOf("B", "b", 1L, 2L, null), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(null, 2L, 1L, "b", "B"), query("UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t DESC"))
         // A text compared with a value of another kind is null, and min and max of several kinds take the least text by its code points.
         assertEquals(listOf(listOf(null, null, null, false, false)), query("RETURN ['a' < 1, 'B' > null, 1 >= 'a', coalesce(null, 'a') < 'B', CASE WHEN true THEN 'a' END < 'B']"))
         assertEquals(listOf("B"), query("UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t < 'a' RETURN t"))
         assertEquals(listOf(1L), query("UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t > 0 RETURN t"))
         assertEquals(listOf(listOf("B", "b")), query("UNWIND ['b', 'B', 'a', 'B'] AS t RETURN min(DISTINCT t), max(DISTINCT t)"))
         assertEquals(listOf(listOf("B", 2L)), query("UNWIND ['b', 1, 'B', 2, true] AS t RETURN min(t), max(t)"))
+    }
+
+    @Test
+    fun `values of several kinds sort as Cypher orders their kinds, a map, a list, a text, a truth value, a number, then null`() {
+        // Not in the spec yet (#299): Oracle and SQLite sort first by where a value's kind comes, then by the value.
+        // Postgres takes jsonb's order for every kind but a text: a number before a truth value, a map and a list last (#307).
+        if (pm.type == DatabaseType.POSTGRES) return
+        val values = "[1, {a: 1}, 'b', true, [2], 2.5, null, false, 'A', [1, 2], -1]"
+        val ascending = listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A", "b", false, true, -1L, 1L, 2.5, null)
+        assertEquals(ascending, query("UNWIND $values AS t RETURN t ORDER BY t"))
+        assertEquals(ascending.reversed(), query("UNWIND $values AS t RETURN t ORDER BY t DESC"))
+        // Carried out of a WITH that pages them, kept distinct, and beside another term.
+        assertEquals(listOf("A", "b", false, true), query("UNWIND $values AS t WITH t ORDER BY t SKIP 3 LIMIT 4 RETURN t"))
+        assertEquals(listOf("b", true, 2L), query("UNWIND [2, 'b', true, 2, 'b'] AS t RETURN DISTINCT t ORDER BY t"))
+        assertEquals(
+            listOf(listOf(1L, "a"), listOf(1L, 3L), listOf(2L, false), listOf(2L, 0L)),
+            query("UNWIND [[2, 0], [1, 3], [2, false], [1, 'a']] AS p RETURN p ORDER BY p[0], p[1]"),
+        )
+        // A truth value before a number, though SQLite reads it as 1 or 0.
+        assertEquals(listOf(false, true, 0L, 1L), query("UNWIND [1, true, 0, false] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(listOf(mapOf("a" to 1L), 1L)), query("UNWIND [true, 1, 'b', [1], {a: 1}] AS t RETURN min(t), max(t)"))
+        // Carried out of a CALL { … }, grouped by, kept distinct by another name, and sorted by when it is not returned.
+        assertEquals(listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A"), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
+        assertEquals(
+            listOf(listOf(listOf(1L), 1L), listOf("b", 2L), listOf(true, 1L), listOf(2L, 2L)),
+            query("UNWIND [2, 'b', true, 2, 'b', [1]] AS t RETURN t, count(*) ORDER BY t"),
+        )
+        assertEquals(listOf(2L, true, "b"), query("UNWIND [2, 'b', true, 2] AS t RETURN DISTINCT t AS u ORDER BY u DESC"))
+        assertEquals(listOf("b", "true", "2"), query("UNWIND [2, 'b', true] AS t RETURN toString(t) AS s ORDER BY t"))
+        // Among their own kind: texts by their code points, and whole and floating-point numbers as numbers.
+        assertEquals(listOf("a", "～", "😀", 1L), query("UNWIND ['😀', '～', 1, 'a'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(true, 0L, 0.5, 1L, 1.5), query("UNWIND [1, 0.5, true, 1.5, 0] AS t RETURN t ORDER BY t"))
+        // Paged by the query that returns them, and nulls first descending, carried out of a CALL { … }.
+        assertEquals(listOf(listOf(2L), "A", "b", false, true), query("UNWIND $values AS t RETURN t ORDER BY t SKIP 2 LIMIT 5"))
+        assertEquals(listOf(2.5, 1L, -1L, true), query("UNWIND $values AS t RETURN t ORDER BY t DESC SKIP 1 LIMIT 4"))
+        assertEquals(listOf(null, null, 1L), query("CALL { UNWIND [1, null, 'a', true, null, [1]] AS t RETURN t ORDER BY t DESC LIMIT 3 } RETURN t"))
+        // Collected in the order a WITH gives them, and indexed or iterated there.
+        assertEquals(listOf(ascending.dropLast(1).reversed()), query("UNWIND $values AS t WITH t ORDER BY t DESC WITH collect(t) AS xs RETURN xs"))
+        assertEquals(listOf(ascending.take(3)), query("UNWIND $values AS t WITH t ORDER BY t RETURN [x IN collect(t) | x][0..3]"))
+        assertEquals(listOf(listOf(listOf(2L), "A", "b", false, true)), query("UNWIND $values AS t WITH t ORDER BY t SKIP 2 LIMIT 5 RETURN collect(t)"))
+        // The last query of a UNION sorted, and a UNION carried out of a CALL { … } sorted and paged.
+        assertEquals(listOf(2L, "b", true, mapOf("a" to 1L), listOf(1L), "a", null), query("UNWIND [2, 'b', true] AS t RETURN t UNION UNWIND [[1], {a: 1}, null, 'a'] AS t RETURN t ORDER BY t"))
+        assertEquals(listOf(listOf(1L), "b", true, 2L, null), query("CALL { UNWIND [2, 'b'] AS t RETURN t UNION UNWIND [true, [1], null] AS t RETURN t } RETURN t ORDER BY t"))
+        assertEquals(listOf(2L, true, "b"), query("CALL { UNWIND [2, 'b'] AS t RETURN t UNION UNWIND [true, [1], null] AS t RETURN t } WITH t ORDER BY t DESC SKIP 1 LIMIT 3 RETURN t"))
+    }
+
+    @Test
+    fun `a property stored as several kinds sorts as Cypher orders their kinds`() {
+        // Not in the spec yet (#299): a property read from the store may be of any kind, so its kind is ranked first.
+        // Postgres puts a number before a truth value, and a list last (#307).
+        if (pm.type == DatabaseType.POSTGRES) return
+        clear()
+        seed("CREATE (:Kind {v: 2}), (:Kind {v: 'b'}), (:Kind {v: true}), (:Kind {v: [1]}), (:Kind {v: 1.5}), (:Kind {v: 'B'}), (:Kind {v: false}), (:Kind)")
+        val ascending = listOf(listOf(1L), "B", "b", false, true, 1.5, 2L, null)
+        assertEquals(ascending, query("MATCH (k:Kind) RETURN k.v ORDER BY k.v"))
+        assertEquals(ascending.reversed(), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC"))
+        assertEquals(listOf("b", false), query("MATCH (k:Kind) WITH k ORDER BY k.v SKIP 2 LIMIT 2 RETURN k.v"))
+        assertEquals(listOf(null, 2L), query("CALL { MATCH (k:Kind) RETURN k.v AS v ORDER BY v DESC LIMIT 2 } RETURN v"))
+        assertEquals(listOf(listOf(listOf(1L), "B", "b", false, true, 1.5, 2L)), query("MATCH (k:Kind) WITH k ORDER BY k.v WITH collect(k.v) AS vs RETURN vs"))
+        assertEquals(listOf(2L, 1.5, true), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC SKIP 1 LIMIT 3"))
+    }
+
+    @Test
+    fun `lists of several kinds of item, nested, sort item by item among values of other kinds`() {
+        // Not in the spec yet (#299): a list sorts first among values of other kinds, and among lists item by item, the
+        // items of each as Cypher orders their kinds at any depth. Postgres takes jsonb's order (#307), and Oracle puts a
+        // number before a text and a null first within a list (#205).
+        if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.ORACLE) return
+        val values = "[[1, 'a'], 'x', [[2], 1], [[2], 'b'], [1, null], 3, [1], [[2], [1]], [{a: 1}], [true]]"
+        val ascending = listOf(
+            listOf(mapOf("a" to 1L)), listOf(listOf(2L), listOf(1L)), listOf(listOf(2L), "b"), listOf(listOf(2L), 1L),
+            listOf(true), listOf(1L), listOf(1L, "a"), listOf(1L, null), "x", 3L,
+        )
+        assertEquals(ascending, query("UNWIND $values AS t RETURN t ORDER BY t"))
+        assertEquals(ascending.reversed(), query("UNWIND $values AS t RETURN t ORDER BY t DESC"))
+        assertEquals(ascending.take(4), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
     }
 
     @Test

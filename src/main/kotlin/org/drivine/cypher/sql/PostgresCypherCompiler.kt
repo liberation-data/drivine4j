@@ -460,8 +460,12 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     private fun heldPlaces(precision: String) = shared(precision) { (p) -> "CASE WHEN $p > $MOST_PLACES THEN $MOST_PLACES ELSE $p END" }
 
-    /** A text that is no whole number, cast to one: Postgres fails with the text in its message. */
-    override fun failure(message: String, value: String) = "CAST(${literal("$message ")} || CAST($value AS text) AS integer)"
+    /**
+     * A text that is no whole number, cast to one: Postgres fails with the text in its message. Joined by `concat`, which
+     * is stable, not immutable, so the planner does not work out a failure of constants alone before any row, as it
+     * works out an immutable `||` and cast in a branch of a CASE no row takes: `round(1.5, -2)` over no rows.
+     */
+    override fun failure(message: String, value: String) = "CAST(concat(${literal("$message ")}, $value) AS integer)"
 
     override fun raise(message: String) = "RAISE EXCEPTION USING MESSAGE = ${literal(message)};"
 

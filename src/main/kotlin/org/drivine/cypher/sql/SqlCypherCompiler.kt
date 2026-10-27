@@ -244,6 +244,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The JSON [json] as text, where it is a string. */
     protected abstract fun text(json: String): String
 
+    /**
+     * [body] over the texts of the JSON values [jsons], each read as [text] reads it where it is a string. A store whose
+     * text read from JSON holds only so much reads a longer one otherwise: see Oracle's.
+     */
+    protected open fun texts(vararg jsons: String, body: (List<String>) -> String): String = body(jsons.map(::text))
+
     /** The JSON [json] as a condition, where it is `true` or `false`. */
     protected abstract fun boolOf(json: String): String
 
@@ -267,6 +273,12 @@ abstract class SqlCypherCompiler(graph: String) {
      * `WITH`, returned or passed on: as [propertyOf] reads it, but on a store that must read such an item apart.
      */
     protected open fun itemProperty(props: String, key: String): String = propertyOf(props, key)
+
+    /**
+     * The value at [keys], each of a map in the one before, in the row a write is making ([ROW]), where a statement of the
+     * write reads it to work out what it writes: as [propertyOf] reads each key, but on a store that must read it apart.
+     */
+    protected open fun rowValue(keys: List<String>): String = keys.fold(ROW, ::propertyOf)
 
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
@@ -377,9 +389,20 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun sortKey(json: String) = nullIfJsonNull(json)
 
     /**
+     * What an order sorts the JSON value [json] by where the statement leaves its kind open, a term after another: values of
+     * several kinds as Cypher orders their kinds ([kindOrder]), null last, and those of one kind among themselves. As [sortKey]
+     * where a store does not override it: Postgres's takes `jsonb`'s order of kinds, a number before a truth value, which is
+     * not yet Cypher's (#307). Oracle's and SQLite's JSON orders put a number before a text, so their terms are where the kind
+     * comes, then the value. A value the statement makes of one kind sorts by [sortKey] alone.
+     */
+    protected open fun openSortKey(json: String): List<String> = listOf(sortKey(json))
+
+    /**
      * A whole number that fails the statement when it is worked out, with [message] and the SQL value [value] it names:
-     * what a compiled statement does where Neo4j fails on a value it reads. It reads [value], so no store works it out
-     * before a row that needs it, as one may a failing expression of constants alone.
+     * what a compiled statement does where Neo4j fails on a value it reads. No store works it out before a row that
+     * needs it, even where [value] is a constant, as a store may work out a failing expression of constants alone. But
+     * in a WHERE, one that reads nothing of a row is tested before any row on Postgres, which tests such a condition
+     * once, first: as it does any expression that fails, such as `1 / 0`.
      */
     protected abstract fun failure(message: String, value: String): String
 
@@ -416,6 +439,12 @@ abstract class SqlCypherCompiler(graph: String) {
      * kind, as JSON orders them, or by [key] where there is one, what orders them.
      */
     protected abstract fun extreme(value: String, min: Boolean, key: String? = null): String
+
+    /**
+     * `sum` of the JSON values [json] of a group, [distinct] each once where it is `DISTINCT `: 0 where there are none.
+     * A store whose numbers keep whether they are floats sums them as they are: a float where any is one, as in Cypher.
+     */
+    protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
 
     /**
      * Where the JSON [json]'s kind comes among the others, as Cypher orders values of several kinds: a map,
@@ -478,6 +507,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** `split`: the SQL text [text] cut at each [separator], a SQL text, as a JSON list of texts. */
     protected abstract fun split(text: String, separator: String): String
+
+    /**
+     * `replace`: the SQL text [text] with each [search] in it made [replacement]; [searchBytes] and [replacementBytes] are
+     * how long they are in UTF-8, where the statement gives them.
+     */
+    protected open fun replaceText(text: String, search: String, replacement: String, searchBytes: Int? = null, replacementBytes: Int? = null) =
+        "REPLACE($text, $search, $replacement)"
 
     /** The SQL text [text], its characters backwards. */
     protected abstract fun reverseText(text: String): String
@@ -1430,10 +1466,14 @@ abstract class SqlCypherCompiler(graph: String) {
          * The row in [ROW] alone, as a statement of a write reads it, with the variables [needed] bound: a row
          * may hold many, and each node or relationship bound is a join.
          */
-        private fun row(needed: Set<String>?): Select = Select(emptyMap()).also { bindRow(it, ROW, needed) }
+        private fun row(needed: Set<String>?, written: Boolean = false): Select = Select(emptyMap()).also { bindRow(it, ROW, needed, written) }
 
-        /** Binds into [select] each variable the row [row] holds, of [needed] where given: a node or a relationship is read from its table, as it is now. */
-        private fun bindRow(select: Select, row: String, needed: Set<String>? = null) {
+        /**
+         * Binds into [select] each variable the row [row] holds, of [needed] where given: a node or a relationship is read from
+         * its table, as it is now. With [written], [row] is [ROW], and a value and each property of it are read as [rowValue]
+         * reads them, for a statement that works out what a write writes.
+         */
+        private fun bindRow(select: Select, row: String, needed: Set<String>? = null, written: Boolean = false) {
             kinds.filterKeys { needed == null || it in needed }.forEach { (variable, kind) ->
                 val key = key(variable)
                 when (kind) {
@@ -1450,9 +1490,11 @@ abstract class SqlCypherCompiler(graph: String) {
                     Kind.VALUE -> select.bind(
                         variable,
                         Value.Json(
-                            propertyOf(row, key), temporal = carried[variable]?.temporal, items = carried[variable]?.items, itemItems = carried[variable]?.itemItems,
+                            if (written) rowValue(listOf(key)) else propertyOf(row, key), temporal = carried[variable]?.temporal, items = carried[variable]?.items,
+                            itemItems = carried[variable]?.itemItems,
                             list = carried[variable]?.list == true, itemLists = carried[variable]?.itemLists == true,
                             text = carried[variable]?.text == true, texts = carried[variable]?.texts == true,
+                            rowKeys = if (written) listOf(key) else null,
                         ),
                     )
                     // A list or a path that is null is held as JSON's null, and read as SQL's.
@@ -1472,7 +1514,7 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun evaluate(variable: String, vararg expressions: Expression?, value: (Map<String, Value>) -> String) {
             val read = expressions.filterNotNull()
-            val select = row(if (read.any(::holdsSubquery)) null else read.flatMap(::variablesIn).toSet())
+            val select = row(if (read.any(::holdsSubquery)) null else read.flatMap(::variablesIn).toSet(), written = true)
             step(ProcedureStep.Select(variable, value(select.scope), from(select).joinToString("") { "\n$it" }))
         }
 
@@ -1855,11 +1897,11 @@ abstract class SqlCypherCompiler(graph: String) {
             // Where rows are compared, an order term of the items that is no item is read over their columns, once compared:
             // a group is keyed by an item, and by no part of one.
             val itemColumns = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(name, pair.first) }
-            val after = mutableMapOf<String, String>()
+            val after = mutableMapOf<String, List<String>>()
             // A term worked out in the query is sorted by in the query that reads it: the value carried out as a column, and
             // what sorts it (JSON's null as SQL's) worked out of that column. Oracle (23.26), sorting by a value that reads
             // the row more than once beside a variable-length walk, closes the session.
-            val sorted = mutableMapOf<String, (String) -> String>()
+            val sorted = mutableMapOf<String, (String) -> List<String>>()
             // An item made anew for each row, randomUUID(), is sorted by of its column, as it is given, not made again: see [once].
             val anew = items.filter { contains(it.expression, ::isAnew) }.map { it.name }.toSet()
             var sortsAnew = false
@@ -1913,27 +1955,33 @@ abstract class SqlCypherCompiler(graph: String) {
                 if (groupBy.isNotEmpty()) add("GROUP BY ${groupBy.joinToString(", ")}")
             }.joinToString("\n")
             // What sorts a term in the query that reads this one: worked out there, of the column carried out, or that column.
-            fun sortedBy(column: String) = after[column] ?: sorted[column]?.invoke("$name.$column") ?: "$name.$column"
+            // Each is named for the query after it, which sorts by them in turn: the last by the term's column, any before it,
+            // where its kind comes ([openSortKey]), by that column with a number after it.
+            fun sortedBy(column: String): List<Pair<String, String>> =
+                (after[column] ?: sorted[column]?.invoke("$name.$column") ?: listOf("$name.$column")).let { terms ->
+                    terms.mapIndexed { i, term -> (if (i == terms.lastIndex) column else "${column}_${i + 1}") to term }
+                }
+            val order = sorts.flatMap { (column, descending) -> sortedBy(column).map { (named, _) -> named to descending } }
             val outerColumns = if (final) {
                 val values = columns.map { (column, value) -> json(value.columnsOf(name, column)) }
                 val result = if (values.size == 1) values.single().sql else jsonArray(values.map { it.sql })
                 "$result AS result"
             } else {
                 (columns.flatMap { (column, value) -> value.columns(column).map { "$name.${it.substringAfterLast(" AS ")}" } } +
-                    sorts.map { (column, _) -> "${sortedBy(column)} AS $column" }).joinToString(", ")
+                    sorts.flatMap { (column, _) -> sortedBy(column).map { (named, term) -> "$term AS $named" } }).joinToString(", ")
             }
             val outer = buildList {
                 add("SELECT $outerColumns")
                 add("FROM (\n${indent(if (sortsAnew) once(inner) else inner)}\n) $name")
                 if (sorts.isNotEmpty()) {
-                    add("ORDER BY ${sorts.joinToString(", ") { (column, descending) -> orderTerm(sortedBy(column), descending) }}")
+                    add("ORDER BY ${sorts.flatMap { (column, descending) -> sortedBy(column).map { (_, term) -> orderTerm(term, descending) } }.joinToString(", ")}")
                 }
                 addAll(page(projection.skip?.let(::count), projection.limit?.let(::count)))
             }.joinToString("\n")
             // What each item is bound to in the query that reads this one: its columns, which that query names.
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
-            val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + sorts.map { (column, _) -> column to false }
-            return Projected(outer, scope, sorts, kinds)
+            val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + order.map { (column, _) -> column to false }
+            return Projected(outer, scope, order, kinds)
         }
 
         /**
@@ -2456,9 +2504,10 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
-            is Value.Json -> temporalField(subject, key) ?: propertyOf(comparable(subject), key).let { taken ->
-                Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) })
-            }
+            is Value.Json -> temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key) }
+                ?: propertyOf(comparable(subject), key).let { taken ->
+                    Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) })
+                }
             is Value.Bool -> throw DrivineException("A truth value has no properties.")
             is Value.Path -> throw DrivineException("A path has no properties.")
         }
@@ -2725,10 +2774,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.MODULO -> Value.Json(scalar(modulo(number(a), number(b))))
                 Operator.POWER -> Value.Json(scalar(float("power(${number(a)}, ${number(b)})")))
                 Operator.IN -> Value.Bool(membership(binary, left, right, scope, filter))
-                Operator.STARTS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> startsWith(x, y) })
-                Operator.MATCHES -> Value.Bool(matches(text(a), text(b)))
-                Operator.ENDS_WITH -> Value.Bool(shared(text(a), text(b)) { (x, y) -> endsWith(x, y) })
-                Operator.CONTAINS -> Value.Bool(containsText(text(a), text(b)))
+                Operator.STARTS_WITH -> Value.Bool(texts(a, b) { texts -> shared(*texts.toTypedArray()) { (x, y) -> startsWith(x, y) } })
+                // A pattern is short: only the text is read as a long one where it is.
+                Operator.MATCHES -> Value.Bool(texts(a) { (x) -> matches(x, text(b)) })
+                Operator.ENDS_WITH -> Value.Bool(texts(a, b) { texts -> shared(*texts.toTypedArray()) { (x, y) -> endsWith(x, y) } })
+                Operator.CONTAINS -> Value.Bool(texts(a, b) { (x, y) -> containsText(x, y) })
                 else -> error("logical operators are handled above")
             }
         }
@@ -3151,7 +3201,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     )
                     else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
                 }
-                "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
+                "sum" -> Value.Json(sum(comparable(json(one())), distinct))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
                 // Zoned values as the moments they are, whatever their offsets, and lists of them item by item so; of a temporal kind,
                 // still of it, and a list of the kinds of list it was. A list the statement makes item by item, as an ORDER BY sorts it: a store's
@@ -3174,8 +3224,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 "split" -> {
                     if (arguments.size != 2) throw DrivineException("split() takes a text and a separator.")
-                    val (text, separator) = arguments.map { text(comparable(json(it))) }
-                    Value.Json(split(text, separator), list = true, texts = true)
+                    Value.Json(texts(*arguments.map { comparable(json(it)) }.toTypedArray()) { (text, separator) -> split(text, separator) }, list = true, texts = true)
                 }
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
@@ -3214,30 +3263,37 @@ abstract class SqlCypherCompiler(graph: String) {
                 "e", "pi" -> if (arguments.isEmpty()) Value.Json(literalJson(if (name == "e") Math.E else Math.PI))
                     else throw DrivineException("${function.name}() takes no argument.")
                 "sign" -> Value.Json(scalar(signOf(number(comparable(json(one()))))))
-                "ltrim", "rtrim" -> Value.Json(scalar("${name.uppercase()}(${text(comparable(json(one())))})"), text = true)
+                "ltrim", "rtrim" -> Value.Json(texts(comparable(json(one()))) { (t) -> scalar("${name.uppercase()}($t)") }, text = true)
                 "randomuuid" -> if (arguments.isEmpty()) Value.Json(scalar(uuid())) else throw DrivineException("randomUUID() takes no argument.")
                 // A position is counted from 0, as Cypher counts it, and SQL from 1.
                 "substring" -> {
                     if (arguments.size !in 2..3) throw DrivineException("substring() takes a text, a start and a length.")
-                    Value.Json(scalar(shared(text(comparable(json(arguments[0])))) { (text) ->
-                        val start = countOf(function, 1, "start", arguments, text)
-                        val length = if (arguments.size == 3) ", ${countOf(function, 2, "length", arguments, text)}" else ""
-                        // The greatest start is past any text, so it is kept as it is rather than counted past Postgres's integer.
-                        val position = shared(start) { (s) -> "CASE WHEN $s < $MAX_COUNT THEN $s + 1 ELSE $s END" }
-                        "SUBSTR($text, $position$length)"
-                    }), text = true)
+                    Value.Json(texts(comparable(json(arguments[0]))) { read ->
+                        scalar(shared(read.single()) { (text) ->
+                            val start = countOf(function, 1, "start", arguments, text)
+                            val length = if (arguments.size == 3) ", ${countOf(function, 2, "length", arguments, text)}" else ""
+                            // The greatest start is past any text, so it is kept as it is rather than counted past Postgres's integer.
+                            val position = shared(start) { (s) -> "CASE WHEN $s < $MAX_COUNT THEN $s + 1 ELSE $s END" }
+                            "SUBSTR($text, $position$length)"
+                        })
+                    }, text = true)
                 }
                 "left", "right" -> {
                     if (arguments.size != 2) throw DrivineException("${function.name}() takes a text and a length.")
-                    Value.Json(scalar(shared(text(comparable(json(arguments[0])))) { (text) ->
-                        val count = countOf(function, 1, "length", arguments, text)
-                        if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)
-                    }), text = true)
+                    Value.Json(texts(comparable(json(arguments[0]))) { read ->
+                        scalar(shared(read.single()) { (text) ->
+                            val count = countOf(function, 1, "length", arguments, text)
+                            if (name == "left") "SUBSTR($text, 1, $count)" else rightText(text, count)
+                        })
+                    }, text = true)
                 }
                 "replace" -> {
                     if (arguments.size != 3) throw DrivineException("replace() takes a text, what to replace, and what with.")
-                    val (text, search, replacement) = arguments.map { text(comparable(json(it))) }
-                    Value.Json(scalar("REPLACE($text, $search, $replacement)"), text = true)
+                    // How long what to replace, and what with, are, in bytes, where the statement gives them.
+                    val (searchBytes, replacementBytes) = function.arguments.drop(1).map { (given(it) as? String)?.toByteArray(Charsets.UTF_8)?.size }
+                    Value.Json(texts(*arguments.map { comparable(json(it)) }.toTypedArray()) { (text, search, replacement) ->
+                        scalar(replaceText(text, search, replacement, searchBytes, replacementBytes))
+                    }, text = true)
                 }
                 "date", "localtime", "time", "localdatetime", "datetime", "duration" -> temporal(Temporal.ofFunction(name)!!, function, arguments, scope)
                 "timestamp" -> if (arguments.isEmpty()) Value.Json(scalar(temporals.field(temporals.now(Temporal.DATE_TIME), Temporal.DATE_TIME, "epochMillis")!!.sql))
@@ -3344,14 +3400,15 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * `round()` of [value] to [precision] places, by [places] over the value as a SQL number and the precision as a whole
          * number toward zero, written in the statement as [written]: -0.5 is 0 places. Given [whole], to 0 places it rounds
-         * by that instead. A precision below 0 is refused, as Neo4j refuses it: when compiling, where it is written, negated
-         * or not, or a parameter's value; and else when the row is read, by [failure], on every store alike, but for a null
-         * value, which Neo4j rounds to null whatever the precision.
+         * by that instead. A precision below 0 or past [MAX_COUNT] fails, as Neo4j fails it: only on a row that rounds a
+         * number by it, by [failure], on every store alike, whether it is written, negated or not, a parameter's value or
+         * read from data. Neo4j reads the precision only when it rounds, so a null value rounds to null by any precision,
+         * and with no row, nothing fails.
          *
          * Places known when compiling pick the rounding then, [whole] below 1 place: under an aggregate, where nothing is
          * bound, a CASE of both would write the number out in each, at each round() nested in another. Places from data
-         * are told apart as the statement runs, in one CASE over the value and the places, where a negative one is refused
-         * before either rounding: so the precision each rounding writes out, more than once on a store, is the places
+         * are told apart as the statement runs, in one CASE over the value and the places, where places out of range are
+         * failed before either rounding: so the precision each rounding writes out, more than once on a store, is the places
          * alone, and the value is asked of its kind, whose test writes it out fewer times than its number does.
          */
         private fun rounded(value: Value, precision: Value, written: Expression, whole: ((String) -> String)? = null, places: (String, String) -> String): String {
@@ -3359,18 +3416,30 @@ abstract class SqlCypherCompiler(graph: String) {
             val given = (given(if (negated) (written as Expression.Unary).operand else written) as? Number)?.toDouble()
             if (given != null) {
                 val signed = if (negated) -given else given
-                if (kotlin.math.truncate(signed) < 0) throw DrivineException(NEGATIVE_PRECISION)
+                val cut = kotlin.math.truncate(signed)
+                // Not `cut in 0..MAX_COUNT`, which NaN fails: Neo4j casts NaN to 0 places, as Java casts it to a long.
+                if (cut < 0 || cut > MAX_COUNT) {
+                    val named = if (cut.isInfinite()) signed.toString() else java.math.BigDecimal(cut).toBigInteger().toString()
+                    return outOfPlaces(comparable(json(value)), literal(named))
+                }
                 val number = number(comparable(json(value)))
-                // Not `signed < 1`, which NaN fails: Neo4j casts NaN to 0 places, as Java casts it to a long.
+                // Not `signed < 1`, which NaN fails.
                 if (whole != null && !(signed >= 1)) return whole(number)
                 return places(number, if (signed.isNaN()) "CAST(0 AS INTEGER)" else truncatedWhole(precision))
             }
             return shared(comparable(json(value)), "${temporalSql.trunc}(${number(comparable(json(precision)))})") { (x, t) ->
                 val toWhole = whole?.let { "WHEN $t = 0 THEN ${it(number(x))} " } ?: ""
-                // A null value, as anything else that is no number, rounds by its negative places to null.
-                "CASE ${toWhole}WHEN $t < 0 AND ${typeOf(x)} = 'number' THEN ${failure(NEGATIVE_PRECISION, t)} ELSE ${places(number(x), "CAST($t AS INTEGER)")} END"
+                // Out of range, places are not cast, which Postgres's integer would fail on beside a null value.
+                "CASE ${toWhole}WHEN $t NOT BETWEEN 0 AND $MAX_COUNT THEN ${outOfPlaces(x, t)} ELSE ${places(number(x), "CAST($t AS INTEGER)")} END"
             }
         }
+
+        /**
+         * `round()` of the JSON value [x] to [precision] places out of range: it fails where [x] is a number, and is null
+         * where it is not, as a null rounds to null by any precision in Neo4j.
+         */
+        private fun outOfPlaces(x: String, precision: String) =
+            "CASE WHEN ${typeOf(x)} = 'number' THEN ${failure(PRECISION_OUT_OF_RANGE, precision)} END"
 
         /** The values [value] of a group, gathered as `collect` gathers them, as JSON. */
         private fun collected(value: Value) = collect(collectable(value), rowOrder)
@@ -3422,19 +3491,26 @@ abstract class SqlCypherCompiler(graph: String) {
          * What an order sorts a value by: JSON's order for a value, a node by its properties. JSON's null, as a map
          * or a list the statement builds holds it, is SQL's null, which comes last, as a graph engine orders null.
          */
-        private fun sortable(value: Value): String = sortTerm(value).let { (carried, sorts) -> sorts(carried) }
+        private fun sortable(value: Value): List<String> = sortTerm(value).let { (carried, sorts) -> sorts(carried) }
 
-        /** What [sortable] sorts [value] by, in two: the value as a column carries it, and what sorts it, of that column. */
-        private fun sortTerm(value: Value): Pair<String, (String) -> String> = when {
-            value is Value.Bool -> value.sql to { it }
+        /**
+         * What [sortable] sorts [value] by, in two: the value as a column carries it, and the terms that sort it, of that column.
+         * A value whose kind the statement leaves open sorts as [openSortKey] has it, where its kind comes first; one it makes a
+         * truth value, a temporal value, a text, a list or a node is of one kind, and sorts by [sortKey] alone.
+         */
+        private fun sortTerm(value: Value): Pair<String, (String) -> List<String>> = when {
+            value is Value.Bool -> value.sql to { listOf(it) }
             // A zoned value the statement makes sorts as the moment it is, whatever its offset.
-            value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { temporals.moment(text(it), value.temporal) }
-            // A list of zoned values the statement makes sorts item by item as the moments they are, where the store sorts it so.
-            listsByMoments && value is Value.Json && value.list && value.items?.zoned == true -> comparable(value) to { momentsKey(it, value.items) }
-            listsByMoments && value is Value.Json && value.itemLists && value.itemItems?.zoned == true -> comparable(value) to { momentsKey(it, value.itemItems, depth = 2) }
+            value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { listOf(temporals.moment(text(it), value.temporal)) }
+            // A list of zoned values the statement makes sorts item by item as the moments they are, where the store sorts it so: of one
+            // kind, a list, it needs no rank of its kind.
+            listsByMoments && value is Value.Json && value.list && value.items?.zoned == true -> comparable(value) to { listOf(momentsKey(it, value.items)) }
+            listsByMoments && value is Value.Json && value.itemLists && value.itemItems?.zoned == true ->
+                comparable(value) to { listOf(momentsKey(it, value.itemItems, depth = 2)) }
             // A list the statement makes sorts as Cypher sorts lists, item by item; any other value as the store sorts its JSON.
-            isList(value) -> comparable(json(value)) to { listSortKey(it) }
-            else -> comparable(json(value)) to { sortKey(it) }
+            isList(value) -> comparable(json(value)) to { listOf(listSortKey(it)) }
+            value !is Value.Json || value.temporal != null || isText(value) -> comparable(json(value)) to { listOf(sortKey(it)) }
+            else -> comparable(json(value)) to { openSortKey(it) }
         }
     }
 
@@ -3492,10 +3568,13 @@ abstract class SqlCypherCompiler(graph: String) {
 
         fun literal(text: String) = "'${text.replace("'", "''")}'"
 
-        /** What `round()` is refused with, as Neo4j refuses it, a precision below 0. */
-        const val NEGATIVE_PRECISION = "round() takes a precision of 0 or more, as in Neo4j."
+        /** What `round()` fails with, as Neo4j fails it, a precision below 0 or past [MAX_COUNT]. */
+        const val PRECISION_OUT_OF_RANGE = "round() takes a precision from 0 to 2147483647, as in Neo4j."
 
-        /** The greatest start or length `substring()`, `left()` and `right()` take, as Neo4j takes them: Java's greatest `int`. */
+        /**
+         * The greatest start or length `substring()`, `left()` and `right()` take, and the greatest precision `round()`
+         * takes, as Neo4j takes them: Java's greatest `int`.
+         */
         const val MAX_COUNT = Int.MAX_VALUE.toLong()
 
         /**
