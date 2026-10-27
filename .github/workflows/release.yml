@@ -36,8 +36,11 @@ on:
 permissions:
   contents: read
 
+# A release, a push to main or of a tag, waits for the one before it on the same ref. A dry run (workflow_dispatch,
+# which the train controller starts on main, or a pull request) has a group of its own: sharing the release's, a dry
+# run queued behind it would cancel a release that was waiting.
 concurrency:
-  group: release-${{ github.ref }}
+  group: ${{ github.event_name == 'push' && format('release-{0}', github.ref) || format('release-dry-run-{0}', github.run_id) }}
   cancel-in-progress: false
 
 env:
