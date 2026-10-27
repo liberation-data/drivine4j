@@ -42,9 +42,6 @@ abstract class CypherWriteContract {
     /** Whether the statement under test is compiled to SQL: what only compiling refuses is asked of it alone. */
     open val compiles: Boolean = false
 
-    /** Whether an OPTIONAL CALL runs in a subquery expression, as `COUNT { OPTIONAL CALL { … } … }`: on Oracle not yet (#338). */
-    open val optionalCallsInSubqueries: Boolean = true
-
     private fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
         pm.query(QuerySpecification.withStatement(CypherStatement(cypher.trimIndent())).bind(parameters))
 
@@ -174,11 +171,12 @@ abstract class CypherWriteContract {
             listOf(listOf(3L, 4L, 2L, 2L, 2L, 2L, "pq")),
             query("MATCH (n:CyWrite {id: 1}) RETURN [n.union, n.same, n.called, n.cased, n.comprehended, n.rebound, n.each]"),
         )
-        if (optionalCallsInSubqueries) {
-            set("optional", counted("OPTIONAL CALL { WITH t MATCH (z:Nope) RETURN t AS u }").format("u.a"))
-            set("found", counted("OPTIONAL CALL { WITH t RETURN t.l AS u }").format("u.a"))
-            assertEquals(listOf(listOf(0L, 2L)), query("MATCH (n:CyWrite {id: 1}) RETURN [n.optional, n.found]"))
-        }
+        // On Oracle, an OPTIONAL CALL in a write's subquery was refused (ORA-06550, ORA-00907) until it was joined on 1 = 1 (#338).
+        set("optional", counted("OPTIONAL CALL { WITH t MATCH (z:Nope) RETURN t AS u }").format("u.a"))
+        set("found", counted("OPTIONAL CALL { WITH t RETURN t.l AS u }").format("u.a"))
+        // With no WHERE … AND … after the join, it closed the session there.
+        set("bare", "COUNT { OPTIONAL CALL { WITH t MATCH (z:Nope) RETURN t AS u } RETURN u }")
+        assertEquals(listOf(listOf(0L, 2L, 1L)), query("MATCH (n:CyWrite {id: 1}) RETURN [n.optional, n.found, n.bare]"))
     }
 
     @Test
@@ -284,8 +282,6 @@ class CypherWriteOracleTest : CypherWriteContract() {
     override val pm: PersistenceManager get() = manager
 
     override val compiles = true
-
-    override val optionalCallsInSubqueries = false
 
     override fun clear() = OracleTestDatabase.clear(manager)
 

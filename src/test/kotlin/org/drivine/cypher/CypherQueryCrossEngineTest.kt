@@ -1326,6 +1326,41 @@ abstract class CypherQueryContract {
         assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}").matches(day as String), day)
         assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3}|\\.\\d{6})?").matches(moment as String), moment)
     }
+
+    /**
+     * Runs [block] with a query of the statements it is given. On Oracle they run on one session of their own, which is
+     * asked again after each: a statement that crashes the session can do so after its rows came back.
+     */
+    protected open fun onOneSession(block: (query: (String) -> List<Any?>) -> Unit) = block { query(it) }
+
+    @Test
+    fun `an OPTIONAL CALL or an OPTIONAL MATCH in a COUNT or an EXISTS subquery keeps the row it finds nothing for`() {
+        // Not in the spec yet. Oracle refused an optional join on TRUE in a scalar subquery followed by WHERE … AND … (ORA-00907),
+        // and crashed the session on one without (ORA-03113, ORA-07445 in its alert log) (#338): it is joined on 1 = 1 there.
+        clear()
+        seed("CREATE (:CyOpt {id: 1}), (:CyOpt {k: 'p'}), (:CyOpt {k: 'q'}), (:CyOpt {k: 'q'})")
+        val none = "OPTIONAL CALL { MATCH (z:Nope) RETURN z.k AS u }"
+        onOneSession { query ->
+            fun counted(subquery: String) = query("MATCH (n:CyOpt {id: 1}) RETURN COUNT { $subquery }")
+            // At the top of a statement, as it ran before.
+            assertEquals(listOf(null), query("$none RETURN u"))
+            assertEquals(listOf(2L), query("$none MATCH (y:CyOpt) WHERE y.k = 'q' RETURN count(y)"))
+            // In a COUNT { }: refused on Oracle, with a WHERE … AND … after the join, and else crashed the session.
+            assertEquals(listOf(2L), counted("$none MATCH (y:CyOpt) WHERE y.k = 'q' RETURN y"))
+            assertEquals(listOf(1L), counted("$none RETURN u"))
+            assertEquals(listOf(4L), counted("$none MATCH (y:CyOpt) RETURN y"))
+            assertEquals(listOf(0L), counted("MATCH (y:CyOpt) $none WITH y, u WHERE y.k = u RETURN y"))
+            // What a CALL that finds something gives is counted, and a plain CALL that finds nothing gives no row.
+            assertEquals(listOf(4L), counted("OPTIONAL CALL { MATCH (z:CyOpt) WHERE z.k = 'q' RETURN z.k AS u } MATCH (y:CyOpt) WHERE y.k = u RETURN y"))
+            assertEquals(listOf(0L), counted("CALL { MATCH (z:Nope) RETURN z.k AS u } MATCH (y:CyOpt) WHERE y.k = 'q' RETURN y"))
+            // An OPTIONAL MATCH is the same join.
+            assertEquals(listOf(2L), counted("OPTIONAL MATCH (z:Nope) MATCH (y:CyOpt) WHERE y.k = 'q' RETURN y"))
+            assertEquals(listOf(1L), counted("OPTIONAL MATCH (z:Nope) RETURN z"))
+            // In an EXISTS { }, and in a WHERE.
+            assertEquals(listOf(listOf(true, false)), query("MATCH (n:CyOpt {id: 1}) RETURN [EXISTS { $none RETURN u }, EXISTS { CALL { MATCH (z:Nope) RETURN z.k AS u } RETURN u }]"))
+            assertEquals(listOf(1L), query("MATCH (n:CyOpt) WHERE COUNT { $none RETURN u } = 1 AND n.id = 1 RETURN n.id"))
+        }
+    }
 }
 
 class CypherQueryNeo4jTest : CypherQueryContract() {
@@ -1383,6 +1418,16 @@ class CypherQueryOracleTest : CypherQueryContract() {
     override fun seed(cypher: String) = OracleTestDatabase.seed(manager, cypher)
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
+    override fun onOneSession(block: (query: (String) -> List<Any?>) -> Unit) {
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String): List<Any?> = connection.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        try {
+            block { cypher -> query(cypher).also { assertEquals(listOf(1L), query("RETURN 1"), "the session after: $cypher") } }
+        } finally {
+            connection.release()
+        }
+    }
 }
 
 class CypherQuerySqliteTest : CypherQueryContract() {
