@@ -280,6 +280,13 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun rowValue(keys: List<String>): String = keys.fold(ROW, ::propertyOf)
 
+    /**
+     * The value of [key] in the JSON [json], read from an item of a list the query unwinds (see [Value.Json.fromList]), where
+     * it is an item of a `RETURN` or a `WITH`, returned or passed on: as [propertyOf] reads it, but on a store that must read
+     * such an item apart.
+     */
+    protected open fun itemValue(json: String, key: String): String = propertyOf(json, key)
+
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
@@ -932,13 +939,14 @@ abstract class SqlCypherCompiler(graph: String) {
             val sql = projected.joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { "SELECT * FROM (\n${indent(it.sql)}\n) ${alias("q")}" }
             // A value is of a temporal kind where each query makes it of that one. It is at keys of a write's row ([Value.Json.rowKeys])
             // only where each query takes it from those: a property of it is read from the row there, which would read the first
-            // query's value for every query's rows (#336).
+            // query's value for every query's rows (#336). It is read from an unwound item ([Value.Json.fromList]) only where each
+            // query reads it from one.
             val scope = projected.first().scope.mapValues { (variable, value) ->
                 val all = projected.map { it.scope.getValue(variable) as? Value.Json }
                 if (value !is Value.Json) value
                 else value.copy(
                     temporal = all.map { it?.temporal }.distinct().singleOrNull(), items = all.map { it?.items }.distinct().singleOrNull(),
-                    rowKeys = all.map { it?.rowKeys }.distinct().singleOrNull(),
+                    rowKeys = all.map { it?.rowKeys }.distinct().singleOrNull(), fromList = all.all { it?.fromList == true },
                     itemItems = all.map { it?.itemItems }.distinct().singleOrNull(),
                     text = all.all { it?.text == true }, texts = all.all { it?.texts == true },
                 )
@@ -973,7 +981,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 unwind.variable,
                 Value.Json(
                     item(name), temporal = itemsOf(list), items = itemItemsOf(list), list = holdsLists(list), flat = isFlat(list),
-                    text = holdsTexts(list) || isText(list),
+                    text = holdsTexts(list) || isText(list), fromList = true,
                 ),
             )
             select.order += itemNo(name) to false
@@ -1501,7 +1509,7 @@ abstract class SqlCypherCompiler(graph: String) {
                             itemItems = carried[variable]?.itemItems,
                             list = carried[variable]?.list == true, itemLists = carried[variable]?.itemLists == true,
                             text = carried[variable]?.text == true, texts = carried[variable]?.texts == true,
-                            rowKeys = if (written) listOf(key) else null,
+                            rowKeys = if (written) listOf(key) else null, fromList = !written,
                         ),
                     )
                     // A list or a path that is null is held as JSON's null, and read as SQL's.
@@ -2491,7 +2499,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * The item [expression] of a `RETURN` or a `WITH` over [select]: a property of a node or a relationship, the item
-         * itself, read as [itemProperty] reads it, but beside a variable-length walk; anything else as elsewhere. A node or a
+         * itself, read as [itemProperty] reads it, and a property of an unwound item ([Value.Json.fromList]) as [itemValue] reads
+         * it, but beside a variable-length walk; anything else as elsewhere. A node or a
          * relationship is compiled once here: compiling the item over it again lost the rows of statements that match a
          * relationship.
          */
@@ -2501,6 +2510,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 when (val subject = expression(expression.subject, select.scope)) {
                     is Value.Node -> if (expression.key != Stamps.PROPERTY) return Value.Json(itemProperty(subject.props, expression.key), flat = true)
                     is Value.Relationship -> return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    // A value of an unwound item, but a temporal value's field, and one a write reads from its row as rowValue does.
+                    is Value.Json -> if (subject.fromList && subject.temporal == null && subject.rowKeys == null && expression.key !in temporals.fieldNames)
+                        return Value.Json(itemValue(comparable(subject), expression.key))
                     else -> {}
                 }
             }

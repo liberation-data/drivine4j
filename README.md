@@ -3340,8 +3340,14 @@ declares the function itself.
   r.a})`, `MERGE … SET n.a = r.a`) is read from the row's text, at no cost measured: 1,000 rows set by one statement
   take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. So is a
   value that a `UNION` in a `CALL { … }` takes from different values of the row in its queries, or that an `OPTIONAL
-  CALL` returns, which may be null. A value such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`)
-  isn't worked around yet.
+  CALL` returns, which may be null.
+- So are reads of an unwound item's value: a text that a `RETURN` or a `WITH` gives from an unwound parameter's item,
+  or from another unwound list's (`UNWIND $rows AS r RETURN r.a`, `WITH r.a AS a`, `SET n.a = r.a RETURN r.a`), is
+  read from the item's text, at about 1.3 times a plain read: 100,000 rows of `RETURN r.a` take about 870 ms, against
+  660 ms. Any other value is read as before, and so is a value of a map made of a node's properties and not unwound
+  (`WITH n {.a} AS m RETURN m.a`); after a write, which carries its rows on, such a value is read from the item's text too.
+  A pattern that matches on such a text (`MERGE (n:X {a: r.a})`) compares it as JSON, which Oracle refuses past about
+  32 KB (ORA-40180), leaving the session open.
 - An `OPTIONAL CALL` or an `OPTIONAL MATCH` is joined `ON 1 = 1`, where Postgres joins `ON TRUE`. This works around
   an Oracle bug, seen on 23.26.3: in a scalar subquery, as a `COUNT { … }` is compiled, a join `ON TRUE` is refused
   (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)
