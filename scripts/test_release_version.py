@@ -140,6 +140,9 @@ class ReleaseVersionTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 release_version.set_version(build_gradle, release_version.Version("0.4.0"))
 
+    def test_reads_the_version_within_its_line_as_the_workflows_sed_does(self) -> None:
+        self.assertEqual(release_version.declared("version = '0.3.0\nfoo = 'bar'\n"), [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -32,7 +32,7 @@ from pathlib import Path
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?$")
 TAG = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$")
 # The line the workflows read the version from, as their sed does: version = '...' at a line's start.
-PROJECT_VERSION = re.compile(r"^version = '([^']*)'[ \t]*$", re.MULTILINE)
+PROJECT_VERSION = re.compile(r"^version = '([^'\n]*)'[ \t]*$", re.MULTILINE)
 # What counts towards a { } block's depth in build.gradle: braces, outside comments and strings.
 BRACE_TOKENS = re.compile(r"//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|[{}]", re.DOTALL)
 
