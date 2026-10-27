@@ -27,8 +27,21 @@ import java.util.IdentityHashMap
  * takes no `JSON` that changes from row to row. A recursive query reads no row outside it, so a walk
  * starts from every node that meets what the node walked from meets of its own, and carries the node
  * it started from.
+ *
+ * @param nullsEqualStored whether two values that may hold a null are compared by the function the store keeps
+ * beside the graph's tables, [nullsEqualName]: see [nullsEqual].
  */
-class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
+class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean = true) : SqlCypherCompiler(graph) {
+
+    /** The function the store keeps that compares two values that may hold a null: see [nullsEqual]. */
+    private val storedNullsEqual = nullsEqualName(graph)
+
+    /**
+     * Whether the statement compiled calls [nullsEqualName]'s function, which a store made by an earlier version, or by a
+     * user who may not make a function, does not have: compiled again with `nullsEqualStored = false`, it calls none.
+     */
+    var callsStoredNullsEqual = false
+        private set
 
     override fun literalJson(value: Any?) =
         if (value is Double) "JSON_SCALAR(TO_BINARY_DOUBLE(${literal(value.toString())}))"
@@ -425,74 +438,29 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     }
 
     /**
-     * By a function the query declares (see [reduce]), which walks the two together: Oracle's recursive queries take no `JSON`.
-     * A procedure's queries call no function it declares, nor do a `reduce`'s step's: there, two values equal as JSON are
-     * null, as each holds a null, and any other two false, as before null was compared item by item: `[null] = [1]` is false
-     * there, where Cypher's is null.
+     * Two values written as the same JSON text are null, as one holds a null and so its pair in the other does: that needs
+     * no walk. The text is read as a `VARCHAR2`, as [holdsNull] reads it; a value past 4,000 bytes has none, and `=` and
+     * `JSON_EQUAL` fail on one past about 32 KB (ORA-40180), so such a value is walked. Any other two are walked together by a
+     * function, as Oracle's recursive queries take no `JSON`: the store's own ([nullsEqualName]), which the graph is made
+     * with, so a procedure's queries and a `reduce`'s step's call it too. Where the store has none (see
+     * [callsStoredNullsEqual]), a query declares it (see [reduce]); a procedure's queries call no function it declares, nor
+     * do a `reduce`'s step's, so there two equal as JSON are null and any other two false, as before null was compared item
+     * by item: `[null] = [1]` is false there, where Cypher's is null.
      */
     override fun nullsEqual(x: String, y: String, equals: (String, String) -> String): String {
-        if (procedural || folding) return "CASE WHEN ${equals(x, y)} THEN NULL ELSE FALSE END"
-        if (!nullsCompared) {
-            nullsCompared = true
-            declare(
-                listOf(
-                    "FUNCTION $NULLS_EQUAL(cy_x JSON, cy_y JSON) RETURN NUMBER IS",
-                    "    FUNCTION eq(a JSON_ELEMENT_T, b JSON_ELEMENT_T) RETURN NUMBER IS",
-                    "        r NUMBER := 1;",
-                    "        e NUMBER;",
-                    "        la JSON_ARRAY_T;",
-                    "        lb JSON_ARRAY_T;",
-                    "        oa JSON_OBJECT_T;",
-                    "        ob JSON_OBJECT_T;",
-                    "        ks JSON_KEY_LIST;",
-                    "        too_long EXCEPTION;",
-                    "        PRAGMA EXCEPTION_INIT(too_long, -40478);",
-                    "    BEGIN",
-                    "        IF a.is_Null OR b.is_Null THEN RETURN NULL; END IF;",
-                    "        IF a.is_Array AND b.is_Array THEN",
-                    "            la := TREAT(a AS JSON_ARRAY_T);",
-                    "            lb := TREAT(b AS JSON_ARRAY_T);",
-                    "            IF la.get_Size <> lb.get_Size THEN RETURN 0; END IF;",
-                    "            FOR i IN 0 .. la.get_Size - 1 LOOP",
-                    "                e := eq(la.get(i), lb.get(i));",
-                    "                IF e = 0 THEN RETURN 0; END IF;",
-                    "                IF e IS NULL THEN r := NULL; END IF;",
-                    "            END LOOP;",
-                    "            RETURN r;",
-                    "        END IF;",
-                    "        IF a.is_Object AND b.is_Object THEN",
-                    "            oa := TREAT(a AS JSON_OBJECT_T);",
-                    "            ob := TREAT(b AS JSON_OBJECT_T);",
-                    "            IF oa.get_Size <> ob.get_Size THEN RETURN 0; END IF;",
-                    "            ks := oa.get_Keys;",
-                    "            FOR i IN 1 .. ks.COUNT LOOP",
-                    "                IF NOT ob.has(ks(i)) THEN RETURN 0; END IF;",
-                    "                e := eq(oa.get(ks(i)), ob.get(ks(i)));",
-                    "                IF e = 0 THEN RETURN 0; END IF;",
-                    "                IF e IS NULL THEN r := NULL; END IF;",
-                    "            END LOOP;",
-                    "            RETURN r;",
-                    "        END IF;",
-                    "        IF a.is_Number AND b.is_Number THEN RETURN CASE WHEN a.to_Number = b.to_Number THEN 1 ELSE 0 END; END IF;",
-                    // As VARCHAR2s, about 3.5 times as fast as CLOBs; as CLOBs where one is past 32 KB, which to_String
-                    // raises on (ORA-40478).
-                    "        IF a.is_String AND b.is_String THEN",
-                    "            BEGIN",
-                    "                RETURN CASE WHEN a.to_String = b.to_String THEN 1 ELSE 0 END;",
-                    "            EXCEPTION WHEN too_long THEN",
-                    "                RETURN CASE WHEN DBMS_LOB.COMPARE(a.to_Clob, b.to_Clob) = 0 THEN 1 ELSE 0 END;",
-                    "            END;",
-                    "        END IF;",
-                    "        IF a.is_Boolean AND b.is_Boolean THEN RETURN CASE WHEN a.to_Boolean = b.to_Boolean THEN 1 ELSE 0 END; END IF;",
-                    "        RETURN 0;",
-                    "    END;",
-                    "BEGIN",
-                    "    RETURN eq(JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_x RETURNING CLOB)), JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_y RETURNING CLOB)));",
-                    "END;",
-                ).joinToString("\n")
-            )
+        if (!nullsEqualStored && (procedural || folding)) return "CASE WHEN ${equals(x, y)} THEN NULL ELSE FALSE END"
+        val walked = if (nullsEqualStored) {
+            callsStoredNullsEqual = true
+            "($storedNullsEqual($x, $y) = 1)"
+        } else {
+            if (!nullsCompared) {
+                nullsCompared = true
+                declare(nullsEqualFunction(NULLS_EQUAL))
+            }
+            "($NULLS_EQUAL($x, $y) = 1)"
         }
-        return "($NULLS_EQUAL($x, $y) = 1)"
+        fun text(json: String) = "JSON_SERIALIZE($json RETURNING VARCHAR2(4000) NULL ON ERROR)"
+        return "CASE WHEN ${text(x)} = ${text(y)} THEN NULL ELSE $walked END"
     }
 
     /** Whether the query declares [NULLS_EQUAL]: see [nullsEqual]. */
@@ -829,9 +797,9 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     /** The kind of the JSON [json] as Oracle names it, a floating-point number by its own name. */
     private fun kind(json: String) = "JSON_VALUE($json, '\$.type()')"
 
-    private companion object {
+    companion object {
         /** The cursor a procedure returns its rows by. */
-        const val CURSOR = "cy_cursor"
+        private const val CURSOR = "cy_cursor"
 
         /** A property as [propertyOf] reads it, its properties and its path, a literal whose quotes are doubled: see [propertyRead]. */
         val PROPERTY_READ = Regex("""JSON_QUERY\((.+), ('\$(?:[^']|'')*') RETURNING JSON\)""")
@@ -843,15 +811,86 @@ class OracleCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         const val NUMBER_TEXT = 32
 
         /** The key of a double in Oracle's extended JSON. */
-        const val DOUBLE = "\$numberDouble"
+        private const val DOUBLE = "\$numberDouble"
 
-        /** The function a query declares that compares two values that may hold a null: see [nullsEqual]. */
-        const val NULLS_EQUAL = "cy_nulls_equal"
+        /** The function a query declares that compares two values that may hold a null, where the store keeps none: see [nullsEqual]. */
+        private const val NULLS_EQUAL = "cy_nulls_equal"
 
         /** How many significant digits a double holds at most, as Neo4j rounds one. */
-        const val DOUBLE_DIGITS = 17
+        private const val DOUBLE_DIGITS = 17
 
         /** The most places [pastItsDigits] rounds to, whose scale `10^p` is well inside the NUMBER range. */
-        const val MOST_PLACES = 100
+        private const val MOST_PLACES = 100
+
+        /** The function the store keeps beside the graph [graph]'s tables that compares two values that may hold a null: see [nullsEqual]. */
+        internal fun nullsEqualName(graph: String) = "${graph}_nulls_equal"
+
+        /**
+         * The function [name], which compares two JSON values as Cypher compares values that may hold a null: 1 where
+         * they are equal, 0 where they differ, and null where a pair of their items holds a null and no pair differs. It
+         * walks the two together with `JSON_ELEMENT_T`, list item by list item and map key by map key, at any depth. A
+         * query declares it with `WITH FUNCTION`; the store keeps it, made with the graph, as `CREATE OR REPLACE` of the same
+         * text (see `OracleGraph`), which Drivine for TypeScript and for Python make byte for byte alike.
+         *
+         * The store's copy is part of the store layout the three libraries share (see AGENTS.md): it is
+         * `CREATE OR REPLACE ` and this text with [name] as [nullsEqualName] gives it, the graph's name as written and then
+         * `_nulls_equal`, its lines joined by `\n` with no newline after the last (the `//` comment below is not in it).
+         * Changing a byte of it changes the layout for all three, so it changes in all three together.
+         */
+        internal fun nullsEqualFunction(name: String): String = listOf(
+            "FUNCTION $name(cy_x JSON, cy_y JSON) RETURN NUMBER IS",
+            "    FUNCTION eq(a JSON_ELEMENT_T, b JSON_ELEMENT_T) RETURN NUMBER IS",
+            "        r NUMBER := 1;",
+            "        e NUMBER;",
+            "        la JSON_ARRAY_T;",
+            "        lb JSON_ARRAY_T;",
+            "        oa JSON_OBJECT_T;",
+            "        ob JSON_OBJECT_T;",
+            "        ks JSON_KEY_LIST;",
+            "        too_long EXCEPTION;",
+            "        PRAGMA EXCEPTION_INIT(too_long, -40478);",
+            "    BEGIN",
+            "        IF a.is_Null OR b.is_Null THEN RETURN NULL; END IF;",
+            "        IF a.is_Array AND b.is_Array THEN",
+            "            la := TREAT(a AS JSON_ARRAY_T);",
+            "            lb := TREAT(b AS JSON_ARRAY_T);",
+            "            IF la.get_Size <> lb.get_Size THEN RETURN 0; END IF;",
+            "            FOR i IN 0 .. la.get_Size - 1 LOOP",
+            "                e := eq(la.get(i), lb.get(i));",
+            "                IF e = 0 THEN RETURN 0; END IF;",
+            "                IF e IS NULL THEN r := NULL; END IF;",
+            "            END LOOP;",
+            "            RETURN r;",
+            "        END IF;",
+            "        IF a.is_Object AND b.is_Object THEN",
+            "            oa := TREAT(a AS JSON_OBJECT_T);",
+            "            ob := TREAT(b AS JSON_OBJECT_T);",
+            "            IF oa.get_Size <> ob.get_Size THEN RETURN 0; END IF;",
+            "            ks := oa.get_Keys;",
+            "            FOR i IN 1 .. ks.COUNT LOOP",
+            "                IF NOT ob.has(ks(i)) THEN RETURN 0; END IF;",
+            "                e := eq(oa.get(ks(i)), ob.get(ks(i)));",
+            "                IF e = 0 THEN RETURN 0; END IF;",
+            "                IF e IS NULL THEN r := NULL; END IF;",
+            "            END LOOP;",
+            "            RETURN r;",
+            "        END IF;",
+            "        IF a.is_Number AND b.is_Number THEN RETURN CASE WHEN a.to_Number = b.to_Number THEN 1 ELSE 0 END; END IF;",
+            // As VARCHAR2s, about 3.5 times as fast as CLOBs; as CLOBs where one is past 32 KB, which to_String
+            // raises on (ORA-40478).
+            "        IF a.is_String AND b.is_String THEN",
+            "            BEGIN",
+            "                RETURN CASE WHEN a.to_String = b.to_String THEN 1 ELSE 0 END;",
+            "            EXCEPTION WHEN too_long THEN",
+            "                RETURN CASE WHEN DBMS_LOB.COMPARE(a.to_Clob, b.to_Clob) = 0 THEN 1 ELSE 0 END;",
+            "            END;",
+            "        END IF;",
+            "        IF a.is_Boolean AND b.is_Boolean THEN RETURN CASE WHEN a.to_Boolean = b.to_Boolean THEN 1 ELSE 0 END; END IF;",
+            "        RETURN 0;",
+            "    END;",
+            "BEGIN",
+            "    RETURN eq(JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_x RETURNING CLOB)), JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_y RETURNING CLOB)));",
+            "END;",
+        ).joinToString("\n")
     }
 }
