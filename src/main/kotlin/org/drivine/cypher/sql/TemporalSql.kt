@@ -25,6 +25,9 @@ abstract class TemporalSql(protected val shared: (List<String>, (List<String>) -
     /** The text [text] as a number: null where it is null or empty. */
     abstract fun number(text: String): String
 
+    /** The timestamp [timestamp] as a text of one width, `2024-03-15T10:30:00.000000`, which orders as the timestamps do. */
+    abstract fun sortable(timestamp: String): String
+
     /** The microseconds of the second of the timestamp [timestamp], as six digits. */
     abstract fun micros(timestamp: String): String
 

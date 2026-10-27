@@ -12,9 +12,10 @@ import org.drivine.manager.PersistenceManager
  * A label is tested on the text of the array (see [SqliteSql.hasLabel]), which a partial index of the
  * schema grammar answers for the nodes of a label (see [SqliteSchemaGrammar]).
  *
- * Every statement here is safe to run again, so the store is made by running them each time a backend
- * is made: SQLite opens a transaction for a schema statement as for any other, and two processes that
- * each find the store missing make it one after the other.
+ * Every statement here is safe to run again, so the store is made by running them all where it is not
+ * all there, on a provider's first connection (see [org.drivine.connection.JdbcConnectionProvider])
+ * and each time a backend is made: SQLite opens a transaction for a schema statement as for any other,
+ * and two processes that each find the store missing make it one after the other.
  *
  * SQLite reads a table's name without regard to case, so a graph called `Contracts` is the same graph as
  * one called `contracts`, as on Postgres, which folds both to lower case. The tables keep the case of the
@@ -56,8 +57,18 @@ internal class SqliteGraph(name: String) : SqlGraph(name, "SQLite", MAX_OBJECT_N
         "CREATE INDEX IF NOT EXISTS ${name}_edge_dst ON $edges (dst, type)",
     ).map { it.trimIndent() }
 
-    override fun ensure(persistenceManager: PersistenceManager) {
-        ddl.forEach { persistenceManager.indexes.run(it) }
+    /**
+     * Counts what of the [ddl] makes is there: each table and index, by its name in any case. A user
+     * who may only read the file, or a connection with `query_only` set, is refused a `CREATE ... IF
+     * NOT EXISTS` even over a table that is there, so the store is looked for first.
+     */
+    val made: String = ddl.map { Regex("IF NOT EXISTS (\\w+)").find(it)!!.groupValues[1].lowercase() }
+        .joinToString(", ", "SELECT COUNT(*) FROM sqlite_master WHERE lower(name) IN (", ")") { "'$it'" }
+
+    /** Runs the [ddl], each statement on its own, unless [made] finds all it makes there. */
+    override fun ensure(run: (String) -> List<Any?>) {
+        if ((run(made).singleOrNull() as? Number)?.toInt() == ddl.size) return
+        ddl.forEach { run(it) }
     }
 
     companion object {

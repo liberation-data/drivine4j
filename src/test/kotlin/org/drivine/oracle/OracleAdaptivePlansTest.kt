@@ -96,7 +96,8 @@ class OracleAdaptivePlansTest {
         }
         val connection = JdbcConnectionProvider(graph, DatabaseType.ORACLE, applications, graphName = graph).connect()
         try {
-            assertFixed(notesOf(sessions.single(), read))
+            // The last session is the one handed out: the provider made the graph's tables on one before it.
+            assertFixed(notesOf(sessions.last(), read))
         } finally {
             connection.release()
         }
@@ -115,7 +116,7 @@ class OracleAdaptivePlansTest {
         }
         val connection = JdbcConnectionProvider(graph, DatabaseType.ORACLE, applications, graphName = graph, setsNoAdaptivePlans = false).connect()
         try {
-            assertContains(notesOf(sessions.single(), read), "this is an adaptive plan")
+            assertContains(notesOf(sessions.last(), read), "this is an adaptive plan")
         } finally {
             connection.release()
         }

@@ -780,6 +780,94 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a list of zoned values, and a list of lists of them, sort and compare item by item as the moments they are, whatever their offsets`() {
+        // Not in the spec yet (#199). As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
+        // Oracle sorts such a list as its JSON: see OracleZonedListSortTest.
+        if (pm.type == DatabaseType.ORACLE) return
+        val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
+        val hours = listOf(10L, 8L, 9L)
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
+        assertEquals(hours.reversed(), query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts DESC"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, collect(t) AS ts RETURN h ORDER BY ts"))
+        assertEquals(hours, query("UNWIND [[$b], [$a], [$c]] AS ts RETURN ts[0].hour ORDER BY ts"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [[t]] AS l RETURN l[0][0].hour ORDER BY l"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, collect([t]) AS l RETURN h ORDER BY l"))
+        // A list that starts another comes first; a null item after any moment.
+        assertEquals(listOf(1L, 2L), query("WITH [$a] AS x, [$a, $b] AS y UNWIND [y, x] AS l RETURN size(l) ORDER BY l"))
+        assertEquals(listOf(0L, 1L), query("WITH [$a, null] AS x, [$a, $b] AS y UNWIND [x, y] AS l RETURN size([i IN l WHERE i IS NULL]) ORDER BY l"))
+        // A long list, and lists worked out with temporal arithmetic, by a comprehension or collect(): k = 0's start at 08:00 UTC.
+        val at = "CASE k WHEN 0 THEN $a ELSE $b END"
+        assertEquals(listOf(0L, 1L), query("UNWIND [0, 1] AS k WITH k, [x IN range(1, 200) | $at + duration({minutes: x})] AS l RETURN k ORDER BY l"))
+        assertEquals(listOf(0L, 1L), query("UNWIND [0, 1] AS k UNWIND range(1, 3) AS x WITH k, $at + duration({minutes: x}) AS t WITH k, collect(t) AS l RETURN k ORDER BY l"))
+        // min() and max() of them.
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [[$b], [$a], [$c]] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [$b, $a, $c] AS t WITH [[t]] AS l RETURN [min(l)[0][0].hour, max(l)[0][0].hour]"))
+        // A time of day with an offset, as a moment.
+        val times = "[time('10:00:00+02:00'), time('09:00:00Z'), time('08:30:00Z')]"
+        assertEquals(hours, query("UNWIND $times AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND $times AS t WITH [t] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
+        // Taken from a list kept in order, by head() and last().
+        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [$b, $a, $c] AS t WITH t ORDER BY t WITH collect(t) AS ts RETURN [head(ts).hour, last(ts).hour]"))
+    }
+
+    @Test
+    fun `a list of zoned values sorts as their moments however it was made, and an empty list or a null item sorts as Cypher puts it`() {
+        // Not in the spec yet (#199). By moment 10:00+02:00, 08:30Z, 09:00Z; as text 08:30Z, 09:00Z, 10:00+02:00.
+        // Oracle sorts such a list as its JSON: see OracleZonedListSortTest.
+        if (pm.type == DatabaseType.ORACLE) return
+        val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
+        val hours = listOf(10L, 8L, 9L)
+        fun sorted(by: String, list: String = "[[t]]") = query("UNWIND [$b, $a, $c] AS t WITH t, $list AS l RETURN t.hour ORDER BY $by")
+        // Taken from a list of lists, by an index, head(), last(), a slice, reverse(), tail() and a comprehension.
+        for (by in listOf("l[0]", "head(l)", "last(l)", "l[0..1]", "reverse(l)", "[x IN l WHERE x IS NOT NULL]", "[x IN l | x]")) {
+            assertEquals(hours, sorted(by), by)
+        }
+        assertEquals(hours, sorted("tail(l)", "[[t], [t]]"))
+        // Made by a CASE, collect(DISTINCT), a UNION, and a comprehension over nodes or a pattern.
+        assertEquals(hours, sorted("CASE WHEN t IS NOT NULL THEN [t] END"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, collect(DISTINCT [t]) AS l RETURN h ORDER BY l"))
+        assertEquals(
+            hours,
+            query("CALL { UNWIND [$b] AS t RETURN [[t]] AS l UNION UNWIND [$a, $c] AS t RETURN [[t]] AS l } RETURN l[0][0].hour ORDER BY l"),
+        )
+        clear()
+        seed(
+            """
+            CREATE (:CyZoned {h: 10})-[:AT]->(:CyZonedAt {at: '2024-03-15T10:00:00+02:00'}),
+                   (:CyZoned {h: 9})-[:AT]->(:CyZonedAt {at: '2024-03-15T09:00:00Z'}),
+                   (:CyZoned {h: 8})-[:AT]->(:CyZonedAt {at: '2024-03-15T08:30:00Z'})
+            """,
+        )
+        assertEquals(hours, query("MATCH (z:CyZoned) RETURN z.h ORDER BY [(z)-[:AT]->(w) | [datetime(w.at)]]"))
+        assertEquals(hours, query("MATCH (z:CyZoned)-[:AT]->(w) WITH z, collect(w) AS ws RETURN z.h ORDER BY [n IN ws | [datetime(n.at)]]"))
+        // The empty list first, then a list of a moment, then a null item or no list; as items of a list too.
+        val ordered = listOf(2L, 1L, 3L)
+        val empty = "[i IN [$a] WHERE false]"
+        assertEquals(ordered, query("UNWIND [1, 2, 3] AS k WITH k, CASE k WHEN 1 THEN [$a] WHEN 2 THEN $empty END AS l RETURN k ORDER BY l"))
+        assertEquals(ordered.reversed(), query("UNWIND [1, 2, 3] AS k WITH k, CASE k WHEN 1 THEN [$a] WHEN 2 THEN $empty END AS l RETURN k ORDER BY l DESC"))
+        assertEquals(ordered, query("UNWIND [1, 2, 3] AS k WITH k, [CASE k WHEN 1 THEN [$a] WHEN 2 THEN $empty END] AS l RETURN k ORDER BY l"))
+        assertEquals(ordered.reversed(), query("UNWIND [1, 2, 3] AS k WITH k, [CASE k WHEN 1 THEN [$a] WHEN 2 THEN $empty END] AS l RETURN k ORDER BY l DESC"))
+        // Two lists of lists of them put together, and min() or max() of lists of them, grouped.
+        assertEquals(hours, sorted("l + l"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, min([t]) AS m RETURN h ORDER BY m"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, max([[t]]) AS m RETURN h ORDER BY m"))
+        // Carried past a write, as a list and as a list of lists.
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l CREATE (:CyZonedWrite) RETURN t.hour ORDER BY l"))
+        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t, [[t]] AS l CREATE (:CyZonedWrite) RETURN t.hour ORDER BY l"))
+        // Read from the row a write works its value out of (#326's rowKeys), in a subquery that sorts them.
+        assertEquals(
+            listOf(1L),
+            query(
+                "UNWIND [$b, $a, $c] AS t WITH collect([t]) AS ls CREATE (n:CyZonedWrite) " +
+                    "SET n.first = COUNT { UNWIND ls AS l WITH l ORDER BY l LIMIT 1 WITH l WHERE l[0].hour = 10 RETURN l } RETURN n.first",
+            ),
+        )
+        // After a term whose kind is open, which sorts by its kind first (#308): the text before the numbers, then by moment.
+        assertEquals(listOf(8L, 10L, 9L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o, l"))
+        assertEquals(listOf(9L, 10L, 8L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o DESC, l DESC"))
+    }
+
+    @Test
     fun `a negative precision from data fails only on a row that reads it, in a WHERE and an aggregate too, with the compiler's message`() {
         // The spec reads a precision from data since v0.6.4; here, in a WHERE and an aggregate, and on rows filtered out.
         clear()

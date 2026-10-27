@@ -499,13 +499,12 @@ properties:
 val drivine = Drivine(DataSourceMap(mapOf(
     "graph" to ConnectionProperties(type = DatabaseType.SQLITE, databaseName = "/var/data/app.db")
 )))
-drivine.graphObjectManager("graph")    // makes the graph's tables in a new store
 val manager = drivine.persistenceManager("graph")
 ```
 
-The tables are made when an object manager is first made for the datasource. In a new store that you only send
-Cypher to, make one once, as above (in Spring, `factory.stateless("graph")` on the `GraphObjectManagerFactory`), or
-the first statement finds no tables ([#296](https://github.com/liberation-data/drivine4j/issues/296)).
+The graph's tables are made, where they are not there yet, before the datasource's first connection, so the first
+statement sent to a new store finds them, with no object manager made first. A user who may read the tables but not
+make them works with a store where they are there.
 
 ### A write and a read
 
@@ -3268,8 +3267,8 @@ val provider = JdbcConnectionProvider.pooled(
 )
 ```
 
-**How a graph is stored.** Two tables and the property graph over them, made when a manager first
-speaks to the graph: `<graph>_node (nid, labels, props, stamp)` and
+**How a graph is stored.** Two tables and the property graph over them, made, where they are not
+there yet, before the datasource's first connection: `<graph>_node (nid, labels, props, stamp)` and
 `<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON. Labels, property
 names and relationship types are data, so `@NodeLabels`, `@PropertyBag` and `edges.relate` work as
 they do elsewhere. To SQL written by hand the graph has one vertex label, `node`, and one edge label,
@@ -3279,7 +3278,7 @@ relationships with it. A third table, `<graph>_schema`, records the indexes and 
 made: see [Schema Management](#schema-management-indexes--constraints). Beside the tables the graph is made with
 one function, `<graph>_nulls_equal`, which a compiled Cypher statement compares two lists or maps that may hold a null
 by (see the notes below). Making it takes `CREATE PROCEDURE`, which the `RESOURCE` role grants, as well as the
-`CREATE TABLE` the tables take. A store an earlier version made gains it when a manager next speaks to the graph. Where the
+`CREATE TABLE` the tables take. A store an earlier version made gains it before the datasource's first connection, as a new one gains its tables. Where the
 user that makes the graph may not make a function, the graph is made without it, and Drivine logs a warning once
 for the graph when a statement would call it, and looks for it again a minute later: a statement that writes, or the step of a `reduce`, then compares two
 lists or maps that hold a null and differ as JSON as false, where Cypher may give null (`[null] = [1]`), and a read
@@ -3351,7 +3350,12 @@ declares the function itself.
   read (`d.year`, `t.hour`, `dur.days`), a duration is added to a moment or to another duration,
   `duration.between` and `truncate` work them out, and two moments compare as the moments they are. A zoned
   value the statement makes sorts as its moment (`ORDER BY datetime(n.at)`); one read as a property sorts as
-  its text. A zoned value keeps the offset it was written with; a named zone, such as
+  its text, and so does a map that holds one. On Postgres and SQLite, a list of them, or a list of lists of
+  them, sorts item by item so in an `ORDER BY`, `min` and `max`. Oracle sorts such a list as it sorts JSON, a
+  zoned value by its text: Oracle 23 takes many minutes to parse the key that sorts it by moments over a list worked
+  out item by item with temporal arithmetic (`[i IN range(1, 10) | t + duration({minutes: i})]`), and
+  neither a query timeout nor a kill ends the parse ([#331](https://github.com/liberation-data/drivine4j/issues/331)). A zoned value keeps the offset it was written
+  with; a named zone, such as
   `Europe/Paris`, is not read. A graph engine's driver gives a temporal value as one of its own, and Oracle
   and Postgres give its text. A value read from a property is of the kind its text tells, so
   `n.day + duration('P1D')` adds a day to a date stored as `2024-03-15`. Two values the statement makes
@@ -3570,7 +3574,8 @@ val provider = JdbcConnectionProvider.pooled(
 )
 ```
 
-**How a graph is stored.** The tables Oracle keeps, made when a manager first speaks to the graph:
+**How a graph is stored.** The tables Oracle keeps, made, where they are not there yet, before the
+datasource's first connection:
 `<graph>_node (nid, labels, props, stamp)` and `<graph>_edge (eid, src, dst, type, props)`, with
 `labels` (a JSON array) and `props` as `jsonb`, and `<graph>_schema` for what schema management made.
 A GIN index over `labels` answers whether a node carries a label. Beside them are three functions,
@@ -3731,7 +3736,8 @@ val provider = JdbcConnectionProvider.sqlite("graph", "/var/data/app.db", graphN
 ```
 
 **How a graph is stored.** `<graph>_node (nid, labels, props, stamp)` and
-`<graph>_edge (eid, src, dst, type, props)`, with `labels` and `props` as JSON text (not SQLite's binary
+`<graph>_edge (eid, src, dst, type, props)`, made, where they are not there yet, before the datasource's
+first connection, with `labels` and `props` as JSON text (not SQLite's binary
 `jsonb`, so Drivine for TypeScript and for Python read the same file), and `<graph>_schema` for what
 schema management made. A save is the plan of steps the other stores carry out, carried out by the
 function `drivine_write` that Drivine registers on each connection: applied whole or not at all, and
