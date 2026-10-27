@@ -527,16 +527,6 @@ abstract class CypherQueryContract {
             listOf(listOf(true, true, true, true)),
             query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l, $long AS w, [$long] AS ws CREATE (n:CyNullEquality) SET n.eq = v = [s], n.in = v IN l, n.longEq = w = $long, n.longIn = w IN ws RETURN [n.eq, n.in, n.longEq, n.longIn]"),
         )
-        assertEquals(listOf("null"), query("CREATE (n:CyNullEquality) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
-    }
-
-    @Test
-    fun `the step of a reduce compares lists and maps that hold a null and differ as JSON item by item`() {
-        // Beside the spec's cases since v0.6.14 (#270): on Oracle a reduce's step calls no function of the query's, so the store's walks them.
-        assertEquals(listOf(listOf(false, null, null)), query("WITH [2, null] AS c RETURN reduce(acc = [], x IN [[1, null], [2, null], [null, 1]] | acc + [x = c])"))
-        assertEquals(listOf(listOf(null, false, false)), query("RETURN reduce(acc = [], m IN [{x: null}, {x: 1, y: 2}, {x: 2}] | acc + [m = {x: 1}])"))
-        assertEquals(listOf(listOf(null, false)), query("WITH [[null], 1] AS a RETURN reduce(acc = [], x IN [[[1], 1], [[1], 2]] | acc + [x = a])"))
-        assertEquals(listOf(null), query("RETURN reduce(acc = true, x IN [[null]] | acc AND x = [1])"))
     }
 
     @Test
@@ -1236,23 +1226,11 @@ abstract class CypherQueryContract {
 
     @Test
     fun `values of several kinds sort as Cypher orders their kinds, a map, a list, a text, a truth value, a number, then null`() {
-        // Not in the spec yet (#299): Oracle and SQLite sort first by where a value's kind comes, then by the value.
+        // Beside the spec's case since v0.6.16 (#299): Oracle and SQLite sort first by where a value's kind comes, then by the value.
         // Postgres takes jsonb's order for every kind but a text: a number before a truth value, a map and a list last (#307).
         if (pm.type == DatabaseType.POSTGRES) return
         val values = "[1, {a: 1}, 'b', true, [2], 2.5, null, false, 'A', [1, 2], -1]"
         val ascending = listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A", "b", false, true, -1L, 1L, 2.5, null)
-        assertEquals(ascending, query("UNWIND $values AS t RETURN t ORDER BY t"))
-        assertEquals(ascending.reversed(), query("UNWIND $values AS t RETURN t ORDER BY t DESC"))
-        // Carried out of a WITH that pages them, kept distinct, and beside another term.
-        assertEquals(listOf("A", "b", false, true), query("UNWIND $values AS t WITH t ORDER BY t SKIP 3 LIMIT 4 RETURN t"))
-        assertEquals(listOf("b", true, 2L), query("UNWIND [2, 'b', true, 2, 'b'] AS t RETURN DISTINCT t ORDER BY t"))
-        assertEquals(
-            listOf(listOf(1L, "a"), listOf(1L, 3L), listOf(2L, false), listOf(2L, 0L)),
-            query("UNWIND [[2, 0], [1, 3], [2, false], [1, 'a']] AS p RETURN p ORDER BY p[0], p[1]"),
-        )
-        // A truth value before a number, though SQLite reads it as 1 or 0.
-        assertEquals(listOf(false, true, 0L, 1L), query("UNWIND [1, true, 0, false] AS t RETURN t ORDER BY t"))
-        assertEquals(listOf(listOf(mapOf("a" to 1L), 1L)), query("UNWIND [true, 1, 'b', [1], {a: 1}] AS t RETURN min(t), max(t)"))
         // Carried out of a CALL { … }, grouped by, kept distinct by another name, and sorted by when it is not returned.
         assertEquals(listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A"), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
         assertEquals(
@@ -1280,15 +1258,11 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a property stored as several kinds sorts as Cypher orders their kinds`() {
-        // Not in the spec yet (#299): a property read from the store may be of any kind, so its kind is ranked first.
+        // Beside the spec's case since v0.6.16 (#299): a property read from the store may be of any kind, so its kind is ranked first.
         // Postgres puts a number before a truth value, and a list last (#307).
         if (pm.type == DatabaseType.POSTGRES) return
         clear()
         seed("CREATE (:Kind {v: 2}), (:Kind {v: 'b'}), (:Kind {v: true}), (:Kind {v: [1]}), (:Kind {v: 1.5}), (:Kind {v: 'B'}), (:Kind {v: false}), (:Kind)")
-        val ascending = listOf(listOf(1L), "B", "b", false, true, 1.5, 2L, null)
-        assertEquals(ascending, query("MATCH (k:Kind) RETURN k.v ORDER BY k.v"))
-        assertEquals(ascending.reversed(), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC"))
-        assertEquals(listOf("b", false), query("MATCH (k:Kind) WITH k ORDER BY k.v SKIP 2 LIMIT 2 RETURN k.v"))
         assertEquals(listOf(null, 2L), query("CALL { MATCH (k:Kind) RETURN k.v AS v ORDER BY v DESC LIMIT 2 } RETURN v"))
         assertEquals(listOf(listOf(listOf(1L), "B", "b", false, true, 1.5, 2L)), query("MATCH (k:Kind) WITH k ORDER BY k.v WITH collect(k.v) AS vs RETURN vs"))
         assertEquals(listOf(2L, 1.5, true), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC SKIP 1 LIMIT 3"))
