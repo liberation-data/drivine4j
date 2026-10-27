@@ -1,9 +1,9 @@
 # Releases drivine4j to Maven Central from a tag. RELEASING.md describes the process.
 #
 # - A push of a tag vX.Y.Z publishes: the tag is checked, the full CI runs, every published module is built, signed
-#   and checked, and nmcp uploads them to the Central Portal.
+#   and checked, and nmcp uploads them to the Central Portal in one bundle, as one deployment.
 # - workflow_dispatch, and a pull request that changes the release machinery, are dry runs: everything but the
-#   publish, signed with a throwaway key, with the Maven repository and the Central Portal bundles left as the run's
+#   publish, signed with a throwaway key, with the Maven repository and the Central Portal bundle left as the run's
 #   artifact to inspect.
 name: Release
 
@@ -130,21 +130,20 @@ jobs:
           gpg --batch --pinentry-mode loopback --passphrase dry-run \
             --quick-gen-key 'Drivine release dry run <dry-run@invalid>' rsa3072 sign 1d
           gpg --batch --pinentry-mode loopback --passphrase dry-run --armor --export-secret-keys > "$RUNNER_TEMP/dry-run-key.asc"
-      # Every module, as ci.yml builds it (the gate ran the tests), then each published module's publication
-      # staged as nmcp stages it, in build/nmcp/m2MavenJava, and zipped into the bundle it uploads.
-      - name: Build, sign and stage the publications
+      # Every module, as ci.yml builds it (the gate ran the tests), then the bundle nmcp uploads: every published
+      # module's publication, staged and signed, in one zip, build/nmcp/zip/publicationAggregated.zip.
+      - name: Build, sign and bundle the publications
         run: |
           SIGNING_KEY="$(cat "$RUNNER_TEMP/dry-run-key.asc")" \
-            ./gradlew build -x test -x standaloneTest zipMavenJavaPublication --no-daemon
+            ./gradlew build -x test -x standaloneTest zipAggregationPublication --no-daemon
         env:
           SIGN: 'true'
           SIGNING_PASSWORD: dry-run
       - name: Check the publications
         run: |
-          mkdir -p release/maven-repo release/bundles
-          for repo in $(find . -path '*/build/nmcp/m2MavenJava' -type d); do
-            cp -R "$repo/." release/maven-repo/
-          done
+          mkdir -p release/maven-repo
+          cp build/nmcp/zip/publicationAggregated.zip release/
+          unzip -q release/publicationAggregated.zip -d release/maven-repo
           staged=$(ls release/maven-repo/org/drivine | sort | tr '\n' ' ')
           expected=$(tr ' ' '\n' <<< "$MODULES" | sort | tr '\n' ' ')
           if [[ "$staged" != "$expected" ]]; then
@@ -159,12 +158,6 @@ jobs:
             done
             grep -q "<version>$VERSION</version>" "$dir/$m-$VERSION.pom" || { echo "::error::$m's pom isn't version $VERSION."; exit 1; }
           done
-          for zip in $(find . -path '*/build/nmcp/zip/publicationMavenJava.zip'); do
-            # A module's directory is its artifactId; the root's is drivine4j.
-            module=${zip%%/build/nmcp/*}; module=${module#./}; [[ "$module" == . ]] && module=drivine4j
-            cp "$zip" "release/bundles/$module.zip"
-          done
-          [[ $(ls release/bundles | wc -l) -eq $(wc -w <<< "$MODULES") ]] || { echo "::error::There isn't one bundle per module."; exit 1; }
           {
             echo "### Staged for Maven Central: $VERSION"
             echo '```'
@@ -177,8 +170,9 @@ jobs:
           path: release/
           if-no-files-found: error
 
-  # nmcp signs and uploads in one Gradle build, so this job builds the publications again from the same tagged
-  # commit, signed with the release key, and uploads them.
+  # nmcp signs and uploads in one Gradle build, so this job builds the bundle again from the same tagged commit,
+  # signed with the release key, checks it as build checked its own, and uploads it as one deployment: the Central
+  # Portal releases every module or none.
   publish:
     needs: [check, build]
     if: needs.check.outputs.publish == 'true'
@@ -186,6 +180,8 @@ jobs:
     environment: release
     permissions:
       contents: read
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
@@ -209,27 +205,38 @@ jobs:
             echo "::error::The release environment is missing: ${missing[*]}."
             exit 1
           fi
+      - name: Build and sign the bundle
+        run: ./gradlew zipAggregationPublication --no-daemon
+        env:
+          SIGN: 'true'
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+      # Signing isn't required by build.gradle, so a signature that's missing is caught here, before the upload.
+      - name: Check the bundle
+        run: |
+          mkdir -p uploaded/maven-repo
+          cp build/nmcp/zip/publicationAggregated.zip uploaded/
+          unzip -q uploaded/publicationAggregated.zip -d uploaded/maven-repo
+          for m in $MODULES; do
+            dir="uploaded/maven-repo/org/drivine/$m/$VERSION"
+            for f in "$m-$VERSION.jar" "$m-$VERSION-sources.jar" "$m-$VERSION-javadoc.jar" "$m-$VERSION.pom" "$m-$VERSION.module"; do
+              [[ -f "$dir/$f" && -f "$dir/$f.asc" ]] || { echo "::error::$m has no $f, or no signature of it."; exit 1; }
+            done
+          done
+          [[ $(ls uploaded/maven-repo/org/drivine | wc -l) -eq $(wc -w <<< "$MODULES") ]] || { echo "::error::The bundle doesn't hold exactly the modules in MODULES."; exit 1; }
       - name: Publish to Maven Central
-        run: ./gradlew publishAllPublicationsToCentralPortal --no-daemon
+        run: ./gradlew publishAggregatedPublicationToCentralPortal --no-daemon
         env:
           SIGN: 'true'
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
           SONATYPE_USERNAME: ${{ secrets.CENTRAL_PORTAL_USERNAME }}
           SONATYPE_PASSWORD: ${{ secrets.CENTRAL_PORTAL_PASSWORD }}
-      - name: Keep the bundles uploaded
-        if: always()
-        run: |
-          mkdir -p uploaded
-          for zip in $(find . -path '*/build/nmcp/zip/publicationMavenJava.zip'); do
-            module=${zip%%/build/nmcp/*}; module=${module#./}; [[ "$module" == . ]] && module=drivine4j
-            cp "$zip" "uploaded/$module.zip"
-          done
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: maven-central-uploaded-${{ needs.check.outputs.version }}
-          path: uploaded/
+          path: uploaded/publicationAggregated.zip
           if-no-files-found: warn
 
   github-release:
@@ -242,4 +249,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          prerelease=()
+          if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag "${prerelease[@]}"

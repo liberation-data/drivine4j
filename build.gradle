@@ -312,6 +312,21 @@ nmcp {
 		// Automatically publish (set to false to manually release from web UI)
 		publicationType = "AUTOMATIC"
 	}
+	// Every published module in one bundle, uploaded as one deployment, so the Central Portal releases all of them
+	// or none: publishAggregatedPublicationToCentralPortal, which release.yml runs. A module that is published is
+	// listed here.
+	publishAggregation {
+		project(':')
+		project(':drivine4j-codegen')
+		project(':drivine4j-codegen-java')
+		project(':drivine4j-codegen-model')
+		project(':drivine4j-coroutines')
+		project(':drivine4j-spring')
+		project(':drivine4j-spring-boot-starter')
+		username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+		password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+		publicationType = "AUTOMATIC"
+	}
 }
 
 // The ANTLR plugin puts the whole tool on the library's classpath: only its runtime belongs there.

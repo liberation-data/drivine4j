@@ -30,7 +30,11 @@ git push origin vX.Y.Z
 - **`build`** builds the release artifacts from the checked-out ref, checks them, runs a smoke test, and uploads them
   as the run's artifact.
 - **`publish`** runs on a tag push alone, in the `release` environment. It publishes the exact files `build` made.
-- **`github-release`** then creates the GitHub release for the tag, with generated notes.
+- **`github-release`** then creates the GitHub release for the tag, with generated notes, marked a prerelease when
+  the version has a `-suffix`.
+
+A tag that fails `check` publishes nothing. Delete it (`git push origin :refs/tags/vX.Y.Z`), fix what the message
+says, and tag again.
 
 A **dry run** is everything but `publish` and `github-release`. Run it from the Actions tab (Release, Run workflow,
 on any branch or tag), and it runs by itself on a pull request that changes the release machinery. A tag push is the
@@ -44,31 +48,32 @@ only thing that publishes.
 - **Modules:** seven are published, all under `org.drivine`: `drivine4j`, `drivine4j-codegen`,
   `drivine4j-codegen-java`, `drivine4j-codegen-model`, `drivine4j-coroutines`, `drivine4j-spring` and
   `drivine4j-spring-boot-starter`. `drivine4j-sample` is not. A new published module is added to `MODULES` in
-  `release.yml`, or `build` fails.
-- **Build:** `./gradlew build -x test -x standaloneTest zipMavenJavaPublication`, with no Gradle cache (the gate ran
-  the tests). Each module's publication is staged, as nmcp stages it, in its `build/nmcp/m2MavenJava`, and zipped into
-  the bundle nmcp uploads, `build/nmcp/zip/publicationMavenJava.zip`.
+  `release.yml` and to `publishAggregation` in the root `build.gradle`, or `build` fails.
+- **Build:** `./gradlew build -x test -x standaloneTest zipAggregationPublication`, with no Gradle cache (the gate
+  ran the tests). Every module's publication is staged and signed, as nmcp stages it, and zipped into the one bundle
+  nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
 - **Checks:** every module has its jar, sources jar, javadoc jar, pom and Gradle module file, each with a signature that
   verifies, and its pom names the version. `build` also fails a tag whose version Maven Central already has.
-- **Publish:** `./gradlew publishAllPublicationsToCentralPortal`, which signs every module with the release key
-  (`SIGN=true`, in-memory from `SIGNING_KEY` and `SIGNING_PASSWORD`) and uploads each module's bundle to the
-  [Central Portal](https://central.sonatype.com) as its own deployment, released automatically
-  (`publicationType = "AUTOMATIC"`). nmcp signs and uploads in one Gradle build, so `publish` builds the publications
-  again from the same tagged commit rather than taking `build`'s, which were signed with a throwaway key. The bundles
-  it uploaded are kept as the run's `maven-central-uploaded-X.Y.Z` artifact. If one module's upload fails, those
-  uploaded before it are released and can't be uploaded again: check the Central Portal's deployments before running
-  `publish` again.
+- **Publish:** `./gradlew publishAggregatedPublicationToCentralPortal`, which signs every module with the release key
+  (`SIGN=true`, in-memory from `SIGNING_KEY` and `SIGNING_PASSWORD`) and uploads the bundle of all seven to the
+  [Central Portal](https://central.sonatype.com) as one deployment, released automatically
+  (`publicationType = "AUTOMATIC"`): the portal releases every module or none. nmcp signs and uploads in one Gradle
+  build, so `publish` builds the bundle again from the same tagged commit rather than taking `build`'s, which was
+  signed with a throwaway key, and checks that it holds every module's files and signatures before uploading it. The
+  bundle it uploaded is kept as the run's `maven-central-uploaded-X.Y.Z` artifact. nmcp doesn't wait for the portal
+  to validate the deployment, so a green `publish` means uploaded: the deployment's state is on the Central Portal,
+  under Deployments, and the release reaches Maven Central some minutes after it validates.
 - **Dry run:** signs with a key made in the job and thrown away, and leaves the `maven-central-X.Y.Z` artifact on the
-  run: `maven-repo/`, a Maven repository of all seven modules with their signatures and checksums, and `bundles/`,
-  the zip nmcp would upload for each. The run's summary lists the files.
+  run: `publicationAggregated.zip`, the bundle nmcp would upload, and `maven-repo/`, the same unzipped, a Maven
+  repository of all seven modules with their signatures and checksums. The run's summary lists the files.
 - **Tags before this:** `0.0.3` and `0.3.0` were made by hand, without the `v`, and stay as they are. `release.yml`
   matches `v*` alone, so they never run it. The first release from a tag is `v0.3.1` or later.
 
 The same build, locally, publishing nothing (unsigned, or add `SIGN=true` with `SIGNING_KEY` and `SIGNING_PASSWORD`):
 
 ```
-./gradlew build -x test -x standaloneTest zipMavenJavaPublication
-find . -path '*/build/nmcp/m2MavenJava/*' -type f
+./gradlew build -x test -x standaloneTest zipAggregationPublication
+unzip -l build/nmcp/zip/publicationAggregated.zip
 ```
 
 `./gradlew publishToMavenLocal` still puts every module in `~/.m2/repository`.
