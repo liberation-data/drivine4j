@@ -307,6 +307,24 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return "LATERAL (SELECT $json AS list) ${alias}_l CROSS JOIN JSON_TABLE(${alias}_l.list, '\$[*]' $items"
     }
 
+    /**
+     * Each item read by its place, from as many rows as the list has items, as [range] makes them: Oracle 23 takes many
+     * seconds, or minutes, to parse a `JSON_TABLE` over a list of temporal values worked out with temporal arithmetic, item
+     * by item in a comprehension (#331), and neither a query timeout nor a kill ends the parse. `JSON_QUERY` reads the same
+     * list in moments, at about ten times the cost of `JSON_TABLE` for a short list, so a list of other values is read by
+     * [elements]. The list is worked out once, in a lateral view of its own, and its places counted in another: where they
+     * are counted over the list's own view, or the list is written out again where it is read, Oracle reads an `EXISTS` over
+     * its items with the wrong row's columns. It reads as `JSON_TABLE`'s `$[*]` does: no rows for null, and one for a value
+     * that is no list.
+     */
+    override fun temporalElements(json: String, alias: String): String {
+        val (list, place) = "${alias}_l" to "${alias}_r"
+        val size = "JSON_VALUE($list.list, '\$.size()' RETURNING NUMBER)"
+        return "LATERAL (SELECT /*+ NO_MERGE */ $json AS list FROM DUAL) $list CROSS JOIN " +
+            "LATERAL (SELECT $place.n AS item_no, JSON_QUERY($list.list, '\$[\$i]' PASSING $place.n - 1 AS \"i\" RETURNING JSON) AS item " +
+            "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST(NVL($size, 0), 1)) $place WHERE $place.n <= $size) $alias"
+    }
+
     override fun aggregateList(value: String, order: String?) =
         "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} NULL ON NULL RETURNING JSON), JSON('[]'))"
 
@@ -314,7 +332,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     override fun collect(value: String, order: String?) =
         "COALESCE(JSON_ARRAYAGG($value${order?.let { " ORDER BY $it" }.orEmpty()} RETURNING JSON), JSON('[]'))"
 
-    /** At most 4,000 bytes, as a `VARCHAR2`: the rest is left off, where it would fail the statement. Unused while lists sort as JSON: see [listsByMoments]. */
+    /** At most 4,000 bytes, as a `VARCHAR2`: the rest is left off, where it would fail the statement. */
     override fun joinedTexts(text: String, order: String) = "LISTAGG($text ON OVERFLOW TRUNCATE '' WITHOUT COUNT) WITHIN GROUP (ORDER BY $order)"
 
     /**
@@ -432,13 +450,6 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
     /** `min` and `max` of lists grouped and ordered by [listSortKey] close the session (ORA-03113): `JSON` orders them by itself. */
     override val extremesByListKey = false
-
-    /**
-     * Oracle 23 takes many minutes to parse [momentsKey]'s `JSON_TABLE` over a list worked out item by item with temporal
-     * arithmetic, as a comprehension works one out (#331), and neither a query timeout nor a kill ends the parse, so the session
-     * stalls: a list of zoned values sorts as its JSON, by the text of each, as it did before lists sorted by their moments.
-     */
-    override val listsByMoments = false
 
     /** `TO_CHAR`'s scientific notation, `1.E+07`, `-1.2E-04`, as Java's: `1.0E7`, `-1.2E-4`. */
     private fun scientific(text: String) = "REGEXP_REPLACE(REPLACE($text, '.E', '.0E'), 'E\\+?(-?)0*([0-9])', 'E\\1\\2')"

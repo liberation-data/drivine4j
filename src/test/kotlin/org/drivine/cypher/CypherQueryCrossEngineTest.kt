@@ -782,8 +782,6 @@ abstract class CypherQueryContract {
     @Test
     fun `a list of zoned values, and a list of lists of them, sort and compare item by item as the moments they are, whatever their offsets`() {
         // Not in the spec yet (#199). As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
-        // Oracle sorts such a list as its JSON: see OracleZonedListSortTest.
-        if (pm.type == DatabaseType.ORACLE) return
         val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
         val hours = listOf(10L, 8L, 9L)
         assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
@@ -813,8 +811,6 @@ abstract class CypherQueryContract {
     @Test
     fun `a list of zoned values sorts as their moments however it was made, and an empty list or a null item sorts as Cypher puts it`() {
         // Not in the spec yet (#199). By moment 10:00+02:00, 08:30Z, 09:00Z; as text 08:30Z, 09:00Z, 10:00+02:00.
-        // Oracle sorts such a list as its JSON: see OracleZonedListSortTest.
-        if (pm.type == DatabaseType.ORACLE) return
         val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
         val hours = listOf(10L, 8L, 9L)
         fun sorted(by: String, list: String = "[[t]]") = query("UNWIND [$b, $a, $c] AS t WITH t, $list AS l RETURN t.hour ORDER BY $by")
