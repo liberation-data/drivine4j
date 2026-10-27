@@ -174,14 +174,23 @@ class OracleFreshGraphTest {
         OracleGraph(graph).ensure(manager)
         val f = OracleGraph(graph).nullsEqual
         val ensuring = OracleGraph(graph).ensuring
-        repeat(15) {
-            OracleTestDatabase.drop("FUNCTION $f")
-            val start = CountDownLatch(1)
-            val errors = ConcurrentLinkedQueue<Throwable>()
-            val threads = (0 until 6).map { i ->
-                thread {
-                    try {
-                        DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword()).use { connection ->
+        // The sessions are opened once, before the rounds: a round's worth of new connections each time, 90 in a few
+        // seconds, is more than CI's Oracle's listener hands out (ORA-12516), and has nothing to do with the race.
+        // Reused sessions are what a pool hands out, and after the first round each caller holds a cursor on the function
+        // dropped since, so the rounds after it are the harder case, not an easier one.
+        val connections = mutableListOf<java.sql.Connection>()
+        try {
+            // Opened inside the try, so the ones made before one that is refused are still closed.
+            repeat(6) {
+                connections += DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword())
+            }
+            repeat(15) {
+                OracleTestDatabase.drop("FUNCTION $f")
+                val start = CountDownLatch(1)
+                val errors = ConcurrentLinkedQueue<Throwable>()
+                val threads = connections.mapIndexed { i, connection ->
+                    thread {
+                        try {
                             start.await()
                             if (i % 2 == 0) {
                                 connection.createStatement().use { it.execute(ensuring) }
@@ -192,16 +201,18 @@ class OracleFreshGraphTest {
                                     if (e.errorCode !in setOf(904, 6575)) throw e
                                 }
                             }
+                        } catch (e: Throwable) {
+                            errors += e
                         }
-                    } catch (e: Throwable) {
-                        errors += e
                     }
                 }
+                start.countDown()
+                threads.forEach(Thread::join)
+                assertTrue(errors.isEmpty(), errors.joinToString())
+                assertEquals(listOf("0"), manager.query(QuerySpecification.withStatement("SELECT TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) AS r FROM DUAL")))
             }
-            start.countDown()
-            threads.forEach(Thread::join)
-            assertTrue(errors.isEmpty(), errors.joinToString())
-            assertEquals(listOf("0"), manager.query(QuerySpecification.withStatement("SELECT TO_CHAR($f(JSON('[1, null]'), JSON('[2, null]'))) AS r FROM DUAL")))
+        } finally {
+            connections.forEach { runCatching { it.close() } }
         }
     }
 
