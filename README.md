@@ -3342,8 +3342,11 @@ declares the function itself.
   value that a `UNION` in a `CALL { … }` takes from different values of the row in its queries, or that an `OPTIONAL
   CALL` returns, which may be null. A value such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`)
   isn't worked around yet.
-- An `OPTIONAL CALL` in a subquery expression (`COUNT { OPTIONAL CALL { … } … }`) doesn't run yet: Oracle refuses
-  the statement (ORA-00907) or closes the session (#338). One at the top of a statement runs.
+- An `OPTIONAL CALL` or an `OPTIONAL MATCH` is joined `ON 1 = 1`, where Postgres joins `ON TRUE`. This works around
+  an Oracle bug, seen on 23.26.3: in a scalar subquery, as a `COUNT { … }` is compiled, a join `ON TRUE` is refused
+  (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)
+  ([#338](https://github.com/liberation-data/drivine4j/issues/338)). It goes once an Oracle release no longer fails
+  the repro in [docs/oracle-on-true-in-scalar-subquery-crash.md](docs/oracle-on-true-in-scalar-subquery-crash.md).
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
