@@ -1,0 +1,245 @@
+# Releases drivine4j to Maven Central from a tag. RELEASING.md describes the process.
+#
+# - A push of a tag vX.Y.Z publishes: the tag is checked, the full CI runs, every published module is built, signed
+#   and checked, and nmcp uploads them to the Central Portal.
+# - workflow_dispatch, and a pull request that changes the release machinery, are dry runs: everything but the
+#   publish, signed with a throwaway key, with the Maven repository and the Central Portal bundles left as the run's
+#   artifact to inspect.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Always a dry run. Pick the branch or tag to try in "Use workflow from".
+  workflow_dispatch:
+  # A dry run, so a change to the release machinery is tested on its pull request.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - RELEASING.md
+      - build.gradle
+      - settings.gradle
+      - gradle.properties
+      - gradle/wrapper/gradle-wrapper.properties
+      - drivine4j-*/build.gradle
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # The modules published to Maven Central, by artifactId. drivine4j-sample is not published.
+  MODULES: >-
+    drivine4j
+    drivine4j-codegen
+    drivine4j-codegen-java
+    drivine4j-codegen-model
+    drivine4j-coroutines
+    drivine4j-spring
+    drivine4j-spring-boot-starter
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Work out the version
+        id: version
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          declared=$(sed -n "s/^version = '\([^']*\)'[[:space:]]*$/\1/p" build.gradle)
+          if [[ -z "$declared" || "$declared" == *$'\n'* ]]; then
+            echo "::error::build.gradle should have one line version = 'X.Y.Z'."
+            exit 1
+          fi
+          # Each published module takes the root's version, so the root's is the one to check.
+          for f in drivine4j-*/build.gradle; do
+            if grep -q "id 'maven-publish'" "$f" && ! grep -q '^version = rootProject.version' "$f"; then
+              echo "::error::$f publishes, but doesn't take its version from the root (version = rootProject.version)."
+              exit 1
+            fi
+          done
+          if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::The tag $tag isn't vX.Y.Z (or vX.Y.Z-suffix). Delete it and tag the release commit vX.Y.Z."
+              exit 1
+            fi
+            version="${tag#v}"
+            if [[ "$version" != "$declared" ]]; then
+              echo "::error::The tag $tag is version $version, but build.gradle's version is $declared. Tag the commit whose version is $version, or bump build.gradle in a release PR first."
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"; then
+              echo "::error::The tag $tag is on $GITHUB_SHA, which isn't on $DEFAULT_BRANCH. Tag the release PR's merge commit on $DEFAULT_BRANCH."
+              exit 1
+            fi
+            publish=true
+          else
+            version="$declared"
+            publish=false
+          fi
+          echo "Version $version, publish: $publish"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "publish=$publish" >> "$GITHUB_OUTPUT"
+
+  # The full CI, as ci.yml runs it on a push or a pull request.
+  gate:
+    needs: check
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+      # ci.yml's test reports are check runs (mikepenz/action-junit-report).
+      checks: write
+
+  build:
+    needs: [check, gate]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
+      PUBLISH: ${{ needs.check.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # No Gradle cache: the release is built from nothing but the checked-out ref.
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      - name: Maven Central doesn't have this version yet
+        run: |
+          status=$(curl -s -o /dev/null -w '%{http_code}' "https://repo1.maven.org/maven2/org/drivine/drivine4j/$VERSION/drivine4j-$VERSION.pom")
+          if [[ "$status" == 200 ]]; then
+            if [[ "$PUBLISH" == true ]]; then
+              echo "::error::Maven Central already has org.drivine:drivine4j:$VERSION."
+              exit 1
+            fi
+            echo "::warning::Maven Central already has org.drivine:drivine4j:$VERSION. A dry run goes on; a tag of it would fail here."
+          fi
+      # The dry run signs as the release does, but with a key made here and thrown away with the runner.
+      - name: Make a throwaway signing key
+        run: |
+          gpg --batch --pinentry-mode loopback --passphrase dry-run \
+            --quick-gen-key 'Drivine release dry run <dry-run@invalid>' rsa3072 sign 1d
+          gpg --batch --pinentry-mode loopback --passphrase dry-run --armor --export-secret-keys > "$RUNNER_TEMP/dry-run-key.asc"
+      # Every module, as ci.yml builds it (the gate ran the tests), then each published module's publication
+      # staged as nmcp stages it, in build/nmcp/m2MavenJava, and zipped into the bundle it uploads.
+      - name: Build, sign and stage the publications
+        run: |
+          SIGNING_KEY="$(cat "$RUNNER_TEMP/dry-run-key.asc")" \
+            ./gradlew build -x test -x standaloneTest zipMavenJavaPublication --no-daemon
+        env:
+          SIGN: 'true'
+          SIGNING_PASSWORD: dry-run
+      - name: Check the publications
+        run: |
+          mkdir -p release/maven-repo release/bundles
+          for repo in $(find . -path '*/build/nmcp/m2MavenJava' -type d); do
+            cp -R "$repo/." release/maven-repo/
+          done
+          staged=$(ls release/maven-repo/org/drivine | sort | tr '\n' ' ')
+          expected=$(tr ' ' '\n' <<< "$MODULES" | sort | tr '\n' ' ')
+          if [[ "$staged" != "$expected" ]]; then
+            echo "::error::The staged modules are [$staged], not [$expected]."
+            exit 1
+          fi
+          for m in $MODULES; do
+            dir="release/maven-repo/org/drivine/$m/$VERSION"
+            for f in "$m-$VERSION.jar" "$m-$VERSION-sources.jar" "$m-$VERSION-javadoc.jar" "$m-$VERSION.pom" "$m-$VERSION.module"; do
+              [[ -f "$dir/$f" ]] || { echo "::error::$m has no $f."; exit 1; }
+              gpg --batch --verify "$dir/$f.asc" "$dir/$f" 2> /dev/null || { echo "::error::$f's signature doesn't verify."; exit 1; }
+            done
+            grep -q "<version>$VERSION</version>" "$dir/$m-$VERSION.pom" || { echo "::error::$m's pom isn't version $VERSION."; exit 1; }
+          done
+          for zip in $(find . -path '*/build/nmcp/zip/publicationMavenJava.zip'); do
+            # A module's directory is its artifactId; the root's is drivine4j.
+            module=${zip%%/build/nmcp/*}; module=${module#./}; [[ "$module" == . ]] && module=drivine4j
+            cp "$zip" "release/bundles/$module.zip"
+          done
+          [[ $(ls release/bundles | wc -l) -eq $(wc -w <<< "$MODULES") ]] || { echo "::error::There isn't one bundle per module."; exit 1; }
+          {
+            echo "### Staged for Maven Central: $VERSION"
+            echo '```'
+            (cd release/maven-repo && find . -type f ! -name '*.md5' ! -name '*.sha*' | sort)
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: maven-central-${{ env.VERSION }}
+          path: release/
+          if-no-files-found: error
+
+  # nmcp signs and uploads in one Gradle build, so this job builds the publications again from the same tagged
+  # commit, signed with the release key, and uploads them.
+  publish:
+    needs: [check, build]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+      # build.gradle falls back to the gpg command when SIGNING_KEY isn't an armored key, which fails less clearly.
+      - name: The release secrets are set
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+          SONATYPE_USERNAME: ${{ secrets.CENTRAL_PORTAL_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.CENTRAL_PORTAL_PASSWORD }}
+        run: |
+          missing=()
+          [[ "$SIGNING_KEY" == *'BEGIN PGP PRIVATE KEY BLOCK'* ]] || missing+=('SIGNING_KEY (an ASCII-armored private key)')
+          [[ -n "$SIGNING_PASSWORD" ]] || missing+=(SIGNING_PASSWORD)
+          [[ -n "$SONATYPE_USERNAME" ]] || missing+=(CENTRAL_PORTAL_USERNAME)
+          [[ -n "$SONATYPE_PASSWORD" ]] || missing+=(CENTRAL_PORTAL_PASSWORD)
+          if (( ${#missing[@]} )); then
+            echo "::error::The release environment is missing: ${missing[*]}."
+            exit 1
+          fi
+      - name: Publish to Maven Central
+        run: ./gradlew publishAllPublicationsToCentralPortal --no-daemon
+        env:
+          SIGN: 'true'
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+          SONATYPE_USERNAME: ${{ secrets.CENTRAL_PORTAL_USERNAME }}
+          SONATYPE_PASSWORD: ${{ secrets.CENTRAL_PORTAL_PASSWORD }}
+      - name: Keep the bundles uploaded
+        if: always()
+        run: |
+          mkdir -p uploaded
+          for zip in $(find . -path '*/build/nmcp/zip/publicationMavenJava.zip'); do
+            module=${zip%%/build/nmcp/*}; module=${module#./}; [[ "$module" == . ]] && module=drivine4j
+            cp "$zip" "uploaded/$module.zip"
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: maven-central-uploaded-${{ needs.check.outputs.version }}
+          path: uploaded/
+          if-no-files-found: warn
+
+  github-release:
+    needs: [check, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag
