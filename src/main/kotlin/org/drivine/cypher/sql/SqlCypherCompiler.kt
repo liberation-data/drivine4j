@@ -856,7 +856,11 @@ abstract class SqlCypherCompiler(graph: String) {
             redeclared(projected.scope.keys, select.bound.keys)
             val name = alias("c")
             select.join(lateral(called(projected.sql), name, call.optional, projected.columns))
-            projected.scope.forEach { (variable, value) -> select.bind(variable, value.laterally(name, projected.columns)) }
+            projected.scope.forEach { (variable, value) ->
+                val returned = value.laterally(name, projected.columns)
+                // A value taken from a write's row is null where an OPTIONAL CALL finds nothing: it is read as the call returns it (#336).
+                select.bind(variable, if (call.optional && returned is Value.Json) returned.copy(rowKeys = null) else returned)
+            }
             projected.order.forEach { (column, descending) -> select.order += lateralColumn(name, column, json = false) to descending }
         }
 
@@ -896,12 +900,15 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             val sql = projected.joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { "SELECT * FROM (\n${indent(it.sql)}\n) ${alias("q")}" }
-            // A value is of a temporal kind where each query makes it of that one.
+            // A value is of a temporal kind where each query makes it of that one. It is at keys of a write's row ([Value.Json.rowKeys])
+            // only where each query takes it from those: a property of it is read from the row there, which would read the first
+            // query's value for every query's rows (#336).
             val scope = projected.first().scope.mapValues { (variable, value) ->
                 val all = projected.map { it.scope.getValue(variable) as? Value.Json }
                 if (value !is Value.Json) value
                 else value.copy(
                     temporal = all.map { it?.temporal }.distinct().singleOrNull(), items = all.map { it?.items }.distinct().singleOrNull(),
+                    rowKeys = all.map { it?.rowKeys }.distinct().singleOrNull(),
                     text = all.all { it?.text == true }, texts = all.all { it?.texts == true },
                 )
             }
