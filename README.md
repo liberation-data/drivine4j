@@ -570,6 +570,8 @@ place in the statement it stands at.
 - [Postgres](#postgres) works float arithmetic, `sum()` and `avg()` out in exact decimal, so it is more accurate:
   `0.1 + 0.2` is `0.3` there, where doubles give `0.30000000000000004`. A result differs from Neo4j's only around its
   16th significant digit, and still comes back as a float.
+- [SQLite](#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
+  adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](#oracle) reads an empty text as null. A text past 4,000 bytes is measured, cut, changed and searched whole, but
   `reverse()` gives null for one.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
@@ -3743,6 +3745,11 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   `CALL { … }`, a variable-length walk, a shortest path) is gathered as JSON and joined with `json_each`, as
   SQLite joins no lateral query. Text compares and sorts by SQLite's `BINARY` collation; `toLower` and
   `toUpper` change the case of any letter, where SQLite's own `lower` and `upper` change ASCII alone.
+- `sum()` and `avg()` add floats as doubles, as Neo4j does, so `0.1 + 0.2` sums to `0.30000000000000004` here
+  too. SQLite also corrects for rounding as it adds (Kahan–Babuška summation), so a long sum of floats, or one that
+  mixes an integer past 2^53 with a float, can be more accurate than Neo4j's in its last digit: `9007199254740993`
+  and `0.5` sum to `9.007199254740994E15`, where Neo4j gives `9.007199254740992E15`. A result still comes back as a
+  float.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
