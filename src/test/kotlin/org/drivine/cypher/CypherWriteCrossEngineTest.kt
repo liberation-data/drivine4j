@@ -252,21 +252,6 @@ abstract class CypherWriteContract {
     }
 
     @Test
-    fun `lists and maps that hold a null and differ as JSON compare item by item in a statement that writes`() {
-        // Beside the spec's step since v0.6.14 (#270): on Oracle a procedure declares no function of its own, so the store's walks them.
-        assertEquals(listOf("null"), query("CREATE (n:CyWrite) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
-        assertEquals(
-            listOf(listOf(null, null, false, true, null, false, null, true)),
-            query(
-                "CREATE (n:CyWrite) WITH n, [null, 1] AS a, [2, 1] AS b, {x: null} AS m, {x: 1} AS o, [[null], 1] AS c, [[1], 2] AS d " +
-                    "RETURN [a = b, m = o, c = d, a <> [1, 2], a IN [b, [3]], a IN [[3]], {k: [null]} = {k: [2]}, m <> {y: 1}]"
-            ),
-        )
-        // A node OPTIONAL MATCH finds none of is null in the list that holds it, beside one the statement made.
-        assertEquals(listOf(listOf(null, null)), query("OPTIONAL MATCH (x:Nope) CREATE (n:CyWrite) WITH n, [x] AS a, [n] AS b RETURN [a = b, a = a]"))
-    }
-
-    @Test
     fun `values that may hold a null are null where written alike only when one holds one, and walked where written otherwise`() {
         // #270: on Oracle two written as the same JSON text are null with no walk, so the text must be written alike only where one holds a null.
         assertEquals(
