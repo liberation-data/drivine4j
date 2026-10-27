@@ -567,7 +567,9 @@ place in the statement it stands at.
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
-- [Postgres](#postgres) works float arithmetic out in exact decimal: `0.1 + 0.2` is `0.3` there.
+- [Postgres](#postgres) works float arithmetic, `sum()` and `avg()` out in exact decimal, so it is more accurate:
+  `0.1 + 0.2` is `0.3` there, where doubles give `0.30000000000000004`. A result differs from Neo4j's only around its
+  16th significant digit, and still comes back as a float.
 - [Oracle](#oracle) reads an empty text as null. A text past 4,000 bytes is measured, cut, changed and searched whole, but
   `reverse()` gives null for one.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
@@ -1837,8 +1839,9 @@ Where Oracle differs, and stays different:
 - `min` and `max` of a text skip a value stored as `""`, which Oracle reads as no value. A key does not: `""` is a key of its own everywhere.
 - `min` and `max` of a property no field declares compare it as text, so `"10"` is less than `"9"`. A key no field declares reads as a number where a number is stored.
 - A key no field declares is text or a number there: a boolean reads as `"true"`, a whole `10.0` as `10`, and a list, a map or a text past 4000 bytes as no value.
-- A `sum` or an `avg` of a `Double` is decimal arithmetic, so 0.1 + 0.2 is 0.3 there and 0.30000000000000004 on the graph engines.
 - A text key is ordered by the session's `NLS_SORT`, which is binary unless it has been set otherwise.
+
+On Oracle and Postgres, a `sum` or an `avg` of a `Double` is worked out in exact decimal, so it is more accurate: 0.1 + 0.2 is 0.3 there, where doubles give 0.30000000000000004. It differs from a graph engine's only around its 16th significant digit, and is still a `Double`.
 
 **What is refused**, before anything is sent, where the compiler does not refuse it first: a read with no `key` (a count of everything is `count`); a `@GraphView` as the source; a `where` or a filter that names anything but the source's own properties; `key` on a property declared nullable, and `key` or an aggregate on one that holds a list; a `path` with no hops, to a class that is no `@NodeFragment`, or whose last hop asks for a label the class does not carry.
 
@@ -3572,9 +3575,11 @@ relationships with it.
   and a write a function made for the statement in `pg_temp`, applied whole or not at all. See
   [Cypher on a relational database](#cypher-on-a-relational-database).
 - Temporal values are their ISO 8601 text, as on Oracle.
-- Compiled Cypher works float arithmetic out in exact decimal (`numeric`), not as a double, so a result can
-  differ from a graph engine's in its last digits: `0.1 * 3` is `0.3`, where Neo4j gives `0.30000000000000004`.
-  A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
+- Compiled Cypher works float arithmetic, `sum()` and `avg()` out in exact decimal (`numeric`), not as doubles,
+  so it is more accurate: `0.1 + 0.2` is `0.3`, where Neo4j gives `0.30000000000000004`. A result differs
+  from a graph engine's only around its 16th significant digit, and still comes back as a float. It shows only
+  where a result is compared for exact equality with one worked out in doubles, which is fragile with floats
+  anyway. A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
