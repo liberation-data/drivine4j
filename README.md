@@ -570,6 +570,8 @@ place in the statement it stands at.
 - [Postgres](#postgres) works float arithmetic, `sum()` and `avg()` out in exact decimal, so it is more accurate:
   `0.1 + 0.2` is `0.3` there, where doubles give `0.30000000000000004`. A result differs from Neo4j's only around its
   16th significant digit, and still comes back as a float.
+- [SQLite](#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
+  adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](#oracle) reads an empty text as null. A text past 4,000 bytes is measured, cut, changed and searched whole, but
   `reverse()` gives null for one.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
