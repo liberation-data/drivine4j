@@ -771,7 +771,8 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a list of zoned values, and a list of lists of them, sort and compare item by item as the moments they are, whatever their offsets`() {
-        // Not in the spec yet (#199). As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
+        // Beside the spec's case since v0.6.17 (#199): the spec excepts Oracle from these, and has no list worked out with
+        // temporal arithmetic from a CASE. As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
         val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
         val hours = listOf(10L, 8L, 9L)
         assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
@@ -794,13 +795,11 @@ abstract class CypherQueryContract {
         val times = "[time('10:00:00+02:00'), time('09:00:00Z'), time('08:30:00Z')]"
         assertEquals(hours, query("UNWIND $times AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
         assertEquals(listOf(listOf(10L, 9L)), query("UNWIND $times AS t WITH [t] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
-        // Taken from a list kept in order, by head() and last().
-        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [$b, $a, $c] AS t WITH t ORDER BY t WITH collect(t) AS ts RETURN [head(ts).hour, last(ts).hour]"))
     }
 
     @Test
     fun `a list of zoned values sorts as their moments however it was made, and an empty list or a null item sorts as Cypher puts it`() {
-        // Not in the spec yet (#199). By moment 10:00+02:00, 08:30Z, 09:00Z; as text 08:30Z, 09:00Z, 10:00+02:00.
+        // Beside the spec's case since v0.6.17 (#199). By moment 10:00+02:00, 08:30Z, 09:00Z; as text 08:30Z, 09:00Z, 10:00+02:00.
         val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
         val hours = listOf(10L, 8L, 9L)
         fun sorted(by: String, list: String = "[[t]]") = query("UNWIND [$b, $a, $c] AS t WITH t, $list AS l RETURN t.hour ORDER BY $by")
@@ -1093,7 +1092,8 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a text past 4,000 bytes is measured, cut, changed, searched and added to whole, as a short one is`() {
-        // Oracle read a text from JSON as a VARCHAR2, which holds 4,000 bytes, and a longer one as null (#298). One function a
+        // Beside the spec's case since v0.6.17 (#298): stored and made by the statement too, and more functions and edge cases.
+        // Oracle read a text from JSON as a VARCHAR2, which holds 4,000 bytes, and a longer one as null. One function a
         // statement. Past 32 KB, given only: Oracle closes the session (ORA-03113) after statements that read such a text from a
         // property and from a parameter in turn, much as it does for one read over two rows (#255), and its sessions hold more of
         // its memory for each statement that reads one the statement makes, up to the instance's limit (ORA-04036).
@@ -1147,6 +1147,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
+        // Beside the spec's writes case since v0.6.17 (#298): read where it is used too, and by more functions.
         // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a
         // CLOB (#298): the two together. One node: Oracle crashes on a long property read from two rows (#255).
         clear()
@@ -1355,7 +1356,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `an OPTIONAL CALL or an OPTIONAL MATCH in a COUNT or an EXISTS subquery keeps the row it finds nothing for`() {
-        // Not in the spec yet. Oracle refused an optional join on TRUE in a scalar subquery followed by WHERE … AND … (ORA-00907),
+        // Beside the spec's case since v0.6.17 (#338). Oracle refused an optional join on TRUE in a scalar subquery followed by WHERE … AND … (ORA-00907),
         // and crashed the session on one without (ORA-03113, ORA-07445 in its alert log) (#338): it is joined on 1 = 1 there.
         clear()
         seed("CREATE (:CyOpt {id: 1}), (:CyOpt {k: 'p'}), (:CyOpt {k: 'q'}), (:CyOpt {k: 'q'})")
