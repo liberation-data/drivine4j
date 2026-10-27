@@ -221,7 +221,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * is read so: a property inside an item (`[n.a]`, `collect(n.a)`) is read as [propertyOf] reads it, and isn't worked
      * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
      * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
-     * it takes a text from the row it is writing: see [rowValue].
+     * it takes a text from the row it is writing: see [rowValue]; and so is an unwound item's value an item gives: see [itemValue].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -250,10 +250,37 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * longer crashes on the repro in `docs/oracle-long-json-string-crash.md`, and `CypherWriteOracleTest`'s "a text past
      * 32 KB set from an unwound parameter" test still passes without it.
      */
-    override fun rowValue(keys: List<String>): String {
+    override fun rowValue(keys: List<String>) = throughText(ROW, keys)
+
+    /**
+     * A value of an item of an unwound list, or of a row a write carries on, that a `RETURN` or a `WITH` returns or passes on
+     * (`UNWIND ${'$'}items AS t RETURN t.a`, `WITH t.a AS a`, `SET n.a = t.a RETURN t.a`): read as [rowValue] reads one, a text
+     * from the item written out as text, anything else from the item as JSON, as before.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#322), to be removed with it.** Such a statement crashed the session
+     * where it took a text past 32 KB from the item, `JSON_QUERY(u1.item, '$.a' RETURNING JSON)`, for each of two or more rows.
+     * [itemProperty]'s form, and the item written out whole as extended JSON, ran clean, but read a map with a key as extended
+     * JSON's are (`{"${'$'}numberLong": "5"}`) as the number it writes. The `CASE` on the value's type, which made Oracle drop a
+     * label test where it read a node's properties twice (see [itemProperty]), reads the item here, a column of the list it
+     * is unwound from, and the labelled patterns beside it kept their tests (`CypherWriteContract`'s "an unwound item's text
+     * … returned only for the nodes a labelled pattern matches"). So only a value read from such an item is read so (see
+     * [Value.Json.fromList]); a map made of a node's properties and not unwound (`WITH n {.a} AS m`, `properties(n)`) is read as before. It cost about
+     * 1.3 times the plain read on short values: 100,000 rows of `UNWIND ${'$'}items AS t RETURN t.a` took 860 to 880 ms against
+     * 650 to 670 ms.
+     *
+     * A pattern that matches on such a text (`MERGE (n:X {a: t.a})`) still compares it as JSON: Oracle refuses that
+     * (ORA-40180), as it refuses to sort or group a text past 32 KB, and the session stays open. To remove the workaround,
+     * delete this override with [itemProperty]'s, once an Oracle release no longer crashes on the repro in
+     * `docs/oracle-long-json-string-crash.md`, and `CypherWriteOracleTest`'s "a text past 32 KB from an unwound parameter
+     * returned or passed on" test still passes without it.
+     */
+    override fun itemValue(json: String, key: String) = throughText(json, listOf(key))
+
+    /** The value at [keys] in the JSON [json]: a text read with one path from [json] written out as text, anything else as JSON. */
+    private fun throughText(json: String, keys: List<String>) = shared(json) { (x) ->
         val path = OracleSql.path(keys)
-        return "CASE WHEN JSON_VALUE($ROW, ${OracleSql.path(keys, ".type()")}) = 'string' " +
-            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($ROW RETURNING CLOB), $path RETURNING CLOB)) ELSE JSON_QUERY($ROW, $path RETURNING JSON) END"
+        "CASE WHEN JSON_VALUE($x, ${OracleSql.path(keys, ".type()")}) = 'string' " +
+            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($x RETURNING CLOB), $path RETURNING CLOB)) ELSE JSON_QUERY($x, $path RETURNING JSON) END"
     }
 
     /**
