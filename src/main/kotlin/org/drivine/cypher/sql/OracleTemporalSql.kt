@@ -38,6 +38,8 @@ class OracleTemporalSql(
 
     override fun number(text: String) = "TO_NUMBER($text)"
 
+    override fun sortable(timestamp: String) = "TO_CHAR($timestamp, 'YYYY-MM-DD\"T\"HH24:MI:SS.FF6')"
+
     override fun micros(timestamp: String) = "TO_CHAR($timestamp, 'FF6')"
 
     override fun dayOfWeek(timestamp: String) =
