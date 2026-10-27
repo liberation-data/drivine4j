@@ -1,7 +1,10 @@
-# Releases drivine4j to Maven Central from a tag. RELEASING.md describes the process.
+# Releases drivine4j to Maven Central. RELEASING.md describes the process.
 #
-# - A push of a tag vX.Y.Z publishes: the tag is checked, the full CI runs, every published module is built, signed
-#   and checked, and nmcp uploads them to the Central Portal in one bundle, as one deployment.
+# - A push to main that raises build.gradle's version (the merge of a "Release vX.Y.Z" PR) publishes it, and tags
+#   the commit vX.Y.Z. A push to main that changes build.gradle without raising the version publishes nothing.
+# - A push of a tag vX.Y.Z, by hand, publishes too: the fallback.
+# - Either way, the full CI runs, every published module is built, signed and checked, and nmcp uploads them to the
+#   Central Portal in one bundle, as one deployment.
 # - workflow_dispatch, and a pull request that changes the release machinery, are dry runs: everything but the
 #   publish, signed with a throwaway key, with the Maven repository and the Central Portal bundle left as the run's
 #   artifact to inspect.
@@ -9,7 +12,11 @@ name: Release
 
 on:
   push:
+    branches: [main]
     tags: ['v*']
+    # A push to main runs this only when it changes the version's file. GitHub doesn't apply paths to a tag push.
+    paths:
+      - build.gradle
   # Always a dry run. Pick the branch or tag to try in "Use workflow from".
   workflow_dispatch:
   # A dry run, so a change to the release machinery is tested on its pull request.
@@ -23,6 +30,8 @@ on:
       - gradle/wrapper/gradle-wrapper.properties
       - gradle/wrapper/gradle-wrapper.jar
       - drivine4j-*/build.gradle
+      - scripts/release_version.py
+      - scripts/test_release_version.py
 
 permissions:
   contents: read
@@ -48,6 +57,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       publish: ${{ steps.version.outputs.publish }}
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -55,6 +65,9 @@ jobs:
       # The build and publish jobs run this commit's ./gradlew, the publish job with the release secrets: its
       # gradle-wrapper.jar, a binary a review can't read, has to be one Gradle released.
       - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
+      # The semver arithmetic the next step relies on, tested with the runner's python3 and nothing installed.
+      - name: Test the version arithmetic
+        run: python3 scripts/test_release_version.py
       - name: Work out the version
         id: version
         env:
@@ -88,23 +101,46 @@ jobs:
               exit 1
             fi
             publish=true
+          elif [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            # A push to main that changed build.gradle. It releases the version when that is a new one, greater than
+            # the newest tag, vX.Y.Z or X.Y.Z (0.0.3 and 0.3.0 were made by hand without the v). github-release then
+            # makes the tag.
+            version="$declared"
+            tag="v$version"
+            newest=$(git tag -l | python3 scripts/release_version.py newest)
+            publish=false
+            if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::build.gradle's version $version isn't X.Y.Z (or X.Y.Z-suffix), so it can't be released."
+              exit 1
+            elif git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+              echo "::notice::build.gradle's version $version is already tagged $tag, so this push releases nothing. A change to build.gradle that isn't a version bump does this."
+            elif [[ -n "$newest" ]] && ! python3 scripts/release_version.py greater "$version" "${newest#v}"; then
+              echo "::notice::build.gradle's version $version isn't later than the last release, $newest, so this push releases nothing."
+            else
+              publish=true
+            fi
           else
             version="$declared"
+            tag="v$version"
             publish=false
           fi
           echo "Version $version, publish: $publish"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-  # The full CI, as ci.yml runs it on a push or a pull request.
+  # The full CI, as ci.yml runs it on a push or a pull request. A push that releases nothing stops at check: ci.yml
+  # runs on the same push to main by itself.
   gate:
     needs: check
+    if: needs.check.outputs.publish == 'true' || github.event_name != 'push'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       # ci.yml's test reports are check runs (mikepenz/action-junit-report).
       checks: write
 
+  # A push that releases nothing skips gate, and so this and the jobs after it.
   build:
     needs: [check, gate]
     runs-on: ubuntu-latest
@@ -120,12 +156,12 @@ jobs:
           distribution: 'temurin'
       - name: Maven Central doesn't have this version yet
         run: |
-          # Only an answer of 200 stops a tag. When Maven Central can't be asked, the step goes on: the portal
+          # Only an answer of 200 stops a release. When Maven Central can't be asked, the step goes on: the portal
           # rejects a version it already has.
           status=$(curl -s --retry 3 -o /dev/null -w '%{http_code}' "https://repo1.maven.org/maven2/org/drivine/drivine4j/$VERSION/drivine4j-$VERSION.pom" || true)
           if [[ "$status" == 200 ]]; then
             if [[ "$PUBLISH" == true ]]; then
-              echo "::error::Maven Central already has org.drivine:drivine4j:$VERSION."
+              echo "::error::Maven Central already has org.drivine:drivine4j:$VERSION, so this run publishes nothing. If merging its version bump released it, and this is a tag pushed for it by hand afterwards, there is nothing left to do. Otherwise bump the version in a release PR."
               exit 1
             fi
             echo "::warning::Maven Central already has org.drivine:drivine4j:$VERSION. A dry run goes on; a tag of it would fail here."
@@ -178,7 +214,7 @@ jobs:
           path: release/
           if-no-files-found: error
 
-  # nmcp signs and uploads in one Gradle build, so this job builds the bundle again from the same tagged commit,
+  # nmcp signs and uploads in one Gradle build, so this job builds the bundle again from the same commit,
   # signed with the release key, checks it as build checked its own, and uploads it as one deployment: the Central
   # Portal releases every module or none.
   publish:
@@ -253,12 +289,18 @@ jobs:
     permissions:
       contents: write
     steps:
+      # On a push to main, the tag doesn't exist yet: the release makes it, on the commit this run built. A tag made
+      # with GITHUB_TOKEN starts no workflow, so it doesn't run this again. A tag pushed by hand is already there.
       - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ needs.check.outputs.tag }}
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           prerelease=()
           if [[ "$VERSION" == *-* ]]; then prerelease=(--prerelease); fi
-          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag "${prerelease[@]}"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --generate-notes --verify-tag "${prerelease[@]}"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --generate-notes "${prerelease[@]}"
+          fi
