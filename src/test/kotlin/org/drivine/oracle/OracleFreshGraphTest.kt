@@ -40,6 +40,10 @@ class OracleFreshGraphTest {
 
     @BeforeEach
     fun dropGraph() {
+        // The provider makes the graph's tables, and its function, before its first connection: that one
+        // is had first, so the graph is dropped after it, and what is asked here finds no tables, as it
+        // would through a provider of the application's own.
+        manager.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
         OracleTestDatabase.drop("PROPERTY GRAPH $graph", "TABLE ${graph}_edge", "TABLE ${graph}_node", "TABLE ${graph}_schema", "FUNCTION ${graph}_nulls_equal")
     }
 

@@ -58,29 +58,34 @@ internal class PostgresGraph(name: String) : SqlGraph(name, "Postgres", MAX_OBJE
      * comment, written last, says which version made the store: one this version made is left alone,
      * and the rest is made again over one an earlier version made, which keeps its rows and has its
      * functions replaced. The block takes a lock of its own for the graph first, so two processes that
-     * each find the store missing make it one after the other, and the second makes nothing. Postgres
-     * runs a block's schema statements in its transaction, so the store is made whole or not at all.
+     * each find the store missing make it one after the other, and the second, looking again once it
+     * has the lock, makes nothing. Postgres runs a block's schema statements in its transaction, so the
+     * store is made whole or not at all.
      */
     val ensuring: String = """
         DO ${'$'}ensure${'$'}
         BEGIN
             IF obj_description(to_regclass('$nodes'), 'pg_class') IS DISTINCT FROM '$VERSION' THEN
                 PERFORM pg_advisory_xact_lock(hashtext('drivine:$name'));
-                -- pgvector, for vector search, where the server has it and the user may make it: without it,
-                -- everything but a vector search works.
-                BEGIN
-                    CREATE EXTENSION IF NOT EXISTS vector;
-                EXCEPTION WHEN OTHERS THEN
-                    NULL;
-                END;
-        ${ddl.joinToString("\n") { "        ${it.replace("\n", "\n        ")};" }}
+                -- Looked for again under the lock: another session may have made it while this one waited.
+                IF obj_description(to_regclass('$nodes'), 'pg_class') IS DISTINCT FROM '$VERSION' THEN
+                    -- pgvector, for vector search, where the server has it and the user may make it: without it,
+                    -- everything but a vector search works.
+                    BEGIN
+                        CREATE EXTENSION IF NOT EXISTS vector;
+                    EXCEPTION WHEN OTHERS THEN
+                        NULL;
+                    END;
+        ${ddl.joinToString("\n") { "            ${it.replace("\n", "\n            ")};" }}
+                END IF;
             END IF;
         END
         ${'$'}ensure${'$'}
     """.trimIndent()
 
-    override fun ensure(persistenceManager: PersistenceManager) {
-        persistenceManager.indexes.run(ensuring)
+    /** Runs [ensuring]. */
+    override fun ensure(run: (String) -> List<Any?>) {
+        run(ensuring)
     }
 
     companion object {

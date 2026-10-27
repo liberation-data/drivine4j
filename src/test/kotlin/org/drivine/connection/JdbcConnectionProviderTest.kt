@@ -1,7 +1,10 @@
 package org.drivine.connection
 
+import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
+import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.postgres.PostgresSchemaGrammar
+import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.schema.UnsupportedSchemaGrammar
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -10,7 +13,11 @@ import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import java.io.PrintWriter
+import java.sql.PreparedStatement
 import java.sql.SQLException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.logging.Logger
 import javax.sql.DataSource
 import kotlin.test.assertContains
@@ -187,8 +194,155 @@ class JdbcConnectionProviderTest {
 
         assertIs<JdbcConnection>(first)
         assertNotSame(first, second)
-        verify(dataSource, times(2)).connection
+        // And one before them, which the graph's tables are made on.
+        verify(dataSource, times(3)).connection
         assertSame(dataSource, provider.nativeDriver)
+    }
+
+    // ----- The graph's tables, made before the first connection -----
+
+    /** A connection whose statements run and return nothing, and which records them; an Oracle session it sets is set. */
+    private fun recording(): java.sql.Connection = Mockito.mock(java.sql.Connection::class.java).also { connection ->
+        `when`(connection.prepareStatement(Mockito.anyString())).thenAnswer { Mockito.mock(PreparedStatement::class.java) }
+        `when`(connection.createStatement()).thenAnswer { Mockito.mock(java.sql.Statement::class.java) }
+    }
+
+    private fun statementsOn(connection: java.sql.Connection): List<String> =
+        Mockito.mockingDetails(connection).invocations.filter { it.method.name == "prepareStatement" }.map { it.getArgument(0) }
+
+    @Test
+    fun `the graph's tables are made once, on a connection of its own, before the first connection is handed out`() {
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source, graphName = "ledger")
+
+        repeat(3) { provider.connect().release() }
+
+        // The statement as it is sent: trimmed of the blank its text begins with.
+        assertEquals(listOf(OracleGraph("ledger").ensuring.trim()), statementsOn(ensuring))
+        verify(ensuring).close()
+        assertEquals(emptyList(), statementsOn(handedOut))
+        verify(source, times(4)).connection
+    }
+
+    @Test
+    fun `on the application's Oracle data source the session the tables are made on is set to make no adaptive plan first, as is the one handed out`() {
+        val ensuringStatement = Mockito.mock(java.sql.Statement::class.java)
+        val handedOutStatement = Mockito.mock(java.sql.Statement::class.java)
+        val ensuring = recording().also { `when`(it.createStatement()).thenReturn(ensuringStatement) }
+        val handedOut = recording().also { `when`(it.createStatement()).thenReturn(handedOutStatement) }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, source).connect()
+
+        val order = Mockito.inOrder(ensuringStatement, ensuring)
+        order.verify(ensuringStatement).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+        order.verify(ensuring).prepareStatement(Mockito.anyString())
+        verify(handedOutStatement, times(1)).execute(JdbcConnectionProvider.NO_ADAPTIVE_PLANS)
+    }
+
+    @Test
+    fun `on SQLite the tables are looked for, and made only when they are not all there`() {
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+
+        JdbcConnectionProvider("default", DatabaseType.SQLITE, source, graphName = "g").connect()
+
+        val graph = SqliteGraph("g")
+        assertEquals(listOf(graph.made) + graph.ddl, statementsOn(ensuring))
+        assertContains(graph.made, "'g_node', 'g_edge', 'g_schema', 'g_edge_src', 'g_edge_dst'")
+    }
+
+    @Test
+    fun `the tables are made for the graph the provider names, on Postgres as on Oracle`() {
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+
+        JdbcConnectionProvider("default", DatabaseType.POSTGRES, source, graphName = "tenant_a").connect()
+
+        assertEquals(listOf(PostgresGraph("tenant_a").ensuring.trim()), statementsOn(ensuring))
+    }
+
+    @Test
+    fun `threads that first connect at once make the tables once`() {
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+
+        val pool = Executors.newFixedThreadPool(8)
+        try {
+            val start = CountDownLatch(1)
+            (1..8).map { pool.submit { start.await(); provider.connect().release() } }.also { start.countDown() }.forEach { it.get(1, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdown()
+        }
+
+        assertEquals(1, statementsOn(ensuring).size)
+        verify(source, times(9)).connection
+    }
+
+    @Test
+    fun `tables that cannot be made are logged and not tried again, and the connection is handed out`() {
+        val handedOut = recording()
+        val refusing = Mockito.mock(java.sql.Connection::class.java).also {
+            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(SQLException("ORA-01031: insufficient privileges"))
+            `when`(it.createStatement()).thenAnswer { Mockito.mock(java.sql.Statement::class.java) }
+        }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(refusing, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+
+        assertIs<JdbcConnection>(provider.connect())
+        provider.connect()
+
+        verify(refusing, times(1)).prepareStatement(Mockito.anyString())
+        verify(refusing).close()
+        verify(source, times(3)).connection
+    }
+
+    @Test
+    fun `a data source that gives no connection for the tables fails the connect, and the next connect makes them`() {
+        val refused = SQLException("ORA-12541: no listener")
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenThrow(refused).thenReturn(ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+
+        assertSame(refused, assertFailsWith<SQLException> { provider.connect() })
+        provider.connect()
+
+        assertEquals(1, statementsOn(ensuring).size)
+    }
+
+    @Test
+    fun `a connection the tables were made on that cannot be closed fails the connect, and the next connect makes them again`() {
+        val broken = SQLException("closed by the network")
+        val unclosable = recording().also { Mockito.doThrow(broken).`when`(it).close() }
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(unclosable, ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+
+        assertSame(broken, assertFailsWith<SQLException> { provider.connect() })
+        provider.connect()
+
+        assertEquals(1, statementsOn(unclosable).size)
+        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(emptyList(), statementsOn(handedOut))
+    }
+
+    @Test
+    fun `a provider for a store that keeps no graph over JDBC makes no tables`() {
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(handedOut) }
+
+        JdbcConnectionProvider("default", DatabaseType.NEO4J, source).connect()
+
+        assertEquals(emptyList(), statementsOn(handedOut))
+        verify(source, times(1)).connection
     }
 
     @Test

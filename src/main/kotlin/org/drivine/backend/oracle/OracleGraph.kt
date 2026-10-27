@@ -76,7 +76,11 @@ internal class OracleGraph(name: String) : SqlGraph(name, "Oracle", MAX_OBJECT_N
      * it, says the rest is. It is looked for before anything is run: a schema statement wants its
      * table to itself, and would be turned away by a writer at work on a store that needs nothing
      * made. A graph made by an earlier version is replaced, and keeps its tables. One that another
-     * process made in the meantime (`ORA-00955`) is taken as made.
+     * process made in the meantime (`ORA-00955`) is taken as made. A statement turned away because
+     * another session holds a lock it wants (`ORA-00054`), as one making the same store from another
+     * pool or process does, is tried again a tenth of a second later, for up to [BUSY_ATTEMPTS] tries:
+     * Oracle's DDL does not wait for a lock unless the session is told to, and telling it would outlast
+     * the block on a pooled connection.
      *
      * The [functions] are made where they are not there, or not valid, so a store an earlier version made gains them. A user
      * who may not make a function (`ORA-01031`: making one takes `CREATE PROCEDURE`, which the `RESOURCE` role grants) still
@@ -89,10 +93,26 @@ internal class OracleGraph(name: String) : SqlGraph(name, "Oracle", MAX_OBJECT_N
             PRAGMA EXCEPTION_INIT(e_exists, -955);
             e_denied EXCEPTION;
             PRAGMA EXCEPTION_INIT(e_denied, -1031);
+            e_busy EXCEPTION;
+            PRAGMA EXCEPTION_INIT(e_busy, -54);
+            PROCEDURE make(p_ddl VARCHAR2) IS
+            BEGIN
+                FOR attempt IN 1 .. $BUSY_ATTEMPTS LOOP
+                    BEGIN
+                        EXECUTE IMMEDIATE p_ddl;
+                        RETURN;
+                    EXCEPTION
+                        WHEN e_exists THEN RETURN;
+                        WHEN e_busy THEN
+                            IF attempt = $BUSY_ATTEMPTS THEN RAISE; END IF;
+                            DBMS_SESSION.SLEEP(0.1);
+                    END;
+                END LOOP;
+            END;
         BEGIN
             SELECT COUNT(*) INTO v_made FROM user_pg_prop_definitions WHERE graph_name = '${name.uppercase()}' AND property_name = 'DOC';
             IF v_made = 0 THEN
-        ${ddl.joinToString("\n") { "        BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(it)}; EXCEPTION WHEN e_exists THEN NULL; END;" }}
+        ${ddl.joinToString("\n") { "        make(${OracleSql.literal(it)});" }}
             END IF;
             SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = '${nullsEqual.uppercase()}' AND status = 'VALID';
             IF v_made = 0 THEN
@@ -102,18 +122,20 @@ internal class OracleGraph(name: String) : SqlGraph(name, "Oracle", MAX_OBJECT_N
     """.trimIndent()
 
     /**
-     * Makes the store if it is not there. Schema statements commit as they run, so they go on a
-     * connection of their own and never on the caller's transaction. A session found to call none of
-     * the [functions] is asked again (see [OracleStoredFunctions]).
+     * Runs [ensuring]. Schema statements commit as they run. A session found to call none of the
+     * [functions] is asked again (see [OracleStoredFunctions]).
      */
-    override fun ensure(persistenceManager: PersistenceManager) {
-        persistenceManager.indexes.run(ensuring)
+    override fun ensure(run: (String) -> List<Any?>) {
+        run(ensuring)
         OracleStoredFunctions.ensured(name)
     }
 
     companion object {
         /** The graph of a manager that names none. */
         const val DEFAULT_NAME = SqlGraph.DEFAULT_NAME
+
+        /** How many times [ensuring] tries a statement that another session's lock turns away: thirty seconds' worth. */
+        const val BUSY_ATTEMPTS = 300
 
         /** Oracle names are at most 128 characters. */
         private const val MAX_OBJECT_NAME = 128

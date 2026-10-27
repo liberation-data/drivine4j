@@ -9,10 +9,12 @@ import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sqlite.SqliteDataSource
 import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteSchemaGrammar
+import org.drivine.backend.sql.SqlGraph
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.UnsupportedSchemaGrammar
+import org.slf4j.LoggerFactory
 import java.util.Collections
 import java.util.WeakHashMap
 import javax.sql.DataSource
@@ -23,6 +25,23 @@ import javax.sql.DataSource
  *
  * The JDBC driver is the application's to supply. For Oracle that is `com.oracle.database.jdbc:ojdbc11`,
  * for Postgres `org.postgresql:postgresql`, and for SQLite `org.xerial:sqlite-jdbc` (see [sqlite]).
+ *
+ * On Oracle, Postgres and SQLite the provider makes the graph's tables (see [SqlGraph]), when they are
+ * not there, before it hands out its first connection: whatever comes first to a new store, a Cypher
+ * statement through a persistence manager, an object manager or a schema statement, finds the graph
+ * there. It runs the statements an object manager's backend runs (`OracleGraph.ensured` and the
+ * others), each of which looks for the store before it makes anything, so a user who may read the
+ * tables but not make them works with a store that is there. It does so once for the provider, that
+ * is for its graph over its data source, on a connection of its own in auto-commit mode, and never on
+ * a caller's transaction. Threads that ask for their first connections at once wait for the one that
+ * makes the tables; two processes are kept apart by the statements themselves, as two object
+ * managers are: a lock of the graph's own on Postgres, `ORA-00955` taken as made and `ORA-00054`
+ * waited out on Oracle, and SQLite's lock on the file.
+ *
+ * Where making them fails once a connection is had, it is logged as a warning and not tried again by
+ * this provider: the connection is handed out, and a statement over tables that are not there says
+ * so. A store reached as a user that cannot make tables, where the check finds nothing to go on, works
+ * as before.
  *
  * Java sees a constructor for each arity, so a caller compiled against fewer parameters still builds after one is added
  * last.
@@ -45,15 +64,31 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     private val setsNoAdaptivePlans: Boolean = true,
 ) : ConnectionProvider, NativeDriverSource<DataSource> {
 
+    /** The graph Oracle, Postgres and SQLite keep in tables; null for another JDBC store, which keeps none. */
+    private val graph: SqlGraph? by lazy {
+        when (type) {
+            DatabaseType.ORACLE -> OracleGraph(graphName)
+            DatabaseType.POSTGRES -> PostgresGraph(graphName)
+            DatabaseType.SQLITE -> SqliteGraph(graphName)
+            else -> null
+        }
+    }
+
     /** Oracle, Postgres and SQLite keep a graph's indexes and constraints over its tables; another JDBC store has no graph. */
     override val schemaGrammar: SchemaGrammar by lazy {
-        when (type) {
-            DatabaseType.ORACLE -> OracleSchemaGrammar(OracleGraph(graphName))
-            DatabaseType.POSTGRES -> PostgresSchemaGrammar(PostgresGraph(graphName))
-            DatabaseType.SQLITE -> SqliteSchemaGrammar(SqliteGraph(graphName))
+        when (val graph = graph) {
+            is OracleGraph -> OracleSchemaGrammar(graph)
+            is PostgresGraph -> PostgresSchemaGrammar(graph)
+            is SqliteGraph -> SqliteSchemaGrammar(graph)
             else -> UnsupportedSchemaGrammar(type.value)
         }
     }
+
+    /** Whether the graph's tables have been made, or found, by this provider: see [ensureGraph]. */
+    @Volatile
+    private var graphEnsured = false
+
+    private val ensuringGraph = Any()
 
     /** The data source behind this provider. Closed by [end] only if this provider made it. */
     override val nativeDriver: DataSource
@@ -73,8 +108,6 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      */
     private val setSessions: MutableSet<java.sql.Connection> = Collections.synchronizedSet(Collections.newSetFromMap(WeakHashMap()))
 
-    override fun connect(): Connection = JdbcConnection(withoutAdaptivePlans(dataSource.connection), JdbcResultMapper(subtypeRegistry), type, graphName)
-
     /**
      * Sets a session of the application's Oracle data source to make no adaptive plan, once (see [NO_ADAPTIVE_PLANS]).
      * A session that cannot be set is closed and its error thrown, rather than given out unset.
@@ -93,11 +126,52 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         return connection
     }
 
+    /** A connection, the graph's tables made first if this is the provider's first (see the class). */
+    override fun connect(): Connection {
+        ensureGraph()
+        return open()
+    }
+
+    /** A connection from [dataSource], its Oracle session set to make no adaptive plan (see [withoutAdaptivePlans]). */
+    private fun open(): JdbcConnection = JdbcConnection(withoutAdaptivePlans(dataSource.connection), JdbcResultMapper(subtypeRegistry), type, graphName)
+
+    /**
+     * Makes the graph's tables when they are not there, once for this provider: after the first time,
+     * a connection costs a read of a flag. A failure to get or to close the connection they are made
+     * on is thrown, and the next connection tries again; a failure of the statements is logged, and
+     * not tried again.
+     */
+    private fun ensureGraph() {
+        if (graphEnsured) return
+        synchronized(ensuringGraph) {
+            if (graphEnsured) return
+            graph?.let { graph ->
+                val connection = open()
+                val failure = try {
+                    graph.ensure(connection)
+                    null
+                } catch (e: Exception) {
+                    e
+                }
+                connection.release(failure)
+                failure?.let {
+                    logger.warn(
+                        "Could not make the tables of graph '{}' on {} database '{}'; statements over them will fail if they are not there.",
+                        graphName, type, name, it,
+                    )
+                }
+            }
+            graphEnsured = true
+        }
+    }
+
     override fun end() {
         if (ownsDataSource) (dataSource as? AutoCloseable)?.close()
     }
 
     companion object {
+        private val logger = LoggerFactory.getLogger(JdbcConnectionProvider::class.java)
+
         /** The graph of a provider that is given no name for one. */
         const val DEFAULT_GRAPH = "drivine"
 
