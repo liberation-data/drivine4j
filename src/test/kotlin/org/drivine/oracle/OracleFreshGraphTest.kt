@@ -176,10 +176,14 @@ class OracleFreshGraphTest {
         val ensuring = OracleGraph(graph).ensuring
         // The sessions are opened once, before the rounds: a round's worth of new connections each time, 90 in a few
         // seconds, is more than CI's Oracle's listener hands out (ORA-12516), and has nothing to do with the race.
-        val connections = (0 until 6).map {
-            DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword())
-        }
+        // Reused sessions are what a pool hands out, and after the first round each caller holds a cursor on the function
+        // dropped since, so the rounds after it are the harder case, not an easier one.
+        val connections = mutableListOf<java.sql.Connection>()
         try {
+            // Opened inside the try, so the ones made before one that is refused are still closed.
+            repeat(6) {
+                connections += DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), OracleTestContainer.getConnectionUsername(), OracleTestContainer.getConnectionPassword())
+            }
             repeat(15) {
                 OracleTestDatabase.drop("FUNCTION $f")
                 val start = CountDownLatch(1)
