@@ -273,6 +273,13 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun rowValue(keys: List<String>): String = keys.fold(ROW, ::propertyOf)
 
+    /**
+     * The value of [key] in the JSON [json], read from an item of a list the query unwinds (see [Value.Json.fromList]), where
+     * it is an item of a `RETURN` or a `WITH`, returned or passed on: as [propertyOf] reads it, but on a store that must read
+     * such an item apart.
+     */
+    protected open fun itemValue(json: String, key: String): String = propertyOf(json, key)
+
     /** The item of the JSON list [json] at the JSON [index], counted from the end where it is negative. */
     protected abstract fun element(json: String, index: String): String
 
@@ -302,6 +309,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** [elements] of the JSON list [json] whose items the statement makes temporal values, or lists of them, as Oracle reads them apart: see its own. */
     protected open fun temporalElements(json: String, alias: String) = elements(json, alias)
+
+    /** [temporalElements] of the JSON list [json] where its items are [temporal] values or lists of them, else [elements]. */
+    protected fun elements(json: String, alias: String, temporal: Boolean) = if (temporal) temporalElements(json, alias) else elements(json, alias)
 
     /** The item, as JSON, of the row named [alias] that [elements] gives. */
     protected open fun item(alias: String) = "$alias.item"
@@ -419,9 +429,10 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /**
      * The items of the JSON list [list] once each, where each is first: what `collect(DISTINCT …)` keeps of what a `WITH`
-     * before it collected, for a store dedupes no aggregate in the query that makes it.
+     * before it collected, for a store dedupes no aggregate in the query that makes it. Where [temporal], the statement makes its
+     * items temporal values or lists of them, and they are read as [temporalElements] reads them.
      */
-    protected abstract fun distinctItems(list: String): String
+    protected abstract fun distinctItems(list: String, temporal: Boolean = false): String
 
     /**
      * The items of the JSON list [list] whose item in [identities], a list as long, is first among those equal to it, as
@@ -882,7 +893,11 @@ abstract class SqlCypherCompiler(graph: String) {
             redeclared(projected.scope.keys, select.bound.keys)
             val name = alias("c")
             select.join(lateral(called(projected.sql), name, call.optional, projected.columns))
-            projected.scope.forEach { (variable, value) -> select.bind(variable, value.laterally(name, projected.columns)) }
+            projected.scope.forEach { (variable, value) ->
+                val returned = value.laterally(name, projected.columns)
+                // A value taken from a write's row is null where an OPTIONAL CALL finds nothing: it is read as the call returns it (#336).
+                select.bind(variable, if (call.optional && returned is Value.Json) returned.copy(rowKeys = null) else returned)
+            }
             projected.order.forEach { (column, descending) -> select.order += lateralColumn(name, column, json = false) to descending }
         }
 
@@ -922,12 +937,16 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             val sql = projected.joinToString(if (distinct) "\nUNION\n" else "\nUNION ALL\n") { "SELECT * FROM (\n${indent(it.sql)}\n) ${alias("q")}" }
-            // A value is of a temporal kind where each query makes it of that one.
+            // A value is of a temporal kind where each query makes it of that one. It is at keys of a write's row ([Value.Json.rowKeys])
+            // only where each query takes it from those: a property of it is read from the row there, which would read the first
+            // query's value for every query's rows (#336). It is read from an unwound item ([Value.Json.fromList]) only where each
+            // query reads it from one.
             val scope = projected.first().scope.mapValues { (variable, value) ->
                 val all = projected.map { it.scope.getValue(variable) as? Value.Json }
                 if (value !is Value.Json) value
                 else value.copy(
                     temporal = all.map { it?.temporal }.distinct().singleOrNull(), items = all.map { it?.items }.distinct().singleOrNull(),
+                    rowKeys = all.map { it?.rowKeys }.distinct().singleOrNull(), fromList = all.all { it?.fromList == true },
                     itemItems = all.map { it?.itemItems }.distinct().singleOrNull(),
                     text = all.all { it?.text == true }, texts = all.all { it?.texts == true },
                 )
@@ -962,7 +981,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 unwind.variable,
                 Value.Json(
                     item(name), temporal = itemsOf(list), items = itemItemsOf(list), list = holdsLists(list), flat = isFlat(list),
-                    text = holdsTexts(list) || isText(list),
+                    text = holdsTexts(list) || isText(list), fromList = true,
                 ),
             )
             select.order += itemNo(name) to false
@@ -1490,7 +1509,7 @@ abstract class SqlCypherCompiler(graph: String) {
                             itemItems = carried[variable]?.itemItems,
                             list = carried[variable]?.list == true, itemLists = carried[variable]?.itemLists == true,
                             text = carried[variable]?.text == true, texts = carried[variable]?.texts == true,
-                            rowKeys = if (written) listOf(key) else null,
+                            rowKeys = if (written) listOf(key) else null, fromList = !written,
                         ),
                     )
                     // A list or a path that is null is held as JSON's null, and read as SQL's.
@@ -2480,7 +2499,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * The item [expression] of a `RETURN` or a `WITH` over [select]: a property of a node or a relationship, the item
-         * itself, read as [itemProperty] reads it, but beside a variable-length walk; anything else as elsewhere. A node or a
+         * itself, read as [itemProperty] reads it, and a property of an unwound item ([Value.Json.fromList]) as [itemValue] reads
+         * it, but beside a variable-length walk; anything else as elsewhere. A node or a
          * relationship is compiled once here: compiling the item over it again lost the rows of statements that match a
          * relationship.
          */
@@ -2490,6 +2510,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 when (val subject = expression(expression.subject, select.scope)) {
                     is Value.Node -> if (expression.key != Stamps.PROPERTY) return Value.Json(itemProperty(subject.props, expression.key), flat = true)
                     is Value.Relationship -> return Value.Json(itemProperty(subject.props, expression.key), flat = true)
+                    // A value of an unwound item, but a temporal value's field, and one a write reads from its row as rowValue does.
+                    is Value.Json -> if (subject.fromList && subject.temporal == null && subject.rowKeys == null && expression.key !in temporals.fieldNames)
+                        return Value.Json(itemValue(comparable(subject), expression.key))
                     else -> {}
                 }
             }
@@ -2529,8 +2552,10 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun holdsTexts(value: Value): Boolean = (value as? Value.Json)?.texts == true
 
         /** The items of the JSON list [json], the value [list], as rows named [alias]: by [temporalElements] where they are temporal values or lists of them. */
-        private fun elementsOf(list: Value, json: String, alias: String) =
-            if (itemsOf(list) != null || itemItemsOf(list) != null) temporalElements(json, alias) else elements(json, alias)
+        private fun elementsOf(list: Value, json: String, alias: String) = elements(json, alias, temporal = holdsTemporals(list))
+
+        /** Whether the statement makes the items of the list [list] temporal values, or lists of them: see [temporalElements]. */
+        private fun holdsTemporals(list: Value) = itemsOf(list) != null || itemItemsOf(list) != null
 
         /** The temporal kind the statement makes each item of the list [list]: see [Value.Json.items]. */
         private fun itemsOf(list: Value): Temporal? = (list as? Value.Json)?.items
@@ -3196,7 +3221,7 @@ abstract class SqlCypherCompiler(graph: String) {
                             itemItems = list.itemItems, list = true, itemLists = list.itemLists, texts = list.texts,
                         )
                     } ?: Value.Json(
-                        distinctItems(comparable(list)), ordered = true, items = list.items, itemItems = list.itemItems, list = true, itemLists = list.itemLists,
+                        distinctItems(comparable(list), temporal = holdsTemporals(list)), ordered = true, items = list.items, itemItems = list.itemItems, list = true, itemLists = list.itemLists,
                         texts = list.texts,
                     )
                     else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
@@ -3229,11 +3254,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
                     "CASE ${typeOf(x)} WHEN 'string' THEN ${scalar(reverseText(text(x)))} " +
-                        "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elements(x, e)}) END"
+                        "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elementsOf(one(), x, e)}) END"
                 }, items = itemsOf(one()), itemItems = itemItemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), text = isText(one()), texts = holdsTexts(one()))
                 "tail" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
-                    "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), itemNo(e)), ordered = true))} FROM ${elements(x, e)} WHERE ${itemNo(e)} > 1) END"
+                    "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), itemNo(e)), ordered = true))} FROM ${elementsOf(one(), x, e)} WHERE ${itemNo(e)} > 1) END"
                 }, items = itemsOf(one()), itemItems = itemItemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), texts = holdsTexts(one()))
                 // A text is read as Cypher reads it, its case and the spaces around it aside; a number is true but for 0.
                 "toboolean" -> Value.Json(shared(comparable(json(one()))) { (x) ->

@@ -44,6 +44,12 @@ sealed interface Value {
          * property of it is read from the row at those keys and the property's, as [SqlCypherCompiler.rowValue] reads it.
          */
         val rowKeys: List<String>? = null,
+        /**
+         * Whether it is read from an item of a list the query unwinds, an `UNWIND`'s or the rows a write carries on, and passed on
+         * as it is: it reads no node's or relationship's properties, so a property of it a `RETURN` or a `WITH` gives is read as
+         * [SqlCypherCompiler.itemValue] reads it.
+         */
+        val fromList: Boolean = false,
     ) : Value
 
     /** A truth value: SQL's boolean, with its null for Cypher's. */

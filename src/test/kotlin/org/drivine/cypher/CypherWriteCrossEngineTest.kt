@@ -150,27 +150,105 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `an unwound parameter's values returned or passed on by a RETURN or a WITH come back as they are given`() {
+        // On Oracle such a value is read through the item's text where it is a text (#322): a whole float stays a float, a
+        // list, a map, an empty text, a null and a missing key come back as they were, returned, passed on, or after a write.
+        val items = listOf(
+            mapOf("id" to 1, "s" to "short", "f" to 5.0, "i" to 5, "l" to listOf(1, 2), "fl" to listOf(1.0, 2.5), "m" to mapOf("k" to 2.0), "z" to null, "e" to ""),
+            mapOf("id" to 2, "s" to "x'\"y", "f" to -0.5, "i" to 0, "l" to emptyList<Any>(), "fl" to listOf(3.0), "m" to mapOf("k" to "v"), "e" to "e"),
+        )
+        val given = mapOf("items" to items)
+        query("CREATE (:CyWrite {id: 1}), (:CyWrite {id: 2})")
+        val expected = mapOf(
+            "s" to listOf("short", "x'\"y"), "f" to listOf(5.0, -0.5), "i" to listOf(5L, 0L), "l" to listOf(listOf(1L, 2L), emptyList()),
+            "fl" to listOf(listOf(1.0, 2.5), listOf(3.0)), "m" to listOf(mapOf("k" to 2.0), mapOf("k" to "v")), "z" to listOf(null, null),
+            "nothing" to listOf(null, null), "e" to listOf("", "e"),
+        )
+        expected.forEach { (key, values) ->
+            assertEquals(values, query("UNWIND \$items AS t RETURN t.$key", given), key)
+            assertEquals(values, query("UNWIND \$items AS t WITH t.$key AS v RETURN v", given), key)
+            assertEquals(values, query("UNWIND \$items AS t WITH t RETURN t.$key", given), key)
+            assertEquals(values, query("UNWIND \$items AS t MATCH (n:CyWrite {id: t.id}) SET n.seen = true RETURN t.$key ORDER BY t.id", given), key)
+            assertEquals(values, query("CALL { UNWIND \$items AS t RETURN t } RETURN t.$key", given), key)
+        }
+        // An OPTIONAL CALL that unwinds nothing gives a null item, and its value is null.
+        assertEquals(listOf(null), query("UNWIND [1] AS x OPTIONAL CALL { WITH x UNWIND [] AS t RETURN t } RETURN t.s"))
+        query("UNWIND \$items AS t WITH t.id AS id, t.s AS s, t.f AS f, t.l AS l, t.m.k AS k CREATE (:CyMade {id: id, s: s, f: f, l: l, k: k})", given)
+        assertEquals(
+            listOf(
+                mapOf("id" to 1L, "s" to "short", "f" to 5.0, "l" to listOf(1L, 2L), "k" to 2.0),
+                mapOf("id" to 2L, "s" to "x'\"y", "f" to -0.5, "l" to emptyList<Any>(), "k" to "v"),
+            ),
+            query("MATCH (n:CyMade) RETURN properties(n) ORDER BY n.id"),
+        )
+        // A map with a key as extended JSON's comes back the map it is, and not the number extended JSON writes.
+        val keyed = listOf(mapOf("d" to mapOf("\$numberLong" to "5")), mapOf("d" to mapOf("\$numberDouble" to "2.0")))
+        assertEquals(keyed.map { it["d"] }, query("UNWIND \$items AS t RETURN t.d", mapOf("items" to keyed)))
+        assertEquals(keyed.map { it["d"] }, query("UNWIND \$items AS t WITH t RETURN t.d", mapOf("items" to keyed)))
+    }
+
+    @Test
+    fun `an unwound item's text, short or past 32 KB, is returned only for the nodes a labelled pattern matches`() {
+        // On Oracle such a text is read in a CASE on its type (#322), and such a CASE on a node's properties made Oracle drop a
+        // label test (see OracleCypherCompiler.itemProperty): each node a label rules out, on either end of the pattern, is left out.
+        query(
+            "UNWIND [1, 2, 3] AS id CREATE (:CyWrite {id: id, o: id * 2})-[:R]->(:CyOther {name: 'k'}), " +
+                "(:CyWrite {id: id, o: id * 2 + 1})-[:R]->(:CyDecoy {name: 'k'}), (:CyNope {id: id})-[:R]->(:CyOther {name: 'k'})",
+        )
+        for (text in listOf("s", "x".repeat(40_000))) {
+            val given = mapOf("texts" to (1..3).map { mapOf("id" to it, "a" to "$text$it", "k" to "k") })
+            val texts = (1..3).map { "$text$it" }
+            assertEquals(texts, query("UNWIND \$texts AS t MATCH (n:CyWrite {id: t.id})-[r]->(k:CyOther) RETURN t.a ORDER BY n.o", given))
+            assertEquals(texts, query("UNWIND \$texts AS t MATCH (k:CyOther {name: t.k})<-[r]-(n:CyWrite {id: t.id}) RETURN t.a ORDER BY n.o", given))
+            assertEquals(
+                (1..3).map { listOf("$text$it", it * 2L) },
+                query("UNWIND \$texts AS t MATCH (n:CyWrite {id: t.id}) WHERE (n)-->(:CyOther) WITH t.a AS a, n RETURN [a, n.o] ORDER BY n.o", given),
+            )
+            assertEquals(texts, query("UNWIND \$texts AS t MATCH (n:CyWrite {id: t.id})-[r]->(k:CyOther) SET n.seen = true RETURN t.a ORDER BY n.o", given))
+            assertEquals(texts.flatMap { listOf(it, it) }, query("UNWIND \$texts AS t MATCH (k:CyOther)<--(n {id: t.id}) RETURN t.a ORDER BY t.id", given))
+        }
+        // So is a value of an item of a list made of a node's properties, unwound beside the labelled pattern.
+        assertEquals(listOf(2L, 4L, 6L), query("MATCH (n:CyWrite)-[r]->(k:CyOther) UNWIND [n {.o}] AS m RETURN m.o ORDER BY m.o"))
+        assertEquals(listOf(0L), query("MATCH (n) WHERE n.seen AND NOT n:CyWrite OR n:CyWrite AND n.seen AND n.o % 2 = 1 RETURN count(n)"))
+    }
+
+    @Test
+    fun `a value a write's subquery takes from its row is read from what a UNION or an OPTIONAL CALL gives`() {
+        // #336: a property of a value a write reads from its row is read from the row (#309). x is t.m in one query of the
+        // UNION and t.l in the other, so its property is read from what the UNION gives; u is null where the OPTIONAL CALL
+        // finds nothing, and not t.
+        query("CREATE (:CyWrite {id: 1}), (:CyWrite {k: 'p'}), (:CyWrite {k: 'q'}), (:CyWrite {k: 'q'})")
+        val given = mapOf("ts" to listOf(mapOf("id" to 1, "a" to "q", "f" to false, "m" to mapOf("a" to "p"), "l" to mapOf("a" to "q"))))
+        fun set(property: String, value: String) = query("UNWIND \$ts AS t MATCH (n:CyWrite {id: t.id}) SET n.$property = $value", given)
+        fun counted(subquery: String) = "COUNT { $subquery MATCH (y:CyWrite) WHERE y.k = %s RETURN y }"
+        set("union", counted("CALL { WITH t RETURN t.m AS x UNION ALL WITH t RETURN t.l AS x }").format("x.a"))
+        // Where each query takes it from the same keys, or a CALL, a CASE, a comprehension, a WITH or a FOREACH passes on the
+        // row's value, it is read as it is given.
+        set("same", counted("CALL { WITH t RETURN t.l AS x UNION ALL WITH t RETURN t.l AS x }").format("x.a"))
+        set("called", counted("CALL { WITH t RETURN t.l AS x }").format("x.a"))
+        set("cased", counted("").format("(CASE WHEN t.f THEN t.m ELSE t.l END).a"))
+        set("comprehended", counted("UNWIND [x IN [t.m, t.l] WHERE x.a = 'q' | x] AS x").format("x.a"))
+        query("UNWIND \$ts AS t WITH t.l AS t, t.id AS id MATCH (n:CyWrite {id: id}) SET n.rebound = ${counted("").format("t.a")}", given)
+        query("UNWIND \$ts AS t MATCH (n:CyWrite {id: t.id}) FOREACH (x IN [t.m, t.l] | FOREACH (z IN [x] | SET n.each = coalesce(n.each, '') + z.a))", given)
+        assertEquals(
+            listOf(listOf(3L, 4L, 2L, 2L, 2L, 2L, "pq")),
+            query("MATCH (n:CyWrite {id: 1}) RETURN [n.union, n.same, n.called, n.cased, n.comprehended, n.rebound, n.each]"),
+        )
+        // On Oracle, an OPTIONAL CALL in a write's subquery was refused (ORA-06550, ORA-00907) until it was joined on 1 = 1 (#338).
+        set("optional", counted("OPTIONAL CALL { WITH t MATCH (z:Nope) RETURN t AS u }").format("u.a"))
+        set("found", counted("OPTIONAL CALL { WITH t RETURN t.l AS u }").format("u.a"))
+        // With no WHERE … AND … after the join, it closed the session there.
+        set("bare", "COUNT { OPTIONAL CALL { WITH t MATCH (z:Nope) RETURN t AS u } RETURN u }")
+        assertEquals(listOf(listOf(0L, 2L, 1L)), query("MATCH (n:CyWrite {id: 1}) RETURN [n.optional, n.found, n.bare]"))
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>
         val after = System.currentTimeMillis() + 60_000
         assertTrue((millis as Long) in before..after, "$millis")
         assertTrue((stamp as Long) in before..after, "$stamp")
-    }
-
-    @Test
-    fun `lists and maps that hold a null and differ as JSON compare item by item in a statement that writes`() {
-        // Beside the spec's step since v0.6.14 (#270): on Oracle a procedure declares no function of its own, so the store's walks them.
-        assertEquals(listOf("null"), query("CREATE (n:CyWrite) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
-        assertEquals(
-            listOf(listOf(null, null, false, true, null, false, null, true)),
-            query(
-                "CREATE (n:CyWrite) WITH n, [null, 1] AS a, [2, 1] AS b, {x: null} AS m, {x: 1} AS o, [[null], 1] AS c, [[1], 2] AS d " +
-                    "RETURN [a = b, m = o, c = d, a <> [1, 2], a IN [b, [3]], a IN [[3]], {k: [null]} = {k: [2]}, m <> {y: 1}]"
-            ),
-        )
-        // A node OPTIONAL MATCH finds none of is null in the list that holds it, beside one the statement made.
-        assertEquals(listOf(listOf(null, null)), query("OPTIONAL MATCH (x:Nope) CREATE (n:CyWrite) WITH n, [x] AS a, [n] AS b RETURN [a = b, a = a]"))
     }
 
     @Test
@@ -398,6 +476,38 @@ class CypherWriteOracleTest : CypherWriteContract() {
             query("UNWIND \$items AS t MATCH (n:CyWrite {id: t.id}) SET n += t", items)
             assertEquals(texts, query("MATCH (n:CyWrite) RETURN n.a ORDER BY n.id"))
             assertEquals(listOf(5.0, 5.0, 5.0), query("MATCH (n:CyWrite) RETURN n.f ORDER BY n.id"))
+        } finally {
+            connection.release()
+        }
+    }
+
+    @Test
+    fun `a text past 32 KB from an unwound parameter returned or passed on, on two rows, leaves the session open`() {
+        // Oracle crashed the session where a statement took a text past 32 KB from an item of an unwound parameter as JSON, and
+        // returned it or passed it on, for each of two rows (#322). The compiler reads such a value through the item's text to
+        // work round it: see OracleCypherCompiler.itemValue. As above, each statement is new, and the session is asked again after it.
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+            connection.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
+        try {
+            val texts = listOf("x", "y", "z").map { it.repeat(40_000) }
+            val items = mapOf("items" to texts.mapIndexed { i, a -> mapOf("id" to i + 1, "a" to a) })
+            query("UNWIND range(1, 3) AS id CREATE (:CyWrite {id: id})")
+            repeat(3) { i ->
+                fun alive() = assertEquals(listOf(1L), query("RETURN 1 AS alive$i"))
+                assertEquals(texts, query("UNWIND \$items AS t RETURN t.a AS a$i", items)).also { alive() }
+                assertEquals(texts, query("UNWIND \$items AS t WITH t.a AS a RETURN a AS a$i", items)).also { alive() }
+                assertEquals(texts, query("UNWIND \$items AS t WITH t RETURN t.a AS a$i", items)).also { alive() }
+                query("UNWIND \$items AS t WITH t.a AS a, t.id AS id CREATE (:CyMade {id: id, a: a, i: $i})", items).also { alive() }
+                assertEquals(texts, query("UNWIND \$items AS t MATCH (n:CyWrite {id: t.id}) SET n.a$i = t.a RETURN t.a AS a$i", items)).also { alive() }
+                assertEquals(texts, query("MATCH (n:CyMade {i: $i}) RETURN n.a ORDER BY n.id"))
+                assertEquals(texts, query("MATCH (n:CyWrite) WHERE n.id > -$i RETURN n.a$i ORDER BY n.id"))
+            }
+            // Not worked around: a pattern that matches on such a text compares it as JSON, which Oracle refuses past about 32 KB
+            // (ORA-40180), as it refuses to sort or group it, and the session stays open.
+            val refused = assertFailsWith<Exception> { query("UNWIND \$items AS t MERGE (n:CyMerged {a: t.a})", items) }
+            assertTrue(generateSequence<Throwable>(refused) { it.cause }.any { "ORA-40180" in it.message.orEmpty() }, refused.toString())
+            assertEquals(listOf(3L), query("MATCH (n:CyWrite) RETURN count(n)"))
         } finally {
             connection.release()
         }

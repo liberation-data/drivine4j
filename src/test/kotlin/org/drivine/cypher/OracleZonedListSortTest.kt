@@ -47,6 +47,12 @@ class OracleZonedListSortTest {
         assertFalse(temporal.contains("JSON_TABLE(w4.c2"), temporal)
         val other = OracleCypherCompiler("g").compile("UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | i + k] AS l RETURN size([x IN l WHERE x > 1])").sql
         assertFalse(other.contains("PASSING"), other)
+        // collect(DISTINCT …) keeps each list, or each value, once, reading the collected list by its places too.
+        for (distinct in listOf("$repro RETURN collect(DISTINCT l)", "$repro UNWIND l AS t RETURN collect(DISTINCT t)")) {
+            val sql = OracleCypherCompiler("g").compile(distinct).sql
+            assertTrue(sql.contains("PASSING e_r.n - 1"), sql)
+        }
+        assertFalse(OracleCypherCompiler("g").compile("UNWIND [1, 1] AS k RETURN collect(DISTINCT k)").sql.contains("PASSING"))
     }
 }
 
@@ -78,13 +84,15 @@ class OracleZonedListSortRunTest {
     private val at = "datetime(CASE k WHEN 0 THEN '2024-03-15T10:00:00+02:00' ELSE '2024-03-15T09:00:00Z' END)"
 
     @Test
-    fun `a list worked out item by item with temporal arithmetic is filtered, sorted, and its size taken, in moments`() {
+    fun `a list worked out item by item with temporal arithmetic is filtered, sorted, reversed, and its size taken, in moments`() {
         assertEquals(listOf("[0,10]", "[1,10]"), rows("$repro RETURN [k, size([x IN l WHERE x IS NOT NULL])] ORDER BY k"))
         assertEquals(setOf("0", "1"), rows("$repro RETURN k ORDER BY size([x IN l WHERE x IS NOT NULL])").toSet())
         val zoned = "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | datetime('2024-03-15T10:00:00Z') + duration({minutes: i})] AS l"
         assertEquals(listOf("[0,10]", "[1,10]"), rows("$zoned RETURN [k, size([x IN l WHERE x IS NOT NULL])] ORDER BY k"))
         assertEquals(listOf("[0,true,1]"), rows("$zoned WITH k, l WHERE k = 0 RETURN [k, all(x IN l WHERE x > datetime('2024-03-15T10:00:00Z')), size([x IN l WHERE x.minute = 1])]"))
         assertEquals(listOf("10"), rows("$repro WITH k, l WHERE k = 0 UNWIND l AS t RETURN count(t)"))
+        assertEquals(listOf("[10,2]"), rows("$repro WITH k, l WHERE k = 0 RETURN [reverse(l)[0].minute, tail(l)[0].minute]"))
+        assertEquals(listOf("[1,10]"), rows("$repro WITH collect(DISTINCT l) AS ls RETURN [size(ls), size(ls[0])]"))
     }
 
     @Test
@@ -98,8 +106,12 @@ class OracleZonedListSortRunTest {
         assertEquals(listOf("[10,9]"), rows("$collected RETURN [min(l)[0].hour, max(l)[0].hour]"))
     }
 
-    /** The first column of each row [cypher], compiled for Oracle, gives, as text; failing where they take past [seconds]. */
-    private fun rows(cypher: String, seconds: Long = 30): List<String> {
+    /**
+     * The first column of each row [cypher], compiled for Oracle, gives, as text; failing where they take past [seconds], which is
+     * short of the 21 seconds the parse of a `JSON_TABLE` over #331's list took, and far past the 15 to 200 milliseconds each of these
+     * statements takes, so a loaded machine does not fail them.
+     */
+    private fun rows(cypher: String, seconds: Long = 10): List<String> {
         val sql = OracleCypherCompiler("cypher").compile(cypher).sql
         val connection = OracleTestDatabase.provider.nativeDriver.connection
         val sid = connection.createStatement().use { it.executeQuery("SELECT SYS_CONTEXT('USERENV', 'SID') FROM dual").use { r -> r.next(); r.getString(1) } }

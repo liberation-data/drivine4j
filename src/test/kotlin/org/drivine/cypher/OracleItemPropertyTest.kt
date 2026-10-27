@@ -9,8 +9,8 @@ import kotlin.test.assertTrue
 /**
  * On Oracle, a property that is an item of a `RETURN` or a `WITH` is read through its text, as extended JSON: Oracle
  * crashed the session where a statement took a text past 32 KB from the properties as JSON for each of two rows (#255).
- * So is a text a write takes from the row it is writing, to work out what it writes (#309). Elsewhere a property is read
- * as it was.
+ * So is a text a write takes from the row it is writing, to work out what it writes (#309), and an unwound item's value a
+ * `RETURN` or a `WITH` gives (#322). Elsewhere a property is read as it was.
  */
 class OracleItemPropertyTest {
 
@@ -103,6 +103,94 @@ class OracleItemPropertyTest {
         assertTrue(merged.contains("= JSON_QUERY(JSON_QUERY(cy_row, '\$.v1' RETURNING JSON), '\$.id' RETURNING JSON)"), merged)
         assertTrue(merged.contains("JSON_OBJECT('id' VALUE ${read("\$.v1.id")} NULL ON NULL RETURNING JSON) INTO cy_value"), merged)
         assertTrue(merged.contains("SELECT ${read("\$.v1.a")} INTO cy_value"), merged)
+    }
+
+    @Test
+    fun `an unwound item's value an item returns or passes on is read through the item's text where it is a text`() {
+        // Oracle crashed the session where such a value, a text past 32 KB, was read as JSON for each of two rows (#322).
+        fun read(json: String) =
+            "CASE WHEN JSON_VALUE($json, '\$.a.type()') = 'string' THEN JSON(JSON_QUERY(JSON_SERIALIZE($json RETURNING CLOB), '\$.a' RETURNING CLOB)) " +
+                "ELSE JSON_QUERY($json, '\$.a' RETURNING JSON) END"
+        val ts = mapOf("ts" to emptyList<Any>())
+        fun compiled(cypher: String) = OracleCypherCompiler("g").compile(cypher, ts).sql
+        val returned = compiled("UNWIND \$ts AS t RETURN t.a")
+        assertTrue(returned.contains("${read("u1.item")} AS c1"), returned)
+        val passed = compiled("UNWIND \$ts AS t WITH t.a AS a CREATE (:Doc {a: a})")
+        assertTrue(passed.contains("${read("u1.item")} AS c1"), passed)
+        val carried = compiled("UNWIND \$ts AS t WITH t RETURN t.a")
+        assertTrue(carried.contains("${read("w3.c1")} AS c1"), carried)
+        val written = compiled("UNWIND \$ts AS t MATCH (n:Doc {id: t.id}) SET n.b = 1 RETURN t.a")
+        assertTrue(written.contains("${read("JSON_QUERY(r4.item, '\$.v1' RETURNING JSON)")} AS c1"), written)
+        // Tested, sorted, nested in an item, or matched by a pattern, as it was.
+        val other = compiled("UNWIND \$ts AS t WITH t WHERE t.b = 1 RETURN [t.a] ORDER BY t.c")
+        assertTrue(!other.contains("SERIALIZE") && other.contains("JSON_QUERY(w3.c1, '\$.a' RETURNING JSON)"), other)
+        val merged = compiled("UNWIND \$ts AS t MERGE (n:Doc {a: t.a})")
+        assertTrue(merged.contains("= JSON_QUERY(JSON_QUERY(cy_row, '\$.v1' RETURNING JSON), '\$.a' RETURNING JSON)"), merged)
+        // A UNION whose every query returns an unwound item gives one, read so too.
+        val unioned = compiled("CALL { UNWIND \$ts AS m RETURN m UNION ALL UNWIND \$ts AS m RETURN m } RETURN m.a")
+        assertTrue(unioned.contains("JSON_SERIALIZE(") && unioned.contains("'\$.a.type()'"), unioned)
+        // A map made of a node's properties and carried past a write is read from the write's rows, so read so too.
+        val past = compiled("MATCH (n:Doc) WITH n, n {.a} AS m SET n.b = 1 RETURN m.a")
+        assertTrue(past.contains("JSON_SERIALIZE(") && past.contains("'\$.a.type()'"), past)
+        // So does a CALL that returns one, an OPTIONAL one among them.
+        listOf("CALL { UNWIND \$ts AS m RETURN m } RETURN m.a", "OPTIONAL CALL { UNWIND \$ts AS m RETURN m } RETURN m.a").forEach { cypher ->
+            val sql = compiled(cypher)
+            assertTrue(sql.contains("JSON_SERIALIZE(") && sql.contains("'\$.a.type()'"), sql)
+        }
+        // A temporal value's field, or a key that may name one, is read as a temporal field is.
+        listOf("UNWIND \$ts AS t RETURN t.year", "UNWIND [date('2020-01-02')] AS t RETURN t.year").forEach { cypher ->
+            val sql = compiled(cypher)
+            assertTrue(!sql.contains("'\$.year.type()'"), sql)
+        }
+    }
+
+    @Test
+    fun `a value of a map made of a node's properties, or written, is read as elsewhere`() {
+        // Only a value read from an unwound item is read through its text: a CASE on a node's properties made Oracle drop a label test.
+        listOf(
+            "MATCH (n:Doc) RETURN properties(n).a",
+            "MATCH (n:Doc) WITH n {.a} AS m RETURN m.a",
+            "MATCH (n:Doc) WITH {a: n.a} AS m RETURN m.a",
+            "MATCH (n:Doc) CALL { WITH n RETURN n {.a} AS m UNION ALL UNWIND [{a: 1}] AS m RETURN m } RETURN m.a",
+        ).forEach { cypher ->
+            val sql = OracleCypherCompiler("g").compile(cypher).sql
+            assertTrue(!sql.contains("SERIALIZE"), sql)
+        }
+    }
+
+    @Test
+    fun `on Postgres an unwound item's value returned is read as elsewhere`() {
+        val ts = mapOf("ts" to emptyList<Any>())
+        assertTrue(PostgresCypherCompiler("g").compile("UNWIND \$ts AS t RETURN t.a", ts).sql.contains("SELECT (u1.item -> 'a') AS c1"))
+        assertTrue(PostgresCypherCompiler("g").compile("UNWIND \$ts AS t WITH t RETURN t.a", ts).sql.contains("SELECT (w3.c1 -> 'a') AS c1"))
+        val written = PostgresCypherCompiler("g").compile("UNWIND \$ts AS t MATCH (n:Doc {id: t.id}) SET n.b = 1 RETURN t.a", ts).sql
+        assertTrue(written.contains("(((r4.item -> 'v1')) -> 'a') AS c1") || written.contains("((r4.item -> 'v1') -> 'a') AS c1"), written)
+    }
+
+    @Test
+    fun `a value a UNION in a write's subquery takes from its row in each query is read from what the UNION gives`() {
+        // x is t.m in one query and t.l in the other (#336): read from the row at the first's keys, the other's rows read t.m.a.
+        val ts = mapOf("ts" to emptyList<Any>())
+        fun union(second: String) =
+            "UNWIND \$ts AS t MATCH (n {id: t.id}) SET n.a = COUNT { CALL { WITH t RETURN t.m AS x UNION ALL WITH t RETURN $second AS x } MATCH (y) WHERE y.k = x.a RETURN y }"
+        val differ = OracleCypherCompiler("g").compile(union("t.l"), ts).sql
+        assertTrue(!differ.contains("'\$.v1.m.a'") && !differ.contains("'\$.v1.l.a'"), differ)
+        // Where each query takes it from the same keys, it is read from the row there, as #309 reads it.
+        val same = OracleCypherCompiler("g").compile(union("t.m"), ts).sql
+        assertTrue(same.contains("'\$.v1.m.a'"), same)
+        val postgres = PostgresCypherCompiler("g").compile(union("t.l"), ts).sql
+        assertTrue(!postgres.contains("(((cy_row -> 'v1') -> 'm') -> 'a')"), postgres)
+    }
+
+    @Test
+    fun `a value an OPTIONAL CALL in a write's subquery returns from its row is read from what the call gives`() {
+        // u is null where the call finds nothing (#336): read from the row, it would be t, and y.k compared with t.a.
+        val cypher = "UNWIND \$ts AS t MATCH (n {id: t.id}) SET n.a = COUNT { OPTIONAL CALL { WITH t MATCH (y:Nope) RETURN t AS u } MATCH (y) WHERE y.k = u.a RETURN y }"
+        val ts = mapOf("ts" to emptyList<Any>())
+        val oracle = OracleCypherCompiler("g").compile(cypher, ts).sql
+        assertTrue(!oracle.contains("'\$.v1.a'"), oracle)
+        val postgres = PostgresCypherCompiler("g").compile(cypher, ts).sql
+        assertTrue(!postgres.contains("((cy_row -> 'v1') -> 'a')"), postgres)
     }
 
     @Test

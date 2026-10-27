@@ -527,16 +527,6 @@ abstract class CypherQueryContract {
             listOf(listOf(true, true, true, true)),
             query("UNWIND ['a,null]'] AS s WITH s, [s] AS v, [[s]] AS l, $long AS w, [$long] AS ws CREATE (n:CyNullEquality) SET n.eq = v = [s], n.in = v IN l, n.longEq = w = $long, n.longIn = w IN ws RETURN [n.eq, n.in, n.longEq, n.longIn]"),
         )
-        assertEquals(listOf("null"), query("CREATE (n:CyNullEquality) WITH n, [null] AS a, [1] AS b SET n.eq = coalesce(a = b, 'null') RETURN n.eq"))
-    }
-
-    @Test
-    fun `the step of a reduce compares lists and maps that hold a null and differ as JSON item by item`() {
-        // Beside the spec's cases since v0.6.14 (#270): on Oracle a reduce's step calls no function of the query's, so the store's walks them.
-        assertEquals(listOf(listOf(false, null, null)), query("WITH [2, null] AS c RETURN reduce(acc = [], x IN [[1, null], [2, null], [null, 1]] | acc + [x = c])"))
-        assertEquals(listOf(listOf(null, false, false)), query("RETURN reduce(acc = [], m IN [{x: null}, {x: 1, y: 2}, {x: 2}] | acc + [m = {x: 1}])"))
-        assertEquals(listOf(listOf(null, false)), query("WITH [[null], 1] AS a RETURN reduce(acc = [], x IN [[[1], 1], [[1], 2]] | acc + [x = a])"))
-        assertEquals(listOf(null), query("RETURN reduce(acc = true, x IN [[null]] | acc AND x = [1])"))
     }
 
     @Test
@@ -861,6 +851,56 @@ abstract class CypherQueryContract {
         // After a term whose kind is open, which sorts by its kind first (#308): the text before the numbers, then by moment.
         assertEquals(listOf(8L, 10L, 9L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o, l"))
         assertEquals(listOf(9L, 10L, 8L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o DESC, l DESC"))
+    }
+
+    @Test
+    fun `a list of temporal values worked out on each row is read item by item, in order, on its own row, wherever it is read`() {
+        // Not in the spec yet: Oracle reads such a list by its places, not with JSON_TABLE (#331). Of 0, 1 and 2 items, at 10:01, 10:02.
+        val at = "localdatetime('2024-03-15T10:00:00')"
+        val rows = "UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, k) | $at + duration({minutes: i})] AS l"
+        fun minute(m: Int) = "localdatetime('2024-03-15T10:0$m:00')"
+        // A comprehension, an IN, the quantifiers, and the list read twice in one statement.
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), false, false, true, true, false), listOf(1L, listOf(1L), true, false, true, false, true), listOf(2L, listOf(1L, 2L), true, true, true, false, true)),
+            query("$rows RETURN k, [x IN l | x.minute], ${minute(1)} IN l, ${minute(2)} IN l, all(x IN l WHERE x.minute <= k), none(x IN l WHERE x.minute = k), single(x IN l WHERE x.minute = 1) ORDER BY k"),
+        )
+        // A comprehension within one over the outer item and the row, in order.
+        assertEquals(
+            listOf(emptyList(), listOf(listOf(1L, 2L)), listOf(listOf(1L, 3L), listOf(2L, 4L))),
+            query("$rows RETURN [x IN l | [y IN [x, x + duration({minutes: k})] | y.minute]] ORDER BY k"),
+        )
+        // An IN over another row's value: each pair whose minute is in the list.
+        assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows UNWIND [1, 2] AS j WITH k, j, l WHERE $at + duration({minutes: j}) IN l WITH k, j ORDER BY j RETURN k, collect(j) ORDER BY k"))
+        // Null and a null item: no list, and a null that is compared.
+        assertEquals(
+            listOf(listOf(0L, null, null), listOf(1L, listOf(1L), true), listOf(2L, null, null)),
+            query("$rows WITH k, CASE WHEN k = 1 THEN l END AS m RETURN k, [x IN m | x.minute], any(x IN m WHERE x.minute = 1) ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), false), listOf(1L, listOf(null), null), listOf(2L, listOf(null, 2L), null)),
+            query("UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, k) | CASE WHEN i > 1 THEN $at + duration({minutes: i}) END] AS l RETURN k, [x IN l | x.minute], ${minute(1)} IN l ORDER BY k"),
+        )
+        // A slice, from either end, an UNWIND, and a CALL { … }.
+        assertEquals(listOf(listOf(emptyList<Long>(), emptyList<Long>()), listOf(emptyList(), listOf(1L)), listOf(listOf(2L), listOf(2L))), query("$rows RETURN [x IN l[1..] | x.minute], [x IN l[-1..] | x.minute] ORDER BY k"))
+        assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows UNWIND l AS t RETURN k, collect(t.minute) ORDER BY k"))
+        assertEquals(listOf(listOf(0L, 0L), listOf(1L, 1L), listOf(2L, 2L)), query("$rows CALL { WITH l UNWIND l AS t RETURN count(t) AS c } RETURN k, c ORDER BY k"))
+        // On each side of a UNION, and a list of such lists.
+        assertEquals(
+            setOf(emptyList(), listOf(1L), listOf(1L, 2L), listOf(2L, 1L)),
+            query("$rows RETURN [x IN l | x.minute] AS ms UNION $rows RETURN [x IN reverse(l) | x.minute] AS ms").toSet(),
+        )
+        assertEquals(listOf(listOf(0L, 0L), listOf(1L, 1L), listOf(2L, 2L)), query("$rows WITH k, [l, l] AS ll RETURN [x IN ll | size(x)][1], size([x IN ll[0] WHERE x.minute > 0]) ORDER BY k"))
+        // collect(DISTINCT …) of such lists, and of their items, each once where first.
+        val twice = "UNWIND [2, 1, 2] AS k WITH k, [i IN range(1, k) | $at + duration({minutes: i})] AS l"
+        assertEquals(listOf(listOf(listOf(1L, 2L), listOf(1L))), query("$twice WITH collect(DISTINCT l) AS ls RETURN [x IN ls | [y IN x | y.minute]]"))
+        assertEquals(listOf(listOf(1L, 2L)), query("$twice UNWIND l AS t WITH collect(DISTINCT t) AS ts RETURN [x IN ts | x.minute]"))
+        // A list that holds a null is kept once, as Cypher keeps it; zoned values of one moment and two offsets are not equal in
+        // Cypher, so each is kept, in the order first seen.
+        val nulls = "UNWIND [2, 1, 2, 1] AS k WITH k, [i IN range(1, k) | CASE WHEN i > 1 THEN $at + duration({minutes: i}) END] AS l"
+        assertEquals(listOf(listOf(listOf(null, 2L), listOf(null))), query("$nulls WITH collect(DISTINCT l) AS ls RETURN [x IN ls | [y IN x | y.minute]]"))
+        val zoned = "UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, 2) | datetime(CASE k WHEN 1 THEN '2024-03-15T10:00:00+02:00' ELSE '2024-03-15T08:00:00Z' END) + duration({minutes: i})] AS l"
+        assertEquals(listOf(listOf(listOf(8L, 8L), listOf(10L, 10L))), query("$zoned WITH collect(DISTINCT l) AS ls RETURN [x IN ls | [y IN x | y.hour]]"))
+        assertEquals(listOf(listOf(8L, 8L, 10L, 10L)), query("$zoned UNWIND l AS t WITH collect(DISTINCT t) AS ts RETURN [x IN ts | x.hour]"))
     }
 
     @Test
@@ -1232,23 +1272,11 @@ abstract class CypherQueryContract {
 
     @Test
     fun `values of several kinds sort as Cypher orders their kinds, a map, a list, a text, a truth value, a number, then null`() {
-        // Not in the spec yet (#299): Oracle and SQLite sort first by where a value's kind comes, then by the value.
+        // Beside the spec's case since v0.6.16 (#299): Oracle and SQLite sort first by where a value's kind comes, then by the value.
         // Postgres takes jsonb's order for every kind but a text: a number before a truth value, a map and a list last (#307).
         if (pm.type == DatabaseType.POSTGRES) return
         val values = "[1, {a: 1}, 'b', true, [2], 2.5, null, false, 'A', [1, 2], -1]"
         val ascending = listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A", "b", false, true, -1L, 1L, 2.5, null)
-        assertEquals(ascending, query("UNWIND $values AS t RETURN t ORDER BY t"))
-        assertEquals(ascending.reversed(), query("UNWIND $values AS t RETURN t ORDER BY t DESC"))
-        // Carried out of a WITH that pages them, kept distinct, and beside another term.
-        assertEquals(listOf("A", "b", false, true), query("UNWIND $values AS t WITH t ORDER BY t SKIP 3 LIMIT 4 RETURN t"))
-        assertEquals(listOf("b", true, 2L), query("UNWIND [2, 'b', true, 2, 'b'] AS t RETURN DISTINCT t ORDER BY t"))
-        assertEquals(
-            listOf(listOf(1L, "a"), listOf(1L, 3L), listOf(2L, false), listOf(2L, 0L)),
-            query("UNWIND [[2, 0], [1, 3], [2, false], [1, 'a']] AS p RETURN p ORDER BY p[0], p[1]"),
-        )
-        // A truth value before a number, though SQLite reads it as 1 or 0.
-        assertEquals(listOf(false, true, 0L, 1L), query("UNWIND [1, true, 0, false] AS t RETURN t ORDER BY t"))
-        assertEquals(listOf(listOf(mapOf("a" to 1L), 1L)), query("UNWIND [true, 1, 'b', [1], {a: 1}] AS t RETURN min(t), max(t)"))
         // Carried out of a CALL { … }, grouped by, kept distinct by another name, and sorted by when it is not returned.
         assertEquals(listOf(mapOf("a" to 1L), listOf(1L, 2L), listOf(2L), "A"), query("CALL { UNWIND $values AS t RETURN t ORDER BY t LIMIT 4 } RETURN t"))
         assertEquals(
@@ -1276,15 +1304,11 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a property stored as several kinds sorts as Cypher orders their kinds`() {
-        // Not in the spec yet (#299): a property read from the store may be of any kind, so its kind is ranked first.
+        // Beside the spec's case since v0.6.16 (#299): a property read from the store may be of any kind, so its kind is ranked first.
         // Postgres puts a number before a truth value, and a list last (#307).
         if (pm.type == DatabaseType.POSTGRES) return
         clear()
         seed("CREATE (:Kind {v: 2}), (:Kind {v: 'b'}), (:Kind {v: true}), (:Kind {v: [1]}), (:Kind {v: 1.5}), (:Kind {v: 'B'}), (:Kind {v: false}), (:Kind)")
-        val ascending = listOf(listOf(1L), "B", "b", false, true, 1.5, 2L, null)
-        assertEquals(ascending, query("MATCH (k:Kind) RETURN k.v ORDER BY k.v"))
-        assertEquals(ascending.reversed(), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC"))
-        assertEquals(listOf("b", false), query("MATCH (k:Kind) WITH k ORDER BY k.v SKIP 2 LIMIT 2 RETURN k.v"))
         assertEquals(listOf(null, 2L), query("CALL { MATCH (k:Kind) RETURN k.v AS v ORDER BY v DESC LIMIT 2 } RETURN v"))
         assertEquals(listOf(listOf(listOf(1L), "B", "b", false, true, 1.5, 2L)), query("MATCH (k:Kind) WITH k ORDER BY k.v WITH collect(k.v) AS vs RETURN vs"))
         assertEquals(listOf(2L, 1.5, true), query("MATCH (k:Kind) RETURN k.v ORDER BY k.v DESC SKIP 1 LIMIT 3"))
@@ -1321,6 +1345,41 @@ abstract class CypherQueryContract {
         val (day, moment) = query("RETURN [date(), localdatetime()]").single() as List<*>
         assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}").matches(day as String), day)
         assertTrue(Regex("\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d{3}|\\.\\d{6})?").matches(moment as String), moment)
+    }
+
+    /**
+     * Runs [block] with a query of the statements it is given. On Oracle they run on one session of their own, which is
+     * asked again after each: a statement that crashes the session can do so after its rows came back.
+     */
+    protected open fun onOneSession(block: (query: (String) -> List<Any?>) -> Unit) = block { query(it) }
+
+    @Test
+    fun `an OPTIONAL CALL or an OPTIONAL MATCH in a COUNT or an EXISTS subquery keeps the row it finds nothing for`() {
+        // Not in the spec yet. Oracle refused an optional join on TRUE in a scalar subquery followed by WHERE … AND … (ORA-00907),
+        // and crashed the session on one without (ORA-03113, ORA-07445 in its alert log) (#338): it is joined on 1 = 1 there.
+        clear()
+        seed("CREATE (:CyOpt {id: 1}), (:CyOpt {k: 'p'}), (:CyOpt {k: 'q'}), (:CyOpt {k: 'q'})")
+        val none = "OPTIONAL CALL { MATCH (z:Nope) RETURN z.k AS u }"
+        onOneSession { query ->
+            fun counted(subquery: String) = query("MATCH (n:CyOpt {id: 1}) RETURN COUNT { $subquery }")
+            // At the top of a statement, as it ran before.
+            assertEquals(listOf(null), query("$none RETURN u"))
+            assertEquals(listOf(2L), query("$none MATCH (y:CyOpt) WHERE y.k = 'q' RETURN count(y)"))
+            // In a COUNT { }: refused on Oracle, with a WHERE … AND … after the join, and else crashed the session.
+            assertEquals(listOf(2L), counted("$none MATCH (y:CyOpt) WHERE y.k = 'q' RETURN y"))
+            assertEquals(listOf(1L), counted("$none RETURN u"))
+            assertEquals(listOf(4L), counted("$none MATCH (y:CyOpt) RETURN y"))
+            assertEquals(listOf(0L), counted("MATCH (y:CyOpt) $none WITH y, u WHERE y.k = u RETURN y"))
+            // What a CALL that finds something gives is counted, and a plain CALL that finds nothing gives no row.
+            assertEquals(listOf(4L), counted("OPTIONAL CALL { MATCH (z:CyOpt) WHERE z.k = 'q' RETURN z.k AS u } MATCH (y:CyOpt) WHERE y.k = u RETURN y"))
+            assertEquals(listOf(0L), counted("CALL { MATCH (z:Nope) RETURN z.k AS u } MATCH (y:CyOpt) WHERE y.k = 'q' RETURN y"))
+            // An OPTIONAL MATCH is the same join.
+            assertEquals(listOf(2L), counted("OPTIONAL MATCH (z:Nope) MATCH (y:CyOpt) WHERE y.k = 'q' RETURN y"))
+            assertEquals(listOf(1L), counted("OPTIONAL MATCH (z:Nope) RETURN z"))
+            // In an EXISTS { }, and in a WHERE.
+            assertEquals(listOf(listOf(true, false)), query("MATCH (n:CyOpt {id: 1}) RETURN [EXISTS { $none RETURN u }, EXISTS { CALL { MATCH (z:Nope) RETURN z.k AS u } RETURN u }]"))
+            assertEquals(listOf(1L), query("MATCH (n:CyOpt) WHERE COUNT { $none RETURN u } = 1 AND n.id = 1 RETURN n.id"))
+        }
     }
 }
 
@@ -1379,6 +1438,16 @@ class CypherQueryOracleTest : CypherQueryContract() {
     override fun seed(cypher: String) = OracleTestDatabase.seed(manager, cypher)
 
     override fun clear() = OracleTestDatabase.clear(manager)
+
+    override fun onOneSession(block: (query: (String) -> List<Any?>) -> Unit) {
+        val connection = OracleTestDatabase.connections(manager).connect()
+        fun query(cypher: String): List<Any?> = connection.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        try {
+            block { cypher -> query(cypher).also { assertEquals(listOf(1L), query("RETURN 1"), "the session after: $cypher") } }
+        } finally {
+            connection.release()
+        }
+    }
 }
 
 class CypherQuerySqliteTest : CypherQueryContract() {

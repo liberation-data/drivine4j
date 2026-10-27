@@ -3338,8 +3338,21 @@ declares the function itself.
 - Writes are worked around for the same bug: a text that a write takes from an unwound parameter's item, or from
   another value of its rows, to write it (`UNWIND $rows AS r MATCH (n {id: r.id}) SET n.a = r.a`, `CREATE (:X {a:
   r.a})`, `MERGE … SET n.a = r.a`) is read from the row's text, at no cost measured: 1,000 rows set by one statement
-  take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. A value
-  such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`) isn't worked around yet.
+  take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. So is a
+  value that a `UNION` in a `CALL { … }` takes from different values of the row in its queries, or that an `OPTIONAL
+  CALL` returns, which may be null.
+- So are reads of an unwound item's value: a text that a `RETURN` or a `WITH` gives from an unwound parameter's item,
+  or from another unwound list's (`UNWIND $rows AS r RETURN r.a`, `WITH r.a AS a`, `SET n.a = r.a RETURN r.a`), is
+  read from the item's text, at about 1.3 times a plain read: 100,000 rows of `RETURN r.a` take about 870 ms, against
+  660 ms. Any other value is read as before, and so is a value of a map made of a node's properties and not unwound
+  (`WITH n {.a} AS m RETURN m.a`); after a write, which carries its rows on, such a value is read from the item's text too.
+  A pattern that matches on such a text (`MERGE (n:X {a: r.a})`) compares it as JSON, which Oracle refuses past about
+  32 KB (ORA-40180), leaving the session open.
+- An `OPTIONAL CALL` or an `OPTIONAL MATCH` is joined `ON 1 = 1`, where Postgres joins `ON TRUE`. This works around
+  an Oracle bug, seen on 23.26.3: in a scalar subquery, as a `COUNT { … }` is compiled, a join `ON TRUE` is refused
+  (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)
+  ([#338](https://github.com/liberation-data/drivine4j/issues/338)). It goes once an Oracle release no longer fails
+  the repro in [docs/oracle-on-true-in-scalar-subquery-crash.md](docs/oracle-on-true-in-scalar-subquery-crash.md).
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
@@ -3350,7 +3363,9 @@ declares the function itself.
   so in an `ORDER BY`, `min` and `max`. Oracle reads the items of a list of temporal values by their places,
   not with `JSON_TABLE`: Oracle 23 takes many seconds, or minutes, to parse a `JSON_TABLE` over a list
   worked out item by item with temporal arithmetic (`[i IN range(1, 10) | t + duration({minutes: i})]`), and
-  neither a query timeout nor a kill ends the parse ([#331](https://github.com/liberation-data/drivine4j/issues/331)). A zoned value keeps the offset it was written
+  neither a query timeout nor a kill ends the parse ([#331](https://github.com/liberation-data/drivine4j/issues/331)). A list
+  the statement no longer knows holds them, as a list of maps that hold them, one passed through `coalesce`, or a list
+  of lists of lists of them (`collect(DISTINCT [l, l])`), is still read with `JSON_TABLE`, and can stall so. A zoned value keeps the offset it was written
   with; a named zone, such as
   `Europe/Paris`, is not read. A graph engine's driver gives a temporal value as one of its own, and Oracle
   and Postgres give its text. A value read from a property is of the kind its text tells, so
