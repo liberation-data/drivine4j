@@ -38,20 +38,28 @@ class CompilerRefusalTest {
     }
 
     @Test
-    fun `round() of two arguments refuses a precision below 0 when cut toward zero, written, negated or given`() {
-        // Not in the spec's refusals yet, which name the message for three arguments alone.
+    fun `round() compiles a precision below 0 or past 2147483647, written, negated or given, to fail on the row that rounds a number by it`() {
+        // Neo4j reads the precision only when it rounds (#305), so none is refused when compiling, in both forms.
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             listOf(
                 "RETURN round(1234.5, -2)" to emptyMap(),
-                "RETURN round(1234.5, -1.2)" to emptyMap(),
+                "RETURN round(1234.5, -1.2, 'UP')" to emptyMap(),
                 "RETURN round(1234.5, -\$p)" to mapOf("p" to 2),
                 "RETURN round(1234.5, \$p)" to mapOf("p" to -2.5),
+                "RETURN round(1234.5, 2147483648)" to emptyMap(),
+                "RETURN round(1234.5, \$p, 'HALF_UP')" to mapOf("p" to Double.POSITIVE_INFINITY),
             ).forEach { (cypher, parameters) ->
-                val refused = assertThrows<DrivineException> { compiler.compile(cypher, parameters) }.message!!
-                assertTrue(refused == "round() takes a precision of 0 or more, as in Neo4j.", refused)
+                val sql = compiler.compile(cypher, parameters).sql
+                assertTrue(sql.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "${compiler::class.simpleName}: $cypher: $sql")
             }
-            // -0.5 and -0.9 cut toward zero are 0 places.
-            compiler.compile("RETURN [round(1234.5, -0.5), round(1234.5, \$p, 'HALF_UP')]", mapOf("p" to -0.9))
+            // -0.5 and -0.9 cut toward zero are 0 places, and 2147483647.9 is 2147483647: none fails.
+            listOf(
+                "RETURN [round(1234.5, -0.5), round(1234.5, \$p, 'HALF_UP')]" to mapOf("p" to -0.9),
+                "RETURN [round(1234.5, 2147483647), round(1234.5, \$p, 'UP')]" to mapOf("p" to 2147483647.9),
+            ).forEach { (cypher, parameters) ->
+                val sql = compiler.compile(cypher, parameters).sql
+                assertTrue(!sql.contains("round() takes a precision"), "${compiler::class.simpleName}: $cypher: $sql")
+            }
         }
     }
 

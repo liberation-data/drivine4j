@@ -37,6 +37,11 @@ sealed interface Value {
          * values compare as JSON; any other may hold a null, which makes Cypher's comparison of the two null where it is not false.
          */
         val flat: Boolean = false,
+        /**
+         * Where a write reads it from the row it is making, to work out what it writes, the keys it is at in that row: a
+         * property of it is read from the row at those keys and the property's, as [SqlCypherCompiler.rowValue] reads it.
+         */
+        val rowKeys: List<String>? = null,
     ) : Value
 
     /** A truth value: SQL's boolean, with its null for Cypher's. */

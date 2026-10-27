@@ -568,7 +568,8 @@ place in the statement it stands at.
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
 - [Postgres](#postgres) works float arithmetic out in exact decimal: `0.1 + 0.2` is `0.3` there.
-- [Oracle](#oracle) reads an empty text as null, and a text read out of JSON is at most 4,000 bytes.
+- [Oracle](#oracle) reads an empty text as null. A text past 4,000 bytes is measured, cut, changed and searched whole, but
+  `reverse()` gives null for one.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
 - Text is ordered by the database's collation on [Postgres](#postgres), and by `BINARY` on [SQLite](#sqlite).
@@ -3297,7 +3298,8 @@ declares the function itself.
   [Cypher on a relational database](#cypher-on-a-relational-database)) and gives the rows a graph engine
   gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
-  each row. A text read out of JSON is at most 4,000 bytes, and an empty one is null. `reduce` is a function the
+  each row. A text read out of JSON past 4,000 bytes is read whole where it is measured, cut, changed or searched, but by
+  `reverse()`, which gives null for one; an empty text is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
   Two lists or maps that may hold a null are compared item by item, as Cypher compares them: where one holds a null, two
   written as the same JSON are null at once, and any other two are walked by the graph's function `<graph>_nulls_equal` (see above), in a statement that
@@ -3329,6 +3331,11 @@ declares the function itself.
   [docs/oracle-long-json-string-crash.md](docs/oracle-long-json-string-crash.md). Such a text still can't be sorted
   by, grouped by or made `DISTINCT`: Oracle sorts and groups JSON only up to about 32 KB, and refuses the statement
   (ORA-40180), leaving the session open.
+- Writes are worked around for the same bug: a text that a write takes from an unwound parameter's item, or from
+  another value of its rows, to write it (`UNWIND $rows AS r MATCH (n {id: r.id}) SET n.a = r.a`, `CREATE (:X {a:
+  r.a})`, `MERGE … SET n.a = r.a`) is read from the row's text, at no cost measured: 1,000 rows set by one statement
+  take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. A value
+  such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`) isn't worked around yet.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields

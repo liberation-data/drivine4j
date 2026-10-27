@@ -697,7 +697,7 @@ abstract class CypherQueryContract {
             "MATCH (n:Round) WHERE n.r IS NOT NULL WITH n.x AS x, n.r AS r RETURN r, round(min(x), r, 'HALF_UP')",
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
-            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), "$statement: $failed")
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
         }
     }
 
@@ -739,7 +739,7 @@ abstract class CypherQueryContract {
             "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.k, n.r, 'UP')",
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
-            if (compiles) assertTrue(failed.contains("round() takes a precision of 0 or more, as in Neo4j."), failed)
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), failed)
         }
         assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.r >= 0 RETURN round(1234.5, n.r)"))
         assertEquals(listOf(1234.5), query("MATCH (n:Round) WHERE n.k = 2 RETURN sum(round(1234.5, n.r))"))
@@ -752,6 +752,36 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(-2L, null, null)), query("UNWIND [null, null] AS x WITH x, -2 AS r RETURN r, round(min(x), r), round(max(x), r, 'UP')"))
         // So far below 0 that the digits a number holds past them, 10^(17 - p), would overflow Oracle's NUMBER.
         assertEquals(listOf(listOf(null, null)), query("UNWIND [-1000] AS p RETURN [round(null, p), round(null, p, 'HALF_EVEN')]"))
+    }
+
+    @Test
+    fun `a precision written below 0 or past 2147483647 fails only on a row that rounds a number by it, with the compiler's message`() {
+        // The spec's cases since #290 and #305, here in a WHERE, an aggregate and a CASE, on rows filtered out, and by a
+        // parameter no YAML holds.
+        clear()
+        seed("CREATE (:Round {x: 1.5, k: 1}), (:Round {k: 2})")
+        listOf(
+            "MATCH (n:Round) WHERE n.k = 1 RETURN round(n.x, -2)" to emptyMap(),
+            "MATCH (n:Round) WHERE round(n.x, 2147483648, 'UP') > 0 RETURN n.k" to emptyMap(),
+            "MATCH (n:Round) RETURN sum(round(n.x, -\$p))" to mapOf("p" to 2),
+            "MATCH (n:Round) RETURN collect(round(n.x, \$p, 'HALF_UP'))" to mapOf("p" to 1.0e20),
+            "RETURN round(1.5, \$p)" to mapOf("p" to Double.POSITIVE_INFINITY),
+            "RETURN round(1.5, \$p, 'UP')" to mapOf("p" to Double.NEGATIVE_INFINITY),
+            "RETURN round(1.5, -9223372036854775808)" to emptyMap(),
+        ).forEach { (statement, parameters) ->
+            val failed = assertThrows<Exception>(statement) { query(statement, parameters) }.message!!
+            if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
+        }
+        // A row that holds no number rounds to null, and a row the CASE does not round, or no row at all, fails nothing.
+        assertEquals(listOf(listOf(null, null, null)), query("MATCH (n:Round) WHERE n.k = 2 RETURN [round(n.x, -2), round(n.x, 2147483648, 'UP'), round(n.x, \$p)]", mapOf("p" to 1.0e20)))
+        assertEquals(listOf(listOf(null, null)), query("RETURN [round(null, \$p), round(null, \$p, 'FLOOR')]", mapOf("p" to Double.POSITIVE_INFINITY)))
+        assertEquals(listOf(0.0, 0.0), query("MATCH (n:Round) RETURN CASE WHEN n.k > 0 THEN 0.0 ELSE round(1.5, -2) + round(n.x, 2147483648) END ORDER BY n.k"))
+        assertEquals(listOf(emptyList<Any>()), query("MATCH (n:Round) WHERE n.k = 1 RETURN collect(CASE WHEN n.k = 2 THEN round(n.x, -2, 'UP') END)"))
+        assertEquals(emptyList(), query("MATCH (n:Round) WHERE n.k = 3 RETURN [round(1.5, -2), round(1.5, \$p, 'UP')]", mapOf("p" to 1.0e20)))
+        assertEquals(emptyList(), query("UNWIND [] AS x RETURN round(1.5, -2)"))
+        // Nor in an ORDER BY whose round() reads nothing of the row. Not in a WHERE: Neo4j may test a condition that reads
+        // nothing of a row before the rows' own, and Postgres does.
+        assertEquals(emptyList(), query("MATCH (n:Round) WHERE n.k = 3 RETURN n.k ORDER BY round(1.5, -2), round(1.5, \$p, 'UP')", mapOf("p" to 1.0e20)))
     }
 
     @Test
@@ -877,6 +907,78 @@ abstract class CypherQueryContract {
         assertEquals(listOf("2.5x", "Ax"), query("CALL { RETURN 2.5 AS v UNION RETURN toUpper('a') AS v } RETURN v + 'x' AS s ORDER BY s"))
         // The least and the greatest of texts are a text, put together with a float as Cypher writes it.
         assertEquals(listOf(listOf("A2.5", "b2.5")), query("UNWIND ['b', 'a'] AS s WITH min(toUpper(s)) AS lo, max(s) AS hi RETURN lo + 2.5, hi + 2.5"))
+    }
+
+    @Test
+    fun `a text past 4,000 bytes is measured, cut, changed, searched and added to whole, as a short one is`() {
+        // Oracle read a text from JSON as a VARCHAR2, which holds 4,000 bytes, and a longer one as null (#298). One function a
+        // statement. Past 32 KB, given only: Oracle closes the session (ORA-03113) after statements that read such a text from a
+        // property and from a parameter in turn, much as it does for one read over two rows (#255), and its sessions hold more of
+        // its memory for each statement that reads one the statement makes, up to the instance's limit (ORA-04036).
+        clear()
+        for (length in listOf(5_000, 40_000)) {
+            val t = " " + "aB".repeat((length - 2) / 2) + " "
+            val functions = mapOf(
+                "size(t)" to length.toLong(), "toUpper(t)" to t.uppercase(), "toLower(t)" to t.lowercase(), "trim(t)" to t.trim(),
+                "ltrim(t)" to t.trimStart(), "rtrim(t)" to t.trimEnd(), "substring(t, 1, size(t) - 2)" to t.substring(1, length - 1),
+                "substring(t, 2)" to t.substring(2), "left(t, size(t) - 1)" to t.dropLast(1), "right(t, size(t) - 1)" to t.drop(1),
+                "replace(t, 'B', 'bb')" to t.replace("B", "bb"), "split(t, 'B')" to t.split("B"),
+                // A separator past 4,000 bytes, too, but within 32 KB, past which Oracle's REPLACE looks for none.
+                "split('x' + t + 'y', left(t, 4100))" to ("x" + t + "y").split(t.take(4100)), "split('x', left(t, 4100))" to listOf("x"),
+                "t STARTS WITH ' aB'" to true, "t STARTS WITH 'x'" to false, "t STARTS WITH t" to true, "t ENDS WITH 'B '" to true, "t ENDS WITH t" to true,
+                "left(t, 10) STARTS WITH t" to false, "left(t, 10) ENDS WITH t" to false,
+                // INSTR looks for no text past 32 KB on Oracle.
+                "t CONTAINS 'BaB'" to true, "t CONTAINS 'z'" to false, "t CONTAINS left(t, 4100)" to true, "t =~ ' (aB)+ '" to true,
+                "t + 'z'" to t + "z", "'z' + t" to "z" + t, "t + t" to t + t, "t + 1" to t + "1", "toString(t)" to t, "isEmpty(t)" to false,
+            )
+            val short = length < 32_000
+            if (short) query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+            val parts = mapOf("a" to t.substring(0, length / 2), "b" to t.substring(length / 2))
+            for ((function, expected) in functions) {
+                // Given, and stored and read in one row, and made by the statement.
+                assertEquals(listOf(expected), query("WITH \$t AS t RETURN $function", mapOf("t" to t)), "$function given, $length")
+                if (!short) continue
+                assertEquals(listOf(expected), query("MATCH (n:CyLongText) WITH n.t AS t RETURN $function"), "$function stored, $length")
+                assertEquals(listOf(expected), query("WITH \$a + \$b AS t RETURN $function", parts), "$function made, $length")
+            }
+            clear()
+        }
+        // Two short texts whose sum is past 4,000 bytes.
+        assertEquals(listOf(6_000L), query("WITH \$a AS a RETURN size(a + a)", mapOf("a" to "é".repeat(3_000))))
+        // Sums at and around 4,000 bytes, of texts of two-byte characters and of a float, put together short on Oracle only where they fit.
+        val sides = listOf("é".repeat(1_000) to "é".repeat(1_000), "a".repeat(1_968) to "a".repeat(1_968), "a".repeat(1_969) to "a".repeat(1_968), "a".repeat(2_000) to "a".repeat(2_001), "a".repeat(3_999) to 1.5)
+        for ((a, b) in sides) assertEquals(listOf("$a$b"), query("WITH \$a AS a, \$b AS b RETURN a + b", mapOf("a" to a, "b" to b)), "${a.length} + $b")
+        // What to replace, and what with, made by the statement, so their lengths are measured for each row: a short text made
+        // past 4,000 bytes, made shorter, and made no longer.
+        val twoByte = mapOf("a" to "é".repeat(1_500))
+        assertEquals(listOf(listOf("é".repeat(3_000), "é".repeat(750), "é".repeat(1_500))),
+            query("WITH \$a AS a RETURN replace(a, left(a, 1), left(a, 2)), replace(a, left(a, 2), left(a, 1)), replace(a, left(a, 1), right(a, 1))", twoByte))
+        // A null text, and a function of a short text that gives Oracle's empty text, null, are not read again as long ones to give another value.
+        for (function in listOf("toUpper(n)", "trim(n)", "substring(n, 1)", "replace(n, 'a', 'b')", "split(n, ',')", "size(n)", "toString(n)", "n + 'a'", "n STARTS WITH 'a'", "n ENDS WITH 'a'", "n CONTAINS 'a'", "n =~ 'a'")) {
+            assertEquals(listOf(null), query("WITH \$n AS n RETURN $function", mapOf("n" to null)), function)
+        }
+        val empty = if (pm.type == DatabaseType.ORACLE) null else ""
+        assertEquals(listOf(listOf(empty, empty, empty, empty)), query("WITH \$s AS s, \$w AS w RETURN substring(s, 5), left(s, 0), replace(s, 'abc', ''), trim(w)", mapOf("s" to "abc", "w" to "   ")))
+        // Two empty texts put together are empty: on Oracle null, as its empty text is, and not read as a long one.
+        assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN e + e", mapOf("e" to "")))
+    }
+
+    @Test
+    fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
+        // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a
+        // CLOB (#298): the two together. One node: Oracle crashes on a long property read from two rows (#255).
+        clear()
+        val t = "aB".repeat(20_000)
+        query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+        val functions = listOf(
+            "size(#)" to 40_000L, "toUpper(#)" to t.uppercase(), "substring(#, 2)" to t.substring(2), "replace(#, 'B', 'b')" to t.lowercase(),
+            "# ENDS WITH 'aB'" to true, "size(# + 'z')" to 40_001L, "toString(#)" to t,
+        )
+        for ((function, expected) in functions) {
+            assertEquals(listOf(expected), query("MATCH (n:CyLongText) WITH n.t AS t RETURN ${function.replace("#", "t")}"), "$function, passed on")
+            assertEquals(listOf(expected), query("MATCH (n:CyLongText) RETURN ${function.replace("#", "n.t")}"), "$function, read where used")
+        }
+        clear()
     }
 
     @Test
