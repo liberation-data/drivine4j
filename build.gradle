@@ -169,6 +169,8 @@ tasks.named('test') {
 	// The images the tests run are pinned in one file, and each pin is an input of the tests.
 	rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
 	if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+	// Each statement is logged in full only when asked: -Pdrivine.statements.level=DEBUG (see logback-test.xml).
+	if (project.hasProperty('drivine.statements.level')) systemProperty 'drivine.statements.level', project.property('drivine.statements.level')
 	finalizedBy jacocoTestReport // Generate coverage report after tests
 }
 
