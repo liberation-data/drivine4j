@@ -81,6 +81,13 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open val extremesByListKey = true
 
+    /**
+     * Whether a list of zoned values the statement makes, or a list of lists of them, sorts and takes its `min` and `max` by
+     * [momentsKey]: not where the store's parse of that key's `JSON_TABLE` over a list worked out item by item can stall the
+     * session, as Oracle's does, where the list is the store's JSON and sorts as that.
+     */
+    protected open val listsByMoments = true
+
     /** How many values [shared] has bound, to name each subquery it binds one in. */
     private var shares = 0
 
@@ -1236,7 +1243,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun listComprehension(comprehension: Expression.ListComprehension, listed: Value, scope: Map<String, Value>): Value {
             val list = comparable(json(listed))
             val name = alias("x")
-            val inner = scope + (comprehension.variable to Value.Json(item(name), temporal = itemsOf(listed), items = itemItemsOf(listed)))
+            val inner = scope + (comprehension.variable to Value.Json(item(name), temporal = itemsOf(listed), items = itemItemsOf(listed), list = holdsLists(listed)))
             val projected = comprehension.projection?.let { expression(it, inner) }
             val projection = projected?.let { json(it).sql } ?: item(name)
             val filter = comprehension.where?.let { " WHERE ${condition(it, inner)}" }.orEmpty()
@@ -2695,7 +2702,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     val gathered = if (left.gathered != null || right.gathered != null) shared(a, b) { (x, y) -> add(x, y) } else null
                     Value.Entities(shared(left.ids, right.ids) { (x, y) -> add(x, y) }, left.relationships, gathered)
                 } else {
-                    // Two lists of items of one kind are, together, a list of that kind. A side the statement makes a text, not given,
+                    // Two lists of items of one kind are, together, a list of that kind, and so of lists of items of one kind. A side the statement makes a text, not given,
                     // is written as its own text; a text put together with a text, or a number given, is a text.
                     val (givenLeft, givenRight) = given(binary.left) to given(binary.right)
                     val (textLeft, textRight) = (isText(left) || givenLeft is String) to (isText(right) || givenRight is String)
@@ -2703,7 +2710,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         shared(a, b) { (x, y) ->
                             add(x, y, (givenLeft ?: MadeText.takeIf { textLeft }) to (givenRight ?: MadeText.takeIf { textRight }))
                         },
-                        items = itemsOf(left)?.takeIf { it == itemsOf(right) },
+                        items = itemsOf(left)?.takeIf { it == itemsOf(right) }, itemItems = itemItemsOf(left)?.takeIf { it == itemItemsOf(right) },
                         list = isList(left) || isList(right), itemLists = holdsLists(left) && (holdsLists(right) || !isList(right)),
                         text = (textLeft && (textRight || isGivenNumber(givenRight))) || (textRight && isGivenNumber(givenLeft)),
                         texts = (holdsTexts(left) && (holdsTexts(right) || textRight)) || (textLeft && holdsTexts(right)),
@@ -3147,14 +3154,18 @@ abstract class SqlCypherCompiler(graph: String) {
                 "sum" -> Value.Json(scalar("COALESCE(sum($distinct${number(comparable(json(one())))}), 0)"))
                 "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
                 // Zoned values as the moments they are, whatever their offsets, and lists of them item by item so; of a temporal kind,
-                // still of it. A list the statement makes item by item, as an ORDER BY sorts it: a store's JSON may put the shorter list first.
+                // still of it, and a list of the kinds of list it was. A list the statement makes item by item, as an ORDER BY sorts it: a store's
+                // JSON may put the shorter list first.
                 "min", "max" -> {
                     val value = json(one())
                     val key = value.temporal?.takeIf { it.zoned }?.let { temporals.moment(text(comparable(value)), it) }
-                        ?: value.items?.takeIf { it.zoned && value.list }?.let { momentsKey(comparable(value), it) }
-                        ?: value.itemItems?.takeIf { it.zoned && value.itemLists }?.let { momentsKey(comparable(value), it, depth = 2) }
+                        ?: value.items?.takeIf { listsByMoments && it.zoned && value.list }?.let { momentsKey(comparable(value), it) }
+                        ?: value.itemItems?.takeIf { listsByMoments && it.zoned && value.itemLists }?.let { momentsKey(comparable(value), it, depth = 2) }
                         ?: if (extremesByListKey && isList(one())) listSortKey(comparable(value)) else null
-                    Value.Json(extreme(comparable(value), min = name == "min", key = key), temporal = value.temporal, text = isText(value))
+                    Value.Json(
+                        extreme(comparable(value), min = name == "min", key = key), temporal = value.temporal, items = value.items, itemItems = value.itemItems,
+                        list = value.list, itemLists = value.itemLists, text = isText(value),
+                    )
                 }
                 "range" -> {
                     if (arguments.size !in 2..3) throw DrivineException("range() takes a start, an end and a step.")
@@ -3418,9 +3429,9 @@ abstract class SqlCypherCompiler(graph: String) {
             value is Value.Bool -> value.sql to { it }
             // A zoned value the statement makes sorts as the moment it is, whatever its offset.
             value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { temporals.moment(text(it), value.temporal) }
-            // A list of zoned values the statement makes sorts item by item as the moments they are.
-            value is Value.Json && value.list && value.items?.zoned == true -> comparable(value) to { momentsKey(it, value.items) }
-            value is Value.Json && value.itemLists && value.itemItems?.zoned == true -> comparable(value) to { momentsKey(it, value.itemItems, depth = 2) }
+            // A list of zoned values the statement makes sorts item by item as the moments they are, where the store sorts it so.
+            listsByMoments && value is Value.Json && value.list && value.items?.zoned == true -> comparable(value) to { momentsKey(it, value.items) }
+            listsByMoments && value is Value.Json && value.itemLists && value.itemItems?.zoned == true -> comparable(value) to { momentsKey(it, value.itemItems, depth = 2) }
             // A list the statement makes sorts as Cypher sorts lists, item by item; any other value as the store sorts its JSON.
             isList(value) -> comparable(json(value)) to { listSortKey(it) }
             else -> comparable(json(value)) to { sortKey(it) }
