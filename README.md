@@ -3338,8 +3338,12 @@ declares the function itself.
 - Writes are worked around for the same bug: a text that a write takes from an unwound parameter's item, or from
   another value of its rows, to write it (`UNWIND $rows AS r MATCH (n {id: r.id}) SET n.a = r.a`, `CREATE (:X {a:
   r.a})`, `MERGE … SET n.a = r.a`) is read from the row's text, at no cost measured: 1,000 rows set by one statement
-  take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. A value
-  such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`) isn't worked around yet.
+  take as long as before. Any other value, a map set whole by `SET n += r` among them, is read as before. So is a
+  value that a `UNION` in a `CALL { … }` takes from different values of the row in its queries, or that an `OPTIONAL
+  CALL` returns, which may be null. A value such an item gives a `RETURN` or a `WITH` (`RETURN r.a`, `WITH r.a AS a`)
+  isn't worked around yet.
+- An `OPTIONAL CALL` in a subquery expression (`COUNT { OPTIONAL CALL { … } … }`) doesn't run yet: Oracle refuses
+  the statement (ORA-00907) or closes the session (#338). One at the top of a statement runs.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields

@@ -42,6 +42,9 @@ abstract class CypherWriteContract {
     /** Whether the statement under test is compiled to SQL: what only compiling refuses is asked of it alone. */
     open val compiles: Boolean = false
 
+    /** Whether an OPTIONAL CALL runs in a subquery expression, as `COUNT { OPTIONAL CALL { … } … }`: on Oracle not yet (#338). */
+    open val optionalCallsInSubqueries: Boolean = true
+
     private fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
         pm.query(QuerySpecification.withStatement(CypherStatement(cypher.trimIndent())).bind(parameters))
 
@@ -150,6 +153,35 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a value a write's subquery takes from its row is read from what a UNION or an OPTIONAL CALL gives`() {
+        // #336: a property of a value a write reads from its row is read from the row (#309). x is t.m in one query of the
+        // UNION and t.l in the other, so its property is read from what the UNION gives; u is null where the OPTIONAL CALL
+        // finds nothing, and not t.
+        query("CREATE (:CyWrite {id: 1}), (:CyWrite {k: 'p'}), (:CyWrite {k: 'q'}), (:CyWrite {k: 'q'})")
+        val given = mapOf("ts" to listOf(mapOf("id" to 1, "a" to "q", "f" to false, "m" to mapOf("a" to "p"), "l" to mapOf("a" to "q"))))
+        fun set(property: String, value: String) = query("UNWIND \$ts AS t MATCH (n:CyWrite {id: t.id}) SET n.$property = $value", given)
+        fun counted(subquery: String) = "COUNT { $subquery MATCH (y:CyWrite) WHERE y.k = %s RETURN y }"
+        set("union", counted("CALL { WITH t RETURN t.m AS x UNION ALL WITH t RETURN t.l AS x }").format("x.a"))
+        // Where each query takes it from the same keys, or a CALL, a CASE, a comprehension, a WITH or a FOREACH passes on the
+        // row's value, it is read as it is given.
+        set("same", counted("CALL { WITH t RETURN t.l AS x UNION ALL WITH t RETURN t.l AS x }").format("x.a"))
+        set("called", counted("CALL { WITH t RETURN t.l AS x }").format("x.a"))
+        set("cased", counted("").format("(CASE WHEN t.f THEN t.m ELSE t.l END).a"))
+        set("comprehended", counted("UNWIND [x IN [t.m, t.l] WHERE x.a = 'q' | x] AS x").format("x.a"))
+        query("UNWIND \$ts AS t WITH t.l AS t, t.id AS id MATCH (n:CyWrite {id: id}) SET n.rebound = ${counted("").format("t.a")}", given)
+        query("UNWIND \$ts AS t MATCH (n:CyWrite {id: t.id}) FOREACH (x IN [t.m, t.l] | FOREACH (z IN [x] | SET n.each = coalesce(n.each, '') + z.a))", given)
+        assertEquals(
+            listOf(listOf(3L, 4L, 2L, 2L, 2L, 2L, "pq")),
+            query("MATCH (n:CyWrite {id: 1}) RETURN [n.union, n.same, n.called, n.cased, n.comprehended, n.rebound, n.each]"),
+        )
+        if (optionalCallsInSubqueries) {
+            set("optional", counted("OPTIONAL CALL { WITH t MATCH (z:Nope) RETURN t AS u }").format("u.a"))
+            set("found", counted("OPTIONAL CALL { WITH t RETURN t.l AS u }").format("u.a"))
+            assertEquals(listOf(listOf(0L, 2L)), query("MATCH (n:CyWrite {id: 1}) RETURN [n.optional, n.found]"))
+        }
+    }
+
+    @Test
     fun `datetime's epoch milliseconds and timestamp are the moment the statement runs`() {
         val before = System.currentTimeMillis() - 60_000
         val (millis, stamp) = query("CREATE (n:CyWrite) SET n.at = datetime().epochMillis RETURN [n.at, timestamp()]").single() as List<*>
@@ -252,6 +284,8 @@ class CypherWriteOracleTest : CypherWriteContract() {
     override val pm: PersistenceManager get() = manager
 
     override val compiles = true
+
+    override val optionalCallsInSubqueries = false
 
     override fun clear() = OracleTestDatabase.clear(manager)
 

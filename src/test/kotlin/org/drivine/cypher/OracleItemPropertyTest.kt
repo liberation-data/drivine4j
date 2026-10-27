@@ -106,6 +106,32 @@ class OracleItemPropertyTest {
     }
 
     @Test
+    fun `a value a UNION in a write's subquery takes from its row in each query is read from what the UNION gives`() {
+        // x is t.m in one query and t.l in the other (#336): read from the row at the first's keys, the other's rows read t.m.a.
+        val ts = mapOf("ts" to emptyList<Any>())
+        fun union(second: String) =
+            "UNWIND \$ts AS t MATCH (n {id: t.id}) SET n.a = COUNT { CALL { WITH t RETURN t.m AS x UNION ALL WITH t RETURN $second AS x } MATCH (y) WHERE y.k = x.a RETURN y }"
+        val differ = OracleCypherCompiler("g").compile(union("t.l"), ts).sql
+        assertTrue(!differ.contains("'\$.v1.m.a'") && !differ.contains("'\$.v1.l.a'"), differ)
+        // Where each query takes it from the same keys, it is read from the row there, as #309 reads it.
+        val same = OracleCypherCompiler("g").compile(union("t.m"), ts).sql
+        assertTrue(same.contains("'\$.v1.m.a'"), same)
+        val postgres = PostgresCypherCompiler("g").compile(union("t.l"), ts).sql
+        assertTrue(!postgres.contains("(((cy_row -> 'v1') -> 'm') -> 'a')"), postgres)
+    }
+
+    @Test
+    fun `a value an OPTIONAL CALL in a write's subquery returns from its row is read from what the call gives`() {
+        // u is null where the call finds nothing (#336): read from the row, it would be t, and y.k compared with t.a.
+        val cypher = "UNWIND \$ts AS t MATCH (n {id: t.id}) SET n.a = COUNT { OPTIONAL CALL { WITH t MATCH (y:Nope) RETURN t AS u } MATCH (y) WHERE y.k = u.a RETURN y }"
+        val ts = mapOf("ts" to emptyList<Any>())
+        val oracle = OracleCypherCompiler("g").compile(cypher, ts).sql
+        assertTrue(!oracle.contains("'\$.v1.a'"), oracle)
+        val postgres = PostgresCypherCompiler("g").compile(cypher, ts).sql
+        assertTrue(!postgres.contains("((cy_row -> 'v1') -> 'a')"), postgres)
+    }
+
+    @Test
     fun `on Postgres a value a write takes from its row is read as elsewhere`() {
         val sql = PostgresCypherCompiler("g").compile("UNWIND \$ts AS t MATCH (n:Doc {id: t.id}) SET n.a = t.a", mapOf("ts" to emptyList<Any>())).sql
         assertTrue(!sql.contains("SERIALIZE") && sql.contains("'v1'") , sql)
