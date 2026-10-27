@@ -854,6 +854,17 @@ abstract class CypherQueryContract {
         // Carried past a write, as a list and as a list of lists.
         assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l CREATE (:CyZonedWrite) RETURN t.hour ORDER BY l"))
         assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t, [[t]] AS l CREATE (:CyZonedWrite) RETURN t.hour ORDER BY l"))
+        // Read from the row a write works its value out of (#326's rowKeys), in a subquery that sorts them.
+        assertEquals(
+            listOf(1L),
+            query(
+                "UNWIND [$b, $a, $c] AS t WITH collect([t]) AS ls CREATE (n:CyZonedWrite) " +
+                    "SET n.first = COUNT { UNWIND ls AS l WITH l ORDER BY l LIMIT 1 WITH l WHERE l[0].hour = 10 RETURN l } RETURN n.first",
+            ),
+        )
+        // After a term whose kind is open, which sorts by its kind first (#308): the text before the numbers, then by moment.
+        assertEquals(listOf(8L, 10L, 9L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o, l"))
+        assertEquals(listOf(9L, 10L, 8L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o DESC, l DESC"))
     }
 
     @Test

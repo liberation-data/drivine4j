@@ -3496,7 +3496,8 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * What [sortable] sorts [value] by, in two: the value as a column carries it, and the terms that sort it, of that column.
          * A value whose kind the statement leaves open sorts as [openSortKey] has it, where its kind comes first; one it makes a
-         * truth value, a temporal value, a text, a list or a node is of one kind, and sorts by [sortKey] alone.
+         * truth value, a temporal value, a text, a list or a node is of one kind, and sorts by one term alone: a zoned value or a
+         * list of them ([listsByMoments]) by its moments, another list by [listSortKey], any other by [sortKey].
          */
         private fun sortTerm(value: Value): Pair<String, (String) -> List<String>> = when {
             value is Value.Bool -> value.sql to { listOf(it) }
