@@ -31,7 +31,10 @@ from pathlib import Path
 
 SEMVER = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z.-]+))?$")
 TAG = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$")
-PROJECT_VERSION = re.compile(r"^version = '[^']*'[ \t]*$", re.MULTILINE)
+# The line the workflows read the version from, as their sed does: version = '...' at a line's start.
+PROJECT_VERSION = re.compile(r"^version = '([^']*)'[ \t]*$", re.MULTILINE)
+# What counts towards a { } block's depth in build.gradle: braces, outside comments and strings.
+BRACE_TOKENS = re.compile(r"//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|[{}]", re.DOTALL)
 
 
 class Version:
@@ -97,11 +100,37 @@ def newest(tags: list[str]) -> str | None:
     return max(versions, key=lambda tag: versions[tag].key()) if versions else None
 
 
+def _top_level(text: str, offset: int) -> bool:
+    # Whether text[offset] is outside every { } block, counting braces outside strings and comments: a line
+    # version = '...' inside dependencies { } or a plugin's block isn't the project's.
+    depth = 0
+    for token in BRACE_TOKENS.finditer(text[:offset]):
+        if token.group() == "{":
+            depth += 1
+        elif token.group() == "}":
+            depth -= 1
+    return depth == 0
+
+
+def declared(text: str) -> list[str]:
+    """Every version the workflows would read from build.gradle: one, when the file is as it should be."""
+    return PROJECT_VERSION.findall(text)
+
+
 def set_version(build_gradle: Path, version: Version) -> None:
     text = build_gradle.read_text()
-    if len(PROJECT_VERSION.findall(text)) != 1:
+    matches = list(PROJECT_VERSION.finditer(text))
+    if len(matches) != 1:
         raise ValueError(f"{build_gradle} doesn't have one line version = '...'")
-    build_gradle.write_text(PROJECT_VERSION.sub(f"version = '{version}'", text))
+    if not _top_level(text, matches[0].start()):
+        raise ValueError(f"{build_gradle}'s line version = '...' is inside a block, so it isn't the project's version")
+    changed = PROJECT_VERSION.sub(f"version = '{version}'", text)
+    if declared(changed) != [str(version)]:
+        raise ValueError(f"{build_gradle} wouldn't declare version {version} after the change")
+    build_gradle.write_text(changed)
+    # Read back as the workflows read it, so a PR that bumps nothing fails here.
+    if declared(build_gradle.read_text()) != [str(version)]:
+        raise ValueError(f"{build_gradle} doesn't declare version {version} after writing it")
 
 
 def main(args: list[str]) -> int:

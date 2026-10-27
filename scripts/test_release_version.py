@@ -98,6 +98,41 @@ class ReleaseVersionTest(unittest.TestCase):
             self.assertIn("version '2.2.20'", text)
             self.assertIn("\tversion = '21'", text)
 
+    def test_set_leaves_the_decoy_versions_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            build_gradle = Path(directory) / "build.gradle"
+            original = (
+                "plugins {\n\tid 'com.gradleup.nmcp' version '0.0.8'\n}\n\n"
+                "// version = '9.9.9' in a comment\n"
+                "group = 'org.drivine'\nversion = '0.3.0'\n\n"
+                "jacoco {\n\ttoolVersion = '0.8.12'\n}\n"
+                "dependencies {\n\timplementation 'a:b:1.0' // {\n\tversion = '1.2.3'\n}\n"
+                "publishing {\n\tpublications {\n\t\tmaven(MavenPublication) {\n"
+                "\t\t\tversion = project.version\n\t\t}\n\t}\n}\n"
+            )
+            build_gradle.write_text(original)
+            release_version.set_version(build_gradle, release_version.Version("0.3.1"))
+            bumped = original.replace("\nversion = '0.3.0'\n", "\nversion = '0.3.1'\n")
+            self.assertEqual(build_gradle.read_text(), bumped)
+            self.assertEqual(release_version.declared(build_gradle.read_text()), ["0.3.1"])
+
+    def test_set_refuses_a_version_line_inside_a_block(self) -> None:
+        # The one line at a line's start is in a block, so it isn't the project's; the file is left as it was.
+        with tempfile.TemporaryDirectory() as directory:
+            build_gradle = Path(directory) / "build.gradle"
+            original = "group = 'org.drivine'\nsubprojects {\nversion = '0.3.0'\n}\n"
+            build_gradle.write_text(original)
+            with self.assertRaises(ValueError):
+                release_version.set_version(build_gradle, release_version.Version("0.3.1"))
+            self.assertEqual(build_gradle.read_text(), original)
+
+    def test_the_repository_build_gradle_has_its_version_at_the_top_level(self) -> None:
+        text = (Path(__file__).parents[1] / "build.gradle").read_text()
+        match = release_version.PROJECT_VERSION.search(text)
+        self.assertIsNotNone(match)
+        self.assertEqual(len(release_version.declared(text)), 1)
+        self.assertTrue(release_version._top_level(text, match.start()))
+
     def test_set_refuses_a_file_without_one_version_line(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             build_gradle = Path(directory) / "build.gradle"

@@ -24,6 +24,7 @@ on:
         type: string
         required: false
         default: ''
+  # The calling job must grant contents: write and pull-requests: write, which this job asks for.
   workflow_call:
     inputs:
       bump:
@@ -43,8 +44,11 @@ on:
 permissions:
   contents: read
 
+# Named for this repository: under workflow_call the group belongs to the caller's repository, so with a bare
+# prepare-release the three libraries' runs, started together by the train controller, would share one group, and a
+# pending run would cancel another.
 concurrency:
-  group: prepare-release
+  group: prepare-release-liberation-data/drivine4j
   cancel-in-progress: false
 
 env:
@@ -99,7 +103,9 @@ jobs:
             version="$exact"
           else
             case "$BUMP" in
-              patch | minor | major | prerelease) version=$(python3 scripts/release_version.py bump "$current" "$BUMP") ;;
+              patch | minor | major | prerelease)
+                version=$(python3 scripts/release_version.py bump "$current" "$BUMP")
+                ;;
               *)
                 echo "::error::bump is $BUMP. It must be patch, minor, major or prerelease."
                 exit 1
@@ -138,6 +144,12 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           python3 scripts/release_version.py set build.gradle "$VERSION"
+          # Read back as release.yml's check reads it, so a PR that bumps nothing isn't opened.
+          written=$(sed -n "s/^version = '\([^']*\)'[[:space:]]*$/\1/p" build.gradle)
+          if [[ "$written" != "$VERSION" ]]; then
+            echo "::error::build.gradle's version reads as '$written' after the change, not $VERSION."
+            exit 1
+          fi
           git diff --stat
       - name: Push the branch and open the PR
         env:
