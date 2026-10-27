@@ -21,6 +21,7 @@ on:
       - settings.gradle
       - gradle.properties
       - gradle/wrapper/gradle-wrapper.properties
+      - gradle/wrapper/gradle-wrapper.jar
       - drivine4j-*/build.gradle
 
 permissions:
@@ -51,6 +52,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      # The build and publish jobs run this commit's ./gradlew, the publish job with the release secrets: its
+      # gradle-wrapper.jar, a binary a review can't read, has to be one Gradle released.
+      - uses: gradle/actions/wrapper-validation@3f5f9adaf7d9fecd50b5935e54106014257a94e6 # v6.4.0
       - name: Work out the version
         id: version
         env:
@@ -116,13 +120,17 @@ jobs:
           distribution: 'temurin'
       - name: Maven Central doesn't have this version yet
         run: |
-          status=$(curl -s -o /dev/null -w '%{http_code}' "https://repo1.maven.org/maven2/org/drivine/drivine4j/$VERSION/drivine4j-$VERSION.pom")
+          # Only an answer of 200 stops a tag. When Maven Central can't be asked, the step goes on: the portal
+          # rejects a version it already has.
+          status=$(curl -s --retry 3 -o /dev/null -w '%{http_code}' "https://repo1.maven.org/maven2/org/drivine/drivine4j/$VERSION/drivine4j-$VERSION.pom" || true)
           if [[ "$status" == 200 ]]; then
             if [[ "$PUBLISH" == true ]]; then
               echo "::error::Maven Central already has org.drivine:drivine4j:$VERSION."
               exit 1
             fi
             echo "::warning::Maven Central already has org.drivine:drivine4j:$VERSION. A dry run goes on; a tag of it would fail here."
+          elif [[ "$status" != 404 ]]; then
+            echo "::warning::Couldn't ask Maven Central whether it has org.drivine:drivine4j:$VERSION (HTTP $status). Going on: the Central Portal rejects a version it already has."
           fi
       # The dry run signs as the release does, but with a key made here and thrown away with the runner.
       - name: Make a throwaway signing key

@@ -53,7 +53,10 @@ only thing that publishes.
   ran the tests). Every module's publication is staged and signed, as nmcp stages it, and zipped into the one bundle
   nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
 - **Checks:** every module has its jar, sources jar, javadoc jar, pom and Gradle module file, each with a signature that
-  verifies, and its pom names the version. `build` also fails a tag whose version Maven Central already has.
+  verifies, and its pom names the version. `build` also fails a tag whose version Maven Central already has, and
+  only warns when Maven Central can't be asked (the portal rejects a duplicate anyway). Before any of it, `check`
+  validates `gradle/wrapper/gradle-wrapper.jar` against Gradle's released checksums, since `publish` runs `./gradlew`
+  with the release secrets.
 - **Publish:** `./gradlew publishAggregatedPublicationToCentralPortal`, which signs every module with the release key
   (`SIGN=true`, in-memory from `SIGNING_KEY` and `SIGNING_PASSWORD`) and uploads the bundle of all seven to the
   [Central Portal](https://central.sonatype.com) as one deployment, released automatically
