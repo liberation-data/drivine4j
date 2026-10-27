@@ -73,7 +73,9 @@ class JdbcConnection(
     override fun parameterCoercers(): List<ParameterCoercer> = listOf(JdbcParameterCoercer)
 
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
-        val finalizedSpec = cypherCompiled(spec.finalizedCopy(QueryLanguage.SQL))
+        val given = spec.finalizedCopy(QueryLanguage.SQL)
+        val compiledFromCypher = given.statement!!.language == QueryLanguage.CYPHER
+        val finalizedSpec = cypherCompiled(given)
         if (finalizedSpec.statement!!.language != QueryLanguage.SQL) {
             throw DrivineException("This database speaks SQL, and was given a ${finalizedSpec.statement!!.language} statement.", spec = spec)
         }
@@ -85,6 +87,11 @@ class JdbcConnection(
 
         try {
             val rows = connection.prepareStatement(positional.statement).use { statement ->
+                // Oracle keeps a cursor's memory while the driver keeps its statement, and a compiled Cypher statement holds
+                // megabytes of it: about 4 MB, and over 20 MB where it reads a text past 32 KB. Kept in the driver's cache, up
+                // to 64 statements a session, a few dozen ran the instance out of PGA (ORA-04036, liberation-data/drivine4j#313).
+                // Closed, its memory goes back. Drivine's own statements, a few the same each time, are still kept.
+                if (compiledFromCypher && type == DatabaseType.ORACLE) statement.isPoolable = false
                 positional.names.forEachIndexed { index, name ->
                     if (!parameters.containsKey(name)) throw DrivineException("The statement has a parameter \$$name, and no value is bound to it.", spec = spec)
                     bind(statement, index + 1, parameters[name])

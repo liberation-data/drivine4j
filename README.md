@@ -3252,7 +3252,9 @@ unless given), `connection-timeout` milliseconds to wait for one (5,000 unless g
 pool asks the database for a connection as it is made, so a service that cannot be reached or a user
 that is turned away fails at startup. Each connection keeps 64 statements prepared
 (`oracle.jdbc.implicitStatementCacheSize`): a save is the same block each time, and is neither sent
-nor parsed again.
+nor parsed again. A Cypher statement compiled to SQL is not kept: Oracle holds a kept statement's memory
+for as long as the driver keeps it, from about 4 MB for a compiled statement to over 20 MB for one that
+reads a long text, and a few dozen of them ran the instance out of memory (ORA-04036, #313).
 
 To use a `DataSource` the application already has, register a provider in code:
 `registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
