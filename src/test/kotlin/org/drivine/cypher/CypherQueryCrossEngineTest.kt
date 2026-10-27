@@ -707,6 +707,9 @@ abstract class CypherQueryContract {
             "UNWIND [1.0, 1.0] AS x RETURN sum(DISTINCT x)" to 1.0,
             // Summed as doubles: past a NUMBER's range, 1e300 is no NUMBER.
             "UNWIND [1e300, 1.0] AS x RETURN sum(x)" to 1e300,
+            // An integer among floats is summed as a double too, as Neo4j sums it, and a computed float is one.
+            "UNWIND [9223372036854775807, 0.5] AS x RETURN sum(x)" to 9.223372036854776E18,
+            "UNWIND [0.5, 2] AS x RETURN sum(x * 10)" to 25.0,
             "UNWIND [0.5, 1.5] AS x RETURN avg(x)" to 1.0,
             "UNWIND [1, 3] AS x RETURN avg(x)" to 2.0,
             "UNWIND [] AS x RETURN avg(x)" to null,
