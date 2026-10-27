@@ -140,7 +140,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun joinedTexts(text: String, order: String) = "string_agg($text, '' ORDER BY $order)"
 
-    override fun distinctItems(list: String) =
+    override fun distinctItems(list: String, temporal: Boolean) =
         "(SELECT COALESCE(json_agg(d.item ORDER BY d.first), '[]'::json) FROM (SELECT min(e.item_no) AS first, e.item FROM ${elements(list, "e")} GROUP BY e.item) d)"
 
     override fun firstOfEach(list: String, identities: String) =

@@ -81,13 +81,6 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open val extremesByListKey = true
 
-    /**
-     * Whether a list of zoned values the statement makes, or a list of lists of them, sorts and takes its `min` and `max` by
-     * [momentsKey]: not where the store's parse of that key's `JSON_TABLE` over a list worked out item by item can stall the
-     * session, as Oracle's does, where the list is the store's JSON and sorts as that.
-     */
-    protected open val listsByMoments = true
-
     /** How many values [shared] has bound, to name each subquery it binds one in. */
     private var shares = 0
 
@@ -314,6 +307,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The items of the JSON list [json] as rows named [alias], whose item is [item] and whose place in the list, counted from 1, [itemNo]. */
     protected abstract fun elements(json: String, alias: String): String
 
+    /** [elements] of the JSON list [json] whose items the statement makes temporal values, or lists of them, as Oracle reads them apart: see its own. */
+    protected open fun temporalElements(json: String, alias: String) = elements(json, alias)
+
+    /** [temporalElements] of the JSON list [json] where its items are [temporal] values or lists of them, else [elements]. */
+    protected fun elements(json: String, alias: String, temporal: Boolean) = if (temporal) temporalElements(json, alias) else elements(json, alias)
+
     /** The item, as JSON, of the row named [alias] that [elements] gives. */
     protected open fun item(alias: String) = "$alias.item"
 
@@ -338,7 +337,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val item = item(alias)
             val itemKey = if (depth == 1) temporalSql.sortable(temporals.moment(text(item), kind)) else key(item, depth - 1)
             val joined = joinedTexts("CASE WHEN ${isJsonNull(item)} THEN '~' ELSE $itemKey END", itemNo(alias))
-            return "(SELECT COALESCE($joined, '') || '!' FROM ${elements(list, alias)})"
+            return "(SELECT COALESCE($joined, '') || '!' FROM ${temporalElements(list, alias)})"
         }
         "CASE WHEN NOT ${isJsonNull(x)} THEN ${bytewise(key(x, depth))} END"
     }
@@ -430,9 +429,10 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /**
      * The items of the JSON list [list] once each, where each is first: what `collect(DISTINCT …)` keeps of what a `WITH`
-     * before it collected, for a store dedupes no aggregate in the query that makes it.
+     * before it collected, for a store dedupes no aggregate in the query that makes it. Where [temporal], the statement makes its
+     * items temporal values or lists of them, and they are read as [temporalElements] reads them.
      */
-    protected abstract fun distinctItems(list: String): String
+    protected abstract fun distinctItems(list: String, temporal: Boolean = false): String
 
     /**
      * The items of the JSON list [list] whose item in [identities], a list as long, is first among those equal to it, as
@@ -975,7 +975,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val items = shared(comparable(json(list))) { (x) ->
                 "CASE WHEN ${typeOf(x)} = 'array' THEN $x WHEN NOT ${isJsonNull(x)} THEN ${comparable(Value.Json(jsonArray(listOf(x)), ordered = true))} END"
             }
-            select.source(elements(items, name))
+            select.source(elementsOf(list, items, name))
             // An item of a list that holds no null holds none; of a list of texts, or of a text, is a text.
             select.bind(
                 unwind.variable,
@@ -1301,7 +1301,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // Of null, null, as in Cypher, and not an empty list.
             return Value.Json(
                 shared(list) { (items) ->
-                    "CASE WHEN NOT ${isJsonNull(items)} THEN (SELECT ${aggregateList(projection, itemNo(name))} FROM ${elements(items, name)}$filter) END"
+                    "CASE WHEN NOT ${isJsonNull(items)} THEN (SELECT ${aggregateList(projection, itemNo(name))} FROM ${elementsOf(listed, items, name)}$filter) END"
                 },
                 ordered = true,
                 items = if (projected != null) (projected as? Value.Json)?.temporal else itemsOf(listed),
@@ -2419,7 +2419,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Value.Bool(
                     // Over a list of nodes or relationships, each item is the node or the relationship, read from its table.
                     if (listed is Value.Entities) shared(listed.ids) { (ids) -> entityItems(ids, listed.relationships, name).let { (from, item) -> quantified(from, item, "$ids IS NULL") } }
-                    else shared(comparable(json(listed))) { (items) -> quantified("FROM ${elements(items, name)}", Value.Json(item(name), temporal = itemsOf(listed)), isJsonNull(items)) }
+                    else shared(comparable(json(listed))) { (items) -> quantified("FROM ${elementsOf(listed, items, name)}", Value.Json(item(name), temporal = itemsOf(listed)), isJsonNull(items)) }
                 )
             }
         }
@@ -2443,7 +2443,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 // A bound counted from the end where it is negative, as an index is: past either end, the end it is past.
                 fun bound(json: String) = "CASE WHEN ${number(json)} < 0 THEN $v.cnt + ${number(json)} ELSE ${number(json)} END"
                 val within = listOfNotNull(from?.let { "$v.item_no > ${bound(it)}" }, to?.let { "$v.item_no <= ${bound(it)}" })
-                val items = "SELECT ${item(e)} AS item, ${itemNo(e)} AS item_no, COUNT(*) OVER () AS cnt FROM ${elements(x, e)}"
+                val items = "SELECT ${item(e)} AS item, ${itemNo(e)} AS item_no, COUNT(*) OVER () AS cnt FROM ${elementsOf(listed, x, e)}"
                 val query = "SELECT ${comparable(Value.Json(aggregateList("$v.item", "$v.item_no"), ordered = true))} FROM ($items) $v" +
                     within.joinToString(" AND ", " WHERE ")
                 val present = (listOf("${typeOf(x)} = 'array'") + listOfNotNull(from, to).map { "NOT ${isJsonNull(it)}" }).joinToString(" AND ")
@@ -2550,6 +2550,12 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether the statement makes [value] a list whose every item is a text, or null: see [Value.Json.texts]. */
         private fun holdsTexts(value: Value): Boolean = (value as? Value.Json)?.texts == true
+
+        /** The items of the JSON list [json], the value [list], as rows named [alias]: by [temporalElements] where they are temporal values or lists of them. */
+        private fun elementsOf(list: Value, json: String, alias: String) = elements(json, alias, temporal = holdsTemporals(list))
+
+        /** Whether the statement makes the items of the list [list] temporal values, or lists of them: see [temporalElements]. */
+        private fun holdsTemporals(list: Value) = itemsOf(list) != null || itemItemsOf(list) != null
 
         /** The temporal kind the statement makes each item of the list [list]: see [Value.Json.items]. */
         private fun itemsOf(list: Value): Temporal? = (list as? Value.Json)?.items
@@ -3040,14 +3046,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 // But JSON's null is equal as JSON to an item that is, so a value that may be JSON's null (not a property read from
                 // the store, which is SQL's null where it is not there) is in a list that may hold a null only where it is not null.
                 val nullable = !within && id == null && !present(binary.left) && !stored(binary.left, scope) && holdsNull("x") != null
-                if (!nullable) return "EXISTS (SELECT 1 FROM ${elements(list, i)} WHERE ${matches(item(i), x)})"
-                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elements(l, i)} WHERE ${matches(item(i), v)}) AND NOT ${isJsonNull(v)})" }
+                if (!nullable) return "EXISTS (SELECT 1 FROM ${elementsOf(right, list, i)} WHERE ${matches(item(i), x)})"
+                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) AND NOT ${isJsonNull(v)})" }
             }
             // A value that may be null, in a list that is not and holds none: in where an item is equal, null where the value is
             // null, else not, written so the store still answers the first as it did, as a semi-join.
             if (present(binary.right) && within && whole && filled) {
                 val i = alias("i")
-                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elements(l, i)} WHERE ${matches(item(i), v)}) OR CASE WHEN NOT ${isJsonNull(v)} THEN FALSE END)" }
+                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) OR CASE WHEN NOT ${isJsonNull(v)} THEN FALSE END)" }
             }
             return shared(list, x) { (l, v) ->
                 val (i, j) = alias("i") to alias("i")
@@ -3055,14 +3061,14 @@ abstract class SqlCypherCompiler(graph: String) {
                 if (!present(binary.right)) cases += "WHEN ${isJsonNull(l)} THEN NULL"
                 // Null is compared with each item, and is in no empty list.
                 if (!present(binary.left)) cases += "WHEN ${isJsonNull(v)} THEN " +
-                    if (filled) "NULL" else "CASE WHEN EXISTS (SELECT 1 FROM ${elements(l, j)}) THEN NULL ELSE FALSE END"
+                    if (filled) "NULL" else "CASE WHEN EXISTS (SELECT 1 FROM ${elementsOf(right, l, j)}) THEN NULL ELSE FALSE END"
                 // A value that holds a null is equal to no item.
                 val held = if (whole) null else holdsNull(v)
-                cases += "WHEN ${held?.let { "NOT ($it) AND " }.orEmpty()}EXISTS (SELECT 1 FROM ${elements(l, i)} WHERE ${matches(item(i), v)}) THEN TRUE"
+                cases += "WHEN ${held?.let { "NOT ($it) AND " }.orEmpty()}EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) THEN TRUE"
                 if (!(within && whole)) {
                     val k = alias("i")
                     val undecided = if (id != null) isJsonNull(item(k)) else "(${nullableEquals(item(k), v, equals)}) IS NULL"
-                    cases += "WHEN EXISTS (SELECT 1 FROM ${elements(l, k)} WHERE $undecided) THEN NULL"
+                    cases += "WHEN EXISTS (SELECT 1 FROM ${elementsOf(right, l, k)} WHERE $undecided) THEN NULL"
                 }
                 "CASE ${cases.joinToString(" ")} ELSE FALSE END"
             }
@@ -3215,7 +3221,7 @@ abstract class SqlCypherCompiler(graph: String) {
                             itemItems = list.itemItems, list = true, itemLists = list.itemLists, texts = list.texts,
                         )
                     } ?: Value.Json(
-                        distinctItems(comparable(list)), ordered = true, items = list.items, itemItems = list.itemItems, list = true, itemLists = list.itemLists,
+                        distinctItems(comparable(list), temporal = holdsTemporals(list)), ordered = true, items = list.items, itemItems = list.itemItems, list = true, itemLists = list.itemLists,
                         texts = list.texts,
                     )
                     else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
@@ -3228,8 +3234,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 "min", "max" -> {
                     val value = json(one())
                     val key = value.temporal?.takeIf { it.zoned }?.let { temporals.moment(text(comparable(value)), it) }
-                        ?: value.items?.takeIf { listsByMoments && it.zoned && value.list }?.let { momentsKey(comparable(value), it) }
-                        ?: value.itemItems?.takeIf { listsByMoments && it.zoned && value.itemLists }?.let { momentsKey(comparable(value), it, depth = 2) }
+                        ?: value.items?.takeIf { it.zoned && value.list }?.let { momentsKey(comparable(value), it) }
+                        ?: value.itemItems?.takeIf { it.zoned && value.itemLists }?.let { momentsKey(comparable(value), it, depth = 2) }
                         ?: if (extremesByListKey && isList(one())) listSortKey(comparable(value)) else null
                     Value.Json(
                         extreme(comparable(value), min = name == "min", key = key), temporal = value.temporal, items = value.items, itemItems = value.itemItems,
@@ -3248,11 +3254,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
                     "CASE ${typeOf(x)} WHEN 'string' THEN ${scalar(reverseText(text(x)))} " +
-                        "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elements(x, e)}) END"
+                        "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elementsOf(one(), x, e)}) END"
                 }, items = itemsOf(one()), itemItems = itemItemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), text = isText(one()), texts = holdsTexts(one()))
                 "tail" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
-                    "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), itemNo(e)), ordered = true))} FROM ${elements(x, e)} WHERE ${itemNo(e)} > 1) END"
+                    "CASE WHEN ${typeOf(x)} = 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), itemNo(e)), ordered = true))} FROM ${elementsOf(one(), x, e)} WHERE ${itemNo(e)} > 1) END"
                 }, items = itemsOf(one()), itemItems = itemItemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), texts = holdsTexts(one()))
                 // A text is read as Cypher reads it, its case and the spaces around it aside; a number is true but for 0.
                 "toboolean" -> Value.Json(shared(comparable(json(one()))) { (x) ->
@@ -3516,16 +3522,16 @@ abstract class SqlCypherCompiler(graph: String) {
          * What [sortable] sorts [value] by, in two: the value as a column carries it, and the terms that sort it, of that column.
          * A value whose kind the statement leaves open sorts as [openSortKey] has it, where its kind comes first; one it makes a
          * truth value, a temporal value, a text, a list or a node is of one kind, and sorts by one term alone: a zoned value or a
-         * list of them ([listsByMoments]) by its moments, another list by [listSortKey], any other by [sortKey].
+         * list of them by its moments, another list by [listSortKey], any other by [sortKey].
          */
         private fun sortTerm(value: Value): Pair<String, (String) -> List<String>> = when {
             value is Value.Bool -> value.sql to { listOf(it) }
             // A zoned value the statement makes sorts as the moment it is, whatever its offset.
             value is Value.Json && value.temporal?.zoned == true -> comparable(value) to { listOf(temporals.moment(text(it), value.temporal)) }
-            // A list of zoned values the statement makes sorts item by item as the moments they are, where the store sorts it so: of one
-            // kind, a list, it needs no rank of its kind.
-            listsByMoments && value is Value.Json && value.list && value.items?.zoned == true -> comparable(value) to { listOf(momentsKey(it, value.items)) }
-            listsByMoments && value is Value.Json && value.itemLists && value.itemItems?.zoned == true ->
+            // A list of zoned values the statement makes sorts item by item as the moments they are: of one kind, a list, it needs no
+            // rank of its kind.
+            value is Value.Json && value.list && value.items?.zoned == true -> comparable(value) to { listOf(momentsKey(it, value.items)) }
+            value is Value.Json && value.itemLists && value.itemItems?.zoned == true ->
                 comparable(value) to { listOf(momentsKey(it, value.itemItems, depth = 2)) }
             // A list the statement makes sorts as Cypher sorts lists, item by item; any other value as the store sorts its JSON.
             isList(value) -> comparable(json(value)) to { listOf(listSortKey(it)) }
