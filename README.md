@@ -4679,6 +4679,8 @@ Every test of `GraphObjectManager` in this repository has a mirror that runs on 
 ./gradlew publishToMavenLocal
 ```
 
+Releases are published to Maven Central by CI from a `vX.Y.Z` tag: see [RELEASING.md](RELEASING.md).
+
 ## License
 
 Apache License 2.0

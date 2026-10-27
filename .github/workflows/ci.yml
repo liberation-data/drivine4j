@@ -6,6 +6,8 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
+  # release.yml runs this as its gate, on the tag it releases.
+  workflow_call:
 
 jobs:
   # The Cypher spec's copies are the tag VERSION names, unchanged, and a later tag is shown as a warning.
