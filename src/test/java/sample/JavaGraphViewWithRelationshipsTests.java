@@ -35,7 +35,7 @@ import static org.junit.jupiter.api.Assertions.*;
  * - Your @NodeFragment classes can be in Java or Kotlin
  * - Everything works at runtime regardless of language
  *
- * See README.md "Java Interoperability" section for details and recommended patterns.
+ * See "Java Interoperability" in docs/14-java-interoperability.md for details and recommended patterns.
  */
 @SpringBootTest(classes = TestAppContext.class)
 @Transactional

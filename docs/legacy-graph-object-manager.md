@@ -2,9 +2,9 @@
 
 `GraphObjectManager` is deprecated in favour of `StatelessGraphObjectManager`. Apart from the fixes below it behaves as it
 always did, and this page keeps its documentation. For why it was replaced and how to move, see
-[Migrating from GraphObjectManager](../README.md#migrating-from-graphobjectmanager).
+[Migrating from GraphObjectManager](15-migrating-from-graphobjectmanager.md#migrating-from-graphobjectmanager).
 
-Loading, querying and deleting are the same on both managers and are described in the README. This
+Loading, querying and deleting are the same on both managers and are described in the [docs](README.md). This
 page covers what differs: saving, the cascade on save, and the session.
 
 The fixes 0.1.0 made to saving apply to this manager too, and are listed under
@@ -69,7 +69,7 @@ val saved = graphObjectManager.saveAll(views, CascadeType.DELETE_ORPHAN)
 Homogeneous root upserts collapse into chunked `UNWIND … MERGE … SET n += row.props` statements
 (sub-linear round trips); relationship/cascade statements stay per-item. Heterogeneous collections are
 grouped by runtime class; the returned list preserves input order. Roots with a `@PropertyBag` fall
-back to the per-item path. Null handling follows [`NullPolicy`](../README.md#null-write-policy-nullpolicy)
+back to the per-item path. Null handling follows [`NullPolicy`](06-object-manager.md#null-write-policy-nullpolicy)
 uniformly with `save` — `IGNORE` (default) leaves nulls, `CLEAR` clears them —
 via `saveAll(objs, nullPolicy = …)`.
 
