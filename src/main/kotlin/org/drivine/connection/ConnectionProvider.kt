@@ -42,11 +42,21 @@ interface ConnectionProvider {
 
     /**
      * Whether this engine supports schema (index / constraint) management. False for engines
-     * with no DDL parity (Neptune, generic openCypher); used to skip them when a catalog
-     * broadcasts to all databases.
+     * with no DDL parity (Neptune, generic openCypher), and for a provider with a [schemaRefusal];
+     * used to skip them when a catalog broadcasts to all databases.
      */
     val supportsSchemaManagement: Boolean
-        get() = schemaGrammar !is UnsupportedSchemaGrammar
+        get() = schemaRefusal == null && schemaGrammar !is UnsupportedSchemaGrammar
+
+    /**
+     * Why this provider holds no schema although its engine could, such as a graph name that cannot
+     * name the tables Oracle, Postgres and SQLite keep it in; null where nothing stands in the way.
+     * Asked before [schemaGrammar], which such a provider cannot give: a catalog for every database
+     * skips the provider, and a catalog that names it fails with this reason. A provider that overrides
+     * [supportsSchemaManagement] keeps it false while this is not null.
+     */
+    val schemaRefusal: String?
+        get() = null
 
     /**
      * Whether [Connection.rollbackTransaction] undoes the statements run since
