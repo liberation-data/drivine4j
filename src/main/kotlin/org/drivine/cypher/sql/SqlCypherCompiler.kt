@@ -1913,6 +1913,7 @@ abstract class SqlCypherCompiler(graph: String) {
             casesFirst(select, projection, items)?.let { (cased, kept) -> return project(cased, kept, final) }
             // After casesFirst, which refuses what it must of an aggregate's CASE before working it out first.
             sharedFirst(select, projection, items)?.let { (shared, kept) -> return project(shared, kept, final) }
+            sortsFirst(select, projection, items)?.let { (sorted, kept) -> return project(sorted, kept, final) }
             aggregatesFirst(select, projection, items)?.let { (grouped, kept) -> return project(grouped, kept, final) }
             heldFirst(select, projection, items)?.let { (held, keyed) -> return project(held, keyed, final) }
             if (final && items.size > 1) {
@@ -2108,6 +2109,66 @@ abstract class SqlCypherCompiler(graph: String) {
             // Kept apart, as casesFirst keeps its own, so no store merges it back into the query that aggregates.
             return with(select, Clause.With(with, null), select.scope.filterKeys { it !in select.bound }, apart = true) to kept
         }
+
+        /**
+         * Beside a variable-length walk, the rows [select] reads with each term the projection sorts by that [shared] would
+         * bind a value in worked out first, in a `WITH *` of its own, and the projection sorted by that term's column; null
+         * where there is none. There `project` binds no value in a term that is none of the items (a value so bound, carried
+         * out of a WITH's query, closed Oracle's session), so an operation that reads its operands more than once wrote them
+         * out again at each level, and `ORDER BY (datetime(b.at) + duration({minutes: b.m})).minute` compiled to megabytes
+         * (#378). Worked out first, for each row, the term binds its values as any item does, as where a `WITH` works it out
+         * first in the statement itself.
+         *
+         * Only where rows are not compared: after DISTINCT or an aggregate, a term is sorted by over the items' columns, as
+         * Neo4j sorts by nothing else there. A term that reads an item's name reads that item's expression, as it is sorted
+         * by, in a comprehension's or a reduce's own expressions too. One that reads it where that is not done, where a name the
+         * comprehension binds would hide it or a variable of the item's expression, or in a pattern, is left as it was.
+         */
+        private fun sortsFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
+            if (!sharing || !select.walks || projection.distinct || items.any { contains(it.expression, ::isAggregate) }) return null
+            val named = items.associate { it.name to it.expression }
+            val terms = linkedMapOf<Expression, Expression>()
+            projection.orderBy.map { it.expression }.distinct().forEach { term ->
+                // An aggregate's result, aggregatesFirst's, is sorted by as `project` sorts it.
+                if (contains(term) { isAggregate(it) || isAnew(it) || it is Expression.Variable && it.name.startsWith("#aggregate") }) return@forEach
+                // Each item's name read first as a name no variable has, so one left where it is not replaced is seen.
+                val marked = scoped(term) { v, local ->
+                    v.takeIf { it.name in named && it.name !in local && local.none { name -> name in variablesIn(named.getValue(it.name)) } }
+                        ?.let { Expression.Variable("#item ${it.name}") }
+                }
+                if (variablesIn(marked).any { it in named }) return@forEach
+                val read = scoped(marked) { v, _ -> if (v.name.startsWith("#item ")) named[v.name.removePrefix("#item ")] else null }
+                // A term that is an item, as written or by its name, is sorted by as `project` sorts it: by the item, bound as it is.
+                if (items.none { it.expression == read } && !contains(read, ::isAnew) && binds(read, select)) terms[term] = read
+            }
+            if (terms.isEmpty()) return null
+            // Named as no variable is, unless quoted so.
+            val names = terms.keys.associateWith { "#sort${++counter}" }
+            val with = Projection(false, true, terms.map { (term, read) -> Projection.Item(read, names.getValue(term)) }, emptyList(), null, null)
+            val kept = projection.copy(
+                star = false,
+                items = items,
+                orderBy = projection.orderBy.map { sort -> names[sort.expression]?.let { sort.copy(expression = Expression.Variable(it)) } ?: sort },
+            )
+            // Kept apart, as sharedFirst keeps its own, so no store merges the value it binds back into the query beside the walk.
+            return with(select, Clause.With(with, null), select.scope.filterKeys { it !in select.bound }, apart = true) to kept
+        }
+
+        /**
+         * [expression] with each variable [replacement] gives a replacement for replaced, as [replaced] replaces, and in a
+         * comprehension's, a quantifier's and a reduce's own expressions too: [replacement] is given the names bound there.
+         */
+        private fun scoped(expression: Expression, local: Set<String> = emptySet(), replacement: (Expression.Variable, Set<String>) -> Expression?): Expression =
+            replaced(expression) { e ->
+                fun r(part: Expression, names: Set<String> = local) = scoped(part, names, replacement)
+                when (e) {
+                    is Expression.Variable -> replacement(e, local)
+                    is Expression.ListComprehension -> e.copy(list = r(e.list), where = e.where?.let { r(it, local + e.variable) }, projection = e.projection?.let { r(it, local + e.variable) })
+                    is Expression.Quantifier -> e.copy(list = r(e.list), where = e.where?.let { r(it, local + e.variable) })
+                    is Expression.Reduce -> e.copy(initial = r(e.initial), list = r(e.list), expression = r(e.expression, local + e.accumulator + e.variable))
+                    else -> null
+                }
+            }
 
         /**
          * Whether [shared] binds a value in [expression], compiled over the rows [select] reads. Compiled only to see:

@@ -158,6 +158,55 @@ abstract class CypherTemporalContract {
             query("MATCH (a:CyAgg)-[:NEXT*1..2]->(b:CyAgg) RETURN a.id AS a, count(*) AS c ORDER BY sum((datetime(b.at) + duration({minutes: b.m})).minute)"),
         )
     }
+
+    @Test
+    fun `rows beside a variable-length walk sort by temporal arithmetic that is none of the items, as they do on Neo4j`() {
+        // #378: beside a walk, such a term bound nothing, and wrote the arithmetic's operands out again at each level: too
+        // long for SQLite. It is worked out first, for each row, and sorts as it did.
+        query(
+            """
+            UNWIND [
+              {id: 1, at: '2024-03-15T10:00:00+02:00', m: 1}, {id: 2, at: '2024-03-15T10:00:00+02:00', m: 1},
+              {id: 3, at: '2024-03-15T10:00:00+02:00', m: 4}, {id: 4, at: '2024-03-15T11:00:00Z', m: 5},
+              {id: 5, at: null, m: 3}, {id: 6, at: '2024-03-15T12:30:00+02:00', m: 0}
+            ] AS r
+            CREATE (:CyAgg {id: r.id, at: r.at, m: r.m})
+            """,
+        )
+        query("MATCH (a:CyAgg), (b:CyAgg) WHERE b.id = a.id + 1 AND NOT a.id IN [3] CREATE (a)-[:NEXT]->(b)")
+        val walk = "MATCH (a:CyAgg)-[:NEXT*1..2]->(b:CyAgg)"
+        val minute = "(datetime(b.at) + duration({minutes: b.m})).minute"
+        // The issue's statement: 5's null minute sorts last.
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(1L, 3L), listOf(2L, 3L), listOf(4L, 6L), listOf(5L, 6L), listOf(4L, 5L)),
+            query("$walk RETURN a.id AS a, b.id AS bb ORDER BY $minute, a, bb"),
+        )
+        // Descending, and reading an item by its name: a is a.id here, not the node; the null sorts first.
+        assertEquals(
+            listOf(listOf(4L, 5L), listOf(5L, 6L), listOf(4L, 6L), listOf(2L, 3L), listOf(1L, 3L), listOf(1L, 2L)),
+            query("$walk RETURN a.id AS a, b.id AS bb ORDER BY (datetime(b.at) + duration({minutes: b.m + a})).minute DESC, a"),
+        )
+        // Reading it in a comprehension's projection.
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(1L, 3L), listOf(2L, 3L), listOf(4L, 6L), listOf(5L, 6L), listOf(4L, 5L)),
+            query("$walk RETURN a.id AS a, b.id AS bb ORDER BY [x IN [b.m] | (datetime(b.at) + duration({minutes: x + a})).minute][0], a, bb"),
+        )
+        // An item named as a variable is, which the term reads: b is b.m.
+        assertEquals(
+            listOf(listOf(4L, 0L), listOf(5L, 0L), listOf(1L, 1L), listOf(4L, 3L), listOf(1L, 4L), listOf(2L, 4L)),
+            query("$walk RETURN a.id AS a, b.m AS b ORDER BY (datetime('2024-03-15T10:00Z') + duration({minutes: b * 7})).minute, a"),
+        )
+        // In a WITH, skipped and limited, and the rows read in that order after it.
+        assertEquals(
+            listOf(listOf(4L, 6L), listOf(5L, 6L), listOf(1L, 3L)),
+            query("$walk WITH a, b ORDER BY $minute DESC, a.id, b.id SKIP 1 LIMIT 3 RETURN a.id AS a, b.id AS bb"),
+        )
+        // After DISTINCT, over the items, as Neo4j sorts there.
+        assertEquals(
+            listOf(1L, 4L, 0L, 3L),
+            query("$walk RETURN DISTINCT b.m AS m, b.at AS at ORDER BY (datetime(at) + duration({minutes: m})).minute").map { (it as List<*>).first() },
+        )
+    }
 }
 
 class CypherTemporalNeo4jTest : CypherTemporalContract() {
