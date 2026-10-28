@@ -29,7 +29,7 @@ the repository's files, so a change that breaks it fails there first.
 
 It reads the standard library alone, so nothing is installed for it. It is drivine-python's
 scripts/release_version.py, with build.gradle for pyproject.toml and the `v` optional in `newest`;
-scripts/test_release_version.py tests it, and release.yml runs that.
+scripts/test_release_version.py tests it, and CI, release.yml and Prepare release run that.
 """
 
 from __future__ import annotations

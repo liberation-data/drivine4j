@@ -5,7 +5,7 @@ unittest rather than pytest, so the runner's python3 runs them with nothing inst
 
     python3 scripts/test_release_version.py
 
-release.yml's check job runs them before it uses the script.
+release.yml's check job and Prepare release run them before they use the script, and CI runs them on each change.
 """
 
 from __future__ import annotations
@@ -222,6 +222,14 @@ class ReleaseVersionTest(unittest.TestCase):
                 self.assertEqual((root / name).read_text(), changed)
                 self.assertEqual((root / "drivine4j-sample" / ".drivine" / "model.json").read_text().count("0.4.0"), 0)
                 self.assertNotIn("0.4.0", (root / "README.md").read_text())
+
+    def test_references_command_prints_the_files_it_changed_one_a_line(self) -> None:
+        # Prepare release reads this output into git add, so each file changed is a line of its own, from the root.
+        with tempfile.TemporaryDirectory() as directory:
+            self._repository(directory)
+            with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                self.assertEqual(release_version.main(["references", directory, "0.4.0"]), 0)
+            self.assertEqual(stdout.getvalue(), "drivine4j-sample/.drivine/model.json\nREADME.md\n")
 
     def test_references_fails_when_a_file_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
