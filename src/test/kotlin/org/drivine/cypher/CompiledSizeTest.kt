@@ -325,4 +325,28 @@ class CompiledSizeTest {
             }
         }
     }
+
+    @Test
+    fun `an aggregate's argument compiled only to see whether it binds a value leaves each function on Oracle declared once, under the name the query calls`() {
+        // Compiled to see, then again: a reduce() in it was declared twice, under one name or a name no query calls.
+        val z = "datetime('2024-03-15T10:00:00Z') + duration({minutes: x})"
+        listOf(
+            "UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + x))",
+            "UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + ($z).minute))",
+        ).forEach { statement ->
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            val declared = Regex("FUNCTION (cy_\\w+)\\(").findAll(sql).map { it.groupValues[1] }.toList()
+            assertEquals(declared.distinct(), declared, "$statement: $sql")
+            assertTrue(declared.isNotEmpty() && declared.all { name -> Regex("\\b$name\\(").findAll(sql).count() > 1 }, "$statement: $sql")
+        }
+        // Without the store's function, the query declares its own once, where the aggregate's argument binds a value or not.
+        listOf(
+            "UNWIND range(1, 3) AS i WITH i, [i, null] AS l, [i] AS m RETURN collect(l = m)",
+            "UNWIND range(1, 3) AS i WITH i, [i, null] AS l, [i] AS m RETURN collect(l = m AND (datetime('2024-03-15T10:00:00Z') + duration({minutes: i})).minute > 0)",
+        ).forEach { statement ->
+            val sql = OracleCypherCompiler("g", nullsEqualStored = false).compile(statement).sql
+            assertEquals(1, Regex("FUNCTION cy_nulls_equal\\(").findAll(sql).count(), "$statement: $sql")
+            assertTrue("THEN NULL ELSE (cy_nulls_equal(" in sql, "$statement: $sql")
+        }
+    }
 }

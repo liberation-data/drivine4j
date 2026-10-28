@@ -135,6 +135,28 @@ abstract class CypherTemporalContract {
         val z = "datetime('2024-03-15T10:00:00+02:00') + duration({minutes: i})"
         assertEquals(listOf(listOf(3L, 1L, 3L, 6L)), query("UNWIND range(1, 3) AS i RETURN [count($z), min($z).minute, max($z).minute, sum(($z).minute)]"))
         assertEquals(listOf(1L, 0L), query("UNWIND range(1, 4) AS i WITH i % 2 AS k, i WITH k, collect($z) AS l RETURN k ORDER BY l"))
+        // Inside a CASE and arithmetic, in a WITH a WHERE filters, and in a CALL { … }: Oracle reads no imported variable in an aggregate there, worked out first or not, so this one reads none.
+        assertEquals(listOf(listOf("many", 4L)), query("UNWIND range(1, 3) AS i RETURN [CASE WHEN count($z) > 1 THEN 'many' END, count($z) + 1]"))
+        assertEquals(listOf(1L), query("UNWIND range(1, 4) AS i WITH i % 2 AS k, max(($z).minute) AS m WHERE m < 4 RETURN k"))
+        assertEquals(listOf(8L), query("UNWIND [2] AS o CALL { WITH o UNWIND range(1, 3) AS i RETURN sum(($z).minute) AS s } RETURN s + o"))
+        // A reduce() in the argument, which Oracle declares a function for.
+        assertEquals(listOf(6L), query("UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + ($z).minute - i + x))"))
+        // A list of temporal values, kept distinct, read back by its items' fields: Oracle reads no temporal list by JSON_TABLE (#331).
+        assertEquals(
+            listOf(listOf(listOf(2L, 3L), listOf(3L, 4L))),
+            query("WITH [datetime('2024-01-01T00:00Z'), datetime('2024-01-02T00:00Z')] AS l UNWIND [1, 2, 1] AS i WITH collect(DISTINCT [x IN l | x + duration({days: i})]) AS c RETURN [y IN c | [x IN y | x.day]]"),
+        )
+        // Beside a variable-length walk in the same MATCH.
+        query("MATCH (a:CyAgg {id: 1}), (b:CyAgg {id: 2}), (c:CyAgg {id: 3}) CREATE (a)-[:NEXT]->(b)-[:NEXT]->(c)")
+        assertEquals(
+            listOf(listOf(1L, 2L, 5L), listOf(2L, 1L, 4L)),
+            query("MATCH (a:CyAgg)-[:NEXT*1..2]->(b:CyAgg) RETURN a.id AS a, count(datetime(b.at) + duration({minutes: b.m})) AS c, sum((datetime(b.at) + duration({minutes: b.m})).minute) AS s ORDER BY a"),
+        )
+        // Sorted there by an aggregate of it that is none of the items, which binds no value beside the walk: see `project`.
+        assertEquals(
+            listOf(listOf(2L, 1L), listOf(1L, 2L)),
+            query("MATCH (a:CyAgg)-[:NEXT*1..2]->(b:CyAgg) RETURN a.id AS a, count(*) AS c ORDER BY sum((datetime(b.at) + duration({minutes: b.m})).minute)"),
+        )
     }
 }
 

@@ -57,9 +57,9 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The functions a query of the statement calls, which it declares before it: see [declare]. */
     private val functions = mutableListOf<String>()
 
-    /** Declares [function], a function's whole text, for the statement to call: a query's own, before it. */
+    /** Declares [function], a function's whole text, for the statement to call: a query's own, before it; once, however often it is declared. */
     protected fun declare(function: String) {
-        functions += function
+        if (function !in functions) functions += function
     }
 
     /** [compiled] with the functions it calls declared before it. */
@@ -2098,10 +2098,12 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * Whether [shared] binds a value in [expression], compiled over the rows [select] reads. Compiled only to see:
-         * the names it takes are given back, so a statement whose aggregates bind nothing compiles as it did.
+         * the names it takes and the functions it declares (a `reduce`'s on Oracle) are given back, so a statement whose
+         * aggregates bind nothing compiles as it did.
          */
         private fun binds(expression: Expression, select: Select): Boolean {
             val (wasCounter, wasShares, wasBindings) = Triple(counter, shares, sharedBindings)
+            val wasFunctions = functions.size
             try {
                 expression(expression, select.scope)
                 return sharedBindings > wasBindings
@@ -2109,6 +2111,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 counter = wasCounter
                 shares = wasShares
                 sharedBindings = wasBindings
+                functions.subList(wasFunctions, functions.size).clear()
             }
         }
 
