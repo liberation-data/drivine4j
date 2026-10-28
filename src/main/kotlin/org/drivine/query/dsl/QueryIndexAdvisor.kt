@@ -39,8 +39,8 @@ enum class IndexAdvicePolicy {
  * when it does not.
  *
  * The rule is that **the index mirrors the cursor**: a range index over exactly the ordered
- * properties, in the same order. Partial coverage does not help — see the pagination section of the
- * README for why an index over only some cursor keys is worse than none.
+ * properties, in the same order. Partial coverage does not help — see "Limit & Pagination" in
+ * docs/06-object-manager.md for why an index over only some cursor keys is worse than none.
  *
  * The database's index list is read once and cached for the life of this advisor, so the check costs
  * one round trip per process rather than one per query. Schema created *after* the first check is

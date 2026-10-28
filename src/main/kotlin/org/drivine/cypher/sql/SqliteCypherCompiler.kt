@@ -61,13 +61,24 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun float(sql: String) = "($sql + 0.0)"
 
-    override fun jsonArray(items: List<String>) = "json_array(${items.joinToString(", ") { "json($it)" }})"
+    /**
+     * SQLite takes no more than 100 arguments to a function (#332): past them, the first 100 items are a `json_array`, and
+     * the rest are appended to it in parts, each by a `json_insert` of as many as it takes.
+     */
+    override fun jsonArray(items: List<String>): String =
+        items.drop(MOST_ARGUMENTS).chunked((MOST_ARGUMENTS - 1) / 2).fold("json_array(${items.take(MOST_ARGUMENTS).joinToString(", ") { "json($it)" }})") { list, part ->
+            "json_insert($list, ${part.joinToString(", ") { "'$[#]', json($it)" }})"
+        }
 
+    /** Past 50 entries, as for [jsonArray], the rest are set over the first 50 by [withEntries]. */
     override fun jsonObject(entries: List<Pair<String, String>>) =
-        "json_object(${entries.joinToString(", ") { (key, value) -> "${literal(key)}, json($value)" }})"
+        withEntries("json_object(${entries.take(MOST_ARGUMENTS / 2).joinToString(", ") { (key, value) -> "${literal(key)}, json($value)" }})", entries.drop(MOST_ARGUMENTS / 2))
 
+    /** In parts, as for [jsonArray]: a `json_set` of as many entries as it takes, each set over the last. */
     override fun withEntries(json: String, entries: List<Pair<String, String>>) =
-        if (entries.isEmpty()) json else "json_set($json, ${entries.joinToString(", ") { (key, value) -> "${path(key)}, json($value)" }})"
+        entries.chunked((MOST_ARGUMENTS - 1) / 2).fold(json) { map, part ->
+            "json_set($map, ${part.joinToString(", ") { (key, value) -> "${path(key)}, json($value)" }})"
+        }
 
     override fun propertyOf(json: String, key: String) = "($json -> ${path(key)})"
 

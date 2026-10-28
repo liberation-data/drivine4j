@@ -66,7 +66,7 @@ class CompilerRefusalTest {
 
     @Test
     fun `toString of a list or a map the statement makes is refused, as Neo4j refuses it`() {
-        // Not in the spec yet (#349): Postgres and SQLite gave the list's JSON text, each spaced its own way, and Oracle null.
+        // Not in the spec yet (#349; https://github.com/liberation-data/drivine-cypher-spec/pull/28): Postgres and SQLite gave the list's JSON text, each spaced its own way, and Oracle null.
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             listOf(
                 "WITH [1, 2] AS l RETURN toString(l)" to "list",

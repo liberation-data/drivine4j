@@ -21,7 +21,7 @@ named.
 
 `references` moves the other files that name drivine4j's own version with build.gradle's, as Prepare release does
 right after `set`: the sample's model file, which the code generator stamps with the version it was built at and CI
-checks is what the build writes, and the README's install snippets. REFERENCES lists them, each a file and a pattern
+checks is what the build writes, and the install snippets in the README and docs/. REFERENCES lists them, each a file and a pattern
 anchored on drivine4j's own coordinates, so a dependency's version that looks the same is never touched, with how many
 times the pattern is found there. It fails, and writes nothing, when a file is missing or a count is off: a moved file
 or a reworded snippet is then noticed, not skipped, and the list is changed with it. A test checks the list against
@@ -44,6 +44,13 @@ TAG = re.compile(r"^v?[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$")
 PROJECT_VERSION = re.compile(r"^version = '([^'\n]*)'[ \t]*$", re.MULTILINE)
 # A version as a reference names it: X.Y.Z, or X.Y.Z-suffix.
 _VERSION = r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?"
+# Gradle's coordinates, Kotlin DSL or Groovy: org.drivine:drivine4j-codegen:0.3.0 and the like.
+_GRADLE = re.compile(r"\borg\.drivine:drivine4j[a-z0-9-]*:(?P<version>" + _VERSION + r")(?=[\"'])")
+# A Maven dependency on one of drivine4j's artifacts: its groupId, artifactId and version in that order.
+_MAVEN = re.compile(
+    r"<groupId>org\.drivine</groupId>\s*<artifactId>drivine4j[a-z0-9-]*</artifactId>\s*"
+    r"<version>(?P<version>" + _VERSION + r")</version>"
+)
 # The files besides build.gradle that name drivine4j's own version, from the repository's root: the file, a pattern
 # whose group "version" is the version, and how many times the pattern is found there. Each pattern is anchored on
 # drivine4j's coordinates (org.drivine and an artifact drivine4j...), or on the model file's generator, so that a
@@ -57,17 +64,11 @@ REFERENCES: list[tuple[str, re.Pattern[str], int]] = [
         re.compile(r'"generator": \{\s*"library": "drivine4j",\s*"version": "(?P<version>' + _VERSION + r')"'),
         1,
     ),
-    # Gradle's coordinates, Kotlin DSL or Groovy: org.drivine:drivine4j-codegen:0.3.0 and the like.
-    ("README.md", re.compile(r"\borg\.drivine:drivine4j[a-z0-9-]*:(?P<version>" + _VERSION + r")(?=[\"'])"), 7),
-    # A Maven dependency on one of drivine4j's artifacts: its groupId, artifactId and version in that order.
-    (
-        "README.md",
-        re.compile(
-            r"<groupId>org\.drivine</groupId>\s*<artifactId>drivine4j[a-z0-9-]*</artifactId>\s*"
-            r"<version>(?P<version>" + _VERSION + r")</version>"
-        ),
-        2,
-    ),
+    # The install snippets: the short README's quick start, and the docs pages that hold the rest.
+    ("README.md", _GRADLE, 1),
+    ("docs/03-installation.md", _GRADLE, 6),
+    ("docs/03-installation.md", _MAVEN, 2),
+    ("docs/07-core-features.md", _GRADLE, 1),
 ]
 # What counts towards a { } block's depth in build.gradle: braces, outside comments and strings.
 BRACE_TOKENS = re.compile(r"//[^\n]*|/\*.*?\*/|'(?:\\.|[^'\\\n])*'|\"(?:\\.|[^\"\\\n])*\"|[{}]", re.DOTALL)

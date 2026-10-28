@@ -1174,6 +1174,57 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 4,000 bytes is reversed whole, as a short one is`() {
+        // Oracle reversed a text with LISTAGG, which gives a VARCHAR2 of 4,000 bytes, and read a longer one from JSON as null
+        // (#311). Given, stored and read in one row, and made by the statement, as above; reversed by its characters, so a
+        // character past U+FFFF, two UTF-16 units, stays whole.
+        clear()
+        fun reversed(t: String) = t.codePoints().toArray().reversedArray().let { String(it, 0, it.size) }
+        val texts = listOf(
+            // 5,000 characters, and past 32 KB.
+            " " + "aB".repeat(2_499) + "é", "aB".repeat(20_000),
+            // Multibyte, under 4,000 characters and past 4,000 bytes; and at 4,000 bytes, short, and one byte past.
+            "é中".repeat(1_999) + "x", "é".repeat(2_000), "é".repeat(2_000) + "x",
+            // Characters past U+FFFF, two UTF-16 units each: across each 1,000th unit, where Oracle cuts a long text, and reversed,
+            // across each other unit; then the other way about.
+            "x" + "😀".repeat(1_500) + "aé" + "😀".repeat(1_000), "😀".repeat(5_000) + "x",
+            // One that ends on a character across the 2,000th unit, so the last piece Oracle cuts is empty; and a piece of the
+            // most bytes, 999 three-byte characters and one of four.
+            "x" + "😀".repeat(1_000), "中".repeat(999) + "😀" + "中".repeat(1_000),
+            // What JSON writes otherwise: quotes, a backslash, a line break and a control character.
+            "a\"\",\"x\\\n\u0001".repeat(800),
+            "abc", "a😀é中",
+        )
+        for (t in texts) {
+            val label = "${t.length} characters, ${t.toByteArray().size} bytes"
+            query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+            val parts = mapOf("a" to t.substring(0, t.offsetByCodePoints(0, t.codePointCount(0, t.length) / 2)))
+                .let { it + ("b" to t.substring(it.getValue("a").length)) }
+            assertEquals(listOf(reversed(t)), query("WITH \$t AS t RETURN reverse(t)", mapOf("t" to t)), "given, $label")
+            assertEquals(listOf(reversed(t)), query("MATCH (n:CyLongText) RETURN reverse(n.t)"), "stored, $label")
+            assertEquals(listOf(reversed(t)), query("MATCH (n:CyLongText) WITH n.t AS t RETURN reverse(t)"), "passed on, $label")
+            assertEquals(listOf(listOf(reversed(t))), query("MATCH (n:CyLongText) RETURN collect(reverse(n.t))"), "collected, $label")
+            // Not where a sum on Oracle puts a character past U+FFFF across its 4,000th UTF-16 unit: the sum gives two U+FFFD there.
+            if (pm.type != DatabaseType.ORACLE || t.length == t.codePointCount(0, t.length)) {
+                assertEquals(listOf(reversed(t)), query("WITH \$a + \$b AS t RETURN reverse(t)", parts), "made, $label")
+            }
+            assertEquals(listOf(t), query("WITH \$t AS t RETURN reverse(reverse(t))", mapOf("t" to t)), "twice, $label")
+            // In a statement that writes, which Oracle runs as a PL/SQL block.
+            assertEquals(listOf(reversed(t)), query("MATCH (n:CyLongText) SET n.r = reverse(n.t) RETURN n.r"), "written, $label")
+            clear()
+        }
+        // Several in one statement, each row and each item reversed from its own text, long and short.
+        val rows = listOf("aB".repeat(3_000), "abc", "x" + "😀".repeat(1_500), "é中".repeat(1_999) + "x")
+        assertEquals(rows.map(::reversed), query("UNWIND \$ts AS t RETURN reverse(t)", mapOf("ts" to rows)))
+        assertEquals(listOf(rows.map(::reversed)), query("RETURN [t IN \$ts | reverse(t)]", mapOf("ts" to rows)))
+        // A null text is null, and an empty one empty: on Oracle null, as its empty text is, and not read again as a long one.
+        assertEquals(listOf(null), query("WITH \$n AS n RETURN reverse(n)", mapOf("n" to null)))
+        assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN reverse(e)", mapOf("e" to "")))
+        // A literal, a text or a list, whose CLOB Oracle bound without a type, and found no DBMS_LOB.SUBSTR for (PLS-307).
+        assertEquals(listOf(listOf("unaeK", listOf(3L, 2L, 1L))), query("RETURN [reverse('Keanu'), reverse([1, 2, 3])]"))
+    }
+
+    @Test
     fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
         // Beside the spec's writes case since v0.6.17 (#298): read where it is used too, and by more functions.
         // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a
@@ -1367,9 +1418,90 @@ abstract class CypherQueryContract {
         assertEquals(listOf("b", "B", "a"), query("UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY $key DESC"))
     }
 
+    /** The Cypher of the [i]th item of a long literal, and what it gives: of seven kinds in turn, a null among them. */
+    private fun longItem(i: Int): Pair<String, Any?> = when (i % 7) {
+        0 -> "$i" to i.toLong()
+        1 -> "'s$i'" to "s$i"
+        2 -> "null" to null
+        3 -> "$i.5" to i + 0.5
+        4 -> (i % 2 == 0).let { "$it" to it }
+        5 -> "[$i, 'n']" to listOf(i.toLong(), "n")
+        else -> "{k: $i}" to mapOf("k" to i.toLong())
+    }
+
+    @Test
+    fun `a list literal of more than 100 items keeps its items, in order, returned, tested with IN, unwound and in a comprehension`() {
+        // Not in the spec yet (#332): Postgres and SQLite take at most 100 arguments to a function, which wrote the whole list.
+        for (n in listOf(100, 101, 250, 1001)) {
+            val items = (0 until n).map(::longItem)
+            val list = items.joinToString(", ", "[", "]") { it.first }
+            val expected = items.map { it.second }
+            val lastWhole = (0 until n).last { it % 7 == 0 }
+            assertEquals(listOf(expected), query("RETURN $list"), "$n items")
+            assertEquals(listOf(listOf(n.toLong(), expected.last(), expected[n - 2])), query("WITH $list AS xs RETURN size(xs), xs[-1], xs[${n - 2}]"), "$n items")
+            assertEquals(expected, query("UNWIND $list AS x RETURN x"), "$n items")
+            assertEquals(listOf(expected.filterNotNull()), query("RETURN [x IN $list WHERE x IS NOT NULL | x]"), "$n items")
+            assertEquals(listOf(n.toLong()), query("RETURN size([x IN $list | x IS NULL])"), "$n items")
+            // A null among the items makes a value not found null, not false, as in Cypher. A list of numbers and nulls is
+            // tested whole, as JSON.
+            val numbers = (0 until n).joinToString(", ", "[", "]") { if (it % 7 == 2) "null" else "$it" }
+            assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $numbers, 999999 IN $numbers"), "$n items")
+            // A list of several kinds is compared item by item, in a few hundred characters of SQL each. Oracle, whose memory
+            // the suite's other sessions share, runs out of it reading the comparisons of 1001 (#360), so isn't asked them.
+            if (n > 250 && pm.type == DatabaseType.ORACLE) continue
+            // (Not -1, which compiles to ten times the statement, #360.)
+            assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $list, 999999 IN $list"), "$n items")
+            // Compared with itself item by item, each pair equal but the nulls, which are null beside each other.
+            assertEquals(listOf(null), query("RETURN $list = $list"), "$n items")
+        }
+    }
+
+    @Test
+    fun `a long list or map literal without a null equals the same value given as a parameter or collected`() {
+        // Not in the spec yet (#332). Text holding the brackets and commas a long literal is spliced at on Postgres.
+        fun item(i: Int): Pair<String, Any?> = when (i % 4) {
+            0 -> "$i" to i.toLong()
+            1 -> "'a], [b}, {$i'" to "a], [b}, {$i"
+            2 -> "[$i, [$i]]" to listOf(i.toLong(), listOf(i.toLong()))
+            else -> "{k: [$i], m: {n: $i}}" to mapOf("k" to listOf(i.toLong()), "m" to mapOf("n" to i.toLong()))
+        }
+        for (n in listOf(101, 200, 201)) {
+            val items = (0 until n).map(::item)
+            val list = items.joinToString(", ", "[", "]") { it.first }
+            val expected = items.map { it.second }
+            assertEquals(listOf(expected), query("RETURN $list"), "$n items")
+            assertEquals(listOf(true), query("RETURN $list = \$p", mapOf("p" to expected)), "$n items")
+            assertEquals(listOf(true), query("UNWIND $list AS x WITH collect(x) AS xs RETURN xs = $list"), "$n items")
+            val entries = (0 until n).map { "k$it" to item(it) }
+            val map = entries.joinToString(", ", "{", "}") { (key, item) -> "$key: ${item.first}" }
+            val expectedMap = entries.associate { (key, item) -> key to item.second }
+            assertEquals(listOf(expectedMap), query("RETURN $map"), "$n entries")
+            assertEquals(listOf(true), query("RETURN $map = \$p", mapOf("p" to expectedMap)), "$n entries")
+        }
+    }
+
+    @Test
+    fun `a map literal of more than 50 entries keeps its entries, in order, returned, read and projected`() {
+        // Not in the spec yet (#332): two arguments each, past 50 entries a map passed the 100 Postgres and SQLite take.
+        for (n in listOf(50, 51, 120)) {
+            val entries = (0 until n).map { "k$it" to longItem(it) }
+            val map = entries.joinToString(", ", "{", "}") { (key, item) -> "$key: ${item.first}" }
+            val expected = entries.associate { (key, item) -> key to item.second }
+            val returned = query("RETURN $map").single() as Map<*, *>
+            assertEquals(expected, returned, "$n entries")
+            // Its keys in the order written, where the store keeps them so: Neo4j and Oracle do for a few keys, not for 50.
+            if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.SQLITE) assertEquals(expected.keys.toList(), returned.keys.toList(), "$n entries")
+            assertEquals(listOf(listOf(n.toLong(), expected["k${n - 1}"], expected["k${n - 2}"])), query("WITH $map AS m RETURN size(keys(m)), m.k${n - 1}, m['k${n - 2}']"), "$n entries")
+            assertEquals(listOf(null), query("RETURN $map = $map"), "$n entries")
+            // Set over a map by a projection, which SQLite wrote by one call too.
+            val projected = entries.joinToString(", ") { (key, item) -> "$key: ${item.first}" }
+            assertEquals(listOf(mapOf("a" to 1L) + expected), query("WITH {a: 1} AS m RETURN m {.*, $projected}"), "$n entries")
+        }
+    }
+
     @Test
     fun `two lists are ordered item by item, and a pair that is not ordered makes the comparison null`() {
-        // Not in the spec yet (#349): the SQL stores gave null for <, <=, > and >= of two lists. The first pair that is not equal
+        // Not in the spec yet (#349; https://github.com/liberation-data/drivine-cypher-spec/pull/28): the SQL stores gave null for <, <=, > and >= of two lists. The first pair that is not equal
         // decides, a list that starts the other comes first, and a pair with a null or of two kinds is not ordered, as on Neo4j.
         fun row(cypher: String) = query(cypher).single()
         assertEquals(
@@ -1449,7 +1581,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `toString of a list is refused`() {
-        // Not in the spec yet (#349): Neo4j refuses it when it plans the statement, and the compiler when it compiles it.
+        // Not in the spec yet (#349; https://github.com/liberation-data/drivine-cypher-spec/pull/28): Neo4j refuses it when it plans the statement, and the compiler when it compiles it.
         assertThrows<Exception> { query("WITH [1, 2] AS l RETURN toString(l)") }
         assertThrows<Exception> { query("WITH [localdatetime('2024-03-15T10:00:00')] AS l RETURN toString(l)") }
     }

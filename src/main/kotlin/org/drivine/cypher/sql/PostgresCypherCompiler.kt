@@ -84,10 +84,30 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun arithmetic(a: String, b: String, operator: String) =
         if (operator == "/") scalar(float("(${number(a)} / ${number(b)})")) else super.arithmetic(a, b, operator)
 
-    override fun jsonArray(items: List<String>) = "json_build_array(${items.joinToString(", ")})"
+    override fun jsonArray(items: List<String>) = spliced(items, MOST_ARGUMENTS) { "json_build_array(${it.joinToString(", ")})" }
 
     override fun jsonObject(entries: List<Pair<String, String>>) =
-        "json_build_object(${entries.joinToString(", ") { (key, value) -> "${literal(key)}, $value" }})"
+        spliced(entries, MOST_ARGUMENTS / 2) { part -> "json_build_object(${part.joinToString(", ") { (key, value) -> "${literal(key)}, $value" }})" }
+
+    /**
+     * What [build] writes of [items], where they are at most [most]; past them, as Postgres takes no more than 100 arguments
+     * to a function (#332), what it writes of each part of them, spliced as text into the text one call would write of
+     * them all: the first part without its closing bracket, the last without its opening one, and those between without
+     * either, joined as `json_build_array` and `json_build_object` join their items. It stays `json`, so the keys of a map
+     * keep their order, where `jsonb`'s `||` would sort them.
+     */
+    private fun <T> spliced(items: List<T>, most: Int, build: (List<T>) -> String): String {
+        if (items.size <= most) return build(items)
+        val parts = items.chunked(most)
+        return parts.withIndex().joinToString(" || ', ' || ", "CAST(", " AS json)") { (i, part) ->
+            val text = "CAST(${build(part)} AS text)"
+            when (i) {
+                0 -> "left($text, -1)"
+                parts.lastIndex -> "right($text, -1)"
+                else -> "right(left($text, -1), -1)"
+            }
+        }
+    }
 
     override fun withEntries(json: String, entries: List<Pair<String, String>>) = "($json || CAST(${jsonObject(entries)} AS jsonb))"
 
