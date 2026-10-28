@@ -1406,6 +1406,30 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a long list or map literal without a null equals the same value given as a parameter or collected`() {
+        // Not in the spec yet (#332). Text holding the brackets and commas a long literal is spliced at on Postgres.
+        fun item(i: Int): Pair<String, Any?> = when (i % 4) {
+            0 -> "$i" to i.toLong()
+            1 -> "'a], [b}, {$i'" to "a], [b}, {$i"
+            2 -> "[$i, [$i]]" to listOf(i.toLong(), listOf(i.toLong()))
+            else -> "{k: [$i], m: {n: $i}}" to mapOf("k" to listOf(i.toLong()), "m" to mapOf("n" to i.toLong()))
+        }
+        for (n in listOf(101, 200, 201)) {
+            val items = (0 until n).map(::item)
+            val list = items.joinToString(", ", "[", "]") { it.first }
+            val expected = items.map { it.second }
+            assertEquals(listOf(expected), query("RETURN $list"), "$n items")
+            assertEquals(listOf(true), query("RETURN $list = \$p", mapOf("p" to expected)), "$n items")
+            assertEquals(listOf(true), query("UNWIND $list AS x WITH collect(x) AS xs RETURN xs = $list"), "$n items")
+            val entries = (0 until n).map { "k$it" to item(it) }
+            val map = entries.joinToString(", ", "{", "}") { (key, item) -> "$key: ${item.first}" }
+            val expectedMap = entries.associate { (key, item) -> key to item.second }
+            assertEquals(listOf(expectedMap), query("RETURN $map"), "$n entries")
+            assertEquals(listOf(true), query("RETURN $map = \$p", mapOf("p" to expectedMap)), "$n entries")
+        }
+    }
+
+    @Test
     fun `a map literal of more than 50 entries keeps its entries, in order, returned, read and projected`() {
         // Not in the spec yet (#332): two arguments each, past 50 entries a map passed the 100 Postgres and SQLite take.
         for (n in listOf(50, 51, 120)) {
