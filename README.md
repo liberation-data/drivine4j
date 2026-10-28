@@ -33,7 +33,8 @@ type-safe query DSL needs the code generator: see [Installation](docs/03-install
 ## Quick Start
 
 Name a datasource, and the starter provides the `PersistenceManagerFactory`, `GraphObjectManagerFactory`,
-`SchemaManager` and Drivine's transaction manager:
+`SchemaManager` and Drivine's transaction manager. Here `manager` is the `PersistenceManager` from
+`factory.get("neo")`:
 
 ```yaml
 database:

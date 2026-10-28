@@ -23,4 +23,4 @@ The full documentation, one file per topic, also published at [drivine.org](http
 - [Links](18-links.md)
 
 The other files in this folder are design notes and release records (`0.1.0-stateless-object-manager.md` and the like),
-linked from the pages above. drivine.org reads only `00-introduction.md` and the numbered pages.
+some linked from the pages above. drivine.org reads only `00-introduction.md` and the numbered pages.
