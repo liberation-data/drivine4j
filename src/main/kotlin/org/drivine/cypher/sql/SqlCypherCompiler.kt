@@ -57,9 +57,9 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The functions a query of the statement calls, which it declares before it: see [declare]. */
     private val functions = mutableListOf<String>()
 
-    /** Declares [function], a function's whole text, for the statement to call: a query's own, before it. */
+    /** Declares [function], a function's whole text, for the statement to call: a query's own, before it; once, however often it is declared. */
     protected fun declare(function: String) {
-        functions += function
+        if (function !in functions) functions += function
     }
 
     /** [compiled] with the functions it calls declared before it. */
@@ -89,6 +89,9 @@ abstract class SqlCypherCompiler(graph: String) {
      * from its group, nor in a term a projection beside a variable-length walk sorts by that is none of its items (see `project`).
      */
     private var sharing = true
+
+    /** How many times [shared] has bound its values, which an aggregate's argument it would bind in is worked out first for: see `sharedFirst`. */
+    private var sharedBindings = 0
 
     /** The statement [cypher], with its parameters' values [parameters], as SQL. */
     fun compile(cypher: String, parameters: Map<String, Any?> = emptyMap()): CompiledCypher =
@@ -124,6 +127,7 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected fun shared(vararg values: String, body: (List<String>) -> String): String {
         if (!sharing || values.all { it.length <= SHARED_ABOVE }) return body(values.toList())
+        sharedBindings++
         return bound(*values, body = body)
     }
 
@@ -1898,6 +1902,8 @@ abstract class SqlCypherCompiler(graph: String) {
             // Before aggregatesFirst, which names each variable it groups by as an item of its own.
             requireExplicitGrouping(items)
             casesFirst(select, projection, items)?.let { (cased, kept) -> return project(cased, kept, final) }
+            // After casesFirst, which refuses what it must of an aggregate's CASE before working it out first.
+            sharedFirst(select, projection, items)?.let { (shared, kept) -> return project(shared, kept, final) }
             aggregatesFirst(select, projection, items)?.let { (grouped, kept) -> return project(grouped, kept, final) }
             heldFirst(select, projection, items)?.let { (held, keyed) -> return project(held, keyed, final) }
             if (final && items.size > 1) {
@@ -2055,6 +2061,62 @@ abstract class SqlCypherCompiler(graph: String) {
             )
             // Kept apart, or Oracle merges it back into the query that aggregates.
             return with(select, Clause.With(with, null), apart = true) to kept
+        }
+
+        /**
+         * The rows [select] reads with each aggregate's argument that [shared] would bind a value in worked out first, in a
+         * `WITH *` of its own, and the projection with the aggregate of that argument read from there; null where there is none.
+         * An aggregate's argument is compiled with no value bound ([aggregating]): bound in a subquery around the aggregate,
+         * a value would be taken from the group the aggregate reads, which no store reads from a subquery's FROM. Unbound, an
+         * operation that reads its operands more than once writes them out again at each level, and `count(t + duration({minutes: i}))`
+         * compiled to megabytes (#333). Worked out first, for each row, the argument binds its values as any item does, and
+         * the aggregate reads its column, as it does where a `WITH` works it out first in the statement itself.
+         */
+        private fun sharedFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
+            if (!sharing) return null
+            // Order terms too, beside a variable-length walk as well: there `project` binds no value in one that is none of the
+            // items, so worked out here, in a WITH's item, is the only place its aggregate's argument binds one.
+            val terms = items.map { it.expression } + projection.orderBy.map { it.expression }
+            val arguments = linkedSetOf<Expression>()
+            terms.forEach { term ->
+                contains(term) { e ->
+                    if (isAggregate(e) && e is Expression.Function) e.arguments.filter { it !in arguments && binds(it, select) }.forEach { arguments += it }
+                    false
+                }
+            }
+            if (arguments.isEmpty()) return null
+            // Named as no variable is, unless quoted so.
+            val names = arguments.associateWith { "#shared${++counter}" }
+            val with = Projection(false, true, names.map { (argument, name) -> Projection.Item(argument, name) }, emptyList(), null, null)
+            fun shared(expression: Expression) = replaced(expression) { term ->
+                if (isAggregate(term) && term is Expression.Function) term.copy(arguments = term.arguments.map { names[it]?.let(Expression::Variable) ?: it }) else null
+            }
+            val kept = projection.copy(
+                star = false,
+                items = items.map { it.copy(expression = shared(it.expression)) },
+                orderBy = projection.orderBy.map { it.copy(expression = shared(it.expression)) },
+            )
+            // Kept apart, as casesFirst keeps its own, so no store merges it back into the query that aggregates.
+            return with(select, Clause.With(with, null), select.scope.filterKeys { it !in select.bound }, apart = true) to kept
+        }
+
+        /**
+         * Whether [shared] binds a value in [expression], compiled over the rows [select] reads. Compiled only to see:
+         * the names it takes and the functions it declares (a `reduce`'s on Oracle) are given back, so a statement whose
+         * aggregates bind nothing compiles as it did.
+         */
+        private fun binds(expression: Expression, select: Select): Boolean {
+            val (wasCounter, wasShares, wasBindings) = Triple(counter, shares, sharedBindings)
+            val wasFunctions = functions.size
+            try {
+                expression(expression, select.scope)
+                return sharedBindings > wasBindings
+            } finally {
+                counter = wasCounter
+                shares = wasShares
+                sharedBindings = wasBindings
+                functions.subList(wasFunctions, functions.size).clear()
+            }
         }
 
         /**

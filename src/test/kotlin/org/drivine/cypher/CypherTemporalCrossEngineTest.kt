@@ -89,6 +89,75 @@ abstract class CypherTemporalContract {
             ),
         )
     }
+
+    @Test
+    fun `aggregates of temporal arithmetic give what they give of the arithmetic worked out first, grouped, distinct and over nulls`() {
+        // #333: an aggregate's argument is worked out first, for each row, where its values are bound; it gives what it did.
+        query(
+            """
+            UNWIND [
+              {id: 1, g: 'a', at: '2024-03-15T10:00:00+02:00', m: 1}, {id: 2, g: 'a', at: '2024-03-15T10:00:00+02:00', m: 1},
+              {id: 3, g: 'a', at: '2024-03-15T10:00:00+02:00', m: 4}, {id: 4, g: 'b', at: '2024-03-15T11:00:00Z', m: 5},
+              {id: 5, g: 'b', at: null, m: 3}, {id: 6, g: 'b', at: '2024-03-15T12:30:00+02:00', m: 0}
+            ] AS r
+            CREATE (:CyAgg {id: r.id, g: r.g, at: r.at, m: r.m})
+            """,
+        )
+        val t = "datetime(n.at) + duration({minutes: n.m})"
+        // b's 12:30+02:00 is 10:30 UTC, before its 11:05Z: min() and max() compare moments, not their texts. Its null is passed over.
+        assertEquals(
+            listOf(
+                mapOf("g" to "a", "count" to 3L, "distinct" to 2L, "lo" to listOf(10L, 1L), "hi" to listOf(10L, 4L), "sum" to 6L, "avg" to 2.0, "times" to listOf(listOf(10L, 1L), listOf(10L, 1L), listOf(10L, 4L))),
+                mapOf("g" to "b", "count" to 2L, "distinct" to 2L, "lo" to listOf(12L, 30L), "hi" to listOf(11L, 5L), "sum" to 35L, "avg" to 17.5, "times" to listOf(listOf(11L, 5L), listOf(12L, 30L))),
+            ),
+            query(
+                """
+                MATCH (n:CyAgg) WITH n ORDER BY n.id
+                WITH n.g AS g, count($t) AS c, count(DISTINCT $t) AS d, min($t) AS lo, max($t) AS hi, sum(($t).minute) AS s, avg(($t).minute) AS a, collect($t) AS l
+                RETURN {g: g, count: c, distinct: d, lo: [lo.hour, lo.minute], hi: [hi.hour, hi.minute], sum: s, avg: a, times: [x IN l | [x.hour, x.minute]]}
+                ORDER BY g
+                """,
+            ),
+        )
+        // Kept distinct by collect(DISTINCT …), and read in an item beside the aggregate.
+        assertEquals(
+            listOf(mapOf("g" to "a", "minutes" to listOf(1L, 4L), "n" to 2L), mapOf("g" to "b", "minutes" to listOf(5L, 30L), "n" to 2L)),
+            query("MATCH (n:CyAgg) WITH n ORDER BY n.id WITH n.g AS g, collect(DISTINCT $t) AS l RETURN {g: g, minutes: [x IN l | x.minute], n: size(l)} ORDER BY g"),
+        )
+        // Sorted by an aggregate of it, which is none of the items.
+        assertEquals(listOf(listOf("b", 3L), listOf("a", 3L)), query("MATCH (n:CyAgg) RETURN n.g AS g, count(*) AS c ORDER BY max(($t).minute) DESC"))
+        // The size of a list of temporal values that a comprehension keeps, summed: 2 for each of b's moments after 09:30 UTC.
+        assertEquals(
+            listOf(4L),
+            query("MATCH (n:CyAgg) RETURN sum(size([x IN [datetime(n.at), datetime(n.at) + duration('PT1H')] WHERE x > datetime('2024-03-15T09:30:00Z')]))"),
+        )
+        // Over no grouping key, the issue's statements.
+        val z = "datetime('2024-03-15T10:00:00+02:00') + duration({minutes: i})"
+        assertEquals(listOf(listOf(3L, 1L, 3L, 6L)), query("UNWIND range(1, 3) AS i RETURN [count($z), min($z).minute, max($z).minute, sum(($z).minute)]"))
+        assertEquals(listOf(1L, 0L), query("UNWIND range(1, 4) AS i WITH i % 2 AS k, i WITH k, collect($z) AS l RETURN k ORDER BY l"))
+        // Inside a CASE and arithmetic, in a WITH a WHERE filters, and in a CALL { … }: Oracle reads no imported variable in an aggregate there, worked out first or not, so this one reads none.
+        assertEquals(listOf(listOf("many", 4L)), query("UNWIND range(1, 3) AS i RETURN [CASE WHEN count($z) > 1 THEN 'many' END, count($z) + 1]"))
+        assertEquals(listOf(1L), query("UNWIND range(1, 4) AS i WITH i % 2 AS k, max(($z).minute) AS m WHERE m < 4 RETURN k"))
+        assertEquals(listOf(8L), query("UNWIND [2] AS o CALL { WITH o UNWIND range(1, 3) AS i RETURN sum(($z).minute) AS s } RETURN s + o"))
+        // A reduce() in the argument, which Oracle declares a function for.
+        assertEquals(listOf(6L), query("UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + ($z).minute - i + x))"))
+        // A list of temporal values, kept distinct, read back by its items' fields: Oracle reads no temporal list by JSON_TABLE (#331).
+        assertEquals(
+            listOf(listOf(listOf(2L, 3L), listOf(3L, 4L))),
+            query("WITH [datetime('2024-01-01T00:00Z'), datetime('2024-01-02T00:00Z')] AS l UNWIND [1, 2, 1] AS i WITH collect(DISTINCT [x IN l | x + duration({days: i})]) AS c RETURN [y IN c | [x IN y | x.day]]"),
+        )
+        // Beside a variable-length walk in the same MATCH.
+        query("MATCH (a:CyAgg {id: 1}), (b:CyAgg {id: 2}), (c:CyAgg {id: 3}) CREATE (a)-[:NEXT]->(b)-[:NEXT]->(c)")
+        assertEquals(
+            listOf(listOf(1L, 2L, 5L), listOf(2L, 1L, 4L)),
+            query("MATCH (a:CyAgg)-[:NEXT*1..2]->(b:CyAgg) RETURN a.id AS a, count(datetime(b.at) + duration({minutes: b.m})) AS c, sum((datetime(b.at) + duration({minutes: b.m})).minute) AS s ORDER BY a"),
+        )
+        // Sorted there by an aggregate of it that is none of the items, which binds no value beside the walk: see `project`.
+        assertEquals(
+            listOf(listOf(2L, 1L), listOf(1L, 2L)),
+            query("MATCH (a:CyAgg)-[:NEXT*1..2]->(b:CyAgg) RETURN a.id AS a, count(*) AS c ORDER BY sum((datetime(b.at) + duration({minutes: b.m})).minute)"),
+        )
+    }
 }
 
 class CypherTemporalNeo4jTest : CypherTemporalContract() {

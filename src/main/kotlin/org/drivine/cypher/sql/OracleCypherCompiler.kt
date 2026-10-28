@@ -517,18 +517,13 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
             callsStoredNullsEqual = true
             "($storedNullsEqual($x, $y) = 1)"
         } else {
-            if (!nullsCompared) {
-                nullsCompared = true
-                declare(nullsEqualFunction(NULLS_EQUAL))
-            }
+            // Declared once, however often it is called; and again where a compile only to see gave its declaration back.
+            declare(nullsEqualFunction(NULLS_EQUAL))
             "($NULLS_EQUAL($x, $y) = 1)"
         }
         fun text(json: String) = "JSON_SERIALIZE($json RETURNING VARCHAR2(4000) NULL ON ERROR)"
         return "CASE WHEN ${text(x)} = ${text(y)} THEN NULL ELSE $walked END"
     }
-
-    /** Whether the query declares [NULLS_EQUAL]: see [nullsEqual]. */
-    private var nullsCompared = false
 
     override fun modulo(a: String, b: String) = "MOD($a, $b)"
 
