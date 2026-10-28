@@ -5,6 +5,7 @@ import org.drivine.cypher.sql.PostgresCypherCompiler
 import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
+import org.drivine.query.SqlParameters
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.Test
@@ -99,7 +100,36 @@ class OracleZonedListSortTest {
         assertTrue(keys.contains("PASSING dg_r.n - 1"), keys)
         assertFalse(keys.contains("JSON_TABLE((SELECT JSON_DATAGUIDE"), keys)
     }
+
+    @Test
+    fun `on Oracle a list of temporal values a WITH takes out of an unwound map is read item by item too`() {
+        // A property of an unwound item held no temporal values deeper, and such a list was read with JSON_TABLE again (#369).
+        for (cypher in unwoundRepros) {
+            val sql = OracleCypherCompiler("g").compile(cypher).sql
+            assertTrue(sql.contains(Regex("PASSING x\\d+_r\\.n - 1")), sql)
+            assertFalse(sql.contains(Regex("JSON_TABLE\\((w|q|u)\\d+\\.(c|item)")), sql)
+        }
+        // A list of other values out of an unwound map is still read with JSON_TABLE, and the value is read as #344 reads it.
+        val numbers = OracleCypherCompiler("g").compile("UNWIND [0, 1] AS k WITH k, [{l: range(1, 10)}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN size([x IN l WHERE x > 1])").sql
+        assertFalse(numbers.contains("PASSING"), numbers)
+        for (cypher in listOf(unwoundRepros[0], "UNWIND [{a: 'x', l: [date()]}] AS t WITH t.a AS a RETURN a")) {
+            val sql = OracleCypherCompiler("g").compile(cypher).sql
+            assertTrue(sql.contains("JSON(JSON_QUERY(JSON_SERIALIZE("), sql)
+        }
+    }
 }
+
+/**
+ * #331's list in a map, unwound, and taken out by a `WITH` (#369): from a map, one the list was put in after it was worked out, a map
+ * two levels down, a list of two maps, and after a write.
+ */
+private val unwoundRepros = listOf(
+    "UNWIND [0, 1] AS k WITH k, [{l: $list}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN size([x IN l WHERE x IS NOT NULL])",
+    "$repro UNWIND [{l: l}] AS t WITH k, t.l AS l RETURN size([x IN l WHERE x IS NOT NULL])",
+    "UNWIND [0, 1] AS k WITH k, [{m: {l: $list}}] AS ms UNWIND ms AS t WITH k, t.m AS m WITH k, m.l AS l RETURN size([x IN l WHERE x IS NOT NULL])",
+    "UNWIND [0, 1] AS k WITH k, [{l: $list}, {l: $list}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN size([x IN l WHERE x IS NOT NULL])",
+    "UNWIND [0, 1] AS k WITH k, [{l: $list}] AS ms UNWIND ms AS t CREATE (:CyUnwoundTemporals) WITH k, t.l AS l RETURN size([x IN l WHERE x IS NOT NULL])",
+)
 
 /** Statements that collect, once each, lists that hold #331's temporal values two levels down, or in maps: see #347. */
 private val deepRepros = listOf(
@@ -127,8 +157,11 @@ private val mayHoldRepros = listOf(
     "$repro WITH k, [{minute: l}] AS ms RETURN size([y IN ms[0].minute WHERE y IS NOT NULL])",
 )
 
-/** #331's statement: a list worked out item by item with temporal arithmetic, by a comprehension. */
-private const val repro = "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i})] AS l"
+/** #331's list: worked out item by item with temporal arithmetic, by a comprehension. */
+private const val list = "[i IN range(1, 10) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i})]"
+
+/** #331's statement: its list, on each of two rows. */
+private const val repro = "UNWIND [0, 1] AS k WITH k, $list AS l"
 
 /** #331's list in a map whose keys are taken: Oracle reads them from the map's data guide. */
 private const val keyed = "$repro WITH k, {l: l} AS m RETURN size(keys(m))"
@@ -187,6 +220,15 @@ class OracleZonedListSortRunTest {
     }
 
     @Test
+    fun `a list of temporal values a WITH takes out of an unwound map is read in moments`() {
+        // No answer within 30 seconds before #369; the session had to be killed.
+        for (cypher in unwoundRepros.dropLast(2)) assertEquals(listOf("10", "10"), rows(cypher))
+        assertEquals(listOf("10", "10", "10", "10"), rows(unwoundRepros[3]))
+        // After a write, rolled back with the session's work.
+        assertEquals(listOf("10", "10"), rows(unwoundRepros[4]))
+    }
+
+    @Test
     fun `a list worked out with temporal arithmetic, by a comprehension or collect, sorts by its moments, and in moments`() {
         val comprehension = "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | $at + duration({minutes: i})] AS l"
         assertEquals(listOf("0", "1"), rows("$comprehension RETURN k ORDER BY l"))
@@ -203,11 +245,21 @@ class OracleZonedListSortRunTest {
      * statements takes, so a loaded machine does not fail them.
      */
     private fun rows(cypher: String, seconds: Long = 10): List<String> {
-        val sql = OracleCypherCompiler("cypher").compile(cypher).sql
+        val compiled = OracleCypherCompiler("cypher").compile(cypher)
+        val positional = SqlParameters.positional(compiled.sql)
         val connection = OracleTestDatabase.provider.nativeDriver.connection
+        // A statement that writes is a block that hands its rows back, and what it writes is rolled back.
+        connection.autoCommit = false
         val sid = connection.createStatement().use { it.executeQuery("SELECT SYS_CONTEXT('USERENV', 'SID') FROM dual").use { r -> r.next(); r.getString(1) } }
         val running = executor.submit<List<String>> {
-            connection.createStatement().use { it.executeQuery(sql).use { r -> generateSequence { if (r.next()) r.getString(1) else null }.toList() } }
+            connection.prepareStatement(positional.statement).use { statement ->
+                positional.names.forEachIndexed { index, name -> statement.setObject(index + 1, compiled.parameters[name]) }
+                if (statement.execute() || statement.moreResults) {
+                    statement.resultSet.use { r -> generateSequence { if (r.next()) r.getString(1) else null }.toList() }
+                } else {
+                    emptyList()
+                }
+            }
         }
         try {
             return running.get(seconds, TimeUnit.SECONDS)
@@ -221,6 +273,7 @@ class OracleZonedListSortRunTest {
             connection.abort(executor)
             fail("Oracle took more than $seconds seconds to run: $cypher")
         } finally {
+            runCatching { connection.rollback() }
             runCatching { connection.close() }
         }
     }

@@ -933,6 +933,35 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a list of temporal values a WITH takes out of an unwound map is read item by item, in order, on its own row`() {
+        // Not in the spec yet: Oracle reads such a list by its places, not with JSON_TABLE (#369). Of 0, 1 and 2 items, at 10:01, 10:02.
+        val at = "localdatetime('2024-03-15T10:00:00')"
+        val list = "[i IN range(1, k) | $at + duration({minutes: i})]"
+        val each = listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L)))
+        assertEquals(each, query("UNWIND [0, 1, 2] AS k WITH k, [{l: $list}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN k, [x IN l | x.minute] ORDER BY k"))
+        assertEquals(each, query("UNWIND [0, 1, 2] AS k WITH k, $list AS l0 UNWIND [{l: l0}] AS t WITH k, t.l AS l RETURN k, [x IN l | x.minute] ORDER BY k"))
+        // A map two levels down, and a list of two maps.
+        assertEquals(
+            each,
+            query("UNWIND [0, 1, 2] AS k WITH k, [{m: {l: $list}}] AS ms UNWIND ms AS t WITH k, t.m AS m WITH k, m.l AS l RETURN k, [x IN l | x.minute] ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>()), listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(1L, listOf(11L)), listOf(2L, listOf(1L, 2L)), listOf(2L, listOf(11L, 12L))),
+            query(
+                "UNWIND [0, 1, 2] AS k WITH k, [{l: $list}, {l: [i IN range(1, k) | $at + duration({minutes: 10 + i})]}] AS ms UNWIND ms AS t " +
+                    "WITH k, t.l AS l RETURN k, [x IN l | x.minute] AS m ORDER BY k, m",
+            ),
+        )
+        // After a write.
+        clear()
+        assertEquals(
+            each,
+            query("UNWIND [0, 1, 2] AS k WITH k, [{l: $list}] AS ms UNWIND ms AS t CREATE (:CyUnwoundTemporals) WITH k, t.l AS l RETURN k, [x IN l | x.minute] ORDER BY k"),
+        )
+        assertEquals(listOf(3L), query("MATCH (n:CyUnwoundTemporals) RETURN count(n)"))
+    }
+
+    @Test
     fun `a negative precision from data fails only on a row that reads it, in a WHERE and an aggregate too, with the compiler's message`() {
         // The spec reads a precision from data since v0.6.4; here, in a WHERE and an aggregate, and on rows filtered out.
         clear()
