@@ -770,31 +770,13 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `a list of zoned values, and a list of lists of them, sort and compare item by item as the moments they are, whatever their offsets`() {
-        // Beside the spec's case since v0.6.17 (#199): the spec excepts Oracle from these, and has no list worked out with
-        // temporal arithmetic from a CASE. As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
-        val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
-        val hours = listOf(10L, 8L, 9L)
-        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
-        assertEquals(hours.reversed(), query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts DESC"))
-        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, collect(t) AS ts RETURN h ORDER BY ts"))
-        assertEquals(hours, query("UNWIND [[$b], [$a], [$c]] AS ts RETURN ts[0].hour ORDER BY ts"))
-        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [[t]] AS l RETURN l[0][0].hour ORDER BY l"))
-        assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH t.hour AS h, collect([t]) AS l RETURN h ORDER BY l"))
-        // A list that starts another comes first; a null item after any moment.
-        assertEquals(listOf(1L, 2L), query("WITH [$a] AS x, [$a, $b] AS y UNWIND [y, x] AS l RETURN size(l) ORDER BY l"))
-        assertEquals(listOf(0L, 1L), query("WITH [$a, null] AS x, [$a, $b] AS y UNWIND [x, y] AS l RETURN size([i IN l WHERE i IS NULL]) ORDER BY l"))
-        // A long list, and lists worked out with temporal arithmetic, by a comprehension or collect(): k = 0's start at 08:00 UTC.
+    fun `a list of zoned values worked out with temporal arithmetic, by a comprehension or collect(), sorts as the moments they are`() {
+        // Beside the spec's case since v0.6.18 (#199): its long list is worked out from one moment, not from a CASE, and it
+        // has no list collect() gathers of them. As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z: k = 0's start at 08:00 UTC.
+        val (a, b) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')")
         val at = "CASE k WHEN 0 THEN $a ELSE $b END"
         assertEquals(listOf(0L, 1L), query("UNWIND [0, 1] AS k WITH k, [x IN range(1, 200) | $at + duration({minutes: x})] AS l RETURN k ORDER BY l"))
         assertEquals(listOf(0L, 1L), query("UNWIND [0, 1] AS k UNWIND range(1, 3) AS x WITH k, $at + duration({minutes: x}) AS t WITH k, collect(t) AS l RETURN k ORDER BY l"))
-        // min() and max() of them.
-        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [[$b], [$a], [$c]] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
-        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [$b, $a, $c] AS t WITH [[t]] AS l RETURN [min(l)[0][0].hour, max(l)[0][0].hour]"))
-        // A time of day with an offset, as a moment.
-        val times = "[time('10:00:00+02:00'), time('09:00:00Z'), time('08:30:00Z')]"
-        assertEquals(hours, query("UNWIND $times AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
-        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND $times AS t WITH [t] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
     }
 
     @Test
