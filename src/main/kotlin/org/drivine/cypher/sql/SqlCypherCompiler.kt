@@ -2957,16 +2957,19 @@ abstract class SqlCypherCompiler(graph: String) {
             val (left, right) = binary.left to binary.right
             if (flat(left, scope) && flat(right, scope)) return null
             fun joined(pairs: List<Pair<Expression, Expression>>, operator: String) =
-                pairs.joinToString(" $operator ", "(", ")") { (a, b) -> bool(binary(Expression.Binary(Operator.EQUALS, a, b), scope)) }
+                grouped(pairs.map { (a, b) -> bool(binary(Expression.Binary(Operator.EQUALS, a, b), scope)) }, operator)
             return when {
                 // The item compiled once, and compared with each of the list's.
                 binary.operator == Operator.IN -> (right as? Expression.ListLiteral)?.takeIf { it.items.isNotEmpty() }?.let { list ->
                     val item = expression(left, scope)
-                    list.items.joinToString(" OR ", "(", ")") { listed ->
-                        val equals = Expression.Binary(Operator.EQUALS, left, listed)
-                        val (l, r) = compared(item, expression(listed, scope), equals)
-                        equality(l, r, listed, plain(left, listed, l, r, scope), stored(left, scope))
-                    }
+                    grouped(
+                        list.items.map { listed ->
+                            val equals = Expression.Binary(Operator.EQUALS, left, listed)
+                            val (l, r) = compared(item, expression(listed, scope), equals)
+                            equality(l, r, listed, plain(left, listed, l, r, scope), stored(left, scope))
+                        },
+                        "OR",
+                    )
                 }
                 left is Expression.ListLiteral && right is Expression.ListLiteral ->
                     if (left.items.size != right.items.size) "FALSE" else joined(left.items.zip(right.items), "AND")
@@ -2977,6 +2980,15 @@ abstract class SqlCypherCompiler(graph: String) {
                 else -> null
             }
         }
+
+        /**
+         * The conditions [terms] joined by [operator], in parentheses. SQLite reads `a OR b OR c` as an expression as deep as it
+         * is long, and refuses one deeper than 1,000 (#332): past [MOST_ARGUMENTS] terms, each run of them is joined in
+         * parentheses of its own, and the runs joined so in turn.
+         */
+        private fun grouped(terms: List<String>, operator: String): String =
+            if (terms.size <= MOST_ARGUMENTS) terms.joinToString(" $operator ", "(", ")")
+            else grouped(terms.chunked(MOST_ARGUMENTS) { grouped(it, operator) }, operator)
 
         /**
          * An equality of [left] and [right], written as [leftWritten] and [rightWritten], where one is a parameter bound to a list
@@ -3627,6 +3639,12 @@ abstract class SqlCypherCompiler(graph: String) {
         val PENDING_COLUMN = Regex("${PENDING}\\.(\\w+)")
 
         fun literal(text: String) = "'${text.replace("'", "''")}'"
+
+        /**
+         * The most arguments a function takes on Postgres, and on the SQLite Drivine ships: a list or a map written by one
+         * call of a function past them, as a literal of more than 100 items or 50 entries is, is written in parts (#332).
+         */
+        const val MOST_ARGUMENTS = 100
 
         /** What `round()` fails with, as Neo4j fails it, a precision below 0 or past [MAX_COUNT]. */
         const val PRECISION_OUT_OF_RANGE = "round() takes a precision from 0 to 2147483647, as in Neo4j."
