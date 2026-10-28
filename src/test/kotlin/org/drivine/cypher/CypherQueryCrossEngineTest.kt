@@ -1413,6 +1413,24 @@ abstract class CypherQueryContract {
                     "[[date('2024-01-01')]] < [[localdatetime('2024-01-02T00:00')]]]"
             ),
         )
+        // A temporal value beside a text is not ordered, though its ISO text would be; a null beside a temporal value is not either.
+        assertEquals(
+            listOf(null, null, null, null, true, false, true),
+            row(
+                "RETURN [[date('2024-01-01')] < ['2024-01-02'], [duration('P1D')] < ['P2D'], ['2024-01-02'] > [date('2024-01-01')], " +
+                    "[date('2024-01-01'), null] < [date('2024-01-01'), date('2024-01-02')], [date('2024-01-01'), null] < [date('2024-01-02'), null], " +
+                    "[localdatetime('2024-01-01T10:00'), null] <= [localdatetime('2024-01-01T10:00')], " +
+                    "[datetime('2024-01-01T10:00+02:00'), null] < [datetime('2024-01-01T09:00Z'), null]]"
+            ),
+        )
+        // Three levels deep, a truth value after another, a whole number beside a float, and whole numbers past 2^53.
+        assertEquals(
+            listOf(true, null, null, false, true, true),
+            row(
+                "RETURN [[[[1]]] < [[[2]]], [[[1, null]]] < [[[1, 2]]], [null] < [1], [1] < [1.0], [9007199254740993] > [9007199254740992], " +
+                    "[true, false] < [true, true]]"
+            ),
+        )
         // The issue's statements: a list of local moments, written and made item by item in a comprehension.
         assertEquals(
             listOf(false, true, true),

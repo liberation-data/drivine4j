@@ -576,6 +576,9 @@ place in the statement it stands at.
   `reverse()` gives null for one.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
+- `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).
+  Two values whose kind it leaves open, such as two parameters or two properties, compare as null where they hold
+  lists. Two maps compare as null, and two that differ do in a list too, where Neo4j orders them.
 - Text is ordered by the database's collation on [Postgres](#postgres), and by `BINARY` on [SQLite](#sqlite).
 - `CALL { … } IN TRANSACTIONS` is one statement, applied whole, where a graph engine commits each batch as it goes.
 - On Oracle, a quantified path pattern's `WHERE` reads no variable from outside it.

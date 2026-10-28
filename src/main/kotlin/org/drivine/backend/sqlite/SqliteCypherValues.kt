@@ -101,9 +101,10 @@ internal object SqliteCypherValues {
     fun order(a: JsonNode, b: JsonNode): Int? = when {
         a.isNull || b.isNull -> null
         a.isArray && b.isArray -> listOrder(a, b)
-        a.isObject && b.isObject -> 0.takeIf { a.size() == b.size() && a.properties().all { (key, value) -> b.has(key) && order(value, b[key]) == 0 } }
+        a.isObject && b.isObject -> 0.takeIf { compare(a, b) == true }
         a.isNumber && b.isNumber -> number(a).compareTo(number(b)).sign
-        a.isTextual && b.isTextual -> codePoints(a.textValue(), b.textValue())
+        // By code points, as Cypher orders texts: Java's `compareTo` orders UTF-16's units.
+        a.isTextual && b.isTextual -> SqlitePlanWriter.CODE_POINTS.compare(a.textValue(), b.textValue()).sign
         a.isBoolean && b.isBoolean -> a.booleanValue().compareTo(b.booleanValue()).sign
         else -> null
     }
@@ -115,11 +116,5 @@ internal object SqliteCypherValues {
             if (pair != 0) return pair
         }
         return a.size().compareTo(b.size()).sign
-    }
-
-    /** Where the text [a] comes beside [b] by their code points, as Cypher orders texts: Java's `compareTo` orders UTF-16's units. */
-    private fun codePoints(a: String, b: String): Int {
-        val (x, y) = a.codePoints().toArray() to b.codePoints().toArray()
-        return (0 until minOf(x.size, y.size)).firstOrNull { x[it] != y[it] }?.let { x[it].compareTo(y[it]).sign } ?: x.size.compareTo(y.size).sign
     }
 }

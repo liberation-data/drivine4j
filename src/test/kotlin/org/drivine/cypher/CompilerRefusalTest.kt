@@ -92,6 +92,12 @@ class CompilerRefusalTest {
         assertTrue(refused.startsWith("Two lists compared with <, <=, > or >= do not run on Oracle in a statement that writes"), refused)
         PostgresCypherCompiler("g").compile(cypher)
         SqliteCypherCompiler("g").compile(cypher)
+        // Nor does a reduce()'s step, which is a function the query declares.
+        val folded = "RETURN reduce(acc = false, x IN [[1], [2]] | acc OR [1] < x)"
+        val inStep = assertThrows<DrivineException> { OracleCypherCompiler("g").compile(folded) }.message!!
+        assertTrue(inStep.startsWith("Two lists compared with <, <=, > or >= do not run on Oracle in the step of a reduce()"), inStep)
+        PostgresCypherCompiler("g").compile(folded)
+        SqliteCypherCompiler("g").compile(folded)
     }
 
     @Test

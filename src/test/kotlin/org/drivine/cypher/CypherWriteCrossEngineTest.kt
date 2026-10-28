@@ -263,6 +263,24 @@ abstract class CypherWriteContract {
             ),
         )
     }
+
+    @Test
+    fun `two lists are ordered item by item in a statement that writes, but on Oracle, which refuses it`() {
+        // #349: Postgres walks the two in the procedure's query, and SQLite by its function; Oracle's block calls no function the query declares.
+        val cypher = "CREATE (n:CyWrite {a: [1] < [2], b: [1, 'a'] < [1, 2], c: ['b'] >= ['a', 'z']}) RETURN [n.a, n.b, n.c]"
+        if (pm.type == DatabaseType.ORACLE) {
+            val refused = assertFailsWith<Exception> { query(cypher) }.message.orEmpty()
+            assertTrue(refused.contains("Two lists compared with <, <=, > or >= do not run on Oracle in a statement that writes"), refused)
+            return
+        }
+        assertEquals(listOf(listOf(true, null, true)), query(cypher))
+        query("UNWIND [[2], [1, 3], [1]] AS l CREATE (:CyWrite {l: l})")
+        query("MATCH (m:CyWrite) WHERE m.l < [2] SET m.small = true")
+        assertEquals(
+            listOf(listOf(listOf(1L), true), listOf(listOf(1L, 3L), true), listOf(listOf(2L), null)),
+            query("MATCH (m:CyWrite) WHERE m.l IS NOT NULL RETURN [m.l, m.small] ORDER BY m.l[0], size(m.l)"),
+        )
+    }
 }
 
 class CypherWriteNeo4jTest : CypherWriteContract() {

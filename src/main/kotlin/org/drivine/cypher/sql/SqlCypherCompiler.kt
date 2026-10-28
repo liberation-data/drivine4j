@@ -2866,17 +2866,21 @@ abstract class SqlCypherCompiler(graph: String) {
          * [a] and [b], the JSON of the lists [left] and [right], as [listOrder] compares them, where the statement makes the items of
          * both, or the items of their items, temporal: a zoned value as the moment it is, whatever its offset, as `ORDER BY` sorts it
          * (see [momentsKey]); a duration as a map of it alone, equal where it is equal and else not ordered, as in Cypher; and a value
-         * of one kind beside one of another as a map of its kind, so the two are not ordered. A local value is its ISO text, which
-         * orders as it does. Each as it is otherwise: a list of temporal values beside one of another kind, a list whose temporal values
-         * are deeper, or one whose items the statement does not know, compares its ISO texts. Their items are read by their places
-         * ([temporalElements]), as Oracle must read a list of temporal values.
+         * of one kind beside one of another as a map of its kind, so the two are not ordered, as is one beside a text, where the
+         * statement makes the other list's items texts. A local value is its ISO text, which orders as it does. Each as it is otherwise:
+         * a list of temporal values beside one of values of several kinds, a list whose temporal values are deeper, or one whose items
+         * the statement does not know, compares its ISO texts. Their items are read by their places ([temporalElements]), as Oracle
+         * must read a list of temporal values.
          */
         private fun comparedItems(left: Value, a: String, right: Value, b: String): Pair<String, String> {
             fun kind(list: Value) = itemsOf(list)?.let { it to 1 } ?: itemItemsOf(list)?.takeIf { holdsLists(list) }?.let { it to 2 }
+            fun wrapped(of: Temporal): (String) -> String = { item -> comparable(Value.Json(jsonObject(listOf(of.name.lowercase() to item)), ordered = true)) }
             val (l, r) = kind(left) to kind(right)
+            // A temporal value beside a text: its ISO text would order where Cypher does not.
+            if (l?.second == 1 && r == null && holdsTexts(right)) return mappedItems(a, 1, wrapped(l.first)) to b
+            if (r?.second == 1 && l == null && holdsTexts(left)) return a to mappedItems(b, 1, wrapped(r.first))
             if (l == null || r == null || l.second != r.second) return a to b
             val (kind, depth) = l
-            fun wrapped(of: Temporal): (String) -> String = { item -> comparable(Value.Json(jsonObject(listOf(of.name.lowercase() to item)), ordered = true)) }
             val moment: (String) -> String = { item -> scalar(temporalSql.sortable(temporals.moment(text(item), kind))) }
             val (eachOfA, eachOfB) = when {
                 kind != r.first -> wrapped(kind) to wrapped(r.first)
