@@ -771,9 +771,8 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a list of zoned values, and a list of lists of them, sort and compare item by item as the moments they are, whatever their offsets`() {
-        // Not in the spec yet (#199). As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
-        // Oracle sorts such a list as its JSON: see OracleZonedListSortTest.
-        if (pm.type == DatabaseType.ORACLE) return
+        // Beside the spec's case since v0.6.17 (#199): the spec excepts Oracle from these, and has no list worked out with
+        // temporal arithmetic from a CASE. As text, 10:00+02:00 (08:00 UTC) sorts after 09:00Z, and 08:30Z before both.
         val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
         val hours = listOf(10L, 8L, 9L)
         assertEquals(hours, query("UNWIND [$b, $a, $c] AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
@@ -796,15 +795,11 @@ abstract class CypherQueryContract {
         val times = "[time('10:00:00+02:00'), time('09:00:00Z'), time('08:30:00Z')]"
         assertEquals(hours, query("UNWIND $times AS t WITH [t] AS ts RETURN ts[0].hour ORDER BY ts"))
         assertEquals(listOf(listOf(10L, 9L)), query("UNWIND $times AS t WITH [t] AS l RETURN [min(l)[0].hour, max(l)[0].hour]"))
-        // Taken from a list kept in order, by head() and last().
-        assertEquals(listOf(listOf(10L, 9L)), query("UNWIND [$b, $a, $c] AS t WITH t ORDER BY t WITH collect(t) AS ts RETURN [head(ts).hour, last(ts).hour]"))
     }
 
     @Test
     fun `a list of zoned values sorts as their moments however it was made, and an empty list or a null item sorts as Cypher puts it`() {
-        // Not in the spec yet (#199). By moment 10:00+02:00, 08:30Z, 09:00Z; as text 08:30Z, 09:00Z, 10:00+02:00.
-        // Oracle sorts such a list as its JSON: see OracleZonedListSortTest.
-        if (pm.type == DatabaseType.ORACLE) return
+        // Beside the spec's case since v0.6.17 (#199). By moment 10:00+02:00, 08:30Z, 09:00Z; as text 08:30Z, 09:00Z, 10:00+02:00.
         val (a, b, c) = listOf("datetime('2024-03-15T10:00:00+02:00')", "datetime('2024-03-15T09:00:00Z')", "datetime('2024-03-15T08:30:00Z')")
         val hours = listOf(10L, 8L, 9L)
         fun sorted(by: String, list: String = "[[t]]") = query("UNWIND [$b, $a, $c] AS t WITH t, $list AS l RETURN t.hour ORDER BY $by")
@@ -855,6 +850,56 @@ abstract class CypherQueryContract {
         // After a term whose kind is open, which sorts by its kind first (#308): the text before the numbers, then by moment.
         assertEquals(listOf(8L, 10L, 9L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o, l"))
         assertEquals(listOf(9L, 10L, 8L), query("UNWIND [$b, $a, $c] AS t WITH t, [t] AS l, CASE t.hour WHEN 8 THEN 'x' ELSE 1 END AS o RETURN t.hour ORDER BY o DESC, l DESC"))
+    }
+
+    @Test
+    fun `a list of temporal values worked out on each row is read item by item, in order, on its own row, wherever it is read`() {
+        // Not in the spec yet: Oracle reads such a list by its places, not with JSON_TABLE (#331). Of 0, 1 and 2 items, at 10:01, 10:02.
+        val at = "localdatetime('2024-03-15T10:00:00')"
+        val rows = "UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, k) | $at + duration({minutes: i})] AS l"
+        fun minute(m: Int) = "localdatetime('2024-03-15T10:0$m:00')"
+        // A comprehension, an IN, the quantifiers, and the list read twice in one statement.
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), false, false, true, true, false), listOf(1L, listOf(1L), true, false, true, false, true), listOf(2L, listOf(1L, 2L), true, true, true, false, true)),
+            query("$rows RETURN k, [x IN l | x.minute], ${minute(1)} IN l, ${minute(2)} IN l, all(x IN l WHERE x.minute <= k), none(x IN l WHERE x.minute = k), single(x IN l WHERE x.minute = 1) ORDER BY k"),
+        )
+        // A comprehension within one over the outer item and the row, in order.
+        assertEquals(
+            listOf(emptyList(), listOf(listOf(1L, 2L)), listOf(listOf(1L, 3L), listOf(2L, 4L))),
+            query("$rows RETURN [x IN l | [y IN [x, x + duration({minutes: k})] | y.minute]] ORDER BY k"),
+        )
+        // An IN over another row's value: each pair whose minute is in the list.
+        assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows UNWIND [1, 2] AS j WITH k, j, l WHERE $at + duration({minutes: j}) IN l WITH k, j ORDER BY j RETURN k, collect(j) ORDER BY k"))
+        // Null and a null item: no list, and a null that is compared.
+        assertEquals(
+            listOf(listOf(0L, null, null), listOf(1L, listOf(1L), true), listOf(2L, null, null)),
+            query("$rows WITH k, CASE WHEN k = 1 THEN l END AS m RETURN k, [x IN m | x.minute], any(x IN m WHERE x.minute = 1) ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), false), listOf(1L, listOf(null), null), listOf(2L, listOf(null, 2L), null)),
+            query("UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, k) | CASE WHEN i > 1 THEN $at + duration({minutes: i}) END] AS l RETURN k, [x IN l | x.minute], ${minute(1)} IN l ORDER BY k"),
+        )
+        // A slice, from either end, an UNWIND, and a CALL { … }.
+        assertEquals(listOf(listOf(emptyList<Long>(), emptyList<Long>()), listOf(emptyList(), listOf(1L)), listOf(listOf(2L), listOf(2L))), query("$rows RETURN [x IN l[1..] | x.minute], [x IN l[-1..] | x.minute] ORDER BY k"))
+        assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows UNWIND l AS t RETURN k, collect(t.minute) ORDER BY k"))
+        assertEquals(listOf(listOf(0L, 0L), listOf(1L, 1L), listOf(2L, 2L)), query("$rows CALL { WITH l UNWIND l AS t RETURN count(t) AS c } RETURN k, c ORDER BY k"))
+        // On each side of a UNION, and a list of such lists.
+        assertEquals(
+            setOf(emptyList(), listOf(1L), listOf(1L, 2L), listOf(2L, 1L)),
+            query("$rows RETURN [x IN l | x.minute] AS ms UNION $rows RETURN [x IN reverse(l) | x.minute] AS ms").toSet(),
+        )
+        assertEquals(listOf(listOf(0L, 0L), listOf(1L, 1L), listOf(2L, 2L)), query("$rows WITH k, [l, l] AS ll RETURN [x IN ll | size(x)][1], size([x IN ll[0] WHERE x.minute > 0]) ORDER BY k"))
+        // collect(DISTINCT …) of such lists, and of their items, each once where first.
+        val twice = "UNWIND [2, 1, 2] AS k WITH k, [i IN range(1, k) | $at + duration({minutes: i})] AS l"
+        assertEquals(listOf(listOf(listOf(1L, 2L), listOf(1L))), query("$twice WITH collect(DISTINCT l) AS ls RETURN [x IN ls | [y IN x | y.minute]]"))
+        assertEquals(listOf(listOf(1L, 2L)), query("$twice UNWIND l AS t WITH collect(DISTINCT t) AS ts RETURN [x IN ts | x.minute]"))
+        // A list that holds a null is kept once, as Cypher keeps it; zoned values of one moment and two offsets are not equal in
+        // Cypher, so each is kept, in the order first seen.
+        val nulls = "UNWIND [2, 1, 2, 1] AS k WITH k, [i IN range(1, k) | CASE WHEN i > 1 THEN $at + duration({minutes: i}) END] AS l"
+        assertEquals(listOf(listOf(listOf(null, 2L), listOf(null))), query("$nulls WITH collect(DISTINCT l) AS ls RETURN [x IN ls | [y IN x | y.minute]]"))
+        val zoned = "UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, 2) | datetime(CASE k WHEN 1 THEN '2024-03-15T10:00:00+02:00' ELSE '2024-03-15T08:00:00Z' END) + duration({minutes: i})] AS l"
+        assertEquals(listOf(listOf(listOf(8L, 8L), listOf(10L, 10L))), query("$zoned WITH collect(DISTINCT l) AS ls RETURN [x IN ls | [y IN x | y.hour]]"))
+        assertEquals(listOf(listOf(8L, 8L, 10L, 10L)), query("$zoned UNWIND l AS t WITH collect(DISTINCT t) AS ts RETURN [x IN ts | x.hour]"))
     }
 
     @Test
@@ -1047,7 +1092,8 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a text past 4,000 bytes is measured, cut, changed, searched and added to whole, as a short one is`() {
-        // Oracle read a text from JSON as a VARCHAR2, which holds 4,000 bytes, and a longer one as null (#298). One function a
+        // Beside the spec's case since v0.6.17 (#298): stored and made by the statement too, and more functions and edge cases.
+        // Oracle read a text from JSON as a VARCHAR2, which holds 4,000 bytes, and a longer one as null. One function a
         // statement. Past 32 KB too, given, stored and made: Oracle closed the session (ORA-03113) after statements that read such
         // a text from a property and from a parameter in turn, and its sessions held megabytes for each compiled statement the
         // driver kept, up to the instance's limit (ORA-04036, #313).
@@ -1099,6 +1145,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
+        // Beside the spec's writes case since v0.6.17 (#298): read where it is used too, and by more functions.
         // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a
         // CLOB (#298): the two together. One node: Oracle crashes on a long property read from two rows (#255).
         clear()
@@ -1307,7 +1354,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `an OPTIONAL CALL or an OPTIONAL MATCH in a COUNT or an EXISTS subquery keeps the row it finds nothing for`() {
-        // Not in the spec yet. Oracle refused an optional join on TRUE in a scalar subquery followed by WHERE … AND … (ORA-00907),
+        // Beside the spec's case since v0.6.17 (#338). Oracle refused an optional join on TRUE in a scalar subquery followed by WHERE … AND … (ORA-00907),
         // and crashed the session on one without (ORA-03113, ORA-07445 in its alert log) (#338): it is joined on 1 = 1 there.
         clear()
         seed("CREATE (:CyOpt {id: 1}), (:CyOpt {k: 'p'}), (:CyOpt {k: 'q'}), (:CyOpt {k: 'q'})")

@@ -3368,11 +3368,13 @@ declares the function itself.
   read (`d.year`, `t.hour`, `dur.days`), a duration is added to a moment or to another duration,
   `duration.between` and `truncate` work them out, and two moments compare as the moments they are. A zoned
   value the statement makes sorts as its moment (`ORDER BY datetime(n.at)`); one read as a property sorts as
-  its text, and so does a map that holds one. On Postgres and SQLite, a list of them, or a list of lists of
-  them, sorts item by item so in an `ORDER BY`, `min` and `max`. Oracle sorts such a list as it sorts JSON, a
-  zoned value by its text: Oracle 23 takes many minutes to parse the key that sorts it by moments over a list worked
-  out item by item with temporal arithmetic (`[i IN range(1, 10) | t + duration({minutes: i})]`), and
-  neither a query timeout nor a kill ends the parse ([#331](https://github.com/liberation-data/drivine4j/issues/331)). A zoned value keeps the offset it was written
+  its text, and so does a map that holds one. A list of them, or a list of lists of them, sorts item by item
+  so in an `ORDER BY`, `min` and `max`. Oracle reads the items of a list of temporal values by their places,
+  not with `JSON_TABLE`: Oracle 23 takes many seconds, or minutes, to parse a `JSON_TABLE` over a list
+  worked out item by item with temporal arithmetic (`[i IN range(1, 10) | t + duration({minutes: i})]`), and
+  neither a query timeout nor a kill ends the parse ([#331](https://github.com/liberation-data/drivine4j/issues/331)). A list
+  the statement no longer knows holds them, as a list of maps that hold them, one passed through `coalesce`, or a list
+  of lists of lists of them (`collect(DISTINCT [l, l])`), is still read with `JSON_TABLE`, and can stall so. A zoned value keeps the offset it was written
   with; a named zone, such as
   `Europe/Paris`, is not read. A graph engine's driver gives a temporal value as one of its own, and Oracle
   and Postgres give its text. A value read from a property is of the kind its text tells, so
