@@ -475,8 +475,11 @@ internal class SqlitePlanWriter(
             .setNodeFactory(JsonNodeFactory.withExactBigDecimals(true))
             .enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
 
-        /** Text in the order of its code points, which is the byte order Postgres's `COLLATE "C"` sorts labels in. */
-        private val CODE_POINTS = Comparator<String> { a, b ->
+        /**
+         * Text in the order of its code points, which is the byte order Postgres's `COLLATE "C"` sorts labels in, and the order
+         * Cypher compares texts in (see [SqliteCypherValues.order]).
+         */
+        internal val CODE_POINTS = Comparator<String> { a, b ->
             val x = a.codePoints().toArray()
             val y = b.codePoints().toArray()
             (0 until minOf(x.size, y.size)).firstOrNull { x[it] != y[it] }?.let { x[it].compareTo(y[it]) } ?: x.size.compareTo(y.size)

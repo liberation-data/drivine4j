@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
 import com.fasterxml.jackson.databind.node.NullNode
 import java.math.BigDecimal
+import kotlin.math.sign
 
 /**
  * Cypher's values as a compiled statement holds them on SQLite, the JSON text of each, and what Cypher does
@@ -90,4 +91,30 @@ internal object SqliteCypherValues {
     val NULL: JsonNode = NullNode.instance
 
     private fun number(node: JsonNode): BigDecimal = if (node.isIntegralNumber) node.bigIntegerValue().toBigDecimal() else BigDecimal(node.doubleValue())
+
+    /**
+     * Where [a] comes beside [b] as Cypher orders two values in a comparison (`<`, `>=` …): -1 before, 0 equal, 1 after. A list
+     * beside a list item by item, the first pair that is not equal deciding, and a list that the other starts with first; a number
+     * beside a number, a text beside a text by its code points, and a truth value beside a truth value. Null where they are not
+     * ordered: a null, values of two kinds, or two maps that differ, which Cypher orders and the compiler does not yet.
+     */
+    fun order(a: JsonNode, b: JsonNode): Int? = when {
+        a.isNull || b.isNull -> null
+        a.isArray && b.isArray -> listOrder(a, b)
+        a.isObject && b.isObject -> 0.takeIf { compare(a, b) == true }
+        a.isNumber && b.isNumber -> number(a).compareTo(number(b)).sign
+        // By code points, as Cypher orders texts: Java's `compareTo` orders UTF-16's units.
+        a.isTextual && b.isTextual -> SqlitePlanWriter.CODE_POINTS.compare(a.textValue(), b.textValue()).sign
+        a.isBoolean && b.isBoolean -> a.booleanValue().compareTo(b.booleanValue()).sign
+        else -> null
+    }
+
+    /** [order] of the lists [a] and [b]: by their first pair that is not equal, which is null where it is not ordered; else by their sizes. */
+    private fun listOrder(a: JsonNode, b: JsonNode): Int? {
+        for (i in 0 until minOf(a.size(), b.size())) {
+            val pair = order(a[i], b[i])
+            if (pair != 0) return pair
+        }
+        return a.size().compareTo(b.size()).sign
+    }
 }

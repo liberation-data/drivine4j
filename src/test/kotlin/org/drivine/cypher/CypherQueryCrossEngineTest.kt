@@ -1559,6 +1559,108 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `two lists are ordered item by item, and a pair that is not ordered makes the comparison null`() {
+        // #349: the SQL stores gave null for <, <=, > and >= of two lists. The first pair that is not equal decides, a list that starts
+        // the other comes first, and a pair with a null or of two kinds is not ordered, as on Neo4j.
+        fun row(cypher: String) = query(cypher).single()
+        assertEquals(
+            listOf(false, true, true, true, false, true, true, true),
+            row("WITH [1, 2] AS l RETURN [l < l, l <= l, l < [1, 3], l > [1], [] < [], [] <= [], [] < [null], [] < [1]]"),
+        )
+        // A null, or values of two kinds, before the pair that decides.
+        assertEquals(
+            listOf(true, null, null, null, null, true, true, false, null),
+            row("RETURN [[1, null] < [2, 3], [null, 1] < [2, 3], [1, null] <= [1, null], [null] <= [null], [1, 'a'] < [1, 2], [1, 'a'] < [2], [1] < [1, 'a'], [1, null] < [1], [true] < [1]]"),
+        )
+        // Nested lists, item by item at any depth.
+        assertEquals(
+            listOf(true, null, true, true, null, true, true, true, true),
+            row(
+                "RETURN [[[1, 2]] < [[1, 3]], [[1]] < [1], [[1], 2] < [[1], 3], [[1, null]] < [[2]], [[null, 1]] < [[null, 2]], [[1]] < [[1, 0]], " +
+                    "[[]] < [[], 1], [[1, 2], [3]] < [[1, 2], [3, null]], [[1, 2], 'x'] < [[1, 3], 1]]"
+            ),
+        )
+        // Numbers of either kind as numbers, texts by their code points, false before true; two maps that are equal are equal.
+        assertEquals(
+            listOf(true, true, false, true, true, true, true, true),
+            row("RETURN [[1] < [1.5], [2.0] <= [2], ['a'] < ['B'], [false] < [true], ['😀'] > ['～'], [{a: 1}] <= [{a: 1}], [1, 3] > [1, 2, 5], [1, 2] >= [1, 2]]"),
+        )
+        // A list beside null or a value of another kind.
+        assertEquals(listOf(null, null, null, null), row("WITH [1, 2] AS l RETURN [l < null, null < l, l < 1, l >= 'a']"))
+        // Temporal values: a zoned one as the moment it is, two of different kinds not ordered, and durations equal or not ordered.
+        assertEquals(
+            listOf(true, null, null, true, true, true, true, true),
+            row(
+                "RETURN [[date('2024-01-01')] < [date('2024-01-02')], [date('2024-01-01')] < [localdatetime('2024-01-02T00:00')], " +
+                    "[duration('P1D')] < [duration('P2D')], [duration('P1D')] <= [duration('P1D')], " +
+                    "[datetime('2024-01-01T10:00+02:00')] < [datetime('2024-01-01T09:00Z')], [] < [duration('P1D')], " +
+                    "[time('10:00+01:00')] < [time('09:30Z')], [localtime('10:00')] < [localtime('10:00:00.5')]]"
+            ),
+        )
+        assertEquals(
+            listOf(true, true, null),
+            row(
+                "RETURN [[[datetime('2024-01-01T10:00+02:00')]] < [[datetime('2024-01-01T09:00Z')]], [[date('2024-01-01')]] < [[date('2024-01-01')], []], " +
+                    "[[date('2024-01-01')]] < [[localdatetime('2024-01-02T00:00')]]]"
+            ),
+        )
+        // A temporal value beside a text is not ordered, though its ISO text would be; a null beside a temporal value is not either.
+        assertEquals(
+            listOf(null, null, null, null, true, false, true),
+            row(
+                "RETURN [[date('2024-01-01')] < ['2024-01-02'], [duration('P1D')] < ['P2D'], ['2024-01-02'] > [date('2024-01-01')], " +
+                    "[date('2024-01-01'), null] < [date('2024-01-01'), date('2024-01-02')], [date('2024-01-01'), null] < [date('2024-01-02'), null], " +
+                    "[localdatetime('2024-01-01T10:00'), null] <= [localdatetime('2024-01-01T10:00')], " +
+                    "[datetime('2024-01-01T10:00+02:00'), null] < [datetime('2024-01-01T09:00Z'), null]]"
+            ),
+        )
+        // Three levels deep, a truth value after another, a whole number beside a float, and whole numbers past 2^53.
+        assertEquals(
+            listOf(true, null, null, false, true, true),
+            row(
+                "RETURN [[[[1]]] < [[[2]]], [[[1, null]]] < [[[1, 2]]], [null] < [1], [1] < [1.0], [9007199254740993] > [9007199254740992], " +
+                    "[true, false] < [true, true]]"
+            ),
+        )
+        // The issue's statements: a list of local moments, written and made item by item in a comprehension.
+        assertEquals(
+            listOf(false, true, true),
+            row("WITH [localdatetime('2024-03-15T10:00:00')] AS l RETURN [l < l, l <= l, l < [localdatetime('2024-03-15T10:00:00') + duration({minutes: 1})]]"),
+        )
+        assertEquals(
+            listOf(listOf(2L, false, true, true), listOf(1L, false, true, true), listOf(2L, false, true, true)),
+            query(
+                "UNWIND [2, 1, 2] AS k WITH k, [i IN range(1, k) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i})] AS l " +
+                    "RETURN [k, l < l, l <= l, l = l]"
+            ),
+        )
+        // In a WHERE, of lists unwound.
+        assertEquals(listOf(listOf(1L, 2L), listOf(1L), emptyList<Any>()), query("UNWIND [[1, 2], [1], [2], [1, null], []] AS l WITH l WHERE l < [1, 5] RETURN l"))
+    }
+
+    @Test
+    fun `two lists are ordered in an aggregate's argument, beside a walk, against a long literal, and out of an unwound map`() {
+        // #349 beside #359, which compiles an aggregate's argument once only to see, #362's literals written in parts, and #381's
+        // temporal values of an unwound map: on Oracle, the query declares its function once, and calls it.
+        clear()
+        seed("CREATE (a:L {m: 1, l: [3]})-[:NEXT]->(b:L {m: 2, l: [1]})-[:NEXT]->(:L {m: 3, l: [1, 5]})")
+        assertEquals(listOf(2L), query("MATCH (n:L) RETURN count(CASE WHEN n.l < [2] THEN 1 END)"))
+        assertEquals(
+            listOf(listOf(2L, 1L), listOf(1L, 2L)),
+            query("MATCH (a:L)-[:NEXT*1..2]->(b:L) RETURN a.m AS a, count(*) AS c ORDER BY sum(CASE WHEN b.l < [2] THEN 1 ELSE 0 END)"),
+        )
+        val long = (1..150).joinToString(", ", "[", "]")
+        assertEquals(listOf(true, false), query("UNWIND [[1, 2], [200]] AS l RETURN l < $long"))
+        val unwound = "UNWIND [0, 1] AS k WITH k, [{l: [i IN range(1, 3) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i + k})], " +
+            "z: [i IN range(1, 3) | datetime('2024-03-15T10:00:00+02:00') + duration({minutes: i + k})]}] AS ms UNWIND ms AS t WITH k, t.l AS l, t.z AS z"
+        // A zoned value read out of a map compares as its text on the SQL stores, as it sorts, so the one beside it keeps its offset.
+        assertEquals(
+            listOf(listOf(0L, true, true), listOf(1L, false, false)),
+            query("$unwound RETURN [k, l < [localdatetime('2024-03-15T10:02:00')], z < [datetime('2024-03-15T10:01:30+02:00')]] ORDER BY k"),
+        )
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
