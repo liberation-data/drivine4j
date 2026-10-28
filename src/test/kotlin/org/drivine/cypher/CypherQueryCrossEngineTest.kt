@@ -1367,6 +1367,87 @@ abstract class CypherQueryContract {
         assertEquals(listOf("b", "B", "a"), query("UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY $key DESC"))
     }
 
+    /** The Cypher of the [i]th item of a long literal, and what it gives: of seven kinds in turn, a null among them. */
+    private fun longItem(i: Int): Pair<String, Any?> = when (i % 7) {
+        0 -> "$i" to i.toLong()
+        1 -> "'s$i'" to "s$i"
+        2 -> "null" to null
+        3 -> "$i.5" to i + 0.5
+        4 -> (i % 2 == 0).let { "$it" to it }
+        5 -> "[$i, 'n']" to listOf(i.toLong(), "n")
+        else -> "{k: $i}" to mapOf("k" to i.toLong())
+    }
+
+    @Test
+    fun `a list literal of more than 100 items keeps its items, in order, returned, tested with IN, unwound and in a comprehension`() {
+        // Not in the spec yet (#332): Postgres and SQLite take at most 100 arguments to a function, which wrote the whole list.
+        for (n in listOf(100, 101, 250, 1001)) {
+            val items = (0 until n).map(::longItem)
+            val list = items.joinToString(", ", "[", "]") { it.first }
+            val expected = items.map { it.second }
+            val lastWhole = (0 until n).last { it % 7 == 0 }
+            assertEquals(listOf(expected), query("RETURN $list"), "$n items")
+            assertEquals(listOf(listOf(n.toLong(), expected.last(), expected[n - 2])), query("WITH $list AS xs RETURN size(xs), xs[-1], xs[${n - 2}]"), "$n items")
+            assertEquals(expected, query("UNWIND $list AS x RETURN x"), "$n items")
+            assertEquals(listOf(expected.filterNotNull()), query("RETURN [x IN $list WHERE x IS NOT NULL | x]"), "$n items")
+            assertEquals(listOf(n.toLong()), query("RETURN size([x IN $list | x IS NULL])"), "$n items")
+            // A null among the items makes a value not found null, not false, as in Cypher. A list of numbers and nulls is
+            // tested whole, as JSON.
+            val numbers = (0 until n).joinToString(", ", "[", "]") { if (it % 7 == 2) "null" else "$it" }
+            assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $numbers, 999999 IN $numbers"), "$n items")
+            // A list of several kinds is compared item by item, in a few hundred characters of SQL each. Oracle, whose memory
+            // the suite's other sessions share, runs out of it reading the comparisons of 1001 (#360), so isn't asked them.
+            if (n > 250 && pm.type == DatabaseType.ORACLE) continue
+            // (Not -1, which compiles to ten times the statement, #360.)
+            assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $list, 999999 IN $list"), "$n items")
+            // Compared with itself item by item, each pair equal but the nulls, which are null beside each other.
+            assertEquals(listOf(null), query("RETURN $list = $list"), "$n items")
+        }
+    }
+
+    @Test
+    fun `a long list or map literal without a null equals the same value given as a parameter or collected`() {
+        // Not in the spec yet (#332). Text holding the brackets and commas a long literal is spliced at on Postgres.
+        fun item(i: Int): Pair<String, Any?> = when (i % 4) {
+            0 -> "$i" to i.toLong()
+            1 -> "'a], [b}, {$i'" to "a], [b}, {$i"
+            2 -> "[$i, [$i]]" to listOf(i.toLong(), listOf(i.toLong()))
+            else -> "{k: [$i], m: {n: $i}}" to mapOf("k" to listOf(i.toLong()), "m" to mapOf("n" to i.toLong()))
+        }
+        for (n in listOf(101, 200, 201)) {
+            val items = (0 until n).map(::item)
+            val list = items.joinToString(", ", "[", "]") { it.first }
+            val expected = items.map { it.second }
+            assertEquals(listOf(expected), query("RETURN $list"), "$n items")
+            assertEquals(listOf(true), query("RETURN $list = \$p", mapOf("p" to expected)), "$n items")
+            assertEquals(listOf(true), query("UNWIND $list AS x WITH collect(x) AS xs RETURN xs = $list"), "$n items")
+            val entries = (0 until n).map { "k$it" to item(it) }
+            val map = entries.joinToString(", ", "{", "}") { (key, item) -> "$key: ${item.first}" }
+            val expectedMap = entries.associate { (key, item) -> key to item.second }
+            assertEquals(listOf(expectedMap), query("RETURN $map"), "$n entries")
+            assertEquals(listOf(true), query("RETURN $map = \$p", mapOf("p" to expectedMap)), "$n entries")
+        }
+    }
+
+    @Test
+    fun `a map literal of more than 50 entries keeps its entries, in order, returned, read and projected`() {
+        // Not in the spec yet (#332): two arguments each, past 50 entries a map passed the 100 Postgres and SQLite take.
+        for (n in listOf(50, 51, 120)) {
+            val entries = (0 until n).map { "k$it" to longItem(it) }
+            val map = entries.joinToString(", ", "{", "}") { (key, item) -> "$key: ${item.first}" }
+            val expected = entries.associate { (key, item) -> key to item.second }
+            val returned = query("RETURN $map").single() as Map<*, *>
+            assertEquals(expected, returned, "$n entries")
+            // Its keys in the order written, where the store keeps them so: Neo4j and Oracle do for a few keys, not for 50.
+            if (pm.type == DatabaseType.POSTGRES || pm.type == DatabaseType.SQLITE) assertEquals(expected.keys.toList(), returned.keys.toList(), "$n entries")
+            assertEquals(listOf(listOf(n.toLong(), expected["k${n - 1}"], expected["k${n - 2}"])), query("WITH $map AS m RETURN size(keys(m)), m.k${n - 1}, m['k${n - 2}']"), "$n entries")
+            assertEquals(listOf(null), query("RETURN $map = $map"), "$n entries")
+            // Set over a map by a projection, which SQLite wrote by one call too.
+            val projected = entries.joinToString(", ") { (key, item) -> "$key: ${item.first}" }
+            assertEquals(listOf(mapOf("a" to 1L) + expected), query("WITH {a: 1} AS m RETURN m {.*, $projected}"), "$n entries")
+        }
+    }
+
     @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
