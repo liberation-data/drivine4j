@@ -1,7 +1,10 @@
 package org.drivine.connection
 
 import org.drivine.DrivineException
+import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleStoredFunctions
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.backend.sqlite.SqliteGraph
 import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.cypher.sql.CompiledCypher
 import org.drivine.cypher.sql.OracleCypherCompiler
@@ -68,6 +71,9 @@ class JdbcConnection(
     /** When the open transaction began, by [System.nanoTime]. */
     private var startedAt = 0L
 
+    /** Why [graphName] cannot name the tables a Cypher statement is compiled over on this store; null where it can. */
+    private val refusedGraph: String? by lazy(LazyThreadSafetyMode.NONE) { graphRefusal(type, graphName) }
+
     override fun sessionId(): String = "jdbc-${System.identityHashCode(connection)}"
 
     override fun parameterCoercers(): List<ParameterCoercer> = listOf(JdbcParameterCoercer)
@@ -123,6 +129,9 @@ class JdbcConnection(
      */
     private fun <T : Any> cypherCompiled(spec: QuerySpecification<T>): QuerySpecification<T> {
         if (spec.statement!!.language != QueryLanguage.CYPHER) return spec
+        // A graph name that cannot name tables is refused here, when Cypher is first run, and not as the connection is had:
+        // plain SQL works whatever the name, as it did before the provider made the graph's tables (#364).
+        refusedGraph?.let { throw DrivineException(it, spec = spec) }
         val compiled = when (type) {
             DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
             DatabaseType.ORACLE -> oracleCompiled(spec.statement!!.text, spec.parameters)
@@ -248,4 +257,12 @@ class JdbcConnection(
         /** Past this a string is bound as a CLOB: the longest a PL/SQL `VARCHAR2` holds. */
         const val MAX_STRING = 32_767
     }
+}
+
+/** Why [graphName] cannot name a graph's tables on [type]; null where it can, or where the store keeps no graph in tables. */
+internal fun graphRefusal(type: DatabaseType, graphName: String): String? = when (type) {
+    DatabaseType.ORACLE -> OracleGraph.refusal(graphName)
+    DatabaseType.POSTGRES -> PostgresGraph.refusal(graphName)
+    DatabaseType.SQLITE -> SqliteGraph.refusal(graphName)
+    else -> null
 }

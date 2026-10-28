@@ -40,6 +40,71 @@ class OracleItemPropertyTest {
     }
 
     @Test
+    fun `a property a text function reads beside a long value has its texts bound beside it, by its own path`() {
+        // A value past SHARED_ABOVE's length is bound in a subquery. The property was bound beside it as JSON, and read as a
+        // CLOB from that; left where it is read, its CLOB was read beside the subquery. On two rows or more, a text past
+        // 32 KB so closed the session either way (#370).
+        val long = "toLower(trim(coalesce(\$p.q, m.name)))"
+        val shapes = listOf(
+            "n.a CONTAINS #", "# CONTAINS n.a", "n.a STARTS WITH #", "n.a ENDS WITH #", "split(n.a, #)", "replace(n.a, #, 'x')", "replace(n.a, 'x', #)",
+            "replace(n.a, n.b, #)",
+        )
+        for (shape in shapes) {
+            for (cypher in listOf("MATCH (n:Doc), (m:Doc) RETURN ${shape.replace("#", long)}", "MATCH (n:Doc), (m:Doc) WITH n, m WHERE ${shape.replace("#", long)} IS NOT NULL RETURN 1")) {
+                val sql = compiledBeside(cypher)
+                assertTrue(Regex("JSON_VALUE\\([\\w.]+props, '\\$.a'\\) END AS v\\d+").containsMatchIn(sql), "$cypher: $sql")
+                assertTrue(Regex("JSON_VALUE\\([\\w.]+props, '\\$.a' RETURNING CLOB\\) END AS v\\d+").containsMatchIn(sql), "$cypher: $sql")
+                assertTrue(!Regex("THEN JSON_VALUE\\([\\w.]+props, '\\$.a' RETURNING CLOB\\) END(?! AS v)").containsMatchIn(sql), "$cypher: $sql")
+            }
+        }
+    }
+
+    @Test
+    fun `a property a sum reads beside a long value has its kind and its CLOB bound beside it, by its own path`() {
+        // Bound beside the long value as JSON and read as a CLOB from that, a text past 32 KB closed the session (#370); left
+        // where it is read beside the subquery, a sum of short texts closed it on one row, `a.id + '->' + b.id`.
+        val long = "toLower(trim(coalesce(\$p.q, m.name)))"
+        for (shape in listOf("n.a + #", "# + n.a", "size(n.a + #)", "n.a + duration(#)", "duration(#) + n.a", "n.a - duration(#)")) {
+            val sql = compiledBeside("MATCH (n:Doc), (m:Doc) RETURN ${shape.replace("#", long)}")
+            assertTrue(sql.contains("JSON_VALUE(n1.props, '\$.a.type()') AS v"), "$shape: $sql")
+            assertTrue(sql.contains("JSON_VALUE(n1.props, '\$.a' RETURNING CLOB) AS v"), "$shape: $sql")
+            assertTrue(sql.contains("CASE WHEN JSON_VALUE(n1.props, '\$.a.length()' RETURNING NUMBER) > 32767 THEN NULL ELSE JSON_QUERY(n1.props, '\$.a' RETURNING JSON) END AS v"), "$shape: $sql")
+            // Read nowhere else: its length, its JSON, its kind and its CLOB.
+            assertEquals(4, Regex(Regex.escape("n1.props, '\$.a")).findAll(sql).count(), "$shape: $sql")
+            // Its kind and its CLOB are read from their own columns, not from its JSON, which is null past 32,767 characters.
+            val (json, kind) = Regex("END AS (v\\d+), JSON_VALUE\\(n1.props, '\\$.a.type\\(\\)'\\) AS (v\\d+)").find(sql)!!.destructured
+            val view = Regex("(sh\\d+)\\.$kind\\b").find(sql)!!.groupValues[1]
+            assertTrue(!Regex("JSON_VALUE\\($view\\.$json, '\\$(\\.type\\(\\)'\\)|' RETURNING CLOB\\))").containsMatchIn(sql), "$shape: $sql")
+        }
+        val sum = OracleCypherCompiler("g").compile("MATCH (a)-[:R]->(b) RETURN a.id + '->' + b.id").sql
+        assertTrue(sum.contains("JSON_VALUE(n2.props, '\$.id.type()') AS v"), sum)
+        assertEquals(4, Regex(Regex.escape("n2.props, '\$.id")).findAll(sum).count(), sum)
+    }
+
+    @Test
+    fun `an aggregate of a text function a property is read by beside a long value works its argument out first, its texts bound there`() {
+        // An aggregate's argument binds no value; one that would is worked out first, for each row (#333), which the texts'
+        // binding says as shared's does, so the property's texts are bound beside the long value there too. A long literal
+        // binds nothing of its own, so only the texts' binding says the argument binds a value.
+        val long = "'${"y".repeat(250)}'"
+        for (aggregate in listOf("count(CASE WHEN n.a CONTAINS $long THEN 1 END)", "collect(split(n.a, $long))")) {
+            val cypher = "MATCH (n:Doc), (m:Doc) RETURN $aggregate"
+            val sql = compiledBeside(cypher)
+            assertTrue(Regex("JSON_VALUE\\([\\w.]+props, '\\$.a' RETURNING CLOB\\) END AS v\\d+").containsMatchIn(sql), "$cypher: $sql")
+        }
+    }
+
+    /** [cypher], whose long value is bound, compiled; its property `a` is not bound as JSON, and the nodes' labels are tested. */
+    private fun compiledBeside(cypher: String): String {
+        val sql = OracleCypherCompiler("g").compile(cypher, mapOf("p" to mapOf("q" to null))).sql
+        assertTrue(Regex(" AS v1\\b").containsMatchIn(sql), "$cypher binds the long value: $sql")
+        assertTrue(!Regex("JSON_QUERY\\([\\w.]+props, '\\$.[ab]' RETURNING JSON\\) AS v").containsMatchIn(sql), "$cypher: $sql")
+        assertTrue(!Regex("JSON_VALUE\\(JSON_QUERY\\([\\w.]+props, '\\$.[ab]' RETURNING JSON\\)").containsMatchIn(sql), "$cypher: $sql")
+        assertEquals(2, Regex(Regex.escape("JSON_EXISTS(")).findAll(sql).count(), "$cypher: $sql")
+        return sql
+    }
+
+    @Test
     fun `a property whose key is quoted in its path, or is in a map, is read by its own path too`() {
         fun read(cypher: String) = OracleCypherCompiler("g").compile(cypher).sql.also { assertTrue(!it.contains("JSON_VALUE(JSON_QUERY(n1.props, '\$.\""), it) }
         val quoted = read("MATCH (n:Doc) RETURN [size(n.`it's`), toUpper(n.`a b`), size(n.`x' RETURNING JSON) y`)]")

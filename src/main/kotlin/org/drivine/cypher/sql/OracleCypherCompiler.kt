@@ -140,18 +140,85 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * where a text it is given is null, and where what it gives would not fit in a `VARCHAR2`: see [replaceText] and
      * [split]. A short text is not read as a CLOB, which is slower: `COALESCE` reads its second value only where the first
      * is null. [body] knows which it is given by [long].
+     *
+     * A property beside a long value, which is bound in a subquery, has its texts bound beside it, each read by the
+     * property's own path (see [direct]): Oracle closed the session (ORA-03113) where a text past 32 KB was read as a
+     * CLOB, and searched or compared, beside such a subquery for each of two rows or more (#370), where the property was
+     * left where it is read, and where it was bound as JSON and read as a CLOB from that.
      */
-    override fun texts(vararg jsons: String, body: (List<String>) -> String) = shared(*jsons) { xs ->
+    override fun texts(vararg jsons: String, body: (List<String>) -> String): String {
+        val properties = jsons.map(::besideLong)
+        if (!binds(*jsons) || properties.none { it }) return shared(*jsons) { xs -> textsOf(xs.map(::textsOf), body) }
+        // Within a body given CLOBs, a property's CLOB alone: its VARCHAR2 is not read.
+        val columns = jsons.withIndex().flatMap { (i, json) ->
+            when {
+                !properties[i] -> listOf(json)
+                long -> listOf(textOf(json, clob = true))
+                else -> listOf(textOf(json, clob = false), textOf(json, clob = true))
+            }
+        }
+        return sharedBound(*columns.toTypedArray()) { names ->
+            val next = names.iterator()
+            val texts = jsons.indices.map { i ->
+                when {
+                    !properties[i] -> textsOf(next.next())
+                    long -> next.next().let { whole -> Texts(whole, whole) }
+                    else -> Texts(next.next(), next.next())
+                }
+            }
+            textsOf(texts, body)
+        }
+    }
+
+    /** A text as a `VARCHAR2`, null past 4,000 bytes, and as a CLOB: see [texts]. */
+    private data class Texts(val short: String, val whole: String)
+
+    /** The JSON [json]'s texts: see [textOf]. */
+    private fun textsOf(json: String) = Texts(textOf(json, clob = false), textOf(json, clob = true))
+
+    /** [body] over [texts] as `VARCHAR2`s, and where it gives null, as CLOBs: see [texts]. */
+    private fun textsOf(texts: List<Texts>, body: (List<String>) -> String): String {
         // Within a body given CLOBs, as CLOBs alone.
-        if (long) return@shared body(xs.map { textOf(it, clob = true) })
-        val read = body(xs.map { textOf(it, clob = false) })
+        if (long) return body(texts.map { it.whole })
+        val read = body(texts.map { it.short })
         long = true
-        val whole = try { body(xs.map { textOf(it, clob = true) }) } finally { long = false }
-        "COALESCE($read, $whole)"
+        val whole = try { body(texts.map { it.whole }) } finally { long = false }
+        return "COALESCE($read, $whole)"
     }
 
     /** The JSON [json] as text, where it is a string: a CLOB where [clob], else as [text] reads it; a property by its own path (see [direct]). */
     private fun textOf(json: String, clob: Boolean) = direct(if (clob) longText(json) else text(json), json)
+
+    /** Whether [json] is a property as [propertyOf] reads it, short beside a long value: see [texts] and [sharedSum]. */
+    private fun besideLong(json: String) = json.length <= SHARED_ABOVE && propertyRead(json) != null
+
+    /**
+     * A side of a `+` that is a property, beside a long value, is bound by the property's own path, as [texts] binds its
+     * texts: its kind and its CLOB, each a column the body's reads of them are rewritten to, and the property as JSON only where it is no text past [BOUND_TEXT] characters. Bound as
+     * JSON whole and read as a CLOB from that, a text past 32 KB closed the session on two rows or more (ORA-03113, #370);
+     * left where it is read beside the subquery, as [direct] reads it, a sum of short texts closed it on one,
+     * `a.id + '->' + b.id`. A text past [BOUND_TEXT] characters is summed with a text or a number from its CLOB, and is null
+     * added to a list, which takes it as JSON: read as JSON beside the subquery, it closed the session.
+     */
+    override fun sharedSum(a: String, b: String, body: (List<String>) -> String): String {
+        val sides = listOf(a, b)
+        val properties = sides.map(::besideLong)
+        if (!binds(a, b) || properties.none { it }) return shared(a, b, body = body)
+        val columns = sides.withIndex().flatMap { (i, json) ->
+            if (!properties[i]) return@flatMap listOf(json)
+            val (props, path) = propertyRead(json)!!
+            fun at(method: String) = "${path.dropLast(1)}$method'"
+            listOf("CASE WHEN JSON_VALUE($props, ${at(".length()")} RETURNING NUMBER) > $BOUND_TEXT THEN NULL ELSE $json END", "JSON_VALUE($props, ${at(".type()")})", "JSON_VALUE($props, $path RETURNING CLOB)")
+        }
+        return sharedBound(*columns.toTypedArray()) { names ->
+            val next = names.iterator()
+            val bound = properties.map { property -> if (property) listOf(next.next(), next.next(), next.next()) else listOf(next.next()) }
+            // A property's kind and CLOB are read from their own columns: its JSON is null past BOUND_TEXT characters.
+            bound.filter { it.size == 3 }.fold(body(bound.map { it.first() })) { sql, (json, kindColumn, clob) ->
+                sql.replace(kind(json), kindColumn).replace("JSON_VALUE($json, '\$' RETURNING CLOB)", clob)
+            }
+        }
+    }
 
     /** The properties and the path of [json] where it is a property as [propertyOf] reads it, `JSON_QUERY(props, '$.a' RETURNING JSON)`. */
     private fun propertyRead(json: String): Pair<String, String>? =
@@ -924,6 +991,13 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
         const val SHORT_TEXT = 4000
+
+        /**
+         * The most characters of a text [sharedSum] binds as JSON: one of 40,001, bound as JSON beside a long value, closed the
+         * session (#370), where one of 12,000 three-byte characters, 36 KB, did not, so a text is counted in characters, as
+         * `.length()` counts them. One as long or shorter is bound as it was.
+         */
+        const val BOUND_TEXT = 32_767
 
         /**
          * How many UTF-16 units of a CLOB [reversedPieces] reverses as one `VARCHAR2`: with one more, where a pair is not cut,

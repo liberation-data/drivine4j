@@ -410,4 +410,39 @@ class CompiledSizeTest {
             assertTrue(Regex("\\bcy_list_order\\(").findAll(sql).count() > 1, "$statement: $sql")
         }
     }
+
+    @Test
+    fun `a term sorted by beside a variable-length walk, which is none of the items, compiles to about the statement a WITH working it out first does`() {
+        // #378: beside a walk, such a term was compiled with nothing bound, and wrote the duration's fields and the addition's
+        // operands out again at each level: 2.4 MB on Postgres, 5.6 MB on Oracle and 2.7 MB on SQLite. Worked out first, for
+        // each row, it binds them as any item does.
+        val walk = "MATCH (a:E)-[:NEXT*1..2]->(b:E)"
+        val minute = "(datetime(b.at) + duration({minutes: b.m})).minute"
+        // Each sorting statement, and the same with a WITH working the term out first.
+        val statements = listOf(
+            "$walk RETURN a.id AS a, b.id AS bb ORDER BY $minute, a, bb" to "$walk WITH a, b, $minute AS t RETURN a.id AS a, b.id AS bb ORDER BY t, a, bb",
+            // Reading an item by its name, and one named as a variable is.
+            "$walk RETURN a.id AS a, b.id AS bb ORDER BY (datetime(b.at) + duration({minutes: b.m + a})).minute DESC" to
+                "$walk WITH a, b, (datetime(b.at) + duration({minutes: b.m + a.id})).minute AS t RETURN a.id AS a, b.id AS bb ORDER BY t DESC",
+            "$walk RETURN a.id AS a, b.m AS b ORDER BY (datetime(a.at) + duration({minutes: b})).minute" to
+                "$walk WITH a, b, (datetime(a.at) + duration({minutes: b.m})).minute AS t RETURN a.id AS a, b.m AS b ORDER BY t",
+            // Reading an item by its name in a comprehension's projection: 273 MB on Oracle before.
+            "$walk RETURN a.id AS a, b.id AS bb ORDER BY [x IN [b.m] | (datetime(b.at) + duration({minutes: x + a})).minute][0]" to
+                "$walk WITH a, b, [x IN [b.m] | (datetime(b.at) + duration({minutes: x + a.id})).minute][0] AS t RETURN a.id AS a, b.id AS bb ORDER BY t",
+            "$walk WITH a, b ORDER BY $minute SKIP 1 LIMIT 3 RETURN a.id AS a" to "$walk WITH a, b, $minute AS t WITH a, b ORDER BY t SKIP 1 LIMIT 3 RETURN a.id AS a",
+            // Reading an item made anew, randomUUID(), by its name: SQLITE_TOOBIG before, where it was left to `project`.
+            "$walk RETURN randomUUID() AS u ORDER BY u + coalesce(toString($minute), '')" to
+                "$walk WITH b, randomUUID() AS u WITH u, u + coalesce(toString($minute), '') AS t RETURN u ORDER BY t",
+        )
+        // After DISTINCT, the term is worked out over the items' columns, after the walk, where it binds its values already.
+        val distinct = "$walk RETURN DISTINCT b.m AS m, b.at AS at ORDER BY (datetime(at) + duration({minutes: m})).minute"
+        compilers.forEach { compiler ->
+            statements.forEach { (sorting, first) ->
+                val (size, reference) = listOf(sorting, first).map { compiler.compile(it, emptyMap()).sql.length }
+                assertTrue(size < 60_000 && size < reference * 1.2, "${compiler::class.simpleName}: $sorting: $size characters, $reference with a WITH first")
+            }
+            val size = compiler.compile(distinct, emptyMap()).sql.length
+            assertTrue(size < 60_000, "${compiler::class.simpleName}: $distinct: $size characters")
+        }
+    }
 }

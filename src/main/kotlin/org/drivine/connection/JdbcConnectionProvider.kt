@@ -32,8 +32,8 @@ import javax.sql.DataSource
  * there. It runs the statements an object manager's backend runs (`OracleGraph.ensured` and the
  * others), each of which looks for the store before it makes anything, so a user who may read the
  * tables but not make them works with a store that is there. It does so once for the provider, that
- * is for its graph over its data source, on a connection of its own in auto-commit mode, and never on
- * a caller's transaction. Threads that ask for their first connections at once wait for the one that
+ * is for its graph over its data source, on a connection of its own set to auto-commit mode for it,
+ * whatever the data source's connections start in, and never on a caller's transaction. Threads that ask for their first connections at once wait for the one that
  * makes the tables; two processes are kept apart by the statements themselves, as two object
  * managers are: a lock of the graph's own on Postgres, `ORA-00955` taken as made and `ORA-00054`
  * waited out on Oracle, and SQLite's lock on the file.
@@ -41,7 +41,8 @@ import javax.sql.DataSource
  * Where making them fails once a connection is had, it is logged as a warning and not tried again by
  * this provider: the connection is handed out, and a statement over tables that are not there says
  * so. A store reached as a user that cannot make tables, where the check finds nothing to go on, works
- * as before.
+ * as before. So does a graph name that cannot name tables: plain SQL works whatever the name, and
+ * Cypher over the graph is refused with why.
  *
  * Java sees a constructor for each arity, so a caller compiled against fewer parameters still builds after one is added
  * last.
@@ -83,6 +84,10 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             else -> UnsupportedSchemaGrammar(type.value)
         }
     }
+
+    /** A graph name that cannot name tables holds no schema: plain SQL over this provider works whatever the name (#364). */
+    override val schemaRefusal: String?
+        get() = graphRefusal(type, graphName)
 
     /** Whether the graph's tables have been made, or found, by this provider: see [ensureGraph]. */
     @Volatile
@@ -138,30 +143,66 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     /**
      * Makes the graph's tables when they are not there, once for this provider: after the first time,
      * a connection costs a read of a flag. A failure to get or to close the connection they are made
-     * on is thrown, and the next connection tries again; a failure of the statements is logged, and
-     * not tried again.
+     * on, or to set it to commit each statement, is thrown, and the next connection tries again; a
+     * failure of the statements is logged, and not tried again.
+     *
+     * A graph name that cannot name tables makes none, and is logged: every connection is handed out,
+     * as before the provider made tables, and a Cypher statement over the graph is refused, naming the
+     * graph and why (#364).
      */
     private fun ensureGraph() {
         if (graphEnsured) return
         synchronized(ensuringGraph) {
             if (graphEnsured) return
-            graph?.let { graph ->
-                val connection = open()
-                val failure = try {
-                    graph.ensure(connection)
-                    null
-                } catch (e: Exception) {
-                    e
-                }
-                connection.release(failure)
-                failure?.let {
-                    logger.warn(
-                        "Could not make the tables of graph '{}' on {} database '{}'; statements over them will fail if they are not there.",
-                        graphName, type, name, it,
-                    )
-                }
+            val refusal = graphRefusal(type, graphName)
+            if (refusal != null) {
+                logger.warn("No tables made for graph '{}' on {} database '{}': {} Plain SQL works; Cypher, object managers and schema over the graph do not. Give the provider a graph name that can name tables.", graphName, type, name, refusal)
+            } else {
+                graph?.let(::makeTables)
             }
             graphEnsured = true
+        }
+    }
+
+    /**
+     * Runs [graph]'s statements on a connection of its own that commits each statement, whatever the data source's
+     * connections do of themselves: on one that commits nothing (`autoCommit = false`, as an application's pool may be
+     * set), what they make would be rolled back as the connection goes back to its pool (#365). The connection is put
+     * back as it was before it is closed.
+     */
+    private fun makeTables(graph: SqlGraph) {
+        val session = withoutAdaptivePlans(dataSource.connection)
+        val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName)
+        val failure = try {
+            val committing = session.autoCommit
+            // Turning auto-commit on commits what the session has pending. A connection just had from the pool has
+            // nothing pending: only the provider's own `ALTER SESSION`, which commits nothing.
+            if (!committing) session.autoCommit = true
+            val refused = try {
+                graph.ensure(connection)
+                null
+            } catch (e: Exception) {
+                e
+            }
+            if (!committing) {
+                try {
+                    session.autoCommit = false
+                } catch (e: Exception) {
+                    refused?.let(e::addSuppressed)
+                    throw e
+                }
+            }
+            refused
+        } catch (e: Exception) {
+            runCatching { connection.release(e) }.exceptionOrNull()?.let(e::addSuppressed)
+            throw e
+        }
+        connection.release(failure)
+        failure?.let {
+            logger.warn(
+                "Could not make the tables of graph '{}' on {} database '{}'; statements over them will fail if they are not there.",
+                graphName, type, name, it,
+            )
         }
     }
 

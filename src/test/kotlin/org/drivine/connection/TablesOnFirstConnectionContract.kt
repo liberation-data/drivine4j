@@ -1,5 +1,6 @@
 package org.drivine.connection
 
+import org.drivine.DrivineException
 import org.drivine.manager.NonTransactionalPersistenceManager
 import org.drivine.manager.PersistenceManager
 import org.drivine.manager.StatelessGraphObjectManager
@@ -12,7 +13,9 @@ import org.junit.jupiter.api.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 /**
  * The graph's tables, made by a [JdbcConnectionProvider] before its first connection: Cypher through a
@@ -29,6 +32,13 @@ abstract class TablesOnFirstConnectionContract {
      * a table: the tables are there, made by [provider]'s user, and its pool is ended.
      */
     protected abstract fun readOnly(graph: String = JdbcConnectionProvider.DEFAULT_GRAPH): JdbcConnectionProvider
+
+    /**
+     * A provider to the same store, for [graph], over a HikariCP pool the application made whose connections commit
+     * nothing of themselves (`autoCommit = false`, as `spring.datasource.hikari.auto-commit=false` sets): what a
+     * connection leaves uncommitted, the pool rolls back as it takes it back. The provider ends the pool.
+     */
+    protected abstract fun notCommitting(graph: String = JdbcConnectionProvider.DEFAULT_GRAPH): JdbcConnectionProvider
 
     /** The tables in the store whose names start with [graph]'s, in lower case, in order. */
     protected abstract fun tables(graph: String): List<String>
@@ -125,6 +135,38 @@ abstract class TablesOnFirstConnectionContract {
         writeAtOnce(managers, objectManagers = setOf(0, 2, 4))
         assertEquals(6, names(managers.first()).size)
         assertEquals(tablesOf("drivine"), tables("drivine"))
+    }
+
+    /** Before 0.4.0 the provider made no tables, and plain SQL worked whatever the graph's name (#364). */
+    @Test
+    fun `a graph name that cannot name tables leaves plain SQL working, and Cypher is refused, naming the graph and why`() {
+        val pm = manager(open("my-graph"))
+
+        assertEquals(1, pm.query(QuerySpecification.withStatement("SELECT 1 AS one")).size)
+        val refused = assertFailsWith<DrivineException> { names(pm) }
+        assertContains(refused.message.orEmpty(), "'my-graph' cannot name a graph on")
+        assertContains(refused.message.orEmpty(), "it names tables")
+        assertEquals(1, pm.query(QuerySpecification.withStatement("SELECT 1 AS one")).size)
+    }
+
+    /** The tables are made committing each statement, whatever the pool's connections do of themselves (#365). */
+    @Test
+    fun `on a pool whose connections commit nothing of themselves, the tables are made and stay made`() {
+        val provider = notCommitting().also { made += it }
+        val pm = manager(provider)
+
+        // The first Cypher, on the provider's first connections.
+        assertEquals(emptyList(), names(pm))
+        assertEquals(tablesOf("drivine"), tables("drivine"))
+
+        // A connection after them writes in a transaction, and another reads what it wrote.
+        provider.connect().apply {
+            startTransaction()
+            query(cypher("CREATE (:Person {name: 'Ada'})"))
+            commitTransaction()
+            release()
+        }
+        assertEquals(listOf("Ada"), names(pm))
     }
 
     @Test

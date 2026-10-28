@@ -225,6 +225,19 @@ class JdbcConnectionTest {
     }
 
     @Test
+    fun `a Cypher statement over a graph whose name cannot name tables is refused, naming the graph and why, and plain SQL runs`() {
+        listOf(DatabaseType.ORACLE to "Oracle", DatabaseType.POSTGRES to "Postgres", DatabaseType.SQLITE to "SQLite").forEach { (type, engine) ->
+            val connection = JdbcConnection(jdbc, JdbcResultMapper(), type, "my-graph")
+
+            val refused = assertFailsWith<DrivineException> { connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
+            assertTrue(refused.message.orEmpty().startsWith("'my-graph' cannot name a graph on $engine: it names tables"), refused.message)
+            connection.query(QuerySpecification.withStatement("SELECT 1 AS one"))
+        }
+        // Only the plain SQL reached the database.
+        verify(jdbc, Mockito.times(3)).prepareStatement(anyString())
+    }
+
+    @Test
     fun `a transaction is opened once, and committed or rolled back only when open`() {
         assertFailsWith<DrivineException> { connection.commitTransaction() }
         assertFailsWith<DrivineException> { connection.rollbackTransaction() }
