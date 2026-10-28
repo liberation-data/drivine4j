@@ -517,18 +517,13 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
             callsStoredNullsEqual = true
             "($storedNullsEqual($x, $y) = 1)"
         } else {
-            if (!nullsCompared) {
-                nullsCompared = true
-                declare(nullsEqualFunction(NULLS_EQUAL))
-            }
+            // Declared once, however often it is called; and again where a compile only to see gave its declaration back.
+            declare(nullsEqualFunction(NULLS_EQUAL))
             "($NULLS_EQUAL($x, $y) = 1)"
         }
         fun text(json: String) = "JSON_SERIALIZE($json RETURNING VARCHAR2(4000) NULL ON ERROR)"
         return "CASE WHEN ${text(x)} = ${text(y)} THEN NULL ELSE $walked END"
     }
-
-    /** Whether the query declares [NULLS_EQUAL]: see [nullsEqual]. */
-    private var nullsCompared = false
 
     /**
      * By [LIST_ORDER], a function the query declares, which walks the two with `JSON_ELEMENT_T`, as [nullsEqual]'s does: Oracle's
@@ -538,15 +533,10 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     override fun listOrder(x: String, y: String): String {
         if (procedural) throw DrivineException("Two lists compared with <, <=, > or >= do not run on Oracle in a statement that writes: its block calls no function of its own from SQL.")
         if (folding) throw DrivineException("Two lists compared with <, <=, > or >= do not run on Oracle in the step of a reduce(): its function calls no function of the query's from SQL.")
-        if (!listsOrdered) {
-            listsOrdered = true
-            declare(listOrderFunction(LIST_ORDER))
-        }
+        // Declared once, however often it is called; and again where a compile only to see gave its declaration back.
+        declare(listOrderFunction(LIST_ORDER))
         return "$LIST_ORDER($x, $y)"
     }
-
-    /** Whether the query declares [LIST_ORDER]: see [listOrder]. */
-    private var listsOrdered = false
 
     override fun modulo(a: String, b: String) = "MOD($a, $b)"
 
