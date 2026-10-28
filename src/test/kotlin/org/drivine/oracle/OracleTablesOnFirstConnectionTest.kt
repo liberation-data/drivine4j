@@ -31,10 +31,11 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
             c.createStatement().use { s -> statements.forEach(s::execute) }
         }
 
+    /** Drops a user an earlier run left and makes this test's, on one connection: see [provider] for why sessions are few. */
     @BeforeEach
     fun makeUser() {
-        dropUser()
         administer(
+            "DROP USER IF EXISTS $user CASCADE",
             "CREATE USER $user IDENTIFIED BY $PASSWORD QUOTA UNLIMITED ON users",
             "GRANT DB_DEVELOPER_ROLE TO $user",
         )
@@ -48,9 +49,9 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
 
     /**
      * A pool of [POOL_MAX] sessions, not Hikari's ten: the tests need several pools connecting at once, not many sessions
-     * each. With ten each the class opened about 150 sessions in a few seconds (about 90 with two), and CI's listener,
+     * each. With ten each the class opened about 150 sessions in a few seconds (about 80 with two), and CI's listener,
      * which counts the sessions it hands out until the instance next reports its load, then turned connections away
-     * (`ORA-12516`).
+     * (`ORA-12516`, #384), as it did for `OracleFreshGraphTest` (#337).
      */
     override fun provider(graph: String): JdbcConnectionProvider =
         JdbcConnectionProvider.pooled("fresh", DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(), user, PASSWORD, poolMax = POOL_MAX, graphName = graph)
