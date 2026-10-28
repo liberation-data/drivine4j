@@ -3362,11 +3362,13 @@ declares the function itself.
   its text, and so does a map that holds one. A list of them, or a list of lists of them, sorts item by item
   so in an `ORDER BY`, `min` and `max`. Oracle reads by their places, not with `JSON_TABLE`, the items of a
   list that holds temporal values the statement makes, at any depth: a list of them, a list of lists or of
-  maps of them (`collect(DISTINCT [l, l])`), one passed through `coalesce`, or taken back out of a map. Oracle 23
+  maps of them (`collect(DISTINCT [l, l])`), one a `CASE`, `coalesce` or `reduce` may give, or one taken back out
+  of a map; and the keys of any map, which `keys` reads from a list Oracle makes of them. Oracle 23
   takes many seconds, or minutes, to parse a `JSON_TABLE` over a list worked out item by item with temporal
   arithmetic (`[i IN range(1, 10) | t + duration({minutes: i})]`), and neither a query timeout nor a kill ends
   the parse ([#331](https://github.com/liberation-data/drivine4j/issues/331), [#347](https://github.com/liberation-data/drivine4j/issues/347)).
-  Other lists keep `JSON_TABLE`, which is about ten times as fast for a short list. A zoned value keeps the offset it was written
+  Other lists keep `JSON_TABLE`, which is about ten times as fast for a short list; read by their places,
+  the keys are faster than `JSON_TABLE` gave them. A zoned value keeps the offset it was written
   with; a named zone, such as
   `Europe/Paris`, is not read. A graph engine's driver gives a temporal value as one of its own, and Oracle
   and Postgres give its text. A value read from a property is of the kind its text tells, so

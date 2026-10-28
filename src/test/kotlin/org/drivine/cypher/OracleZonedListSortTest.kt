@@ -72,14 +72,32 @@ class OracleZonedListSortTest {
             val sql = OracleCypherCompiler("g").compile(unwound).sql
             assertTrue(sql.contains(Regex("PASSING u\\d+_r\\.n - 1")), sql)
         }
-        // Not a list of lists of lists of other values, or a coalesce of them.
+        // Not a list of lists of lists of other values, a coalesce, a collect, a UNION or a map of them.
+        val numbers = "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | i + k] AS l"
         for (other in listOf(
-            "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | i + k] AS l RETURN collect(DISTINCT [l, l])",
-            "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | i + k] AS l RETURN size([x IN coalesce(l, []) WHERE x > 1])",
+            "$numbers RETURN collect(DISTINCT [l, l])",
+            "$numbers RETURN size([x IN coalesce(l, []) WHERE x > 1])",
+            "$numbers RETURN size([x IN coalesce(l, [1, 2]) WHERE x > 1])",
+            "$numbers UNWIND l AS x WITH k, collect(x) AS c RETURN size([y IN c WHERE y > 1])",
+            "$numbers WITH k, [x IN l | {a: x, b: 'z'}] AS ms RETURN size([m IN ms WHERE m.a > 1])",
+            "$numbers WITH k, {l: l, n: 1} AS m RETURN size([x IN m.l WHERE x > 1])",
+            "CALL { RETURN [1, 2] AS l UNION RETURN [3, 4] AS l } RETURN size([x IN l WHERE x > 1])",
         )) {
             val sql = OracleCypherCompiler("g").compile(other).sql
             assertFalse(sql.contains("PASSING"), sql)
         }
+    }
+
+    @Test
+    fun `on Oracle an item a quantifier takes, a coalesce, CASE or reduce that may hold a temporal value, and a map of them and its keys, are read item by item too`() {
+        for (cypher in mayHoldRepros) {
+            val sql = OracleCypherCompiler("g").compile(cypher).sql
+            assertTrue(sql.contains("PASSING"), sql)
+            assertFalse(sql.contains(Regex("JSON_TABLE\\((w|q)\\d+\\.(c|item)")), sql)
+        }
+        val keys = OracleCypherCompiler("g").compile(keyed).sql
+        assertTrue(keys.contains("PASSING dg_r.n - 1"), keys)
+        assertFalse(keys.contains("JSON_TABLE((SELECT JSON_DATAGUIDE"), keys)
     }
 }
 
@@ -92,8 +110,28 @@ private val deepRepros = listOf(
     "$repro RETURN collect(DISTINCT [x IN l | {t: x}])",
 )
 
+/**
+ * Statements whose lists may hold #331's temporal values: a list of lists of them, an item of which a quantifier or reduce takes,
+ * a list worked out item by item with a coalesce or a CASE that is a temporal value or a number, a list a reduce gives of them,
+ * and a list of them at a map's key that a temporal value's field is named for.
+ */
+private val mayHoldRepros = listOf(
+    "$repro WITH k, [l, l] AS ll RETURN [k, any(x IN ll WHERE size([y IN x WHERE y IS NOT NULL]) > 9)] ORDER BY k",
+    "$repro WITH k, [l, l] AS ll RETURN reduce(s = 0, x IN ll | s + size([y IN x WHERE y IS NOT NULL])) / 2",
+    "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | coalesce(CASE WHEN k > 5 THEN k END, localdatetime('2024-03-15T10:00:00') + duration({minutes: i}))] AS l " +
+        "RETURN size([x IN l WHERE x IS NOT NULL])",
+    "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | CASE WHEN k > 5 THEN k ELSE localdatetime('2024-03-15T10:00:00') + duration({minutes: i}) END] AS l " +
+        "RETURN size([x IN l WHERE x IS NOT NULL])",
+    "$repro WITH k, reduce(acc = [], x IN l | acc + [x]) AS m RETURN size([y IN m WHERE y IS NOT NULL])",
+    "$repro WITH k, {minute: l} AS m RETURN size([y IN m.minute WHERE y IS NOT NULL])",
+    "$repro WITH k, [{minute: l}] AS ms RETURN size([y IN ms[0].minute WHERE y IS NOT NULL])",
+)
+
 /** #331's statement: a list worked out item by item with temporal arithmetic, by a comprehension. */
 private const val repro = "UNWIND [0, 1] AS k WITH k, [i IN range(1, 10) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i})] AS l"
+
+/** #331's list in a map whose keys are taken: Oracle reads them from the map's data guide. */
+private const val keyed = "$repro WITH k, {l: l} AS m RETURN size(keys(m))"
 
 /**
  * The statements whose reads of a list stalled Oracle's parse (#331) run in moments, and lists of zoned values sort by their
@@ -143,6 +181,9 @@ class OracleZonedListSortRunTest {
         assertEquals(listOf("[1,2,10]"), rows("$repro WITH collect(DISTINCT [l, l]) AS ls RETURN [size(ls), size(ls[0]), size(ls[0][0])]"))
         assertEquals(listOf("10"), rows("$repro WITH k, [x IN l | {t: x}] AS ms WHERE k = 0 UNWIND ms AS m RETURN count(m.t)"))
         assertEquals(listOf("10"), rows("$repro WITH k, {l: l} AS m WHERE k = 0 UNWIND m.l AS t RETURN count(t)"))
+        assertEquals(listOf("[0,true]", "[1,true]"), rows(mayHoldRepros[0]))
+        for (cypher in mayHoldRepros.drop(1)) assertEquals(listOf("10", "10"), rows(cypher))
+        assertEquals(listOf("1", "1"), rows(keyed))
     }
 
     @Test

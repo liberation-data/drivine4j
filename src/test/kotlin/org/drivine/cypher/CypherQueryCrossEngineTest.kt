@@ -931,6 +931,23 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows UNWIND [x IN l | {t: x}] AS m RETURN k, collect(m.t.minute) ORDER BY k"))
         // A list taken back out of a map that holds it.
         assertEquals(listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))), query("$rows WITH k, {l: l} AS m RETURN k, [x IN m.l | x.minute] ORDER BY k"))
+        // An item a quantifier takes from a list of such lists, and a coalesce in a list worked out item by item that is a temporal value or a number.
+        assertEquals(listOf(listOf(0L, false), listOf(1L, false), listOf(2L, true)), query("$rows WITH k, [l, l] AS ll RETURN k, any(x IN ll WHERE size([y IN x WHERE y.minute = 2]) > 0) ORDER BY k"))
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))),
+            query("UNWIND [0, 1, 2] AS k WITH k, [i IN range(1, k) | coalesce(CASE WHEN k > 5 THEN k END, $at + duration({minutes: i}))] AS l RETURN k, [x IN l | x.minute] ORDER BY k"),
+        )
+        // Such a list a reduce gives, one at a map's key a temporal value's field is named for, and the keys of a map that holds one.
+        val each = listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L)))
+        assertEquals(each, query("$rows WITH k, reduce(acc = [], x IN l | acc + [x]) AS m RETURN k, [x IN m | x.minute] ORDER BY k"))
+        assertEquals(each, query("$rows WITH k, {minute: l} AS m RETURN k, [x IN m.minute | x.minute] ORDER BY k"))
+        assertEquals(listOf(listOf(0L, listOf("l")), listOf(1L, listOf("l")), listOf(2L, listOf("l"))), query("$rows WITH k, {l: l} AS m RETURN k, keys(m) ORDER BY k"))
+        // A list of a number and a temporal value sorts, and is searched with IN, as Cypher has it.
+        val mixed = "UNWIND [[2, $at + duration({minutes: 2})], [1, $at], [2, $at + duration({minutes: 1})]] AS l"
+        assertEquals(
+            listOf(listOf(1L, 0L, false, false), listOf(2L, 1L, true, true), listOf(2L, 2L, false, true)),
+            query("$mixed RETURN l[0], l[1].minute, $at + duration({minutes: 1}) IN l, 2 IN l ORDER BY l"),
+        )
     }
 
     @Test

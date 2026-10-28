@@ -2328,7 +2328,8 @@ abstract class SqlCypherCompiler(graph: String) {
                 else -> listComprehension(expression, listed, scope)
             }
             is Expression.Reduce -> {
-                val initial = comparable(json(expression(expression.initial, scope)))
+                val start = expression(expression.initial, scope)
+                val initial = comparable(json(start))
                 val listed = expression(expression.list, scope)
                 val list = comparable(json(listed))
                 val own = setOf(expression.accumulator, expression.variable)
@@ -2344,14 +2345,14 @@ abstract class SqlCypherCompiler(graph: String) {
                     reduce(
                         alias("f"), initial, list,
                         step = { accumulator, item ->
-                            val inner = scope + mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item, temporal = itemsOf(listed)))
+                            val inner = scope + mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item, temporal = itemsOf(listed), temporals = itemTemporalsOf(listed)))
                             comparable(json(expression(expression.expression, inner)))
                         },
                         context = context,
                         contextStep = { accumulator, item, map ->
                             // A value read from the map is of the kind the statement made it.
                             val inner = read.associateWith { (scope.getValue(it) as? Value.Json).let { v -> Value.Json(propertyOf(map, it), temporal = v?.temporal, items = v?.items) } } +
-                                mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item, temporal = itemsOf(listed)))
+                                mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item, temporal = itemsOf(listed), temporals = itemTemporalsOf(listed)))
                             val was = givenParameters
                             givenParameters = given.associateWith { Value.Json(propertyOf(map, "$$it"), temporal = Temporal.ofValue(parameters.value(it))) }
                             try {
@@ -2360,7 +2361,9 @@ abstract class SqlCypherCompiler(graph: String) {
                                 givenParameters = was
                             }
                         },
-                    )
+                    ),
+                    // It may hold what its start, its list or a value of the row its step reads holds (#347).
+                    temporals = hasTemporals(start) || hasTemporals(listed) || read.any { hasTemporals(scope.getValue(it)) },
                 )
             }
             is Expression.PatternComprehension -> {
@@ -2425,7 +2428,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Value.Bool(
                     // Over a list of nodes or relationships, each item is the node or the relationship, read from its table.
                     if (listed is Value.Entities) shared(listed.ids) { (ids) -> entityItems(ids, listed.relationships, name).let { (from, item) -> quantified(from, item, "$ids IS NULL") } }
-                    else shared(comparable(json(listed))) { (items) -> quantified("FROM ${elementsOf(listed, items, name)}", Value.Json(item(name), temporal = itemsOf(listed)), isJsonNull(items)) }
+                    else shared(comparable(json(listed))) { (items) -> quantified("FROM ${elementsOf(listed, items, name)}", Value.Json(item(name), temporal = itemsOf(listed), temporals = itemTemporalsOf(listed)), isJsonNull(items)) }
                 )
             }
         }
@@ -2591,7 +2594,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /**
          * A field of a temporal value, `d.year` or `dur.days`: of the kind the statement makes it, or of the kind a
-         * text's shape tells, where a map's is its entry of that name; null for a name no temporal value has.
+         * text's shape tells, where a map's is its entry of that name; null for a name no temporal value has. A map's entry
+         * may hold what the map holds, as `{minute: l}.minute` does: see [Value.Json.temporals].
          */
         private fun temporalField(subject: Value.Json, key: String): Value? {
             if (key !in temporals.fieldNames) return null
@@ -2603,7 +2607,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val kinds = Temporal.entries.filter { temporals.field("NULL", it, key) != null }
                 val read = temporals.byKind(text(x), kinds) { kind, t -> scalar(temporals.field(t, kind, key)!!.sql) }
                 "CASE WHEN ${typeOf(x)} = 'string' THEN $read ELSE ${propertyOf(x, key)} END"
-            })
+            }, temporals = subject.temporals)
         }
 
         /**
@@ -3192,7 +3196,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
             }
             return Value.Json(
-                sql, temporal = kindOf(results), items = itemKindOf(results), identity = identity, temporals = results.any { holdsTemporals(it.second) },
+                sql, temporal = kindOf(results), items = itemKindOf(results), identity = identity, temporals = results.any { hasTemporals(it.second) },
                 list = results.all { isList(it.second) }, itemLists = results.all { holdsLists(it.second) },
                 text = results.all { isText(it.second) }, texts = results.all { holdsTexts(it.second) },
             )
@@ -3223,7 +3227,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     // A list of one kind where each is, or is null or an empty list written, as `coalesce(l, [])`: so Oracle reads its items
                     // by their places, as it reads l's (#347).
                     items = listKindOf(function.arguments.zip(arguments), ::itemsOf), itemItems = listKindOf(function.arguments.zip(arguments), ::itemItemsOf),
-                    temporals = arguments.any(::holdsTemporals),
+                    temporals = arguments.any(::hasTemporals),
                     text = arguments.all(::isText), texts = arguments.all(::holdsTexts),
                 )
                 "count" -> Value.Json(scalar("count($distinct${countable(one())})"))
