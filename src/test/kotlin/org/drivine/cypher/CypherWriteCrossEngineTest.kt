@@ -94,6 +94,30 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `the tokens the stamp clauses make are random, so a stale object's stamp does not come round again`() {
+        // On Oracle a token was the first 16 hex digits of a SYS_GUID(), of which a counter's 4 changed (#401).
+        val stamp = Stamps.QUOTED
+        query("UNWIND range(1, 1000) AS i CREATE (:CyWrite {id: i})")
+        query("MATCH (n:CyWrite) SET ${Stamps.setClause("n")}")
+        query("MATCH (n:CyWrite) SET ${Stamps.linksClause("n")}")
+        val stamps = query("MATCH (n:CyWrite) RETURN n.$stamp").map { it as String }
+        val tokens = stamps.flatMap { it.split(':') }
+        assertEquals(1000, stamps.toSet().size)
+        assertEquals(2000, tokens.toSet().size)
+        // Each hex digit but the 13th, a version 4 UUID's version, takes nearly every value across the tokens.
+        (0 until Stamps.TOKEN).filter { it != 12 }.forEach { position ->
+            val digits = tokens.map { it[position] }.toSet()
+            assertTrue(digits.size >= 12, "position $position of the tokens took only $digits")
+        }
+        // Saved one after another, a node's tokens share no long prefix.
+        val saved = (1..20).map {
+            query("MATCH (n:CyWrite {id: 1}) SET ${Stamps.setClause("n")}")
+            (query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp").single() as String).substringBefore(':')
+        }
+        saved.zipWithNext().forEach { (a, b) -> assertTrue(a.commonPrefixWith(b).length <= 4, "$a then $b") }
+    }
+
+    @Test
     fun `an unwound item's text, short or past 32 KB, is written only to the nodes a labelled pattern matches`() {
         // On Oracle such a text is read in a CASE on its type (#309), and such a CASE in a read made Oracle drop a label test
         // (see OracleCypherCompiler.itemProperty): each node a label rules out, on either end of the pattern, is left alone.
