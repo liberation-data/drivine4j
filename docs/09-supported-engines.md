@@ -241,8 +241,8 @@ declares the function itself.
   [Cypher on a relational database](05-cypher-on-a-relational-database.md#cypher-on-a-relational-database)) and gives the rows a graph engine
   gives: a read is a query, and a write (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`) an anonymous
   PL/SQL block, applied whole or not at all. A `RETURN` of several items gives a list of them for
-  each row. A text read out of JSON past 4,000 bytes is read whole where it is measured, cut, changed or searched, but by
-  `reverse()`, which gives null for one; an empty text is null. `reduce` is a function the
+  each row. A text read out of JSON past 4,000 bytes is read whole where it is measured, cut, changed, searched or
+  reversed; an empty text is null. `reduce` is a function the
   query declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
   Two lists or maps that may hold a null are compared item by item, as Cypher compares them: where one holds a null, two
   written as the same JSON are null at once, and any other two are walked by the graph's function `<graph>_nulls_equal` (see above), in a statement that

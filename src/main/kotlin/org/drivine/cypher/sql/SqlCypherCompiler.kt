@@ -525,6 +525,9 @@ abstract class SqlCypherCompiler(graph: String) {
     /** The SQL text [text], its characters backwards. */
     protected abstract fun reverseText(text: String): String
 
+    /** The SQL text [text], its characters backwards, as JSON: see Oracle's, which reverses a text past 4,000 bytes otherwise. */
+    protected open fun reversedText(text: String) = scalar(reverseText(text))
+
     /** Whether the text [a] holds the text [b]. */
     protected abstract fun containsText(a: String, b: String): String
 
@@ -3297,7 +3300,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 "reverse" -> Value.Json(shared(comparable(json(one()))) { (x) ->
                     val e = alias("e")
-                    "CASE ${typeOf(x)} WHEN 'string' THEN ${scalar(reverseText(text(x)))} " +
+                    "CASE ${typeOf(x)} WHEN 'string' THEN ${texts(x) { (t) -> reversedText(t) }} " +
                         "WHEN 'array' THEN (SELECT ${comparable(Value.Json(aggregateList(item(e), "${itemNo(e)} DESC"), ordered = true))} FROM ${elementsOf(one(), x, e)}) END"
                 }, items = itemsOf(one()), itemItems = itemItemsOf(one()), list = isList(one()), itemLists = holdsLists(one()), text = isText(one()), texts = holdsTexts(one()),
                     temporals = holdsTemporals(one()))

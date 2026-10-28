@@ -111,8 +111,7 @@ place in the statement it stands at.
   16th significant digit, and still comes back as a float.
 - [SQLite](09-supported-engines.md#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
   adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
-- [Oracle](09-supported-engines.md#oracle) reads an empty text as null. A text past 4,000 bytes is measured, cut, changed and searched whole, but
-  `reverse()` gives null for one.
+- [Oracle](09-supported-engines.md#oracle) reads an empty text as null.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
 - Text is ordered by the database's collation on [Postgres](09-supported-engines.md#postgres), and by `BINARY` on [SQLite](09-supported-engines.md#sqlite).

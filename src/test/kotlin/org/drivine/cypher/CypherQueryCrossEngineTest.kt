@@ -1174,6 +1174,57 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 4,000 bytes is reversed whole, as a short one is`() {
+        // Oracle reversed a text with LISTAGG, which gives a VARCHAR2 of 4,000 bytes, and read a longer one from JSON as null
+        // (#311). Given, stored and read in one row, and made by the statement, as above; reversed by its characters, so a
+        // character past U+FFFF, two UTF-16 units, stays whole.
+        clear()
+        fun reversed(t: String) = t.codePoints().toArray().reversedArray().let { String(it, 0, it.size) }
+        val texts = listOf(
+            // 5,000 characters, and past 32 KB.
+            " " + "aB".repeat(2_499) + "é", "aB".repeat(20_000),
+            // Multibyte, under 4,000 characters and past 4,000 bytes; and at 4,000 bytes, short, and one byte past.
+            "é中".repeat(1_999) + "x", "é".repeat(2_000), "é".repeat(2_000) + "x",
+            // Characters past U+FFFF, two UTF-16 units each: across each 1,000th unit, where Oracle cuts a long text, and reversed,
+            // across each other unit; then the other way about.
+            "x" + "😀".repeat(1_500) + "aé" + "😀".repeat(1_000), "😀".repeat(5_000) + "x",
+            // One that ends on a character across the 2,000th unit, so the last piece Oracle cuts is empty; and a piece of the
+            // most bytes, 999 three-byte characters and one of four.
+            "x" + "😀".repeat(1_000), "中".repeat(999) + "😀" + "中".repeat(1_000),
+            // What JSON writes otherwise: quotes, a backslash, a line break and a control character.
+            "a\"\",\"x\\\n\u0001".repeat(800),
+            "abc", "a😀é中",
+        )
+        for (t in texts) {
+            val label = "${t.length} characters, ${t.toByteArray().size} bytes"
+            query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+            val parts = mapOf("a" to t.substring(0, t.offsetByCodePoints(0, t.codePointCount(0, t.length) / 2)))
+                .let { it + ("b" to t.substring(it.getValue("a").length)) }
+            assertEquals(listOf(reversed(t)), query("WITH \$t AS t RETURN reverse(t)", mapOf("t" to t)), "given, $label")
+            assertEquals(listOf(reversed(t)), query("MATCH (n:CyLongText) RETURN reverse(n.t)"), "stored, $label")
+            assertEquals(listOf(reversed(t)), query("MATCH (n:CyLongText) WITH n.t AS t RETURN reverse(t)"), "passed on, $label")
+            assertEquals(listOf(listOf(reversed(t))), query("MATCH (n:CyLongText) RETURN collect(reverse(n.t))"), "collected, $label")
+            // Not where a sum on Oracle puts a character past U+FFFF across its 4,000th UTF-16 unit: the sum gives two U+FFFD there.
+            if (pm.type != DatabaseType.ORACLE || t.length == t.codePointCount(0, t.length)) {
+                assertEquals(listOf(reversed(t)), query("WITH \$a + \$b AS t RETURN reverse(t)", parts), "made, $label")
+            }
+            assertEquals(listOf(t), query("WITH \$t AS t RETURN reverse(reverse(t))", mapOf("t" to t)), "twice, $label")
+            // In a statement that writes, which Oracle runs as a PL/SQL block.
+            assertEquals(listOf(reversed(t)), query("MATCH (n:CyLongText) SET n.r = reverse(n.t) RETURN n.r"), "written, $label")
+            clear()
+        }
+        // Several in one statement, each row and each item reversed from its own text, long and short.
+        val rows = listOf("aB".repeat(3_000), "abc", "x" + "😀".repeat(1_500), "é中".repeat(1_999) + "x")
+        assertEquals(rows.map(::reversed), query("UNWIND \$ts AS t RETURN reverse(t)", mapOf("ts" to rows)))
+        assertEquals(listOf(rows.map(::reversed)), query("RETURN [t IN \$ts | reverse(t)]", mapOf("ts" to rows)))
+        // A null text is null, and an empty one empty: on Oracle null, as its empty text is, and not read again as a long one.
+        assertEquals(listOf(null), query("WITH \$n AS n RETURN reverse(n)", mapOf("n" to null)))
+        assertEquals(listOf(if (pm.type == DatabaseType.ORACLE) null else ""), query("WITH \$e AS e RETURN reverse(e)", mapOf("e" to "")))
+        // A literal, a text or a list, whose CLOB Oracle bound without a type, and found no DBMS_LOB.SUBSTR for (PLS-307).
+        assertEquals(listOf(listOf("unaeK", listOf(3L, 2L, 1L))), query("RETURN [reverse('Keanu'), reverse([1, 2, 3])]"))
+    }
+
+    @Test
     fun `a stored text past 32 KB, read in one row, is measured and changed whole, passed on by a WITH or read where it is used`() {
         // Beside the spec's writes case since v0.6.17 (#298): read where it is used too, and by more functions.
         // On Oracle a WITH passes a property on read through its text (#255), and a function reads a text past 4,000 bytes as a

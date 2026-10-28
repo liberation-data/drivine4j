@@ -19,8 +19,8 @@ import java.util.IdentityHashMap
  * A value is Oracle's `JSON`, which compares, groups and orders as JSON and keeps a map's keys in the
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
  * number the statement writes, or a parameter's that is a whole number, is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is a
- * `VARCHAR2` of at most 4,000 bytes, and one longer is read as a CLOB where it is measured, cut, changed or searched (see [texts]), but for
- * `reverse()`, which still gives null. An empty text is null, as Oracle's empty text is. `reduce` is a function the query
+ * `VARCHAR2` of at most 4,000 bytes, and one longer is read as a CLOB where it is measured, cut, changed, searched or reversed (see
+ * [texts]). An empty text is null, as Oracle's empty text is. `reduce` is a function the query
  * declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
@@ -172,7 +172,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return depth == 0 && !quoted
     }
 
-    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [split] and [replaceText], which read them otherwise. */
+    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [split], [replaceText] and [reversedText], which read them otherwise. */
     private var long = false
 
     override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'boolean' THEN JSON_VALUE($x, '$' RETURNING BOOLEAN) END" }
@@ -761,9 +761,42 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return "CASE WHEN $r <= $s OR LENGTHB($text) * $r <= $SHORT_TEXT * $s THEN $replaced END"
     }
 
-    /** Oracle has no reverse of a text that it documents: its characters, read from the last. */
+    /** Oracle has no reverse of a text that it documents: its characters, read from the last, put together by `LISTAGG`. */
     override fun reverseText(text: String) = shared(text) { (t) ->
         "(SELECT LISTAGG(SUBSTR($t, LEVEL, 1)) WITHIN GROUP (ORDER BY LEVEL DESC) FROM DUAL CONNECT BY LEVEL <= LENGTH($t))"
+    }
+
+    /**
+     * `LISTAGG` gives a `VARCHAR2`, and fails past 4,000 bytes (ORA-01489), so a CLOB that [texts] gives (#311) is reversed in
+     * pieces, as JSON: see [reversedPieces]. The CLOB is bound once, as each piece reads it, and bound as a CLOB by `TO_CLOB`:
+     * of a literal, `reverse('Keanu')` or `reverse([1, 2, 3])`, Oracle otherwise finds no one `DBMS_LOB.SUBSTR` to call (PLS-307).
+     */
+    override fun reversedText(text: String) = if (long) bound("TO_CLOB($text)") { (t) -> reversedPieces(t) } else super.reversedText(text)
+
+    /**
+     * The CLOB [text] reversed as a JSON text: cut into pieces of [REVERSED_PIECE] of its UTF-16 units, each a `VARCHAR2`
+     * reversed by [reverseText], and the pieces put together last to first.
+     *
+     * A CLOB counts a character past U+FFFF as two units, and refuses a cut that starts between them (ORA-22831), so a piece
+     * that would end on the first of two takes the second too, and the next starts after it: `REGEXP_SUBSTR` reads the
+     * character at a unit, two units where one starts there, and from that unit, not from the text's start, so each piece of
+     * a long text takes as long.
+     *
+     * The pieces are put together as a JSON list, each after an `x`, written in ASCII: a `","x` in it is then only ever
+     * between two of them, as a quote in a text is written `\"`, so removing each, and the first `x`, leaves a list of one
+     * text, which is read as JSON. A null text has one piece, as a hierarchical query has a first row, which is left out, so
+     * the list is null, and so is the text. Written otherwise, a character past U+FFFF whose two units are the 4,000th and
+     * the 4,001st of a CLOB Oracle has made, as a CLOB put together or cut is, comes out of `JSON_SCALAR`, `JSON_ARRAY` and
+     * `JSON_OBJECT` as two U+FFFD; in ASCII it is written `\uD83D\uDE00`, and read back whole. The pieces are `VARCHAR2`s.
+     */
+    private fun reversedPieces(text: String): String {
+        fun pairStarts(unit: String) = "LENGTH(REGEXP_SUBSTR($text, '.', $unit, 1, 'n')) = 2"
+        val first = "((LEVEL - 1) * $REVERSED_PIECE + 1 + CASE WHEN LEVEL > 1 AND ${pairStarts("(LEVEL - 1) * $REVERSED_PIECE")} THEN 1 ELSE 0 END)"
+        val last = "(LEVEL * $REVERSED_PIECE + CASE WHEN ${pairStarts("LEVEL * $REVERSED_PIECE")} THEN 1 ELSE 0 END)"
+        val cut = "SELECT LEVEL n, DBMS_LOB.SUBSTR($text, $last - $first + 1, $first) s FROM DUAL CONNECT BY LEVEL <= CEIL(LENGTH($text) / $REVERSED_PIECE)"
+        val joined = "JSON_SERIALIZE(JSON_ARRAYAGG('x' || rv_reversed.r ORDER BY rv_reversed.n DESC RETURNING JSON) RETURNING CLOB ASCII)"
+        return "(SELECT JSON_QUERY(JSON(REPLACE(REPLACE($joined, '\",\"x'), '[\"x', '[\"')), '\$[0]' RETURNING JSON) " +
+            "FROM (SELECT rv_piece.n, ${reverseText("rv_piece.s")} r FROM ($cut) rv_piece WHERE rv_piece.s IS NOT NULL) rv_reversed)"
     }
 
     /** `ROW_NUMBER()` takes an order of its own; `ROWNUM` counts the rows as the query gives them. */
@@ -883,6 +916,12 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
         const val SHORT_TEXT = 4000
+
+        /**
+         * How many UTF-16 units of a CLOB [reversedPieces] reverses as one `VARCHAR2`: with one more, where a pair is not cut,
+         * and the `x` the piece is put together after, at most 3,002 bytes, as a unit is three bytes at most and a pair four.
+         */
+        const val REVERSED_PIECE = 1000
 
         /** The most bytes [asText] writes a number in: Java's text of a double, `-2.2250738585072014E-308`, and some to spare. */
         const val NUMBER_TEXT = 32
