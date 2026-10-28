@@ -1368,6 +1368,75 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `two lists are ordered item by item, and a pair that is not ordered makes the comparison null`() {
+        // Not in the spec yet (#349): the SQL stores gave null for <, <=, > and >= of two lists. The first pair that is not equal
+        // decides, a list that starts the other comes first, and a pair with a null or of two kinds is not ordered, as on Neo4j.
+        fun row(cypher: String) = query(cypher).single()
+        assertEquals(
+            listOf(false, true, true, true, false, true, true, true),
+            row("WITH [1, 2] AS l RETURN [l < l, l <= l, l < [1, 3], l > [1], [] < [], [] <= [], [] < [null], [] < [1]]"),
+        )
+        // A null, or values of two kinds, before the pair that decides.
+        assertEquals(
+            listOf(true, null, null, null, null, true, true, false, null),
+            row("RETURN [[1, null] < [2, 3], [null, 1] < [2, 3], [1, null] <= [1, null], [null] <= [null], [1, 'a'] < [1, 2], [1, 'a'] < [2], [1] < [1, 'a'], [1, null] < [1], [true] < [1]]"),
+        )
+        // Nested lists, item by item at any depth.
+        assertEquals(
+            listOf(true, null, true, true, null, true, true, true, true),
+            row(
+                "RETURN [[[1, 2]] < [[1, 3]], [[1]] < [1], [[1], 2] < [[1], 3], [[1, null]] < [[2]], [[null, 1]] < [[null, 2]], [[1]] < [[1, 0]], " +
+                    "[[]] < [[], 1], [[1, 2], [3]] < [[1, 2], [3, null]], [[1, 2], 'x'] < [[1, 3], 1]]"
+            ),
+        )
+        // Numbers of either kind as numbers, texts by their code points, false before true; two maps that are equal are equal.
+        assertEquals(
+            listOf(true, true, false, true, true, true, true, true),
+            row("RETURN [[1] < [1.5], [2.0] <= [2], ['a'] < ['B'], [false] < [true], ['😀'] > ['～'], [{a: 1}] <= [{a: 1}], [1, 3] > [1, 2, 5], [1, 2] >= [1, 2]]"),
+        )
+        // A list beside null or a value of another kind.
+        assertEquals(listOf(null, null, null, null), row("WITH [1, 2] AS l RETURN [l < null, null < l, l < 1, l >= 'a']"))
+        // Temporal values: a zoned one as the moment it is, two of different kinds not ordered, and durations equal or not ordered.
+        assertEquals(
+            listOf(true, null, null, true, true, true, true, true),
+            row(
+                "RETURN [[date('2024-01-01')] < [date('2024-01-02')], [date('2024-01-01')] < [localdatetime('2024-01-02T00:00')], " +
+                    "[duration('P1D')] < [duration('P2D')], [duration('P1D')] <= [duration('P1D')], " +
+                    "[datetime('2024-01-01T10:00+02:00')] < [datetime('2024-01-01T09:00Z')], [] < [duration('P1D')], " +
+                    "[time('10:00+01:00')] < [time('09:30Z')], [localtime('10:00')] < [localtime('10:00:00.5')]]"
+            ),
+        )
+        assertEquals(
+            listOf(true, true, null),
+            row(
+                "RETURN [[[datetime('2024-01-01T10:00+02:00')]] < [[datetime('2024-01-01T09:00Z')]], [[date('2024-01-01')]] < [[date('2024-01-01')], []], " +
+                    "[[date('2024-01-01')]] < [[localdatetime('2024-01-02T00:00')]]]"
+            ),
+        )
+        // The issue's statements: a list of local moments, written and made item by item in a comprehension.
+        assertEquals(
+            listOf(false, true, true),
+            row("WITH [localdatetime('2024-03-15T10:00:00')] AS l RETURN [l < l, l <= l, l < [localdatetime('2024-03-15T10:00:00') + duration({minutes: 1})]]"),
+        )
+        assertEquals(
+            listOf(listOf(2L, false, true, true), listOf(1L, false, true, true), listOf(2L, false, true, true)),
+            query(
+                "UNWIND [2, 1, 2] AS k WITH k, [i IN range(1, k) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i})] AS l " +
+                    "RETURN [k, l < l, l <= l, l = l]"
+            ),
+        )
+        // In a WHERE, of lists unwound.
+        assertEquals(listOf(listOf(1L, 2L), listOf(1L), emptyList<Any>()), query("UNWIND [[1, 2], [1], [2], [1, null], []] AS l WITH l WHERE l < [1, 5] RETURN l"))
+    }
+
+    @Test
+    fun `toString of a list is refused`() {
+        // Not in the spec yet (#349): Neo4j refuses it when it plans the statement, and the compiler when it compiles it.
+        assertThrows<Exception> { query("WITH [1, 2] AS l RETURN toString(l)") }
+        assertThrows<Exception> { query("WITH [localdatetime('2024-03-15T10:00:00')] AS l RETURN toString(l)") }
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return

@@ -8,6 +8,7 @@ import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestFactory
 import org.junit.jupiter.api.assertThrows
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
@@ -61,6 +62,36 @@ class CompilerRefusalTest {
                 assertTrue(!sql.contains("round() takes a precision"), "${compiler::class.simpleName}: $cypher: $sql")
             }
         }
+    }
+
+    @Test
+    fun `toString of a list or a map the statement makes is refused, as Neo4j refuses it`() {
+        // Not in the spec yet (#349): Postgres and SQLite gave the list's JSON text, each spaced its own way, and Oracle null.
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            listOf(
+                "WITH [1, 2] AS l RETURN toString(l)" to "list",
+                "WITH [localdatetime('2024-03-15T10:00:00')] AS l RETURN toString(l)" to "list",
+                "MATCH (n) RETURN toString(collect(n.x))" to "list",
+                "RETURN toString({a: 1})" to "map",
+                "MATCH (n) RETURN toString(n {.name})" to "map",
+            ).forEach { (cypher, kind) ->
+                val refused = assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message!!
+                assertEquals("toString() takes a number, a text, a truth value or a temporal value, not a $kind, as in Neo4j.", refused)
+            }
+            // A value whose kind the statement leaves open is compiled, as Neo4j plans it.
+            compiler.compile("UNWIND [1, 'a'] AS x RETURN toString(x)")
+            compiler.compile("MATCH (n) RETURN toString(n.x)")
+        }
+    }
+
+    @Test
+    fun `two lists compared in a statement that writes are refused on Oracle, whose block calls no function the query declares`() {
+        // #349: Oracle compares two lists by a function the query declares, which a procedure's queries do not call.
+        val cypher = "CREATE (n:N {a: [1] < [2]})"
+        val refused = assertThrows<DrivineException> { OracleCypherCompiler("g").compile(cypher) }.message!!
+        assertTrue(refused.startsWith("Two lists compared with <, <=, > or >= do not run on Oracle in a statement that writes"), refused)
+        PostgresCypherCompiler("g").compile(cypher)
+        SqliteCypherCompiler("g").compile(cypher)
     }
 
     @Test

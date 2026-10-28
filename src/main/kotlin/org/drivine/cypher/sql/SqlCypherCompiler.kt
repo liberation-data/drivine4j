@@ -388,6 +388,15 @@ abstract class SqlCypherCompiler(graph: String) {
     /** Whether the JSON values [x] and [y], of one kind, a number, a text or a truth value, stand as [operator] says (`<`, `>=`…). */
     protected open fun ordered(x: String, operator: String, y: String) = "$x $operator $y"
 
+    /**
+     * Where the JSON list [x] comes beside the JSON list [y], neither of them null, as Cypher orders two lists in a comparison
+     * (`<`, `>=` …), as a SQL number: -1 before, 0 equal, 1 after. Item by item from the first, at any depth: the first pair
+     * that is not equal decides, and a list that the other starts with comes before it. Null where that pair is not ordered:
+     * a null in it, values of two kinds, or two maps that differ, which Cypher orders and no store does here yet. A number,
+     * a text (by its code points) and a truth value are ordered among their own kind, as [ordered] orders them.
+     */
+    protected abstract fun listOrder(x: String, y: String): String
+
     /** A SQL truth value [sql] as JSON's `true` or `false`, or null. */
     protected open fun boolJson(sql: String) = scalar(sql)
 
@@ -2791,12 +2800,13 @@ abstract class SqlCypherCompiler(graph: String) {
                         ?: equality(left, right, binary.right, plain, stored(binary.left, scope))
                     Value.Bool(if (binary.operator == Operator.EQUALS) equal else "NOT ($equal)")
                 }
-                // Values of two kinds are not ordered, as in Cypher: the comparison is null.
+                // Values of two kinds are not ordered, as in Cypher: the comparison is null. Two lists are, item by item.
                 Operator.LESS_THAN, Operator.GREATER_THAN, Operator.LESS_THAN_OR_EQUAL, Operator.GREATER_THAN_OR_EQUAL -> {
                     val operator = mapOf(
                         Operator.LESS_THAN to "<", Operator.GREATER_THAN to ">", Operator.LESS_THAN_OR_EQUAL to "<=", Operator.GREATER_THAN_OR_EQUAL to ">=",
                     ).getValue(binary.operator)
-                    Value.Bool(shared(a, b) { (x, y) -> "CASE WHEN ${typeOf(x)} = ${typeOf(y)} AND ${typeOf(x)} IN ('number', 'string', 'boolean') THEN ${ordered(x, operator, y)} END" })
+                    if (listed(left, right)) Value.Bool(listCompared(left, a, right, b, operator))
+                    else Value.Bool(shared(a, b) { (x, y) -> "CASE WHEN ${typeOf(x)} = ${typeOf(y)} AND ${typeOf(x)} IN ('number', 'string', 'boolean') THEN ${ordered(x, operator, y)} END" })
                 }
                 // Two lists of nodes, or of relationships, are together a list of them.
                 Operator.ADD -> if (left is Value.Entities && right is Value.Entities && left.relationships == right.relationships) {
@@ -2834,6 +2844,58 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.CONTAINS -> Value.Bool(texts(a, b) { (x, y) -> containsText(x, y) })
                 else -> error("logical operators are handled above")
             }
+        }
+
+        /**
+         * Whether `<`, `<=`, `>` or `>=` of [left] and [right] compares two lists, item by item: where the statement makes either
+         * a list, of values (a list of nodes or of relationships compares as before). Any other comparison is written as it was.
+         */
+        private fun listed(left: Value, right: Value): Boolean = left is Value.Json && right is Value.Json && (left.list || right.list)
+
+        /**
+         * `<`, `<=`, `>` or `>=`, [operator], of [left] and [right], whose JSON is [a] and [b]: where both are lists, as [listOrder]
+         * orders them, their temporal items as [comparedItems] gives them; else null, as a list and a value of another kind are not
+         * ordered.
+         */
+        private fun listCompared(left: Value, a: String, right: Value, b: String, operator: String): String {
+            val (x, y) = comparedItems(left, a, right, b)
+            return shared(x, y) { (p, q) -> "CASE WHEN ${typeOf(p)} = 'array' AND ${typeOf(q)} = 'array' THEN ${listOrder(p, q)} $operator 0 END" }
+        }
+
+        /**
+         * [a] and [b], the JSON of the lists [left] and [right], as [listOrder] compares them, where the statement makes the items of
+         * both, or the items of their items, temporal: a zoned value as the moment it is, whatever its offset, as `ORDER BY` sorts it
+         * (see [momentsKey]); a duration as a map of it alone, equal where it is equal and else not ordered, as in Cypher; and a value
+         * of one kind beside one of another as a map of its kind, so the two are not ordered. A local value is its ISO text, which
+         * orders as it does. Each as it is otherwise: a list of temporal values beside one of another kind, a list whose temporal values
+         * are deeper, or one whose items the statement does not know, compares its ISO texts. Their items are read by their places
+         * ([temporalElements]), as Oracle must read a list of temporal values.
+         */
+        private fun comparedItems(left: Value, a: String, right: Value, b: String): Pair<String, String> {
+            fun kind(list: Value) = itemsOf(list)?.let { it to 1 } ?: itemItemsOf(list)?.takeIf { holdsLists(list) }?.let { it to 2 }
+            val (l, r) = kind(left) to kind(right)
+            if (l == null || r == null || l.second != r.second) return a to b
+            val (kind, depth) = l
+            fun wrapped(of: Temporal): (String) -> String = { item -> comparable(Value.Json(jsonObject(listOf(of.name.lowercase() to item)), ordered = true)) }
+            val moment: (String) -> String = { item -> scalar(temporalSql.sortable(temporals.moment(text(item), kind))) }
+            val (eachOfA, eachOfB) = when {
+                kind != r.first -> wrapped(kind) to wrapped(r.first)
+                kind == Temporal.DURATION -> wrapped(kind) to wrapped(kind)
+                kind.zoned -> moment to moment
+                else -> return a to b
+            }
+            return mappedItems(a, depth, eachOfA) to mappedItems(b, depth, eachOfB)
+        }
+
+        /** The JSON list [json] with each item at [depth], 1 its own items and 2 theirs, that is not null as [each] gives it. */
+        private fun mappedItems(json: String, depth: Int, each: (String) -> String): String = shared(json) { (x) ->
+            fun over(list: String, depth: Int): String {
+                val e = alias("lc")
+                val mapped = if (depth == 1) each(item(e)) else "CASE WHEN ${typeOf(item(e))} = 'array' THEN ${over(item(e), depth - 1)} ELSE ${item(e)} END"
+                val items = aggregateList("CASE WHEN ${isJsonNull(item(e))} THEN ${literalJson(null)} ELSE $mapped END", itemNo(e))
+                return comparable(Value.Json("(SELECT $items FROM ${temporalElements(list, e)})", ordered = true))
+            }
+            "CASE WHEN ${typeOf(x)} = 'array' THEN ${over(x, depth)} END"
         }
 
         /**
@@ -3384,6 +3446,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 else -> {
                     // A function the store has no SQL for is named before its arguments are counted.
                     if (function(name, "NULL") == null) unsupported("The function ${function.name}()")
+                    if (name == "tostring") textOfKind(function, one())
                     val argument = comparable(json(one()))
                     // An item taken from a list is of the kind its items are.
                     val taken = name == "head" || name == "last"
@@ -3398,6 +3461,20 @@ abstract class SqlCypherCompiler(graph: String) {
                     )
                 }
             }
+        }
+
+        /**
+         * Refuses `toString` of [value], the argument of [function], where the statement makes it a list or a map: Neo4j refuses
+         * it when it plans the statement. A value whose kind the statement leaves open is compiled as before.
+         */
+        private fun textOfKind(function: Expression.Function, value: Value) {
+            val written = function.arguments.single()
+            val kind = when {
+                isList(value) -> "list"
+                written is Expression.MapLiteral || written is Expression.MapProjection -> "map"
+                else -> return
+            }
+            throw DrivineException("${function.name}() takes a number, a text, a truth value or a temporal value, not a $kind, as in Neo4j.")
         }
 
         /**

@@ -116,6 +116,9 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun ordered(x: String, operator: String, y: String) = "(($x ->> '$') $operator ($y ->> '$'))"
 
+    /** By [SqliteFunctions.LIST_ORDER], which walks the two as Cypher does. */
+    override fun listOrder(x: String, y: String) = "${SqliteFunctions.LIST_ORDER}($x, $y)"
+
     /** A list as [SqliteFunctions.SORT_KEY] writes it, which orders as Cypher orders lists; any other value as the SQL value `->>` reads. */
     override fun sortKey(json: String) = shared(json) { (x) -> "CASE WHEN json_type($x) = 'array' THEN ${SqliteFunctions.SORT_KEY}($x) ELSE ($x ->> '$') END" }
 
