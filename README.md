@@ -587,6 +587,10 @@ The object manager, `StatelessGraphObjectManager`, loads, saves and queries anno
 Cypher to write. Use it where it does what you need, and keep Cypher for the queries it doesn't: see
 [Object Manager](#object-manager---type-safe-graph-mapping).
 
+On Postgres and Oracle it is also the faster way. It runs SQL of its own, written for the store's
+tables, where a Cypher statement is compiled to SQL first; and on Oracle its statements stay prepared,
+where a compiled one is prepared again each time it runs (see [Oracle](#oracle)).
+
 ## Object Manager - Type-Safe Graph Mapping
 
 `StatelessGraphObjectManager` is a high-level API for working with graph-mapped objects using annotated models. It generates efficient Cypher queries automatically and provides a type-safe DSL for filtering and ordering.
@@ -3254,12 +3258,15 @@ that is turned away fails at startup. Each connection keeps 64 statements prepar
 (`oracle.jdbc.implicitStatementCacheSize`): a save is the same block each time, and is neither sent
 nor parsed again. A Cypher statement compiled to SQL is not kept: Oracle holds a kept statement's memory
 for as long as the driver keeps it, from about 4 MB for a compiled statement to over 20 MB for one that
-reads a long text, and a few dozen of them ran the instance out of memory (ORA-04036, #313).
+reads a long text, and a few dozen of them ran the instance out of memory (ORA-04036, #313). So it is
+prepared again each time it runs: about 0.3 ms more for a short statement (Oracle reuses its plan; it
+doesn't parse it again from scratch). The object manager's statements are kept, so where the object
+manager does what you need, it is the faster way to Oracle.
 
 To use a `DataSource` the application already has, register a provider in code:
 `registry.register(JdbcConnectionProvider("graph", DatabaseType.ORACLE, dataSource, graphName = "drivine"))`.
 Drivine does not close a `DataSource` it was given, and does not configure it: turn the driver's
-statement cache on there yourself. It does set each of its sessions, the first time it connects with one, to make no
+statement cache on there yourself. A Cypher statement compiled to SQL is kept out of that cache too. It does set each of its sessions, the first time it connects with one, to make no
 adaptive plan, unless you ask it not to (see the notes below). For a pool of Drivine's own (HikariCP) without the YAML:
 
 ```kotlin
