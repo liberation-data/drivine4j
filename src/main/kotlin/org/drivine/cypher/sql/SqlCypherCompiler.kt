@@ -126,10 +126,21 @@ abstract class SqlCypherCompiler(graph: String) {
      * read. Oracle groups by no subquery, so a projection that would group by a value so bound works it out first.
      */
     protected fun shared(vararg values: String, body: (List<String>) -> String): String {
-        if (!sharing || values.all { it.length <= SHARED_ABOVE }) return body(values.toList())
+        if (!binds(*values)) return body(values.toList())
+        return sharedBound(*values, body = body)
+    }
+
+    /** [body] over [values] [bound] as [shared] binds them, and counted so: see [sharedBindings]. */
+    protected fun sharedBound(vararg values: String, body: (List<String>) -> String): String {
         sharedBindings++
         return bound(*values, body = body)
     }
+
+    /** Whether [shared] binds [values]: where one is long, and values are bound here at all. */
+    protected fun binds(vararg values: String) = sharing && values.any { it.length > SHARED_ABOVE }
+
+    /** [body] over the sides [a] and [b] of a `+`, as [shared] binds them: see Oracle's. */
+    protected open fun sharedSum(a: String, b: String, body: (List<String>) -> String): String = shared(a, b, body = body)
 
     /** [shared], of a list of values, as [Temporals] and a store's [TemporalSql] take it. */
     protected val sharedList: (List<String>, (List<String>) -> String) -> String = { values, body -> shared(*values.toTypedArray(), body = body) }
@@ -2703,8 +2714,9 @@ abstract class SqlCypherCompiler(graph: String) {
                 Operator.ADD, Operator.SUBTRACT -> {
                     val sign = if (operator == Operator.ADD) 1 else -1
                     // A side read from the store: [temporal] of the two texts, null where neither is of a kind it reads; then, in an
-                    // addition, the two added as any two values are, as Cypher adds a temporal value to a list or to a text.
-                    fun read(kind: Temporal?, temporal: (String, String) -> String) = Value.Json(shared(jsonA, jsonB) { (x, y) ->
+                    // addition, the two added as any two values are, as Cypher adds a temporal value to a list or to a text. Bound
+                    // as a sum's sides are, so a stored text past 32 KB beside a long duration leaves Oracle's session open (#370).
+                    fun read(kind: Temporal?, temporal: (String, String) -> String) = Value.Json(sharedSum(jsonA, jsonB) { (x, y) ->
                         val value = scalar(shared(text(x), text(y)) { (tx, ty) -> temporal(tx, ty) })
                         if (sign > 0) "COALESCE($value, ${add(x, y)})" else value
                     }, temporal = kind)
@@ -2884,7 +2896,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     val (givenLeft, givenRight) = given(binary.left) to given(binary.right)
                     val (textLeft, textRight) = (isText(left) || givenLeft is String) to (isText(right) || givenRight is String)
                     Value.Json(
-                        shared(a, b) { (x, y) ->
+                        sharedSum(a, b) { (x, y) ->
                             add(x, y, (givenLeft ?: MadeText.takeIf { textLeft }) to (givenRight ?: MadeText.takeIf { textRight }))
                         },
                         items = itemsOf(left)?.takeIf { it == itemsOf(right) }, itemItems = itemItemsOf(left)?.takeIf { it == itemItemsOf(right) },
