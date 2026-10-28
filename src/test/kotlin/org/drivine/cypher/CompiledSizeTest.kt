@@ -380,6 +380,8 @@ class CompiledSizeTest {
         listOf(
             "UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + x))",
             "UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + ($z).minute))",
+            // And an operation over an aggregate's result, compiled to see whether it binds one (#373).
+            "UNWIND range(1, 3) AS i RETURN toLower(toLower(toString(reduce(a = max(i), x IN [1] | a + x)))) + 'x'",
         ).forEach { statement ->
             val sql = OracleCypherCompiler("g").compile(statement).sql
             val declared = Regex("FUNCTION (cy_\\w+)\\(").findAll(sql).map { it.groupValues[1] }.toList()

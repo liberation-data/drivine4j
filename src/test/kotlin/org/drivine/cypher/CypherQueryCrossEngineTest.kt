@@ -1697,8 +1697,17 @@ abstract class CypherQueryContract {
         assertEquals(listOf("Mr: Cy Ames"), query("$walk RETURN min(e.title) + ': ' + min(e.first) + ' ' + min(e.last)"))
         val sorted = "toLower(toLower(max(e.last))) + toString(sum(e.a))"
         assertEquals(listOf(listOf("Cy", "cole5"), listOf("Ann", "cole8")), query("$walk RETURN s.first AS s, $sorted AS t ORDER BY $sorted"))
-        // Over no rows, the aggregate is null, and so is what is worked out over it.
+        // Beside a key that is an expression, in a CASE and in a map.
+        val texts = "toLower(max(n.title)) + ': ' + toLower(max(n.last))"
+        assertEquals(listOf(listOf(2L, "dr: bell"), listOf(4L, "mr: ames"), listOf(6L, "ms: cole")), query("$all RETURN n.a + 1 AS k, $texts AS t ORDER BY k"))
+        assertEquals(listOf(listOf("x", "mr: bell"), listOf("y", "")), query("$all RETURN n.k AS k, CASE WHEN count(*) > 1 THEN $texts ELSE '' END AS t ORDER BY k"))
+        assertEquals(
+            listOf(listOf("x", mapOf("t" to "mr: bell", "c" to 3L)), listOf("y", mapOf("t" to "ms: cole", "c" to 2L))),
+            query("$all RETURN n.k AS k, {t: $texts, c: count(*) + 1} AS m ORDER BY k"),
+        )
+        // Over no rows, the aggregate is null, and so is what is worked out over it; a count is 0.
         assertEquals(listOf(null), query("$all WHERE n.k = 'z' RETURN toLower(max(n.title)) + '!'"))
+        assertEquals(listOf(listOf("0!", 1L)), query("$all WHERE n.k = 'z' RETURN [toLower(toString(count(*))) + '!', count(*) + 1]"))
     }
 
     @Test
