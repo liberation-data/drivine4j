@@ -85,6 +85,10 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         }
     }
 
+    /** A graph name that cannot name tables holds no schema: plain SQL over this provider works whatever the name (#364). */
+    override val schemaRefusal: String?
+        get() = graphRefusal(type, graphName)
+
     /** Whether the graph's tables have been made, or found, by this provider: see [ensureGraph]. */
     @Volatile
     private var graphEnsured = false
@@ -152,7 +156,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             if (graphEnsured) return
             val refusal = graphRefusal(type, graphName)
             if (refusal != null) {
-                logger.warn("No tables made for graph '{}' on {} database '{}': {} Plain SQL works; Cypher and object managers over the graph do not.", graphName, type, name, refusal)
+                logger.warn("No tables made for graph '{}' on {} database '{}': {} Plain SQL works; Cypher, object managers and schema over the graph do not. Give the provider a graph name that can name tables.", graphName, type, name, refusal)
             } else {
                 graph?.let(::makeTables)
             }
@@ -171,6 +175,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName)
         val failure = try {
             val committing = session.autoCommit
+            // Turning auto-commit on commits what the session has pending. A connection just had from the pool has
+            // nothing pending: only the provider's own `ALTER SESSION`, which commits nothing.
             if (!committing) session.autoCommit = true
             val refused = try {
                 graph.ensure(connection)

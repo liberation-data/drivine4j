@@ -26,6 +26,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotSame
+import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
@@ -167,6 +168,20 @@ class JdbcConnectionProviderTest {
 
         assertIs<PostgresSchemaGrammar>(postgres.schemaGrammar)
         assertTrue(postgres.supportsSchemaManagement)
+    }
+
+    @Test
+    fun `a provider whose graph name cannot name tables manages no schema, says why, and gives no grammar`() {
+        listOf(DatabaseType.ORACLE to "Oracle", DatabaseType.POSTGRES to "Postgres", DatabaseType.SQLITE to "SQLite").forEach { (type, engine) ->
+            val provider = JdbcConnectionProvider("default", type, dataSource, graphName = "my-graph")
+
+            val refusal = provider.schemaRefusal
+            assertTrue(refusal.orEmpty().startsWith("'my-graph' cannot name a graph on $engine: it names tables"), refusal)
+            assertFalse(provider.supportsSchemaManagement)
+            assertEquals(refusal, assertFailsWith<IllegalArgumentException> { provider.schemaGrammar }.message)
+        }
+        assertNull(JdbcConnectionProvider("default", DatabaseType.POSTGRES, dataSource, graphName = "g").schemaRefusal)
+        assertNull(JdbcConnectionProvider("default", DatabaseType.NEO4J, dataSource, graphName = "my-graph").schemaRefusal)
     }
 
     @Test
@@ -394,6 +409,44 @@ class JdbcConnectionProviderTest {
         provider.connect()
 
         assertEquals(1, statementsOn(ensuring).size)
+    }
+
+    @Test
+    fun `tables that cannot be made on a connection that commits none put it back as it was, and are not tried again`() {
+        val refusing = recording().also {
+            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(SQLException("permission denied for schema public"))
+        }
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(refusing, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source)
+
+        assertIs<JdbcConnection>(provider.connect())
+        provider.connect()
+
+        val order = Mockito.inOrder(refusing)
+        order.verify(refusing).autoCommit = true
+        order.verify(refusing).prepareStatement(Mockito.anyString())
+        order.verify(refusing).autoCommit = false
+        order.verify(refusing).close()
+        verify(source, times(3)).connection
+    }
+
+    @Test
+    fun `a connection that cannot be put back as it was after the tables fails the connect, is closed, and the next connect makes them`() {
+        val broken = SQLException("closed by the network")
+        val unrestorable = recording().also { Mockito.doThrow(broken).`when`(it).autoCommit = false }
+        val ensuring = recording().also { `when`(it.autoCommit).thenReturn(true) }
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(unrestorable, ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source)
+
+        assertSame(broken, assertFailsWith<SQLException> { provider.connect() })
+        verify(unrestorable).close()
+        provider.connect()
+
+        assertEquals(1, statementsOn(unrestorable).size)
+        assertEquals(1, statementsOn(ensuring).size)
+        assertEquals(emptyList(), statementsOn(handedOut))
     }
 
     @Test

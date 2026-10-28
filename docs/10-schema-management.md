@@ -49,7 +49,7 @@ fun propositionSchema(embeddingService: EmbeddingService) = SchemaCatalog.of(
 
 Multiple catalog beans merge; identical declarations deduplicate; conflicting declarations for the same (kind, label, properties) fail startup.
 
-**Which databases a catalog applies to.** By default a catalog broadcasts to **every schema-capable registered database** — engines without DDL support (Neptune, openCypher) are skipped with a warning. Narrow it when you need to:
+**Which databases a catalog applies to.** By default a catalog broadcasts to **every schema-capable registered database** — engines without DDL support (Neptune, openCypher), and an Oracle, Postgres or SQLite datasource whose graph name can't name tables (such as `my-graph`), are skipped with a warning. Narrow it when you need to:
 
 ```kotlin
 SchemaCatalog.of(...)                        // all schema-capable databases (default)
@@ -58,7 +58,7 @@ SchemaCatalog.of(...).forDatabase("users")   // one named datasource
 SchemaCatalog.of(...).forDatabases("a", "b") // a specific set
 ```
 
-Broadcast is lenient (skips engines that can't do schema); an explicitly **named** target is strict — pointing it at an unknown or schema-incapable datasource fails startup. `"default"` resolves to the first-registered datasource, consistent with the rest of Drivine.
+Broadcast is lenient (skips engines that can't do schema); an explicitly **named** target is strict — pointing it at an unknown or schema-incapable datasource fails startup with a `DrivineException`, which says why. `"default"` resolves to the first-registered datasource, consistent with the rest of Drivine.
 
 Targeting is replace/last-wins, not additive — use one `forDatabases("a", "b")` call to target several; chaining `forDatabase(...)` calls does not accumulate (last wins).
 

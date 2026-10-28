@@ -45,7 +45,9 @@ The graph's tables are made, where they are not there yet, before the datasource
 statement sent to a new store finds them, with no object manager made first. A user who may read the tables but not
 make them works with a store where they are there. The tables are made committing each statement, also on a datasource
 whose connections start with `autoCommit = false`. A graph name that can't name tables, such as `my-graph`, makes no
-tables: plain SQL still works, and a Cypher statement fails, naming the graph and saying why.
+tables: plain SQL still works, a Cypher statement fails with a `DrivineException`, naming the graph and saying why, and
+an object manager over the graph is refused with an `IllegalArgumentException` that says the same. A schema catalog for
+every database skips the datasource, and one that names it fails.
 
 ### A write and a read
 
