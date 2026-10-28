@@ -962,6 +962,36 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `zoned, duration and partly null lists out of an unwound map, and a list of numbers beside one, are read item by item too`() {
+        // Not in the spec yet (#369). Zoned values compare by their moments: 10:02+02:00 alone is past 08:01:30Z.
+        val zoned = "[i IN range(1, k) | datetime('2024-03-15T10:00:00+02:00') + duration({minutes: i})]"
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), 0L), listOf(1L, listOf(1L), 0L), listOf(2L, listOf(1L, 2L), 1L)),
+            query("UNWIND [0, 1, 2] AS k WITH k, [{l: $zoned}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN k, [x IN l | x.minute], size([x IN l WHERE x > datetime('2024-03-15T08:01:30Z')]) ORDER BY k"),
+        )
+        val durations = "[i IN range(1, k) | duration({minutes: i})]"
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))),
+            query("UNWIND [0, 1, 2] AS k WITH k, [{l: $durations}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN k, [x IN l | x.minutes] ORDER BY k"),
+        )
+        val partlyNull = "[i IN range(1, k) | CASE i WHEN 1 THEN null ELSE localdatetime('2024-03-15T10:00:00') + duration({minutes: i}) END]"
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), 0L), listOf(1L, listOf(null), 0L), listOf(2L, listOf(null, 2L), 1L)),
+            query("UNWIND [0, 1, 2] AS k WITH k, [{l: $partlyNull}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN k, [x IN l | x.minute], size([x IN l WHERE x IS NOT NULL]) ORDER BY k"),
+        )
+        // Numbers beside such a list in the map, and the list read two levels down in one WITH.
+        val local = "[i IN range(1, k) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i})]"
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>(), emptyList<Long>()), listOf(1L, listOf(1L), emptyList<Long>()), listOf(2L, listOf(1L, 2L), listOf(2L))),
+            query("UNWIND [0, 1, 2] AS k WITH k, [{l: $local, n: range(1, k)}] AS ms UNWIND ms AS t WITH k, t.l AS l, t.n AS n RETURN k, [x IN l | x.minute], [x IN n WHERE x > 1] ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf(0L, emptyList<Long>()), listOf(1L, listOf(1L)), listOf(2L, listOf(1L, 2L))),
+            query("UNWIND [0, 1, 2] AS k WITH k, [{m: {l: $local}}] AS ms UNWIND ms AS t WITH k, t.m.l AS l RETURN k, [x IN l | x.minute] ORDER BY k"),
+        )
+    }
+
+    @Test
     fun `a negative precision from data fails only on a row that reads it, in a WHERE and an aggregate too, with the compiler's message`() {
         // The spec reads a precision from data since v0.6.4; here, in a WHERE and an aggregate, and on rows filtered out.
         clear()

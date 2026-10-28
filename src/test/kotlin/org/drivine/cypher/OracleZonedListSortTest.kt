@@ -104,7 +104,10 @@ class OracleZonedListSortTest {
     @Test
     fun `on Oracle a list of temporal values a WITH takes out of an unwound map is read item by item too`() {
         // A property of an unwound item held no temporal values deeper, and such a list was read with JSON_TABLE again (#369).
-        for (cypher in unwoundRepros) {
+        // Zoned values and durations, and a list with nulls among them, as well.
+        val others = listOf("datetime('2024-03-15T10:00:00+02:00') + duration({minutes: i})", "duration({minutes: i})", "CASE i WHEN 1 THEN null ELSE date() END")
+            .map { "UNWIND [0, 1] AS k WITH k, [{l: [i IN range(1, 10) | $it]}] AS ms UNWIND ms AS t WITH k, t.l AS l RETURN size([x IN l WHERE x IS NOT NULL])" }
+        for (cypher in unwoundRepros + others) {
             val sql = OracleCypherCompiler("g").compile(cypher).sql
             assertTrue(sql.contains(Regex("PASSING x\\d+_r\\.n - 1")), sql)
             assertFalse(sql.contains(Regex("JSON_TABLE\\((w|q|u)\\d+\\.(c|item)")), sql)
