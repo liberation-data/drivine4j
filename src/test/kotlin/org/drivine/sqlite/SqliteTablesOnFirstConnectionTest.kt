@@ -1,5 +1,7 @@
 package org.drivine.sqlite
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import org.drivine.backend.sqlite.SqliteDataSource
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
@@ -21,6 +23,14 @@ class SqliteTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
     override val writesAtOnce = false
 
     override fun provider(graph: String): JdbcConnectionProvider = JdbcConnectionProvider.sqlite("fresh", path, graphName = graph)
+
+    override fun notCommitting(graph: String): JdbcConnectionProvider = JdbcConnectionProvider(
+        "fresh",
+        DatabaseType.SQLITE,
+        HikariDataSource(HikariConfig().apply { dataSource = SqliteDataSource(path); isAutoCommit = false }),
+        ownsDataSource = true,
+        graphName = graph,
+    )
 
     /** Connections that refuse to write (`query_only`): SQLite has no users, and a file's own permissions are the platform's. */
     override fun readOnly(graph: String): JdbcConnectionProvider {

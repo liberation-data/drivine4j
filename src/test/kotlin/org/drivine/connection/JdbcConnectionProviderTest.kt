@@ -335,6 +335,68 @@ class JdbcConnectionProviderTest {
     }
 
     @Test
+    fun `a graph name that cannot name tables leaves every connection working, as it did before the provider made tables, and is not tried again`() {
+        listOf(DatabaseType.ORACLE, DatabaseType.POSTGRES, DatabaseType.SQLITE).forEach { type ->
+            val handedOut = recording()
+            val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(handedOut) }
+            val provider = JdbcConnectionProvider("default", type, source, graphName = "my-graph")
+
+            assertIs<JdbcConnection>(provider.connect())
+            assertIs<JdbcConnection>(provider.connect())
+
+            // No connection is taken for tables that cannot be named.
+            verify(source, times(2)).connection
+            assertEquals(emptyList(), statementsOn(handedOut))
+        }
+    }
+
+    @Test
+    fun `the tables are made committing each statement on a data source whose connections commit none, and the connection is put back as it was`() {
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+        `when`(ensuring.autoCommit).thenReturn(false)
+
+        JdbcConnectionProvider("default", DatabaseType.POSTGRES, source).connect()
+
+        val order = Mockito.inOrder(ensuring)
+        order.verify(ensuring).autoCommit = true
+        order.verify(ensuring).prepareStatement(Mockito.anyString())
+        order.verify(ensuring).autoCommit = false
+        order.verify(ensuring).close()
+    }
+
+    @Test
+    fun `the tables are made on a connection that commits each statement already, which is left so`() {
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+        `when`(ensuring.autoCommit).thenReturn(true)
+
+        JdbcConnectionProvider("default", DatabaseType.POSTGRES, source).connect()
+
+        verify(ensuring).prepareStatement(Mockito.anyString())
+        verify(ensuring, never()).autoCommit = Mockito.anyBoolean()
+    }
+
+    @Test
+    fun `a connection whose mode cannot be set for the tables fails the connect, is closed, and the next connect makes them`() {
+        val broken = SQLException("closed by the network")
+        val unsettable = recording().also { Mockito.doThrow(broken).`when`(it).autoCommit = true }
+        val ensuring = recording().also { `when`(it.autoCommit).thenReturn(true) }
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(unsettable, ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source)
+
+        assertSame(broken, assertFailsWith<SQLException> { provider.connect() })
+        verify(unsettable).close()
+        assertEquals(emptyList(), statementsOn(unsettable))
+        provider.connect()
+
+        assertEquals(1, statementsOn(ensuring).size)
+    }
+
+    @Test
     fun `a provider for a store that keeps no graph over JDBC makes no tables`() {
         val handedOut = recording()
         val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(handedOut) }

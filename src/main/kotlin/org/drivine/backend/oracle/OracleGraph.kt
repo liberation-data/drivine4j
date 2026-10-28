@@ -15,7 +15,7 @@ import org.drivine.manager.PersistenceManager
  * its properties with its labels and its stamp among them. A read projects `v.doc` and is no longer
  * concerned with how the map is put together.
  */
-internal class OracleGraph(name: String) : SqlGraph(name, "Oracle", MAX_OBJECT_NAME) {
+internal class OracleGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAME) {
 
     /** What makes the store, when it is not there. Each statement is safe to run again. */
     val ddl: List<String> = listOf(
@@ -131,6 +131,12 @@ internal class OracleGraph(name: String) : SqlGraph(name, "Oracle", MAX_OBJECT_N
     }
 
     companion object {
+        /** The store's name, for what is said of a graph name it cannot take. */
+        private const val ENGINE = "Oracle"
+
+        /** Why [name] cannot name a graph here; null where it can (see [SqlGraph.refusal]). */
+        fun refusal(name: String): String? = SqlGraph.refusal(name, ENGINE, MAX_OBJECT_NAME)
+
         /** The graph of a manager that names none. */
         const val DEFAULT_NAME = SqlGraph.DEFAULT_NAME
 
