@@ -12,7 +12,7 @@ import org.drivine.session.SessionManager
  * - [stateless] returns a [StatelessGraphObjectManager], which keeps no session. Use this one.
  * - [get] returns the deprecated [GraphObjectManager], each with a [SessionManager] of its own.
  *
- * The two can share a database. They do not save alike: see the README, "Migrating from
+ * The two can share a database. They do not save alike: see docs/15-migrating-from-graphobjectmanager.md, "Migrating from
  * GraphObjectManager".
  */
 @Suppress("DEPRECATION") // built on GraphObjectManager, which is deprecated for callers
@@ -60,7 +60,7 @@ class GraphObjectManagerFactory(
         "GraphObjectManager is deprecated in favour of StatelessGraphObjectManager, from stateless(). " +
             "The stateless manager saves differently: its save adds relationships and removes none unless told to, " +
             "where this manager's removes what its session saw and the object no longer holds. " +
-            "So this is not a drop-in replacement. See the README: Migrating from GraphObjectManager."
+            "So this is not a drop-in replacement. See docs/15-migrating-from-graphobjectmanager.md: Migrating from GraphObjectManager."
     )
     @JvmOverloads
     @Synchronized

@@ -1,7 +1,7 @@
 # Opens the release PR: "Release vX.Y.Z", which raises build.gradle's version on a branch release/vX.Y.Z. Every
 # published module takes the root's version from build.gradle. The PR also moves the other files that name the version
-# with it, the sample's model file (CI checks it is what the build writes) and the README's install snippets, as
-# scripts/release_version.py's REFERENCES lists them. Merging the PR releases the version: release.yml runs on the
+# with it, the sample's model file (CI checks it is what the build writes) and the install snippets in the README and
+# docs/, as scripts/release_version.py's REFERENCES lists them. Merging the PR releases the version: release.yml runs on the
 # push to main. RELEASING.md describes the process.
 #
 # Run it from the Actions tab (Prepare release, Run workflow), or through the API, as the train controller in
@@ -159,8 +159,8 @@ jobs:
             exit 1
           fi
           # The other files that name the version: the sample's model file, as the code generator would write it at
-          # the new version, so CI's check that it is current passes, and the README's install snippets. It fails,
-          # changing nothing, when one it expects isn't found; the list is in the script.
+          # the new version, so CI's check that it is current passes, and the install snippets in the README and
+          # docs/. It fails, changing nothing, when one it expects isn't found; the list is in the script.
           if ! python3 scripts/release_version.py references . "$VERSION" > "$RUNNER_TEMP/references"; then
             echo "::error::A file that names the version isn't as scripts/release_version.py's REFERENCES expects. Change the list to match it."
             exit 1

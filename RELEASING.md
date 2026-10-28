@@ -69,7 +69,8 @@ included. Only a merged version bump or a pushed tag publishes.
   `scripts/release_version.py references`, the other files that name the version: the generator's version in the
   sample's model file, `drivine4j-sample/.drivine/model.json` (the code generator stamps it with the version it was
   built at, and CI fails when the committed file isn't what the build writes), and the install snippets in
-  `README.md`, Gradle's `org.drivine:drivine4j…:X.Y.Z` and Maven's `<version>` in a `drivine4j` dependency. The
+  `README.md`, `docs/03-installation.md` and `docs/07-core-features.md`, Gradle's `org.drivine:drivine4j…:X.Y.Z`
+  and Maven's `<version>` in a `drivine4j` dependency. The
   script's `REFERENCES` lists each file, with a pattern anchored on drivine4j's own coordinates and how many times it
   is found; Prepare release fails, changing nothing, when one is missing or a count is off, so a moved file or a
   reworded snippet is noticed. A snippet added, moved or reworded changes the list with it, and its test, run in CI,

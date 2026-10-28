@@ -2,7 +2,7 @@
 
 Status: **phases 1 to 7 done** on `feat/oracle-sql-pgq`; 8 and part of 9 remain. Target: Oracle Database 23ai / 26ai.
 What was built, and what it showed, is under [Outcome](#outcome) at the end. How to use it is in the
-README, under [Oracle](../README.md#oracle).
+docs, under [Oracle](09-supported-engines.md#oracle).
 
 The phases below are the plan as it was written. Where a class was built under another name, or a
 step turned out otherwise, the phase says so in italics.
