@@ -152,6 +152,12 @@ class ReleaseVersionTest(unittest.TestCase):
     )
     _README = (
         'implementation("org.drivine:drivine4j-spring-boot-starter:0.3.0")\n'
+        # A dependency's version, and prose, that look the same: left as they are.
+        'implementation("com.example:drivine4j-extras:0.3.0")\n'
+        "The tags 0.0.3 and 0.3.0 were made by hand.\n"
+    )
+    _INSTALLATION = (
+        'implementation("org.drivine:drivine4j-spring-boot-starter:0.3.0")\n'
         'implementation("org.drivine:drivine4j:0.3.0")\n'
         "implementation 'org.drivine:drivine4j:0.3.0'\n"
         "<dependency>\n    <groupId>org.drivine</groupId>\n    <artifactId>drivine4j</artifactId>\n"
@@ -159,19 +165,22 @@ class ReleaseVersionTest(unittest.TestCase):
         'implementation("org.drivine:drivine4j:0.3.0")\nksp("org.drivine:drivine4j-codegen:0.3.0")\n'
         "<groupId>org.drivine</groupId>\n<artifactId>drivine4j-codegen</artifactId>\n<version>0.3.0</version>\n"
         "annotationProcessor 'org.drivine:drivine4j-codegen-java:0.3.0'\n"
-        'implementation("org.drivine:drivine4j-coroutines:0.3.0")\n'
-        # A dependency's version, and prose, that look the same: left as they are.
-        'implementation("com.example:drivine4j-extras:0.3.0")\n'
+        # A dependency's version that looks the same: left as it is.
         "<groupId>com.dyescape</groupId>\n<artifactId>kotlin-maven-symbol-processing</artifactId>\n"
         "<version>0.3.0</version>\n"
-        "The tags 0.0.3 and 0.3.0 were made by hand. ksp version 2.2.20-0.3.0.\n"
+        "ksp version 2.2.20-0.3.0.\n"
     )
+    _CORE_FEATURES = 'implementation("org.drivine:drivine4j-coroutines:0.3.0")\n'
+    _FILES = ["drivine4j-sample/.drivine/model.json", "README.md", "docs/03-installation.md", "docs/07-core-features.md"]
 
     def _repository(self, directory: str) -> Path:
         root = Path(directory)
         (root / "drivine4j-sample" / ".drivine").mkdir(parents=True)
+        (root / "docs").mkdir()
         (root / "drivine4j-sample" / ".drivine" / "model.json").write_text(self._MODEL)
         (root / "README.md").write_text(self._README)
+        (root / "docs" / "03-installation.md").write_text(self._INSTALLATION)
+        (root / "docs" / "07-core-features.md").write_text(self._CORE_FEATURES)
         return root
 
     def test_references_moves_every_reference_to_the_version(self) -> None:
@@ -179,16 +188,18 @@ class ReleaseVersionTest(unittest.TestCase):
             with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
                 root = self._repository(directory)
                 changed = release_version.set_references(root, release_version.Version(version))
-                self.assertEqual(changed, ["drivine4j-sample/.drivine/model.json", "README.md"])
+                self.assertEqual(changed, self._FILES)
                 self.assertEqual(
                     (root / "drivine4j-sample" / ".drivine" / "model.json").read_text(),
                     self._MODEL.replace('"version": "0.3.0",\n', f'"version": "{version}",\n'),
                 )
-                readme = (root / "README.md").read_text()
-                self.assertNotIn("org.drivine:drivine4j:0.3.0", readme)
-                self.assertEqual(readme.count(f"drivine4j:{version}"), 3)
-                self.assertEqual(readme.count(f"<version>{version}</version>"), 2)
-                self.assertEqual([found for _, found in release_version.references(root)], [version] * 10)
+                self.assertIn(f"drivine4j-spring-boot-starter:{version}", (root / "README.md").read_text())
+                installation = (root / "docs" / "03-installation.md").read_text()
+                self.assertNotIn("org.drivine:drivine4j:0.3.0", installation)
+                self.assertEqual(installation.count(f"drivine4j:{version}"), 3)
+                self.assertEqual(installation.count(f"<version>{version}</version>"), 2)
+                self.assertIn(f"drivine4j-coroutines:{version}", (root / "docs" / "07-core-features.md").read_text())
+                self.assertEqual([found for _, found in release_version.references(root)], [version] * 11)
 
     def test_references_leaves_a_dependencys_version_alone(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -196,8 +207,12 @@ class ReleaseVersionTest(unittest.TestCase):
             release_version.set_references(root, release_version.Version("0.4.0"))
             readme = (root / "README.md").read_text()
             self.assertIn('implementation("com.example:drivine4j-extras:0.3.0")', readme)
-            self.assertIn("<artifactId>kotlin-maven-symbol-processing</artifactId>\n<version>0.3.0</version>", readme)
-            self.assertIn("The tags 0.0.3 and 0.3.0 were made by hand. ksp version 2.2.20-0.3.0.", readme)
+            self.assertIn("The tags 0.0.3 and 0.3.0 were made by hand.", readme)
+            installation = (root / "docs" / "03-installation.md").read_text()
+            self.assertIn(
+                "<artifactId>kotlin-maven-symbol-processing</artifactId>\n<version>0.3.0</version>", installation
+            )
+            self.assertIn("ksp version 2.2.20-0.3.0.", installation)
             model = (root / "drivine4j-sample" / ".drivine" / "model.json").read_text()
             self.assertIn('[{"version": "0.3.0"}]', model)
 
@@ -205,12 +220,18 @@ class ReleaseVersionTest(unittest.TestCase):
         for name, original, changed in [
             # A snippet reworded, so the pattern no longer finds it.
             (
-                "README.md",
-                self._README,
-                self._README.replace("org.drivine:drivine4j-coroutines:", "drivine4j-coroutines "),
+                "docs/07-core-features.md",
+                self._CORE_FEATURES,
+                self._CORE_FEATURES.replace("org.drivine:drivine4j-coroutines:", "drivine4j-coroutines "),
             ),
             # A snippet added, which REFERENCES doesn't count yet.
             ("README.md", self._README, self._README + 'implementation("org.drivine:drivine4j-spring:0.3.0")\n'),
+            # A Maven snippet moved out of the installation page.
+            (
+                "docs/03-installation.md",
+                self._INSTALLATION,
+                self._INSTALLATION.replace("<groupId>org.drivine</groupId>", "<groupId>org.example</groupId>", 1),
+            ),
             # The model file's generator written another way.
             ("drivine4j-sample/.drivine/model.json", self._MODEL, self._MODEL.replace('"library": "drivine4j",', "")),
         ]:
@@ -220,8 +241,8 @@ class ReleaseVersionTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release_version.set_references(root, release_version.Version("0.4.0"))
                 self.assertEqual((root / name).read_text(), changed)
-                self.assertEqual((root / "drivine4j-sample" / ".drivine" / "model.json").read_text().count("0.4.0"), 0)
-                self.assertNotIn("0.4.0", (root / "README.md").read_text())
+                for file in self._FILES:
+                    self.assertNotIn("0.4.0", (root / file).read_text())
 
     def test_references_command_prints_the_files_it_changed_one_a_line(self) -> None:
         # Prepare release reads this output into git add, so each file changed is a line of its own, from the root.
@@ -229,7 +250,7 @@ class ReleaseVersionTest(unittest.TestCase):
             self._repository(directory)
             with contextlib.redirect_stdout(io.StringIO()) as stdout:
                 self.assertEqual(release_version.main(["references", directory, "0.4.0"]), 0)
-            self.assertEqual(stdout.getvalue(), "drivine4j-sample/.drivine/model.json\nREADME.md\n")
+            self.assertEqual(stdout.getvalue(), "".join(f"{file}\n" for file in self._FILES))
 
     def test_references_fails_when_a_file_is_missing(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

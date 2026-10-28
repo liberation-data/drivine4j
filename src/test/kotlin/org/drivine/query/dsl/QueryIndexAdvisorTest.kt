@@ -40,7 +40,7 @@ import kotlin.test.assertTrue
  *
  * The rule under test is that the index must **mirror** the ordering — same properties, same order.
  * Partial coverage does not count, because a composite index that only overlaps the cursor is the
- * case that profiles worst (see the README's pagination section).
+ * case that profiles worst (see "Limit & Pagination" in docs/06-object-manager.md).
  */
 class QueryIndexAdvisorTest {
 

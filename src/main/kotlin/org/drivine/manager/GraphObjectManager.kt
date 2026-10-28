@@ -42,7 +42,7 @@ import org.slf4j.LoggerFactory
  */
 @Deprecated(
     "Use StatelessGraphObjectManager (GraphObjectManagerFactory.stateless()). A save by this manager depends on its " +
-        "session's snapshot, so a node changed elsewhere gets a partial save. See the README: Migrating from GraphObjectManager.",
+        "session's snapshot, so a node changed elsewhere gets a partial save. See docs/15-migrating-from-graphobjectmanager.md: Migrating from GraphObjectManager.",
 )
 class GraphObjectManager internal constructor(
     private val persistenceManager: PersistenceManager,
@@ -444,7 +444,7 @@ class GraphObjectManager internal constructor(
 
     /**
      * Reports when an ordered query has no range index to seek into. See [indexAdvice] for the
-     * levels, and the README's pagination section for why the index must mirror the ordering
+     * levels, and "Limit & Pagination" in docs/06-object-manager.md for why the index must mirror the ordering
      * exactly rather than merely overlap it.
      *
      * Only root-level orders participate — a collection sort happens inside a pattern comprehension,

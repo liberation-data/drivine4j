@@ -38,7 +38,7 @@ internal data class KeysetPlan(
  * **Nulls.** A row whose ordered property is null never satisfies a comparison, so it is dropped by
  * every page after the first. Engines also disagree on where nulls sort, so the explicit
  * `IS NOT NULL` is what makes that exclusion identical everywhere rather than a per-engine accident.
- * Keyset properties should be non-null in the data; see the README's pagination section. An order
+ * Keyset properties should be non-null in the data; see "Limit & Pagination" in docs/06-object-manager.md. An order
  * that places its nulls ([NullPlacement]) asks for those rows, which no cursor here reaches, so it is refused.
  */
 internal object KeysetPlanner {
