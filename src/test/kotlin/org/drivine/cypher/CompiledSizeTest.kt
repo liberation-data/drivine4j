@@ -298,4 +298,31 @@ class CompiledSizeTest {
             assertTrue(sumGrowth < avgGrowth * 1.1, "$name: from 2 levels to 4, sum grew $sumGrowth times, avg $avgGrowth")
         }
     }
+
+    @Test
+    fun `an aggregate of temporal arithmetic compiles to about the statement a WITH working its argument out first does`() {
+        // #333: an aggregate's argument was compiled with nothing bound, so count(Z + duration({minutes: i})) wrote the
+        // duration's fields and the addition's operands out again at each level: 1.0 MB on Postgres, 3.4 MB on Oracle and
+        // 2.0 MB on SQLite, and min() 10 MB on Oracle. Worked out first, for each row, it binds them as any item does.
+        val z = "datetime('2024-03-15T10:00:00+02:00')"
+        val within = "datetime('2024-03-15T09:30:00Z')"
+        // Each aggregating statement, and the same with a WITH working the aggregate's argument out first.
+        val statements = listOf("count", "collect", "min", "max", "sum", "avg").map { aggregate ->
+            val argument = if (aggregate in setOf("sum", "avg")) "($z + duration({minutes: i})).minute" else "$z + duration({minutes: i})"
+            "UNWIND range(1, 3) AS i RETURN $aggregate($argument)" to "UNWIND range(1, 3) AS i WITH $argument AS t RETURN $aggregate(t)"
+        } + listOf(
+            "UNWIND range(1, 3) AS i WITH i % 2 AS k, collect($z + duration({minutes: i})) AS l RETURN k ORDER BY l" to
+                "UNWIND range(1, 3) AS i WITH i % 2 AS k, $z + duration({minutes: i}) AS t WITH k, collect(t) AS l RETURN k ORDER BY l",
+            "UNWIND range(1, 3) AS i RETURN count(DISTINCT $z + duration({minutes: i}))" to
+                "UNWIND range(1, 3) AS i WITH $z + duration({minutes: i}) AS t RETURN count(DISTINCT t)",
+            "MATCH (n:E) RETURN sum(size([x IN [datetime(n.at), datetime(n.at) + duration('PT1H')] WHERE x > $within]))" to
+                "MATCH (n:E) WITH size([x IN [datetime(n.at), datetime(n.at) + duration('PT1H')] WHERE x > $within]) AS s RETURN sum(s)",
+        )
+        compilers.forEach { compiler ->
+            statements.forEach { (aggregating, first) ->
+                val (size, reference) = listOf(aggregating, first).map { compiler.compile(it, emptyMap()).sql.length }
+                assertTrue(size < 120_000 && size < reference * 1.2, "${compiler::class.simpleName}: $aggregating: $size characters, $reference with a WITH first")
+            }
+        }
+    }
 }
