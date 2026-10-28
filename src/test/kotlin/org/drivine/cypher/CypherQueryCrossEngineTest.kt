@@ -1076,9 +1076,9 @@ abstract class CypherQueryContract {
     fun `a text past 4,000 bytes is measured, cut, changed, searched and added to whole, as a short one is`() {
         // Beside the spec's case since v0.6.17 (#298): stored and made by the statement too, and more functions and edge cases.
         // Oracle read a text from JSON as a VARCHAR2, which holds 4,000 bytes, and a longer one as null. One function a
-        // statement. Past 32 KB, given only: Oracle closes the session (ORA-03113) after statements that read such a text from a
-        // property and from a parameter in turn, much as it does for one read over two rows (#255), and its sessions hold more of
-        // its memory for each statement that reads one the statement makes, up to the instance's limit (ORA-04036).
+        // statement. Past 32 KB too, given, stored and made: Oracle closed the session (ORA-03113) after statements that read such
+        // a text from a property and from a parameter in turn, and its sessions held megabytes for each compiled statement the
+        // driver kept, up to the instance's limit (ORA-04036, #313).
         clear()
         for (length in listOf(5_000, 40_000)) {
             val t = " " + "aB".repeat((length - 2) / 2) + " "
@@ -1095,13 +1095,11 @@ abstract class CypherQueryContract {
                 "t CONTAINS 'BaB'" to true, "t CONTAINS 'z'" to false, "t CONTAINS left(t, 4100)" to true, "t =~ ' (aB)+ '" to true,
                 "t + 'z'" to t + "z", "'z' + t" to "z" + t, "t + t" to t + t, "t + 1" to t + "1", "toString(t)" to t, "isEmpty(t)" to false,
             )
-            val short = length < 32_000
-            if (short) query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
+            query("CREATE (n:CyLongText {t: \$t})", mapOf("t" to t))
             val parts = mapOf("a" to t.substring(0, length / 2), "b" to t.substring(length / 2))
             for ((function, expected) in functions) {
                 // Given, and stored and read in one row, and made by the statement.
                 assertEquals(listOf(expected), query("WITH \$t AS t RETURN $function", mapOf("t" to t)), "$function given, $length")
-                if (!short) continue
                 assertEquals(listOf(expected), query("MATCH (n:CyLongText) WITH n.t AS t RETURN $function"), "$function stored, $length")
                 assertEquals(listOf(expected), query("WITH \$a + \$b AS t RETURN $function", parts), "$function made, $length")
             }
