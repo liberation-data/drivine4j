@@ -1560,8 +1560,8 @@ abstract class CypherQueryContract {
 
     @Test
     fun `two lists are ordered item by item, and a pair that is not ordered makes the comparison null`() {
-        // Not in the spec yet (#349; https://github.com/liberation-data/drivine-cypher-spec/pull/28): the SQL stores gave null for <, <=, > and >= of two lists. The first pair that is not equal
-        // decides, a list that starts the other comes first, and a pair with a null or of two kinds is not ordered, as on Neo4j.
+        // #349: the SQL stores gave null for <, <=, > and >= of two lists. The first pair that is not equal decides, a list that starts
+        // the other comes first, and a pair with a null or of two kinds is not ordered, as on Neo4j.
         fun row(cypher: String) = query(cypher).single()
         assertEquals(
             listOf(false, true, true, true, false, true, true, true),
@@ -1640,7 +1640,7 @@ abstract class CypherQueryContract {
 
     @Test
     fun `toString of a list is refused`() {
-        // Not in the spec yet (#349; https://github.com/liberation-data/drivine-cypher-spec/pull/28): Neo4j refuses it when it plans the statement, and the compiler when it compiles it.
+        // #349: Neo4j refuses it when it plans the statement, and the compiler when it compiles it.
         assertThrows<Exception> { query("WITH [1, 2] AS l RETURN toString(l)") }
         assertThrows<Exception> { query("WITH [localdatetime('2024-03-15T10:00:00')] AS l RETURN toString(l)") }
     }
