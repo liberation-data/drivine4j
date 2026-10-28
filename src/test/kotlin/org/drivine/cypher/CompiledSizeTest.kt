@@ -384,6 +384,9 @@ class CompiledSizeTest {
             "$walk RETURN a.id AS a, b.id AS bb ORDER BY [x IN [b.m] | (datetime(b.at) + duration({minutes: x + a})).minute][0]" to
                 "$walk WITH a, b, [x IN [b.m] | (datetime(b.at) + duration({minutes: x + a.id})).minute][0] AS t RETURN a.id AS a, b.id AS bb ORDER BY t",
             "$walk WITH a, b ORDER BY $minute SKIP 1 LIMIT 3 RETURN a.id AS a" to "$walk WITH a, b, $minute AS t WITH a, b ORDER BY t SKIP 1 LIMIT 3 RETURN a.id AS a",
+            // Reading an item made anew, randomUUID(), by its name: SQLITE_TOOBIG before, where it was left to `project`.
+            "$walk RETURN randomUUID() AS u ORDER BY u + coalesce(toString($minute), '')" to
+                "$walk WITH b, randomUUID() AS u WITH u, u + coalesce(toString($minute), '') AS t RETURN u ORDER BY t",
         )
         // After DISTINCT, the term is worked out over the items' columns, after the walk, where it binds its values already.
         val distinct = "$walk RETURN DISTINCT b.m AS m, b.at AS at ORDER BY (datetime(at) + duration({minutes: m})).minute"

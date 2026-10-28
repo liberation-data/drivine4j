@@ -196,11 +196,44 @@ abstract class CypherTemporalContract {
             listOf(listOf(4L, 0L), listOf(5L, 0L), listOf(1L, 1L), listOf(4L, 3L), listOf(1L, 4L), listOf(2L, 4L)),
             query("$walk RETURN a.id AS a, b.m AS b ORDER BY (datetime('2024-03-15T10:00Z') + duration({minutes: b * 7})).minute, a"),
         )
+        // Items named as each other's variables: a is b.id and b is a.id, each read as its own item.
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(1L, 3L), listOf(2L, 3L), listOf(4L, 5L), listOf(4L, 6L), listOf(5L, 6L)),
+            query("$walk RETURN a.id AS b, b.id AS a ORDER BY (datetime('2024-03-15T10:00Z') + duration({minutes: a * 7 + b})).minute, a, b"),
+        )
+        // An item's name read in a subquery: a is a.id there too, not the node.
+        assertEquals(
+            listOf(listOf(4L, 5L), listOf(5L, 6L), listOf(4L, 6L), listOf(1L, 2L), listOf(1L, 3L), listOf(2L, 3L)),
+            query("$walk RETURN a.id AS a, b.id AS bb ORDER BY COUNT { MATCH (x:CyAgg) WHERE x.id <= a } * datetime(b.at).minute DESC, a, bb"),
+        )
+        // An item's name read in a pattern, or as a map projection's variable, where it is not replaced: a is a.id there too.
+        assertEquals(
+            listOf(listOf(4L, 5L), listOf(5L, 6L), listOf(1L, 2L), listOf(1L, 3L), listOf(2L, 3L), listOf(4L, 6L)),
+            query("$walk RETURN a.id AS a, b.id AS bb ORDER BY size([(b)<-[:NEXT]-(x:CyAgg {id: a}) | x.id]) * datetime(b.at).minute DESC, a, bb"),
+        )
+        assertEquals(
+            listOf(listOf(4L, 5L), listOf(5L, 6L), listOf(4L, 6L), listOf(1L, 2L), listOf(1L, 3L), listOf(2L, 3L)),
+            query("$walk RETURN a.id AS a, b.id AS bb ORDER BY b{.m, a}.a * datetime(b.at).minute DESC, a, bb"),
+        )
         // In a WITH, skipped and limited, and the rows read in that order after it.
         assertEquals(
             listOf(listOf(4L, 6L), listOf(5L, 6L), listOf(1L, 3L)),
             query("$walk WITH a, b ORDER BY $minute DESC, a.id, b.id SKIP 1 LIMIT 3 RETURN a.id AS a, b.id AS bb"),
         )
+        // Limited, then filtered by the WITH's WHERE.
+        assertEquals(
+            listOf(listOf(4L, 5L), listOf(4L, 6L), listOf(5L, 6L)),
+            query("$walk WITH a, b ORDER BY $minute DESC, a.id, b.id LIMIT 4 WHERE a.id > 1 RETURN a.id AS a, b.id AS bb"),
+        )
+        // An item made anew for each row, randomUUID(), read by its name: sorted by as it is given. Made again for the term,
+        // the rows came out of order; left to `project`, the statement was too long for SQLite.
+        val made = query("$walk RETURN randomUUID() AS u ORDER BY u + coalesce(toString($minute), '')")
+        assertEquals(made.map { it as String }.sorted(), made)
+        // Beside it, an item made anew that no term reads, and one not made anew, are given as they were.
+        val beside = query("$walk RETURN randomUUID() AS u, randomUUID() AS v, b.id AS bb ORDER BY v + coalesce(toString($minute), '')").map { it as List<*> }
+        assertEquals(beside.map { it[1] as String }.sorted(), beside.map { it[1] })
+        assertEquals(listOf(2L, 3L, 3L, 5L, 6L, 6L), beside.map { it[2] as Long }.sorted())
+        assertEquals(12, beside.flatMap { it.take(2) }.toSet().size)
         // After DISTINCT, over the items, as Neo4j sorts there.
         assertEquals(
             listOf(1L, 4L, 0L, 3L),

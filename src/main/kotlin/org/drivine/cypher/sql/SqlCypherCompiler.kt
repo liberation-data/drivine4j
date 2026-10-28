@@ -2121,16 +2121,24 @@ abstract class SqlCypherCompiler(graph: String) {
          *
          * Only where rows are not compared: after DISTINCT or an aggregate, a term is sorted by over the items' columns, as
          * Neo4j sorts by nothing else there. A term that reads an item's name reads that item's expression, as it is sorted
-         * by, in a comprehension's or a reduce's own expressions too. One that reads it where that is not done, where a name the
-         * comprehension binds would hide it or a variable of the item's expression, or in a pattern, is left as it was.
+         * by, in a comprehension's, a quantifier's or a reduce's own expressions too. Left as it was, in the order these are
+         * seen: a term holding an aggregate, an aggregate's result aggregatesFirst worked out, or randomUUID(); one holding a
+         * subquery, whose names neither [scoped] nor [variablesIn] sees; one that reads an item's name where it is not
+         * replaced, where a name the comprehension binds would hide it or a variable of the item's expression, in a pattern
+         * or as a map projection's variable; and one that, so read, is an item or binds nothing. An item made anew,
+         * randomUUID(), that such a term reads is made first, in a `WITH *` before the term's, and read from there by both.
          */
         private fun sortsFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             if (!sharing || !select.walks || projection.distinct || items.any { contains(it.expression, ::isAggregate) }) return null
             val named = items.associate { it.name to it.expression }
             val terms = linkedMapOf<Expression, Expression>()
+            // Each item made anew that a term reads, by its name, and the column it is made first in.
+            val made = linkedMapOf<String, String>()
             projection.orderBy.map { it.expression }.distinct().forEach { term ->
-                // An aggregate's result, aggregatesFirst's, is sorted by as `project` sorts it.
+                // An aggregate's result, aggregatesFirst's, is sorted by as `project` sorts it; so is a randomUUID() of its own.
                 if (contains(term) { isAggregate(it) || isAnew(it) || it is Expression.Variable && it.name.startsWith("#aggregate") }) return@forEach
+                // A subquery's, `COUNT { … }`'s, names are seen by neither scoped nor variablesIn: one there is read as it was.
+                if (holdsSubquery(term)) return@forEach
                 // Each item's name read first as a name no variable has, so one left where it is not replaced is seen.
                 val marked = scoped(term) { v, local ->
                     v.takeIf { it.name in named && it.name !in local && local.none { name -> name in variablesIn(named.getValue(it.name)) } }
@@ -2139,9 +2147,24 @@ abstract class SqlCypherCompiler(graph: String) {
                 if (variablesIn(marked).any { it in named }) return@forEach
                 val read = scoped(marked) { v, _ -> if (v.name.startsWith("#item ")) named[v.name.removePrefix("#item ")] else null }
                 // A term that is an item, as written or by its name, is sorted by as `project` sorts it: by the item, bound as it is.
-                if (items.none { it.expression == read } && !contains(read, ::isAnew) && binds(read, select)) terms[term] = read
+                if (items.none { it.expression == read } && binds(read, select)) {
+                    terms[term] = read
+                    contains(marked) { e ->
+                        val name = (e as? Expression.Variable)?.name?.takeIf { it.startsWith("#item ") }?.removePrefix("#item ")
+                        if (name != null && contains(named.getValue(name), ::isAnew)) made.getOrPut(name) { "#sort${++counter}" }
+                        false
+                    }
+                }
             }
             if (terms.isEmpty()) return null
+            // An item made anew for each row, randomUUID(), that a term reads is made first, in a WITH of its own, as a WITH's
+            // items read none of each other; the projection, compiled again, reads it and works the term out over its column.
+            // Worked out in the term, it would be made again, and the rows sorted by a value none of them is given.
+            if (made.isNotEmpty()) {
+                val with = Projection(false, true, made.map { (name, column) -> Projection.Item(named.getValue(name), column) }, emptyList(), null, null)
+                val kept = projection.copy(star = false, items = items.map { item -> made[item.name]?.let { item.copy(expression = Expression.Variable(it)) } ?: item })
+                return with(select, Clause.With(with, null), select.scope.filterKeys { it !in select.bound }, apart = true) to kept
+            }
             // Named as no variable is, unless quoted so.
             val names = terms.keys.associateWith { "#sort${++counter}" }
             val with = Projection(false, true, terms.map { (term, read) -> Projection.Item(read, names.getValue(term)) }, emptyList(), null, null)
