@@ -112,6 +112,25 @@ class SqliteCypherFunctionsTest {
     }
 
     @Test
+    fun `drivine_list_order orders two lists as Cypher compares them, and gives null where either is no list`() {
+        assertEquals(
+            listOf(-1L, 0L, 1L, -1L, 1L, -1L, 0L),
+            row(
+                "SELECT drivine_list_order('[1, 2]', '[1, 3]'), drivine_list_order('[1, 2.0]', '[1.0, 2]'), drivine_list_order('[[1, 2]]', '[[1]]'), " +
+                    "drivine_list_order('[\"\\uffff\"]', '[\"\\ud83d\\ude00\"]'), drivine_list_order('[9007199254740993]', '[9007199254740992]'), " +
+                    "drivine_list_order('[false]', '[true]'), drivine_list_order('[{\"a\": 1}]', '[{\"a\": 1.0}]')"
+            ),
+        )
+        assertEquals(
+            listOf(null, null, null, null, null, null),
+            row(
+                "SELECT drivine_list_order('[null]', '[1]'), drivine_list_order('[1]', '[\"1\"]'), drivine_list_order('[{\"a\": 1}]', '[{\"a\": 2}]'), " +
+                    "drivine_list_order('1', '[1]'), drivine_list_order('[1]', '{}'), drivine_list_order(NULL, '[1]')"
+            ),
+        )
+    }
+
+    @Test
     fun `drivine_temporal reads, moves, measures and cuts a timestamp`() {
         assertEquals(
             listOf(
