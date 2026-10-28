@@ -317,6 +317,9 @@ class CompiledSizeTest {
                 "UNWIND range(1, 3) AS i WITH $z + duration({minutes: i}) AS t RETURN count(DISTINCT t)",
             "MATCH (n:E) RETURN sum(size([x IN [datetime(n.at), datetime(n.at) + duration('PT1H')] WHERE x > $within]))" to
                 "MATCH (n:E) WITH size([x IN [datetime(n.at), datetime(n.at) + duration('PT1H')] WHERE x > $within]) AS s RETURN sum(s)",
+            // Sorted beside a variable-length walk by an aggregate that is none of the items: too long for SQLite before.
+            "MATCH (a:E)-[:NEXT*1..2]->(b:E) RETURN a.id AS a, count(*) AS c ORDER BY sum((datetime(b.at) + duration({minutes: b.m})).minute)" to
+                "MATCH (a:E)-[:NEXT*1..2]->(b:E) WITH a, (datetime(b.at) + duration({minutes: b.m})).minute AS t RETURN a.id AS a, count(*) AS c ORDER BY sum(t)",
         )
         compilers.forEach { compiler ->
             statements.forEach { (aggregating, first) ->

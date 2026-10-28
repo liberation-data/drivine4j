@@ -2071,8 +2071,9 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun sharedFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             if (!sharing) return null
-            // Beside a variable-length walk, an order term that is none of the items binds no value: see `project`.
-            val terms = items.map { it.expression } + if (select.walks) emptyList() else projection.orderBy.map { it.expression }
+            // Order terms too, beside a variable-length walk as well: there `project` binds no value in one that is none of the
+            // items, so worked out here, in a WITH's item, is the only place its aggregate's argument binds one.
+            val terms = items.map { it.expression } + projection.orderBy.map { it.expression }
             val arguments = linkedSetOf<Expression>()
             terms.forEach { term ->
                 contains(term) { e ->
