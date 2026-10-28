@@ -2585,8 +2585,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     is Value.Node -> if (expression.key != Stamps.PROPERTY) return Value.Json(itemProperty(subject.props, expression.key), flat = true)
                     is Value.Relationship -> return Value.Json(itemProperty(subject.props, expression.key), flat = true)
                     // A value of an unwound item, but a temporal value's field, and one a write reads from its row as rowValue does.
+                    // It may hold temporal values deeper, as property() has it, so that a list of them is read by its places (#369).
                     is Value.Json -> if (subject.fromList && subject.temporal == null && subject.rowKeys == null && expression.key !in temporals.fieldNames)
-                        return Value.Json(itemValue(comparable(subject), expression.key))
+                        return Value.Json(itemValue(comparable(subject), expression.key), temporals = subject.temporals)
                     else -> {}
                 }
             }
