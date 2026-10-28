@@ -554,10 +554,11 @@ Return one map or one value, as [RETURN Clause Best Practices](#important-return
 
 What each statement gives on each store is set out in
 [drivine-cypher-spec](https://github.com/liberation-data/drivine-cypher-spec), which all three Drivine libraries run in
-their tests. drivine4j 0.3.0 passes v0.6.6 of it; `src/test/resources/cypher/VERSION` names the version a checkout
-runs. It covers reads and writes (`CREATE`, `MERGE`, `SET`, `REMOVE`, `DELETE`), `OPTIONAL MATCH`, aggregation,
-`UNION`, `CALL { … }`, `EXISTS { … }`, `FOREACH`, variable-length relationships, quantified path patterns,
-`shortestPath`, list comprehensions and openCypher's temporal values.
+their tests. Each release of drivine4j passes the version of it named in that release's
+`src/test/resources/cypher/VERSION`, as does each checkout. It covers reads and writes (`CREATE`, `MERGE`, `SET`,
+`REMOVE`, `DELETE`), `OPTIONAL MATCH`, aggregation, `UNION`, `CALL { … }`, `EXISTS { … }`, `FOREACH`,
+variable-length relationships, quantified path patterns, `shortestPath`, list comprehensions and openCypher's temporal
+values.
 
 Cypher the compiler doesn't take is refused by name before anything is sent, with a `DrivineException` such as
 `SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the

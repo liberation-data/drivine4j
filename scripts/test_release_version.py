@@ -10,7 +10,9 @@ release.yml's check job runs them before it uses the script.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -142,6 +144,104 @@ class ReleaseVersionTest(unittest.TestCase):
 
     def test_reads_the_version_within_its_line_as_the_workflows_sed_does(self) -> None:
         self.assertEqual(release_version.declared("version = '0.3.0\nfoo = 'bar'\n"), [])
+
+    # A repository holding the files REFERENCES names, at 0.3.0, with a dependency's 0.3.0 beside each reference.
+    _MODEL = (
+        '{\n  "format": "drivine-model/1",\n  "generator": {\n    "library": "drivine4j",\n    "version": "0.3.0",\n'
+        '    "language": "kotlin"\n  },\n  "module": "drivine4j-sample",\n  "fragments": [{"version": "0.3.0"}]\n}\n'
+    )
+    _README = (
+        'implementation("org.drivine:drivine4j-spring-boot-starter:0.3.0")\n'
+        'implementation("org.drivine:drivine4j:0.3.0")\n'
+        "implementation 'org.drivine:drivine4j:0.3.0'\n"
+        "<dependency>\n    <groupId>org.drivine</groupId>\n    <artifactId>drivine4j</artifactId>\n"
+        "    <version>0.3.0</version>\n</dependency>\n"
+        'implementation("org.drivine:drivine4j:0.3.0")\nksp("org.drivine:drivine4j-codegen:0.3.0")\n'
+        "<groupId>org.drivine</groupId>\n<artifactId>drivine4j-codegen</artifactId>\n<version>0.3.0</version>\n"
+        "annotationProcessor 'org.drivine:drivine4j-codegen-java:0.3.0'\n"
+        'implementation("org.drivine:drivine4j-coroutines:0.3.0")\n'
+        # A dependency's version, and prose, that look the same: left as they are.
+        'implementation("com.example:drivine4j-extras:0.3.0")\n'
+        "<groupId>com.dyescape</groupId>\n<artifactId>kotlin-maven-symbol-processing</artifactId>\n"
+        "<version>0.3.0</version>\n"
+        "The tags 0.0.3 and 0.3.0 were made by hand. ksp version 2.2.20-0.3.0.\n"
+    )
+
+    def _repository(self, directory: str) -> Path:
+        root = Path(directory)
+        (root / "drivine4j-sample" / ".drivine").mkdir(parents=True)
+        (root / "drivine4j-sample" / ".drivine" / "model.json").write_text(self._MODEL)
+        (root / "README.md").write_text(self._README)
+        return root
+
+    def test_references_moves_every_reference_to_the_version(self) -> None:
+        for version in ["0.4.0", "0.4.0-rc.1"]:
+            with self.subTest(version=version), tempfile.TemporaryDirectory() as directory:
+                root = self._repository(directory)
+                changed = release_version.set_references(root, release_version.Version(version))
+                self.assertEqual(changed, ["drivine4j-sample/.drivine/model.json", "README.md"])
+                self.assertEqual(
+                    (root / "drivine4j-sample" / ".drivine" / "model.json").read_text(),
+                    self._MODEL.replace('"version": "0.3.0",\n', f'"version": "{version}",\n'),
+                )
+                readme = (root / "README.md").read_text()
+                self.assertNotIn("org.drivine:drivine4j:0.3.0", readme)
+                self.assertEqual(readme.count(f"drivine4j:{version}"), 3)
+                self.assertEqual(readme.count(f"<version>{version}</version>"), 2)
+                self.assertEqual([found for _, found in release_version.references(root)], [version] * 10)
+
+    def test_references_leaves_a_dependencys_version_alone(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._repository(directory)
+            release_version.set_references(root, release_version.Version("0.4.0"))
+            readme = (root / "README.md").read_text()
+            self.assertIn('implementation("com.example:drivine4j-extras:0.3.0")', readme)
+            self.assertIn("<artifactId>kotlin-maven-symbol-processing</artifactId>\n<version>0.3.0</version>", readme)
+            self.assertIn("The tags 0.0.3 and 0.3.0 were made by hand. ksp version 2.2.20-0.3.0.", readme)
+            model = (root / "drivine4j-sample" / ".drivine" / "model.json").read_text()
+            self.assertIn('[{"version": "0.3.0"}]', model)
+
+    def test_references_fails_and_writes_nothing_when_a_reference_is_missing(self) -> None:
+        for name, original, changed in [
+            # A snippet reworded, so the pattern no longer finds it.
+            (
+                "README.md",
+                self._README,
+                self._README.replace("org.drivine:drivine4j-coroutines:", "drivine4j-coroutines "),
+            ),
+            # A snippet added, which REFERENCES doesn't count yet.
+            ("README.md", self._README, self._README + 'implementation("org.drivine:drivine4j-spring:0.3.0")\n'),
+            # The model file's generator written another way.
+            ("drivine4j-sample/.drivine/model.json", self._MODEL, self._MODEL.replace('"library": "drivine4j",', "")),
+        ]:
+            with self.subTest(name=name, changed=changed[-60:]), tempfile.TemporaryDirectory() as directory:
+                root = self._repository(directory)
+                (root / name).write_text(changed)
+                with self.assertRaises(ValueError):
+                    release_version.set_references(root, release_version.Version("0.4.0"))
+                self.assertEqual((root / name).read_text(), changed)
+                self.assertEqual((root / "drivine4j-sample" / ".drivine" / "model.json").read_text().count("0.4.0"), 0)
+                self.assertNotIn("0.4.0", (root / "README.md").read_text())
+
+    def test_references_fails_when_a_file_is_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = self._repository(directory)
+            (root / "drivine4j-sample" / ".drivine" / "model.json").unlink()
+            with self.assertRaises(ValueError):
+                release_version.set_references(root, release_version.Version("0.4.0"))
+            self.assertEqual((root / "README.md").read_text(), self._README)
+            with contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(release_version.main(["references", directory, "0.4.0"]), 2)
+            self.assertIn("model.json isn't there", stderr.getvalue())
+
+    def test_the_repository_references_name_build_gradles_version(self) -> None:
+        # REFERENCES is current: every file is there with the count it names, and each reference names the version
+        # build.gradle has, so the next Prepare release moves them all.
+        root = Path(__file__).parents[1]
+        [version] = release_version.declared((root / "build.gradle").read_text())
+        found = release_version.references(root)
+        self.assertEqual(len(found), sum(count for _, _, count in release_version.REFERENCES))
+        self.assertEqual({found_version for _, found_version in found}, {version})
 
 
 if __name__ == "__main__":

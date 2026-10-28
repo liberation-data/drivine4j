@@ -20,6 +20,18 @@ jobs:
       - name: Check the Cypher spec
         run: scripts/check-cypher-spec.sh
 
+  # The version script's tests, which also check that its list of the files naming the version (the sample's model
+  # file and the README's install snippets) matches them, so a snippet added or reworded fails here and not in the
+  # next Prepare release.
+  release-version:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test the version script
+        run: python3 scripts/test_release_version.py
+
   test:
     runs-on: ubuntu-latest
     strategy:

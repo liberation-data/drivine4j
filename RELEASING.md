@@ -65,7 +65,15 @@ included. Only a merged version bump or a pushed tag publishes.
 
 - **Version:** `version` in the root `build.gradle`. Every published module takes it (`version = rootProject.version`),
   and `check` fails if one doesn't. The tag must be `v` and that version, character for character: `v0.3.1` for
-  `0.3.1`. Prepare release changes only this line, through `scripts/release_version.py set`.
+  `0.3.1`. Prepare release changes this line, through `scripts/release_version.py set`, and then, through
+  `scripts/release_version.py references`, the other files that name the version: the generator's version in the
+  sample's model file, `drivine4j-sample/.drivine/model.json` (the code generator stamps it with the version it was
+  built at, and CI fails when the committed file isn't what the build writes), and the install snippets in
+  `README.md`, Gradle's `org.drivine:drivine4j…:X.Y.Z` and Maven's `<version>` in a `drivine4j` dependency. The
+  script's `REFERENCES` lists each file, with a pattern anchored on drivine4j's own coordinates and how many times it
+  is found; Prepare release fails, changing nothing, when one is missing or a count is off, so a moved file or a
+  reworded snippet is noticed. A snippet added, moved or reworded changes the list with it, and its test, run in CI,
+  fails until it does. Prose doesn't name the current version, so it needs no bump.
 - **Push trigger:** a push to `main` that changes `build.gradle`.
 - **Modules:** seven are published, all under `org.drivine`: `drivine4j`, `drivine4j-codegen`,
   `drivine4j-codegen-java`, `drivine4j-codegen-model`, `drivine4j-coroutines`, `drivine4j-spring` and
@@ -97,7 +105,7 @@ included. Only a merged version bump or a pushed tag publishes.
 - **Version arithmetic:** `scripts/release_version.py`, as in drivine-python, bumps a version as
   `npm version --preid rc` does and orders versions by semver precedence, so a prerelease `X.Y.Z-rc.N` comes before
   `X.Y.Z` and `rc.10` after `rc.9`. It needs only the runner's `python3`. Its tests,
-  `python3 scripts/test_release_version.py`, run in `check` and in "Prepare release" before either uses it.
+  `python3 scripts/test_release_version.py`, run in CI, in `check` and in "Prepare release" before either uses it.
 
 The same build, locally, publishing nothing (unsigned, or add `SIGN=true` with `SIGNING_KEY` and `SIGNING_PASSWORD`):
 
