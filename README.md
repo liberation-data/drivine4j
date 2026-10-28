@@ -23,7 +23,7 @@ Java 21+. The object manager needs Kotlin 2.2.0+. For a Spring Boot application,
 
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j-spring-boot-starter:0.3.0")
+    implementation("org.drivine:drivine4j-spring-boot-starter:0.4.0")
 }
 ```
 
