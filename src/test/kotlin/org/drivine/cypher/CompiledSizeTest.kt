@@ -258,9 +258,11 @@ class CompiledSizeTest {
         // #301: under an aggregate nothing is bound, so a CASE of both roundings, nested four deep, wrote the number out in
         // both at each level. The places, written or given, pick the rounding when compiling.
         fun nested(precision: String) = "UNWIND [1.5] AS x RETURN " + "round(".repeat(4) + "sum(x)" + "$precision)".repeat(4)
-        compilers.forEach { compiler ->
-            val name = compiler::class.simpleName
-            fun size(precision: String, parameters: Map<String, Any?> = emptyMap()) = compiler.compile(nested(precision), parameters).sql.length
+        // Each compiled by a compiler of its own: where it binds a value, the subquery it binds it in is named by a count that a
+        // compiler keeps from one statement to the next, so the same statement compiled later may be a few characters longer.
+        listOf({ OracleCypherCompiler("g") }, { PostgresCypherCompiler("g") }, { SqliteCypherCompiler("g") }).forEach { compiler ->
+            val name = compiler()::class.simpleName
+            fun size(precision: String, parameters: Map<String, Any?> = emptyMap()) = compiler().compile(nested(precision), parameters).sql.length
             val whole = size("")
             listOf(", 0", ", -0.5", ", 0.9", ", -\$p").forEach { assertEquals(whole, size(it, mapOf("p" to 0.5)), "$name: round(x$it)") }
             // A parameter, its key, and NaN, which Neo4j casts to 0 places.
@@ -325,6 +327,48 @@ class CompiledSizeTest {
             statements.forEach { (aggregating, first) ->
                 val (size, reference) = listOf(aggregating, first).map { compiler.compile(it, emptyMap()).sql.length }
                 assertTrue(size < 120_000 && size < reference * 1.2, "${compiler::class.simpleName}: $aggregating: $size characters, $reference with a WITH first")
+            }
+        }
+    }
+
+    @Test
+    fun `text functions, texts added and arithmetic over an aggregate's result compile to about the statement a WITH working the aggregate out first does`() {
+        // #373: an operation over an aggregate's result was compiled with nothing bound, as the aggregate is, so it wrote the
+        // aggregate out again at each level: max(n.title) + ': ' + max(n.first) + ' ' + max(n.last) ran the compiler out of memory
+        // on Oracle and compiled to 68 MB on Postgres, and toString() four deep over head(collect(…)) to 23 MB on Oracle.
+        fun four(function: String, over: String) = "$function(".repeat(4) + over + ")".repeat(4)
+        val texts = "max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)"
+        val worked = "WITH max(n.title) AS a, max(n.first) AS b, max(n.last) AS c"
+        // Each statement, and the same with a WITH working its aggregates out first.
+        val statements = listOf(
+            "MATCH (n) RETURN $texts" to "MATCH (n) $worked RETURN a + ': ' + b + ' ' + c",
+            "MATCH (n) RETURN head(collect(n.title)) + ': ' + head(collect(n.first)) + ' ' + head(collect(n.last))" to
+                "MATCH (n) WITH collect(n.title) AS a, collect(n.first) AS b, collect(n.last) AS c RETURN head(a) + ': ' + head(b) + ' ' + head(c)",
+            "MATCH (n) RETURN ${four("toLower", "max(n.name)")}" to "MATCH (n) WITH max(n.name) AS m RETURN ${four("toLower", "m")}",
+            "MATCH (n) RETURN ${four("toLower", "head(collect(n.name))")}" to "MATCH (n) WITH collect(n.name) AS c RETURN ${four("toLower", "head(c)")}",
+            "MATCH (n) RETURN ${four("toLower", "collect(n.name)[0]")}" to "MATCH (n) WITH collect(n.name) AS c RETURN ${four("toLower", "c[0]")}",
+            "MATCH (n) RETURN ${four("trim", "max(n.name)")}" to "MATCH (n) WITH max(n.name) AS m RETURN ${four("trim", "m")}",
+            "MATCH (n) RETURN ${four("toString", "head(collect(n.name))")}" to "MATCH (n) WITH collect(n.name) AS c RETURN ${four("toString", "head(c)")}",
+            "MATCH (n) RETURN substring(substring(substring(substring(max(n.name), 0), 0), 0), 0)" to
+                "MATCH (n) WITH max(n.name) AS m RETURN substring(substring(substring(substring(m, 0), 0), 0), 0)",
+            "MATCH (n) RETURN (sum(n.a) + sum(n.b)) * 2 / count(*) - max(n.a)" to
+                "MATCH (n) WITH sum(n.a) AS a, sum(n.b) AS b, count(*) AS c, max(n.a) AS m RETURN (a + b) * 2 / c - m",
+            // Beside a grouping key, with DISTINCT, as an order term, and beside a variable-length walk.
+            "MATCH (n) RETURN n.k AS k, $texts AS t" to "MATCH (n) WITH n.k AS k, max(n.title) AS a, max(n.first) AS b, max(n.last) AS c RETURN k, a + ': ' + b + ' ' + c AS t",
+            "MATCH (n) RETURN DISTINCT $texts" to "MATCH (n) $worked RETURN DISTINCT a + ': ' + b + ' ' + c",
+            "MATCH (n) RETURN n.k AS k ORDER BY $texts" to
+                "MATCH (n) WITH n.k AS k, max(n.title) AS a, max(n.first) AS b, max(n.last) AS c RETURN k ORDER BY a + ': ' + b + ' ' + c",
+            "MATCH (n)-[*1..3]->(m) RETURN max(m.title) + ': ' + max(m.first) + ' ' + max(m.last)" to
+                "MATCH (n)-[*1..3]->(m) WITH max(m.title) AS a, max(m.first) AS b, max(m.last) AS c RETURN a + ': ' + b + ' ' + c",
+            "MATCH (n)-[*1..3]->(m) RETURN ${four("toLower", "max(m.name)")}" to "MATCH (n)-[*1..3]->(m) WITH max(m.name) AS x RETURN ${four("toLower", "x")}",
+            // An order term beside a walk binds nothing, worked out first or not (see `project`): as it does with a WITH first.
+            "MATCH (n)-[*1..3]->(m) RETURN n.k AS k ORDER BY ${four("toLower", "max(m.name)")}" to
+                "MATCH (n)-[*1..3]->(m) WITH n.k AS k, max(m.name) AS x RETURN k ORDER BY ${four("toLower", "x")}",
+        )
+        compilers.forEach { compiler ->
+            statements.forEach { (over, first) ->
+                val (size, reference) = listOf(over, first).map { compiler.compile(it, emptyMap()).sql.length }
+                assertTrue(size < 120_000 && size < reference * 1.2, "${compiler::class.simpleName}: $over: $size characters, $reference with a WITH first")
             }
         }
     }

@@ -2114,11 +2114,31 @@ abstract class SqlCypherCompiler(graph: String) {
          * the names it takes and the functions it declares (a `reduce`'s on Oracle) are given back, so a statement whose
          * aggregates bind nothing compiles as it did.
          */
-        private fun binds(expression: Expression, select: Select): Boolean {
+        private fun binds(expression: Expression, select: Select): Boolean = binds { expression(expression, select.scope) }
+
+        /**
+         * Whether [shared] would bind a value in [term], over an aggregate's result, where [term] is no aggregate itself:
+         * each aggregate in it compiled as it is, with nothing bound ([aggregating]), and the operations over them with
+         * [shared] on. Compiled only to see, as [binds] is.
+         */
+        private fun bindsOverAggregates(term: Expression, select: Select): Boolean {
+            if (isAggregate(term) || !contains(term, ::isAggregate)) return false
+            return binds {
+                val results = mutableMapOf<String, Value>()
+                // Named as no variable is, unless quoted so.
+                val over = replaced(term) { part ->
+                    if (!isAggregate(part)) null else Expression.Variable("#over${results.size + 1}").also { results[it.name] = unshared { expression(part, select.scope) } }
+                }
+                expression(over, select.scope + results)
+            }
+        }
+
+        /** Whether [shared] binds a value in what [work] compiles, the names it takes and the functions it declares given back. */
+        private fun binds(work: () -> Unit): Boolean {
             val (wasCounter, wasShares, wasBindings) = Triple(counter, shares, sharedBindings)
             val wasFunctions = functions.size
             try {
-                expression(expression, select.scope)
+                work()
                 return sharedBindings > wasBindings
             } finally {
                 counter = wasCounter
@@ -2166,13 +2186,17 @@ abstract class SqlCypherCompiler(graph: String) {
          * or a relationship, not its properties. An order term, or a part of one, that is an item is read by the item's name.
          * A store dedupes no aggregate in the query that makes it, and Oracle's `LISTAGG`, which does, gives at most 4,000
          * bytes; and Oracle reads no aggregate of the query it is in from a subquery, which reading a list item by item is.
-         * Null where the projection does neither.
+         * So too where an operation over an aggregate's result would bind a value ([bindsOverAggregates]): in the query
+         * that aggregates, nothing is bound ([aggregating]), so `max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)`
+         * wrote each aggregate out again at every level, to 68 MB on Postgres, and ran the compiler out of memory on Oracle
+         * (#373); over the aggregates' columns, the operation binds its values as any item does. Null where the projection
+         * does none of these.
          */
         private fun aggregatesFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             fun collectsDistinct(expression: Expression) = expression is Expression.Function && expression.distinct && expression.name.lowercase() == "collect"
             fun iteratesAggregate(expression: Expression) = iterated(expression).any { contains(it, ::isAggregate) }
             val terms = items.map { it.expression } + projection.orderBy.map { it.expression }
-            if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) }) return null
+            if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) || bindsOverAggregates(it, select) }) return null
             // Named as no variable is, unless quoted so.
             val keys = items.filter { !contains(it.expression, ::isAggregate) }.associate { it.expression to "#group${++counter}" }
             val aggregates = linkedMapOf<Expression, String>()
