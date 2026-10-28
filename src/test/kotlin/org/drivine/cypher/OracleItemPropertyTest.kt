@@ -60,13 +60,25 @@ class OracleItemPropertyTest {
     }
 
     @Test
-    fun `a property a sum reads beside a long value is left where it is read, and read by its own path`() {
-        // Bound beside the long value as JSON and read as a CLOB from that, a text past 32 KB closed the session (#370).
+    fun `a property a sum reads beside a long value has its kind and its CLOB bound beside it, by its own path`() {
+        // Bound beside the long value as JSON and read as a CLOB from that, a text past 32 KB closed the session (#370); left
+        // where it is read beside the subquery, a sum of short texts closed it on one row, `a.id + '->' + b.id`.
         val long = "toLower(trim(coalesce(\$p.q, m.name)))"
-        for (shape in listOf("n.a + #", "# + n.a", "size(n.a + #)")) {
+        for (shape in listOf("n.a + #", "# + n.a", "size(n.a + #)", "n.a + duration(#)", "duration(#) + n.a", "n.a - duration(#)")) {
             val sql = compiledBeside("MATCH (n:Doc), (m:Doc) RETURN ${shape.replace("#", long)}")
-            assertTrue(Regex("JSON_VALUE\\(n\\d+.props, '\\$.a' RETURNING CLOB\\)").containsMatchIn(sql), "$shape: $sql")
+            assertTrue(sql.contains("JSON_VALUE(n1.props, '\$.a.type()') AS v"), "$shape: $sql")
+            assertTrue(sql.contains("JSON_VALUE(n1.props, '\$.a' RETURNING CLOB) AS v"), "$shape: $sql")
+            assertTrue(sql.contains("CASE WHEN JSON_VALUE(n1.props, '\$.a.length()' RETURNING NUMBER) > 32767 THEN NULL ELSE JSON_QUERY(n1.props, '\$.a' RETURNING JSON) END AS v"), "$shape: $sql")
+            // Read nowhere else: its length, its JSON, its kind and its CLOB.
+            assertEquals(4, Regex(Regex.escape("n1.props, '\$.a")).findAll(sql).count(), "$shape: $sql")
+            // Its kind and its CLOB are read from their own columns, not from its JSON, which is null past 32,767 characters.
+            val (json, kind) = Regex("END AS (v\\d+), JSON_VALUE\\(n1.props, '\\$.a.type\\(\\)'\\) AS (v\\d+)").find(sql)!!.destructured
+            val view = Regex("(sh\\d+)\\.$kind\\b").find(sql)!!.groupValues[1]
+            assertTrue(!Regex("JSON_VALUE\\($view\\.$json, '\\$(\\.type\\(\\)'\\)|' RETURNING CLOB\\))").containsMatchIn(sql), "$shape: $sql")
         }
+        val sum = OracleCypherCompiler("g").compile("MATCH (a)-[:R]->(b) RETURN a.id + '->' + b.id").sql
+        assertTrue(sum.contains("JSON_VALUE(n2.props, '\$.id.type()') AS v"), sum)
+        assertEquals(4, Regex(Regex.escape("n2.props, '\$.id")).findAll(sum).count(), sum)
     }
 
     @Test
