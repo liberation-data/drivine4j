@@ -46,8 +46,14 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
         administer("DROP USER IF EXISTS $user CASCADE")
     }
 
+    /**
+     * A pool of [POOL_MAX] sessions, not Hikari's ten: the tests need several pools connecting at once, not many sessions
+     * each. With ten each the class opened about 150 sessions in a few seconds (about 90 with two), and CI's listener,
+     * which counts the sessions it hands out until the instance next reports its load, then turned connections away
+     * (`ORA-12516`).
+     */
     override fun provider(graph: String): JdbcConnectionProvider =
-        JdbcConnectionProvider.pooled("fresh", DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(), user, PASSWORD, graphName = graph)
+        JdbcConnectionProvider.pooled("fresh", DatabaseType.ORACLE, OracleTestContainer.getJdbcUrl(), user, PASSWORD, poolMax = POOL_MAX, graphName = graph)
 
     /** The same user, with what it may make taken from it: it may connect, and read what it owns. */
     override fun readOnly(graph: String): JdbcConnectionProvider {
@@ -110,6 +116,9 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
 
     private companion object {
         const val PASSWORD = "fresh"
+
+        /** The sessions each test pool holds. */
+        const val POOL_MAX = 2
 
         /** Names each test's user apart from the others'. */
         val users = AtomicInteger()
