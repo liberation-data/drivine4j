@@ -1303,6 +1303,35 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a stored text past 32 KB that a text function or a sum reads beside a long value, on two rows, is read whole`() {
+        // On Oracle a value past SHARED_ABOVE's length is bound in a subquery, and a property beside it was bound too, taken
+        // out as JSON and read as a CLOB: a text past 32 KB so closed the session from the second run on (ORA-03113, #370),
+        // as #255's did. A node of another label holds the same text, and is not read.
+        clear()
+        val bio = "a".repeat(40_000) + "x"
+        query("CREATE (:CyBio {name: 'x', first: 'A', bio: \$bio}), (:CyBio {name: 'x', first: 'A', bio: \$bio}), (:CyBioOther {name: 'x', first: 'A', bio: \$bio})", mapOf("bio" to bio))
+        // Long to write as SQL, so bound: a coalesce of a parameter's key, trimmed and made lower case.
+        fun long(text: String) = "toLower(trim(coalesce(\$p.q, $text)))"
+        val each = List(4) { it }
+        val statements = listOf(
+            "MATCH (n:CyBio), (m:CyBio) WHERE n.bio CONTAINS ${long("m.name")} RETURN count(*)" to listOf(4L),
+            "MATCH (n:CyBio), (m:CyBio) WHERE n.bio STARTS WITH ${long("m.first")} RETURN count(*)" to listOf(4L),
+            "MATCH (n:CyBio), (m:CyBio) WHERE n.bio ENDS WITH ${long("m.name")} RETURN count(*)" to listOf(4L),
+            "MATCH (n:CyBio), (m:CyBio) RETURN size(n.bio + ${long("m.name")})" to each.map { 40_002L },
+            "MATCH (n:CyBio), (m:CyBio) RETURN size(${long("m.name")} + n.bio)" to each.map { 40_002L },
+            "MATCH (n:CyBio), (m:CyBio) RETURN size(split(n.bio, ${long("m.name")}))" to each.map { 2L },
+            "MATCH (n:CyBio), (m:CyBio) RETURN size(replace(n.bio, ${long("m.name")}, 'yy'))" to each.map { 40_002L },
+            "MATCH (n:CyBio), (m:CyBio) RETURN right(replace(n.bio, 'x', ${long("m.first")} + 'b'), 3)" to each.map { "aab" },
+            "MATCH (n:CyBio) WITH n WHERE n.bio CONTAINS ${long("n.name")} RETURN count(*)" to listOf(2L),
+        )
+        onOneSession(mapOf("p" to mapOf("q" to null))) { query ->
+            // Oracle closed the session from the second run on.
+            repeat(3) { run -> for ((cypher, expected) in statements) assertEquals(expected, query(cypher), "$cypher, run ${run + 1}") }
+        }
+        clear()
+    }
+
+    @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
         // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()
@@ -1568,10 +1597,10 @@ abstract class CypherQueryContract {
     }
 
     /**
-     * Runs [block] with a query of the statements it is given. On Oracle they run on one session of their own, which is
-     * asked again after each: a statement that crashes the session can do so after its rows came back.
+     * Runs [block] with a query of the statements it is given, each given [parameters]. On Oracle they run on one session of their
+     * own, which is asked again after each: a statement that crashes the session can do so after its rows came back.
      */
-    protected open fun onOneSession(block: (query: (String) -> List<Any?>) -> Unit) = block { query(it) }
+    protected open fun onOneSession(parameters: Map<String, Any?> = emptyMap(), block: (query: (String) -> List<Any?>) -> Unit) = block { query(it, parameters) }
 
     @Test
     fun `an OPTIONAL CALL or an OPTIONAL MATCH in a COUNT or an EXISTS subquery keeps the row it finds nothing for`() {
@@ -1659,11 +1688,12 @@ class CypherQueryOracleTest : CypherQueryContract() {
 
     override fun clear() = OracleTestDatabase.clear(manager)
 
-    override fun onOneSession(block: (query: (String) -> List<Any?>) -> Unit) {
+    override fun onOneSession(parameters: Map<String, Any?>, block: (query: (String) -> List<Any?>) -> Unit) {
         val connection = OracleTestDatabase.connections(manager).connect()
-        fun query(cypher: String): List<Any?> = connection.query(QuerySpecification.withStatement(CypherStatement(cypher)))
+        fun query(cypher: String, parameters: Map<String, Any?> = emptyMap()): List<Any?> =
+            connection.query(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters))
         try {
-            block { cypher -> query(cypher).also { assertEquals(listOf(1L), query("RETURN 1"), "the session after: $cypher") } }
+            block { cypher -> query(cypher, parameters).also { assertEquals(listOf(1L), query("RETURN 1"), "the session after: $cypher") } }
         } finally {
             connection.release()
         }

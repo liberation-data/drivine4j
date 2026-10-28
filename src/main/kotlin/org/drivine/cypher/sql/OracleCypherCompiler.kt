@@ -140,18 +140,62 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * where a text it is given is null, and where what it gives would not fit in a `VARCHAR2`: see [replaceText] and
      * [split]. A short text is not read as a CLOB, which is slower: `COALESCE` reads its second value only where the first
      * is null. [body] knows which it is given by [long].
+     *
+     * A property beside a long value, which is bound in a subquery, has its texts bound beside it, each read by the
+     * property's own path (see [direct]): Oracle closed the session (ORA-03113) where a text past 32 KB was read as a
+     * CLOB, and searched or compared, beside such a subquery for each of two rows or more (#370), where the property was
+     * left where it is read, and where it was bound as JSON and read as a CLOB from that.
      */
-    override fun texts(vararg jsons: String, body: (List<String>) -> String) = shared(*jsons) { xs ->
+    override fun texts(vararg jsons: String, body: (List<String>) -> String): String {
+        val properties = jsons.map(::readInPlace)
+        if (!binds(*jsons) || properties.none { it }) return shared(*jsons) { xs -> textsOf(xs.map(::textsOf), body) }
+        // Within a body given CLOBs, a property's CLOB alone: its VARCHAR2 is not read.
+        val columns = jsons.withIndex().flatMap { (i, json) ->
+            when {
+                !properties[i] -> listOf(json)
+                long -> listOf(textOf(json, clob = true))
+                else -> listOf(textOf(json, clob = false), textOf(json, clob = true))
+            }
+        }
+        return sharedBound(*columns.toTypedArray()) { names ->
+            val next = names.iterator()
+            val texts = jsons.indices.map { i ->
+                when {
+                    !properties[i] -> textsOf(next.next())
+                    long -> next.next().let { whole -> Texts(whole, whole) }
+                    else -> Texts(next.next(), next.next())
+                }
+            }
+            textsOf(texts, body)
+        }
+    }
+
+    /** A text as a `VARCHAR2`, null past 4,000 bytes, and as a CLOB: see [texts]. */
+    private data class Texts(val short: String, val whole: String)
+
+    /** The JSON [json]'s texts: see [textOf]. */
+    private fun textsOf(json: String) = Texts(textOf(json, clob = false), textOf(json, clob = true))
+
+    /** [body] over [texts] as `VARCHAR2`s, and where it gives null, as CLOBs: see [texts]. */
+    private fun textsOf(texts: List<Texts>, body: (List<String>) -> String): String {
         // Within a body given CLOBs, as CLOBs alone.
-        if (long) return@shared body(xs.map { textOf(it, clob = true) })
-        val read = body(xs.map { textOf(it, clob = false) })
+        if (long) return body(texts.map { it.whole })
+        val read = body(texts.map { it.short })
         long = true
-        val whole = try { body(xs.map { textOf(it, clob = true) }) } finally { long = false }
-        "COALESCE($read, $whole)"
+        val whole = try { body(texts.map { it.whole }) } finally { long = false }
+        return "COALESCE($read, $whole)"
     }
 
     /** The JSON [json] as text, where it is a string: a CLOB where [clob], else as [text] reads it; a property by its own path (see [direct]). */
     private fun textOf(json: String, clob: Boolean) = direct(if (clob) longText(json) else text(json), json)
+
+    /**
+     * A property as [propertyOf] reads it, short, is not bound beside a long value as JSON, so [direct] still reads it by
+     * its own path: bound so, it was read as a CLOB from that JSON, and Oracle closed the session (ORA-03113) on a text past
+     * 32 KB read so on two rows (#370), as on #255's. It is short to write out again where it is read. [texts] binds a
+     * property's texts beside the long value instead.
+     */
+    override fun readInPlace(value: String) = value.length <= SHARED_ABOVE && propertyRead(value) != null
 
     /** The properties and the path of [json] where it is a property as [propertyOf] reads it, `JSON_QUERY(props, '$.a' RETURNING JSON)`. */
     private fun propertyRead(json: String): Pair<String, String>? =
