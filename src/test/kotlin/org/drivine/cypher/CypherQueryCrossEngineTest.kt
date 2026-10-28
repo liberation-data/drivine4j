@@ -1639,10 +1639,25 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `toString of a list is refused`() {
-        // #349: Neo4j refuses it when it plans the statement, and the compiler when it compiles it.
-        assertThrows<Exception> { query("WITH [1, 2] AS l RETURN toString(l)") }
-        assertThrows<Exception> { query("WITH [localdatetime('2024-03-15T10:00:00')] AS l RETURN toString(l)") }
+    fun `two lists are ordered in an aggregate's argument, beside a walk, against a long literal, and out of an unwound map`() {
+        // #349 beside #359, which compiles an aggregate's argument once only to see, #362's literals written in parts, and #381's
+        // temporal values of an unwound map: on Oracle, the query declares its function once, and calls it.
+        clear()
+        seed("CREATE (a:L {m: 1, l: [3]})-[:NEXT]->(b:L {m: 2, l: [1]})-[:NEXT]->(:L {m: 3, l: [1, 5]})")
+        assertEquals(listOf(2L), query("MATCH (n:L) RETURN count(CASE WHEN n.l < [2] THEN 1 END)"))
+        assertEquals(
+            listOf(listOf(2L, 1L), listOf(1L, 2L)),
+            query("MATCH (a:L)-[:NEXT*1..2]->(b:L) RETURN a.m AS a, count(*) AS c ORDER BY sum(CASE WHEN b.l < [2] THEN 1 ELSE 0 END)"),
+        )
+        val long = (1..150).joinToString(", ", "[", "]")
+        assertEquals(listOf(true, false), query("UNWIND [[1, 2], [200]] AS l RETURN l < $long"))
+        val unwound = "UNWIND [0, 1] AS k WITH k, [{l: [i IN range(1, 3) | localdatetime('2024-03-15T10:00:00') + duration({minutes: i + k})], " +
+            "z: [i IN range(1, 3) | datetime('2024-03-15T10:00:00+02:00') + duration({minutes: i + k})]}] AS ms UNWIND ms AS t WITH k, t.l AS l, t.z AS z"
+        // A zoned value read out of a map compares as its text on the SQL stores, as it sorts, so the one beside it keeps its offset.
+        assertEquals(
+            listOf(listOf(0L, true, true), listOf(1L, false, false)),
+            query("$unwound RETURN [k, l < [localdatetime('2024-03-15T10:02:00')], z < [datetime('2024-03-15T10:01:30+02:00')]] ORDER BY k"),
+        )
     }
 
     @Test

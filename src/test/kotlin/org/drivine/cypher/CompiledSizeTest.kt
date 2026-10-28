@@ -351,5 +351,17 @@ class CompiledSizeTest {
             assertEquals(1, Regex("FUNCTION cy_nulls_equal\\(").findAll(sql).count(), "$statement: $sql")
             assertTrue("THEN NULL ELSE (cy_nulls_equal(" in sql, "$statement: $sql")
         }
+        // Two lists compared, in an aggregate's argument that binds a value or not, and in an order term beside a walk (#349).
+        listOf(
+            "MATCH (n) RETURN count(CASE WHEN n.l < [2] THEN 1 END)",
+            "MATCH (n) RETURN count(CASE WHEN n.l < [2] AND (datetime(n.at) + duration({minutes: n.m})).minute > 0 THEN 1 END)",
+            "MATCH (a)-[:NEXT*1..2]->(b) RETURN a.m AS a, count(*) AS c ORDER BY sum(CASE WHEN b.l < [2] THEN 1 ELSE 0 END)",
+        ).forEach { statement ->
+            PostgresCypherCompiler("g").compile(statement)
+            SqliteCypherCompiler("g").compile(statement)
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            assertEquals(1, Regex("FUNCTION cy_list_order\\(").findAll(sql).count(), "$statement: $sql")
+            assertTrue(Regex("\\bcy_list_order\\(").findAll(sql).count() > 1, "$statement: $sql")
+        }
     }
 }
