@@ -1749,6 +1749,54 @@ abstract class CypherQueryContract {
             assertEquals(listOf(1L), query("MATCH (n:CyOpt) WHERE COUNT { $none RETURN u } = 1 AND n.id = 1 RETURN n.id"))
         }
     }
+
+    @Test
+    fun `an aggregate in a CALL reads the variables the CALL imports`() {
+        // Not in the spec yet (#368). On Oracle, an aggregate in a CALL read a variable of an unwound row as null, so sum() gave 0
+        // and collect() gave []. Postgres and SQLite refused an aggregate of an imported variable alone, count(o), as the row's
+        // query's, and SQLite refused one beside a grouping key worked out first. The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val aggregates = "RETURN sum(i + o) AS s, collect(o) AS c, count(o) AS n, max(i * o) AS m } RETURN o, s, c, n, m ORDER BY o"
+        val rows = listOf(listOf(1L, 9L, listOf(1L, 1L, 1L), 3L, 3L), listOf(2L, 12L, listOf(2L, 2L, 2L), 3L, 6L))
+        assertEquals(listOf(12L), query("UNWIND [2] AS o CALL { WITH o UNWIND range(1, 3) AS i RETURN sum(i + o) AS s } RETURN s"))
+        assertEquals(listOf(listOf(2L, 2L, 2L)), query("UNWIND [2] AS o CALL { WITH o UNWIND range(1, 3) AS i RETURN collect(o) AS s } RETURN s"))
+        // Imported by a WITH, or by the CALL's scope clause.
+        assertEquals(rows, query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 3) AS i $aggregates"))
+        assertEquals(rows, query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 3) AS i $aggregates"))
+        assertEquals(
+            listOf(listOf(1L, 9L, listOf(1L, 1L, 1L)), listOf(2L, 12L, listOf(2L, 2L, 2L))),
+            query("UNWIND [1, 2] AS o OPTIONAL CALL (o) { UNWIND range(1, 3) AS i RETURN sum(i + o) AS s, collect(o) AS c } RETURN o, s, c ORDER BY o"),
+        )
+        // Aggregated in a WITH within the CALL.
+        assertEquals(
+            listOf(listOf(1L, 90L), listOf(2L, 120L)),
+            query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 3) AS i WITH sum(i + o) AS t RETURN t * 10 AS s } RETURN o, s ORDER BY o"),
+        )
+        // Grouped within the CALL, by a key worked out first where it holds a subquery or a parameter.
+        val grouped = listOf(
+            listOf(1L, 0L, listOf(3L, 5L), 2L), listOf(1L, 1L, listOf(2L, 4L), 2L),
+            listOf(2L, 0L, listOf(4L, 6L), 4L), listOf(2L, 1L, listOf(3L, 5L), 4L),
+        )
+        assertEquals(grouped, query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 4) AS i RETURN i % 2 AS k, collect(o + i) AS xs, sum(o) AS s } RETURN o, k, xs, s ORDER BY o, k"))
+        assertEquals(grouped, query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 4) AS i RETURN i % 2 AS k, collect(o + i) AS xs, sum(o) AS s } RETURN o, k, xs, s ORDER BY o, k"))
+        assertEquals(
+            grouped,
+            query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 4) AS i RETURN i % \$m AS k, collect(o + i) AS xs, sum(o) AS s } RETURN o, k, xs, s ORDER BY o, k", mapOf("m" to 2L)),
+        )
+        // Over an imported node's property.
+        assertEquals(
+            listOf(
+                listOf("Carrie", 3937L, listOf("Carrie", "Carrie"), 1967L), listOf("Hugo", 0L, listOf("Hugo", "Hugo"), null),
+                listOf("Keanu", 3931L, listOf("Keanu", "Keanu"), 1964L), listOf("Laurence", 3925L, listOf("Laurence", "Laurence"), 1961L),
+            ),
+            query("MATCH (p:Person) CALL (p) { UNWIND range(1, 2) AS i RETURN sum(p.born + i) AS s, collect(p.name) AS ns, max(p.born) AS b } RETURN p.name, s, ns, b ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 2L, 1997L), listOf("Hugo", 2L, null), listOf("Keanu", 2L, 1994L), listOf("Laurence", 2L, 1991L)),
+            query("MATCH (p:Person) CALL { WITH p UNWIND [10, 20] AS i RETURN count(p) AS n, sum(i) + max(p.born) AS t } RETURN p.name, n, t ORDER BY p.name"),
+        )
+    }
 }
 
 class CypherQueryNeo4jTest : CypherQueryContract() {

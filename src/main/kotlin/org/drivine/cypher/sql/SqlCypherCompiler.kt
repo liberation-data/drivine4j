@@ -934,10 +934,42 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun calledPart(select: Select, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
             var inner = Select(select.scope)
+            importsApart(select.scope, clauses)?.let { (source, imports) ->
+                inner.source(source)
+                imports.forEach(inner::bind)
+            }
             clauses.dropLast(1).forEach { inner = read(inner, it, select.scope) }
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /**
+         * Where the query [clauses] of a `CALL { … }` aggregates, the variables of the row it is in, [scope], read from a query
+         * of no table of their own in the call's rows: that query, as a source, and the variables as read from it; null where
+         * it aggregates nothing. Read from the row, a variable is of the row's query, not the call's: Postgres takes an aggregate
+         * of it alone, `count(o)`, as one of the row's query, which it refuses in a FROM, and so does SQLite; Oracle's aggregate
+         * reads a variable of an unwound row as null there, so `sum(i + o)` gave 0 (#368). Kept apart with [boundSelect], or
+         * Oracle merges it back. Bound as the call's own, so a `WITH *` a projection works out first carries them: not a name
+         * the call binds itself, as a CALL within it yields one, and not under a `RETURN *`, which would return them.
+         */
+        private fun importsApart(scope: Map<String, Value>, clauses: List<Clause>): Pair<String, Map<String, Value>>? {
+            val projections = clauses.mapNotNull { (it as? Clause.With)?.projection ?: (it as? Clause.Return)?.projection }
+            if (projections.none { p -> (p.items.map { it.expression } + p.orderBy.map { it.expression }).any { contains(it, ::isAggregate) } }) return null
+            if (projections.last().star) return null
+            val declared = clauses.flatMap { clause ->
+                when (clause) {
+                    is Clause.Unwind -> listOf(clause.variable)
+                    is Clause.Call -> (listOf(clause.query.clauses) + clause.query.unions.map { it.clauses })
+                        .flatMap { (it.last() as? Clause.Return)?.projection?.items.orEmpty().map { item -> item.name } }
+                    else -> emptyList()
+                }
+            }.toSet()
+            val named = scope.filterKeys { it !in declared }.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
+            if (named.isEmpty()) return null
+            val name = alias("i")
+            val columns = named.flatMap { (_, value, column) -> value.columns(column) }
+            return "(${boundSelect(columns.joinToString(", "))}) $name" to named.associate { (variable, value, column) -> variable to value.columnsOf(name, column) }
         }
 
         /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
