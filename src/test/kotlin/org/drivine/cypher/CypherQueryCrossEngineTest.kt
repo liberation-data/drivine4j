@@ -1943,6 +1943,32 @@ abstract class CypherQueryContract {
         )
         assertEquals(listOf(listOf(1L, 11L), listOf(2L, 11L)), query("UNWIND [1, 2] AS o CALL { UNWIND [5, 6] AS o RETURN sum(o) AS s } RETURN o, s ORDER BY o"))
     }
+
+    @Test
+    fun `properties of a node beside another node's table give the rows of the pattern, and that node's values`() {
+        // Not in the spec yet: Oracle's JSON table transformation lost a node's label test where the query read two of its
+        // properties, or one two ways, beside another node's table, and gave a row for each two nodes (#415).
+        clear()
+        seed(
+            """
+            CREATE (a:N1 {n: 1, m: 10, s: 'x', l: [1]}) CREATE (b:N2 {n: 2, m: 20, s: 'y', l: [2]}) CREATE (c:N3 {n: 3, m: 30, s: 'z', l: [3]})
+            CREATE (a)-[:R]->(b), (a)-[:R]->(c)
+            """
+        )
+        assertEquals(listOf(listOf(3L, -1L)), query("MATCH (a:N1), (b:N2) RETURN a.n + b.n AS sum, a.n - b.n AS diff"))
+        assertEquals(listOf(listOf(3L, 2L)), query("MATCH (a:N1), (b:N2) RETURN a.n + b.n, a.n * b.n"))
+        assertEquals(listOf(listOf(3L, -1L)), query("MATCH (a:N1) MATCH (b:N2) RETURN a.n + b.n, a.n - b.n"))
+        assertEquals(listOf(listOf(3L, true, false)), query("MATCH (a:N1), (b:N2) RETURN a.n + b.n, a.n < b.n, a.n = b.n"))
+        assertEquals(listOf(3L), query("MATCH (a:N1), (b:N2) RETURN CASE WHEN a.n > 0 THEN a.n + b.n ELSE a.n - b.n END"))
+        assertEquals(listOf(listOf("xy", listOf(1L, 2L), listOf(1L, 2L))), query("MATCH (a:N1), (b:N2) RETURN a.s + b.s, a.l + b.l, a.l + b.n"))
+        assertEquals(listOf(listOf(-9L, listOf(1L, 10L))), query("MATCH (a:N1), (b:N2) RETURN a.n - a.m, [a.n, a.m]"))
+        assertEquals(listOf(listOf("X", 1L, "1")), query("MATCH (a:N1), (b:N2) RETURN toUpper(a.s), size(a.s), toString(a.n)"))
+        assertEquals(listOf(-1L), query("MATCH (a:N1), (b:N2) WHERE a.s STARTS WITH 'x' RETURN a.n - b.n"))
+        assertEquals(listOf(3L), query("MATCH (a:N1), (b:N2) RETURN sum(a.n + b.n)"))
+        assertEquals(listOf(listOf(3L, 1L)), query("MATCH (a:N1)-->(b:N2) RETURN b.n + 1, b.n - 1"))
+        assertEquals(listOf(listOf(-9L, 2L)), query("MATCH (b:N2) WITH b MATCH (a:N1) RETURN a.n - a.m, b.n"))
+        assertEquals(listOf(3L, 5L), query("MATCH (a:N1), (b:N2) RETURN a.n + b.n AS s UNION ALL MATCH (a:N2), (b:N3) RETURN a.n + b.n AS s"))
+    }
 }
 
 class CypherQueryNeo4jTest : CypherQueryContract() {
