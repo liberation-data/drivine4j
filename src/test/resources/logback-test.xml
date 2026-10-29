@@ -9,6 +9,8 @@
     <!-- Every statement in full, Oracle's write blocks among them: a few concurrent suites logged hundreds of MB this way,
          more than CI's JUnit report can read. Run with -Pdrivine.statements.level=DEBUG to see them. -->
     <logger name="org.drivine.logger.StatementLogger" level="${drivine.statements.level:-INFO}"/>
+    <!-- The TCK run sets ERROR: its expected errors each close a connection with a warning. -->
+    <logger name="org.drivine.connection.JdbcConnection" level="${drivine.connection.level:-DEBUG}"/>
     
     <root level="INFO">
         <appender-ref ref="STDOUT"/>

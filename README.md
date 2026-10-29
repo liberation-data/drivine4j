@@ -67,6 +67,7 @@ The [Quick Start](docs/04-quick-start.md) has the rest, and the
 - [docs/](docs/README.md): the same, one file per topic, on GitHub.
 - [RELEASING.md](RELEASING.md): how a release is published.
 - [TEST_CONTAINERS.md](TEST_CONTAINERS.md): the databases the tests run against.
+- [TCK.md](TCK.md): the openCypher TCK, run on each store, and its nightly gate.
 - [AGENTS.md](AGENTS.md): notes for contributors, on keeping the three Drivine libraries alike.
 - Issues: https://github.com/liberation-data/drivine4j/issues
 
