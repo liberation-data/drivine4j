@@ -509,7 +509,7 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         const val WHITESPACE = "char(32, 9, 10, 11, 12, 13)"
 
         /** An infinity, as SQLite reads the number its JSON writes for one. */
-        const val INFINITY = "9e999"
+        const val INFINITY = SqliteCypherValues.INFINITY
 
         /** NaN, as a statement given it writes it, as SQL: see the class. */
         val NAN_JSON = literal(SqliteCypherValues.write(SqliteCypherValues.NAN))
