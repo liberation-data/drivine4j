@@ -531,6 +531,9 @@ abstract class SqlCypherCompiler(graph: String) {
      */
     protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
 
+    /** `avg` of the JSON values [json] of a group, as [sum] adds them, as a float: null where there are none. */
+    protected open fun avg(json: String, distinct: String) = scalar(float("avg($distinct${number(json)})"))
+
     /**
      * Whether a `sum` of the SQL numbers [numbers], [distinct] each once where it is `DISTINCT `, is past a long's
      * range (#339): on a store that sums integers exactly, the sum is a double there, as Neo4j's is. Neo4j goes on as a
@@ -4446,7 +4449,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     else -> Value.Json(distinctItems(comparable(json(list))), ordered = true)
                 }
                 "sum" -> Value.Json(sum(comparable(json(one())), distinct))
-                "avg" -> Value.Json(scalar(float("avg($distinct${number(comparable(json(one())))})")))
+                "avg" -> Value.Json(avg(comparable(json(one())), distinct))
                 // Zoned values as the moments they are, whatever their offsets, and lists of them item by item so; of a temporal kind,
                 // still of it, and a list of the kinds of list it was. A list the statement makes item by item, as an ORDER BY sorts it: a store's
                 // JSON may put the shorter list first.
