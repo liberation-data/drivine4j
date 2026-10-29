@@ -1556,14 +1556,51 @@ abstract class CypherQueryContract {
             // tested whole, as JSON.
             val numbers = (0 until n).joinToString(", ", "[", "]") { if (it % 7 == 2) "null" else "$it" }
             assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $numbers, 999999 IN $numbers"), "$n items")
-            // A list of several kinds is compared item by item, in a few hundred characters of SQL each. Oracle, whose memory
-            // the suite's other sessions share, runs out of it reading the comparisons of 1001 (#360), so isn't asked them.
+            // A list of several kinds: its constants are tested at once, as one list, and its nulls make a value not found null (#360).
+            // One a statement: on Oracle, each copy of a 1,001-item literal takes about 180 MB of PGA to build.
+            listOf("$lastWhole" to true, "999999" to null, "-1" to null).forEach { (value, found) ->
+                assertEquals(listOf(found), query("RETURN $value IN $list"), "$value IN $n items")
+            }
+            // Two lists of several kinds are compared item by item, in a few hundred characters of SQL each. Oracle, whose memory
+            // the suite's other sessions share, runs out of it reading the comparisons of 1001 (#404), so isn't asked them.
             if (n > 250 && pm.type == DatabaseType.ORACLE) continue
-            // (Not -1, which compiles to ten times the statement, #360.)
-            assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $list, 999999 IN $list"), "$n items")
             // Compared with itself item by item, each pair equal but the nulls, which are null beside each other.
             assertEquals(listOf(null), query("RETURN $list = $list"), "$n items")
         }
+    }
+
+    @Test
+    fun `a value of each kind tested with IN against a long list literal of several kinds, a null among them, as Cypher tests it`() {
+        // Not in the spec yet (#360): on Oracle, -1 IN 1,001 such items compiled to 1.6 MB, and ran out of PGA.
+        for (n in listOf(10, 101, 1001)) {
+            val items = (0 until n).map(::longItem)
+            val list = items.joinToString(", ", "[", "]") { it.first }
+            val noNulls = items.filter { it.second != null }.joinToString(", ", "[", "]") { it.first }
+            val lastWhole = (0 until n).last { it % 7 == 0 }
+            // Not found beside a null is null; found, a nested list, a map, a float equal to a whole number and a truth value are true.
+            // One a statement: on Oracle, each copy of a 1,001-item literal takes about 180 MB of PGA to build.
+            listOf(
+                "-1 IN $list" to null, "$lastWhole IN $list" to true, "null IN $list" to null, "[5, 'n'] IN $list" to true,
+                "{k: 6} IN $list" to true, "7.0 IN $list" to true, "true IN $list" to true, "'s1' IN $list" to true,
+                "-1 IN $noNulls" to false, "'s1' IN $noNulls" to true,
+            ).forEach { (tested, expected) -> assertEquals(listOf(expected), query("RETURN $tested"), "${tested.substringBefore(" IN ")} IN $n items") }
+            assertEquals(listOf(null, true, null), query("UNWIND [-1, 0, null] AS x RETURN x IN $list"), "$n items")
+            assertEquals(listOf(0L, 7L, "s1"), query("UNWIND [-1, 0, 7, null, 's1'] AS x WITH x WHERE x IN $list RETURN x"), "$n items")
+            assertEquals(listOf(-1L), query("UNWIND [-1, 0, 7, null, 's1'] AS x WITH x WHERE NOT x IN $noNulls RETURN x"), "$n items")
+            assertEquals(emptyList(), query("UNWIND [-1, 0, 7, null, 's1'] AS x WITH x WHERE NOT x IN $list RETURN x"), "$n items")
+        }
+        // A truth value is no number, a float is equal to a whole number, and an item that holds a null makes its comparison null
+        // where nothing else differs.
+        assertEquals(
+            listOf(listOf(null, false, true, null, null, false, null, true, false)),
+            query("RETURN true IN [1, 's', null], true IN [1, 's'], 3.0 IN [3, 's', null], [5, null] IN [[5, null], 1, 2], " +
+                "[5, 'n'] IN [[5, null], 1, 2], [5, 'n'] IN [[6, null], 1, 2], {k: 6} IN [{k: null}, 1, 2], 1 IN [1, 2, null], 1 IN [true, 1.5, 's']"),
+        )
+        // A value that holds a null, against constants that hold none: null where an item is equal but for the null.
+        assertEquals(
+            listOf(listOf(null, null, false), listOf(true, true, false), listOf(null, null, null)),
+            query("UNWIND [[5, null], [6, 'n'], null] AS v RETURN [v IN [[5, 1], [6, 'n'], 3], v IN [[7, 1], [6, 'n'], 3, null], v IN [[7, 1], 3]]"),
+        )
     }
 
     @Test
@@ -1712,6 +1749,63 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `texts, text functions and arithmetic over an aggregate's result, beside grouping keys, a walk, DISTINCT and an order`() {
+        // #373: an operation over an aggregate's result is worked out over the aggregate's column, where it would bind a value;
+        // the three aggregates concatenated ran the compiler out of memory on Oracle, and compiled to 68 MB on Postgres.
+        clear()
+        seed(
+            "CREATE (a:CyAgg {k: 'x', title: 'Dr', first: 'Ann', last: 'Bell', name: ' Bo ', a: 1, b: 10})-[:NEXT]->" +
+                "(b:CyAgg {k: 'x', title: 'Mr', first: 'Cy', last: 'Ames', name: ' Al ', a: 3, b: 20})-[:NEXT]->" +
+                "(:CyAgg {k: 'y', title: 'Ms', first: 'Di', last: 'Cole', name: ' Ed ', a: 5, b: 30})"
+        )
+        val all = "MATCH (n:CyAgg)"
+        val ordered = "MATCH (n:CyAgg) WITH n ORDER BY n.a"
+        assertEquals(listOf("Ms: Di Cole"), query("$all RETURN max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)"))
+        assertEquals(listOf("Dr: Ann Bell"), query("$ordered RETURN head(collect(n.title)) + ': ' + head(collect(n.first)) + ' ' + head(collect(n.last))"))
+        assertEquals(
+            listOf(listOf(" bo ", "Ed", "I", "bo")),
+            query(
+                "$ordered RETURN [toLower(toLower(toLower(toLower(collect(n.name)[0])))), trim(trim(max(n.name))), " +
+                    "substring(substring(toUpper(max(n.first)), 0), 1), toLower(trim(head(collect(n.name))))]"
+            ),
+        )
+        assertEquals(listOf(listOf(3L, 41L)), query("$all RETURN [sum(n.a) / count(*), (sum(n.a) + sum(n.b)) * 2 / count(*) - max(n.a)]"))
+        // Beside a grouping key, ordered by it, and by an operation over aggregates, which Neo4j sorts by only where it is an item.
+        assertEquals(listOf(listOf("x", "Mr: bell"), listOf("y", "Ms: cole")), query("$all RETURN n.k AS k, max(n.title) + ': ' + toLower(max(n.last)) AS t ORDER BY k"))
+        assertEquals(
+            listOf(listOf("y", "coleDi"), listOf("x", "amesCy")),
+            query("$all RETURN n.k AS k, toLower(min(n.last)) + max(n.first) AS t ORDER BY toLower(min(n.last)) + max(n.first) DESC"),
+        )
+        assertEquals(listOf(listOf("y", 30L), listOf("x", 15L)), query("$all RETURN n.k AS k, sum(n.b) / count(*) AS m ORDER BY sum(n.b) / count(*) DESC"))
+        // DISTINCT, with a key and without.
+        assertEquals(listOf(listOf("x", "cy2"), listOf("y", "di1")), query("$all RETURN DISTINCT n.k AS k, toLower(max(n.first)) + toString(count(*)) AS t ORDER BY k"))
+        assertEquals(listOf("Ms: Di Cole"), query("$all RETURN DISTINCT max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)"))
+        // Beside a variable-length walk, in an item, and in an order term too.
+        val walk = "MATCH (s:CyAgg)-[:NEXT*1..2]->(e:CyAgg)"
+        assertEquals(listOf("Mr: Cy Ames"), query("$walk RETURN min(e.title) + ': ' + min(e.first) + ' ' + min(e.last)"))
+        val sorted = "toLower(toLower(max(e.last))) + toString(sum(e.a))"
+        assertEquals(listOf(listOf("Cy", "cole5"), listOf("Ann", "cole8")), query("$walk RETURN s.first AS s, $sorted AS t ORDER BY $sorted"))
+        assertEquals(listOf(listOf("Cy", "cole5")), query("$walk RETURN s.first AS s, $sorted AS t ORDER BY $sorted DESC SKIP 1 LIMIT 1"))
+        // An order term that reads an item by its name beside an aggregate, with a walk and without.
+        assertEquals(listOf(listOf("y", 5L), listOf("x", 4L)), query("$all RETURN n.k AS k, sum(n.a) AS m ORDER BY toString(10 - sum(n.a)) + toLower(toLower(k))"))
+        assertEquals(listOf(listOf("Cy", 5L), listOf("Ann", 8L)), query("$walk RETURN s.first AS s, sum(e.a) AS c ORDER BY toLower(toLower(s)) + toString(sum(e.a)) DESC"))
+        // Where a comprehension's own name hides an item's, and where the item's expression reads a name the comprehension binds.
+        assertEquals(listOf(listOf("y", 5L), listOf("x", 4L)), query("$all RETURN n.k AS k, sum(n.a) AS m ORDER BY toString([k IN [10] | k - m][0]) + toString(sum(n.a))"))
+        assertEquals(listOf(listOf("y", 5L), listOf("x", 4L)), query("$all RETURN n.k AS k, sum(n.a) AS m ORDER BY [n IN ['b'] | k + n][0] + toString(sum(n.a)) DESC"))
+        // Beside a key that is an expression, in a CASE and in a map.
+        val texts = "toLower(max(n.title)) + ': ' + toLower(max(n.last))"
+        assertEquals(listOf(listOf(2L, "dr: bell"), listOf(4L, "mr: ames"), listOf(6L, "ms: cole")), query("$all RETURN n.a + 1 AS k, $texts AS t ORDER BY k"))
+        assertEquals(listOf(listOf("x", "mr: bell"), listOf("y", "")), query("$all RETURN n.k AS k, CASE WHEN count(*) > 1 THEN $texts ELSE '' END AS t ORDER BY k"))
+        assertEquals(
+            listOf(listOf("x", mapOf("t" to "mr: bell", "c" to 3L)), listOf("y", mapOf("t" to "ms: cole", "c" to 2L))),
+            query("$all RETURN n.k AS k, {t: $texts, c: count(*) + 1} AS m ORDER BY k"),
+        )
+        // Over no rows, the aggregate is null, and so is what is worked out over it; a count is 0.
+        assertEquals(listOf(null), query("$all WHERE n.k = 'z' RETURN toLower(max(n.title)) + '!'"))
+        assertEquals(listOf(listOf("0!", 1L)), query("$all WHERE n.k = 'z' RETURN [toLower(toString(count(*))) + '!', count(*) + 1]"))
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
@@ -1753,6 +1847,91 @@ abstract class CypherQueryContract {
             assertEquals(listOf(listOf(true, false)), query("MATCH (n:CyOpt {id: 1}) RETURN [EXISTS { $none RETURN u }, EXISTS { CALL { MATCH (z:Nope) RETURN z.k AS u } RETURN u }]"))
             assertEquals(listOf(1L), query("MATCH (n:CyOpt) WHERE COUNT { $none RETURN u } = 1 AND n.id = 1 RETURN n.id"))
         }
+    }
+
+    @Test
+    fun `an aggregate in a CALL reads the variables the CALL imports`() {
+        // Not in the spec yet (#368). On Oracle, an aggregate in a CALL read a variable of an unwound row as null, so sum() gave 0
+        // and collect() gave []. Postgres and SQLite refused an aggregate of an imported variable alone, count(o), as the row's
+        // query's, and SQLite refused one beside a grouping key worked out first. The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val aggregates = "RETURN sum(i + o) AS s, collect(o) AS c, count(o) AS n, max(i * o) AS m } RETURN o, s, c, n, m ORDER BY o"
+        val rows = listOf(listOf(1L, 9L, listOf(1L, 1L, 1L), 3L, 3L), listOf(2L, 12L, listOf(2L, 2L, 2L), 3L, 6L))
+        assertEquals(listOf(12L), query("UNWIND [2] AS o CALL { WITH o UNWIND range(1, 3) AS i RETURN sum(i + o) AS s } RETURN s"))
+        assertEquals(listOf(listOf(2L, 2L, 2L)), query("UNWIND [2] AS o CALL { WITH o UNWIND range(1, 3) AS i RETURN collect(o) AS s } RETURN s"))
+        // Imported by a WITH, or by the CALL's scope clause.
+        assertEquals(rows, query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 3) AS i $aggregates"))
+        assertEquals(rows, query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 3) AS i $aggregates"))
+        assertEquals(
+            listOf(listOf(1L, 9L, listOf(1L, 1L, 1L)), listOf(2L, 12L, listOf(2L, 2L, 2L))),
+            query("UNWIND [1, 2] AS o OPTIONAL CALL (o) { UNWIND range(1, 3) AS i RETURN sum(i + o) AS s, collect(o) AS c } RETURN o, s, c ORDER BY o"),
+        )
+        // Aggregated in a WITH within the CALL.
+        assertEquals(
+            listOf(listOf(1L, 90L), listOf(2L, 120L)),
+            query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 3) AS i WITH sum(i + o) AS t RETURN t * 10 AS s } RETURN o, s ORDER BY o"),
+        )
+        // Grouped within the CALL, by a key worked out first where it holds a subquery or a parameter.
+        val grouped = listOf(
+            listOf(1L, 0L, listOf(3L, 5L), 2L), listOf(1L, 1L, listOf(2L, 4L), 2L),
+            listOf(2L, 0L, listOf(4L, 6L), 4L), listOf(2L, 1L, listOf(3L, 5L), 4L),
+        )
+        assertEquals(grouped, query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 4) AS i RETURN i % 2 AS k, collect(o + i) AS xs, sum(o) AS s } RETURN o, k, xs, s ORDER BY o, k"))
+        assertEquals(grouped, query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 4) AS i RETURN i % 2 AS k, collect(o + i) AS xs, sum(o) AS s } RETURN o, k, xs, s ORDER BY o, k"))
+        assertEquals(
+            grouped,
+            query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 4) AS i RETURN i % \$m AS k, collect(o + i) AS xs, sum(o) AS s } RETURN o, k, xs, s ORDER BY o, k", mapOf("m" to 2L)),
+        )
+        // Over an imported node's property.
+        assertEquals(
+            listOf(
+                listOf("Carrie", 3937L, listOf("Carrie", "Carrie"), 1967L), listOf("Hugo", 0L, listOf("Hugo", "Hugo"), null),
+                listOf("Keanu", 3931L, listOf("Keanu", "Keanu"), 1964L), listOf("Laurence", 3925L, listOf("Laurence", "Laurence"), 1961L),
+            ),
+            query("MATCH (p:Person) CALL (p) { UNWIND range(1, 2) AS i RETURN sum(p.born + i) AS s, collect(p.name) AS ns, max(p.born) AS b } RETURN p.name, s, ns, b ORDER BY p.name"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 2L, 1997L), listOf("Hugo", 2L, null), listOf("Keanu", 2L, 1994L), listOf("Laurence", 2L, 1991L)),
+            query("MATCH (p:Person) CALL { WITH p UNWIND [10, 20] AS i RETURN count(p) AS n, sum(i) + max(p.born) AS t } RETURN p.name, n, t ORDER BY p.name"),
+        )
+        // Each row's own values, a null among them; two imports; a map and a relationship.
+        assertEquals(
+            listOf(listOf(1L, 3L, listOf(1L, 1L, 1L), 1L), listOf(null, 0L, emptyList<Any>(), null)),
+            query("UNWIND [1, null] AS o CALL (o) { UNWIND range(1, 3) AS i RETURN count(o) AS n, collect(o) AS c, max(o) AS s } RETURN o, n, c, s ORDER BY o"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 10L, 23L, listOf(1L, 1L), 2L), listOf(1L, 20L, 43L, listOf(1L, 1L), 2L), listOf(2L, 10L, 43L, listOf(2L, 2L), 2L), listOf(2L, 20L, 83L, listOf(2L, 2L), 2L)),
+            query("UNWIND [1, 2] AS a UNWIND [10, 20] AS b CALL { WITH a, b UNWIND range(1, 2) AS i RETURN sum(a * b + i) AS s, collect(a) AS ca, count(b) AS nb } RETURN a, b, s, ca, nb ORDER BY a, b"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 5L, listOf(mapOf("a" to 1L), mapOf("a" to 1L))), listOf(2L, 7L, listOf(mapOf("a" to 2L), mapOf("a" to 2L)))),
+            query("UNWIND [{a: 1}, {a: 2}] AS o CALL { WITH o UNWIND range(1, 2) AS i RETURN sum(o.a + i) AS s, collect(o) AS c } RETURN o.a, s, c ORDER BY o.a"),
+        )
+        assertEquals(
+            listOf(listOf("Laurence", listOf("Morpheus", "Morpheus"), 2L)),
+            query("MATCH (p:Person {name: 'Laurence'})-[r:ACTED_IN]->() CALL { WITH r UNWIND [1, 2] AS i RETURN collect(r.role) AS rs, count(r) AS n } RETURN p.name, rs, n"),
+        )
+        // In each query of a UNION in the CALL, in a CALL within the CALL, and in a CALL after a write.
+        assertEquals(
+            listOf(listOf(1L, 4L), listOf(1L, 5L), listOf(2L, 5L), listOf(2L, 7L)),
+            query("UNWIND [1, 2] AS o CALL (o) { UNWIND [1, 2] AS i RETURN sum(i + o) AS s UNION ALL UNWIND [3] AS i RETURN sum(i + o) AS s } RETURN o, s ORDER BY o, s"),
+        )
+        assertEquals(
+            listOf(listOf(1L, listOf(9L, 12L)), listOf(2L, listOf(12L, 18L))),
+            query("UNWIND [1, 2] AS o CALL (o) { UNWIND [1, 2] AS j CALL (o, j) { UNWIND range(1, 3) AS i RETURN sum(o * j + i) AS s } RETURN collect(s) AS ss } RETURN o, ss ORDER BY o"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 5L, listOf(1L, 1L), 2L), listOf(2L, 7L, listOf(1L, 1L), 2L)),
+            query("CREATE (x:CyCallWrite {v: 1}) WITH x UNWIND range(1, 2) AS o CALL { WITH o, x UNWIND range(1, 2) AS i RETURN sum(i + o) AS s, collect(x.v) AS xs, count(o) AS n } RETURN o, s, xs, n ORDER BY o"),
+        )
+        // Under a RETURN * after a WITH that names what it passes on; and a variable the CALL unwinds itself, of a name the row has.
+        assertEquals(listOf(listOf(1L, 9L), listOf(2L, 12L)), query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 3) AS i WITH sum(i + o) AS s RETURN * } RETURN o, s ORDER BY o"))
+        assertEquals(
+            listOf(listOf(1L, 9L, listOf(1L, 1L, 1L)), listOf(2L, 12L, listOf(2L, 2L, 2L))),
+            query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 3) AS i WITH sum(i + o) AS s, collect(o) AS c RETURN * } RETURN o, s, c ORDER BY o"),
+        )
+        assertEquals(listOf(listOf(1L, 11L), listOf(2L, 11L)), query("UNWIND [1, 2] AS o CALL { UNWIND [5, 6] AS o RETURN sum(o) AS s } RETURN o, s ORDER BY o"))
     }
 }
 

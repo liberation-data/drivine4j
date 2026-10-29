@@ -13,7 +13,7 @@ import org.drivine.manager.PersistenceManager
  * Names are written bare, so Postgres folds them to lower case: a graph called `Contracts` keeps its
  * nodes in `contracts_node`, and is the same graph as one called `contracts`.
  */
-internal class PostgresGraph(name: String) : SqlGraph(name, "Postgres", MAX_OBJECT_NAME) {
+internal class PostgresGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAME) {
 
     /** The functions the graph is written through. */
     val writes = PostgresWriteFunctions(this)
@@ -89,6 +89,12 @@ internal class PostgresGraph(name: String) : SqlGraph(name, "Postgres", MAX_OBJE
     }
 
     companion object {
+        /** The store's name, for what is said of a graph name it cannot take. */
+        private const val ENGINE = "Postgres"
+
+        /** Why [name] cannot name a graph here; null where it can (see [SqlGraph.refusal]). */
+        fun refusal(name: String): String? = SqlGraph.refusal(name, ENGINE, MAX_OBJECT_NAME)
+
         /** Postgres names are at most 63 characters: past that, it cuts them short without a word. */
         private const val MAX_OBJECT_NAME = 63
 

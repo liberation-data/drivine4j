@@ -934,10 +934,43 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         private fun calledPart(select: Select, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
             var inner = Select(select.scope)
+            importsApart(select.scope, clauses)?.let { (source, imports) ->
+                inner.source(source)
+                imports.forEach(inner::bind)
+            }
             clauses.dropLast(1).forEach { inner = read(inner, it, select.scope) }
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /**
+         * Where the query [clauses] of a `CALL { … }` aggregates, the variables of the row it is in, [scope], read from a query
+         * of no table of their own in the call's rows: that query, as a source, and the variables as read from it; null where
+         * it aggregates nothing. Read from the row, a variable is of the row's query, not the call's: Postgres takes an aggregate
+         * of it alone, `count(o)`, as one of the row's query, which it refuses in a FROM, and so does SQLite; Oracle's aggregate
+         * reads a variable of an unwound row as null there, so `sum(i + o)` gave 0 (#368). Kept apart with [boundSelect], or
+         * Oracle merges it back. Bound as the call's own, so a `WITH *` a projection works out first carries them: not a name
+         * the call binds itself, as a CALL within it yields one, and not where its `RETURN` and each `WITH` is `*`, which would
+         * return them: a `WITH` of named items before a `RETURN *` passes on only those, as it does without them.
+         */
+        private fun importsApart(scope: Map<String, Value>, clauses: List<Clause>): Pair<String, Map<String, Value>>? {
+            val projections = clauses.mapNotNull { (it as? Clause.With)?.projection ?: (it as? Clause.Return)?.projection }
+            if (projections.none { p -> (p.items.map { it.expression } + p.orderBy.map { it.expression }).any { contains(it, ::isAggregate) } }) return null
+            if (projections.all { it.star }) return null
+            val declared = clauses.flatMap { clause ->
+                when (clause) {
+                    is Clause.Unwind -> listOf(clause.variable)
+                    is Clause.Call -> (listOf(clause.query.clauses) + clause.query.unions.map { it.clauses })
+                        .flatMap { (it.last() as? Clause.Return)?.projection?.items.orEmpty().map { item -> item.name } }
+                    else -> emptyList()
+                }
+            }.toSet()
+            val named = scope.filterKeys { it !in declared }.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
+            if (named.isEmpty()) return null
+            val name = alias("i")
+            val columns = named.flatMap { (_, value, column) -> value.columns(column) }
+            return "(${boundSelect(columns.joinToString(", "))}) $name" to named.associate { (variable, value, column) -> variable to value.columnsOf(name, column) }
         }
 
         /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
@@ -1924,6 +1957,7 @@ abstract class SqlCypherCompiler(graph: String) {
             casesFirst(select, projection, items)?.let { (cased, kept) -> return project(cased, kept, final) }
             // After casesFirst, which refuses what it must of an aggregate's CASE before working it out first.
             sharedFirst(select, projection, items)?.let { (shared, kept) -> return project(shared, kept, final) }
+            sortsFirst(select, projection, items)?.let { (sorted, kept) -> return project(sorted, kept, final) }
             aggregatesFirst(select, projection, items)?.let { (grouped, kept) -> return project(grouped, kept, final) }
             heldFirst(select, projection, items)?.let { (held, keyed) -> return project(held, keyed, final) }
             if (final && items.size > 1) {
@@ -2121,15 +2155,127 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
+         * Beside a variable-length walk, the rows [select] reads with each term the projection sorts by that [shared] would
+         * bind a value in worked out first, in a `WITH *` of its own, and the projection sorted by that term's column; null
+         * where there is none. There `project` binds no value in a term that is none of the items (a value so bound, carried
+         * out of a WITH's query, closed Oracle's session), so an operation that reads its operands more than once wrote them
+         * out again at each level, and `ORDER BY (datetime(b.at) + duration({minutes: b.m})).minute` compiled to megabytes
+         * (#378). Worked out first, for each row, the term binds its values as any item does, as where a `WITH` works it out
+         * first in the statement itself.
+         *
+         * Only where rows are not compared: after DISTINCT or an aggregate, a term is sorted by over the items' columns, as
+         * Neo4j sorts by nothing else there. A term that reads an item's name reads that item's expression, as it is sorted
+         * by, in a comprehension's, a quantifier's or a reduce's own expressions too. Over aggregatesFirst's grouping `WITH`,
+         * whose rows are its groups already, a term over an aggregate's result reads that result's column as any other. Left
+         * as it was, in the order these are seen: a term holding an aggregate or randomUUID(); one holding a subquery, whose
+         * names neither [scoped] nor [variablesIn] sees; one that reads an item's name where it is not replaced, where a name
+         * the comprehension binds would hide it or a variable of the item's expression, in a pattern or as a map projection's
+         * variable; and one that, so read, is an item or binds nothing. An item made anew, randomUUID(), that such a term
+         * reads is made first, in a `WITH *` before the term's, and read from there by both.
+         */
+        private fun sortsFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
+            if (!sharing || !select.walks || projection.distinct || items.any { contains(it.expression, ::isAggregate) }) return null
+            val named = items.associate { it.name to it.expression }
+            val terms = linkedMapOf<Expression, Expression>()
+            // Each item made anew that a term reads, by its name, and the column it is made first in.
+            val made = linkedMapOf<String, String>()
+            projection.orderBy.map { it.expression }.distinct().forEach { term ->
+                // An aggregate is sorted by as `project` sorts it; so is a randomUUID() of its own.
+                if (contains(term) { isAggregate(it) || isAnew(it) }) return@forEach
+                // A subquery's, `COUNT { … }`'s, names are seen by neither scoped nor variablesIn: one there is read as it was.
+                if (holdsSubquery(term)) return@forEach
+                // Each item's name read first as a name no variable has, so one left where it is not replaced is seen.
+                val marked = scoped(term) { v, local ->
+                    v.takeIf { it.name in named && it.name !in local && local.none { name -> name in variablesIn(named.getValue(it.name)) } }
+                        ?.let { Expression.Variable("#item ${it.name}") }
+                }
+                if (variablesIn(marked).any { it in named }) return@forEach
+                val read = scoped(marked) { v, _ -> if (v.name.startsWith("#item ")) named[v.name.removePrefix("#item ")] else null }
+                // A term that is an item, as written or by its name, is sorted by as `project` sorts it: by the item, bound as it is.
+                if (items.none { it.expression == read } && binds(read, select)) {
+                    terms[term] = read
+                    contains(marked) { e ->
+                        val name = (e as? Expression.Variable)?.name?.takeIf { it.startsWith("#item ") }?.removePrefix("#item ")
+                        if (name != null && contains(named.getValue(name), ::isAnew)) made.getOrPut(name) { "#sort${++counter}" }
+                        false
+                    }
+                }
+            }
+            if (terms.isEmpty()) return null
+            // An item made anew for each row, randomUUID(), that a term reads is made first, in a WITH of its own, as a WITH's
+            // items read none of each other; the projection, compiled again, reads it and works the term out over its column.
+            // Worked out in the term, it would be made again, and the rows sorted by a value none of them is given.
+            if (made.isNotEmpty()) {
+                val with = Projection(false, true, made.map { (name, column) -> Projection.Item(named.getValue(name), column) }, emptyList(), null, null)
+                val kept = projection.copy(star = false, items = items.map { item -> made[item.name]?.let { item.copy(expression = Expression.Variable(it)) } ?: item })
+                return with(select, Clause.With(with, null), select.scope.filterKeys { it !in select.bound }, apart = true) to kept
+            }
+            // Named as no variable is, unless quoted so.
+            val names = terms.keys.associateWith { "#sort${++counter}" }
+            val with = Projection(false, true, terms.map { (term, read) -> Projection.Item(read, names.getValue(term)) }, emptyList(), null, null)
+            val kept = projection.copy(
+                star = false,
+                items = items,
+                orderBy = projection.orderBy.map { sort -> names[sort.expression]?.let { sort.copy(expression = Expression.Variable(it)) } ?: sort },
+            )
+            // Kept apart, as sharedFirst keeps its own, so no store merges the value it binds back into the query beside the walk.
+            return with(select, Clause.With(with, null), select.scope.filterKeys { it !in select.bound }, apart = true) to kept
+        }
+
+        /**
+         * [expression] with each variable [replacement] gives a replacement for replaced, as [replaced] replaces, and in a
+         * comprehension's, a quantifier's and a reduce's own expressions too: [replacement] is given the names bound there.
+         */
+        private fun scoped(expression: Expression, local: Set<String> = emptySet(), replacement: (Expression.Variable, Set<String>) -> Expression?): Expression =
+            replaced(expression) { e ->
+                fun r(part: Expression, names: Set<String> = local) = scoped(part, names, replacement)
+                when (e) {
+                    is Expression.Variable -> replacement(e, local)
+                    is Expression.ListComprehension -> e.copy(list = r(e.list), where = e.where?.let { r(it, local + e.variable) }, projection = e.projection?.let { r(it, local + e.variable) })
+                    is Expression.Quantifier -> e.copy(list = r(e.list), where = e.where?.let { r(it, local + e.variable) })
+                    is Expression.Reduce -> e.copy(initial = r(e.initial), list = r(e.list), expression = r(e.expression, local + e.accumulator + e.variable))
+                    else -> null
+                }
+            }
+
+        /**
          * Whether [shared] binds a value in [expression], compiled over the rows [select] reads. Compiled only to see:
          * the names it takes and the functions it declares (a `reduce`'s on Oracle) are given back, so a statement whose
          * aggregates bind nothing compiles as it did.
          */
-        private fun binds(expression: Expression, select: Select): Boolean {
+        private fun binds(expression: Expression, select: Select): Boolean = binds { expression(expression, select.scope) }
+
+        /**
+         * Whether [shared] would bind a value in [term], over an aggregate's result, where [term] is no aggregate itself:
+         * each aggregate in it compiled as it is, with nothing bound ([aggregating]), and the operations over them with
+         * [shared] on. Compiled only to see, as [binds] is. An order term reads each item it names, in [named], by its name:
+         * the item's value, compiled over the rows [select] reads as `project` compiles it, is bound to that name, so a comprehension's own name hides
+         * it as it hides any variable, and the item's expression is never read where a comprehension binds its variables.
+         */
+        private fun bindsOverAggregates(term: Expression, select: Select, named: Map<String, Expression> = emptyMap()): Boolean {
+            if (isAggregate(term) || !contains(term, ::isAggregate)) return false
+            return binds {
+                // Each item compiled as `project` compiles it, with shared on where it does not aggregate, lest one nested deep be
+                // written out again at each level; what it binds is its own, not the term's.
+                val items = named.filterKeys { it in variablesIn(term) }.mapValues { (_, item) ->
+                    val was = sharedBindings
+                    aggregating(item) { expression(item, select.scope) }.also { sharedBindings = was }
+                }
+                val results = mutableMapOf<String, Value>()
+                // Named as no variable is, unless quoted so.
+                val over = replaced(term) { part ->
+                    if (!isAggregate(part)) null else Expression.Variable("#over${results.size + 1}").also { results[it.name] = unshared { expression(part, select.scope) } }
+                }
+                expression(over, select.scope + items + results)
+            }
+        }
+
+        /** Whether [shared] binds a value in what [work] compiles, the names it takes and the functions it declares given back. */
+        private fun binds(work: () -> Unit): Boolean {
             val (wasCounter, wasShares, wasBindings) = Triple(counter, shares, sharedBindings)
             val wasFunctions = functions.size
             try {
-                expression(expression, select.scope)
+                work()
                 return sharedBindings > wasBindings
             } finally {
                 counter = wasCounter
@@ -2177,13 +2323,22 @@ abstract class SqlCypherCompiler(graph: String) {
          * or a relationship, not its properties. An order term, or a part of one, that is an item is read by the item's name.
          * A store dedupes no aggregate in the query that makes it, and Oracle's `LISTAGG`, which does, gives at most 4,000
          * bytes; and Oracle reads no aggregate of the query it is in from a subquery, which reading a list item by item is.
-         * Null where the projection does neither.
+         * So too where an operation over an aggregate's result would bind a value ([bindsOverAggregates]): in the query
+         * that aggregates, nothing is bound ([aggregating]), so `max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)`
+         * wrote each aggregate out again at every level, to 68 MB on Postgres, and ran the compiler out of memory on Oracle
+         * (#373); over the aggregates' columns, the operation binds its values as any item does. Null where the projection
+         * does none of these.
          */
         private fun aggregatesFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             fun collectsDistinct(expression: Expression) = expression is Expression.Function && expression.distinct && expression.name.lowercase() == "collect"
             fun iteratesAggregate(expression: Expression) = iterated(expression).any { contains(it, ::isAggregate) }
             val terms = items.map { it.expression } + projection.orderBy.map { it.expression }
-            if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) }) return null
+            // An order term reads an item by its name.
+            val byName = items.associate { it.name to it.expression }
+            if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) } &&
+                items.none { bindsOverAggregates(it.expression, select) } &&
+                projection.orderBy.none { bindsOverAggregates(it.expression, select, byName) }
+            ) return null
             // Named as no variable is, unless quoted so.
             val keys = items.filter { !contains(it.expression, ::isAggregate) }.associate { it.expression to "#group${++counter}" }
             val aggregates = linkedMapOf<Expression, String>()
@@ -2218,14 +2373,13 @@ abstract class SqlCypherCompiler(graph: String) {
             // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
             // a variable an item is named after is that item, not the variable of that name before it.
             val itemNames = items.associate { it.expression to it.name }
-            val aliases = items.map { it.name }.toSet()
             val kept = projection.copy(
                 star = false,
                 items = items.map { it.copy(expression = replaced(it.expression, ::kept)) },
                 orderBy = projection.orderBy.map { sort ->
                     sort.copy(
                         expression = replaced(sort.expression) { term ->
-                            if (term is Expression.Variable && term.name in aliases) term else itemNames[term]?.let(Expression::Variable) ?: kept(term)
+                            if (term is Expression.Variable && term.name in byName) term else itemNames[term]?.let(Expression::Variable) ?: kept(term)
                         },
                     )
                 },
@@ -3103,17 +3257,36 @@ abstract class SqlCypherCompiler(graph: String) {
             fun joined(pairs: List<Pair<Expression, Expression>>, operator: String) =
                 grouped(pairs.map { (a, b) -> bool(binary(Expression.Binary(Operator.EQUALS, a, b), scope)) }, operator)
             return when {
-                // The item compiled once, and compared with each of the list's.
+                // The item compiled once, and compared with each of the list's. A null the list writes makes its comparison null
+                // whatever the value, so the nulls are one null term. A value that compares as JSON is tested at once, as [membership]
+                // tests it against a list, against the items that are constants holding no null, where there are two or more: written
+                // one by one, a long list of mixed kinds compiled to megabytes on Oracle (#360). A value that may hold a null is tested
+                // against the texts, numbers and truth values apart, as one that holds none, which none of them is equal to but for a
+                // null; and against the lists and maps as membership tests such a value, item by item where it holds a null.
                 binary.operator == Operator.IN -> (right as? Expression.ListLiteral)?.takeIf { it.items.isNotEmpty() }?.let { list ->
                     val item = expression(left, scope)
-                    grouped(
-                        list.items.map { listed ->
-                            val equals = Expression.Binary(Operator.EQUALS, left, listed)
-                            val (l, r) = compared(item, expression(listed, scope), equals)
-                            equality(l, r, listed, plain(left, listed, l, r, scope), stored(left, scope))
-                        },
-                        "OR",
-                    )
+                    val (nulls, items) = list.items.partition { it is Expression.Literal && it.value == null }
+                    val (constants, others) = items.partition { plainJson(item) && constant(it) }
+                        .let { (constants, others) -> if (constants.size > 1) constants to others else emptyList<Expression>() to items }
+                    val (scalars, containers) = if (isFlat(item)) constants to emptyList()
+                        else constants.partition { it !is Expression.ListLiteral && it !is Expression.MapLiteral }
+                    val within = listOf(scalars to (item as? Value.Json)?.copy(flat = true), containers to item).filter { it.first.isNotEmpty() }
+                        .map { (written, value) ->
+                            val listed = Expression.ListLiteral(written)
+                            membership(Expression.Binary(Operator.IN, left, listed), requireNotNull(value), expression(listed, scope), scope, false)
+                        }
+                    val compared = others.map { listed ->
+                        val equals = Expression.Binary(Operator.EQUALS, left, listed)
+                        val (l, r) = compared(item, expression(listed, scope), equals)
+                        equality(l, r, listed, plain(left, listed, l, r, scope), stored(left, scope))
+                    }
+                    val terms = within + compared
+                    // A null beside other terms takes its kind from them; alone, it is given one, as Postgres can't make a bare NULL JSON.
+                    when {
+                        nulls.isEmpty() -> grouped(terms, "OR")
+                        terms.isEmpty() -> "(CASE WHEN 1 = 0 THEN FALSE END)"
+                        else -> grouped(terms + "NULL", "OR")
+                    }
                 }
                 left is Expression.ListLiteral && right is Expression.ListLiteral ->
                     if (left.items.size != right.items.size) "FALSE" else joined(left.items.zip(right.items), "AND")
@@ -3123,6 +3296,26 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 else -> null
             }
+        }
+
+        /**
+         * Whether [value] compares as its JSON, as [membership] compares a value with a list's items: no node, relationship or
+         * value that holds one, which compares by identity, and no temporal value, which compares by its kind. One that may hold
+         * a null [membership] compares as [equality] does, null where an item is equal but for the null.
+         */
+        private fun plainJson(value: Value): Boolean =
+            value is Value.Json && value.identity == null && !holdsTemporals(value) && value.temporal == null
+
+        /**
+         * Whether [expression] is a constant that holds no null: a number, a text or a truth value the statement writes, a
+         * negated number, or a list or a map of such. As JSON, it is equal to a value that holds no null where Cypher finds them equal.
+         */
+        private fun constant(expression: Expression): Boolean = when (expression) {
+            is Expression.Literal -> expression.value != null
+            is Expression.Unary -> expression.operator == Expression.Unary.Operator.NEGATE && (expression.operand as? Expression.Literal)?.value is Number
+            is Expression.ListLiteral -> expression.items.all(::constant)
+            is Expression.MapLiteral -> expression.entries.all { constant(it.second) }
+            else -> false
         }
 
         /**
