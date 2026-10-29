@@ -26,6 +26,7 @@ import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
 import org.drivine.backend.sqlite.SqliteGraph
+import org.drivine.backend.sqlite.SqliteLowerCopies
 import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.GraphQuerySpec
@@ -172,6 +173,20 @@ abstract class CaseInsensitiveContract {
         assertEquals("ann@x.com", copy("CiAccount", "a1"))
         // Saved again as it is, beside the copy it now has.
         assertEquals(saved.stamp, stateless.save(saved).stamp)
+    }
+
+    @Test
+    fun `a patch writes the copy only on a node it changes`() {
+        stateless.save(CiAccount("a1", "Ann@X.com"))
+        run("MATCH (n:CiAccount {id: 'a1'}) REMOVE n.`${LowerCopies.of("email")}`")
+        val stamp = account("a1").stamp
+
+        stateless.patch("a1", CiAccount::class.java, CiAccountQueryDsl.INSTANCE) { fields { query.email setTo "Ann@X.com" } }
+        assertNull(copy("CiAccount", "a1"))
+        assertEquals(stamp, account("a1").stamp)
+
+        stateless.patch("a1", CiAccount::class.java, CiAccountQueryDsl.INSTANCE) { fields { query.email setTo "Anne@X.com" } }
+        assertEquals("anne@x.com", copy("CiAccount", "a1"))
     }
 
     @Test
@@ -558,5 +573,41 @@ class CaseInsensitiveSqliteTest : CaseInsensitiveContract() {
     override fun assertIndexServes(statement: GraphStatement) {
         val plan = pm.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${statement.statement}").bind(statement.bindings)).joinToString("\n")
         assertContains(plan, "USING INDEX ${graph.objectName("ix", listOf("CiPlanned", LowerCopies.of("email")))}")
+    }
+
+    private fun copyOf(label: String, id: String): String? =
+        pm.query(QuerySpecification.withStatement("MATCH (n:$label {id: '$id'}) RETURN n.`${LowerCopies.of("email")}`").transform(String::class.java)).singleOrNull()
+
+    @Test
+    fun `drivine_lower_copies writes a batch at a time, removes the copy of a property with no value, and writes nothing once done`() {
+        pm.execute(QuerySpecification.withStatement(
+            "CREATE (:CiLate {id: 'l1', email: 'Ann@X.com'}), (:CiLate {id: 'l2', email: 'BOB@x.com'}), (:CiLate {id: 'l3', `${LowerCopies.of("email")}`: 'stale'})"
+        ))
+        val fill = SqliteLowerCopies(graph).fill("CiLate", "email")
+        fun filled(): Long = pm.getOne(QuerySpecification.withStatement(fill).bind(mapOf("batch" to 2)).transform(Number::class.java)).toLong()
+
+        assertEquals(listOf(2L, 1L, 0L), listOf(filled(), filled(), filled()))
+        assertEquals("ann@x.com", copyOf("CiLate", "l1"))
+        assertEquals("bob@x.com", copyOf("CiLate", "l2"))
+        assertNull(copyOf("CiLate", "l3"))
+    }
+
+    @Test
+    fun `a save, setClause in Cypher of your own, and a lookup lowercase beyond ASCII alike, as SQLite's own lower does not`() {
+        val stateless = StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+        stateless.save(CiAccount("a1", "ÉCOLE@X.COM"))
+        pm.execute(QuerySpecification.withStatement("CREATE (:CiAccount {id: 'a2'})"))
+        pm.execute(QuerySpecification.withStatement("MATCH (n:CiAccount {id: 'a2'}) SET n.email = 'ÅSA@X.com' SET ${LowerCopies.setClause("n", "email")}"))
+        assertEquals("école@x.com", copyOf("CiAccount", "a1"))
+        assertEquals("åsa@x.com", copyOf("CiAccount", "a2"))
+
+        pm.indexes.ensure(RangeIndexSpec("CiAccount", "email", ignoreCase = true))
+        fun found(email: String, contains: Boolean = false): Set<String> = stateless.loadAll(CiAccount::class.java, CiAccountQueryDsl.INSTANCE) {
+            where { if (contains) query.email containsIgnoreCase email else query.email eqIgnoreCase email }
+        }.map { it.id }.toSet()
+        assertContains(lookup(CiAccount::class.java, "École@x.com").statement, LowerCopies.of("email"))
+        assertEquals(setOf("a1"), found("École@x.com"))
+        assertEquals(setOf("a2"), found("åSA@x.COM"))
+        assertEquals(setOf("a1"), found("ÉCOLE", contains = true))
     }
 }
