@@ -109,12 +109,13 @@ abstract class CypherWriteContract {
             val digits = tokens.map { it[position] }.toSet()
             assertTrue(digits.size >= 12, "position $position of the tokens took only $digits")
         }
-        // Saved one after another, a node's tokens share no long prefix.
+        // Saved one after another, a node's tokens seldom share a long prefix, where SYS_GUID()'s always did.
         val saved = (1..20).map {
             query("MATCH (n:CyWrite {id: 1}) SET ${Stamps.setClause("n")}")
             (query("MATCH (n:CyWrite {id: 1}) RETURN n.$stamp").single() as String).substringBefore(':')
         }
-        saved.zipWithNext().forEach { (a, b) -> assertTrue(a.commonPrefixWith(b).length <= 4, "$a then $b") }
+        // Two random tokens share 5 digits once in about a million; three such pairs in 19, about once in 1e15 runs.
+        assertTrue(saved.zipWithNext().count { (a, b) -> a.commonPrefixWith(b).length > 4 } <= 2, "$saved share long prefixes")
     }
 
     @Test

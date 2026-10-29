@@ -258,13 +258,14 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `randomUUID gives a new random version 4 UUID each time, in lower case, sharing no long prefix with the one before`() {
+    fun `randomUUID gives a new random version 4 UUID each time, in lower case, seldom sharing a long prefix with the one before`() {
         // Oracle's SYS_GUID() gave version 0 values that shared their first 12 characters, a counter changing (#401).
         val uuids = query("UNWIND range(1, 50) AS i RETURN randomUUID()").map { it as String }
         val version4 = Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
         assertEquals(50, uuids.toSet().size, "$uuids")
         uuids.forEach { assertTrue(version4.matches(it), "not a lower-case version 4 UUID: $it") }
-        uuids.zipWithNext().forEach { (a, b) -> assertTrue(a.commonPrefixWith(b).length <= 4, "$a and $b share a long prefix") }
+        // Two random UUIDs share 5 characters once in about a million; three such pairs in 49, about once in 6e13 runs.
+        assertTrue(uuids.zipWithNext().count { (a, b) -> a.commonPrefixWith(b).length > 4 } <= 2, "$uuids share long prefixes")
     }
 
     @Test
