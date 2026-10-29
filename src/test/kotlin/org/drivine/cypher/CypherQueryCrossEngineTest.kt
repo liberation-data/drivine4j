@@ -1551,14 +1551,51 @@ abstract class CypherQueryContract {
             // tested whole, as JSON.
             val numbers = (0 until n).joinToString(", ", "[", "]") { if (it % 7 == 2) "null" else "$it" }
             assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $numbers, 999999 IN $numbers"), "$n items")
-            // A list of several kinds is compared item by item, in a few hundred characters of SQL each. Oracle, whose memory
-            // the suite's other sessions share, runs out of it reading the comparisons of 1001 (#360), so isn't asked them.
+            // A list of several kinds: its constants are tested at once, as one list, and its nulls make a value not found null (#360).
+            // One a statement: on Oracle, each copy of a 1,001-item literal takes about 180 MB of PGA to build.
+            listOf("$lastWhole" to true, "999999" to null, "-1" to null).forEach { (value, found) ->
+                assertEquals(listOf(found), query("RETURN $value IN $list"), "$value IN $n items")
+            }
+            // Two lists of several kinds are compared item by item, in a few hundred characters of SQL each. Oracle, whose memory
+            // the suite's other sessions share, runs out of it reading the comparisons of 1001 (#404), so isn't asked them.
             if (n > 250 && pm.type == DatabaseType.ORACLE) continue
-            // (Not -1, which compiles to ten times the statement, #360.)
-            assertEquals(listOf(listOf(true, null)), query("RETURN $lastWhole IN $list, 999999 IN $list"), "$n items")
             // Compared with itself item by item, each pair equal but the nulls, which are null beside each other.
             assertEquals(listOf(null), query("RETURN $list = $list"), "$n items")
         }
+    }
+
+    @Test
+    fun `a value of each kind tested with IN against a long list literal of several kinds, a null among them, as Cypher tests it`() {
+        // Not in the spec yet (#360): on Oracle, -1 IN 1,001 such items compiled to 1.6 MB, and ran out of PGA.
+        for (n in listOf(10, 101, 1001)) {
+            val items = (0 until n).map(::longItem)
+            val list = items.joinToString(", ", "[", "]") { it.first }
+            val noNulls = items.filter { it.second != null }.joinToString(", ", "[", "]") { it.first }
+            val lastWhole = (0 until n).last { it % 7 == 0 }
+            // Not found beside a null is null; found, a nested list, a map, a float equal to a whole number and a truth value are true.
+            // One a statement: on Oracle, each copy of a 1,001-item literal takes about 180 MB of PGA to build.
+            listOf(
+                "-1 IN $list" to null, "$lastWhole IN $list" to true, "null IN $list" to null, "[5, 'n'] IN $list" to true,
+                "{k: 6} IN $list" to true, "7.0 IN $list" to true, "true IN $list" to true, "'s1' IN $list" to true,
+                "-1 IN $noNulls" to false, "'s1' IN $noNulls" to true,
+            ).forEach { (tested, expected) -> assertEquals(listOf(expected), query("RETURN $tested"), "${tested.substringBefore(" IN ")} IN $n items") }
+            assertEquals(listOf(null, true, null), query("UNWIND [-1, 0, null] AS x RETURN x IN $list"), "$n items")
+            assertEquals(listOf(0L, 7L, "s1"), query("UNWIND [-1, 0, 7, null, 's1'] AS x WITH x WHERE x IN $list RETURN x"), "$n items")
+            assertEquals(listOf(-1L), query("UNWIND [-1, 0, 7, null, 's1'] AS x WITH x WHERE NOT x IN $noNulls RETURN x"), "$n items")
+            assertEquals(emptyList(), query("UNWIND [-1, 0, 7, null, 's1'] AS x WITH x WHERE NOT x IN $list RETURN x"), "$n items")
+        }
+        // A truth value is no number, a float is equal to a whole number, and an item that holds a null makes its comparison null
+        // where nothing else differs.
+        assertEquals(
+            listOf(listOf(null, false, true, null, null, false, null, true, false)),
+            query("RETURN true IN [1, 's', null], true IN [1, 's'], 3.0 IN [3, 's', null], [5, null] IN [[5, null], 1, 2], " +
+                "[5, 'n'] IN [[5, null], 1, 2], [5, 'n'] IN [[6, null], 1, 2], {k: 6} IN [{k: null}, 1, 2], 1 IN [1, 2, null], 1 IN [true, 1.5, 's']"),
+        )
+        // A value that holds a null, against constants that hold none: null where an item is equal but for the null.
+        assertEquals(
+            listOf(listOf(null, null, false), listOf(true, true, false), listOf(null, null, null)),
+            query("UNWIND [[5, null], [6, 'n'], null] AS v RETURN [v IN [[5, 1], [6, 'n'], 3], v IN [[7, 1], [6, 'n'], 3, null], v IN [[7, 1], 3]]"),
+        )
     }
 
     @Test

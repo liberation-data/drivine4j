@@ -3187,17 +3187,36 @@ abstract class SqlCypherCompiler(graph: String) {
             fun joined(pairs: List<Pair<Expression, Expression>>, operator: String) =
                 grouped(pairs.map { (a, b) -> bool(binary(Expression.Binary(Operator.EQUALS, a, b), scope)) }, operator)
             return when {
-                // The item compiled once, and compared with each of the list's.
+                // The item compiled once, and compared with each of the list's. A null the list writes makes its comparison null
+                // whatever the value, so the nulls are one null term. A value that compares as JSON is tested at once, as [membership]
+                // tests it against a list, against the items that are constants holding no null, where there are two or more: written
+                // one by one, a long list of mixed kinds compiled to megabytes on Oracle (#360). A value that may hold a null is tested
+                // against the texts, numbers and truth values apart, as one that holds none, which none of them is equal to but for a
+                // null; and against the lists and maps as membership tests such a value, item by item where it holds a null.
                 binary.operator == Operator.IN -> (right as? Expression.ListLiteral)?.takeIf { it.items.isNotEmpty() }?.let { list ->
                     val item = expression(left, scope)
-                    grouped(
-                        list.items.map { listed ->
-                            val equals = Expression.Binary(Operator.EQUALS, left, listed)
-                            val (l, r) = compared(item, expression(listed, scope), equals)
-                            equality(l, r, listed, plain(left, listed, l, r, scope), stored(left, scope))
-                        },
-                        "OR",
-                    )
+                    val (nulls, items) = list.items.partition { it is Expression.Literal && it.value == null }
+                    val (constants, others) = items.partition { plainJson(item) && constant(it) }
+                        .let { (constants, others) -> if (constants.size > 1) constants to others else emptyList<Expression>() to items }
+                    val (scalars, containers) = if (isFlat(item)) constants to emptyList()
+                        else constants.partition { it !is Expression.ListLiteral && it !is Expression.MapLiteral }
+                    val within = listOf(scalars to (item as? Value.Json)?.copy(flat = true), containers to item).filter { it.first.isNotEmpty() }
+                        .map { (written, value) ->
+                            val listed = Expression.ListLiteral(written)
+                            membership(Expression.Binary(Operator.IN, left, listed), requireNotNull(value), expression(listed, scope), scope, false)
+                        }
+                    val compared = others.map { listed ->
+                        val equals = Expression.Binary(Operator.EQUALS, left, listed)
+                        val (l, r) = compared(item, expression(listed, scope), equals)
+                        equality(l, r, listed, plain(left, listed, l, r, scope), stored(left, scope))
+                    }
+                    val terms = within + compared
+                    // A null beside other terms takes its kind from them; alone, it is given one, as Postgres can't make a bare NULL JSON.
+                    when {
+                        nulls.isEmpty() -> grouped(terms, "OR")
+                        terms.isEmpty() -> "(CASE WHEN 1 = 0 THEN FALSE END)"
+                        else -> grouped(terms + "NULL", "OR")
+                    }
                 }
                 left is Expression.ListLiteral && right is Expression.ListLiteral ->
                     if (left.items.size != right.items.size) "FALSE" else joined(left.items.zip(right.items), "AND")
@@ -3207,6 +3226,26 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 else -> null
             }
+        }
+
+        /**
+         * Whether [value] compares as its JSON, as [membership] compares a value with a list's items: no node, relationship or
+         * value that holds one, which compares by identity, and no temporal value, which compares by its kind. One that may hold
+         * a null [membership] compares as [equality] does, null where an item is equal but for the null.
+         */
+        private fun plainJson(value: Value): Boolean =
+            value is Value.Json && value.identity == null && !holdsTemporals(value) && value.temporal == null
+
+        /**
+         * Whether [expression] is a constant that holds no null: a number, a text or a truth value the statement writes, a
+         * negated number, or a list or a map of such. As JSON, it is equal to a value that holds no null where Cypher finds them equal.
+         */
+        private fun constant(expression: Expression): Boolean = when (expression) {
+            is Expression.Literal -> expression.value != null
+            is Expression.Unary -> expression.operator == Expression.Unary.Operator.NEGATE && (expression.operand as? Expression.Literal)?.value is Number
+            is Expression.ListLiteral -> expression.items.all(::constant)
+            is Expression.MapLiteral -> expression.entries.all { constant(it.second) }
+            else -> false
         }
 
         /**
