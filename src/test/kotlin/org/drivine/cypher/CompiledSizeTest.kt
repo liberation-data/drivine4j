@@ -378,6 +378,26 @@ class CompiledSizeTest {
     }
 
     @Test
+    fun `a value tested with IN against a long list literal of several kinds, a null among them, compiles to about the list's own statement`() {
+        // #360: each item was compared with the value on its own, the value written out at each, so -1 IN 1,001 such items
+        // compiled to 1.6 MB on Oracle, and ran out of PGA. Its constants are now tested at once, as one list, and its nulls are one null.
+        val kinds = listOf<(Int) -> String>({ "$it" }, { "'s$it'" }, { "null" }, { "$it.5" }, { "true" }, { "[$it, 'n']" }, { "{k: $it}" })
+        val list = (0 until 1001).joinToString(", ", "[", "]") { kinds[it % 7](it) }
+        compilers.forEach { compiler ->
+            val name = compiler::class.simpleName
+            val reference = compiler.compile("RETURN $list", emptyMap()).sql.length
+            listOf("-1", "0", "999999", "null", "[5, 'n']", "{k: 6}", "3.0", "true", "\$p").forEach { value ->
+                val size = compiler.compile("RETURN $value IN $list", mapOf("p" to -1)).sql.length
+                assertTrue(size < reference * 1.2, "$name: $value IN the list: $size characters, the list alone $reference")
+            }
+            listOf("MATCH (n) WHERE n.v IN $list RETURN n", "UNWIND [-1, [5, null]] AS x RETURN x IN $list").forEach { statement ->
+                val size = compiler.compile(statement, emptyMap()).sql.length
+                assertTrue(size < reference * 1.2, "$name: ${statement.take(40)}: $size characters, the list alone $reference")
+            }
+        }
+    }
+
+    @Test
     fun `an aggregate's argument compiled only to see whether it binds a value leaves each function on Oracle declared once, under the name the query calls`() {
         // Compiled to see, then again: a reduce() in it was declared twice, under one name or a name no query calls.
         val z = "datetime('2024-03-15T10:00:00Z') + duration({minutes: x})"
