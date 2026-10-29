@@ -27,8 +27,8 @@ enum class DatabaseType(
     MEMGRAPH("MEMGRAPH"),
 
     /**
-     * Oracle Database, 23.9 or later, over JDBC (see `JdbcConnectionProvider.oracleRefusal`). It speaks SQL: a graph is a SQL property graph
-     * over tables, read with `GRAPH_TABLE` and written as rows of those tables.
+     * Oracle Database, 23.9 or later, over JDBC (see `JdbcConnectionProvider.oracleRefusal`). It speaks SQL: a graph is a
+     * SQL property graph over tables, read with `GRAPH_TABLE` and written as rows of those tables.
      */
     ORACLE("ORACLE", speaksCypher = false),
 

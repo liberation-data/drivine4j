@@ -514,6 +514,9 @@ class JdbcConnectionProviderTest {
         // As the driver gives Oracle Free 23.26.3: minor version 26.
         assertNull(JdbcConnectionProvider.oracleRefusal(oracle(23, 26, "23.26.3.0.0")))
         assertNull(JdbcConnectionProvider.oracleRefusal(oracle(26, 1, "26.1.0.0.0")))
+        // A product version with no number in it names the version by the driver's major and minor.
+        val bare = oracle(21, 3, "").also { `when`(it.databaseProductVersion).thenReturn(null) }
+        assertContains(JdbcConnectionProvider.oracleRefusal(bare).orEmpty(), "this database is 21.3.")
     }
 
     @Test
