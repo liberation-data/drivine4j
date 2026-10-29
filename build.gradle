@@ -343,3 +343,43 @@ generateGrammarSource {
 compileKotlin.dependsOn generateGrammarSource
 compileTestKotlin.dependsOn generateTestGrammarSource
 sourcesJar.dependsOn generateGrammarSource
+
+// The openCypher TCK, run against each store through Drivine: a source set, a configuration and a task of their
+// own, so `test`, `check` and `build` run none of it. See TCK.md.
+//   ./gradlew tck -Ptck.store=postgres [-Ptck.features=Match1,Match2] [-Ptck.timeout=30]
+//   -Ptck.gate=true             fails on any scenario that passes in src/tck/resources/tck-baseline-<store>.json and not now
+//   -Ptck.baseline.update=true  rewrites that baseline from the run (a whole run only)
+def tckFeaturesVersion = '2024.2'
+sourceSets {
+	tck {
+		compileClasspath += sourceSets.main.output + sourceSets.test.output
+		runtimeClasspath += sourceSets.main.output + sourceSets.test.output
+	}
+}
+configurations {
+	tckImplementation.extendsFrom testImplementation
+	tckRuntimeOnly.extendsFrom testRuntimeOnly
+}
+dependencies {
+	tckImplementation 'org.opencypher:tck-api_2.13:1.0.0-M23'
+	// The features and named graphs: 2024.2's are 2024.3's, the latest release, unchanged.
+	tckImplementation "org.opencypher:tck:${tckFeaturesVersion}"
+	tckImplementation 'org.scala-lang:scala-library:2.13.10'
+}
+tasks.register('tck', JavaExec) {
+	description = 'Runs the openCypher TCK against one store: -Ptck.store=neo4j|postgres|oracle|sqlite.'
+	group = 'verification'
+	classpath = sourceSets.tck.runtimeClasspath
+	mainClass = 'org.drivine.tck.TckRunnerKt'
+	maxHeapSize = '2g'
+	workingDir = projectDir
+	rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+	if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+	systemProperty 'tck.version', "openCypher TCK ${tckFeaturesVersion}"
+	systemProperty 'tck.baseline.dir', file('src/tck/resources').absolutePath
+	systemProperty 'tck.out', layout.buildDirectory.file("tck/${project.findProperty('tck.store') ?: 'sqlite'}.jsonl").get().asFile.absolutePath
+	['tck.store', 'tck.features', 'tck.timeout', 'tck.out', 'tck.limit', 'tck.debug', 'tck.gate', 'tck.baseline.update'].each { key ->
+		if (project.hasProperty(key)) systemProperty key, project.property(key)
+	}
+}
+kotlin.target.compilations.named('tck') { associateWith(kotlin.target.compilations.getByName('main')) }

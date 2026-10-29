@@ -462,10 +462,58 @@ jobs:
             **/build/reports/tests/test/
           retention-days: 14
 
+  # The openCypher TCK on each store, held to the store's baseline in src/tck/resources: it fails on any
+  # scenario that passed there and doesn't now. Unlike the jobs above it runs the pinned images, as the
+  # baselines were written on them, so a failure here is Drivine's own. See TCK.md.
+  tck:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        store: [ neo4j, postgres, oracle, sqlite ]
+      fail-fast: false
+
+    name: tck (${{ matrix.store }})
+    timeout-minutes: 30
+
+    env:
+      TEST_IMAGES_UNPINNED: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Configure Testcontainers for Docker 29+
+        run: echo "api.version=1.44" > ~/.docker-java.properties
+
+      - name: Run the TCK and hold it to the baseline
+        run: ./gradlew tck -Ptck.store=${{ matrix.store }} -Ptck.gate=true --no-daemon
+
+      - name: Write the report to the job's summary
+        if: always()
+        run: if [ -f build/tck/report.md ]; then cat build/tck/report.md >> "$GITHUB_STEP_SUMMARY"; fi
+
+      - name: Upload the TCK results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-tck-${{ matrix.store }}
+          path: build/tck/
+          retention-days: 14
+
   # A scheduled run that fails opens one issue, and none while that issue is open: the failed runs are
   # listed on the workflow's page, each with the releases it ran. A run started by hand opens none.
   report-failure:
-    needs: [ cypher-spec, test, test-falkordb, test-memgraph, test-oracle, test-postgres ]
+    needs: [ cypher-spec, test, test-falkordb, test-memgraph, test-oracle, test-postgres, tck ]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
@@ -482,5 +530,5 @@ jobs:
           if [ -n "$open" ]; then
             echo "#$open is open for it."
           else
-            gh issue create --title "$TITLE" --body "$RUN failed. In each job, the step that pulls the images names the release of each one. Fix Drivine for the new release, move its pin in gradle/test-images.txt, and close this issue: the next failure opens another. See TEST_CONTAINERS.md, \"Pinned images and the nightly run\"."
+            gh issue create --title "$TITLE" --body "$RUN failed. In each job, the step that pulls the images names the release of each one. Fix Drivine for the new release, move its pin in gradle/test-images.txt, and close this issue: the next failure opens another. See TEST_CONTAINERS.md, \"Pinned images and the nightly run\". A failed tck job runs the pinned images: its log names each TCK scenario that passed in the store's baseline and no longer does. See TCK.md."
           fi
