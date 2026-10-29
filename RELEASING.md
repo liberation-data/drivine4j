@@ -99,9 +99,9 @@ own run, when the pull request is up to date with its base.
   `drivine4j-codegen-java`, `drivine4j-codegen-model`, `drivine4j-coroutines`, `drivine4j-spring` and
   `drivine4j-spring-boot-starter`. `drivine4j-sample` is not. A new published module is added to `MODULES` in
   `release.yml` and to `publishAggregation` in the root `build.gradle`, or `build` fails.
-- **Build:** `./gradlew build -x test -x standaloneTest zipAggregationPublication`, with no Gradle cache (the gate
-  ran the tests). Every module's publication is staged and signed, as nmcp stages it, and zipped into the one bundle
-  nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
+- **Build:** `./gradlew build -x test -x standaloneTest zipAggregationPublication`, with no Gradle cache (the gate,
+  or the CI run `trust` found on this tree, ran the tests). Every module's publication is staged and signed, as nmcp
+  stages it, and zipped into the one bundle nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
 - **Checks:** every module has its jar, sources jar, javadoc jar, pom and Gradle module file, each with a signature that
   verifies, and its pom names the version. `build` also fails a release whose version Maven Central already has, and
   only warns when Maven Central can't be asked (the portal rejects a duplicate anyway). Before any of it, `check`

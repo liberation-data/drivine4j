@@ -218,8 +218,9 @@ jobs:
           gpg --batch --pinentry-mode loopback --passphrase dry-run \
             --quick-gen-key 'Drivine release dry run <dry-run@invalid>' rsa3072 sign 1d
           gpg --batch --pinentry-mode loopback --passphrase dry-run --armor --export-secret-keys > "$RUNNER_TEMP/dry-run-key.asc"
-      # Every module, as ci.yml builds it (the gate ran the tests), then the bundle nmcp uploads: every published
-      # module's publication, staged and signed, in one zip, build/nmcp/zip/publicationAggregated.zip.
+      # Every module, as ci.yml builds it (the gate, or the CI run trust found on this tree, ran the tests), then the
+      # bundle nmcp uploads: every published module's publication, staged and signed, in one zip,
+      # build/nmcp/zip/publicationAggregated.zip.
       - name: Build, sign and bundle the publications
         run: |
           SIGNING_KEY="$(cat "$RUNNER_TEMP/dry-run-key.asc")" \
