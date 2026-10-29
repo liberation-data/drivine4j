@@ -742,9 +742,10 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   float.
 - An infinity is the number SQLite's JSON writes for one, and is stored. Its JSON holds no NaN: a statement given one
   as a parameter writes it as `{"$numberDouble": "NaN"}`, works with it as the float it is, as Neo4j does, and gives
-  it back as NaN. A statement that writes and is given NaN is refused, rather than store that map. A float divided by
-  zero is still null. So is NaN worked out from a stored infinity by a statement given no NaN or infinity
-  (`n.inf - n.inf`, `n.inf * 0`), where Neo4j gives NaN, but for the two infinities added with `+`, which give NaN.
+  it back as NaN. A statement that writes and is given NaN is refused, rather than store that map, and one that writes
+  NaN it works out from an infinity (`$i - $i`, `n.inf + n.negative`) fails. A float divided by zero is still null. So
+  is NaN worked out from a stored infinity by a statement given no NaN or infinity (`n.inf - n.inf`, `n.inf * 0`),
+  where Neo4j gives NaN, but for the two infinities added with `+`, which give NaN.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.

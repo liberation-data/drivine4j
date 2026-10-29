@@ -2447,4 +2447,27 @@ class CypherQuerySqliteTest : CypherQueryContract() {
             clear()
         }
     }
+
+    @Test
+    fun `NaN worked out by a statement that writes is refused, as NaN given is, and no map is stored in its place`() {
+        // SQLite's JSON holds no NaN: worked out from an infinity given or stored, it would be stored as `{"$numberDouble": "NaN"}` (#295).
+        clear()
+        try {
+            val infinity = mapOf("i" to Double.POSITIVE_INFINITY)
+            pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Inf {b: \$i, c: [-\$i]})")).bind(infinity))
+            fun refused(cypher: String, parameters: Map<String, Any?> = emptyMap()) {
+                val failure = assertThrows<Exception>(cypher) { pm.execute(QuerySpecification.withStatement(CypherStatement(cypher)).bind(parameters)) }
+                assertTrue(failure.message!!.contains("works out NaN"), failure.message)
+            }
+            refused("CREATE (:Inf {x: \$i - \$i})", infinity)
+            refused("MATCH (n:Inf) SET n.x = [\$i * 0]", infinity)
+            refused("MATCH (n:Inf) SET n += {x: n.b + n.c[0]}")
+            assertEquals(listOf(listOf(1L, null)), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) RETURN [count(n), collect(n.x)[0]]"))))
+            // An infinity worked out is stored, as one given is, by the statement that failed above, which runs again.
+            pm.execute(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) SET n.x = n.b + 1")))
+            assertEquals(listOf(Double.POSITIVE_INFINITY), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) RETURN n.x"))))
+        } finally {
+            clear()
+        }
+    }
 }
