@@ -2165,12 +2165,13 @@ abstract class SqlCypherCompiler(graph: String) {
          *
          * Only where rows are not compared: after DISTINCT or an aggregate, a term is sorted by over the items' columns, as
          * Neo4j sorts by nothing else there. A term that reads an item's name reads that item's expression, as it is sorted
-         * by, in a comprehension's, a quantifier's or a reduce's own expressions too. Left as it was, in the order these are
-         * seen: a term holding an aggregate, an aggregate's result aggregatesFirst worked out, or randomUUID(); one holding a
-         * subquery, whose names neither [scoped] nor [variablesIn] sees; one that reads an item's name where it is not
-         * replaced, where a name the comprehension binds would hide it or a variable of the item's expression, in a pattern
-         * or as a map projection's variable; and one that, so read, is an item or binds nothing. An item made anew,
-         * randomUUID(), that such a term reads is made first, in a `WITH *` before the term's, and read from there by both.
+         * by, in a comprehension's, a quantifier's or a reduce's own expressions too. Over aggregatesFirst's grouping `WITH`,
+         * whose rows are its groups already, a term over an aggregate's result reads that result's column as any other. Left
+         * as it was, in the order these are seen: a term holding an aggregate or randomUUID(); one holding a subquery, whose
+         * names neither [scoped] nor [variablesIn] sees; one that reads an item's name where it is not replaced, where a name
+         * the comprehension binds would hide it or a variable of the item's expression, in a pattern or as a map projection's
+         * variable; and one that, so read, is an item or binds nothing. An item made anew, randomUUID(), that such a term
+         * reads is made first, in a `WITH *` before the term's, and read from there by both.
          */
         private fun sortsFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             if (!sharing || !select.walks || projection.distinct || items.any { contains(it.expression, ::isAggregate) }) return null
@@ -2179,8 +2180,8 @@ abstract class SqlCypherCompiler(graph: String) {
             // Each item made anew that a term reads, by its name, and the column it is made first in.
             val made = linkedMapOf<String, String>()
             projection.orderBy.map { it.expression }.distinct().forEach { term ->
-                // An aggregate's result, aggregatesFirst's, is sorted by as `project` sorts it; so is a randomUUID() of its own.
-                if (contains(term) { isAggregate(it) || isAnew(it) || it is Expression.Variable && it.name.startsWith("#aggregate") }) return@forEach
+                // An aggregate is sorted by as `project` sorts it; so is a randomUUID() of its own.
+                if (contains(term) { isAggregate(it) || isAnew(it) }) return@forEach
                 // A subquery's, `COUNT { … }`'s, names are seen by neither scoped nor variablesIn: one there is read as it was.
                 if (holdsSubquery(term)) return@forEach
                 // Each item's name read first as a name no variable has, so one left where it is not replaced is seen.
@@ -2242,11 +2243,39 @@ abstract class SqlCypherCompiler(graph: String) {
          * the names it takes and the functions it declares (a `reduce`'s on Oracle) are given back, so a statement whose
          * aggregates bind nothing compiles as it did.
          */
-        private fun binds(expression: Expression, select: Select): Boolean {
+        private fun binds(expression: Expression, select: Select): Boolean = binds { expression(expression, select.scope) }
+
+        /**
+         * Whether [shared] would bind a value in [term], over an aggregate's result, where [term] is no aggregate itself:
+         * each aggregate in it compiled as it is, with nothing bound ([aggregating]), and the operations over them with
+         * [shared] on. Compiled only to see, as [binds] is. An order term reads each item it names, in [named], by its name:
+         * the item's value, compiled over the rows [select] reads as `project` compiles it, is bound to that name, so a comprehension's own name hides
+         * it as it hides any variable, and the item's expression is never read where a comprehension binds its variables.
+         */
+        private fun bindsOverAggregates(term: Expression, select: Select, named: Map<String, Expression> = emptyMap()): Boolean {
+            if (isAggregate(term) || !contains(term, ::isAggregate)) return false
+            return binds {
+                // Each item compiled as `project` compiles it, with shared on where it does not aggregate, lest one nested deep be
+                // written out again at each level; what it binds is its own, not the term's.
+                val items = named.filterKeys { it in variablesIn(term) }.mapValues { (_, item) ->
+                    val was = sharedBindings
+                    aggregating(item) { expression(item, select.scope) }.also { sharedBindings = was }
+                }
+                val results = mutableMapOf<String, Value>()
+                // Named as no variable is, unless quoted so.
+                val over = replaced(term) { part ->
+                    if (!isAggregate(part)) null else Expression.Variable("#over${results.size + 1}").also { results[it.name] = unshared { expression(part, select.scope) } }
+                }
+                expression(over, select.scope + items + results)
+            }
+        }
+
+        /** Whether [shared] binds a value in what [work] compiles, the names it takes and the functions it declares given back. */
+        private fun binds(work: () -> Unit): Boolean {
             val (wasCounter, wasShares, wasBindings) = Triple(counter, shares, sharedBindings)
             val wasFunctions = functions.size
             try {
-                expression(expression, select.scope)
+                work()
                 return sharedBindings > wasBindings
             } finally {
                 counter = wasCounter
@@ -2294,13 +2323,22 @@ abstract class SqlCypherCompiler(graph: String) {
          * or a relationship, not its properties. An order term, or a part of one, that is an item is read by the item's name.
          * A store dedupes no aggregate in the query that makes it, and Oracle's `LISTAGG`, which does, gives at most 4,000
          * bytes; and Oracle reads no aggregate of the query it is in from a subquery, which reading a list item by item is.
-         * Null where the projection does neither.
+         * So too where an operation over an aggregate's result would bind a value ([bindsOverAggregates]): in the query
+         * that aggregates, nothing is bound ([aggregating]), so `max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)`
+         * wrote each aggregate out again at every level, to 68 MB on Postgres, and ran the compiler out of memory on Oracle
+         * (#373); over the aggregates' columns, the operation binds its values as any item does. Null where the projection
+         * does none of these.
          */
         private fun aggregatesFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
             fun collectsDistinct(expression: Expression) = expression is Expression.Function && expression.distinct && expression.name.lowercase() == "collect"
             fun iteratesAggregate(expression: Expression) = iterated(expression).any { contains(it, ::isAggregate) }
             val terms = items.map { it.expression } + projection.orderBy.map { it.expression }
-            if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) }) return null
+            // An order term reads an item by its name.
+            val byName = items.associate { it.name to it.expression }
+            if (terms.none { contains(it, ::collectsDistinct) || contains(it, ::iteratesAggregate) } &&
+                items.none { bindsOverAggregates(it.expression, select) } &&
+                projection.orderBy.none { bindsOverAggregates(it.expression, select, byName) }
+            ) return null
             // Named as no variable is, unless quoted so.
             val keys = items.filter { !contains(it.expression, ::isAggregate) }.associate { it.expression to "#group${++counter}" }
             val aggregates = linkedMapOf<Expression, String>()
@@ -2335,14 +2373,13 @@ abstract class SqlCypherCompiler(graph: String) {
             // An order term, or a part of one, that is an item is read by the item's name, as over a DISTINCT projection it can only be;
             // a variable an item is named after is that item, not the variable of that name before it.
             val itemNames = items.associate { it.expression to it.name }
-            val aliases = items.map { it.name }.toSet()
             val kept = projection.copy(
                 star = false,
                 items = items.map { it.copy(expression = replaced(it.expression, ::kept)) },
                 orderBy = projection.orderBy.map { sort ->
                     sort.copy(
                         expression = replaced(sort.expression) { term ->
-                            if (term is Expression.Variable && term.name in aliases) term else itemNames[term]?.let(Expression::Variable) ?: kept(term)
+                            if (term is Expression.Variable && term.name in byName) term else itemNames[term]?.let(Expression::Variable) ?: kept(term)
                         },
                     )
                 },

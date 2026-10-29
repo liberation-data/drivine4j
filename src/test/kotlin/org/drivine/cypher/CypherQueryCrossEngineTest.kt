@@ -1744,6 +1744,63 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `texts, text functions and arithmetic over an aggregate's result, beside grouping keys, a walk, DISTINCT and an order`() {
+        // #373: an operation over an aggregate's result is worked out over the aggregate's column, where it would bind a value;
+        // the three aggregates concatenated ran the compiler out of memory on Oracle, and compiled to 68 MB on Postgres.
+        clear()
+        seed(
+            "CREATE (a:CyAgg {k: 'x', title: 'Dr', first: 'Ann', last: 'Bell', name: ' Bo ', a: 1, b: 10})-[:NEXT]->" +
+                "(b:CyAgg {k: 'x', title: 'Mr', first: 'Cy', last: 'Ames', name: ' Al ', a: 3, b: 20})-[:NEXT]->" +
+                "(:CyAgg {k: 'y', title: 'Ms', first: 'Di', last: 'Cole', name: ' Ed ', a: 5, b: 30})"
+        )
+        val all = "MATCH (n:CyAgg)"
+        val ordered = "MATCH (n:CyAgg) WITH n ORDER BY n.a"
+        assertEquals(listOf("Ms: Di Cole"), query("$all RETURN max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)"))
+        assertEquals(listOf("Dr: Ann Bell"), query("$ordered RETURN head(collect(n.title)) + ': ' + head(collect(n.first)) + ' ' + head(collect(n.last))"))
+        assertEquals(
+            listOf(listOf(" bo ", "Ed", "I", "bo")),
+            query(
+                "$ordered RETURN [toLower(toLower(toLower(toLower(collect(n.name)[0])))), trim(trim(max(n.name))), " +
+                    "substring(substring(toUpper(max(n.first)), 0), 1), toLower(trim(head(collect(n.name))))]"
+            ),
+        )
+        assertEquals(listOf(listOf(3L, 41L)), query("$all RETURN [sum(n.a) / count(*), (sum(n.a) + sum(n.b)) * 2 / count(*) - max(n.a)]"))
+        // Beside a grouping key, ordered by it, and by an operation over aggregates, which Neo4j sorts by only where it is an item.
+        assertEquals(listOf(listOf("x", "Mr: bell"), listOf("y", "Ms: cole")), query("$all RETURN n.k AS k, max(n.title) + ': ' + toLower(max(n.last)) AS t ORDER BY k"))
+        assertEquals(
+            listOf(listOf("y", "coleDi"), listOf("x", "amesCy")),
+            query("$all RETURN n.k AS k, toLower(min(n.last)) + max(n.first) AS t ORDER BY toLower(min(n.last)) + max(n.first) DESC"),
+        )
+        assertEquals(listOf(listOf("y", 30L), listOf("x", 15L)), query("$all RETURN n.k AS k, sum(n.b) / count(*) AS m ORDER BY sum(n.b) / count(*) DESC"))
+        // DISTINCT, with a key and without.
+        assertEquals(listOf(listOf("x", "cy2"), listOf("y", "di1")), query("$all RETURN DISTINCT n.k AS k, toLower(max(n.first)) + toString(count(*)) AS t ORDER BY k"))
+        assertEquals(listOf("Ms: Di Cole"), query("$all RETURN DISTINCT max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)"))
+        // Beside a variable-length walk, in an item, and in an order term too.
+        val walk = "MATCH (s:CyAgg)-[:NEXT*1..2]->(e:CyAgg)"
+        assertEquals(listOf("Mr: Cy Ames"), query("$walk RETURN min(e.title) + ': ' + min(e.first) + ' ' + min(e.last)"))
+        val sorted = "toLower(toLower(max(e.last))) + toString(sum(e.a))"
+        assertEquals(listOf(listOf("Cy", "cole5"), listOf("Ann", "cole8")), query("$walk RETURN s.first AS s, $sorted AS t ORDER BY $sorted"))
+        assertEquals(listOf(listOf("Cy", "cole5")), query("$walk RETURN s.first AS s, $sorted AS t ORDER BY $sorted DESC SKIP 1 LIMIT 1"))
+        // An order term that reads an item by its name beside an aggregate, with a walk and without.
+        assertEquals(listOf(listOf("y", 5L), listOf("x", 4L)), query("$all RETURN n.k AS k, sum(n.a) AS m ORDER BY toString(10 - sum(n.a)) + toLower(toLower(k))"))
+        assertEquals(listOf(listOf("Cy", 5L), listOf("Ann", 8L)), query("$walk RETURN s.first AS s, sum(e.a) AS c ORDER BY toLower(toLower(s)) + toString(sum(e.a)) DESC"))
+        // Where a comprehension's own name hides an item's, and where the item's expression reads a name the comprehension binds.
+        assertEquals(listOf(listOf("y", 5L), listOf("x", 4L)), query("$all RETURN n.k AS k, sum(n.a) AS m ORDER BY toString([k IN [10] | k - m][0]) + toString(sum(n.a))"))
+        assertEquals(listOf(listOf("y", 5L), listOf("x", 4L)), query("$all RETURN n.k AS k, sum(n.a) AS m ORDER BY [n IN ['b'] | k + n][0] + toString(sum(n.a)) DESC"))
+        // Beside a key that is an expression, in a CASE and in a map.
+        val texts = "toLower(max(n.title)) + ': ' + toLower(max(n.last))"
+        assertEquals(listOf(listOf(2L, "dr: bell"), listOf(4L, "mr: ames"), listOf(6L, "ms: cole")), query("$all RETURN n.a + 1 AS k, $texts AS t ORDER BY k"))
+        assertEquals(listOf(listOf("x", "mr: bell"), listOf("y", "")), query("$all RETURN n.k AS k, CASE WHEN count(*) > 1 THEN $texts ELSE '' END AS t ORDER BY k"))
+        assertEquals(
+            listOf(listOf("x", mapOf("t" to "mr: bell", "c" to 3L)), listOf("y", mapOf("t" to "ms: cole", "c" to 2L))),
+            query("$all RETURN n.k AS k, {t: $texts, c: count(*) + 1} AS m ORDER BY k"),
+        )
+        // Over no rows, the aggregate is null, and so is what is worked out over it; a count is 0.
+        assertEquals(listOf(null), query("$all WHERE n.k = 'z' RETURN toLower(max(n.title)) + '!'"))
+        assertEquals(listOf(listOf("0!", 1L)), query("$all WHERE n.k = 'z' RETURN [toLower(toString(count(*))) + '!', count(*) + 1]"))
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
