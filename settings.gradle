@@ -1,8 +1,15 @@
 rootProject.name = 'drivine4j'
 
 // Code generation modules
+include 'drivine4j-codegen-model'  // The model file both processors write
 include 'drivine4j-codegen'        // KSP processor for Kotlin
 include 'drivine4j-codegen-java'   // APT processor for Java
+
+// Spring Framework adapter: DrivineTransactionManager (no Boot)
+include 'drivine4j-spring'
+
+// Transactions for Kotlin coroutines: a suspend transaction block (kotlinx-coroutines)
+include 'drivine4j-coroutines'
 
 // Spring Boot starter module
 include 'drivine4j-spring-boot-starter'

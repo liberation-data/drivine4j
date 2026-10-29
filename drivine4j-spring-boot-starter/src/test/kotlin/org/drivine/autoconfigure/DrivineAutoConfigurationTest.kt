@@ -11,6 +11,7 @@ import org.drivine.manager.PersistenceManagerFactory
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
+import org.drivine.transaction.Transactions
 import org.drivine.schema.SchemaManager
 import org.junit.jupiter.api.Test
 import org.springframework.boot.ApplicationRunner
@@ -49,6 +50,7 @@ class DrivineAutoConfigurationTest {
         DatabaseRegistry::class.java,
         TransactionContextHolder::class.java,
         PlatformTransactionManager::class.java,
+        Transactions::class.java,
         PersistenceManagerFactory::class.java,
         GraphObjectManagerFactory::class.java,
         SchemaManager::class.java,
@@ -75,6 +77,7 @@ class DrivineAutoConfigurationTest {
             assertThat(context).doesNotHaveBean(GraphObjectManagerFactory::class.java)
             assertThat(context).doesNotHaveBean(SchemaManager::class.java)
             assertThat(context).doesNotHaveBean(PlatformTransactionManager::class.java)
+            assertThat(context).doesNotHaveBean(Transactions::class.java)
             assertThat(context).doesNotHaveBean(ApplicationRunner::class.java)
         }
     }

@@ -276,10 +276,12 @@ class OracleBackendTest {
 
         val asked = store.queried.single()
         assertEquals(
-            "SELECT object_name FROM g_schema WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL",
+            "SELECT object_name FROM g_schema WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL" +
+                " AND JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) = \$dimensions",
             asked.statement,
         )
-        assertEquals(mapOf<String, Any?>("kind" to "VECTOR_INDEX", "label" to "VecDoc", "properties" to "[\"embedding\"]"), asked.parameters)
+        // Only an index of the vector's size is searched: Oracle refuses to measure two sizes against each other.
+        assertEquals(mapOf<String, Any?>("kind" to "VECTOR_INDEX", "label" to "VecDoc", "properties" to "[\"embedding\"]", "dimensions" to 2), asked.parameters)
         assertContains(plan.cypher, "FROM g_v_made s")
         assertContains(plan.cypher, "FETCH APPROX FIRST")
         assertEquals(5, plan.requestedRows)
@@ -292,6 +294,8 @@ class OracleBackendTest {
 
         assertFalse("FETCH APPROX" in plan.cypher)
         assertContains(plan.cypher, "VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB))")
+        // Only the embeddings of the vector's size are measured: Oracle refuses to measure two sizes against each other.
+        assertContains(plan.cypher, "VECTOR_DIMENSION_COUNT(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB))) = 1")
         assertTrue(0.5 in plan.bindings.values, "the threshold is bound")
     }
 
@@ -339,7 +343,7 @@ class OracleBackendTest {
         val plain = backend.delete(Claim::class.java, null, CascadeType.NONE).statement.squashed()
         val narrowed = backend.delete(Claim::class.java, "n.text = 'x'", CascadeType.NONE).statement.squashed()
 
-        assertContains(plain, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE INSTR(JSON_SERIALIZE(n_.labels), ''\"Claim\"'') > 0 AND JSON_VALUE(n_.props, ''$.id'') = :b0' USING \$id; v_count := SQL%ROWCOUNT;")
+        assertContains(plain, "EXECUTE IMMEDIATE 'DELETE FROM g_node n_ WHERE INSTR('','' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), '']''), ''['') || '',\"'', '',\"Claim\",\"'') > 0 AND JSON_VALUE(n_.props, ''$.id'') = :b0' USING \$id; v_count := SQL%ROWCOUNT;")
         assertContains(plain, "OPEN v_rows FOR SELECT v_count FROM dual;")
         assertContains(narrowed, "AND JSON_VALUE(n_.props, ''$.id'') = :b0 AND (JSON_VALUE(n_.props, ''$.text'') = ''x'')' USING \$id;")
     }
@@ -537,7 +541,7 @@ class OracleBackendTest {
 
         assertEquals(
             "SELECT n.stamp FROM g_node n WHERE JSON_VALUE(n.props, '$.id') = \$id" +
-                " AND INSTR(JSON_SERIALIZE(n.labels), '\"Gauge\"') > 0 AND INSTR(JSON_SERIALIZE(n.labels), '\"Hot\"') > 0",
+                " AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Gauge\",\"') > 0 AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Hot\",\"') > 0",
             found.statement,
         )
         assertEquals(mapOf<String, Any?>("id" to "3"), found.bindings)
@@ -654,7 +658,7 @@ class OracleBackendTest {
         assertContains(sql, "\"Hot\"")
         assertContains(sql, "= \$_fromId")
         // The target's label is tested on the node found, not used to find it.
-        assertContains(sql, "INSTR(JSON_SERIALIZE(n_.labels), '\"Human\"') > 0")
+        assertContains(sql, "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Human\",\"') > 0")
     }
 
     @Test
@@ -713,8 +717,8 @@ class OracleBackendTest {
 
         // The where is tested in the pattern, on the node the path starts from.
         assertContains(sql, "MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"GroupMessage\")') AND JSON_VALUE(n_.props, '$.role') = ${'$'}_p1 AND ")
-        assertContains(sql, "<-[e1_1 IS edge WHERE e1_1.type = 'HAS_MESSAGE']- (via_ IS node WHERE INSTR(JSON_SERIALIZE(via_.labels), '\"GroupSession\"') > 0)")
-        assertContains(sql, "-[e1_2 IS edge WHERE e1_2.type = 'OWNED_BY']-> (k0_ IS node WHERE INSTR(JSON_SERIALIZE(k0_.labels), '\"GroupUser\"') > 0 AND INSTR(JSON_SERIALIZE(k0_.labels), '\"GroupPerson\"') > 0)")
+        assertContains(sql, "<-[e1_1 IS edge WHERE e1_1.type = 'HAS_MESSAGE']- (via_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(via_.labels), ']'), '[') || ',\"', ',\"GroupSession\",\"') > 0)")
+        assertContains(sql, "-[e1_2 IS edge WHERE e1_2.type = 'OWNED_BY']-> (k0_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(k0_.labels), ']'), '[') || ',\"', ',\"GroupUser\",\"') > 0 AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(k0_.labels), ']'), '[') || ',\"', ',\"GroupPerson\",\"') > 0)")
         assertContains(sql, "SELECT DISTINCT r.nid, r.k0 FROM GRAPH_TABLE (g")
         assertContains(sql, "COLUMNS (n_.nid, k0_.nid AS k0)) r ) pair_ JOIN g_node n_ ON n_.nid = pair_.nid GROUP BY pair_.k0 ) g_")
         assertContains(sql, "COALESCE(SUM(CASE WHEN JSON_VALUE(n_.props, '$.role') = ${'$'}_p0 THEN JSON_VALUE(n_.props, '$.tokens' RETURNING NUMBER) END), 0) AS a1")

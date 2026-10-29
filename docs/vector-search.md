@@ -34,7 +34,9 @@ Returns `List<Scored<T>>`, most similar first.
   `topK` rows**. Callers who need a fuller set raise `topK`. This keeps the vector path's `WHERE`
   byte-identical to the normal load path.
 - **Score normalized to similarity, higher = better, on every engine** — so ordering and `threshold`
-  mean the same thing regardless of backend. The normalization lives in each grammar.
+  mean the same thing regardless of backend: `(1 + cos) / 2` for cosine and `1 / (1 + d²)` for
+  Euclidean, each in `[0, 1]`, as Neo4j gives them. The normalization lives in each grammar, and
+  `VectorScoreCrossEngineTest` pins the score of a known pair on every store.
 - **The property is inferred from `@VectorIndex`.** The embedding property is already annotated for
   the schema feature, so the common single-embedding case needs no property argument; a name is only
   passed to disambiguate multiple embeddings on one node. No `@Embedding` / auto-embed — Drivine
@@ -48,8 +50,8 @@ post-filter, threshold) — see `VectorSearchNeo4jTest` and `VectorSearchCrossEn
 | Engine   | Vector head | Status |
 |----------|-------------|--------|
 | Neo4j 5  | `CALL db.index.vector.queryNodes(name, k, vec) YIELD node, score` — score is already normalized similarity | ✅ verified |
-| FalkorDB | `CALL db.idx.vector.queryNodes(label, prop, k, vecf32(vec)) YIELD node, score` — distance → similarity (cosine `1-d`, euclidean `1/(1+d)`) | ✅ verified |
-| Memgraph | `CALL vector_search.search(name, k, vec) YIELD node, similarity` — native similarity | ✅ verified |
+| FalkorDB | `CALL db.idx.vector.queryNodes(label, prop, k, vecf32(vec)) YIELD node, score` — the score is a distance, `1 - cos` or `d`, rescaled to `1 - score / 2` and `1 / (1 + score²)` | ✅ verified |
+| Memgraph | `CALL vector_search.search(name, k, vec) YIELD node, distance` — the distance, `1 - cos` or `d²`, rescaled to `1 - distance / 2` and `1 / (1 + distance)` (not `similarity`, which is `\|1 - distance\|`) | ✅ verified |
 | Neptune  | **throws** `UnsupportedOperationException` — no native vector index (inherits the grammar default) | ✅ throws |
 
 ### FalkorDB quirk: required relationships are filtered *after* projection
@@ -137,7 +139,8 @@ Full rationale: [0.0.79-vector-search-k.md](0.0.79-vector-search-k.md).
 **`partitionLabel`** — targets a per-partition index at runtime, so the search runs *inside* the
 partition rather than being post-filtered. The label is bound, not interpolated (one query plan for all
 partitions); the index name re-derives as `${label}_${property}_vector`, matching the create side.
-Targeting is not identity — the projection is unchanged.
+Targeting is not identity — the projection is unchanged, and a node the partition's index yields
+comes back only when it has every one of the fragment's labels.
 Full rationale: [0.0.79-vector-partitioning.md](0.0.79-vector-partitioning.md).
 
 **Short-yield reporting** — a vector search returning fewer rows than requested logs the numbers at

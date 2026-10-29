@@ -226,15 +226,22 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
         private const val MAX_CAUSE_DEPTH = 10
     }
 
-    /** Says why a checked save matched nothing: the node is gone, or carries another stamp. */
+    /**
+     * Says why a checked save matched nothing: the node is gone, carries another stamp, or carries the
+     * stamp the statement compared and differs in a field it compared.
+     */
     private fun staleObject(stamp: StampWrite, expected: String): StaleObjectException {
         val found = persistenceManager.query(backend.foundStamp(stamp).spec().transform(String::class.java))
+        val foundStamp = found.firstOrNull()?.takeIf { it.isNotEmpty() }
+        val stampAsCompared = foundStamp != null &&
+            if (stamp.wholeStampCompared) foundStamp == expected else Stamps.nodeToken(foundStamp) == Stamps.nodeToken(expected)
         return StaleObjectException(
             type = stamp.fragmentClass,
             id = stamp.id,
             expectedStamp = expected,
-            foundStamp = found.firstOrNull()?.takeIf { it.isNotEmpty() },
+            foundStamp = foundStamp,
             deleted = found.isEmpty(),
+            fieldsDiffer = found.isNotEmpty() && stamp.fieldsCompared && stampAsCompared,
         )
     }
 }

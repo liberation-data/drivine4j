@@ -714,19 +714,23 @@ data class CollectionSortSpec(
     val ascending: Boolean
 ) {
     /**
-     * Returns true if this is a nested collection sort (e.g., "raisedBy_worksFor").
+     * Whether this sorts the collection of the relationship at [path]: its field name at the top, or
+     * the field names that lead to it joined by `_`, as `raisedBy_worksFor`. Compared whole, so a
+     * relationship whose name holds an underscore, and one more than two levels down, are told apart.
      */
+    fun isFor(path: String): Boolean = relationshipPath == path
+
+    /** Whether the path holds an underscore. A relationship's own name may hold one too: match with [isFor]. */
+    @Deprecated("Splits the path on its first underscore, which a relationship's name may hold: match with isFor(path)")
     fun isNested(): Boolean = relationshipPath.contains("_")
 
-    /**
-     * For nested sorts, returns the parent relationship name (e.g., "raisedBy" from "raisedBy_worksFor").
-     */
-    fun parentRelationship(): String? = if (isNested()) relationshipPath.substringBefore("_") else null
+    /** The path before its first underscore, e.g. "raisedBy" from "raisedBy_worksFor". */
+    @Deprecated("Splits the path on its first underscore, which a relationship's name may hold: match with isFor(path)")
+    fun parentRelationship(): String? = if (relationshipPath.contains("_")) relationshipPath.substringBefore("_") else null
 
-    /**
-     * For nested sorts, returns the nested relationship name (e.g., "worksFor" from "raisedBy_worksFor").
-     */
-    fun nestedRelationship(): String? = if (isNested()) relationshipPath.substringAfter("_") else null
+    /** The path after its first underscore, e.g. "worksFor" from "raisedBy_worksFor". */
+    @Deprecated("Splits the path on its first underscore, which a relationship's name may hold: match with isFor(path)")
+    fun nestedRelationship(): String? = if (relationshipPath.contains("_")) relationshipPath.substringAfter("_") else null
 }
 
 /** Orders parted by [CypherGenerator.splitOrders]: the sorts of relationship collections, and the orders of the roots. */

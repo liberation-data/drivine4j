@@ -126,10 +126,26 @@ class OracleNamesTest {
         assertTrue(ensuring.contains("PRAGMA EXCEPTION_INIT(e_exists, -955);"))
         assertTrue(ensuring.contains("SELECT COUNT(*) INTO v_made FROM user_pg_prop_definitions WHERE graph_name = 'MYGRAPH' AND property_name = 'DOC';"))
         assertTrue(ensuring.contains("IF v_made = 0 THEN"))
+        // Another session's lock (ORA-00054) is waited out, and what another session made is taken as made.
+        assertTrue(ensuring.contains("PRAGMA EXCEPTION_INIT(e_busy, -54);"))
+        assertTrue(ensuring.contains("WHEN e_exists THEN RETURN;"))
+        assertTrue(ensuring.contains("DBMS_SESSION.SLEEP(0.1);"))
         for (statement in graph.ddl) {
-            assertTrue(ensuring.contains("BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(statement)}; EXCEPTION WHEN e_exists THEN NULL; END;"), "wraps: $statement")
+            assertTrue(ensuring.contains("make(${OracleSql.literal(statement)});"), "wraps: $statement")
         }
-        assertEquals(graph.ddl.size, Regex("BEGIN EXECUTE IMMEDIATE ").findAll(ensuring).count())
+        assertEquals(graph.ddl.size, Regex("\\bmake\\('").findAll(ensuring).count())
+        // The graph's functions are made after the tables, whether or not the tables were there, where they are missing or
+        // not valid. Each replaces one another process made, and a user who may not make one still has the store (#270).
+        val functionsChecked = ensuring.indexOf("SELECT COUNT(*) INTO v_made FROM user_objects WHERE object_type = 'FUNCTION' AND object_name = 'MYGRAPH_NULLS_EQUAL' AND status = 'VALID';")
+        assertTrue(functionsChecked > ensuring.lastIndexOf("make(${OracleSql.literal(graph.ddl.last())});"), ensuring)
+        assertTrue(ensuring.contains("PRAGMA EXCEPTION_INIT(e_denied, -1031);"))
+        assertEquals(listOf("myGraph_nulls_equal"), graph.functions.map { it.substringAfter("FUNCTION ").substringBefore('(') })
+        for (statement in graph.functions) {
+            assertTrue(statement.startsWith("CREATE OR REPLACE FUNCTION "), statement)
+            val wrapped = ensuring.indexOf("BEGIN EXECUTE IMMEDIATE ${OracleSql.literal(statement)}; EXCEPTION WHEN e_denied THEN NULL; END;")
+            assertTrue(wrapped > functionsChecked, "wraps: $statement")
+        }
+        assertEquals(graph.functions.size, Regex("BEGIN EXECUTE IMMEDIATE ").findAll(ensuring).count())
         // Nothing in the block is read as a parameter: the JSON paths are inside literals.
         assertTrue(SqlParameters.positional(ensuring).names.isEmpty())
     }

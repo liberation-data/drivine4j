@@ -64,10 +64,11 @@ internal class FragmentMergeBuilder(
      *   embeddings included — see [NullPolicy].
      * @param writeFields The only fields this save may touch, by field name: a field outside the set is
      *   neither written nor cleared, whatever [nullPolicy] says. Null means every field.
-     * @param asLoaded The fields as the object was loaded, by field name, as a save writes them. A
-     *   checked save then matches the node only while each field still holds what was loaded, as
-     *   well as the stamp: a declared field its value, a bag the keys it owns and their values, the
-     *   labels field the labels it reads. Null compares the stamp alone.
+     * @param asLoaded The fields as the object was loaded, by field name, as a save writes them, but a
+     *   `@JsonPacked` field the node held text for as that text, as the load read it. A checked
+     *   save then matches the node only while each field still holds what was loaded, as well as
+     *   the stamp: a declared field its value, a bag the keys it owns and their values, the labels
+     *   field the labels it reads. Null compares the stamp alone.
      * @return A MergeStatement containing the query and bindings
      */
     fun <T : Any> buildMergeStatement(
@@ -329,7 +330,12 @@ internal class FragmentMergeBuilder(
             LowerCopies.clause("n", fragmentModel.lowerCopied)?.let { append("\n").append(it) }
         }
         val carried = fragmentModel.stampField?.let { allProps[it] as? String }
-        val stampWrite = offered?.let { StampWrite(obj.javaClass, idValue, labels, nodeIdProperty, expected, carried) }
+        val stampWrite = offered?.let {
+            StampWrite(
+                obj.javaClass, idValue, labels, nodeIdProperty, expected, carried,
+                fieldsCompared = fieldsAsLoaded.isNotEmpty(), wholeStampCompared = expected != null && wholeStamp,
+            )
+        }
         return MergeStatement(query, bindings, stampWrite)
     }
 
@@ -454,6 +460,13 @@ data class StampWrite(
      * data it may hold one itself, and is told whole here.
      */
     val labelNames: List<String> = labels.split(':'),
+    /** Whether a checked statement compares the node's fields with the object as it was loaded, as well as its stamp. */
+    val fieldsCompared: Boolean = false,
+    /**
+     * Whether a checked statement compares the whole stamp, the relationship token too, and not the
+     * node token alone.
+     */
+    val wholeStampCompared: Boolean = false,
 )
 
 /**

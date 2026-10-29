@@ -100,7 +100,7 @@ class FalkorDbConnection(
             )
             FalkorDbTransactionMode.STRICT -> throw UnsupportedOperationException(
                 "FalkorDB does not support multi-statement transactions. " +
-                "Remove @Transactional or set falkorDbTransactionMode to WARN to allow passthrough."
+                "Remove @Transactional (or the transaction { } block) or set falkorDbTransactionMode to WARN to allow passthrough."
             )
         }
     }

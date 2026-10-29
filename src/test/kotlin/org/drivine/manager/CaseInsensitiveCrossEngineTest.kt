@@ -25,6 +25,8 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.backend.sqlite.SqliteGraph
+import org.drivine.sqlite.SqliteTestDatabase
 import org.drivine.query.QuerySpecification
 import org.drivine.query.dsl.GraphQuerySpec
 import org.drivine.query.dsl.containsIgnoreCase
@@ -61,7 +63,7 @@ import sample.caseinsensitive.CiRedone
  * `@CaseInsensitive`: a save keeps a lowercased copy of the property, which loads do not see; an
  * index that ignores case is made over the copy, and ensuring it fills the copy in on the nodes saved
  * before; once it has, `eqIgnoreCase` and `containsIgnoreCase` compare with the copy, which the index
- * serves. Verified on Neo4j, FalkorDB, Memgraph, Oracle and Postgres.
+ * serves. Verified on Neo4j, FalkorDB, Memgraph, Oracle, Postgres and SQLite.
  */
 abstract class CaseInsensitiveContract {
 
@@ -539,5 +541,22 @@ class CaseInsensitivePostgresTest : CaseInsensitiveContract() {
         }
         assertFalse("Seq Scan" in plan, plan)
         assertContains(plan, "Index")
+    }
+}
+
+class CaseInsensitiveSqliteTest : CaseInsensitiveContract() {
+    private val graph = SqliteGraph("contracts")
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(SqliteTestDatabase.graphManager("contracts"))
+
+    override fun forgetCopies() {
+        SqliteTestDatabase.run("DELETE FROM ${graph.catalog} WHERE kind = 'LOWER_COPY'")
+        listOf("CiLate", "CiAccount", "CiPlanned", "CiRedone").forEach { pm.indexes.drop(RangeIndexSpec(it, "email", ignoreCase = true)) }
+        pm.constraints.drop(UniquenessConstraintSpec("CiMember", "email", ignoreCase = true))
+    }
+
+    /** The plan SQLite makes for [statement]: it names the partial index over the copy where that answers. */
+    override fun assertIndexServes(statement: GraphStatement) {
+        val plan = pm.query(QuerySpecification.withStatement("EXPLAIN QUERY PLAN ${statement.statement}").bind(statement.bindings)).joinToString("\n")
+        assertContains(plan, "USING INDEX ${graph.objectName("ix", listOf("CiPlanned", LowerCopies.of("email")))}")
     }
 }

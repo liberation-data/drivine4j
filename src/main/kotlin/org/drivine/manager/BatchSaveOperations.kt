@@ -45,6 +45,11 @@ internal class BatchSaveOperations(
      * UNWIND-root statements precede the per-item relationship statements that MATCH those roots, so the
      * list is safe to execute in order.
      *
+     * The rows of each `UNWIND` go in the order of their ids, chunk after chunk, so that two batches
+     * over the same roots lock them in the same order (see [inLockOrder]). The classes, and the
+     * statements of each item, keep the order [items] gives: a view's relationship statements can
+     * write a node another item's write too, and the caller's order says which is written last.
+     *
      * @param writeFields the only root fields to write of an item of the class it is asked of, by
      *   field name; null for all of them
      */
@@ -82,7 +87,7 @@ internal class BatchSaveOperations(
         writeFields: Set<String>?,
     ) {
         val rows = group.map { obj -> unwindRootRow(obj, rootModel, rootFieldName, idField, nullPolicy, writeFields) }
-        rows.chunked(chunkSize).forEach { chunk ->
+        rows.inIdOrder(clazz).chunked(chunkSize).forEach { chunk ->
             specs.add(
                 QuerySpecification
                     .withStatement(stampedUnwind(rootModel))
@@ -100,16 +105,20 @@ internal class BatchSaveOperations(
      * had before the row wrote to it: empty for a node the row made, [Stamps.NEVER_STAMPED] for one
      * that was there without a stamp. Each of [items] is a fragment that
      * [savedByUnwind] allows.
+     *
+     * The classes go in the order of their names and the rows of each in the order of their ids,
+     * chunk after chunk: see [inLockOrder].
      */
     fun buildStampedSpecs(
         items: List<IndexedValue<Any>>,
         nullPolicy: NullPolicy,
         writeFields: (Class<*>) -> Set<String>? = { null },
     ): List<QuerySpecification<String>> =
-        items.groupBy { it.value.javaClass }.flatMap { (clazz, group) ->
+        byClassName(items).flatMap { (clazz, group) ->
             val model = FragmentModel.from(clazz)
             val statement = stampedUnwind(model, handsBack = true) + "\nRETURN $HANDED_BACK"
             unwindRows(model, group, handsBack = true, nullPolicy, writeFields(clazz))
+                .inIdOrder(clazz)
                 .chunked(chunkSize)
                 .map { chunk -> QuerySpecification.withStatement(statement).bind(mapOf(ROWS to chunk)).transform(String::class.java) }
         }
@@ -128,8 +137,7 @@ internal class BatchSaveOperations(
      * [buildStampedSpecs] does, and none for one of [plain].
      *
      * The classes go in the order of their names, those of [plain] first, and the rows of each in the
-     * order of their ids, so that two batches over the same nodes take their locks in the same order
-     * whatever order they were given in. Rows of one id keep the order they were given in.
+     * order of their ids, as in every other statement of a batch: see [inLockOrder].
      */
     fun buildTogetherSpec(
         plain: List<IndexedValue<Any>>,
@@ -148,14 +156,20 @@ internal class BatchSaveOperations(
         val handedBack = stampedAt.joinToString(" + ") { "${SAVED}$it" }.ifEmpty { "[]" }
         val statement = (segments + "UNWIND $handedBack AS saved\nRETURN saved").joinToString("\n")
         val bindings = groups.mapIndexed { index, group ->
-            "${ROWS}$index" to unwindRows(group.model, group.items, group.handsBack, nullPolicy, writeFields(group.clazz))
-                .sortedBy { it["id"].toString() }
+            "${ROWS}$index" to unwindRows(group.model, group.items, group.handsBack, nullPolicy, writeFields(group.clazz)).inIdOrder(group.clazz)
         }.toMap()
         return QuerySpecification.withStatement(statement).bind(bindings).transform(String::class.java)
     }
 
     private fun togetherGroups(items: List<IndexedValue<Any>>, handsBack: Boolean): List<TogetherGroup> =
-        items.groupBy { it.value.javaClass }.entries.sortedBy { it.key.name }.map { TogetherGroup(it.key, it.value, handsBack) }
+        byClassName(items).map { TogetherGroup(it.key, it.value, handsBack) }
+
+    /** [items] grouped by their classes, in the order of the classes' names. */
+    private fun byClassName(items: List<IndexedValue<Any>>): List<Map.Entry<Class<*>, List<IndexedValue<Any>>>> =
+        items.groupBy { it.value.javaClass }.entries.sortedBy { it.key.name }
+
+    /** The rows of one class's `UNWIND` in lock order: see [inLockOrder]. */
+    private fun List<Map<String, Any?>>.inIdOrder(clazz: Class<*>): List<Map<String, Any?>> = inLockOrder({ clazz }, { it["id"] })
 
     /** The fragments of one class in a statement of [buildTogetherSpec], and whether a stamp is handed back for each. */
     private class TogetherGroup(val clazz: Class<*>, val items: List<IndexedValue<Any>>, val handsBack: Boolean) {
@@ -286,6 +300,20 @@ internal class BatchSaveOperations(
         /** What a row of a stamped `UNWIND` hands back: `index/found=stamp`. */
         private const val HANDED_BACK = "row.i + '/' + ${Stamps.FOUND} + '=' + n.${Stamps.QUOTED}"
     }
+}
+
+/**
+ * These items in the order a batch takes their nodes' locks in: by the name of each one's class,
+ * then by its id as text, so that two batches over the same nodes take their locks in the same order
+ * whatever order they were given in. Items of one class and id keep the order they were given in, so
+ * the last of them is still the one written last.
+ */
+internal fun <T> List<T>.inLockOrder(classOf: (T) -> Class<*>, idOf: (T) -> Any?): List<T> =
+    map { LockKey(classOf(it).name, idOf(it).toString()) to it }.sortedBy { it.first }.map { it.second }
+
+/** Where an item comes in [inLockOrder]: each key read once, not at every comparison. */
+private data class LockKey(val className: String, val id: String) : Comparable<LockKey> {
+    override fun compareTo(other: LockKey): Int = compareValuesBy(this, other, { it.className }, { it.id })
 }
 
 private fun org.drivine.query.MergeStatement.toSpec(): QuerySpecification<*> =

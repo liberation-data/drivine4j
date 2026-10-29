@@ -6,6 +6,7 @@ import org.drivine.StaleObjectException
 import org.drivine.annotation.GraphView
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.backend.FragmentBatch
+import org.drivine.mapper.AsStored
 import org.drivine.mapper.toMap
 import org.drivine.annotation.NodeFragment
 import org.drivine.mapper.ResultPostProcessor
@@ -141,7 +142,8 @@ class StatelessGraphObjectManager private constructor(
      * @param from the object as it was loaded, when [obj] is a changed copy of it: see [save]
      * @throws IllegalArgumentException when a name is no field of the object, when the object
      *   could not be handed the stamps the save would leave, and when [from] is not [obj] as it was
-     *   loaded: another class, another id, or no stamp. Nothing is written then
+     *   loaded: another class, another id, or no stamp, or of a class (for a view, a root) with no
+     *   `@NodeStamp` field. Nothing is written then
      * @throws StaleObjectException when what the save would overwrite changed after the object was loaded
      */
     @JvmOverloads
@@ -159,13 +161,18 @@ class StatelessGraphObjectManager private constructor(
         val (saved, asLoaded) = from?.let { loadedAs(obj, it) } ?: (obj to null)
         val statement = statementFor(saved, relationships, nullPolicy, fields, checked = true, asLoaded)
         requireStampable(saved, statement)
-        return stamped(saved, statement, executor.save(statement))
+        return stamped(saved, statement, executor.save(statement)).also { result ->
+            // A packed or set field the save did not write still holds what was loaded.
+            if (asLoaded == null || fields == null) return@also
+            val root = stamps.rootOf(result) ?: return@also
+            stamps.stampOf(result)?.let { AsStored.carry(root, it, asLoaded, fields, objectMapper) }
+        }
     }
 
     /**
      * [obj] to be checked as [from], the object it was loaded as: carrying [from]'s stamp, whatever
      * stamp it carries itself, as [update] checks against the stamp it loaded; and [from]'s root fields,
-     * as a save writes them, which the save compares with the node. [from] must not be [obj] itself: an
+     * as [asLoaded] gives them, which the save compares with the node. [from] must not be [obj] itself: an
      * object changed in place no longer says what was loaded. A copy may share an unchanged root.
      */
     private fun <T : Any> loadedAs(obj: T, from: T): Pair<T, Map<String, Any?>> {
@@ -177,13 +184,18 @@ class StatelessGraphObjectManager private constructor(
         }
         val root = requireNotNull(stamps.rootOf(obj)) { "The ${obj.javaClass.simpleName} saved has no root fragment." }
         val loadedRoot = requireNotNull(stamps.rootOf(from)) { "The ${from.javaClass.simpleName} given as from has no root fragment." }
-        val idField = requireNotNull(rootModel(obj.javaClass).nodeIdField)
-        val asLoaded = objectMapper.toMap(loadedRoot)
+        val model = rootModel(obj.javaClass)
+        require(model.stampField != null) {
+            "${model.clazz.simpleName} has no @NodeStamp field, so a save of a ${obj.javaClass.simpleName} has no stamp to be checked against what was loaded. Give it one, or save without from."
+        }
+        val idField = requireNotNull(model.nodeIdField)
+        val loadedStamp = stamps.stampOf(from)
+        val asLoaded = asLoaded(loadedRoot, loadedStamp)
         val id = objectMapper.toMap(root)[idField]
         require(asLoaded[idField]?.toString() == id?.toString()) {
             "from is the ${from.javaClass.simpleName} '${asLoaded[idField]}', and the object saved '$id'. Give the object as it was loaded."
         }
-        val loadedStamp = requireNotNull(stamps.stampOf(from)) {
+        requireNotNull(loadedStamp) {
             "The ${from.javaClass.simpleName} given as from carries no stamp, so nothing says what it was loaded with. Give it as it was loaded, with its @NodeStamp field."
         }
         val saved = if (stamps.stampOf(obj) == loadedStamp) obj else stamps.of(obj, IdentityHashMap<Any, String>().apply { put(root, loadedStamp) })
@@ -284,6 +296,14 @@ class StatelessGraphObjectManager private constructor(
      * saved by a statement of its own. An object the batch
      * holds more than once is handed the stamp its node is left with each time.
      *
+     * The fragments are written class by class in an order the classes alone fix (by their names; on
+     * a Cypher store those without a stamp first, and of those the ones saved by statements of their
+     * own first, while a stamped one saved so goes last, after the views), and those of each class in
+     * the order of their ids, so that two batches over the same nodes take their locks in the same
+     * order whatever order they were given in. Fragments of one id keep the order they were given
+     * in, so the last of them is still the one written last. The views are written in the order given.
+     * The objects come back in the order given.
+     *
      * A batch that only adds is not checked, and it makes any node it does not find. With [only] or
      * [except], a node that was deleted since the object was loaded comes back holding its id and the
      * written fields alone, and for a view its relationships. It has its labels and a stamp, as any
@@ -344,7 +364,9 @@ class StatelessGraphObjectManager private constructor(
         val fields: Map<Class<*>, Set<String>?> = items.map { it.javaClass }.distinct().associateWith { batchWriteFields(it, only, except) }
         if (items.isEmpty()) return emptyList()
         val views = items.filter { it.javaClass.isAnnotationPresent(GraphView::class.java) }
+        // In lock order, so that two batches over the same nodes take their locks in the same order.
         val fragments = items.withIndex().filterNot { it.value.javaClass.isAnnotationPresent(GraphView::class.java) }
+            .inLockOrder({ it.value.javaClass }, { idOf(it.value) })
         require(relationships !is Replace || fragments.isEmpty()) {
             "Replace applies to the relationship fields of a @GraphView, and ${fragments.first().value.javaClass.simpleName} is not one."
         }
@@ -394,7 +416,7 @@ class StatelessGraphObjectManager private constructor(
         val left = linkedMapOf<Pair<Class<*>, Any?>, String>()
         val nodes = returned.map { row ->
             val item = items[row.index]
-            val node = item.javaClass to objectMapper.toMap(item)[FragmentModel.from(item.javaClass).nodeIdField]
+            val node = item.javaClass to idOf(item)
             found.putIfAbsent(node, row.found)
             left[node] = row.stamp
             item to node
@@ -409,6 +431,9 @@ class StatelessGraphObjectManager private constructor(
         }
         return saved
     }
+
+    /** The id of [fragment], as its object holds it. */
+    private fun idOf(fragment: Any): Any? = objectMapper.toMap(fragment)[FragmentModel.from(fragment.javaClass).nodeIdField]
 
     /** Each of [single] as the statement of [singles] that saved it hands its stamps back, from that statement's [rows]. */
     private fun savedSingly(single: List<Any>, singles: List<SaveStatement>, rows: List<List<Any?>>): Map<Any, Any> {
@@ -638,7 +663,10 @@ class StatelessGraphObjectManager private constructor(
      * `@NodeStamp` field: without one a change by another writer is not noticed. On an engine whose
      * reads take no snapshot (Neo4j), a load can be handed another writer's stamp with the data from
      * before its write, so the save compares each field of the root as it was loaded too: each
-     * declared field, each `@PropertyBag` key by key, and the `@NodeLabels` field.
+     * declared field, each `@PropertyBag` key by key, and the `@NodeLabels` field. A `@JsonPacked`
+     * field is compared as the text the load read, so JSON another writer packed another way is not
+     * taken for a change, and a `Set` field as the list the load read, so a list in another order than
+     * the set's, or holding an item twice, is not taken for one either.
      *
      * An update writes to the node it loaded and never makes one. If the node is deleted between the
      * load and the save, nothing is written and null is returned, as when it was not there to load.
@@ -658,8 +686,7 @@ class StatelessGraphObjectManager private constructor(
             val loadedClass = loaded.javaClass
             val before = digests.digestOf(loaded)
             val loadedStamp = stamps.stampOf(loaded)
-            // The root's fields as the save writes them, which a checked save compares with the node.
-            val asLoaded = objectMapper.toMap(requireNotNull(stamps.rootOf(loaded)))
+            val asLoaded = asLoaded(requireNotNull(stamps.rootOf(loaded)), loadedStamp)
             // Outside the try: a stale save the change makes itself is not this update's to try again.
             val changed = change(loaded)
             try {
@@ -684,6 +711,17 @@ class StatelessGraphObjectManager private constructor(
     @JvmOverloads
     fun <T : Any> update(id: UUID, graphClass: Class<T>, attempts: Int = 3, change: (T) -> T): T? =
         update(id.toString(), graphClass, attempts, change)
+
+    /**
+     * The fields of [root], loaded with [loadedStamp], as a checked save compares them with the node:
+     * as the save writes them, but a `@JsonPacked` field as the text the load read, and a `Set` field
+     * as the list the load read ([AsStored]), so that JSON another writer packed another way, or a list
+     * in another order or holding an item twice, is not taken for a change. A packed or set field the
+     * node held nothing for, whose value came from a default, and one of a root no load made, such
+     * as a copy, are written as the save writes them.
+     */
+    private fun asLoaded(root: Any, loadedStamp: String?): Map<String, Any?> =
+        objectMapper.toMap(root) + AsStored.of(root, loadedStamp).orEmpty().filterValues { it != null }
 
     /**
      * Saves what differs between an object as it was loaded, digested as [before], its root's fields
@@ -717,7 +755,11 @@ class StatelessGraphObjectManager private constructor(
         // The node was loaded, so it is written only if it is still there: an update makes no node.
         val statement = backend.save(SaveRequest.changed(changed, before, digests.digestOf(changed), dirty, asLoaded))
         requireStampable(changed, statement)
-        return stamped(changed, statement, executor.save(statement))
+        return stamped(changed, statement, executor.save(statement)).also { saved ->
+            // A packed or set field the update did not write still holds what was loaded.
+            val root = stamps.rootOf(saved) ?: return@also
+            stamps.stampOf(saved)?.let { AsStored.carry(root, it, asLoaded, dirty, objectMapper) }
+        }
     }
 
     private fun statementFor(

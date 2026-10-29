@@ -120,6 +120,19 @@ internal interface GraphBackend {
     ): ScoredSearchPlan
 
     /**
+     * The search, for each root among [ids] that holds the embedding [property] names (null for the only
+     * one the fragment declares), for its nearest among the other [ids]: one row for each such root,
+     * `{seed, near}`, `near` up to [topK] of `{id, score}`, best first, none of them the seed, none
+     * scoring under [threshold]. A root with no neighbour left still has its row, with `near` empty. The
+     * score is the one [nearest] gives for the same pair.
+     *
+     * Where the store searches through an approximate index, the index is asked for [searchK] for each
+     * root and the set is a filter on what it finds, as [nearest]'s filters are; where it measures every
+     * node, only the set is measured, and the answer is exact.
+     */
+    fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement
+
+    /**
      * The search for the roots whose indexed text meets [text], by the full-text index that covers
      * [property]; null for the only one the fragment declares. [query] filters what the search finds,
      * and the [topK] best that score [threshold] or more come back.
@@ -155,7 +168,10 @@ internal interface GraphBackend {
     /**
      * How [fragments] are saved several at a time, unchecked, each under its index: which go together
      * and by what statements is the backend's to say, as it is what its store can write so. See
-     * [FragmentBatch].
+     * [FragmentBatch]. The caller gives [fragments] in the order to take their locks in (see
+     * [org.drivine.manager.inLockOrder]), and the fragments of each class are written in that order,
+     * [FragmentBatch.alone] among them. The classes may go in another, so long as the classes alone
+     * fix it: a Cypher store writes first the unstamped ones an `UNWIND` cannot write.
      *
      * @param writeFields the only fields to write of a fragment of the class it is asked of, by field
      *   name; null for all of them

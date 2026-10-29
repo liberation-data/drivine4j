@@ -9,6 +9,7 @@ import org.drivine.query.dsl.IndexAdvicePolicy
 import org.drivine.session.SessionManager
 import org.drivine.transaction.DrivineTransactionManager
 import org.drivine.transaction.TransactionContextHolder
+import org.drivine.transaction.Transactions
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean
 import org.springframework.context.annotation.Bean
 import org.springframework.context.annotation.Configuration
@@ -56,6 +57,13 @@ class DrivineConfiguration {
     @ConditionalOnMissingBean
     fun drivineTransactionManager(contextHolder: TransactionContextHolder): PlatformTransactionManager {
         return DrivineTransactionManager(contextHolder)
+    }
+
+    /** Drivine's own transactions, `transactions.transaction { }`: they join `@Transactional` ones, and those join them. */
+    @Bean
+    @ConditionalOnMissingBean
+    fun drivineTransactions(contextHolder: TransactionContextHolder): Transactions {
+        return Transactions(contextHolder)
     }
 
     @Bean

@@ -223,10 +223,15 @@ class SchemaManager(
     }
 
     private fun warnSkipped(resolution: SchemaTargets.Resolution) {
-        if (resolution.skipped.isNotEmpty()) {
+        val (refused, incapable) = resolution.skipped.map { it to databaseRegistry.connectionProvider(it)?.schemaRefusal }
+            .partition { (_, refusal) -> refusal != null }
+        refused.forEach { (database, refusal) ->
+            logger.warn("Skipping schema management for database '{}': {}", database, refusal)
+        }
+        if (incapable.isNotEmpty()) {
             logger.warn(
                 "Skipping schema management for databases whose engine has no DDL support: {}",
-                resolution.skipped
+                incapable.map { it.first }.toSet()
             )
         }
     }

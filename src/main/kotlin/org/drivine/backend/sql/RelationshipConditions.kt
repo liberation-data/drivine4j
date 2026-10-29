@@ -2,6 +2,7 @@ package org.drivine.backend.sql
 
 import org.drivine.model.GraphViewModel
 import org.drivine.query.dsl.CollectionSortSpec
+import org.drivine.query.dsl.CypherGenerator
 import org.drivine.model.RelationshipModel
 import org.drivine.query.dsl.WhereCondition
 
@@ -20,7 +21,7 @@ internal object RelationshipConditions {
             when (condition) {
                 is WhereCondition.PropertyCondition -> {
                     val alias = condition.propertyPath.substringBefore('.')
-                    val relationship = if (alias in relationships) alias else alias.substringBefore('_').takeIf { '_' in alias && it in relationships }
+                    val relationship = CypherGenerator.relationshipNamedFirst(alias, relationships)
                     if (relationship != null) byRelationship.getOrPut(relationship) { mutableListOf() }.add(condition) else kept += condition
                 }
                 is WhereCondition.LabelCondition ->
@@ -32,13 +33,10 @@ internal object RelationshipConditions {
         return kept
     }
 
-    /** The sort of [collectionSorts] for [relationship]: by its own name at the top, by its parent's and its own beneath. */
-    fun sortOf(collectionSorts: List<CollectionSortSpec>, relationship: RelationshipModel, parentField: String?): CollectionSortSpec? =
-        collectionSorts.find {
-            if (parentField == null) {
-                !it.isNested() && it.relationshipPath == relationship.fieldName
-            } else {
-                it.isNested() && it.parentRelationship() == parentField && it.nestedRelationship() == relationship.fieldName
-            }
-        }
+    /**
+     * The sort of [collectionSorts] for [relationship]: by its own name at the top, beneath by [parentPath],
+     * the path to the view that holds it, and its own name, as [CollectionSortSpec.isFor] reads a path.
+     */
+    fun sortOf(collectionSorts: List<CollectionSortSpec>, relationship: RelationshipModel, parentPath: String?): CollectionSortSpec? =
+        collectionSorts.find { it.isFor(parentPath?.let { path -> "${path}_${relationship.fieldName}" } ?: relationship.fieldName) }
 }

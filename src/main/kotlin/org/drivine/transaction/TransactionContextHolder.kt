@@ -3,8 +3,10 @@ package org.drivine.transaction
 import org.drivine.connection.DatabaseRegistry
 
 /**
- * Holds transaction context in thread-local storage.
- * Must be configured as a bean in your Spring configuration.
+ * Holds the transaction in progress in thread-local storage. [Transactions] begins and ends
+ * transactions in it, and so does the Spring adapter's `DrivineTransactionManager`, given the same
+ * holder: so the two join each other's transactions. The persistence managers read it to find the
+ * transaction a statement runs in.
  */
 class TransactionContextHolder(
     val databaseRegistry: DatabaseRegistry
@@ -14,8 +16,8 @@ class TransactionContextHolder(
     private val localStorage: ThreadLocal<MutableMap<String, Any>> = ThreadLocal.withInitial { mutableMapOf() }
 
     /**
-     * Gets the current DrivineTransactionObject from thread-local storage.
-     * This is managed by Spring's PlatformTransactionManager.
+     * Gets the current DrivineTransactionObject from thread-local storage, or null outside a
+     * transaction. Set by [Transactions], or by Spring's `DrivineTransactionManager`.
      */
     var currentTransaction: DrivineTransactionObject?
         get() = localStorage.get()[TransactionContextKeys.TRANSACTION.name] as DrivineTransactionObject?

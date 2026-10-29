@@ -1,6 +1,15 @@
 package org.drivine.connection
 
 import org.drivine.DrivineException
+import org.drivine.backend.oracle.OracleGraph
+import org.drivine.backend.oracle.OracleStoredFunctions
+import org.drivine.backend.postgres.PostgresGraph
+import org.drivine.backend.sqlite.SqliteGraph
+import org.drivine.backend.sqlite.SqliteSql
+import org.drivine.cypher.sql.CompiledCypher
+import org.drivine.cypher.sql.OracleCypherCompiler
+import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqliteCypherCompiler
 import org.drivine.logger.StatementLogger
 import org.drivine.mapper.JdbcResultMapper
 import org.drivine.mapper.ResultMapper
@@ -10,11 +19,15 @@ import org.drivine.query.QueryLanguage
 import org.drivine.query.QuerySpecification
 import org.drivine.query.SpecCompiler
 import org.drivine.query.SqlParameters
+import org.drivine.query.TemporalCoercer
 import org.slf4j.LoggerFactory
 import java.io.StringReader
+import java.math.BigDecimal
 import java.sql.PreparedStatement
 import java.sql.Types
+import java.time.Duration
 import java.time.Instant
+import java.time.temporal.Temporal
 
 /**
  * A connection to a database that speaks SQL, over JDBC.
@@ -31,23 +44,46 @@ import java.time.Instant
  * with `DBMS_SQL.RETURN_RESULT`. A block is how a statement that writes returns rows on Oracle: it is
  * one statement to the database, applied whole or not at all. On Postgres a statement that writes
  * returns rows itself, with `RETURNING`, or as a function's result.
+ *
+ * SQLite has no type for a moment, a date or a decimal: one is bound as its ISO text, which SQLite's
+ * date functions read, and a decimal as the number it is. Nor has it a JSON type, so a column cannot say
+ * it holds a document: a statement that opens with `/* drivine:json */`, as Drivine's own statements
+ * over a SQLite graph do, has each of its text values read as the JSON it is, and any other statement's
+ * text is text, as JSON in a character column is on the other stores (see [JdbcResultMapper.sqliteRows]).
  */
 class JdbcConnection(
     private val connection: java.sql.Connection,
     private val resultMapper: ResultMapper,
     /** The database spoken to: Oracle binds a long string as a CLOB, which Postgres would take for a large object. */
     private val type: DatabaseType = DatabaseType.ORACLE,
+    /** The graph a Cypher statement is compiled against: its tables are `<graph>_node` and `<graph>_edge`. */
+    private val graphName: String = JdbcConnectionProvider.DEFAULT_GRAPH,
+    /**
+     * On SQLite, how long a transaction may hold the file's write lock before its end is logged as a warning: the
+     * lock is taken as the transaction begins, and every other writer to the file waits for it.
+     */
+    private val lockWarning: Duration = Duration.ofSeconds(5),
+    /** Why the store runs no Cypher, an Oracle older than 23.9, as its provider found it; null where it runs Cypher. */
+    private val cypherRefusal: String? = null,
 ) : Connection {
 
     private val logger = LoggerFactory.getLogger(JdbcConnection::class.java)
     private var inTransaction = false
+
+    /** When the open transaction began, by [System.nanoTime]. */
+    private var startedAt = 0L
+
+    /** Why [graphName] cannot name the tables a Cypher statement is compiled over on this store; null where it can. */
+    private val refusedGraph: String? by lazy(LazyThreadSafetyMode.NONE) { graphRefusal(type, graphName) }
 
     override fun sessionId(): String = "jdbc-${System.identityHashCode(connection)}"
 
     override fun parameterCoercers(): List<ParameterCoercer> = listOf(JdbcParameterCoercer)
 
     override fun <T : Any> query(spec: QuerySpecification<T>): List<T> {
-        val finalizedSpec = spec.finalizedCopy(QueryLanguage.SQL)
+        val given = spec.finalizedCopy(QueryLanguage.SQL)
+        val compiledFromCypher = given.statement!!.language == QueryLanguage.CYPHER
+        val finalizedSpec = cypherCompiled(given)
         if (finalizedSpec.statement!!.language != QueryLanguage.SQL) {
             throw DrivineException("This database speaks SQL, and was given a ${finalizedSpec.statement!!.language} statement.", spec = spec)
         }
@@ -59,13 +95,23 @@ class JdbcConnection(
 
         try {
             val rows = connection.prepareStatement(positional.statement).use { statement ->
+                // Oracle keeps a cursor's memory while the driver keeps its statement, and a compiled Cypher statement holds
+                // megabytes of it: about 4 MB, and over 20 MB where it reads a text past 32 KB. Kept in the driver's cache, up
+                // to 64 statements a session, a few dozen ran the instance out of PGA (ORA-04036, liberation-data/drivine4j#313).
+                // Closed, its memory goes back. Drivine's own statements, a few the same each time, are still kept.
+                if (compiledFromCypher && type == DatabaseType.ORACLE) statement.isPoolable = false
                 positional.names.forEachIndexed { index, name ->
                     if (!parameters.containsKey(name)) throw DrivineException("The statement has a parameter \$$name, and no value is bound to it.", spec = spec)
                     bind(statement, index + 1, parameters[name])
                 }
                 // A query answers with a result set; a block that returns one is asked for it.
                 if (statement.execute() || statement.moreResults) {
-                    statement.resultSet.use(JdbcResultMapper::rows)
+                    if (type == DatabaseType.SQLITE) {
+                        val json = positional.statement.trimStart().startsWith(SqliteSql.JSON_ROWS)
+                        statement.resultSet.use { JdbcResultMapper.sqliteRows(it, json) }
+                    } else {
+                        statement.resultSet.use(JdbcResultMapper::rows)
+                    }
                 } else {
                     emptyList()
                 }
@@ -79,8 +125,43 @@ class JdbcConnection(
         }
     }
 
+    /**
+     * A Cypher statement compiled to the store's SQL over the graph's tables, so a statement written for a
+     * graph engine runs here and gives the same rows; anything else as it is.
+     */
+    private fun <T : Any> cypherCompiled(spec: QuerySpecification<T>): QuerySpecification<T> {
+        if (spec.statement!!.language != QueryLanguage.CYPHER) return spec
+        // A graph name that cannot name tables is refused here, when Cypher is first run, and not as the connection is had:
+        // plain SQL works whatever the name, as it did before the provider made the graph's tables (#364).
+        refusedGraph?.let { throw DrivineException(it, spec = spec) }
+        // So is an Oracle older than 23.9, which has no UUID() for randomUUID().
+        cypherRefusal?.let { throw DrivineException(it, spec = spec) }
+        val compiled = when (type) {
+            DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
+            DatabaseType.ORACLE -> oracleCompiled(spec.statement!!.text, spec.parameters)
+            // Its text values are JSON: see JdbcResultMapper.sqliteRows.
+            DatabaseType.SQLITE -> SqliteCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters).let { it.copy(sql = "${SqliteSql.JSON_ROWS}\n${it.sql}") }
+            else -> throw DrivineException("A Cypher statement does not run on $type yet.", spec = spec)
+        }
+        return spec.withSql(compiled.sql, compiled.parameters)
+    }
+
+    /**
+     * [cypher] compiled for Oracle, calling the functions the graph's store keeps where the statement needs one and the
+     * session may call it, and compiled again to call none where it may not: see [OracleStoredFunctions].
+     */
+    private fun oracleCompiled(cypher: String, parameters: Map<String, Any?>): CompiledCypher {
+        val compiler = OracleCypherCompiler(graphName)
+        val compiled = compiler.compile(cypher, parameters)
+        if (!compiler.callsStoredNullsEqual || OracleStoredFunctions.nullsEqual(connection, graphName)) return compiled
+        return OracleCypherCompiler(graphName, nullsEqualStored = false).compile(cypher, parameters)
+    }
+
     /** Binds [value] to the marker at [index], counted from one. */
     private fun bind(statement: PreparedStatement, index: Int, value: Any?) = when (value) {
+        // SQLite keeps a moment, a date or a time as its ISO text, and has no decimal.
+        is Temporal, is java.util.Date -> if (type == DatabaseType.SQLITE) statement.setString(index, iso(value)) else statement.setObject(index, value)
+        is BigDecimal -> if (type == DatabaseType.SQLITE) bindNumber(statement, index, value) else statement.setObject(index, value)
         // A null of no declared type: Oracle converts a character null to the type the statement wants, and
         // Postgres, its strings sent untyped, takes it for whatever type the statement wants there.
         null -> statement.setNull(index, Types.VARCHAR)
@@ -94,27 +175,75 @@ class JdbcConnection(
         else -> statement.setObject(index, value)
     }
 
+    /** [value], a moment, a date or a time, as the ISO text SQLite's date functions read. */
+    private fun iso(value: Any): String = when (value) {
+        is java.sql.Date -> value.toLocalDate().toString()
+        is java.util.Date -> value.toInstant().toString()
+        else -> TemporalCoercer.coerce(mapOf("v" to value))["v"].toString()
+    }
+
+    /** [value] as SQLite's integer where it is whole and fits, and as its real number otherwise. */
+    private fun bindNumber(statement: PreparedStatement, index: Int, value: BigDecimal) {
+        val whole = runCatching { value.longValueExact() }.getOrNull()
+        if (whole != null) statement.setLong(index, whole) else statement.setDouble(index, value.toDouble())
+    }
+
     override fun startTransaction() {
         if (inTransaction) throw DrivineException("A transaction is already open on this connection.")
         connection.autoCommit = false
         inTransaction = true
+        startedAt = System.nanoTime()
     }
 
     override fun commitTransaction() {
         if (!inTransaction) throw DrivineException("There is no transaction to commit.")
-        connection.commit()
+        if (type == DatabaseType.SQLITE) endSqlite("COMMIT") else connection.commit()
         endTransaction()
     }
 
     override fun rollbackTransaction() {
         if (!inTransaction) throw DrivineException("There is no transaction to rollback.")
-        connection.rollback()
+        rollback()
         endTransaction()
     }
 
-    /** Leaves the connection as a pool expects it back: committing each statement as it runs. */
+    /** Rolls the open transaction back. */
+    private fun rollback() {
+        if (type == DatabaseType.SQLITE) endSqlite("ROLLBACK") else connection.rollback()
+    }
+
+    /**
+     * Ends SQLite's open transaction with [end], `COMMIT` or `ROLLBACK`, and opens one that takes no lock for
+     * [endTransaction] to close as the driver goes back to committing each statement.
+     *
+     * The driver's own commit and rollback open the next transaction as they end one, and so wait for the file's
+     * write lock again: with another writer holding it, a commit that was made would be reported as failed. Nor is
+     * the transaction committed by turning the driver back to committing each statement: it counts itself back in
+     * that mode before its `COMMIT` runs, so a commit SQLite refuses, as it does one breaking a deferred foreign
+     * key, would leave the transaction open on a connection the driver, and its pool, take to have none.
+     *
+     * A `ROLLBACK` refused because SQLite has already rolled the transaction back, as it does on a full disk or an
+     * interrupted statement, has nothing left to undo: the `BEGIN` after it then opens, and its failure is thrown
+     * only when a transaction is still open.
+     */
+    private fun endSqlite(end: String) = connection.createStatement().use { statement ->
+        val ended = runCatching { statement.execute(end) }
+        if (end != "ROLLBACK") ended.getOrThrow()
+        runCatching { statement.execute("BEGIN DEFERRED") }.onFailure { begin ->
+            throw ended.exceptionOrNull()?.apply { addSuppressed(begin) } ?: begin
+        }
+    }
+
+    /**
+     * Leaves the connection as a pool expects it back: committing each statement as it runs. A SQLite transaction
+     * that held the write lock past [lockWarning] is logged first, so it is logged though the driver fails to go back.
+     */
     private fun endTransaction() {
         inTransaction = false
+        val held = Duration.ofNanos(System.nanoTime() - startedAt)
+        if (type == DatabaseType.SQLITE && held > lockWarning) {
+            logger.warn("A SQLite transaction held the file's write lock for ${held.toMillis()} ms: no other writer can write while one is held.")
+        }
         connection.autoCommit = true
     }
 
@@ -122,7 +251,7 @@ class JdbcConnection(
     override fun release(err: Throwable?) {
         err?.let { logger.warn("Closing connection with error: $it") }
         if (inTransaction) {
-            runCatching { connection.rollback() }
+            runCatching { rollback() }
             runCatching { endTransaction() }
         }
         connection.close()
@@ -132,4 +261,12 @@ class JdbcConnection(
         /** Past this a string is bound as a CLOB: the longest a PL/SQL `VARCHAR2` holds. */
         const val MAX_STRING = 32_767
     }
+}
+
+/** Why [graphName] cannot name a graph's tables on [type]; null where it can, or where the store keeps no graph in tables. */
+internal fun graphRefusal(type: DatabaseType, graphName: String): String? = when (type) {
+    DatabaseType.ORACLE -> OracleGraph.refusal(graphName)
+    DatabaseType.POSTGRES -> PostgresGraph.refusal(graphName)
+    DatabaseType.SQLITE -> SqliteGraph.refusal(graphName)
+    else -> null
 }

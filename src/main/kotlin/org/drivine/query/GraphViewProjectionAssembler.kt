@@ -97,6 +97,12 @@ internal class GraphViewProjectionAssembler(
     /** The root fragment's field name — the alias the root node is bound to throughout the query. */
     val rootFieldName: String get() = viewModel.rootFragment.fieldName
 
+    /** The root fragment's own labels, which a load of the view matches and a search checks its hits for. */
+    fun rootLabels(): List<String> = GraphTypeLabels.fragmentLabels(viewModel.rootFragment.fragmentType)
+
+    /** The root's labels, checked on the node a search's index on [indexedLabel] yielded: see [indexedNodeLabelCheck]. */
+    fun indexedRootLabelCheck(indexedLabel: String): String? = indexedNodeLabelCheck(rootFieldName, rootLabels(), indexedLabel)
+
     /**
      * The colon-joined label string for the root fragment's `MATCH`, e.g. `Person:Mapped`.
      * @throws IllegalArgumentException if the root fragment declares no labels
@@ -245,20 +251,15 @@ internal class GraphViewProjectionAssembler(
      * Finds a collection sort spec for a direct relationship (e.g., "assignedTo").
      */
     private fun findSortForRelationship(relationshipName: String): CollectionSortSpec? {
-        return context.collectionSorts.find {
-            !it.isNested() && it.relationshipPath == relationshipName
-        }
+        return context.collectionSorts.find { it.isFor(relationshipName) }
     }
 
     /**
-     * Finds a collection sort spec for a nested relationship (e.g., "worksFor" inside "raisedBy").
+     * Finds a collection sort spec for a nested relationship (e.g., "worksFor" inside "raisedBy"):
+     * [parentPath] is the path to the view that holds it, as [CollectionSortSpec.isFor] reads one.
      */
-    private fun findSortForNestedRelationship(parentAlias: String, nestedRelationshipName: String): CollectionSortSpec? {
-        return context.collectionSorts.find { sort ->
-            sort.isNested() &&
-            sort.parentRelationship() == parentAlias &&
-            sort.nestedRelationship() == nestedRelationshipName
-        }
+    private fun findSortForNestedRelationship(parentPath: String, nestedRelationshipName: String): CollectionSortSpec? {
+        return context.collectionSorts.find { it.isFor("${parentPath}_$nestedRelationshipName") }
     }
 
     /**
@@ -930,8 +931,9 @@ internal class GraphViewProjectionAssembler(
      * @param varName The Cypher variable name for this nested view
      * @param nestedViewModel The view model for the nested GraphView
      * @param visitCounts Visit counter map for cycle detection
-     * @param fieldName The field that holds this view. A nested sort names it, not [varName]: a level of a
-     *   recursive view holds the field under a name of its own, and the sort must order every level alike.
+     * @param fieldName The path to this view: the fields that lead to it from the root, joined by `_`. A
+     *   nested sort names it, not [varName]: a level of a recursive view holds the field under a name of
+     *   its own, and the sort must order every level alike.
      */
     private fun buildNestedViewProjection(
         varName: String,
@@ -986,7 +988,8 @@ internal class GraphViewProjectionAssembler(
             // Build projection for the nested target - this handles both GraphView and fragment targets
             // For GraphView targets, it recursively builds the full structure (root + relationships)
             // For fragment targets, it builds field mappings
-            val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType, visitCounts, nestedRel.fieldName)
+            // A view this holds is reached by this one's path and the field, which a sort below it names.
+            val nestedProjection = buildRelationshipProjection(nestedTargetAlias, nestedRel.elementType, visitCounts, "${fieldName}_${nestedRel.fieldName}")
 
             // Use [0] suffix for single-object relationships to return object instead of array
             if (nestedRel.isCollection) {

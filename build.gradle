@@ -1,26 +1,23 @@
 plugins {
 	id 'org.jetbrains.kotlin.jvm' version '2.2.20'
+	// Opens the Spring-annotated classes of the tests, which run in Spring contexts. It is a compiler
+	// plugin, and adds nothing to what the library depends on.
 	id 'org.jetbrains.kotlin.plugin.spring' version '2.2.20'
-	id 'org.springframework.boot' version '3.5.7'
-	id 'io.spring.dependency-management' version '1.1.7'
 
 	id 'maven-publish'
 	id 'signing'
 	id 'org.jetbrains.dokka' version '1.9.20'
 	id 'com.gradleup.nmcp' version '0.0.8'
 	id 'jacoco'
+	id 'antlr'
 }
 
 group = 'org.drivine'
-version = '0.2.0'
+version = '0.4.0'
 
 base {
 	archivesName = 'drivine4j'
 }
-
-// jfalkordb 0.13.0 is built on Jedis 8; the Spring Boot BOM manages Jedis to 6.0.0, which lacks
-// DefaultJedisClientConfig.Builder.autoNegotiateProtocol and fails every FalkorDB connection.
-ext['jedis.version'] = '8.0.1'
 
 java {
 	toolchain {
@@ -33,33 +30,67 @@ repositories {
 	mavenCentral()
 }
 
+// The images the tests run, as gradle/test-images.txt pins them: each test task of every module hands
+// them to PinnedImages. -Ptest.images.unpinned=true, or TEST_IMAGES_UNPINNED=true, leaves them out, so
+// a test's image is run as it names it and neo4j:latest pulls the latest Neo4j. The nightly workflow
+// runs so; a pull request's run keeps the pins.
+ext.testImagesUnpinned = providers.gradleProperty('test.images.unpinned')
+	.orElse(providers.environmentVariable('TEST_IMAGES_UNPINNED')).getOrElse('false') == 'true'
+ext.testImagePins = testImagesUnpinned ? [:] : file('gradle/test-images.txt').readLines()
+	.collect { it.trim() }.findAll { it && !it.startsWith('#') }
+	.collectEntries { line ->
+		def (named, pinned) = line.split(/\s+/)
+		[(named): pinned]
+	}
+
 // Configuration for Neo4j plugins (downloaded to .m2 for testcontainer mounting)
 configurations {
 	neo4jPlugins
 }
 
+// Tests of the core on its own runtime classpath: the main classes, their runtime dependencies and
+// JUnit. The ordinary tests run in Spring contexts, through the starter; these show the core also runs
+// where there is no framework, in a plain main or a Ktor server.
+sourceSets {
+	standaloneTest {
+		compileClasspath += sourceSets.main.output
+		runtimeClasspath += sourceSets.main.output
+	}
+}
+configurations {
+	standaloneTestImplementation.extendsFrom implementation, api
+	standaloneTestRuntimeOnly.extendsFrom runtimeOnly
+}
+
 dependencies {
 	// Neo4j plugins for test containers - these are server-side plugins, not Java dependencies
 	// They get mounted into the Neo4j container's /plugins directory
-	neo4jPlugins 'org.neo4j.procedure:apoc-extended:5.26.0'
+	neo4jPlugins 'org.neo4j.procedure:apoc-extended:2026.04.0'
 	implementation 'org.neo4j.driver:neo4j-java-driver:5.28.9'
 
-	// Boot dependencies are useful in tests and samples; publishing will use plain JAR
-	implementation 'org.springframework.boot:spring-boot-starter'
-	implementation 'org.springframework.boot:spring-boot-starter-aop'
-	implementation 'org.aspectj:aspectjweaver:1.9.7'
+	// The core depends on what it uses: the drivers, Jackson, HikariCP and SLF4J. Spring support is in
+	// drivine4j-spring (the transaction manager) and drivine4j-spring-boot-starter (the auto-configuration).
+	// The versions are the ones Spring Boot 3.5.7 manages, as before.
+	implementation 'org.slf4j:slf4j-api:2.0.17'
 
+	// The Cypher compiler's parser, generated from openCypher's grammar (src/main/antlr): the tool at
+	// build time, and only its runtime with the library.
+	antlr 'org.antlr:antlr4:4.13.2'
+	implementation 'org.antlr:antlr4-runtime:4.13.2'
 	implementation 'org.jetbrains.kotlin:kotlin-reflect'
+	implementation platform('com.fasterxml.jackson:jackson-bom:2.19.2')
 	implementation 'com.fasterxml.jackson.module:jackson-module-kotlin'
 	implementation 'com.fasterxml.jackson.core:jackson-databind'
 	implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310'
 
-	// Test support - needed for @Rollback and TestExecutionListener
-	implementation 'org.springframework:spring-test'
-	implementation 'org.springframework:spring-tx'
-
+	// The tests run in Spring Boot contexts, through the starter, with Boot's versions. The BOM is
+	// a test platform, so it manages nothing the library publishes.
+	testImplementation platform('org.springframework.boot:spring-boot-dependencies:3.5.7')
 	testImplementation 'org.springframework.boot:spring-boot-starter-test'
+	testImplementation 'org.springframework.boot:spring-boot-starter-aop'
 	testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+	// The Cypher spec's files (src/test/resources/cypher) are YAML.
+	testImplementation 'com.fasterxml.jackson.dataformat:jackson-dataformat-yaml'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// TestContainers
@@ -73,11 +104,16 @@ dependencies {
 	// Oracle tests run against Oracle Free, when ORACLE_TESTS=true
 	testImplementation 'com.oracle.database.jdbc:ojdbc11'
 
-	// Postgres tests run against pgvector's image, when POSTGRES_TESTS=true
+	// Postgres tests run against pgvector's image, unless POSTGRES_TESTS=false
 	testImplementation 'org.postgresql:postgresql'
 
-	// Connection pool for JDBC databases (Oracle, Postgres). The JDBC driver itself is the application's to add.
-	implementation 'com.zaxxer:HikariCP'
+	// SQLite's driver: compiled against for the functions Drivine registers on each connection (see
+	// org.drivine.backend.sqlite), and the application's to add, as the Oracle and Postgres drivers are.
+	compileOnly 'org.xerial:sqlite-jdbc:3.53.2.1'
+	testImplementation 'org.xerial:sqlite-jdbc:3.53.2.1'
+
+	// Connection pool for JDBC databases (Oracle, Postgres, SQLite). The JDBC driver itself is the application's to add.
+	implementation 'com.zaxxer:HikariCP:6.3.3'
 
 	// FalkorDB driver
 	implementation 'com.falkordb:jfalkordb:0.13.0'
@@ -92,6 +128,12 @@ dependencies {
 
 	// Spring Boot Starter for tests
 	testImplementation project(':drivine4j-spring-boot-starter')
+
+	standaloneTestImplementation platform('org.junit:junit-bom:5.12.2')
+	standaloneTestImplementation 'org.junit.jupiter:junit-jupiter'
+	standaloneTestImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+	standaloneTestImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+	standaloneTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// Fix Dokka Jackson compatibility issue
 	dokkaPlugin 'org.jetbrains.dokka:kotlin-as-java-plugin:1.9.20'
@@ -109,18 +151,26 @@ tasks.named('test') {
 	// CI runs the suite once for each collection sort strategy. Gradle does not track the
 	// environment, so without this the second run is up to date and runs nothing.
 	inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
+	// The Oracle and Postgres switches are inputs too, so turning one on runs the tests it enables.
+	def oracleTests = providers.environmentVariable('ORACLE_TESTS').orElse('')
+	inputs.property('oracleTests', oracleTests)
+	inputs.property('postgresTests', providers.environmentVariable('POSTGRES_TESTS').orElse(''))
+	// The Oracle tests are opt-in: say so once, so a run without them is not mistaken for one with them.
+	doFirst {
+		if (oracleTests.get() != 'true') {
+			logger.lifecycle('Oracle tests skipped: set ORACLE_TESTS=true to run them')
+		}
+	}
 	// The full suite runs many Spring contexts + testcontainer integration tests in one JVM; the
 	// default heap is too small and the worker OOM-crashes mid-run (surfacing as a cascade of
 	// NoClassDefFoundError on the still-pending tests, and a missing jacoco test.exec). Give it room.
 	// A ceiling, not a reservation — overridable for constrained CI via -PtestMaxHeap=1536m.
 	maxHeapSize = (project.findProperty('testMaxHeap') ?: '2g').toString()
 	// The images the tests run are pinned in one file, and each pin is an input of the tests.
-	rootProject.file('gradle/test-images.txt').readLines()
-		.collect { it.trim() }.findAll { it && !it.startsWith('#') }
-		.each { line ->
-			def (named, pinned) = line.split(/\s+/)
-			systemProperty "drivine.test.image.${named}", pinned
-		}
+	rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+	if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+	// Each statement is logged in full only when asked: -Pdrivine.statements.level=DEBUG (see logback-test.xml).
+	if (project.hasProperty('drivine.statements.level')) systemProperty 'drivine.statements.level', project.property('drivine.statements.level')
 	finalizedBy jacocoTestReport // Generate coverage report after tests
 }
 
@@ -138,13 +188,27 @@ jacocoTestReport {
 	}
 }
 
-// Ensure we publish a normal library JAR, not the Spring Boot fat jar
-tasks.named('bootJar') {
-	enabled = false
+def standaloneTest = tasks.register('standaloneTest', Test) {
+	description = 'Runs the core on its own runtime classpath, with no framework.'
+	group = 'verification'
+	testClassesDirs = sourceSets.standaloneTest.output.classesDirs
+	classpath = sourceSets.standaloneTest.runtimeClasspath
+	useJUnitPlatform()
+	rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+	if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+	// The core's Spring support is in drivine4j-spring: fail before the tests if a Spring module
+	// comes onto the core's own classpath.
+	doFirst {
+		def spring = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts
+			.collect { it.moduleVersion.id }
+			.findAll { it.group.startsWith('org.springframework') }
+		if (spring) {
+			throw new GradleException("The core's runtime classpath has ${spring.join(', ')}: Spring support belongs in drivine4j-spring")
+		}
+	}
 }
-tasks.named('jar') {
-	enabled = true
-	archiveClassifier.set('')  // Remove '-plain' classifier to make it the main JAR
+tasks.named('check') {
+	dependsOn standaloneTest
 }
 
 // Task to download Neo4j plugins to Gradle cache (for DrivineTestContainer)
@@ -187,7 +251,7 @@ publishing {
 
 			pom {
 				name = 'drivine4j'
-				description = 'Drivine for JVM — Neo4j/Spring-oriented utilities'
+				description = 'Drivine for JVM: a graph database client for Neo4j, FalkorDB, Neptune, Memgraph, Oracle and Postgres'
 				url = 'https://github.com/liberation-data/drivine4j'
 
 				licenses {
@@ -248,4 +312,89 @@ nmcp {
 		// Automatically publish (set to false to manually release from web UI)
 		publicationType = "AUTOMATIC"
 	}
+	// Every published module in one bundle, uploaded as one deployment, so the Central Portal releases all of them
+	// or none: publishAggregatedPublicationToCentralPortal, which release.yml runs. A module that is published is
+	// listed here.
+	publishAggregation {
+		project(':')
+		project(':drivine4j-codegen')
+		project(':drivine4j-codegen-java')
+		project(':drivine4j-codegen-model')
+		project(':drivine4j-coroutines')
+		project(':drivine4j-spring')
+		project(':drivine4j-spring-boot-starter')
+		username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+		password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+		publicationType = "AUTOMATIC"
+	}
 }
+
+// The ANTLR plugin puts the whole tool on the library's classpath: only its runtime belongs there.
+configurations {
+	api {
+		setExtendsFrom(extendsFrom.findAll { it != configurations.antlr })
+	}
+}
+
+generateGrammarSource {
+	arguments += ['-visitor', '-no-listener', '-package', 'org.drivine.cypher.grammar']
+}
+
+compileKotlin.dependsOn generateGrammarSource
+compileTestKotlin.dependsOn generateTestGrammarSource
+sourcesJar.dependsOn generateGrammarSource
+
+// The openCypher TCK, run against each store through Drivine: a source set, a configuration and a task of their
+// own, so `test`, `check` and `build` run none of it: `check` compiles the harness and runs its own tests only. See TCK.md.
+//   ./gradlew tck -Ptck.store=postgres [-Ptck.features=Match1,Match2] [-Ptck.timeout=30]
+//   -Ptck.gate=true             fails on any scenario that passes in src/tck/resources/tck-baseline-<store>.json and not now
+//   -Ptck.baseline.update=true  rewrites that baseline from the run (a whole run only)
+def tckFeaturesVersion = '2024.2'
+def tckApiVersion = '1.0.0-M23'
+sourceSets {
+	tck {
+		compileClasspath += sourceSets.main.output + sourceSets.test.output
+		runtimeClasspath += sourceSets.main.output + sourceSets.test.output
+	}
+}
+configurations {
+	tckImplementation.extendsFrom testImplementation
+	tckRuntimeOnly.extendsFrom testRuntimeOnly
+}
+dependencies {
+	tckImplementation "org.opencypher:tck-api_2.13:${tckApiVersion}"
+	// The features and named graphs: 2024.2's are 2024.3's, the latest release, unchanged.
+	tckImplementation "org.opencypher:tck:${tckFeaturesVersion}"
+	tckImplementation 'org.scala-lang:scala-library:2.13.10'
+}
+tasks.register('tck', JavaExec) {
+	description = 'Runs the openCypher TCK against one store: -Ptck.store=neo4j|postgres|oracle|sqlite.'
+	group = 'verification'
+	classpath = sourceSets.tck.runtimeClasspath
+	mainClass = 'org.drivine.tck.TckRunnerKt'
+	maxHeapSize = '2g'
+	workingDir = projectDir
+	rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+	if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+	// A baseline keys each scenario by its place in its feature, so the gate refuses a baseline of another version.
+	systemProperty 'tck.version', "openCypher TCK ${tckFeaturesVersion}, tck-api ${tckApiVersion}"
+	systemProperty 'tck.baseline.dir', file('src/tck/resources').absolutePath
+	// A TCK error closes its connection with a warning, over a thousand a run: the run records each error itself.
+	systemProperty 'drivine.connection.level', 'ERROR'
+	systemProperty 'tck.out', layout.buildDirectory.file("tck/${project.findProperty('tck.store') ?: 'sqlite'}.jsonl").get().asFile.absolutePath
+	['tck.store', 'tck.features', 'tck.timeout', 'tck.out', 'tck.limit', 'tck.debug', 'tck.gate', 'tck.baseline.update'].each { key ->
+		if (project.hasProperty(key)) systemProperty key, project.property(key)
+	}
+}
+kotlin.target.compilations.named('tck') { associateWith(kotlin.target.compilations.getByName('main')) }
+// The harness's own tests, of the gate and the ratchet, with no database: each TCK run runs them first, and `check`
+// runs them too, so a change to `main` that breaks the harness fails its pull request, not the nightly run.
+def tckTest = tasks.register('tckTest', Test) {
+	description = 'Tests the TCK harness: the gate and the ratchet.'
+	group = 'verification'
+	testClassesDirs = sourceSets.tck.output.classesDirs
+	classpath = sourceSets.tck.runtimeClasspath
+	useJUnitPlatform()
+}
+tasks.named('tck') { dependsOn tckTest }
+tasks.named('check') { dependsOn tckTest }

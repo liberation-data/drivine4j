@@ -1,0 +1,139 @@
+plugins {
+    id 'org.jetbrains.kotlin.jvm'
+    id 'maven-publish'
+    id 'com.gradleup.nmcp'
+}
+
+// Apply signing plugin only when needed
+def shouldSign = project.hasProperty('sign') || System.getenv('SIGN') == 'true'
+if (shouldSign) {
+    apply plugin: 'signing'
+}
+
+group = 'org.drivine'
+version = rootProject.version
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+    withSourcesJar()
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // Core drivine4j library
+    api project(':')
+
+    // The coroutine context the transaction is carried in
+    api 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.10.2'
+
+    testImplementation platform('org.junit:junit-bom:5.12.2')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testImplementation 'org.jetbrains.kotlin:kotlin-test-junit5'
+    testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    // Oracle when ORACLE_TESTS=true, and Postgres unless POSTGRES_TESTS=false: the drivers the root module's tests use
+    testRuntimeOnly 'com.oracle.database.jdbc:ojdbc11:23.7.0.25.01'
+    testRuntimeOnly 'org.postgresql:postgresql:42.7.8'
+    // A Spring transaction, begun on the thread, that a suspend block joins
+    testImplementation project(':drivine4j-spring')
+}
+
+kotlin {
+    compilerOptions {
+        freeCompilerArgs.addAll '-Xjsr305=strict'
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    // The Oracle and Postgres switches are inputs, so turning one on runs the tests it enables.
+    def oracleTests = providers.environmentVariable('ORACLE_TESTS').orElse('')
+    inputs.property('oracleTests', oracleTests)
+    inputs.property('postgresTests', providers.environmentVariable('POSTGRES_TESTS').orElse(''))
+    // The Oracle tests are opt-in: say so once, so a run without them is not mistaken for one with them.
+    doFirst {
+        if (oracleTests.get() != 'true') {
+            logger.lifecycle('Oracle tests skipped: set ORACLE_TESTS=true to run them')
+        }
+    }
+    // The images the tests run are pinned in one file, and each pin is an input of the tests: see the root build.
+    rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+    if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
+}
+
+// Publishing configuration
+publishing {
+    publications {
+        mavenJava(MavenPublication) {
+            from components.java
+
+            artifactId = 'drivine4j-coroutines'
+
+            pom {
+                name = 'Drivine4j Coroutines'
+                description = 'Drivine4j transactions for Kotlin coroutines: a suspend block whose transaction follows it from thread to thread'
+                url = 'https://github.com/liberation-data/drivine4j'
+
+                licenses {
+                    license {
+                        name = 'Apache License 2.0'
+                        url = 'https://www.apache.org/licenses/LICENSE-2.0'
+                        distribution = 'repo'
+                    }
+                }
+                developers {
+                    developer {
+                        id = 'jasperblues'
+                        name = 'Jasper Blues'
+                        email = 'jasper@liberation-data.com'
+                    }
+                }
+                scm {
+                    connection = 'scm:git:https://github.com/liberation-data/drivine4j.git'
+                    developerConnection = 'scm:git:ssh://git@github.com/liberation-data/drivine4j.git'
+                    url = 'https://github.com/liberation-data/drivine4j'
+                }
+            }
+        }
+    }
+}
+
+// Javadoc jar (empty for now - Kotlin projects typically use Dokka)
+tasks.register('javadocJar', Jar) {
+    archiveClassifier = 'javadoc'
+}
+
+// Attach javadoc jar to publication
+publishing.publications.mavenJava.artifact(tasks.named('javadocJar'))
+
+// --- Signing (required for non-SNAPSHOT releases to Maven Central) ---
+if (shouldSign) {
+    signing {
+        required { gradle.taskGraph.hasTask('publish') && !version.endsWith('SNAPSHOT') }
+
+        def signingKey = findProperty('signingKey') ?: System.getenv('SIGNING_KEY')
+        def signingPassword = findProperty('signingPassword') ?: System.getenv('SIGNING_PASSWORD')
+
+        if (signingKey != null && signingKey.contains('BEGIN PGP')) {
+            useInMemoryPgpKeys(signingKey, signingPassword)
+        } else {
+            useGpgCmd()
+        }
+
+        sign publishing.publications.mavenJava
+    }
+}
+
+// --- Central Publishing Portal (new Maven Central) ---
+nmcp {
+    publishAllPublications {
+        username = findProperty('sonatypeUsername') ?: System.getenv('SONATYPE_USERNAME')
+        password = findProperty('sonatypePassword') ?: System.getenv('SONATYPE_PASSWORD')
+        publicationType = "AUTOMATIC"
+    }
+}

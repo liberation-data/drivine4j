@@ -4,6 +4,8 @@ import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSql
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.postgres.PostgresSql
+import org.drivine.backend.sqlite.SqliteGraph
+import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.connection.DatabaseType
 import org.drivine.manager.PersistenceManager
 import org.drivine.query.QuerySpecification
@@ -34,6 +36,7 @@ object TestCleanup {
             DatabaseType.FALKORDB -> "MATCH (n) DETACH DELETE n"
             DatabaseType.ORACLE -> oracle(persistenceManager, markerField, markerValue)
             DatabaseType.POSTGRES -> postgres(persistenceManager, markerField, markerValue)
+            DatabaseType.SQLITE -> sqlite(persistenceManager, markerField, markerValue)
             else -> "MATCH (n) WHERE n.$markerField = '$markerValue' DETACH DELETE n"
         }
         persistenceManager.execute(QuerySpecification.withStatement(statement))
@@ -110,5 +113,11 @@ object TestCleanup {
     private fun postgres(persistenceManager: PersistenceManager, field: String, value: String): String {
         val graph = PostgresGraph.ensured(persistenceManager)
         return "DELETE FROM ${graph.nodes} n WHERE ${PostgresSql.property("n", field)} = ${PostgresSql.literal(value)}"
+    }
+
+    /** As on Oracle: the graph is made where it is not yet. */
+    private fun sqlite(persistenceManager: PersistenceManager, field: String, value: String): String {
+        val graph = SqliteGraph.ensured(persistenceManager)
+        return "DELETE FROM ${graph.nodes} WHERE ${SqliteSql.property("", field)} = ${SqliteSql.literal(value)}"
     }
 }

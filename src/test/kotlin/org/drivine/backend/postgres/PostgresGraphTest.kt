@@ -50,6 +50,10 @@ class PostgresGraphTest {
         val ensuring = PostgresGraph("g").ensuring
         assertTrue(ensuring.startsWith("DO \$ensure\$"), ensuring)
         assertTrue("pg_advisory_xact_lock(hashtext('drivine:g'))" in ensuring, ensuring)
+        // Looked for again once the lock is had: a session that waited for another making it makes nothing.
+        val look = "IF obj_description(to_regclass('g_node'), 'pg_class') IS DISTINCT FROM '${PostgresGraph.VERSION}' THEN"
+        assertTrue(ensuring.indexOf(look, ensuring.indexOf("pg_advisory_xact_lock")) > 0, ensuring)
+        assertTrue(ensuring.indexOf(look) < ensuring.indexOf("pg_advisory_xact_lock"), ensuring)
         assertTrue("USING GIN (labels jsonb_path_ops)" in ensuring, ensuring)
         assertTrue(ensuring.indexOf("COMMENT ON TABLE g_node IS '${PostgresGraph.VERSION}'") > ensuring.indexOf("CREATE INDEX IF NOT EXISTS g_node_labels"), ensuring)
     }

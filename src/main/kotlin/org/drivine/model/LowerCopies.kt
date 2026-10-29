@@ -6,7 +6,7 @@ import org.drivine.schema.SchemaGrammar
  * The lowercased copy a node keeps of each `@CaseInsensitive` property, so that a case-insensitive
  * lookup is a plain comparison an index can serve. The copy of `email` is stored under
  * `__drivine.lower.email`, beside the stamp, and is the database's own lowercasing of the property:
- * `toLower` on the graph engines, `LOWER` on Oracle and Postgres. A lookup lowercases what it is
+ * `toLower` on the graph engines, `LOWER` on Oracle and Postgres, `drivine_lower` on SQLite. A lookup lowercases what it is
  * given the same way, so the copy and the value compared with it are lowercased alike.
  *
  * Every Drivine write of the node sets the copy from the property as stored once the write is done,

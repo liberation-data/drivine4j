@@ -32,6 +32,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 
 /**
  * [EdgeOperations.relate] and [EdgeOperations.loadRelated], verified on Neo4j, FalkorDB and
@@ -208,4 +209,14 @@ class StatelessRelatePostgresTest {
     fun clean() = PostgresTestDatabase.clear(pm)
 
     @Test fun `edges on Postgres`() = verify(buildGom(pm, registry), PostgresTestDatabase.fixtures(pm))
+}
+
+class StatelessRelateSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+
+    @BeforeEach
+    fun clean() = SqliteTestDatabase.clear(pm)
+
+    @Test fun `edges on SQLite`() = verify(buildGom(pm, registry), SqliteTestDatabase.fixtures(pm))
 }

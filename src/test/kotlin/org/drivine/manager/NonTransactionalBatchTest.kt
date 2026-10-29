@@ -194,7 +194,8 @@ class TransactionalBatchTest {
         val thrown = assertFailsWith<UnsupportedOperationException> { manager.queryBatch(listOf(statement("RETURN 1"))) }
 
         assertSame(refusal, thrown)
-        assertEquals(listOf("start"), connection.calls)
+        // The connection whose transaction could not start is released, not kept in the transaction.
+        assertEquals(listOf("start", "release:$refusal"), connection.calls)
     }
 
     private data class Transactional(val manager: TransactionalPersistenceManager, val holder: TransactionContextHolder)

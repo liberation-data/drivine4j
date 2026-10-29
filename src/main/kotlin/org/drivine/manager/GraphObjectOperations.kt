@@ -153,7 +153,8 @@ interface GraphObjectOperations {
 
     /**
      * Loads the [topK] graph objects whose embedding is most similar to [vector], ordered most
-     * similar first, each paired with its normalized similarity [score][Scored.score].
+     * similar first, each paired with its normalized similarity [score][Scored.score]: `(1 + cos) / 2`
+     * for a cosine index and `1 / (1 + d²)` for a Euclidean one, the same on every store.
      *
      * Works on both a `@GraphView` (searches the **root fragment**'s embedding, returns the
      * projected view) and a plain `@NodeFragment` (searches and returns the fragment itself). The
@@ -164,12 +165,14 @@ interface GraphObjectOperations {
      * **Result count semantics:** `topK` is the index's `k` — the number of candidates the
      * nearest-neighbour search returns. For a view, the required-relationship filters (and an
      * optional [threshold]) are applied *afterwards*, so **fewer than [topK] results may come back**;
-     * raise [topK] if your view is selective. A fragment search has no relationship filters, so it
-     * returns the full top-K (minus any [threshold] cut).
+     * raise [topK] if your view is selective. So is a root's labels beyond the first: the index is on
+     * the first, so a node with that label alone is a candidate, and is dropped. A fragment search
+     * with one label has no such filter, so it returns the full top-K (minus any [threshold] cut).
      *
      * On Oracle the search goes through the vector index when one has been made for the label and
-     * property, and is approximate as on the graph engines; with none made it measures every node of
-     * the label, which is exact and is not refused.
+     * property for embeddings of the vector's size, and is approximate as on the graph engines; with
+     * none made, or one of another size, it measures every node of the label whose embedding is of the
+     * vector's size, which is exact and is not refused: a node of another size is left out.
      *
      * Example:
      * ```kotlin
@@ -184,7 +187,8 @@ interface GraphObjectOperations {
      * @param searchK how many candidates the index is asked for; [topK] is then the limit applied
      *   after the filter. Null asks the index for [topK]. See `docs/0.0.79-vector-search-k.md`
      * @param partitionLabel the label whose vector index is searched, in place of the fragment's own;
-     *   null searches the fragment's. See `docs/0.0.79-vector-partitioning.md`
+     *   null searches the fragment's. A node it yields comes back only when it has every one of the
+     *   fragment's labels. See `docs/0.0.79-vector-partitioning.md`
      * @return scored instances, most similar first, of length `<= topK`
      * @throws UnsupportedOperationException if the backend has no native vector index
      */
@@ -213,6 +217,59 @@ interface GraphObjectOperations {
         searchK: Int? = null,
         partitionLabel: String? = null,
     ): List<Scored<T>>
+
+    /**
+     * For each of [ids], finds its nearest neighbours **among the same [ids]**, by the embedding of its
+     * root node, in one statement the store answers natively: the batched form of calling [loadNearest]
+     * once per id with that node's own embedding and keeping only the hits inside the set.
+     *
+     * The result maps each id whose root node has the embedding to up to [topK] *other* ids from
+     * [ids] (never itself), most similar first, each paired with the same normalized
+     * [score][Scored.score] [loadNearest] gives that pair on this store, so the two agree. Those
+     * below [threshold] are dropped. An id with no embedding, or no node, is not a key; an id whose
+     * neighbours were all dropped maps to an empty list. The map iterates in the order of [ids].
+     * An embedding of another size than the index's is measured against none of a different size: on
+     * Postgres or Oracle with a vector index made it is not a key, on Neo4j and FalkorDB the search
+     * fails, as their index search refuses a vector of another size, and Memgraph does not store one.
+     *
+     * Works on a `@NodeFragment` and on a `@GraphView`, whose **root fragment**'s embedding is searched;
+     * the vector index is resolved from `@VectorIndex` as [loadNearest] resolves it. A view's
+     * relationships play no part: the set is named by id.
+     *
+     * **Result count semantics:** on a store that searches through an approximate index (Neo4j,
+     * FalkorDB, Memgraph, and Postgres or Oracle once a vector index has been made), the index is asked
+     * for [searchK] candidates per id, and the "among [ids]" filter, the self-exclusion, the root's
+     * labels beyond the first (the one the index is on) and the [threshold] then apply to those, so
+     * **fewer than [topK] may come back** for an id whose nearest mostly lie outside the set. A selective set — few ids among many indexed nodes — needs a larger
+     * [searchK], exactly as a filtered [loadNearest] does. Where the store measures every node instead
+     * (SQLite, and Postgres or Oracle with no vector index made) only the set is measured, the answer
+     * is exact, and [searchK] changes nothing; it measures every pair of the set, so its cost grows
+     * with the square of the number of [ids].
+     *
+     * ```kotlin
+     * val neighbours = graphObjectManager.loadNearestAmong(PropositionNode::class.java, batchIds, topK = 5, threshold = 0.8)
+     * neighbours["p-1"] // [Scored("p-7", 0.97), Scored("p-3", 0.91)]
+     * ```
+     *
+     * @param graphClass the `@GraphView` or `@NodeFragment` class whose root nodes the ids name
+     * @param ids the set: both the seeds searched from and the only ids that can come back
+     * @param topK the most neighbours kept for each id
+     * @param threshold optional minimum similarity (higher = closer); neighbours below it are dropped
+     * @param property the `@VectorIndex` embedding property to search, when the fragment has several
+     * @param searchK how many candidates the index is asked for per id, before the filter; null asks
+     *   for `topK + 1`, the one more being the id itself, which an index finds first. See
+     *   `docs/0.0.79-vector-search-k.md`
+     * @return for each id with an embedding, its neighbours' ids, scored, most similar first
+     * @throws UnsupportedOperationException if the backend has no native vector index
+     */
+    fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        threshold: Double? = null,
+        property: String? = null,
+        searchK: Int? = null,
+    ): Map<String, List<Scored<String>>>
 
     /**
      * Vector search with an additional caller `where { }` predicate `AND`-ed into the filter — vector
@@ -262,7 +319,8 @@ interface GraphObjectOperations {
      *
      * Works on a `@GraphView` (searches its root fragment's text index, returns the projected view)
      * and on a bare `@NodeFragment` (searches and returns itself). As with [loadNearest], a view's
-     * required-relationship filters apply *after* the search, so **fewer than [topK] rows may return**.
+     * required-relationship filters, and a root's labels beyond the first (the one the index is on),
+     * apply *after* the search, so **fewer than [topK] rows may return**.
      *
      * The [query] is passed through to the engine's full-text query language (Lucene syntax on Neo4j:
      * `AND`/`OR`/`"phrase"`/`field:term`). Raw user input is **not** escaped here — wrap or escape it
@@ -275,7 +333,11 @@ interface GraphObjectOperations {
      *
      * @param graphClass the `@GraphView` or `@NodeFragment` class to load
      * @param query the full-text query string
-     * @param topK the maximum number of results to return (applied as a `LIMIT`)
+     * @param topK the maximum number of results to return. On Neo4j, FalkorDB and Memgraph it also
+     *   bounds the hits the index yields: `topK` of them, or `topK` times
+     *   [org.drivine.query.FullTextSearchLimits.FILTERED_OVER_FETCH] when a required relationship, a
+     *   root label beyond the first or a caller `where { }` filters them, since every hit is held to normalize the scores. Memgraph's
+     *   index is asked for no more than 1,000,000 hits, however large `topK` is
      * @param threshold minimum normalized relevance in `[0, 1]`; results below it are dropped (default
      *   `0.0` keeps everything)
      * @return scored instances, most relevant first, of length `<= topK`
@@ -320,6 +382,11 @@ interface GraphObjectOperations {
      *     where { query.containerSectionId eq "sec-1" }
      * }
      * ```
+     *
+     * The predicate applies after the index yields, and on Neo4j, FalkorDB and Memgraph the index is
+     * asked for `topK` times [org.drivine.query.FullTextSearchLimits.FILTERED_OVER_FETCH] hits. A predicate
+     * that passes fewer than one in that many of the best hits can return fewer than `topK` rows while
+     * the index holds more that pass it.
      *
      * @param queryObject the generated query DSL object providing property references
      * @param query the full-text query string
@@ -398,6 +465,11 @@ interface GraphObjectOperations {
      * that is refused before anything is written, rather than leave that node and what it holds.
      *
      * Ids are always bound as parameters; nothing is interpolated into the Cypher.
+     *
+     * A delete, this or any other, that the engine turns away because another writer was changing the
+     * same nodes at that moment is run again, as a save is: one turned away has deleted nothing. Inside
+     * a caller's transaction the engine has usually failed the transaction with it, and that first
+     * failure is what is thrown.
      *
      * @param id The ID value of the object to delete
      * @param graphClass The graph object class
@@ -506,6 +578,23 @@ interface GraphObjectOperations {
         threshold: Double?,
         searchK: Int?,
     ): List<Scored<T>> = loadNearest(graphClass, property, vector, topK, threshold, searchK, null)
+
+    /** [loadNearestAmong] with every optional argument left out, for Java. */
+    fun <T : Any> loadNearestAmong(graphClass: Class<T>, ids: Collection<String>, topK: Int): Map<String, List<Scored<String>>> =
+        loadNearestAmong(graphClass, ids, topK, null, null, null)
+
+    /** [loadNearestAmong] with a [threshold] and nothing after it, for Java. */
+    fun <T : Any> loadNearestAmong(graphClass: Class<T>, ids: Collection<String>, topK: Int, threshold: Double?): Map<String, List<Scored<String>>> =
+        loadNearestAmong(graphClass, ids, topK, threshold, null, null)
+
+    /** [loadNearestAmong] with a [threshold] and a named [property] and no [searchK], for Java. */
+    fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        threshold: Double?,
+        property: String?,
+    ): Map<String, List<Scored<String>>> = loadNearestAmong(graphClass, ids, topK, threshold, property, null)
 
     /** [loadMatching] with every optional argument left out, for Java. */
     fun <T : Any> loadMatching(graphClass: Class<T>, query: String, topK: Int): List<Scored<T>> =

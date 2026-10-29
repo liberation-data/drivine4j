@@ -117,6 +117,18 @@ class VectorPartitionLabelTest {
         assertEquals(projectionOf(plain.cypher), projectionOf(partitioned.cypher))
     }
 
+    @Test
+    fun `a partitioned search checks each node it yields for the fragment's own label`() {
+        // The partition's index is on the partition's label, so a node in it need not be a Proposition.
+        // Without a partition the index is on Proposition itself, and there is nothing to check.
+        listOf(neo4j, FalkorDbCypherGrammar(ApocSortMapsEmitter())).forEach { grammar ->
+            val partitioned = plan(partitionLabel = "Corpus_abc", grammar = grammar).cypher
+            val plain = plan(grammar = grammar).cypher
+            assertTrue(partitioned.contains("WHERE n:`Proposition`"), partitioned)
+            assertFalse(plain.contains("n:`Proposition`"), plain)
+        }
+    }
+
     // ----- Conflicts -----
 
     @Test

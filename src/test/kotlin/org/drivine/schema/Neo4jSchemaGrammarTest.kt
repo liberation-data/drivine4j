@@ -390,6 +390,25 @@ class Neo4jSchemaGrammarTest {
     }
 
     @Test
+    fun `a refusal with only an unexpected error beneath it is suspected, as Neo4j 5 LTS gives a violation`() {
+        val refusal = error(
+            "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( name='x', type='UNIQUENESS', schema=(:Person {email}) ):",
+            error("50N42", "N/A", "50N42: Unexpected error has occurred. See debug log for details."),
+        )
+
+        assertTrue(grammar.isConstraintViolation(DrivineException(refusal.message!!, refusal)))
+    }
+
+    @Test
+    fun `an unexpected error that is not a refused constraint is not a violation`() {
+        assertFalse(
+            grammar.isConstraintViolation(
+                error("50N11", "Neo.DatabaseError.Statement.ExecutionFailed", "Something else failed.", error("50N42", "N/A", "Unexpected error."))
+            )
+        )
+    }
+
+    @Test
     fun `a refusal to make a constraint whose GQL status names another cause is not a violation`() {
         val refusal = error(
             "50N11", "Neo.DatabaseError.Schema.ConstraintCreationFailed", "Unable to create Constraint( type='NODE KEY', schema=(:U {e}) ):",

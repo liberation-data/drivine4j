@@ -58,19 +58,38 @@ class OracleSqlTest {
     fun `a label is looked for in the indexable form or the serialized form, quoted as JSON writes it`() {
         assertEquals("JSON_EXISTS(n.labels, '$[*]?(@ == \"Person\")')", OracleSql.hasLabel("n", "Person"))
         assertEquals("JSON_EXISTS(n.labels, '$[*]?(@ == \"A\\\"B\")')", OracleSql.hasLabel("n", "A\"B"))
-        assertEquals("INSTR(JSON_SERIALIZE(n.labels), '\"Person\"') > 0", OracleSql.carriesLabel("n", "Person"))
-        assertEquals("INSTR(JSON_SERIALIZE(n.labels), '\"A\\\"B\"') > 0", OracleSql.carriesLabel("n", "A\"B"))
+        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"Person\",\"') > 0", OracleSql.carriesLabel("n", "Person"))
+        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"A\\\"B\",\"') > 0", OracleSql.carriesLabel("n", "A\"B"))
     }
 
     @Test
-    fun `no labels is no predicate, several are conjoined, and a scan takes the indexable form`() {
+    fun `a label is looked for by its text as one whole label, among the labels made commas at each end`() {
+        assertEquals(
+            "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(c.labels), ']'), '[') || ',\"', ',\"x\\\",\\\"Dog\",\"') > 0",
+            OracleSql.holdsLabel("c.labels", "x\",\"Dog"),
+        )
+        assertEquals(OracleSql.holdsLabel("n.labels", "Dog"), OracleSql.carriesLabel("n", "Dog"))
+        assertEquals("INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n.labels), ']'), '[') || ',\"', ',\"it''s\",\"') > 0", OracleSql.carriesLabel("n", "it's"))
+    }
+
+    @Test
+    fun `a label is written as Oracle's JSON_SERIALIZE writes it, control characters and line separators escaped`() {
+        assertEquals("\"plain é 😀 / '\"", OracleSql.serialized("plain é 😀 / '"))
+        assertEquals("\"\\\"\\\\\"", OracleSql.serialized("\"\\"))
+        assertEquals("\"\\b\\t\\n\\f\\r\"", OracleSql.serialized("\b\t\n\u000C\r"))
+        assertEquals("\"\\u0000\\u0001\\u000B\\u001F\\u007F\"", OracleSql.serialized("\u0000\u0001\u000B\u001F\u007F"))
+        assertEquals("\"\\u2028\\u2029\u0080\u2027\u202A\"", OracleSql.serialized("\u2028\u2029\u0080\u2027\u202A"))
+    }
+
+    @Test
+    fun `no labels is no predicate, several are conjoined, and a scan takes the indexable form for its first`() {
         assertNull(OracleSql.hasLabels("n", emptyList()))
         assertEquals(
             "${OracleSql.carriesLabel("n", "A")} AND ${OracleSql.carriesLabel("n", "B")}",
             OracleSql.hasLabels("n", listOf("A", "B")),
         )
         assertEquals(
-            "${OracleSql.hasLabel("n", "A")} AND ${OracleSql.hasLabel("n", "B")}",
+            "${OracleSql.hasLabel("n", "A")} AND ${OracleSql.carriesLabel("n", "B")}",
             OracleSql.hasLabels("n", listOf("A", "B"), scanned = true),
         )
     }

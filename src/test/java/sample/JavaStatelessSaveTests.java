@@ -6,6 +6,7 @@ import org.drivine.manager.NullPolicy;
 import org.drivine.manager.RemovedTargets;
 import org.drivine.manager.Replace;
 import org.drivine.manager.StatelessGraphObjectManager;
+import org.drivine.model.javafields.JavaProbe;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -50,6 +51,24 @@ public class JavaStatelessSaveTests {
         assertEquals(saved.getStamp(), stateless.load(id, Claim.class).getStamp());
     }
 
+    /** A fragment whose @NodeId is a private field of its Java superclass saves by it, and loads back (#193). */
+    @Test
+    public void savesByASuperclassPrivateNodeId() {
+        JavaProbe probe = new JavaProbe();
+        probe.setId(id);
+        probe.setName("first");
+        probe.setCreatedOn("2026-10-25");
+        stateless.save(probe);
+        probe.setName("second");
+        stateless.save(probe);
+
+        JavaProbe loaded = stateless.load(id, JavaProbe.class);
+        assertEquals("second", loaded.getName());
+        assertEquals("2026-10-25", loaded.getCreatedOn());
+        // Saved twice by one id: one node, not two.
+        assertEquals(1, stateless.loadAll(JavaProbe.class).stream().filter(it -> id.equals(it.getId())).count());
+    }
+
     @Test
     public void refusesAStaleObject() {
         Claim first = stateless.save(new Claim(id, "Ada founded Acme", null, null));
@@ -71,6 +90,18 @@ public class JavaStatelessSaveTests {
         assertThrows(StaleObjectException.class, () -> stateless.save(new Claim(id, "late", null, null), loaded));
         // The object saved itself no longer says what was loaded, once it is changed in place.
         assertThrows(IllegalArgumentException.class, () -> stateless.save(saved, saved));
+    }
+
+    @Test
+    public void refusesASaveFromAClassWithNoStampField() {
+        Memo memo = new Memo(id, "one");
+
+        IllegalArgumentException refused = assertThrows(IllegalArgumentException.class, () -> stateless.save(new Memo(id, "two"), memo));
+
+        assertEquals(
+            "Memo has no @NodeStamp field, so a save of a Memo has no stamp to be checked against what was loaded. Give it one, or save without from.",
+            refused.getMessage());
+        assertNull(stateless.load(id, Memo.class));
     }
 
     @Test

@@ -1,0 +1,2147 @@
+# Cypher that reads, and the rows each store gives for it, over the graph below. See README.md.
+label: CyTest
+graph: |
+  CREATE (keanu:Person:CyTest {name: 'Keanu', born: 1964}),
+         (carrie:Person:CyTest {name: 'Carrie', born: 1967}),
+         (laurence:Person:CyTest {name: 'Laurence', born: 1961}),
+         (hugo:Person:CyTest {name: 'Hugo'}),
+         (matrix:Movie:CyTest {title: 'The Matrix', released: 1999, tagline: 'Welcome to the Real World'}),
+         (reloaded:Movie:CyTest {title: 'The Matrix Reloaded', released: 2003}),
+         (johnny:Movie:CyTest {title: 'Johnny Mnemonic', released: 1995}),
+         (text:Code:CyTest {code: '7'}),
+         (number:Code:CyTest {code: 7}),
+         (keanu)-[:ACTED_IN {role: 'Neo'}]->(matrix),
+         (keanu)-[:ACTED_IN {role: 'Neo'}]->(reloaded),
+         (keanu)-[:ACTED_IN {role: 'Johnny'}]->(johnny),
+         (carrie)-[:ACTED_IN {role: 'Trinity'}]->(matrix),
+         (carrie)-[:ACTED_IN {role: 'Trinity'}]->(reloaded),
+         (laurence)-[:ACTED_IN {role: 'Morpheus'}]->(matrix),
+         (keanu)-[:KNOWS]->(carrie),
+         (laurence)-[:KNOWS]->(keanu)
+
+cases:
+  - name: "Returning nodes and properties"
+    description: "A node comes back as its properties, and a property as its value."
+    steps:
+      - cypher: "MATCH (p:Person {name: $name}) RETURN properties(p)"
+        parameters: {name: "Keanu"}
+        rows: [{name: "Keanu", born: 1964}]
+      - cypher: "MATCH (p:Person) WHERE p.name = 'Keanu' RETURN p"
+        rows: [{name: "Keanu", born: 1964}]
+      - cypher: "MATCH (p:Person) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Hugo", "Keanu", "Laurence"]
+
+  - name: "Text is not a number"
+    description: "Values compare by type: the text '7' is not the number 7."
+    steps:
+      - cypher: "MATCH (c:Code) WHERE c.code = '7' RETURN c.code"
+        rows: ["7"]
+      - cypher: "MATCH (c:Code) WHERE c.code = 7 RETURN c.code"
+        rows: [7]
+      - cypher: "MATCH (p:Person) WHERE p.born >= $year RETURN p.name ORDER BY p.name"
+        parameters: {year: 1964}
+        rows: ["Carrie", "Keanu"]
+      - cypher: "MATCH (p:Person) WHERE p.born IS NULL RETURN p.name"
+        rows: ["Hugo"]
+      - cypher: "MATCH (p:Person) WHERE p.name STARTS WITH 'K' OR p.name ENDS WITH 'ence' RETURN p.name ORDER BY p.name"
+        rows: ["Keanu", "Laurence"]
+      - cypher: "MATCH (p:Person) WHERE p.name IN ['Carrie', 'Hugo'] RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Hugo"]
+
+  - name: "Whole number equals its float"
+    description: "1964 equals 1964.0, in a pattern, a WHERE, an IN, a range or a RETURN, written or a parameter."
+    steps:
+      - cypher: "MATCH (p:Person {born: 1964.0}) RETURN p.name"
+        rows: ["Keanu"]
+      - cypher: "MATCH (p:Person) WHERE p.born = $born RETURN p.name"
+        parameters: {born: 1964.0}
+        rows: ["Keanu"]
+      - cypher: "MATCH (m:Movie {released: $r}) RETURN m.title"
+        parameters: {r: 1999.0}
+        rows: ["The Matrix"]
+      - cypher: "MATCH (m:Movie) WHERE m.released IN $rs RETURN m.title"
+        parameters: {rs: [1999.0, 1.5]}
+        rows: ["The Matrix"]
+      - cypher: "MATCH (p:Person) WHERE p.born >= $b AND p.born < $b + 1 RETURN p.name"
+        parameters: {b: 1964.0}
+        rows: ["Keanu"]
+      - cypher: "RETURN $f = 2"
+        parameters: {f: 2.0}
+        rows: [true]
+
+  - name: "Integer bounds"
+    description: "The least and greatest whole numbers are written as literals, and one past the greatest is refused."
+    steps:
+      - cypher: "RETURN [-9223372036854775808, 9223372036854775807, - 9223372036854775808]"
+        rows: [[-9223372036854775808, 9223372036854775807, -9223372036854775808]]
+      - cypher: "RETURN 9223372036854775808"
+        error: true
+      - cypher: "RETURN -9223372036854775809"
+        error: true
+
+  - name: "Relationship direction and types"
+    description: "A relationship is matched in its direction, either way, or by any of several types."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[:KNOWS]->(p) RETURN p.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (:Person {name: 'Keanu'})<-[:KNOWS]-(p) RETURN p.name"
+        rows: ["Laurence"]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[:KNOWS]-(p) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Laurence"]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m:Movie {title: 'The Matrix'}) RETURN r.role ORDER BY r.role"
+        rows: ["Morpheus", "Neo", "Trinity"]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN {role: $role}]->(:Movie {title: 'The Matrix'}) RETURN p.name"
+        parameters: {role: "Neo"}
+        rows: ["Keanu"]
+      - cypher: "MATCH (p:Person)-[:KNOWS|ACTED_IN]->(:Person) RETURN DISTINCT p.name ORDER BY p.name"
+        rows: ["Keanu", "Laurence"]
+
+  - name: "Distinct relationships in one match"
+    description: "Two relationships in one pattern never match the same relationship."
+    steps:
+      - note: "Keanu's co-actors: the same ACTED_IN is not read for both sides."
+        cypher: "MATCH (a:Person {name: 'Keanu'})-[:ACTED_IN]->(m)<-[:ACTED_IN]-(other) RETURN other.name ORDER BY other.name"
+        rows: ["Carrie", "Carrie", "Laurence"]
+
+  - name: "Optional match"
+    description: "OPTIONAL MATCH keeps the row, with null where it finds nothing."
+    steps:
+      - cypher: "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN p.name, f.name ORDER BY p.name"
+        rows: [["Carrie", null], ["Hugo", null], ["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+      - note: One that binds nothing new keeps the row too.
+        cypher: "MATCH (p:Person {name: 'Hugo'}) OPTIONAL MATCH (p)-[:KNOWS]->() RETURN p.name"
+        rows: ["Hugo"]
+
+  - name: "WITH aggregates and pages"
+    description: "WITH aggregates, filters, orders and pages rows."
+    steps:
+      - cypher: |
+          MATCH (p:Person)-[:ACTED_IN]->(m:Movie)
+          WITH p, count(m) AS movies
+          WHERE movies > 1
+          RETURN { name: p.name, movies: movies }
+          ORDER BY movies DESC
+        rows: [{name: "Keanu", movies: 3}, {name: "Carrie", movies: 2}]
+      - cypher: "MATCH (m:Movie) RETURN m.title ORDER BY m.title LIMIT 2"
+        rows: ["Johnny Mnemonic", "The Matrix"]
+      - cypher: "MATCH (p:Person) WITH p ORDER BY p.name DESC LIMIT 2 RETURN p.name"
+        rows: ["Laurence", "Keanu"]
+      - cypher: "MATCH (m:Movie) RETURN m.title ORDER BY m.title SKIP $offset LIMIT 5"
+        parameters: {offset: 2}
+        rows: ["The Matrix Reloaded"]
+      - cypher: "MATCH ()-[r:ACTED_IN]->() RETURN DISTINCT r.role ORDER BY r.role"
+        rows: ["Johnny", "Morpheus", "Neo", "Trinity"]
+
+  - name: "WITH groups by kept variables"
+    description: "A WITH that aggregates groups by the other variables it keeps."
+    steps:
+      - cypher: |
+          MATCH (p:Person)-[:ACTED_IN]->(m:Movie)
+          WITH p, collect(m.title) AS titles, min(m.released) AS first, sum(m.released) AS years
+          RETURN { person: p.name, titles: titles, first: first, years: years }
+          ORDER BY p.name
+        unorderedLists: true
+        rows:
+          - {person: "Carrie", titles: ["The Matrix", "The Matrix Reloaded"], first: 1999, years: 4002}
+          - {person: "Keanu", titles: ["The Matrix", "The Matrix Reloaded", "Johnny Mnemonic"], first: 1995, years: 5997}
+          - {person: "Laurence", titles: ["The Matrix"], first: 1999, years: 1999}
+
+  - name: "Map key order"
+    description: "A returned map keeps its keys in the order they were written."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN { zebra: p.name, apple: p.born, mango: 'm' }"
+        keyOrder: true
+        rows: [{zebra: "Keanu", apple: 1964, mango: "m"}]
+
+  - name: "Pattern comprehension view"
+    description: "A pattern comprehension with a map projection reads a nested view in one statement."
+    steps:
+      - cypher: |
+          MATCH (actor:Person {name: $name})
+          WITH actor, [(actor)-[:ACTED_IN]->(movie:Movie) | movie {.title, .released}] AS movies
+          RETURN { actor: actor.name, movies: movies }
+        parameters: {name: "Carrie"}
+        unorderedLists: true
+        rows: [{actor: "Carrie", movies: [{title: "The Matrix", released: 1999}, {title: "The Matrix Reloaded", released: 2003}]}]
+      - cypher: "MATCH (p:Person {name: 'Hugo'}) RETURN [(p)-[:ACTED_IN]->(m) | m.title]"
+        rows: [[]]
+
+  - name: "Patterns and labels as conditions"
+    description: "Patterns, EXISTS, label tests and list comprehensions work as conditions and as values."
+    steps:
+      - cypher: "MATCH (p:Person) WHERE (p)-[:ACTED_IN]->(:Movie) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Keanu", "Laurence"]
+      - cypher: "MATCH (p:Person) WHERE NOT EXISTS { (p)-[:ACTED_IN]->() } RETURN p.name"
+        rows: ["Hugo"]
+      - cypher: "MATCH (p:Person) WHERE p:CyTest AND p.name = 'Keanu' RETURN p.name"
+        rows: ["Keanu"]
+      - cypher: "RETURN [x IN [1, 2, 3, 4] WHERE x % 2 = 0 | x]"
+        rows: [[2, 4]]
+      - cypher: "RETURN any(x IN [1, 2, 3] WHERE x > 2)"
+        rows: [true]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN labels(p)"
+        unorderedLists: true
+        rows: [["CyTest", "Person"]]
+
+  - name: "Arithmetic"
+    description: "Arithmetic and functions work on values; integer division stays an integer."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN { sum: 3 + 4, div: 7 / 2, real: 7.0 / 2, text: 'a' + 'b', upper: toUpper(p.name), size: size(p.name) }"
+        rows: [{sum: 7, div: 3, real: 3.5, text: "ab", upper: "KEANU", size: 5}]
+      - cypher: "MATCH (p:Person) WHERE p.born IS NOT NULL RETURN p.name ORDER BY p.born LIMIT 1"
+        rows: ["Laurence"]
+      - cypher: "MATCH (p:Person) RETURN count(*)"
+        rows: [4]
+      - cypher: "MATCH (p:Person) RETURN count(p.born)"
+        rows: [3]
+
+  - name: "Lists, conversions and text tests"
+    description: "List operations, conversions, text tests and aggregates give the values Neo4j gives."
+    steps:
+      - cypher: |
+          WITH [1, 2, 3] AS xs
+          RETURN {
+              whole: 2.0, last: xs[-1], byParam: xs[$i], head: head(xs), joined: xs + [4], appended: [1, 2] + 3,
+              float: toFloat('2.5'), integer: toInteger('7.9'), string: toString(7), in: 2 IN xs,
+              starts: 'Keanu' STARTS WITH 'Ke', ends: 'Keanu' ENDS WITH 'nu', holds: 'Keanu' CONTAINS 'an',
+              coalesced: coalesce(null, 'x'), case: CASE WHEN size(xs) > 2 THEN 'big' ELSE 'small' END,
+              keyed: {a: 2}['a'], notInteger: toInteger('seven'), notFloat: toFloat('2.5.1')
+          }
+        parameters: {i: 1}
+        rows:
+          - whole: 2.0
+            last: 3
+            byParam: 2
+            head: 1
+            joined: [1, 2, 3, 4]
+            appended: [1, 2, 3]
+            float: 2.5
+            integer: 7
+            string: "7"
+            in: true
+            starts: true
+            ends: true
+            holds: true
+            coalesced: "x"
+            case: "big"
+            keyed: 2
+            notInteger: null
+            notFloat: null
+      - cypher: |
+          MATCH (:Person)-[r:ACTED_IN]->(m:Movie) WHERE m.title STARTS WITH 'The Matrix' AND r.role <> 'Morpheus'
+          RETURN { avg: avg(m.released) - 4, latest: max(m.released), distinct: collect(DISTINCT r.role) }
+        unorderedLists: true
+        rows: [{avg: 1997.0, latest: 2003, distinct: ["Neo", "Trinity"]}]
+
+  - name: "Quantifiers, CASE and powers"
+    description: "Quantifiers, XOR, simple CASE, powers, negation and text functions give the values Neo4j gives."
+    steps:
+      - cypher: |
+          WITH [1, 2, 3] AS xs
+          RETURN {
+              all: all(x IN xs WHERE x > 0), none: none(x IN xs WHERE x > 2), single: single(x IN xs WHERE x > 2),
+              xor: true XOR false, case: CASE size(xs) - 1 WHEN 1 THEN 'one' WHEN 2 THEN 'two' ELSE 'many' END,
+              power: 2 ^ 3, negated: -(1 + 2), abs: abs(-2.5), trimmed: trim('  a '), lower: toLower('AB'), unordered: 1 < 'a'
+          }
+        rows:
+          - {all: true, none: false, single: true, xor: true, case: "two", power: 8.0, negated: -3, abs: 2.5, trimmed: "a", lower: "ab", unordered: null}
+      - note: "A key or an index an expression gives: Oracle reads no key so (see the Oracle case below)."
+        except: [oracle]
+        cypher: "WITH {a: 2} AS m, [1, 3] AS xs, 'a' AS k, 1 AS i RETURN [m[k], xs[i]]"
+        rows: [[2, 3]]
+
+  - name: "Quantifiers of null"
+    description: "any(), all(), none() and single() are null where an item's condition is null and no item decides them, and of a null list; true or false where one does, and of an empty list."
+    steps:
+      - cypher: "RETURN [any(x IN [1, null] WHERE x = 2), any(x IN [1, null] WHERE x = 1), any(x IN [2, 3] WHERE x = 1), any(x IN [] WHERE x = 1), any(x IN null WHERE x = 1)]"
+        rows: [[null, true, false, false, null]]
+      - cypher: "RETURN [all(x IN [1, null] WHERE x = 1), all(x IN [2, null] WHERE x = 1), all(x IN [1, 1] WHERE x = 1), all(x IN [] WHERE x = 1), all(x IN null WHERE x = 1)]"
+        rows: [[null, false, true, true, null]]
+      - cypher: "RETURN [none(x IN [null] WHERE x = 1), none(x IN [1, null] WHERE x = 1), none(x IN [2, 3] WHERE x = 1), none(x IN [] WHERE x = 1), none(x IN null WHERE x = 1)]"
+        rows: [[null, false, true, true, null]]
+      - note: "single() is false where two items are true, whatever the others; else null where one is null."
+        cypher: "RETURN [single(x IN [1, null] WHERE x = 1), single(x IN [1, 1, null] WHERE x = 1), single(x IN [2, null] WHERE x = 1), single(x IN [1, 2] WHERE x = 1), single(x IN [] WHERE x = 1), single(x IN null WHERE x = 1)]"
+        rows: [[null, false, null, true, false, null]]
+      - note: "A key a map has not, and a property a node has not, is null."
+        cypher: "RETURN [any(m IN [{a: 1}, {}] WHERE m.a = 2), all(m IN [{a: 1}, {}] WHERE m.a = 1), none(m IN [{a: 1}, {}] WHERE m.a = 2), single(m IN [{a: 1}, {}] WHERE m.a = 1)]"
+        rows: [[null, null, null, null]]
+      - cypher: "MATCH (p:Person) WITH collect(p) AS ps RETURN [any(x IN ps WHERE x.born > 1966), all(x IN ps WHERE x.born > 1960), none(x IN ps WHERE x.born > 1970), single(x IN ps WHERE x.born > 1966)]"
+        rows: [[true, null, null, null]]
+      - cypher: "MATCH (p:Person) RETURN p.name, [any(x IN [1] WHERE p.born > 1966), all(x IN [1, 2] WHERE p.born > 1960 + x), none(x IN [1] WHERE p.born > 1966), single(x IN [1, 2] WHERE p.born > 1960 + x)] ORDER BY p.name"
+        rows: [["Carrie", [true, true, false, false]], ["Hugo", [null, null, null, null]], ["Keanu", [false, true, true, false]], ["Laurence", [false, false, true, false]]]
+      - cypher: "RETURN [[y IN [1, 2] WHERE all(x IN [null, y] WHERE x = y)], any(y IN [[1, null], [2]] WHERE all(x IN y WHERE x = 1)), coalesce(any(x IN [1, null] WHERE x = 2), 'unknown')]"
+        rows: [[[], null, "unknown"]]
+      - note: "A pattern OPTIONAL MATCH does not find gives a null list of relationships, and a null path."
+        cypher: "MATCH (k:Person {name: 'Keanu'}) OPTIONAL MATCH p = (k)-[rs:NOPE*]->() RETURN [any(r IN rs WHERE r.since > 1), all(r IN rs WHERE r.since > 1), none(n IN nodes(p) WHERE n.born > 1), single(r IN relationships(p) WHERE r.since > 1)]"
+        rows: [[null, null, null, null]]
+      - note: "A quantifier that is null groups its rows, sorts last, and is counted by no aggregate."
+        cypher: "MATCH (p:Person) RETURN any(x IN [1] WHERE p.born > 1966) AS young, count(*) ORDER BY young"
+        rows: [[false, 2], [true, 1], [null, 1]]
+      - cypher: "MATCH (p:Person) RETURN [count(none(x IN [1] WHERE p.born > 1966)), sum(CASE WHEN single(x IN [1] WHERE p.born > 1966) THEN 1 ELSE 0 END), size(collect(all(x IN [1] WHERE p.born > 1962)))]"
+        rows: [[3, 1, 3]]
+      - cypher: "MATCH (p:Person) RETURN p.name ORDER BY none(x IN [1] WHERE p.born > 1966), p.name"
+        rows: ["Carrie", "Keanu", "Laurence", "Hugo"]
+      - cypher: "MATCH (p:Person) RETURN p.name, CASE all(x IN [1] WHERE p.born > 1962) WHEN false THEN 'old' WHEN true THEN 'young' ELSE 'unknown' END ORDER BY p.name"
+        rows: [["Carrie", "young"], ["Hugo", "unknown"], ["Keanu", "young"], ["Laurence", "old"]]
+
+  - name: "Quantifiers of null in a WHERE"
+    description: "A quantifier that is null keeps no row, nor does its negation, and IS NULL finds it."
+    steps:
+      - cypher: "MATCH (p:Person) WHERE none(x IN [1] WHERE p.born > 1966) RETURN p.name ORDER BY p.name"
+        rows: ["Keanu", "Laurence"]
+      - cypher: "MATCH (p:Person) WHERE NOT none(x IN [1] WHERE p.born > 1966) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (p:Person) WHERE all(x IN [1] WHERE p.born > 1962) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Keanu"]
+      - cypher: "MATCH (p:Person) WHERE NOT all(x IN [1] WHERE p.born > 1962) RETURN p.name ORDER BY p.name"
+        rows: ["Laurence"]
+      - cypher: "MATCH (p:Person) WHERE NOT any(x IN [1] WHERE p.born > 1966) RETURN p.name ORDER BY p.name"
+        rows: ["Keanu", "Laurence"]
+      - cypher: "MATCH (p:Person) WHERE any(x IN [1] WHERE p.born > 1966) IS NULL RETURN p.name ORDER BY p.name"
+        rows: ["Hugo"]
+      - cypher: "MATCH (p:Person) WHERE single(x IN [1, 2] WHERE p.born > 1962 + x) RETURN p.name ORDER BY p.name"
+        rows: ["Keanu"]
+      - cypher: "MATCH (p:Person) WHERE NOT single(x IN [1, 2] WHERE p.born > 1962 + x) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Laurence"]
+      - cypher: "MATCH (p:Person) WHERE p.name STARTS WITH 'H' OR none(x IN [1] WHERE p.born > 1966) RETURN p.name ORDER BY p.name"
+        rows: ["Hugo", "Keanu", "Laurence"]
+      - note: "A property no node has is a null list."
+        cypher: "MATCH (p:Person) WHERE all(x IN p.nicknames WHERE x = 'a') OR p.name = 'Carrie' RETURN p.name ORDER BY p.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (p:Person) WITH p, all(x IN [1] WHERE p.born > 1962) AS young WHERE young IS NULL RETURN p.name"
+        rows: ["Hugo"]
+      - cypher: "MATCH (k:Person {name: 'Keanu'}) OPTIONAL MATCH (k)-[rs:NOPE*]->() WITH k, rs WHERE none(r IN rs WHERE r.since > 1) OR all(r IN rs WHERE r.since > 1) RETURN k.name"
+        rows: []
+      - cypher: "MATCH (k:Person {name: 'Keanu'}) OPTIONAL MATCH (k)-[rs:NOPE*]->() WITH k, rs WHERE any(r IN rs WHERE r.since > 1) IS NULL RETURN k.name"
+        rows: ["Keanu"]
+      - note: "XOR, and a CASE, read null apart from false."
+        cypher: "MATCH (p:Person) WHERE any(x IN [1] WHERE p.born > 1966) XOR p.name = 'Hugo' RETURN p.name ORDER BY p.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (p:Person) WHERE CASE WHEN NOT all(x IN [1] WHERE p.born > 1962) THEN true ELSE p.name = 'Hugo' END RETURN p.name ORDER BY p.name"
+        rows: ["Hugo", "Laurence"]
+
+  - name: "Operator precedence"
+    description: "NOT, XOR and IS NULL apply to the whole condition, and an index to the whole list."
+    steps:
+      - cypher: "MATCH (p:Person) WHERE NOT p.name = 'Keanu' RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Hugo", "Laurence"]
+      - cypher: "MATCH (n:CyTest) WHERE NOT n:Person:Movie RETURN count(*)"
+        rows: [9]
+      - cypher: "MATCH (p:Person) WHERE p.name = 'Keanu' XOR p.born > 1962 RETURN p.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN (p.nick = 'x') IS NULL"
+        rows: [true]
+      - cypher: "RETURN [1] + [[2, 3]][0]"
+        rows: [[1, 2, 3]]
+
+  - name: "collect DISTINCT of maps and lists"
+    description: "collect(DISTINCT …) of maps and lists keeps each one once."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->() RETURN [collect(DISTINCT {role: r.role}), collect(DISTINCT [r.role])]"
+        unorderedLists: true
+        rows: [[[{role: "Johnny"}, {role: "Neo"}], [["Johnny"], ["Neo"]]]]
+
+  - name: "collect skips nulls"
+    description: "collect() leaves out nulls, including null nodes."
+    steps:
+      - cypher: "UNWIND [1, null, 2] AS x RETURN [collect(x), count(x)]"
+        rows: [[[1, 2], 2]]
+      - cypher: "UNWIND [1, null, 1] AS x RETURN collect(DISTINCT x)"
+        rows: [[1]]
+      - cypher: "UNWIND [{a: 1}, {a: null}, {b: 1}, {a: 2}] AS m RETURN collect(m.a)"
+        rows: [[1, 2]]
+      - note: Nodes gathered, and read in the projection that gathers them; a node that is null left out.
+        cypher: "MATCH (p:Person) OPTIONAL MATCH (p)-[:KNOWS]->(f:Person {name: 'Nobody'}) RETURN [size(collect(p)), size(collect(f))]"
+        rows: [[4, 0]]
+
+  - name: "collect keeps WITH order"
+    description: "collect() gathers rows in the order a WITH sorted them, within each group too."
+    steps:
+      - cypher: "UNWIND [3, 1, 2] AS x WITH x ORDER BY x RETURN collect(x)"
+        rows: [[1, 2, 3]]
+      - cypher: "UNWIND [3, 1, 2] AS x WITH x ORDER BY x DESC RETURN collect(x)"
+        rows: [[3, 2, 1]]
+      - cypher: |
+          MATCH (p:Person)-[:ACTED_IN]->(m:Movie) WITH p, m ORDER BY m.title DESC
+          WITH p.name AS name, collect(m.title) AS titles WHERE name = 'Keanu'
+          RETURN titles
+        rows: [["The Matrix Reloaded", "The Matrix", "Johnny Mnemonic"]]
+
+  - name: "Grouping by maps and lists"
+    description: "RETURN groups by a map, list or pattern comprehension, and orders by an aggregate or expression it doesn't return."
+    steps:
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN {name: p.name} AS who, count(*) AS c ORDER BY c DESC"
+        rows: [[{name: "Keanu"}, 3], [{name: "Carrie"}, 2], [{name: "Laurence"}, 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p {.name} AS who, count(m) AS c ORDER BY c DESC"
+        rows: [[{name: "Keanu"}, 3], [{name: "Carrie"}, 2], [{name: "Laurence"}, 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN [(p)-[:KNOWS]->(f) | f.name] AS knows, count(*) AS c ORDER BY c"
+        rows: [[["Keanu"], 1], [[], 2], [["Carrie"], 3]]
+      - note: Gathered in the order the rows came in, though the key is worked out before it is grouped by.
+        cypher: "MATCH (p:Person) WITH p ORDER BY p.name DESC RETURN size([(p)-[:KNOWS]->(f) | f]) AS k, collect(p.name) AS names ORDER BY k"
+        rows: [[0, ["Hugo", "Carrie"]], [1, ["Laurence", "Keanu"]]]
+      - cypher: "MATCH (p:Person) RETURN toUpper(toLower(trim(toUpper(toLower(trim(toUpper(p.name))))))) AS k, count(*) AS c ORDER BY k"
+        rows: [["CARRIE", 1], ["HUGO", 1], ["KEANU", 1], ["LAURENCE", 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name AS n, count(*) AS c ORDER BY min(m.released), n"
+        rows: [["Keanu", 3], ["Carrie", 2], ["Laurence", 1]]
+      - note: An order of an expression of an item, which is no item.
+        cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN {name: p.name} AS who, count(*) AS c ORDER BY who.name"
+        rows: [[{name: "Carrie"}, 2], [{name: "Keanu"}, 3], [{name: "Laurence"}, 1]]
+      - cypher: "MATCH (p:Person) RETURN p.born AS b, count(*) AS c ORDER BY b + 1 DESC"
+        rows: [[null, 1], [1967, 1], [1964, 1], [1961, 1]]
+
+  - name: "Grouping by parameters and subqueries"
+    description: "RETURN groups by keys built from parameters or subqueries, with DISTINCT, paging, a later WHERE, or an optional match."
+    steps:
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN p.name + $x AS k, count(*) AS c ORDER BY k"
+        parameters: {x: "!"}
+        rows: [["Carrie!", 2], ["Keanu!", 3], ["Laurence!", 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN [x IN $names WHERE x = p.name] AS k, count(*) AS c ORDER BY size(k) DESC"
+        parameters: {names: ["Keanu", "Hugo"]}
+        rows: [[["Keanu"], 3], [[], 3]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT [(p)-[:KNOWS]->(f) | f.name] AS knows, count(*) AS c ORDER BY c DESC SKIP $s LIMIT $l"
+        parameters: {s: 1, l: 1}
+        rows: [[[], 2]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) WITH [(p)-[:KNOWS]->(f) | f.name] AS knows, count(*) AS c WHERE c > 1 RETURN {k: knows, c: c} ORDER BY c DESC"
+        rows: [{k: ["Carrie"], c: 3}, {k: [], c: 2}]
+      - cypher: "MATCH (p:Person) OPTIONAL MATCH (p)-[:ACTED_IN]->(m) RETURN [(p)-[:KNOWS]->(f) | f.name] AS knows, count(m) AS c ORDER BY c, size(knows)"
+        rows: [[["Keanu"], 1], [[], 2], [["Carrie"], 3]]
+
+  - name: "min and max of mixed kinds"
+    description: "min() and max() of mixed kinds of values order them as Cypher does."
+    steps:
+      - cypher: "UNWIND [1, 'a', 2.5] AS x RETURN [min(x), max(x)]"
+        rows: [["a", 2.5]]
+      - cypher: "UNWIND [true, 1] AS x RETURN [min(x), max(x)]"
+        rows: [[true, 1]]
+      - cypher: "UNWIND [[1], 'a', 1] AS x RETURN [min(x), max(x)]"
+        rows: [[[1], 1]]
+      - cypher: "UNWIND [null, 'b', 'a'] AS x RETURN [min(x), max(x)]"
+        rows: [["a", "b"]]
+      - note: "Of lists, item by item, as ORDER BY sorts them, where a store's JSON may put the shorter list first (drivine4j#220)."
+        cypher: "UNWIND [[1, 2], [3]] AS xs RETURN [min(xs), max(xs)]"
+        rows: [[[1, 2], [3]]]
+      - note: "Item by item, not as text: [10] comes after [2]."
+        cypher: "UNWIND [[2], [1, 5], [1, 5], [10]] AS xs RETURN [min(DISTINCT xs), max(DISTINCT xs)]"
+        rows: [[[1, 5], [10]]]
+      - note: "In a group, too."
+        cypher: "UNWIND [[1, 2], [3], [0, 9, 9], [2, 1]] AS xs WITH xs[0] < 2 AS k, min(xs) AS lo, max(xs) AS hi RETURN k, lo, hi ORDER BY k"
+        rows: [[false, [2, 1], [3]], [true, [0, 9, 9], [1, 2]]]
+
+  - name: "Nulls in ORDER BY"
+    description: "ORDER BY puts null last ascending and first descending."
+    steps:
+      - cypher: "UNWIND [{a: 2}, {a: null}, {a: 1}] AS m RETURN m.a ORDER BY m.a"
+        rows: [1, 2, null]
+      - cypher: "UNWIND [{a: 2}, {a: null}, {a: 1}] AS m RETURN m.a ORDER BY m.a DESC"
+        rows: [null, 2, 1]
+      - cypher: "MATCH (p:Person) RETURN DISTINCT p {.born} AS b ORDER BY b.born"
+        rows: [{born: 1961}, {born: 1964}, {born: 1967}, {born: null}]
+
+  - name: "Texts in code point order"
+    description: "Texts compare and sort by their code points, as Cypher has them, not by a locale's collation: a capital before every small letter, and a space before a letter."
+    steps:
+      - cypher: "UNWIND ['John Wick', 'Johnny Mnemonic', 'b', 'B', 'a', 'A', 'é', 'e', 'z', 'Z', '~', '_', '-', ' ', 'a b', 'ab', 'a-c'] AS t RETURN t ORDER BY t"
+        rows: [" ", "-", "A", "B", "John Wick", "Johnny Mnemonic", "Z", "_", "a", "a b", "a-c", "ab", "b", "e", "z", "~", "é"]
+      - cypher: "UNWIND ['John Wick', 'Johnny Mnemonic', 'b', 'B', 'a', 'é'] AS t WITH t ORDER BY t DESC RETURN collect(t)"
+        rows: [["é", "b", "a", "Johnny Mnemonic", "John Wick", "B"]]
+      - cypher: "UNWIND ['b', 'B', 'b', 'a', 'B'] AS t RETURN DISTINCT t ORDER BY t"
+        rows: ["B", "a", "b"]
+      - cypher: "RETURN ['a' < 'B', 'John Wick' < 'Johnny Mnemonic', 'é' > 'f', 'Z' < '_', 'a' >= 'B', 'ab' <= 'a b']"
+        rows: [[false, true, true, true, true, false]]
+      - cypher: "UNWIND ['b', 'B', 'a', 'é'] AS t RETURN min(t), max(t)"
+        rows: [["B", "é"]]
+      - cypher: "UNWIND ['b', 'B', 'a', 'B'] AS t RETURN min(DISTINCT t), max(DISTINCT t)"
+        rows: [["B", "b"]]
+      - note: "A text given compares as one written."
+        cypher: "UNWIND $ts AS t RETURN t ORDER BY t"
+        parameters: {ts: ["b", "B", "John Wick", "Johnny Mnemonic", "a"]}
+        rows: ["B", "John Wick", "Johnny Mnemonic", "a", "b"]
+      - note: "A sort key long enough that Postgres works it out once, in a subquery, sorts so too."
+        cypher: "UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY coalesce(toLower(toUpper(trim(t))), toUpper(t), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz') + t"
+        rows: ["a", "B", "b"]
+      - cypher: "UNWIND ['b', 'B', 'a'] AS t RETURN DISTINCT t ORDER BY coalesce(toLower(toUpper(trim(t))), toUpper(t), 'zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz') + t DESC"
+        rows: ["b", "B", "a"]
+
+  - name: "Properties in code point order"
+    description: "A text property compares with a text, and sorts, by code points: 'The Matrix' is before 'The matrix', which a locale puts first."
+    steps:
+      - cypher: "MATCH (m:Movie) WHERE m.title < $t RETURN m.title ORDER BY m.title"
+        parameters: {t: "The matrix"}
+        rows: ["Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"]
+      - cypher: "MATCH (m:Movie) WHERE m.title >= 'the' RETURN m.title"
+        rows: []
+      - cypher: "MATCH (m:Movie) WITH m.title AS t ORDER BY toLower(t) + 'A' DESC RETURN collect(t)"
+        rows: [["The Matrix", "The Matrix Reloaded", "Johnny Mnemonic"]]
+      - cypher: "MATCH (m:Movie) WITH CASE WHEN m.released < 1996 THEN toLower(m.title) ELSE m.title END AS t RETURN min(t), max(t)"
+        rows: [["The Matrix", "johnny mnemonic"]]
+      - cypher: "MATCH (p:Person), (q:Person) WHERE toLower(p.name) < q.name RETURN count(*)"
+        rows: [0]
+
+  - name: "Lists of texts in code point order"
+    description: "A sort by a list, and min and max of lists, compare the texts in them by code points."
+    steps:
+      - cypher: "UNWIND [['a', 'b'], ['a', 'B'], ['B'], ['b'], ['John Wick'], ['Johnny Mnemonic'], ['a', 'é'], ['a', '~']] AS l RETURN l ORDER BY l"
+        rows: [["B"], ["John Wick"], ["Johnny Mnemonic"], ["a", "B"], ["a", "b"], ["a", "~"], ["a", "é"], ["b"]]
+      - cypher: "UNWIND [['a', 'b'], ['a', 'B'], ['B'], ['b']] AS l RETURN min(l), max(l)"
+        rows: [[["B"], ["b"]]]
+      - cypher: "MATCH (m:Movie) WITH m ORDER BY m.released WITH collect(toLower(m.title)) + ['The Matrix'] AS ts UNWIND [ts, ['the matrix'], ['The matrix']] AS l RETURN l ORDER BY l DESC"
+        rows: [["the matrix"], ["johnny mnemonic", "the matrix", "the matrix reloaded", "The Matrix"], ["The matrix"]]
+
+  - name: "Long texts in a list in code point order"
+    description: "A text in a list sorts by its code points up to its 500th character and past it, whether that character is of one byte in UTF-8, two or four."
+    steps:
+      - cypher: "UNWIND [[$a + 'b', '3'], [$a + 'B', '2'], [$a, '1'], [$a + $c + 'b', '5'], [$a + $c, '4']] AS g WITH [g[0], g[1]] AS l RETURN l[1] ORDER BY l"
+        parameters: {a: {$repeat: "a", times: 499}, c: {$repeat: "a", times: 101}}
+        rows: ["1", "2", "4", "5", "3"]
+      - cypher: "UNWIND [[$a + 'aB', 3], [$a + 'a', 2], [$a + 'é', 5], [$a + 'b', 4], [$a + 'B', 1]] AS g WITH [g[0]] AS l, g[1] AS k RETURN k ORDER BY l"
+        parameters: {a: {$repeat: "a", times: 499}}
+        rows: [1, 2, 3, 4, 5]
+      - note: "500 characters of four bytes are 16,000 bits, near the 16,383 that Postgres keys a text in a list by."
+        cypher: "WITH reduce(s = '', i IN range(1, 499) | s + '😀') AS s UNWIND [[s + '😀b', 6], [s, 1], [s + '～', 3], [s + '😀a', 5], [s + 'a', 2], [s + '😀', 4]] AS g WITH [g[0]] AS l, g[1] AS k RETURN k ORDER BY l"
+        rows: [1, 2, 3, 4, 5, 6]
+      - cypher: "WITH reduce(s = '', i IN range(1, 499) | s + '😀') AS s UNWIND [[s + '😀b', 6], [s, 1], [s + '～', 3], [s + '😀a', 5], [s + 'a', 2], [s + '😀', 4]] AS g WITH [g[0]] AS l, g[1] AS k RETURN k ORDER BY l DESC"
+        rows: [6, 5, 4, 3, 2, 1]
+
+  - name: "Texts beside nulls and other kinds"
+    description: "A text sorts beside a null and a value of another kind as Cypher orders them, and by its code points among the texts."
+    steps:
+      - cypher: "UNWIND ['b', null, 'B'] AS t RETURN t ORDER BY t"
+        rows: ["B", "b", null]
+      - cypher: "UNWIND ['b', null, 'B', 'b'] AS t RETURN DISTINCT t ORDER BY t DESC"
+        rows: [null, "b", "B"]
+      - note: "A text before a number, as Cypher orders kinds."
+        cypher: "UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t"
+        rows: ["B", "b", 1, 2, null]
+      - cypher: "UNWIND [2, 'b', null, 1, 'B'] AS t RETURN t ORDER BY t DESC"
+        rows: [null, 2, 1, "b", "B"]
+      - note: "A text compared with a value of another kind, or with null, is null; one that coalesce() or CASE gives compares by its code points."
+        cypher: "RETURN ['a' < 1, 'B' > null, 1 >= 'a', coalesce(null, 'a') < 'B', CASE WHEN true THEN 'a' END < 'B']"
+        rows: [[null, null, null, false, false]]
+      - cypher: "UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t < 'a' RETURN t"
+        rows: ["B"]
+      - cypher: "UNWIND ['b', 1, 'B', true] AS t WITH t WHERE t > 0 RETURN t"
+        rows: [1]
+      - note: "min() takes the least text by its code points, and max() the greatest number, as Cypher orders kinds."
+        cypher: "UNWIND ['b', 1, 'B', 2, true] AS t RETURN min(t), max(t)"
+        rows: [["B", 2]]
+
+  - name: "Values of several kinds in Cypher's order of kinds"
+    description: "ORDER BY sorts a map, then a list, a text, a truth value, a number, and null last ascending (first descending), and values of one kind among themselves; min() and max() take that order too."
+    steps:
+      - note: "Postgres sorts a number before a truth value, and a map and a list last (drivine4j#307)."
+        cypher: "UNWIND [1, {a: 1}, 'b', true, [2], 2.5, null, false, 'A', [1, 2], -1] AS t RETURN t ORDER BY t"
+        except: [postgres]
+        rows: [{a: 1}, [1, 2], [2], "A", "b", false, true, -1, 1, 2.5, null]
+      - cypher: "UNWIND [1, {a: 1}, 'b', true, [2], 2.5, null, false, 'A', [1, 2], -1] AS t RETURN t ORDER BY t DESC"
+        except: [postgres]
+        rows: [null, 2.5, 1, -1, true, false, "b", "A", [2], [1, 2], {a: 1}]
+      - note: "Carried out of a WITH that pages them."
+        cypher: "UNWIND [1, {a: 1}, 'b', true, [2], 2.5, null, false, 'A', [1, 2], -1] AS t WITH t ORDER BY t SKIP 3 LIMIT 4 RETURN t"
+        except: [postgres]
+        rows: ["A", "b", false, true]
+      - cypher: "UNWIND [2, 'b', true, 2, 'b'] AS t RETURN DISTINCT t ORDER BY t"
+        except: [postgres]
+        rows: ["b", true, 2]
+      - note: "An item of a list, whose kind the statement leaves open, beside another term."
+        cypher: "UNWIND [[2, 0], [1, 3], [2, false], [1, 'a']] AS p RETURN p ORDER BY p[0], p[1]"
+        except: [postgres]
+        rows: [[1, "a"], [1, 3], [2, false], [2, 0]]
+      - note: "A truth value before a number, though SQLite reads one as 1 or 0."
+        cypher: "UNWIND [1, true, 0, false] AS t RETURN t ORDER BY t"
+        except: [postgres]
+        rows: [false, true, 0, 1]
+      - cypher: "UNWIND [true, 1, 'b', [1], {a: 1}] AS t RETURN min(t), max(t)"
+        rows: [[{a: 1}, 1]]
+
+  - name: "Texts beyond the Basic Multilingual Plane in code point order"
+    description: "A character above U+FFFF sorts after every one below it, as its code point says, though UTF-16, by which Java and JavaScript compare texts, puts it before U+E000 to U+FFFF."
+    steps:
+      - cypher: "UNWIND ['😀', '～', '', 'a', '퟿'] AS t RETURN t ORDER BY t"
+        rows: ["a", "퟿", "", "～", "😀"]
+      - cypher: "RETURN ['😀' < '～', '😀' > '', '😀' > '퟿']"
+        rows: [[false, true, true]]
+      - cypher: "UNWIND [['😀'], ['～']] AS l RETURN l ORDER BY l"
+        rows: [["～"], ["😀"]]
+      - note: "Neo4j compares a text given as a parameter by its UTF-16 code units, where it compares one written or stored by its code points (neo4j/neo4j#13997). The other stores give these rows."
+        cypher: "UNWIND $ts AS t RETURN min(t), max(t)"
+        parameters: {ts: ["😀", "～", ""]}
+        except: [neo4j]
+        rows: [["", "😀"]]
+
+  - name: "Floats stay floats"
+    description: "Negating or taking abs() of a float keeps it a float."
+    steps:
+      - cypher: "RETURN [-2.0, abs(-2.0), abs(-2.5), -(2), abs(-2)]"
+        rows: [[-2.0, 2.0, 2.5, -2, 2]]
+
+  - name: "substring, left, right, replace"
+    description: "substring, left, right and replace work on text, counting from 0."
+    steps:
+      - cypher: "MATCH (m:Movie {title: 'The Matrix'}) RETURN [substring(m.title, 6), substring(m.title, 6, 2), left('Matrix', 2), right('Matrix', 3), right(m.title, 50), replace(m.title, 'a', '_')]"
+        rows: [["trix", "tr", "Ma", "rix", "The Matrix", "The M_trix"]]
+
+  - name: "Start and length of a text function"
+    description: "substring(), left() and right() refuse a written float and a start or length outside 0 to 2147483647, and cut a bound float toward zero, as Neo4j does."
+    steps:
+      - note: "A written float is refused whatever the text, a whole one too."
+        cypher: "RETURN left('hello', 2.7)"
+        error: true
+      - cypher: "RETURN left('hello', 2.0)"
+        error: true
+      - cypher: "RETURN substring('hello', 1.0)"
+        error: true
+      - cypher: "RETURN substring('hello', 1, 2.6)"
+        error: true
+      - cypher: "RETURN right(null, 2.7)"
+        error: true
+      - note: "Below 0, written, bound or read from data, it fails."
+        cypher: "RETURN left('hello', -1)"
+        error: true
+      - cypher: "RETURN substring('hello', -1, 2)"
+        error: true
+      - cypher: "RETURN substring('hello', 1, -1)"
+        error: true
+      - cypher: "RETURN right('hello', $n)"
+        parameters: {n: -1}
+        error: true
+      - cypher: "UNWIND [-1] AS n RETURN left('hello', n)"
+        error: true
+      - note: "A negated parameter is negated first."
+        cypher: "RETURN left('hello', -$n)"
+        parameters: {n: 1}
+        error: true
+      - cypher: "RETURN [left('hello', -$m), substring('hello', -$m, -$l)]"
+        parameters: {m: -1, l: -2}
+        rows: [["h", "el"]]
+      - note: "Past 2147483647 it fails, and up to it, it is taken. Memgraph and FalkorDB take a greater one."
+        only: [neo4j, sql]
+        cypher: "RETURN left('hello', $n)"
+        parameters: {n: 2147483648}
+        error: true
+      - cypher: "RETURN [left('hello', 2147483647), right('hello', 2147483647), substring('hello', 1, 2147483647), left('hello', $m), substring('hello', 1, $m)]"
+        parameters: {m: 2147483647}
+        rows: [["hello", "hello", "ello", "hello", "ello"]]
+      - except: [oracle]
+        cypher: "UNWIND [2147483647] AS s RETURN [substring('hello', s), substring('hello', $m)]"
+        parameters: {m: 2147483647}
+        rows: [["", ""]]
+      - note: "Oracle's empty text is null."
+        only: [oracle]
+        cypher: "UNWIND [2147483647] AS s RETURN [substring('hello', s), substring('hello', $m)]"
+        parameters: {m: 2147483647}
+        rows: [[null, null]]
+      - note: "Beside a null text it is null. Memgraph refuses it."
+        except: [memgraph]
+        cypher: "RETURN [left(null, -1), right(null, -1), substring(null, 1, -1)]"
+        rows: [[null, null, null]]
+      - except: [memgraph]
+        cypher: "UNWIND [-1] AS n RETURN left(null, n)"
+        rows: [null]
+      - note: "Past 2147483647, beside a null text, it is null too."
+        cypher: "RETURN [left($t, 2147483648), substring($t, 0, 9223372036854775807), right($t, $n)]"
+        parameters: {t: null, n: 9223372036854775807}
+        rows: [[null, null, null]]
+      - note: "A null start or length is null. FalkorDB refuses it, and Memgraph refuses it in substring()."
+        except: [falkordb]
+        cypher: "RETURN [left('hello', null), right('hello', null)]"
+        rows: [[null, null]]
+      - except: [memgraph, falkordb]
+        cypher: "RETURN [substring('hello', null), substring('hello', 1, null)]"
+        rows: [[null, null]]
+      - note: "A key a parameter doesn't have is null. FalkorDB refuses it as a length."
+        cypher: "RETURN [left($p.none, $p.i), substring($p.none, 1), left('hello', $p.i)]"
+        parameters: {p: {i: 2}}
+        rows: [[null, null, "he"]]
+      - except: [falkordb]
+        cypher: "RETURN [left('hello', $p.none), right('hello', $p.none)]"
+        parameters: {p: {i: 2}}
+        rows: [[null, null]]
+      - note: "Bound or read from data, a float is cut toward zero: 2.7 is 2, -0.5 is 0, and -1.5 is -1, which fails. Memgraph and FalkorDB refuse it."
+        only: [neo4j, postgres, sqlite]
+        cypher: "RETURN [left('hello', $f), right('hello', $f), substring('hello', $s, $f), left('hello', $q)]"
+        parameters: {f: 2.7, s: 1.7, q: -0.5}
+        rows: [["he", "lo", "el", ""]]
+      - note: "Oracle's empty text is null."
+        only: [oracle]
+        cypher: "RETURN [left('hello', $f), right('hello', $f), substring('hello', $s, $f), left('hello', $q)]"
+        parameters: {f: 2.7, s: 1.7, q: -0.5}
+        rows: [["he", "lo", "el", null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND $xs AS n RETURN [left('hello', n), substring('hello', n)]"
+        parameters: {xs: [2.7, 2.0, null]}
+        rows: [["he", "llo"], ["he", "llo"], [null, null]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [left('hello', $p.f), left('hello', -$g)]"
+        parameters: {p: {f: 2.7}, g: -2.7}
+        rows: [["he", "he"]]
+      - note: "Cut toward zero, -1.5 is -1, -2.7 is -2, and 1.0E20 is past 2147483647, so each fails. Memgraph and FalkorDB refuse any bound float."
+        cypher: "RETURN left('hello', $n)"
+        parameters: {n: -1.5}
+        error: true
+      - cypher: "RETURN left('hello', -$n)"
+        parameters: {n: 2.7}
+        error: true
+      - cypher: "RETURN left('hello', $n)"
+        parameters: {n: 1.0e+20}
+        error: true
+      - cypher: "UNWIND $xs AS n RETURN left('hello', n)"
+        parameters: {xs: [-1.5]}
+        error: true
+
+  - name: "keys()"
+    description: "keys() gives a map's or node's keys, whatever they're called."
+    steps:
+      - cypher: "RETURN keys({b: 1, a: {x: 2}, `odd key`: [1], `q\"t`: null})"
+        unorderedLists: true
+        rows: [["a", "b", "odd key", "q\"t"]]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) UNWIND keys(p) AS k RETURN k"
+        unordered: true
+        rows: ["born", "name"]
+      - cypher: "RETURN keys({})"
+        rows: [[]]
+
+  - name: "Regular expressions and more functions"
+    description: "=~ matches the whole text, Java-style; split, reverse, toBoolean, round and others give the values Neo4j gives."
+    steps:
+      - cypher: "MATCH (p:Person) WHERE p.name =~ '[CK].*' RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Keanu"]
+      - cypher: "RETURN ['Keanu' =~ 'Kea', 'Keanu' =~ 'keanu', null =~ 'x']"
+        rows: [[false, false, null]]
+      - note: A pattern that opens with (?i) matches in any case, as Java's does.
+        cypher: "RETURN ['Keanu' =~ '(?i)keanu', 'Keanu' =~ '(?i)kea']"
+        rows: [[true, false]]
+      - note: A dot matches no line break, as Java's does, unless the pattern opens with (?s).
+        cypher: "RETURN ['a\\nb' =~ 'a.b', 'a\\nb' =~ '(?s)a.b']"
+        rows: [[false, true]]
+      - note: The whole text matches, a line break that ends it included, though Java's $ matches before one.
+        cypher: "RETURN ['ab\\n' =~ 'ab', 'ab\\n' =~ 'ab\\n', 'ab\\n' =~ 'ab$']"
+        rows: [[false, true, false]]
+      - note: (?m) lets ^ and $ in the pattern match at a line break, and the whole text must still match.
+        cypher: "RETURN ['x\\nab' =~ '(?m)ab', 'ab\\nx' =~ '(?m)ab', 'x\\nab' =~ 'x$\\n^ab', 'x\\nab' =~ '(?m).*ab']"
+        rows: [[false, false, false, false]]
+      - note: Oracle's ^ and $ match at a line break only where nothing in the pattern reads past it, so a pattern that does is left out there.
+        except: [oracle]
+        cypher: "RETURN 'x\\nab' =~ '(?m)x$\\n^ab'"
+        rows: [true]
+      - note: (?s) and (?m) together let a dot match a line break and ^ and $ match at one, in either order.
+        cypher: "RETURN ['a\\nb' =~ '(?sm)a.b', 'a\\nb' =~ '(?ms)a.b', 'a\\nb' =~ '(?si)A.B']"
+        rows: [[true, true, true]]
+      - except: [oracle]
+        cypher: "RETURN 'a\\nb' =~ '(?ims)A$.^B'"
+        rows: [true]
+      - cypher: "MATCH (p:Person) WHERE p.name =~ $pattern RETURN p.name ORDER BY p.name"
+        parameters: {pattern: "(?i)[ck].*"}
+        rows: ["Carrie", "Keanu"]
+      - cypher: |
+          RETURN {split: split('a,b,c', ','), reversed: reverse('Keanu'), reversedList: reverse([1, 2, 3]), tail: tail([1, 2, 3]),
+                  yes: toBoolean('TRUE'), no: toBoolean(false), notBoolean: toBoolean('maybe'), fromNumbers: [toBoolean(1), toBoolean(0)], spaced: toBoolean(' true '),
+                  emptyList: isEmpty([]), emptyMap: isEmpty({}), fullText: isEmpty('x'),
+                  round: round(2.5), roundTo: round(2.567, 2), floor: floor(2.7), ceil: ceil(2.1), sqrt: sqrt(9), sign: sign(-4),
+                  trimmed: [ltrim('  a '), rtrim(' b  ')]}
+        rows:
+          - split: ["a", "b", "c"]
+            reversed: "unaeK"
+            reversedList: [3, 2, 1]
+            tail: [2, 3]
+            "yes": true
+            "no": false
+            notBoolean: null
+            fromNumbers: [true, false]
+            spaced: true
+            emptyList: true
+            emptyMap: true
+            fullText: false
+            round: 3.0
+            roundTo: 2.57
+            floor: 2.0
+            ceil: 3.0
+            sqrt: 3.0
+            sign: -1
+            trimmed: ["a ", " b"]
+      - note: "The least positive numbers a store's decimal holds, from 1.0E-130 to under 1.0E-128, are positive, as is one read from a parameter; Oracle's SIGN gives 0 for them."
+        only: [neo4j, sql]
+        cypher: "RETURN [sign(1.0E-129), sign(-1.0E-129), sign(0.0), sign(null), sign(1.0E-130), sign(9.99E-129), sign($x)]"
+        parameters: {x: 1.0e-129}
+        rows: [[1, -1, 0, null, 1, 1, 1]]
+      - cypher: "UNWIND tail([1, 2, 3]) AS x RETURN x"
+        rows: [2, 3]
+      - cypher: "RETURN split('a', null)"
+        rows: [null]
+      - note: "An empty separator cuts at each character. Oracle's empty text is null."
+        except: [oracle]
+        cypher: "RETURN [split('abc', ''), split('', ',')]"
+        rows: [[["a", "b", "c"], [""]]]
+
+  - name: "Round to a fractional or negative precision"
+    description: "round() reads its precision as a whole number toward zero, as Neo4j does, and fails on a row it rounds a number on by one below 0 or past 2147483647."
+    steps:
+      - note: "1.7 is read as 1, not rounded to 2: 2.555 to 2 places would be 2.56. -0.5 is read as 0. Memgraph and FalkorDB take no precision."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(2.555, 1.7), round(2.55, 1.7, 'UP'), round(2.5, -0.5)]"
+        rows: [[2.6, 2.6, 3.0]]
+      - only: [neo4j, sql]
+        cypher: "RETURN round(2.555, $p)"
+        parameters: {p: 1.7}
+        rows: [2.6]
+      - only: [neo4j, sql]
+        cypher: "RETURN round(1234.5, -2)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(1234.5, -2, 'HALF_UP')"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(1234.5, $p)"
+        parameters: {p: -2}
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(5, -$q, 'UP')"
+        parameters: {q: 2}
+        error: true
+      - note: "Neo4j reads the precision only when it rounds a number, so one written below 0 gives null for a null, as one from data does, written, negated or a parameter's value."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(null, -2), round(null, -2, 'UP'), round(null, $p), round(null, -$q, 'HALF_UP'), round(null, -2.5)]"
+        parameters: {p: -2, q: 2}
+        rows: [[null, null, null, null, null]]
+      - note: "And with no row to round, nothing fails."
+        only: [neo4j, sql]
+        cypher: "MATCH (p:Person) WHERE p.name = 'Nobody' RETURN round(1.5, -2), round(1.5, -2, 'UP'), round(1.5, $p)"
+        parameters: {p: -2}
+        rows: []
+      - note: "A precision read from data below 0 fails the statement when the row is read, as Neo4j fails it, in both forms."
+        only: [neo4j, sql]
+        cypher: "UNWIND [-2] AS p RETURN round(1234.5, p)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [-2] AS p RETURN round(1234.5, p, 'HALF_UP')"
+        error: true
+      - note: "-0.5 read from data is 0 places, and null is null."
+        only: [neo4j, sql]
+        cypher: "UNWIND [-0.5, null] AS p RETURN round(1234.5, p)"
+        rows: [1235.0, null]
+      - note: "To 0 places, as round(x) rounds, half toward +infinity as Java's Math.round does; to more, half away from zero."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(-2.5, 0), round(-1.5, 0), round(-0.5, 0), round(2.5, 0), round(-2.6, 0), round(-2.55, 1), round(-2.5, 0.7)]"
+        rows: [[-2.0, -1.0, 0.0, 3.0, -3.0, -2.6, -2.0]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [0, -0.5, 1, null] AS p RETURN round(-2.5, p)"
+        rows: [-2.0, -2.0, -2.5, null]
+      - note: "Places past a number's digits give it back: a double holds 17 significant digits at most, so rounding it past its last changes nothing, however many places, where a store's decimal would overflow. Short of them, it rounds."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(1.5, 400), round(2.5, 1000000000), round(2.5, 400, 'HALF_UP'), round(-2.5, 300, 'FLOOR'), round(1.0E-100, 120), round(1.0E-100, 99), round(1.0E-120, 130, 'HALF_UP'), round(-1.0E-120, 136, 'CEILING')]"
+        rows: [[1.5, 2.5, 2.5, -2.5, 1.0e-100, 0.0, 1.0e-120, -1.0e-120]]
+      - note: "Either side of the last place a double holds, and short of it, where a mode still rounds."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(123.456, 14, 'UP'), round(123.456, 15, 'UP'), round(123.456, 16, 'UP'), round(-123.456, 14, 'FLOOR'), round(1234.5678901234567, 13), round(1234.5678901234567, 12, 'HALF_EVEN')]"
+        rows: [[123.456, 123.456, 123.456, -123.456, 1234.5678901234567, 1234.567890123457]]
+      - note: "Places past the digits read from data, in both forms."
+        only: [neo4j, sql]
+        cypher: "UNWIND [400, 1000000000] AS p RETURN [round(2.5, p), round(2.5, p, 'FLOOR')]"
+        rows: [[2.5, 2.5], [2.5, 2.5]]
+      - note: "Numbers near the least a store's decimal holds, short of their digits and past them."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(1.0E-129, 2), round(-1.0E-129, 2, 'FLOOR'), round(1.0E-130, 140), round(-1.0E-125, 141, 'HALF_EVEN'), round(1.2345678901234567E-130, 145), round(5.5E-128, 128, 'HALF_EVEN')]"
+        rows: [[0.0, -0.01, 1.0e-130, -1.0e-125, 1.234567890123457e-130, 6.0e-128]]
+      - note: "Zero, which has no digits to count, rounds to zero however many places, and to null where the precision is null, written or read from data."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(0.0, 400), round(0, 2, 'UP'), round(0.0, null), round(0, null, 'HALF_UP')]"
+        rows: [[0.0, 0.0, null, null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [null] AS p RETURN [round(0.0, p), round(0.0, p, 'UP')]"
+        rows: [[null, null]]
+      - note: "A negative precision from data fails on zero too, over an aggregate as anywhere."
+        only: [neo4j, sql]
+        cypher: "UNWIND [0.0, 0.0] AS x WITH x, -2 AS r RETURN r, round(sum(x), r)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [0.0, 0.0] AS x WITH x, -2 AS r RETURN r, round(sum(x), r, 'UP')"
+        error: true
+      - note: "A null rounds to null whatever the precision, one below 0 read from data too."
+        only: [neo4j, sql]
+        cypher: "UNWIND [-2] AS p RETURN [round(null, p), round(null, p, 'HALF_UP')]"
+        rows: [[null, null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [-1000] AS p RETURN [round(null, p), round(null, p, 'UP')]"
+        rows: [[null, null]]
+      - note: "A whole number by a negative precision from data fails, as a float does."
+        only: [neo4j, sql]
+        cypher: "UNWIND [-2] AS p RETURN round(5, p)"
+        error: true
+      - note: "Neo4j takes a precision up to 2147483647, Java's greatest int, cut toward zero, written, a parameter's value or read from data, in both forms."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(2.5, 2147483647), round(2.5, 2147483647, 'UP'), round(2.5, $p), round(-2.5, $p, 'FLOOR'), round(2.5, 2147483647.5)]"
+        parameters: {p: 2147483647}
+        rows: [[2.5, 2.5, 2.5, -2.5, 2.5]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483647, 2147483647.5] AS p RETURN [round(2.5, p), round(2.5, p, 'HALF_EVEN')]"
+        rows: [[2.5, 2.5], [2.5, 2.5]]
+      - note: "Past 2147483647, it fails on a row it rounds a number on, written, a parameter's value or read from data, in both forms, and as far below 0 too."
+        only: [neo4j, sql]
+        cypher: "RETURN round(2.5, 2147483648)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(2.5, 2147483648, 'UP')"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(5, $p)"
+        parameters: {p: 2147483648}
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(2.5, 1.0E10)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "RETURN round(2.5, -2147483649)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483648] AS p RETURN round(2.5, p)"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483648] AS p RETURN round(2.5, p, 'UP')"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [1.0E10] AS p RETURN round(5, p, 'HALF_EVEN')"
+        error: true
+      - only: [neo4j, sql]
+        cypher: "UNWIND [-2147483649] AS p RETURN round(2.5, p)"
+        error: true
+      - note: "A null rounds to null by such a precision, and with no row to round, nothing fails."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(null, 2147483648), round(null, 2147483648, 'UP'), round(null, $p), round(null, 1.0E10)]"
+        parameters: {p: 2147483648}
+        rows: [[null, null, null, null]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [2147483648, 1.0E10] AS p RETURN [round(null, p), round(null, p, 'UP')]"
+        rows: [[null, null], [null, null]]
+      - only: [neo4j, sql]
+        cypher: "MATCH (p:Person) WHERE p.name = 'Nobody' RETURN round(1.5, 2147483648), round(1.5, 2147483648, 'UP'), round(1.5, $p)"
+        parameters: {p: 2147483648}
+        rows: []
+
+  - name: "EXISTS and COUNT subqueries"
+    description: "EXISTS { } and COUNT { } take a pattern, clauses or a whole query, evaluated per row."
+    steps:
+      - cypher: "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:ACTED_IN]->(m:Movie) WHERE m.released > 2000 } RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Keanu"]
+      - cypher: "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(f) RETURN f } RETURN p.name ORDER BY p.name"
+        rows: ["Keanu", "Laurence"]
+      - cypher: "MATCH (p:Person) RETURN p.name, COUNT { (p)-[:ACTED_IN]->() } ORDER BY p.name"
+        rows: [["Carrie", 2], ["Hugo", 0], ["Keanu", 3], ["Laurence", 1]]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN COUNT { MATCH (p)-[:ACTED_IN]->(m) WITH m WHERE m.released < 2000 RETURN m.title }"
+        rows: [2]
+
+  - name: "CALL subqueries"
+    description: "CALL { } runs for each row; OPTIONAL CALL keeps a row it gives nothing for."
+    steps:
+      - cypher: "MATCH (p:Person) CALL { WITH p MATCH (p)-[:ACTED_IN]->(m:Movie) RETURN count(m) AS movies } RETURN p.name, movies ORDER BY p.name"
+        rows: [["Carrie", 2], ["Hugo", 0], ["Keanu", 3], ["Laurence", 1]]
+      - cypher: "MATCH (p:Person) CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } RETURN p.name + '>' + friend ORDER BY p.name"
+        rows: ["Keanu>Carrie", "Laurence>Keanu"]
+      - cypher: "MATCH (p:Person) OPTIONAL CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } RETURN [p.name, friend] ORDER BY p.name"
+        rows: [["Carrie", null], ["Hugo", null], ["Keanu", "Carrie"], ["Laurence", "Keanu"]]
+      - cypher: "CALL { MATCH (m:Movie) RETURN m ORDER BY m.released DESC LIMIT 1 } RETURN m.title"
+        rows: ["The Matrix Reloaded"]
+      - note: A CALL that finds no path returns null for its nodes, its relationships and the node at its end, not a list of null.
+        cypher: |
+          MATCH (k:Person {name: 'Keanu'})
+          CALL (k) { OPTIONAL MATCH p = (k)-[rs:NOPE*]->(x) RETURN nodes(p) AS ns, rs, relationships(p) AS r1, x }
+          RETURN [ns, rs, r1, x, ns IS NULL, rs IS NULL, size(rs), labels(x)]
+        rows: [[null, null, null, null, true, true, null, null]]
+      - note: "An OPTIONAL CALL in a COUNT keeps the row it finds nothing for, with a WHERE … AND … after it."
+        cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN COUNT { OPTIONAL CALL (p) { MATCH (p)-[:NOPE]->(f) RETURN f.name AS friend } MATCH (m:Movie) WHERE m.released > 1996 AND m.released < 2010 RETURN m }"
+        rows: [2]
+      - cypher: "MATCH (p:Person {name: 'Hugo'}) RETURN COUNT { OPTIONAL CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS friend } RETURN friend }"
+        rows: [1]
+      - cypher: "MATCH (p:Person {name: 'Hugo'}) RETURN COUNT { OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN f }"
+        rows: [1]
+
+  - name: "UNION inside subqueries"
+    description: "A UNION works inside CALL, COUNT and EXISTS, evaluated per row."
+    steps:
+      - cypher: |
+          MATCH (p:Person {name: 'Keanu'})
+          CALL (p) { MATCH (p)-[:KNOWS]->(f) RETURN f.name AS other UNION MATCH (p)<-[:KNOWS]-(f) RETURN f.name AS other }
+          RETURN other ORDER BY other
+        rows: ["Carrie", "Laurence"]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN COUNT { MATCH (p)-[:KNOWS]-(f) RETURN f.name AS n UNION ALL MATCH (p)-[:ACTED_IN]->(m) RETURN m.title AS n }"
+        rows: [5]
+      - cypher: "MATCH (p:Person) WHERE EXISTS { MATCH (p)-[:KNOWS]->(f) RETURN f UNION MATCH (p)-[:ACTED_IN]->(f) WHERE f.released < 1996 RETURN f } RETURN p.name ORDER BY p.name"
+        rows: ["Keanu", "Laurence"]
+
+  - name: "Quantified relationships"
+    description: "-[:R]->{1,2}, + and * work like variable-length relationships."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{1,2}(p) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Keanu"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{2}(p) RETURN p.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->+(p) RETURN p.name ORDER BY p.name"
+        rows: ["Carrie", "Keanu"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[r:KNOWS]->*(p) RETURN [p.name, size(r)] ORDER BY size(r)"
+        rows: [["Laurence", 0], ["Keanu", 1], ["Carrie", 2]]
+
+  - name: "Quantifier bounds"
+    description: "A quantifier with no bound in its braces, or a least bound above its greatest, is refused, as Neo4j refuses it."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{} (b) RETURN b.name"
+        error: true
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{3,1} (b) RETURN b.name"
+        error: true
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){3,1} (b) RETURN b.name"
+        error: true
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){} (b) RETURN b.name"
+        error: true
+      - note: "Equal bounds are one count."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{2,2} (b) RETURN b.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*3..1]->(b) RETURN b.name"
+        rows: []
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->{,} (b) RETURN b.name ORDER BY b.name"
+        rows: ["Carrie", "Keanu", "Laurence"]
+
+  - name: "Quantified path patterns"
+    description: "A quantified path pattern repeats a pattern of nodes and relationships, its variables lists of what each repetition matched."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x:Person)-[r:KNOWS]->(y:Person)){1,2} (b) RETURN [b.name, [n IN x | n.name], [n IN y | n.name], size(r)] ORDER BY size(r)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu", ["Laurence"], ["Keanu"], 1], ["Carrie", ["Laurence", "Keanu"], ["Keanu", "Carrie"], 2]]
+      - note: "Its WHERE is met by each repetition."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE y.born < 1966)+ (b) RETURN b.name"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Keanu"]
+      - note: "A repetition of two relationships takes neither twice, in it or in another."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((:Person)-[:ACTED_IN]->(m:Movie)<-[:ACTED_IN]-(:Person)){1,2} (b) RETURN [[n IN m | n.title], b.name]"
+        except: [memgraph, falkordb, neptune]
+        unordered: true
+        rows: [[["The Matrix"], "Keanu"], [["The Matrix"], "Carrie"], [["The Matrix", "The Matrix Reloaded"], "Carrie"], [["The Matrix", "The Matrix Reloaded"], "Keanu"]]
+      - note: "No repetition at all is the node it starts from."
+        cypher: "MATCH (a:Person {name: 'Hugo'}) ((x)-[:KNOWS]->(y))* (b) RETURN [b.name, size(x), a = b]"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Hugo", 0, true]]
+      - cypher: "MATCH p = (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){2} (b) RETURN [length(p), [n IN nodes(p) | n.name]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[2, ["Laurence", "Keanu", "Carrie"]]]
+      - note: "A path pattern may be the quantified path pattern alone."
+        cypher: "MATCH ((x:Person)-[:KNOWS]->(y:Person)){2} RETURN [n IN x | n.name]"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Laurence", "Keanu"]]
+      - note: "Its variables are lists to the rest of the MATCH."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y))+ (b) WHERE size(x) = 2 RETURN b.name"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Carrie"]
+      - note: "A quantified path pattern between two others, its nodes joined to theirs."
+        cypher: "MATCH (a:Person {name: 'Laurence'})-[:KNOWS]->(k) ((x)-[:KNOWS]->(y)){1} (c)-[:ACTED_IN]->(m {title: 'The Matrix Reloaded'}) RETURN [k.name, c.name]"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu", "Carrie"]]
+      - note: "Its relationships' variable is the list of each repetition's, read either way, with properties of a parameter."
+        cypher: "MATCH (:Movie {title: $title}) ((m)<-[r:ACTED_IN {role: $role}]-(p:Person)){1} (b) RETURN [b.name, [x IN r | x.role]]"
+        parameters: {title: "The Matrix", role: "Neo"}
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu", ["Neo"]]]
+      - cypher: "MATCH (:Person {name: 'Carrie'}) ((x)-[:KNOWS]-(y)){1,2} (b) RETURN b.name ORDER BY b.name"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Keanu", "Laurence"]
+      - note: "An OPTIONAL MATCH keeps the row where no repetition reaches a node."
+        cypher: "MATCH (p:Person) OPTIONAL MATCH (p) ((x)-[:KNOWS]->(y))+ (b:Person {name: 'Carrie'}) RETURN [p.name, size(x)] ORDER BY p.name"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Carrie", null], ["Hugo", null], ["Keanu", 1], ["Laurence", 2]]
+      - cypher: "MATCH (p:Person) WHERE EXISTS { MATCH (p) ((x)-[:KNOWS]->(y)){2} (b) } RETURN p.name"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Laurence"]
+      - note: "Two quantified path patterns side by side share the node between them."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((a)-[:KNOWS]->(b)){1} ((c)-[:ACTED_IN]->(d)){1} RETURN [[n IN c | n.name], [n IN d | n.title]] ORDER BY d[0].title"
+        except: [memgraph, falkordb, neptune]
+        rows: [[["Keanu"], ["Johnny Mnemonic"]], [["Keanu"], ["The Matrix"]], [["Keanu"], ["The Matrix Reloaded"]]]
+      - note: "A walk from a node it reaches: only the far node is given."
+        cypher: "MATCH (a) ((x)-[:KNOWS]->(y)){2} (:Person {name: 'Carrie'}) RETURN a.name"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Laurence"]
+      - note: "Its relationships are not another part of the pattern's."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->(k) ((x)-[:KNOWS]-(y)){1} (c) RETURN c.name"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Carrie"]
+      - note: "Each variable of a repetition of two relationships is the list of its own of each."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((a)-[r1:ACTED_IN]->(m)<-[r2:ACTED_IN]-(c)){2} (b) RETURN [[n IN a | n.name], [n IN m | n.title], [n IN c | n.name], [x IN r1 | x.role], [x IN r2 | x.role]]"
+        except: [memgraph, falkordb, neptune]
+        unordered: true
+        rows: [[["Laurence", "Carrie"], ["The Matrix", "The Matrix Reloaded"], ["Carrie", "Keanu"], ["Morpheus", "Trinity"], ["Trinity", "Neo"]], [["Laurence", "Keanu"], ["The Matrix", "The Matrix Reloaded"], ["Keanu", "Carrie"], ["Morpheus", "Neo"], ["Neo", "Trinity"]]]
+      - note: "A walk may come back to a node it left."
+        cypher: "MATCH (:Movie {title: 'The Matrix'}) ((x)<-[:ACTED_IN]-(p)-[:ACTED_IN]->(y)){1,2} (b) RETURN [b.title, [n IN p | n.name]]"
+        except: [memgraph, falkordb, neptune]
+        unordered: true
+        rows: [["Johnny Mnemonic", ["Carrie", "Keanu"]], ["Johnny Mnemonic", ["Keanu"]], ["The Matrix", ["Carrie", "Keanu"]], ["The Matrix", ["Keanu", "Carrie"]], ["The Matrix Reloaded", ["Carrie"]], ["The Matrix Reloaded", ["Keanu"]]]
+      - note: "Its variables unwind to the nodes, and are kept by WITH."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){2} (b) WITH y UNWIND y AS n RETURN n.name"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Keanu", "Carrie"]
+      - cypher: "MATCH (p:Person) RETURN [p.name, COUNT { MATCH (p) ((x)-[:KNOWS]->(y))+ (b) }] ORDER BY p.name"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Carrie", 0], ["Hugo", 0], ["Keanu", 1], ["Laurence", 2]]
+      - note: "Its WHERE may read a node from outside it. Oracle's walks read nothing of the row they are in: refusals.yaml."
+        cypher: "MATCH (a:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE y.born > a.born)+ (b) RETURN b.name ORDER BY b.name"
+        except: [memgraph, falkordb, neptune, oracle]
+        rows: ["Carrie", "Keanu"]
+      - note: "A variable of a quantified path pattern is a list to size(), head(), last() and an index."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){2} (b) RETURN [size(x), head(x).name, x[1].name, last(y).name, x[-1].name]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[2, "Laurence", "Keanu", "Carrie", "Keanu"]]
+      - note: "Returned whole, it is its nodes' properties; two are equal where their nodes are."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){2} (b) RETURN [x, [x = y, x = x, x[1] = y[0], x <> y]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[[{name: "Laurence", born: 1961}, {name: "Keanu", born: 1964}], [false, true, true, true]]]
+      - note: "collect() gathers it from each row, and a relationship variable is its relationships."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[r:KNOWS]->(y))+ (b) WITH x, r ORDER BY size(x) RETURN [collect(x), collect(r)]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[[[{name: "Laurence", born: 1961}], [{name: "Laurence", born: 1961}, {name: "Keanu", born: 1964}]], [[{}], [{}, {}]]]]
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y)){2} (b) RETURN [p IN y WHERE p.born > 1965 | p.name]"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Carrie"]]
+      - note: "No repetition at all binds empty lists, and an OPTIONAL MATCH that finds none binds null."
+        cypher: "MATCH (p:Person) OPTIONAL MATCH (p) ((x)-[:KNOWS]->(y)){0,2} (b:Person {name: 'Laurence'}) RETURN [p.name, x, y] ORDER BY p.name"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Carrie", null, null], ["Hugo", null, null], ["Keanu", null, null], ["Laurence", [], []]]
+      - cypher: "MATCH p = (:Person {name: 'Laurence'}) ((a)-[:ACTED_IN]->(m)<-[:ACTED_IN]-(c)){1} (b) RETURN [length(p), size(relationships(p)), [n IN nodes(p) | coalesce(n.name, n.title)]]"
+        except: [memgraph, falkordb, neptune]
+        unordered: true
+        rows: [[2, 2, ["Laurence", "The Matrix", "Keanu"]], [2, 2, ["Laurence", "The Matrix", "Carrie"]]]
+      - note: "Its WHERE may read its relationships, and match a pattern of its nodes."
+        cypher: "MATCH (:Person {name: 'Keanu'}) ((x)-[r:ACTED_IN]->(m) WHERE r.role = 'Neo' AND NOT (m)<-[:ACTED_IN]-(:Person {name: 'Laurence'})){1} (b) RETURN b.title"
+        except: [memgraph, falkordb, neptune]
+        rows: ["The Matrix Reloaded"]
+      - note: "Its WHERE may read a node of its own MATCH, after it. Oracle's walks read nothing of the row they are in."
+        cypher: "MATCH (a:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE y.born <= b.born)+ (b:Person {name: 'Carrie'}) RETURN size(x)"
+        except: [memgraph, falkordb, neptune, oracle]
+        rows: [2]
+      - note: "Its WHERE may hold a subquery of its nodes."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE COUNT { (y)-[:ACTED_IN]->() } >= 2)+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
+      - note: "Oracle's walks read nothing of the row they are in, which a subquery may: refusals.yaml."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE EXISTS { MATCH (y)-[:ACTED_IN]->(:Movie {title: 'Johnny Mnemonic'}) })+ (b) RETURN b.name"
+        except: [memgraph, falkordb, neptune, oracle]
+        rows: ["Keanu"]
+      - note: "A subquery of its WHERE may walk a pattern of its own. Oracle's recursive queries hold none of their own: refusals.yaml."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE EXISTS { MATCH (y) ((a)-[:ACTED_IN]->(b)){1} (:Movie {title: 'Johnny Mnemonic'}) })+ () RETURN [n IN y | n.name]"
+        except: [memgraph, falkordb, neptune, oracle]
+        rows: [["Keanu"]]
+      - note: "Its WHERE may hold a subquery in a quantifier's condition."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE any(k IN [2] WHERE COUNT { (y)-[:ACTED_IN]->() } >= k))+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
+      - note: "Its WHERE may hold a subquery in a pattern comprehension's properties."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE size([(:Person {name: 'Keanu'})-[:ACTED_IN]->(m {title: CASE WHEN COUNT { (y)-[:ACTED_IN]->() } >= 2 THEN 'The Matrix' ELSE '-' END}) | m]) > 0)+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
+      - note: "Its WHERE may hold a subquery in an EXISTS pattern's properties."
+        cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y) WHERE EXISTS { (:Person {name: 'Keanu'})-[:ACTED_IN]->(:Movie {title: CASE WHEN COUNT { (y)-[:ACTED_IN]->() } >= 2 THEN 'The Matrix' ELSE '-' END}) })+ () RETURN [n IN y | n.name] ORDER BY size(y)"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Keanu"], ["Keanu", "Carrie"]]
+
+  - name: "Shortest paths"
+    description: "shortestPath gives the shortest match, and allShortestPaths every match of that length."
+    steps:
+      - cypher: "MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) MATCH p = shortestPath((a)-[:KNOWS*]->(b)) RETURN [length(p), [n IN nodes(p) | n.name]]"
+        rows: [[2, ["Laurence", "Keanu", "Carrie"]]]
+      - cypher: "MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) MATCH p = allShortestPaths((a)-[*]-(b)) RETURN [n IN nodes(p) | coalesce(n.name, n.title)]"
+        unordered: true
+        rows: [["Laurence", "Keanu", "Carrie"], ["Laurence", "The Matrix", "Carrie"]]
+      - cypher: "MATCH (a:Person {name: 'Hugo'}), (b:Person {name: 'Carrie'}) MATCH p = shortestPath((a)-[*]-(b)) RETURN length(p)"
+        rows: []
+      - note: "The WHERE of its MATCH is met by the paths it finds from: the shortest of those that meet it."
+        cypher: "MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Keanu'}) MATCH p = shortestPath((a)-[*]-(b)) WHERE length(p) > 1 RETURN length(p)"
+        rows: [2]
+      - note: "An end not bound before it: the shortest to each node it reaches."
+        cypher: "MATCH (a:Person {name: 'Laurence'}) MATCH p = shortestPath((a)-[*]-(m:Movie)) RETURN [m.title, length(p)] ORDER BY m.title"
+        rows: [["Johnny Mnemonic", 2], ["The Matrix", 1], ["The Matrix Reloaded", 2]]
+      - cypher: "MATCH p = allShortestPaths((a:Person)-[:ACTED_IN*]->(:Movie)) WITH a, count(p) AS paths RETURN [a.name, paths] ORDER BY a.name"
+        rows: [["Carrie", 2], ["Keanu", 3], ["Laurence", 1]]
+
+  - name: "UNION and UNION ALL"
+    description: "UNION ALL gives each query's rows in turn; UNION gives each row once, where it first appears."
+    steps:
+      - cypher: "UNWIND [3, 1] AS x RETURN x AS v UNION ALL UNWIND [2, 3] AS x RETURN x AS v"
+        rows: [3, 1, 2, 3]
+      - cypher: "UNWIND [3, 1] AS x RETURN x AS v UNION UNWIND [2, 3] AS x RETURN x AS v"
+        rows: [3, 1, 2]
+      - cypher: |
+          MATCH (p:Person {name: $name}) RETURN {name: p.name, kind: 'person'} AS row
+          UNION
+          MATCH (m:Movie {title: 'The Matrix'}) RETURN {name: m.title, kind: 'movie'} AS row
+          UNION
+          MATCH (p:Person {name: $name}) RETURN {name: p.name, kind: 'person'} AS row
+        parameters: {name: "Keanu"}
+        rows: [{name: "Keanu", kind: "person"}, {name: "The Matrix", kind: "movie"}]
+      - only: [sql]
+        cypher: "RETURN 1 AS v UNION RETURN 2 AS v UNION ALL RETURN 3 AS v"
+        error: "UNION and UNION ALL are not mixed in one statement, as in Cypher."
+      - only: [sql]
+        cypher: "RETURN 1 AS v UNION RETURN 2 AS w"
+        error: "Each query of a UNION returns the same names, as in Cypher: (v) and (w)."
+
+  - name: "range and reduce"
+    description: "range() gives whole numbers, and reduce() folds a list from its first item."
+    steps:
+      - cypher: "RETURN [range(0, 3), range(10, 4, -3), range(1, 0)]"
+        rows: [[[0, 1, 2, 3], [10, 7, 4], []]]
+      - cypher: "RETURN reduce(total = 0, x IN [1, 2, 3] | total + x)"
+        rows: [6]
+      - cypher: "RETURN reduce(total = 0, x IN null | total + x)"
+        rows: [null]
+      - cypher: "RETURN reduce(dot = 0, i IN range(0, size($v) - 1) | dot + $v[i] * $v[i])"
+        parameters: {v: [1, 2, 3]}
+        rows: [14]
+      - note: A reduce in the list of a reduce.
+        cypher: "RETURN reduce(s = 0, x IN reduce(t = [], y IN [1, 2] | t + [y]) | s + x)"
+        rows: [3]
+      - note: "Oracle refuses a reduce in the step of one: see the Oracle case below."
+        except: [oracle]
+        cypher: "RETURN reduce(s = 0, x IN [[1, 2], [3]] | s + reduce(t = 0, y IN x | t + y))"
+        rows: [6]
+      - note: "Oracle refuses a path read in a step: see the Oracle case below."
+        except: [oracle]
+        cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS]->() RETURN reduce(s = 0, x IN [1] | s + length(p))"
+        rows: [1]
+      - note: "A text built up from the empty text: Oracle's empty text is null."
+        except: [oracle]
+        cypher: |
+          MATCH (p:Person) WITH p ORDER BY p.name
+          WITH collect(p.name) AS names
+          RETURN reduce(s = '', n IN names | s + CASE WHEN s = '' THEN '' ELSE ',' END + n)
+        rows: ["Carrie,Hugo,Keanu,Laurence"]
+
+  - name: "UNWIND of a non-list"
+    description: "UNWIND of a single value gives one row, and of null no rows."
+    steps:
+      - cypher: "UNWIND 5 AS x RETURN x"
+        rows: [5]
+      - cypher: "UNWIND $v AS x RETURN x"
+        parameters: {v: "a"}
+        rows: ["a"]
+      - cypher: "UNWIND null AS x RETURN x"
+        rows: []
+      - cypher: "UNWIND $v AS x RETURN x"
+        parameters: {v: null}
+        rows: []
+      - cypher: "UNWIND [1, null] AS x RETURN x"
+        rows: [1, null]
+
+  - name: "Null equality"
+    description: "null equals nothing, not even null."
+    steps:
+      - cypher: "RETURN [null = null, null <> null, 1 = null, 'a' <> null]"
+        rows: [[null, null, null, null]]
+      - cypher: "UNWIND [1, null] AS x RETURN x = null"
+        rows: [null, null]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) WHERE NOT (p.name = null) RETURN p.name"
+        rows: []
+      - cypher: "RETURN CASE null WHEN null THEN 'null' ELSE 'other' END"
+        rows: ["other"]
+
+  - name: "Relationships in lists compare by identity"
+    description: "Two relationships with the same properties are different, as items of a list too."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[r:KNOWS*]->(b) RETURN [b.name, r[0] = r[-1]] ORDER BY b.name"
+        rows: [["Carrie", false], ["Keanu", true]]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() RETURN [r1 = r2, [r1] = [r2], r1 IN [r2], r1 IN [r1], [r1] = [r1], [r1] <> [r2]]"
+        rows: [[false, false, false, true, true, true]]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH collect(r1) + collect(r2) AS rs RETURN [rs[0] = rs[1], size(rs), size([x IN rs WHERE x = rs[0]]), any(x IN rs WHERE x = rs[1]), rs[1] IN rs]"
+        rows: [[false, 2, 1, true, true]]
+      - note: "Keanu acted Neo in two films: the same properties, two relationships."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN {role: 'Neo'}]->() WITH collect(r) AS rs RETURN [rs[0] = rs[1], rs[0] <> rs[1], rs[0] = rs[0]]"
+        rows: [[false, true, true]]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN {role: 'Neo'}]->() RETURN [count(DISTINCT r), size(collect(DISTINCT r))]"
+        rows: [[2, 2]]
+
+  - name: "Map projection"
+    description: "A map projection's selectors override .*, and type() gives a relationship's type."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Laurence'})-[r]->(k:Person) WITH p, r, k.name AS first RETURN [p {.*, born: 1, first}, p {.name, first}, type(r)]"
+        rows: [[{name: "Laurence", born: 1, first: "Keanu"}, {name: "Laurence", first: "Keanu"}, "KNOWS"]]
+
+  - name: "Projections of null"
+    description: "A map projection, keys() and a list comprehension of null are null."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Hugo'}) OPTIONAL MATCH (p)-[:KNOWS]->(f) RETURN [f {.name}, f {.*, x: 1}, keys(f), [t IN p.tags | t]]"
+        rows: [[null, null, null, null]]
+      - cypher: "RETURN [x IN $v | x]"
+        parameters: {v: null}
+        rows: [null]
+
+  - name: "RETURN *"
+    description: "RETURN * gives each variable in scope as a column, in the order of their names."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Keanu'})-[:ACTED_IN]->(m:Movie {title: 'The Matrix'}) WITH m.title AS zeta, p.name AS alpha RETURN *"
+        rows: [["Keanu", "The Matrix"]]
+      - cypher: "MATCH (p:Person {name: 'Keanu'})-[:ACTED_IN]->(m:Movie {title: 'The Matrix'}) RETURN *"
+        rows: [[{title: "The Matrix", released: 1999, tagline: "Welcome to the Real World"}, {name: "Keanu", born: 1964}]]
+      - note: "Names are ordered by their characters' codes: capitals, then an underscore, then small letters."
+        cypher: "WITH 1 AS b, 2 AS B, 3 AS a, 4 AS _x RETURN *"
+        rows: [[2, 4, 3, 1]]
+      - note: "Items named after the star come after its columns."
+        cypher: "WITH 1 AS b, 2 AS a RETURN *, 0 AS aa"
+        rows: [[2, 1, 0]]
+      - cypher: "WITH 1 AS b, 2 AS a WITH * RETURN *"
+        rows: [[2, 1]]
+      - cypher: "UNWIND [2, 1] AS b WITH b, 10 - b AS a RETURN * ORDER BY b"
+        rows: [[9, 1], [8, 2]]
+
+  - name: "Implicit grouping key"
+    description: "A RETURN item that mixes an aggregate with another variable is refused, as Neo4j refuses it."
+    steps:
+      - note: Neo4j says "implicit grouping"; the compiler names the variable outside its aggregates.
+        only: [graph]
+        cypher: "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN { person: p.name, titles: collect(m.title) }"
+        error: true
+      - only: [sql]
+        cypher: "MATCH (p:Person)-[:ACTED_IN]->(m:Movie) RETURN { person: p.name, titles: collect(m.title) }"
+        error: "{ person: p.name, titles: collect(m.title) } aggregates, and names p outside its aggregates, which no other item is: Cypher would group by it without being told. Aggregate in a WITH first, as in WITH p, collect(…) AS items RETURN { … }."
+      - note: With the variable an item of its own, it is grouped by.
+        cypher: "MATCH (p:Person {name: 'Laurence'})-[:ACTED_IN]->(m:Movie) RETURN p, collect(m.title)"
+        rows: [[{name: "Laurence", born: 1961}, ["The Matrix"]]]
+
+  - name: "Variable-length ranges"
+    description: "A variable-length relationship matches each length in its range."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*]->(b) RETURN b.name ORDER BY b.name"
+        rows: ["Carrie", "Keanu"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*2]->(b) RETURN b.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*..1]->(b) RETURN b.name"
+        rows: ["Keanu"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*2..]->(b) RETURN b.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*0..1]->(b) RETURN b.name ORDER BY b.name"
+        rows: ["Keanu", "Laurence"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*3..]->(b) RETURN b.name"
+        rows: []
+
+  - name: "Variable-length direction and filters"
+    description: "A variable-length relationship honours direction, types, properties and conditions on its end."
+    steps:
+      - note: "Pinned at its far end: walked from there."
+        cypher: "MATCH (a)-[:KNOWS*]->(:Person {name: 'Carrie'}) RETURN a.name ORDER BY a.name"
+        rows: ["Keanu", "Laurence"]
+      - note: Either way, and not back along the relationship it came by.
+        cypher: "MATCH (:Person {name: 'Carrie'})-[:KNOWS*2]-(b) RETURN b.name"
+        rows: ["Laurence"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS|ACTED_IN*2]->(m:Movie) RETURN DISTINCT m.title ORDER BY m.title"
+        rows: ["Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[:ACTED_IN*1 {role: 'Neo'}]->(m) RETURN m.title ORDER BY m.title"
+        rows: ["The Matrix", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*]->(b) WHERE b.born > 1965 RETURN b.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (p:Person) WHERE (p)-[:KNOWS*2]->() RETURN p.name"
+        rows: ["Laurence"]
+
+  - name: "Variable-length relationship uniqueness"
+    description: "A variable-length relationship never reuses a relationship its match already used."
+    steps:
+      - note: "The same rows as the fixed-length match: MATCH (:Person {name: 'Keanu'})-[:ACTED_IN]->(m)<-[:ACTED_IN]-(other)"
+        cypher: "MATCH (:Person {name: 'Keanu'})-[:ACTED_IN]->(m)<-[:ACTED_IN*1]-(other) RETURN other.name ORDER BY other.name"
+        rows: ["Carrie", "Carrie", "Laurence"]
+      - note: "Two walks of one match share no relationship: Laurence to Keanu is taken by one of them only."
+        cypher: "MATCH (a)-[:KNOWS*1]->(:Person {name: 'Keanu'})-[:KNOWS*1]->(c) RETURN [a.name, c.name]"
+        rows: [["Laurence", "Carrie"]]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS*1]->(k)<-[:KNOWS*1]-(:Person {name: 'Laurence'}) RETURN k.name"
+        rows: []
+
+  - name: "Paths"
+    description: "nodes(p), relationships(p) and length(p) give a path's parts in order."
+    steps:
+      - cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS*2]->(:Person) RETURN [[n IN nodes(p) | n.name], size(relationships(p)), length(p)]"
+        rows: [[["Laurence", "Keanu", "Carrie"], 2, 2]]
+      - note: "A path of fixed and variable-length parts, walked from its pinned far end, in the pattern's order."
+        cypher: "MATCH p = (a)-[:KNOWS*]->(:Person {name: 'Carrie'})-[:ACTED_IN]->(m {title: 'The Matrix'}) WHERE a.name = 'Laurence' RETURN [n IN nodes(p) | coalesce(n.name, n.title)]"
+        rows: [["Laurence", "Keanu", "Carrie", "The Matrix"]]
+      - cypher: "MATCH p = (:Person {name: 'Keanu'})-[:ACTED_IN]->(:Movie {title: 'The Matrix'})<-[:ACTED_IN]-(:Person {name: 'Carrie'}) RETURN [r IN relationships(p) | r.role]"
+        rows: [["Neo", "Trinity"]]
+      - cypher: "MATCH p = (:Person {name: 'Hugo'}) RETURN length(p)"
+        rows: [0]
+      - note: A path is kept by a WITH, and is null where an optional match finds none.
+        cypher: |
+          MATCH (a:Person) WHERE a.name IN ['Hugo', 'Keanu']
+          OPTIONAL MATCH p = (a)-[:KNOWS]->(:Person)
+          WITH a, p
+          RETURN [a.name, length(p)] ORDER BY a.name
+        rows: [["Hugo", null], ["Keanu", 1]]
+
+  - name: "Variable-length relationship variable"
+    description: "A variable on a variable-length relationship is the list of its relationships."
+    steps:
+      - note: "One row for each walk: through The Matrix, and through The Matrix Reloaded."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN*2]-(:Person {name: 'Carrie'}) WHERE r[0].role = 'Neo' AND r[1].role = 'Trinity' RETURN [x IN r | x.role]"
+        rows: [["Neo", "Trinity"], ["Neo", "Trinity"]]
+
+  - name: "Returning a path"
+    description: "Returning a whole path is refused on SQL stores, which suggest nodes(p), relationships(p) and length(p)."
+    steps:
+      - only: [sql]
+        cypher: "MATCH p = (a:Person)-[:KNOWS*1..2]->(b) RETURN p"
+        error: "A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p)."
+
+  - name: "Computed index on Oracle"
+    description: "On Oracle, a computed list index works but a computed map key gives null."
+    steps:
+      - only: [oracle]
+        cypher: "WITH {a: 1} AS m, 'a' AS k, [5, 6] AS xs, 1 AS i RETURN [m[k], xs[i]]"
+        rows: [[null, 6]]
+
+  - name: "reduce reads the row"
+    description: "reduce() reads the row's variables and the parameters."
+    steps:
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [p.name, reduce(t = p.born, x IN [3, 4] | t + x * $k)]"
+        parameters: {k: 1}
+        rows: [["Keanu", 1971]]
+
+  - name: "reduce limits on Oracle"
+    description: "Oracle refuses reduce() in a statement that writes, nested in another reduce(), or reading a path."
+    steps:
+      - only: [oracle]
+        cypher: "CREATE (n:CyTest) RETURN reduce(t = 0, x IN [1] | t + x)"
+        error: "reduce() does not run on Oracle in a statement that writes: its block calls no function of its own from SQL."
+      - only: [oracle]
+        cypher: "RETURN reduce(s = 0, x IN [[1, 2], [3]] | s + reduce(t = 0, y IN x | t + y))"
+        error: "reduce() does not run on Oracle in the step of a reduce(): its function calls no function of the query's from SQL."
+      - only: [oracle]
+        cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS]->() RETURN reduce(s = 0, x IN [1] | s + length(p))"
+        error: "A path read in the step of reduce() does not run on Oracle: its function is given the row as JSON."
+
+  - name: "Quantifiers over a path's nodes"
+    description: "any(), all(), none() and single() over a path's nodes, or a quantified path pattern's group variable, read that path's list."
+    steps:
+      - cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS*]->(b) RETURN [b.name, any(n IN nodes(p) WHERE n.name = 'Carrie'), all(n IN nodes(p) WHERE n.born > 1960)] ORDER BY b.name"
+        rows: [["Carrie", true, true], ["Keanu", false, true]]
+      - cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS*]->(b) RETURN [b.name, none(n IN nodes(p) WHERE n.name = 'Carrie'), single(n IN nodes(p) WHERE n.born > 1963)] ORDER BY b.name"
+        rows: [["Carrie", false, false], ["Keanu", true, true]]
+      - cypher: "MATCH p = (:Person {name: 'Laurence'})-[:KNOWS*]->(b) WHERE any(n IN nodes(p) WHERE n.name = 'Carrie') RETURN b.name"
+        rows: ["Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS]->(y))+ (b) RETURN [b.name, any(n IN y WHERE n.name = 'Carrie')] ORDER BY b.name"
+        except: [memgraph, falkordb, neptune]
+        rows: [["Carrie", true], ["Keanu", false]]
+
+  - name: "A walk sorted by an expression"
+    description: "A variable-length walk sorted by an expression of where it ends, such as coalesce(), gives its rows in order."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n ORDER BY n"
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n ORDER BY n DESC"
+        rows: ["The Matrix Reloaded", "The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix", "Keanu", "Johnny Mnemonic", "Carrie"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[:KNOWS]->(k)-[*1]-(c) RETURN coalesce(c.name, c.title) AS n ORDER BY n"
+        rows: ["Carrie", "Johnny Mnemonic", "The Matrix", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN b.released ORDER BY coalesce(b.name, b.title), b.released"
+        rows: [null, 1995, null, 1999, 1999, 1999, 2003, 2003]
+      - cypher: "MATCH (:Person {name: 'Laurence'}) ((x)-[:KNOWS|ACTED_IN]->(y))+ (b) RETURN coalesce(b.name, b.title) AS n ORDER BY n"
+        except: [memgraph, falkordb, neptune]
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+
+  - name: "collect(DISTINCT) past 4000 bytes"
+    description: "collect(DISTINCT …) gathers values whose text is past 4000 bytes, as collect() does."
+    steps:
+      - cypher: "UNWIND range(1, 500) AS i WITH collect(DISTINCT 'value number ' + toString(i % 400)) AS xs RETURN [size(xs), reduce(n = 0, x IN xs | n + size(x)), xs[0], xs[-1]]"
+        rows: [[400, 6290, "value number 1", "value number 0"]]
+      - cypher: "UNWIND range(1, 300) AS i RETURN size(collect(DISTINCT {i: i % 250, text: 'some words to make it longer'}))"
+        rows: [250]
+
+  - name: "A text past 4000 bytes"
+    description: "A text past 4000 bytes is measured, cut, changed, searched and added to whole, as a short one is."
+    steps:
+      - cypher: "WITH $t AS t RETURN [size(t), toUpper(t), toLower(t), toString(t), size(trim(' ' + t + ' ')), size(ltrim(' ' + t)), size(rtrim(t + ' '))]"
+        parameters: {t: {$repeat: "aB", times: 2500}}
+        rows: [[5000, {$repeat: "AB", times: 2500}, {$repeat: "ab", times: 2500}, {$repeat: "aB", times: 2500}, 5000, 5000, 5000]]
+      - cypher: "WITH $t AS t RETURN [substring(t, 2), substring(t, 0, 4998), left(t, 4998), right(t, 4998), replace(t, 'B', 'bb')]"
+        parameters: {t: {$repeat: "aB", times: 2500}}
+        rows: [[{$repeat: "aB", times: 2499}, {$repeat: "aB", times: 2499}, {$repeat: "aB", times: 2499}, {$repeat: "aB", times: 2499}, {$repeat: "abb", times: 2500}]]
+      - cypher: "WITH $t AS t WITH split(t + 'a', 'B') AS parts RETURN [size(parts), parts[0], parts[-1]]"
+        parameters: {t: {$repeat: "aB", times: 2500}}
+        rows: [[2501, "a", "a"]]
+      - cypher: "WITH $t AS t RETURN [t STARTS WITH 'aBa', t STARTS WITH 'B', t STARTS WITH t, t ENDS WITH 'aB', t ENDS WITH 'a', t ENDS WITH t, t CONTAINS 'BaB', t CONTAINS 'x', t CONTAINS t, t =~ '(aB)+']"
+        parameters: {t: {$repeat: "aB", times: 2500}}
+        rows: [[true, false, true, true, false, true, true, false, true, true]]
+      - cypher: "WITH $t AS t RETURN [size(t + 'z'), size('z' + t), size(t + t), size(t + 1), right(t + 'z', 2), left('z' + t, 2)]"
+        parameters: {t: {$repeat: "aB", times: 2500}}
+        rows: [[5001, 5001, 10000, 5001, "Bz", "za"]]
+      - note: "Two short texts whose sum is past 4000 bytes."
+        cypher: "WITH $a AS a RETURN [size(a + a), a + a]"
+        parameters: {a: {$repeat: "é", times: 3000}}
+        rows: [[6000, {$repeat: "é", times: 6000}]]
+      - note: "Past 32 KB."
+        cypher: "WITH $t AS t RETURN [size(t), toUpper(t), substring(t, 2), t ENDS WITH 'aB', size(t + t), size(split(t, 'a'))]"
+        parameters: {t: {$repeat: "aB", times: 20000}}
+        rows: [[40000, {$repeat: "AB", times: 20000}, {$repeat: "aB", times: 19999}, true, 80000, 20001]]
+
+  - name: "A parameter past 32 KB"
+    description: "A parameter whose JSON is past 32 KB is bound, and comes back as it went. Oracle compares no JSON that long, so the value is only returned."
+    steps:
+      - cypher: "RETURN $big"
+        parameters: {big: {$repeat: "x", times: 40000}}
+        rows: [{$repeat: "x", times: 40000}]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [p.name, $doc.text, $doc.n]"
+        parameters: {doc: {text: {$repeat: "y", times: 40000}, n: 1}}
+        rows: [["Keanu", {$repeat: "y", times: 40000}, 1]]
+      - cypher: "UNWIND $texts AS t RETURN t"
+        parameters: {texts: [{$repeat: "a", times: 20000}, {$repeat: "b", times: 20000}]}
+        rows: [{$repeat: "a", times: 20000}, {$repeat: "b", times: 20000}]
+
+  - name: "A float parameter with no fraction"
+    description: "A float parameter that is a whole number, such as 2.0, stays a float, nested in maps and lists, past a long's range, in a UNION, and in a parameter past 32 KB."
+    steps:
+      - cypher: "RETURN [$f, $f * 2, $f + 1, toString($f), $m.f]"
+        parameters: {f: 2.0, m: {f: 3.0}}
+        rows: [[2.0, 4.0, 3.0, "2.0", 3.0]]
+      - cypher: "RETURN $p"
+        parameters: {p: {a: [1.0, 2.5, {b: -3.0}], n: 4}}
+        rows: [{a: [1.0, 2.5, {b: -3.0}], n: 4}]
+      - cypher: "RETURN [$p.a[2].b, toString($f)]"
+        parameters: {p: {a: [1.0, 2.5, {b: -3.0}], n: 4}, f: -2.0}
+        rows: [[-3.0, "-2.0"]]
+      - cypher: "RETURN [$big, $big * 2, toString($big), $seven, toString($seven)]"
+        parameters: {big: 1.0e+20, seven: 1.0e+7}
+        rows: [[1.0e+20, 2.0e+20, "1.0E20", 1.0e+7, "1.0E7"]]
+      - cypher: "RETURN $f AS x UNION ALL RETURN 1.5 AS x"
+        parameters: {f: 2.0}
+        unordered: true
+        rows: [2.0, 1.5]
+      - cypher: "RETURN $doc.n"
+        parameters: {doc: {text: {$repeat: "y", times: 40000}, n: 2.0}}
+        rows: [2.0]
+      - cypher: "RETURN [toString(2.5), toString(3), toString('a'), toString($f * 2)]"
+        parameters: {f: 2.0}
+        rows: [["2.5", "3", "a", "4.0"]]
+
+  - name: "A walk sorted in a WITH"
+    description: "A walk sorted by an expression of where it ends in a WITH, skipped and limited, keeps that order in the query that reads it."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY coalesce(b.name, b.title) DESC, b.released SKIP 1 LIMIT 4 RETURN coalesce(b.name, b.title)"
+        rows: ["The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix"]
+
+  - name: "A walk sorted by toString()"
+    description: "A walk returns toString() of an expression of where it ends, and sorted by it in a RETURN or a WITH, gives its rows in order."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN toString(coalesce(b.name, b.title)) AS n"
+        unordered: true
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN toString(coalesce(b.name, b.title)) AS n ORDER BY n"
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+      - note: "The order term is not an item of the RETURN, so it is carried beside the walk."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) ORDER BY toString(coalesce(b.name, b.title)) DESC"
+        rows: ["The Matrix Reloaded", "The Matrix Reloaded", "The Matrix", "The Matrix", "The Matrix", "Keanu", "Johnny Mnemonic", "Carrie"]
+      - note: "The order term is not an item of the WITH, so it is carried beside the walk."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY toString(coalesce(b.name, b.title)) RETURN coalesce(b.name, b.title)"
+        rows: ["Carrie", "Johnny Mnemonic", "Keanu", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded"]
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY toString(coalesce(b.name, b.title)) DESC SKIP 4 LIMIT 3 RETURN coalesce(b.name, b.title)"
+        rows: ["The Matrix", "Keanu", "Johnny Mnemonic"]
+      - note: "toString() of a number, and of null where a person has no released, which sorts last."
+        cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) WITH b ORDER BY toString(b.released), coalesce(b.name, b.title) RETURN coalesce(b.name, b.title)"
+        rows: ["Johnny Mnemonic", "The Matrix", "The Matrix", "The Matrix", "The Matrix Reloaded", "The Matrix Reloaded", "Carrie", "Keanu"]
+
+  - name: "Sorted by coalesce() of collect(DISTINCT)"
+    description: "A walk's groups sort by coalesce() of an aggregate collected once each, and a DISTINCT projection by coalesce() of an item of one."
+    steps:
+      - cypher: "MATCH (:Person {name: 'Laurence'})-[*]->(b) RETURN coalesce(b.name, b.title) AS n, count(*) ORDER BY coalesce(head(collect(DISTINCT b.born)), 0), n"
+        rows: [["Johnny Mnemonic", 1], ["The Matrix", 3], ["The Matrix Reloaded", 2], ["Keanu", 1], ["Carrie", 1]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) RETURN DISTINCT p.name AS n, collect(DISTINCT m.title) AS ts ORDER BY coalesce(ts[2], 'zz'), n SKIP 1 LIMIT 2"
+        unorderedLists: true
+        rows: [["Carrie", ["The Matrix", "The Matrix Reloaded"]], ["Laurence", ["The Matrix"]]]
+
+  - name: "collect(DISTINCT) compares values, not their text"
+    description: "collect(DISTINCT …) keeps a float that is a whole number a float, keeps an item past 4000 bytes, and keeps once two maps that differ only in the order of their keys."
+    steps:
+      - cypher: "UNWIND [1.0, 2.5, 1.0] AS x RETURN collect(DISTINCT x)"
+        rows: [[1.0, 2.5]]
+      - cypher: "UNWIND [1, 2] AS x RETURN x, collect(DISTINCT $f) ORDER BY x DESC"
+        parameters: {f: 2.0}
+        rows: [[2, [2.0]], [1, [2.0]]]
+      - cypher: "UNWIND [[$b], [$b], 'a'] AS x RETURN collect(DISTINCT x)"
+        parameters: {b: {$repeat: "y", times: 5000}}
+        rows: [[[{$repeat: "y", times: 5000}], "a"]]
+      - cypher: "UNWIND [{a: 1, b: 2}, {b: 2, a: 1}] AS x RETURN collect(DISTINCT x)"
+        rows: [[{a: 1, b: 2}]]
+
+  - name: "A map parameter keyed with $"
+    description: "A map parameter with a key that begins with $, such as extended JSON's $numberDouble, comes back the map it is, alone or beside a float that is a whole number."
+    steps:
+      - cypher: "RETURN $m"
+        parameters: {m: {$numberDouble: "1"}}
+        rows: [{$numberDouble: "1"}]
+      - note: "The float's extended JSON is the same text as the map's."
+        cypher: "RETURN [$f, $m]"
+        parameters: {f: 2.0, m: {$numberDouble: "2.0"}}
+        rows: [[2.0, {$numberDouble: "2.0"}]]
+      - note: "Beside a float that is a whole number in the same parameter."
+        cypher: "RETURN [$p.a, $p.m, $p.l]"
+        parameters: {p: {a: 2.5, b: 2.0, m: {$numberDouble: "1"}, l: {$numberLong: "5"}}}
+        rows: [[2.5, {$numberDouble: "1"}, {$numberLong: "5"}]]
+
+  - name: "A comprehension or quantifier over collect()"
+    description: "A list comprehension, a quantifier, IN, reverse, tail or a slice reads collect(…) in the projection that collects it, beside a grouping key, in a WITH and in an order term."
+    steps:
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, [x IN collect(r) WHERE x.role = 'Neo' | x.role] ORDER BY p.name"
+        rows: [["Carrie", []], ["Keanu", ["Neo", "Neo"]], ["Laurence", []]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, any(x IN collect(r) WHERE x.role = 'Neo') ORDER BY p.name"
+        rows: [["Carrie", false], ["Keanu", true], ["Laurence", false]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, size([x IN collect(m) WHERE x.released > 2000]) ORDER BY p.name"
+        rows: [["Carrie", 1], ["Keanu", 1], ["Laurence", 0]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, [x IN collect(m.released) WHERE x > 2000], all(x IN collect(m.released) WHERE x > 1996) ORDER BY p.name"
+        rows: [["Carrie", [2003], true], ["Keanu", [2003], false], ["Laurence", [], true]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) WITH p, [x IN collect(m) WHERE x.released > 2000 | x.title] AS ts RETURN p.name, ts ORDER BY p.name"
+        rows: [["Carrie", ["The Matrix Reloaded"]], ["Keanu", ["The Matrix Reloaded"]], ["Laurence", []]]
+      - note: "The comprehension's body reads a grouping key."
+        cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, size([x IN collect(r) WHERE x.role <> p.name]), count(*) ORDER BY p.name"
+        rows: [["Carrie", 2, 2], ["Keanu", 3, 3], ["Laurence", 1, 1]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, collect(m.title) ORDER BY any(x IN collect(r) WHERE x.role = 'Neo'), p.name"
+        unorderedLists: true
+        rows: [["Carrie", ["The Matrix", "The Matrix Reloaded"]], ["Laurence", ["The Matrix"]], ["Keanu", ["The Matrix", "The Matrix Reloaded", "Johnny Mnemonic"]]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN p.name, 'Neo' IN collect(r.role), size(reverse(collect(m.title))), size(tail(collect(r.role))), size(collect(m.released)[1..]) ORDER BY p.name"
+        rows: [["Carrie", false, 2, 1, 1], ["Keanu", true, 3, 2, 2], ["Laurence", false, 1, 0, 0]]
+      - cypher: "MATCH (p:Person)-[r:ACTED_IN]->(m) RETURN count(*), any(x IN collect(m.released) WHERE x > 2000)"
+        rows: [[6, true]]
+
+  - name: "Maps and lists holding relationships compare by identity"
+    description: "Two maps, or two lists of lists, holding different relationships or nodes with the same properties are different; holding the same one, equal."
+    steps:
+      - note: "Neither KNOWS relationship has a property."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() RETURN [{x: r1} = {x: r2}, {x: r1} = {x: r1}, [[r1]] = [[r2]], [[r1]] = [[r1]], {x: [r1]} = {x: [r2]}, {x: r1} <> {x: r2}]"
+        rows: [[false, true, false, true, false, true]]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() RETURN [{x: r1} IN [{x: r2}], {x: r1} IN [{x: r1}], [r1, 1] = [r2, 1], {x: r1, y: 1} = {x: r1, y: 1}, {x: r1} = {x: {}}]"
+        rows: [[false, true, false, true, false]]
+      - note: "Holding the same relationship, a map or a list is equal to one whose number is written as a float, or whose keys come in another order."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->() RETURN [{x: r1, y: 1} = {x: r1, y: 1.0}, [r1, 1] = [r1, 1.0], {a: 1, x: r1} = {x: r1, a: 1}, {x: r1, y: 1} IN [{x: r1, y: 1.0}]]"
+        rows: [[true, true, true, true]]
+      - note: "Carried by a WITH, a map keeps what it holds by identity."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH {x: r1} AS a, {x: r2} AS b, {x: r1} AS c RETURN [a = b, a = c]"
+        rows: [[false, true]]
+      - cypher: "MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) RETURN [{x: a} = {x: b}, {x: a} = {x: a}, a {.name, b} = a {.name, b}, a {.name, b} = a {.name, b: a}, [[a]] = [[b]], [[a]] = [[a]]]"
+        rows: [[false, true, true, false, false, true]]
+      - note: "A map or a list taken from a list, by head(), a slice or collect holds the same relationship, and is equal."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH r1, r2, collect({x: r1}) AS l RETURN [[{x: r1}][0] = {x: r1}, head([{x: r1}]) = {x: r1}, [[r1], [r2]][0..1] = [[r1]], {x: r1} IN l]"
+        rows: [[true, true, true, true]]
+      - note: "Taken so, a map or a list holding the other relationship is different, though neither has a property."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH r1, r2, collect({x: r1}) AS l RETURN [[{x: r2}][0] = {x: r1}, head([{x: r2}]) = {x: r1}, [[r1], [r2]][1..2] = [[r1]], {x: r2} IN l, head(l) = {x: r2}]"
+        rows: [[false, false, false, false, false]]
+      - note: "A map written out of what was taken from a list holds what it held; one of properties written out, a map projection of every property, a CASE or a parameter holds none."
+        cypher: "MATCH (p:Person {name: 'Keanu'})-[r:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH p, r, collect({x: r}) AS ms RETURN [{a: {x: r}} = {a: ms[0]}, {a: {x: r}} = {a: {x: {role: 'Neo'}}}, {name: 'Keanu', born: 1964, x: r} = p {.*, x: r}, {x: r} IN [ms[0]], {x: r} = CASE WHEN p.born > 0 THEN {x: {role: 'Neo'}} END, {x: r} = $m]"
+        parameters: {m: {x: {role: "Neo"}}}
+        rows: [[true, false, true, true, false, false]]
+      - note: "Unwound, read by a comprehension or a reduce, or against properties(), a map holding a relationship still compares by identity. The SQL compilers compare these by properties (drivine4j#211)."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() UNWIND [{x: r1}] AS m RETURN [m = {x: r2}, m = {x: r1}, {x: r1} = {x: properties(r1)}, reduce(a = null, n IN [m] | n) = {x: r2}, [y IN [{x: r1}] | y][0] = {x: r2}]"
+        except: [sql]
+        rows: [[false, true, false, false, false]]
+      - note: "A CASE that gives a map holding a relationship holds it by identity."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() RETURN [{x: r1} = CASE WHEN true THEN {x: r2} END, {x: r1} = CASE WHEN true THEN {x: r1} END, {x: r1}.x = r1, {x: r1}.x = r2]"
+        rows: [[false, true, true, false]]
+      - note: "What is taken out of a map or a list that holds a relationship or a node is that, compared by identity, and has its properties."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(:Movie {title: 'The Matrix'}) WITH {x: r} AS m WITH m, collect(m) AS l RETURN [m.x.role = 'Neo', [m][0].x.role = 'Neo', head([m]).x['role'] = 'Neo', m.x.role IN ['Neo'], l[0].x.role = 'Neo']"
+        rows: [[true, true, true, true, true]]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->() WITH {x: r} AS m WHERE m.x.role = 'Neo' RETURN count(*)"
+        rows: [2]
+      - cypher: "MATCH (p:Person {name: 'Keanu'}) RETURN [{x: [p]}.x[0] = p, [[p]][0][0] = p, head({x: [p]}.x) = p, {x: [p]}.x[0].name = 'Keanu', [[p]][0][-1] = p, last([[p]][0]) = p, [[p]][0][0..1] = [p]]"
+        rows: [[true, true, true, true, true, true, true]]
+      - cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(m) WITH r ORDER BY m.released WITH collect(r) AS rs RETURN [{x: rs}.x[0] = rs[0], {x: rs}.x[1] = rs[2], {x: rs}.x[-1] = rs[2], {x: rs}.x[1..] = rs[1..], [rs][0][9] IS NULL]"
+        rows: [[true, false, true, true, true]]
+      - note: "A list of relationships is the same as a list that holds them among other values, or taken out of a map."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->(), (:Person {name: 'Laurence'})-[r2:KNOWS]->() WITH {x: r1} AS m, r1, r2 RETURN [[m.x] = [r1], [m.x] = [r2], [r1, 1][0..1] = [r1], [r1, 1][0..1] = [r2], [m.x, 1] = [r1, 1], {y: [r1]} = {y: [m.x]}]"
+        rows: [[true, false, true, false, true, true]]
+      - note: "collect(DISTINCT) and count(DISTINCT) keep a map holding a relationship once for each relationship."
+        cypher: "MATCH (p:Person)-[r:ACTED_IN]->() WITH p, collect(DISTINCT {x: r}) AS l, count(DISTINCT {x: r}) AS n MATCH (p)-[r2:ACTED_IN]->(:Movie {title: 'The Matrix'}) RETURN p.name, size(l), n, {x: r2} IN l ORDER BY p.name"
+        rows: [["Carrie", 2, 2, true], ["Keanu", 3, 3, true], ["Laurence", 1, 1, true]]
+      - note: "So they do a list holding a relationship."
+        cypher: "MATCH (p:Person)-[r:ACTED_IN]->() WITH p, collect(DISTINCT [r]) AS l, count(DISTINCT [r]) AS n MATCH (p)-[r2:ACTED_IN]->(:Movie {title: 'The Matrix'}) RETURN p.name, size(l), n, [r2] IN l ORDER BY p.name"
+        rows: [["Carrie", 2, 2, true], ["Keanu", 3, 3, true], ["Laurence", 1, 1, true]]
+
+  - name: "List slices"
+    description: "list[from..to] gives the items from the one at from up to the one before to, each counted from the end where negative; a bound left out is the list's end, and a null bound or list gives null."
+    steps:
+      - cypher: "WITH [1, 2, 3, 4, 5] AS xs RETURN [xs[1..], xs[..2], xs[1..3], xs[-2..], xs[..-1], xs[3..1], xs[10..], xs[-10..2], xs[1..10]]"
+        rows: [[[2, 3, 4, 5], [1, 2], [2, 3], [4, 5], [1, 2, 3, 4], [], [], [1, 2], [2, 3, 4, 5]]]
+      - cypher: "WITH [1, 2, 3] AS xs, 1 AS i RETURN [xs[null..], xs[1..null], xs[i..i + 1], [][0..1]]"
+        rows: [[null, null, [2], []]]
+      - note: "A bound worked out as the statement runs, or bound as a parameter, may be negative."
+        cypher: "WITH [1, 2, 3] AS xs, 1 AS i RETURN [xs[-i..], xs[..-i], xs[-i - 1..-i], xs[-3..-1], xs[-1..-3], xs[0..0]]"
+        rows: [[[3], [1, 2], [2], [1, 2], [], []]]
+      - cypher: "RETURN [$xs[1..], $xs[$a..$b], $xs[..$a]]"
+        parameters: {xs: [1, 2, 3, 4], a: -2, b: -1}
+        rows: [[[2, 3, 4], [3], [1, 2]]]
+      - cypher: "WITH null AS xs RETURN xs[1..]"
+        rows: [null]
+      - note: "A slice of relationships is a list of them, compared by identity."
+        cypher: "MATCH (:Person {name: 'Keanu'})-[r:ACTED_IN]->(m) WITH r ORDER BY m.released WITH collect(r) AS rs RETURN [[x IN rs[1..] | x.role], rs[1..][0] = rs[1], rs[..1] = rs[1..2], size(rs[-2..])]"
+        rows: [[["Neo", "Neo"], true, false, 2]]
+      - cypher: "UNWIND [date('2024-03-15'), date('2024-01-02'), date('2023-05-01')] AS d WITH collect(d) AS ds RETURN [x IN ds[1..] | x.year]"
+        rows: [[2024, 2023]]
+
+  - name: "Float arithmetic"
+    description: "Arithmetic of a float is a double's, as Cypher works it out: 0.1 + 0.2 is 0.30000000000000004, and 1.0 / 3, sqrt(2) and 2 ^ 0.5 have a double's digits."
+    steps:
+      - cypher: "RETURN [4.0 / 2, 1.0 / 3, 1.5 - 0.2, 7 / 2.0, 2.0 * 3, 1.0 / 3 * 3, 1e10 * 1e10]"
+        rows: [[2.0, 0.3333333333333333, 1.3, 3.5, 6.0, 1.0, 1.0e+20]]
+      - note: "Postgres works a float out in exact decimal, not a double (drivine4j#188): 0.1 + 0.2 is 0.3 there."
+        cypher: "RETURN [0.1 + 0.2, 0.1 * 3]"
+        except: [postgres]
+        rows: [[0.30000000000000004, 0.30000000000000004]]
+      - cypher: "RETURN [toString(4.0 / 2), toString(1.5 - 0.2), toString(7 / 2.0), toString(10.0 / 4)]"
+        rows: [["2.0", "1.3", "3.5", "2.5"]]
+      - note: "Postgres works a float out in exact decimal, not a double (drivine4j#188), written without trailing zeros: 1.0 / 3 has twenty digits there, and 0.1 + 0.2 is 0.3."
+        cypher: "RETURN [toString(1.0 / 3), toString(0.1 + 0.2), toString(1.0 / 3 * 3)]"
+        except: [postgres]
+        rows: [["0.3333333333333333", "0.30000000000000004", "1.0"]]
+      - note: "sqrt() and ^ work in doubles too, with a double's digits."
+        cypher: "RETURN [sqrt(2), sqrt(2.0), 10 ^ -1, toString(sqrt(2))]"
+        rows: [[1.4142135623730951, 1.4142135623730951, 0.1, "1.4142135623730951"]]
+      - note: "Postgres works ^ out in decimal, not a double (drivine4j#188): 2 ^ 0.5 is 1.414213562373095 there."
+        cypher: "RETURN [2 ^ 0.5, 2.0 ^ 0.5]"
+        except: [postgres]
+        rows: [[1.4142135623730951, 1.4142135623730951]]
+      - cypher: "MATCH (m:Movie) RETURN [toString(avg(m.released)), toString(sum(m.released * 1.5))]"
+        rows: [["1999.0", "8995.5"]]
+
+  - name: "Aggregates of floats"
+    description: "An aggregate of floats is a float, whole or not, and a sum is a float where any value it sums is one: 2.0 is not 2."
+    steps:
+      - note: "Oracle's NUMBER keeps no kind, so a sum of floats that is whole was an integer there (drivine4j#304)."
+        only: [neo4j, sql]
+        cypher: "UNWIND [0.5, 1.0, 0.5] AS x RETURN sum(x)"
+        rows: [2.0]
+      - note: "A float among integers makes the sum a float; integers alone, or none, sum to an integer."
+        only: [neo4j, sql]
+        cypher: "UNWIND [['a', 1], ['a', 1.0], ['b', 1], ['b', 0.5], ['b', 0.5], ['c', 1], ['c', 2]] AS r WITH r[0] AS k, sum(r[1]) AS s ORDER BY k RETURN collect(s)"
+        rows: [[2.0, 2.0, 3]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [] AS x RETURN sum(x)"
+        rows: [0]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [1.0, 1.0] AS x RETURN sum(DISTINCT x)"
+        rows: [1.0]
+      - note: "avg() is a float, of integers too; min() and max() keep the kind of the value they pick."
+        only: [neo4j, sql]
+        cypher: "UNWIND [['a', 0.5], ['a', 1.5], ['b', 1], ['b', 1]] AS r WITH r[0] AS k, r[1] AS x WITH k, [sum(x), avg(x), min(x), max(x)] AS a ORDER BY k RETURN collect(a)"
+        rows: [[[2.0, 1.0, 0.5, 1.5], [2, 1.0, 1, 1]]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [1, 2.0] AS x RETURN [max(x), avg(x), sum(x)]"
+        rows: [[2.0, 1.5, 3.0]]
+      - only: [neo4j, sql]
+        cypher: "UNWIND [0.5, 1.0, 0.5] AS x RETURN [toString(sum(x)), sum(x) + 1]"
+        rows: [["2.0", 3.0]]
+      - note: "A parameter's fraction, and its whole float, are floats summed."
+        only: [neo4j, sql]
+        cypher: "UNWIND $xs AS x RETURN sum(x)"
+        parameters: {xs: [0.5, 0.5]}
+        rows: [1.0]
+      - only: [neo4j, sql]
+        cypher: "UNWIND $xs AS x RETURN sum(x)"
+        parameters: {xs: [0.5, 1.0, 0.5]}
+        rows: [2.0]
+      - note: "A float too small for a store's decimal to write with a point is still a float."
+        only: [neo4j, sql]
+        cypher: "UNWIND $xs AS x RETURN sum(x)"
+        parameters: {xs: [1.0e-41, -1.0e-41]}
+        rows: [0.0]
+      - note: "A float past a store's decimal is summed as a double, not dropped."
+        only: [neo4j, sql]
+        cypher: "UNWIND [1e300, 1.0] AS x RETURN sum(x)"
+        rows: [1.0e+300]
+      - note: "An integer summed with a float is summed as a double."
+        only: [neo4j, sql]
+        cypher: "UNWIND [9223372036854775807, 0.5] AS x RETURN sum(x)"
+        rows: [9.223372036854776e+18]
+
+  - name: "Floats written as text"
+    description: "A float is written as Java writes a double: from 10^7, or under 10^-3, in scientific notation, as returned, by toString() and added to a text."
+    steps:
+      - cypher: "RETURN [1e7, 123456789.0, 1e15, 1e16, 1e20, 1e-4, 2.0e3, -1e7]"
+        rows: [[1.0e+7, 1.23456789e+8, 1.0e+15, 1.0e+16, 1.0e+20, 1.0e-4, 2000.0, -1.0e+7]]
+      - cypher: "RETURN [toString(1e7), toString(1.0e7 + 0.5), toString(123456789.0), toString(1e-3), toString(1e-4), toString(0.00012), toString(1.5e-7), toString(1e20), toString(9999999.0), toString(-1e7), toString(-2.5), toString(1e300), toString(1.0e-200)]"
+        rows: [["1.0E7", "1.00000005E7", "1.23456789E8", "0.001", "1.0E-4", "1.2E-4", "1.5E-7", "1.0E20", "9999999.0", "-1.0E7", "-2.5", "1.0E300", "1.0E-200"]]
+      - cypher: "RETURN ['a' + 1e7, 'a' + 2.0, 'a' + 1e-4, 1e7 + 'a', toString(toFloat('1e7')), toString(10.0 ^ 7)]"
+        rows: [["a1.0E7", "a2.0", "a1.0E-4", "1.0E7a", "1.0E7", "1.0E7"]]
+      - cypher: "RETURN [toString($f), toString($g), $f + 'a']"
+        parameters: {f: 0.00012, g: 12345678.5}
+        rows: [["1.2E-4", "1.23456785E7", "1.2E-4a"]]
+      - note: "JSON holds no NaN: Postgres fails a division by zero, and SQLite's gives null (drivine4j#201)."
+        cypher: "RETURN [toString(0.0 / 0.0), toString(1.0 / 0), toString(-1.0 / 0)]"
+        except: [postgres, sqlite]
+        rows: [["NaN", "Infinity", "-Infinity"]]
+
+  - name: "Sorted by a list"
+    description: "A sort by a list compares two lists item by item, the shorter first where one begins the other, items of different kinds as Cypher orders kinds and null last, as by what collect gathered."
+    steps:
+      - cypher: "UNWIND [[1, 2], [1], [0, 5, 6], [], [1, 1]] AS xs RETURN xs ORDER BY xs"
+        rows: [[], [0, 5, 6], [1], [1, 1], [1, 2]]
+      - cypher: "UNWIND [[1, 2], [1], [0, 5, 6], [], [1, 1]] AS xs WITH xs ORDER BY xs DESC RETURN collect(xs)"
+        rows: [[[1, 2], [1, 1], [1], [0, 5, 6], []]]
+      - cypher: "UNWIND [[1, 'b'], [1, 'a'], [2, 'c'], [1, 'd'], [3, 'a'], [3, 'b']] AS r WITH r[0] AS k, r[1] AS v RETURN k, collect(v) ORDER BY collect(v)"
+        rows: [[3, ["a", "b"]], [1, ["b", "a", "d"]], [2, ["c"]]]
+      - cypher: "MATCH (p:Person)-[:ACTED_IN]->(m) WITH p, m ORDER BY m.released WITH p, collect(m.title) AS ts RETURN p.name ORDER BY ts DESC"
+        rows: ["Carrie", "Laurence", "Keanu"]
+      - note: "Null sorts last within a list, as it does among values. Oracle sorts it first (drivine4j#205)."
+        cypher: "UNWIND [[1, 2], [1, null], [1], [null], [0]] AS xs RETURN xs ORDER BY xs"
+        except: [oracle]
+        rows: [[0], [1], [1, 2], [1, null], [null]]
+      - note: "Items of different kinds sort as Cypher orders kinds: a text before a number. Oracle sorts a number first (drivine4j#205)."
+        cypher: "UNWIND [[1, 'a'], [1, 2], ['a'], [1.5]] AS xs RETURN xs ORDER BY xs"
+        except: [oracle]
+        rows: [["a"], [1, "a"], [1, 2], [1.5]]
+      - note: "A list of lists compares each inner list item by item too."
+        cypher: "UNWIND [[[1, 2]], [[3]], [[1]], [[1], [0]]] AS xs RETURN xs ORDER BY xs"
+        rows: [[[1]], [[1], [0]], [[1, 2]], [[3]]]
+      - note: "Lists nested three deep compare item by item at every depth, an empty list first."
+        cypher: "UNWIND [[[[1, 2]]], [[[3]]], [[[1]]]] AS xs RETURN xs ORDER BY xs"
+        rows: [[[[1]]], [[[1, 2]]], [[[3]]]]
+      - cypher: "UNWIND [[[[1, 2]]], [], [[[3]], [[[2]]]]] AS xs WITH xs ORDER BY xs DESC RETURN collect(xs)"
+        rows: [[[[[3]], [[[2]]]], [[[1, 2]]], []]]
+      - cypher: "UNWIND [[[1]], [[]], [[], 1], []] AS xs RETURN xs ORDER BY xs"
+        rows: [[], [[]], [[], 1], [[1]]]
+      - note: "Within a list, a list sorts before a number, as Cypher orders kinds. Oracle sorts a number first (drivine4j#205)."
+        cypher: "UNWIND [[[1]], [[[]]]] AS xs RETURN xs ORDER BY xs"
+        except: [oracle]
+        rows: [[[[]]], [[1]]]
+      - note: "So does a list that holds null, and a shorter list before a longer one it begins. Oracle sorts a number before a list (drivine4j#205)."
+        cypher: "UNWIND [[1, 2], [[null]], [1, [2, null]], [1, [2]], [1, [1, 5]]] AS xs RETURN xs ORDER BY xs"
+        except: [oracle]
+        rows: [[[null]], [1, [1, 5]], [1, [2]], [1, [2, null]], [1, 2]]
+      - note: "A list worked out in the order term, by reverse(), tail(), a slice, +, range() or split(), sorts so too."
+        cypher: "UNWIND [[1, 2], [3], [0, 5, 6]] AS xs RETURN xs ORDER BY reverse(xs)"
+        rows: [[1, 2], [3], [0, 5, 6]]
+      - cypher: "UNWIND [[9, 1, 2], [9, 3], [9]] AS xs RETURN xs ORDER BY tail(xs)"
+        rows: [[9], [9, 1, 2], [9, 3]]
+      - cypher: "UNWIND [[9, 1, 2], [9, 3], [9]] AS xs WITH xs ORDER BY xs[1..] DESC RETURN collect(xs)"
+        rows: [[[9, 3], [9, 1, 2], [9]]]
+      - cypher: "UNWIND [[1, 2], [3], [0, 5, 6]] AS xs RETURN xs ORDER BY xs + [0]"
+        rows: [[0, 5, 6], [1, 2], [3]]
+      - cypher: "UNWIND [3, 1, 2] AS i RETURN i ORDER BY range(i, 3)"
+        rows: [1, 2, 3]
+      - cypher: "UNWIND ['b', 'a,c'] AS s RETURN s ORDER BY split(s, ',')"
+        rows: ["a,c", "b"]
+      - note: "So does an item, or head() of a slice, of a list of lists."
+        cypher: "WITH [[3], [1, 2]] AS ls UNWIND [0, 1] AS i RETURN i ORDER BY ls[i]"
+        rows: [1, 0]
+      - cypher: "WITH [[3], [1, 2]] AS ls UNWIND [0, 1] AS i RETURN i ORDER BY head(ls[i..]) DESC"
+        rows: [0, 1]
+
+  - name: "Parameter named by a keyword"
+    description: "A parameter may be named by any word after $, a keyword among them, wherever a parameter goes."
+    steps:
+      - cypher: "MATCH (p:Person) RETURN p.name ORDER BY p.name SKIP $skip LIMIT $limit"
+        parameters: {skip: 1, limit: 2}
+        rows: ["Hugo", "Keanu"]
+      - cypher: "MATCH (p:Person) WHERE p.name = $match OR p.born = $order RETURN p.name ORDER BY p.name"
+        parameters: {match: "Hugo", order: 1961}
+        rows: ["Hugo", "Laurence"]
+      - cypher: "MATCH (m:Movie {released: $end}) RETURN m.title"
+        parameters: {end: 1999}
+        rows: ["The Matrix"]
+      - cypher: "UNWIND $count AS x RETURN x"
+        parameters: {count: [1, 2]}
+        rows: [1, 2]
+      - note: A keyword is a name in any case, as written.
+        cypher: "RETURN [$return, $where, $null, $true, $call, $yield, $Distinct, $exists, $as, $in]"
+        parameters: {"return": 1, "where": 2, "null": 3, "true": 4, "call": 5, "yield": 6, "Distinct": 7, "exists": 8, "as": 9, "in": 10}
+        rows: [[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]]
+
+  - name: "Functions of numbers"
+    description: "exp, log, log10, sqrt, e, pi, the trigonometric functions, degrees, radians and haversin give the floats Neo4j gives, and null for null."
+    steps:
+      - note: Rounded to 10 places, as a store's library and Java's may differ in a double's last digit.
+        cypher: |
+          RETURN [round(exp(1), 10), round(log(10), 10), round(log10(2), 10), round(sqrt(2), 10), round(sin(1), 10), round(cos(1), 10),
+                  round(tan(1), 10), round(cot(1), 10), round(asin(0.5), 10), round(acos(0.5), 10), round(atan(1), 10), round(atan2(1, 2), 10),
+                  round(degrees(1), 10), round(radians(1), 10), round(haversin(1), 10)]
+        rows: [[2.7182818285, 2.302585093, 0.3010299957, 1.4142135624, 0.8414709848, 0.5403023059, 1.5574077247, 0.6420926159, 0.5235987756, 1.0471975512, 0.7853981634, 0.463647609, 57.2957795131, 0.0174532925, 0.2298488471]]
+      - note: Exact where the double is. An exponent too small for a double is 0.0.
+        cypher: "RETURN [exp(0), log(1), log10(1000), sqrt(16), e(), pi(), sin(0), cos(0), atan2(0, 1), degrees(pi()), radians(180), haversin(0), exp(-1000), atan2(0, 0)]"
+        rows: [[1.0, 0.0, 3.0, 4.0, 2.718281828459045, 3.141592653589793, 0.0, 1.0, 0.0, 180.0, 3.141592653589793, 0.0, 0.0, 0.0]]
+      - cypher: "RETURN [exp(null), log(null), log10(null), sqrt(null), sin(null), cot(null), atan2(null, 1), atan2(1, null), degrees(null), haversin(null)]"
+        rows: [[null, null, null, null, null, null, null, null, null, null]]
+      - note: Of a property, a whole number.
+        cypher: "MATCH (m:Movie) RETURN round(log10(m.released), 6) ORDER BY m.released"
+        rows: [3.299943, 3.300813, 3.301681]
+      - cypher: "MATCH (p:Person) WHERE p.born IS NOT NULL RETURN p.name, round(sqrt(p.born - 1960), 4) ORDER BY p.name"
+        rows: [["Carrie", 2.6458], ["Keanu", 2.0], ["Laurence", 1.0]]
+      - note: randomUUID() bound by a WITH is one value however often it is read.
+        cypher: "UNWIND range(1, 3) AS i WITH randomUUID() AS u RETURN collect(u = u)"
+        rows: [[true, true, true]]
+      - note: Sorted by, it is sorted by the value given, not one made again.
+        cypher: "UNWIND range(1, 20) AS i WITH randomUUID() AS u ORDER BY u WITH collect(u) AS us RETURN all(k IN range(1, size(us) - 1) WHERE us[k - 1] <= us[k])"
+        rows: [true]
+      - note: As Java works them out in doubles, the cancellation in haversin of a small angle and all.
+        cypher: "RETURN [round(haversin(0.00001) * 100000000000, 8), degrees(0.5)]"
+        rows: [[2.50000021, 28.64788975654116]]
+      - note: By the ratio Java multiplies by, where 180 / π worked out otherwise differs in the last digit.
+        cypher: "RETURN [degrees(0.1), radians(30), radians(60)]"
+        rows: [[5.729577951308233, 0.5235987755982988, 1.0471975511965976]]
+      - note: An exponent whose double is below the least normal one.
+        except: [oracle]
+        cypher: "RETURN exp(-745)"
+        rows: [4.9e-324]
+      - note: An exponent just below the one whose double is the least, and 0.0.
+        cypher: "RETURN [exp(-745.1333), exp(-745.13325), exp(-745.1332191019412)]"
+        rows: [[0.0, 0.0, 0.0]]
+
+  - name: "Functions of numbers that give NaN or an infinity"
+    description: "Neo4j gives NaN and the infinities as Java does; JSON holds neither, so a SQL store fails rather than give another value."
+    steps:
+      - only: [neo4j]
+        cypher: "RETURN [toString(log(0)), toString(sqrt(-1)), toString(exp(1000)), toString(cot(0)), toString(asin(2)), toString(log10(-1))]"
+        rows: [["-Infinity", "NaN", "Infinity", "Infinity", "NaN", "NaN"]]
+      - only: [sql]
+        cypher: "RETURN log(0)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN sqrt(-1)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN exp(1000)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN cot(0)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN asin(2)"
+        error: true
+      - only: [sql]
+        cypher: "RETURN log10(-1)"
+        error: true
+
+  - name: "Round by a mode"
+    description: "round(value, precision, mode) rounds in decimal by one of Java's rounding modes, as Neo4j does, so 2.345 is halfway; a null gives null."
+    steps:
+      - cypher: |
+          RETURN [round(2.345, 2, 'HALF_UP'), round(2.345, 2, 'HALF_DOWN'), round(2.345, 2, 'HALF_EVEN'), round(2.355, 2, 'HALF_EVEN'),
+                  round(-2.345, 2, 'UP'), round(-2.345, 2, 'DOWN'), round(-2.345, 2, 'CEILING'), round(-2.345, 2, 'FLOOR'),
+                  round(-2.5, 0, 'HALF_EVEN'), round(3, 1, 'UP'), round(1.25, 1, $mode), round(null, 1, 'UP'), round(1.5, null, 'UP'), round(1.5, 1, null)]
+        parameters: {mode: "HALF_UP"}
+        rows: [[2.35, 2.34, 2.34, 2.36, -2.35, -2.34, -2.34, -2.35, -2.0, 3.0, 1.3, null, null, null]]
+      - note: Halfway on a negative number, and to no places.
+        cypher: "RETURN [round(-2.5, 0, 'HALF_UP'), round(-2.5, 0, 'HALF_DOWN'), round(-3.5, 0, 'HALF_EVEN'), round(0.5, 0, 'HALF_EVEN'), round(1.15, 1, 'HALF_EVEN'), round(-1.25, 1, 'CEILING')]"
+        rows: [[-3.0, -2.0, -4.0, 0.0, 1.2, -1.2]]
+      - note: "The least positive numbers a store's decimal holds, rounded away from zero, toward it, and halfway, keep their sign, though Oracle's SIGN gives 0 for them."
+        only: [neo4j, sql]
+        cypher: "RETURN [round(1.0E-129, 2, 'UP'), round(1.0E-129, 0, 'UP'), round(-1.0E-129, 2, 'UP'), round(1.0E-129, 2, 'DOWN'), round(-1.0E-129, 2, 'DOWN'), round(1.0E-130, 2, 'UP'), round(1.0E-129, 2, 'CEILING'), round(1.0E-129, 129, 'UP')]"
+        rows: [[0.01, 1.0, -0.01, 0.0, 0.0, 0.01, 0.01, 1.0e-129]]
+      - only: [neo4j, sql]
+        cypher: "RETURN [round(5.0E-130, 129, 'HALF_UP'), round(5.0E-130, 129, 'HALF_DOWN'), round(5.0E-130, 129, 'HALF_EVEN'), round(1.5E-129, 129, 'HALF_EVEN'), round(-5.0E-130, 129, 'HALF_UP'), round(9.0E-129, 128, 'HALF_UP')]"
+        rows: [[1.0e-129, 0.0, 0.0, 2.0e-129, -1.0e-129, 1.0e-128]]
+      - note: A float rounds as its shortest decimal reads, as Java's BigDecimal.valueOf reads it, though its double is below it.
+        cypher: "RETURN [round(1.005, 2, 'HALF_UP'), round(toFloat('1.005'), 2, 'HALF_UP'), round(2.675, 2, 'HALF_EVEN'), round(1.005 * 1, 2, 'HALF_DOWN'), round(pi(), 4, 'UP')]"
+        rows: [[1.01, 1.01, 2.68, 1.0, 3.1416]]
+      - note: Neo4j takes no negative precision.
+        cypher: "RETURN round(1250, -2, 'HALF_EVEN')"
+        error: true
+      - note: Neo4j names the modes it takes; the compiler's message is in refusals.yaml.
+        cypher: "RETURN round(2.5, 0, 'up')"
+        error: true
+
+  - name: "Labels and relationship types"
+    description: "CALL db.labels() and CALL db.relationshipTypes() give each label the graph's nodes have and each type its relationships have, once each, alone or within a query."
+    steps:
+      - cypher: "CALL db.labels()"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - cypher: "CALL db.labels() YIELD *"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - note: Called alone, a procedure may be named without its parentheses.
+        cypher: "CALL db.labels"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - cypher: "CALL db.relationshipTypes()"
+        unordered: true
+        rows: ["ACTED_IN", "KNOWS"]
+      - cypher: "CALL db.labels() YIELD label AS x"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code"]
+      - cypher: "CALL db.labels() YIELD label RETURN label ORDER BY label"
+        rows: ["Code", "CyTest", "Movie", "Person"]
+      - cypher: "CALL db.labels() YIELD label AS l WHERE l STARTS WITH 'C' RETURN l ORDER BY l"
+        rows: ["Code", "CyTest"]
+      - cypher: "CALL db.relationshipTypes() YIELD relationshipType AS t RETURN t ORDER BY t DESC"
+        rows: ["KNOWS", "ACTED_IN"]
+      - cypher: "CALL db.labels() YIELD label RETURN count(label)"
+        rows: [4]
+      - note: Within a query, its rows for each row, its WHERE reading the variables around it.
+        cypher: "MATCH (m:Movie) WHERE m.released < 1999 CALL db.relationshipTypes() YIELD relationshipType WHERE relationshipType <> 'KNOWS' RETURN m.title, relationshipType"
+        rows: [["Johnny Mnemonic", "ACTED_IN"]]
+      - cypher: "WITH 'Movie' AS wanted CALL db.labels() YIELD label WHERE label = wanted RETURN label"
+        rows: ["Movie"]
+      - cypher: "UNWIND [1, 2] AS i CALL db.relationshipTypes() YIELD relationshipType RETURN i, relationshipType ORDER BY i, relationshipType"
+        rows: [[1, "ACTED_IN"], [1, "KNOWS"], [2, "ACTED_IN"], [2, "KNOWS"]]
+      - cypher: "CALL db.labels() YIELD label RETURN label UNION CALL db.relationshipTypes() YIELD relationshipType RETURN relationshipType AS label"
+        unordered: true
+        rows: ["Person", "CyTest", "Movie", "Code", "ACTED_IN", "KNOWS"]
+      - note: What it yields is a new variable, as any other a clause binds.
+        cypher: "WITH 'Movie' AS label CALL db.labels() YIELD label RETURN label"
+        error: true
+      - note: A variable around a CALL { … } that does not import it is not bound in it, so a CALL within it may yield its name.
+        cypher: "WITH 1 AS label CALL { CALL db.labels() YIELD label RETURN count(label) AS n } RETURN label, n"
+        rows: [[1, 4]]
+
+  - name: "Lists and maps that hold a null"
+    description: "A list or a map is compared item by item: false where a pair is false, else null where a pair is null, else true."
+    steps:
+      - cypher: "RETURN [[null] = [null], {x: null} = {x: null}, [null, 1] = [null, 1]]"
+        rows: [[null, null, null]]
+      - note: "A pair that differs makes it false, whatever else is null; so do different lengths and different keys."
+        cypher: "RETURN [[1, null] = [2, null], [1, 2] = [1], [null] = [null, null], [] = []]"
+        rows: [[false, false, false, true]]
+      - cypher: "RETURN [[null] <> [null], [1, null] <> [2, null], [null, 1] <> [null, 1]]"
+        rows: [[null, true, null]]
+      - cypher: "RETURN [{x: null} = {y: null}, {x: 1, y: null} = {x: 2, y: null}, {x: null} = {x: 1}, {x: null} = {}, {a: 1} = {a: 1, b: null}]"
+        rows: [[false, false, null, false, false]]
+      - note: "Lists and maps within them are compared the same way."
+        cypher: "RETURN [[[null]] = [[null]], [[1, null]] = [[2, null]], [{x: null}] = [{x: null}], {a: [null]} = {a: [null]}, [1, [null]] = [2, [null]], [[null], 1] = [[null], 2]]"
+        rows: [[null, false, null, null, false, false]]
+      - note: "A null is compared with a value of any kind as null; values of two other kinds are not equal."
+        cypher: "RETURN [[1] = ['1'], [null] = [1], [[1]] = [1], [null, 'a'] = [1, 'b'], [1] = [1.0], [null] = [[1]], [null] = [{x: 1}], [null, 1] = [1, null]]"
+        rows: [[false, null, false, false, true, null, null, null]]
+      - cypher: "RETURN CASE [null] WHEN [null] THEN 'y' ELSE 'n' END"
+        rows: ["n"]
+      - note: "Lists that hold no null compare as they did."
+        cypher: "RETURN [[1, 2] = [1, 2], [1, 2] <> [1, 3], {x: 1} = {x: 1}, 'a' IN ['a', 'b'], 'c' IN ['a', 'b']]"
+        rows: [[true, true, true, true, false]]
+
+  - name: "IN compares as equality does"
+    description: "x IN list is true where an item is equal to x, else null where a comparison is null, else false."
+    steps:
+      - note: "The first item is in parentheses: FalkorDB reads a list that starts `[null IN` as a list comprehension."
+        cypher: |
+          RETURN [(null IN [null]), [null] IN [[null]], 1 IN [null], 1 IN [1, null], 2 IN [1, null], null IN [], [null] IN [[1, 2]],
+                  [null] IN [[1]], [1, null] IN [[2, null]], [1] IN [[1], null], {x: null} IN [{x: null}], [1] IN [[2], null], [1] IN [[null]], null IN [1]]
+        rows: [[null, null, null, true, null, false, false, null, false, true, null, null, null, null]]
+      - cypher: "RETURN [$x IN $l, 2 IN $l, $a IN $ls, $a IN [[2, null]], 1 IN $n]"
+        parameters: {x: null, l: [1, 2], a: [1, null], ls: [[1, null], [3]], n: null}
+        rows: [[null, true, null, false, null]]
+      - note: "A null IN keeps no row, nor an item in a list comprehension's WHERE."
+        cypher: "UNWIND [1] AS i WITH i WHERE $x IN $l OR $m.x IN $l RETURN i"
+        parameters: {x: null, l: [null, 2], m: {x: null}}
+        rows: []
+      - cypher: "RETURN [j IN [1, 2] WHERE $x IN $l OR $m.x IN $l]"
+        parameters: {x: null, l: [null, 2], m: {x: null}}
+        rows: [[]]
+
+  - name: "Values that hold a null, compared at run time"
+    description: "Parameters, values a WITH carries and collected lists are compared item by item as written lists are."
+    steps:
+      - cypher: "RETURN [$a = $b, $a = $c, $a IN [$b], $m = $n, $p = $p]"
+        parameters: {a: [1, null], b: [1, null], c: [2, null], m: {x: null}, n: {x: 1}, p: [1, 2]}
+        rows: [[null, false, null, null, true]]
+      - cypher: "WITH [1, null] AS a, [1, null] AS b, [2, null] AS c, [null, 1] AS d RETURN [a = b, a = c, a <> c, a = d, a IN [b, c], a IN [c]]"
+        rows: [[null, false, true, null, null, false]]
+      - cypher: "WITH [[null], 1] AS a, [[null], 2] AS b, {k: [null]} AS m, {k: [1]} AS n, {k: [1], j: 2} AS o RETURN [a = b, m = n, m = m, m = o, n = n]"
+        rows: [[false, null, null, false, true]]
+      - cypher: "UNWIND [[1, null], [2, null]] AS l WITH collect(l) AS ls RETURN [ls = [[1, null], [2, null]], ls[0] = ls[1], ls[0] IN ls]"
+        rows: [[null, false, null]]
+      - note: "A null comparison keeps no row, nor does a false one."
+        cypher: "UNWIND [[1, null], [2, null], [3]] AS l WITH l WHERE l = [1, null] OR l = [3] RETURN l"
+        rows: [[3]]
+
+  - name: "Values that hold a null, compared in the step of a reduce"
+    description: "The step of a reduce() compares lists and maps that hold a null item by item, as a query does."
+    steps:
+      - cypher: "WITH [2, null] AS c RETURN reduce(acc = [], x IN [[1, null], [2, null], [null, 1]] | acc + [x = c])"
+        rows: [[false, null, null]]
+      - cypher: "RETURN reduce(acc = [], m IN [{x: null}, {x: 1, y: 2}, {x: 2}] | acc + [m = {x: 1}])"
+        rows: [[null, false, false]]
+      - cypher: "WITH [[null], 1] AS a RETURN reduce(acc = [], x IN [[[1], 1], [[1], 2]] | acc + [x = a])"
+        rows: [[null, false]]
+      - note: "<> and IN compare the same way in the step."
+        cypher: "RETURN reduce(acc = [], x IN [[null, 1], [null, 2]] | acc + [x <> [2, 1], x IN [[2, 1], [3]]])"
+        rows: [[null, null, true, false]]
+      - cypher: "RETURN reduce(acc = true, x IN [[null]] | acc AND x = [1])"
+        rows: [null]
+
+  - name: "A null node or relationship in a list or a map"
+    description: "A node or a relationship OPTIONAL MATCH finds none of is null in the list or the map that holds it, so the comparison is null."
+    steps:
+      - cypher: "OPTIONAL MATCH (x:Nope)-[r]->() RETURN [[r] = [r], {x: r} = {x: r}, [r] <> [r], r IN [r], [r] IN [[r]], x IN [x], [x] = [x], {x: x} = {x: x}, [r, 1] = [r, 2]]"
+        rows: [[null, null, null, null, null, null, null, null, false]]
+      - note: "Hugo knows no one."
+        cypher: |
+          MATCH (:Person {name: 'Keanu'})-[r1:KNOWS]->() OPTIONAL MATCH (:Person {name: 'Hugo'})-[r2:KNOWS]->()
+          WITH r1, r2, [r1, r2] AS a, {x: r2} AS m
+          RETURN [[r1, r2] = [r1, r2], {a: r1, b: r2} = {a: r1, b: r2}, a = a, m = m, a = [r1, r1], r1 IN [r2], a = [r1]]
+        rows: [[null, null, null, null, null, null, false]]
+
+  - name: "Two lists ordered item by item"
+    description: "<, <=, > and >= order two lists by the first pair of items that differ, a list that starts the other first, and give null where that pair has a null or is of two kinds."
+    steps:
+      - cypher: "RETURN [[1, 2] < [1, 3], [1, 3] > [1, 2], [1, 2] <= [1, 3], [1, 2] >= [1, 3]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, true, true, false]]
+      - note: "A list that starts the other comes first."
+        cypher: "RETURN [[1] < [1, 2], [1, 2] > [1], [] < [1], [] < [], [1, 3] > [1, 2, 5], [1, 2] >= [1]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, true, true, false, true, true]]
+      - note: "Two equal lists, and a whole number equal to its float."
+        cypher: "WITH [1, 2] AS l RETURN [l < l, l <= l, l >= l, l > l, [] <= [], [1, 2] <= [1.0, 2.0]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[false, true, true, false, true, true]]
+      - note: "A null in the first pair, and a list beside null."
+        cypher: "RETURN [[null, 1] < [2, 3], [null] <= [null], [null] < [1], [] < [null], [1, 2] < null, null < [1, 2]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[null, null, null, true, null, null]]
+      - note: "A null after the pair that decides is not read, and a null in the pair that decides makes it null."
+        cypher: "RETURN [[1, null] < [2, 3], [1, null] <= [1, null], [1, null] < [1], [1, null] < [1, 2], [1, 2, null] > [1, 3, null]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, null, false, null, false]]
+      - note: "Two kinds after the pair that decides are not read, nor past the end of the shorter list, and two equal maps are equal."
+        cypher: "RETURN [[1, 'a'] < [2], [1] < [1, 'a'], [[1, 2], 'x'] < [[1, 3], 1], [{a: 1}] <= [{a: 1}]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, true, true, true]]
+      - note: "Lists within lists, item by item at any depth; a list beside a number is not ordered."
+        cypher: "RETURN [[[1, 2]] < [[1, 3]], [[1], 2] < [[1], 3], [[1]] < [[1, 0]], [[[1]]] < [[[2]]], [[1, 2], [3]] < [[1, 2], [3, null]], [[1]] < [1], [[null, 1]] < [[null, 2]]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, true, true, true, true, null, null]]
+      - note: "false comes before true, and a truth value beside a number is not ordered."
+        cypher: "RETURN [[false] < [true], [true, false] < [true, true], [true] >= [false, true], [true] < [1]]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, true, true, null]]
+      - note: "A whole number and a float are ordered as numbers; a number beside a text is not ordered."
+        cypher: "RETURN [[1] < [1.5], [2.0] <= [2], [1] < [1.0], [2] > [1.5], [1, 'a'] < [1, 2], [1] < ['1']]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, true, false, true, null, null]]
+      - note: "Texts are ordered by their code points: an emoji, past the Basic Multilingual Plane, after a fullwidth tilde, which UTF-16 would put after it."
+        cypher: "RETURN [['a'] < ['B'], ['b'] >= ['a', 'z'], ['😀'] > ['～'], ['a😀'] > ['a～'], ['～', 'x'] < ['😀']]"
+        except: [memgraph, falkordb, neptune]
+        rows: [[false, true, true, true, true]]
+      - note: "In a WHERE, of lists unwound."
+        cypher: "UNWIND [[1, 2], [1], [2], [1, null], []] AS l WITH l WHERE l < [1, 5] RETURN l"
+        except: [memgraph, falkordb, neptune]
+        rows: [[1, 2], [1], []]
+      - note: "Of lists bound as parameters, whose kind the statement leaves open. The SQL stores order two lists only where the statement makes one side a list, so $a < $b gives null there (drivine4j#385)."
+        cypher: "RETURN [$a < $b, $a < [1, 3], [1] < $a, $b >= $a]"
+        parameters: {a: [1, 2], b: [1, 3]}
+        only: [neo4j]
+        rows: [[true, true, true, true]]
+      - note: "A list parameter beside a list literal is ordered on the SQL stores too."
+        cypher: "RETURN [$a < [1, 3], [1] < $a]"
+        parameters: {a: [1, 2]}
+        except: [memgraph, falkordb, neptune]
+        rows: [[true, true]]
+      - note: "A parameter that is not a list, or a list whose deciding pair is of two kinds, beside a list literal gives null."
+        cypher: "RETURN [$a < [1, 3], [1] < $a, $b < [2], [1, 2] < $b]"
+        parameters: {a: 1, b: [1, "a"]}
+        except: [memgraph, falkordb, neptune]
+        rows: [[null, null, true, null]]
+      - note: "In the step of a reduce(): Oracle refuses it, as below."
+        cypher: "RETURN reduce(acc = false, x IN [[1], [2]] | acc OR [1] < x)"
+        except: [memgraph, falkordb, neptune, oracle]
+        rows: [true]
+      - only: [oracle]
+        cypher: "RETURN reduce(acc = false, x IN [[1], [2]] | acc OR [1] < x)"
+        error: "Two lists compared with <, <=, > or >= do not run on Oracle in the step of a reduce(): its function calls no function of the query's from SQL."
+
+  - name: "toString of a list or a map"
+    description: "toString() of a list or a map the statement makes is refused, as Neo4j refuses it, and of a value whose kind it leaves open is run."
+    steps:
+      - note: "The compiler refuses both as Neo4j refuses them under Cypher 5. Neo4j 2026.10's default language, Cypher 25, gives toString({a: 1}) as '{a: 1}', and toString([1, 'a']) as '[1, a]' though it refuses toString([1, 2])."
+        only: [neo4j]
+        cypher: "CYPHER 5 RETURN toString([1, 2])"
+        error: true
+      - only: [neo4j]
+        cypher: "CYPHER 5 RETURN toString({a: 1})"
+        error: true
+      - only: [sql]
+        cypher: "RETURN toString([1, 2])"
+        error: "toString() takes a number, a text, a truth value or a temporal value, not a list, as in Neo4j."
+      - only: [sql]
+        cypher: "RETURN toString({a: 1})"
+        error: "toString() takes a number, a text, a truth value or a temporal value, not a map, as in Neo4j."
+      - cypher: "UNWIND [1, 'a'] AS x RETURN toString(x)"
+        rows: ["1", "a"]

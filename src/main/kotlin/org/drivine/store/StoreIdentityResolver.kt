@@ -113,8 +113,8 @@ class StoreIdentityResolver(private val persistenceManager: PersistenceManager) 
         } catch (e: Exception) {
             // Another process creating the same constraint at the same moment surfaces here on engines
             // without IF NOT EXISTS, or where concurrent schema writes conflict. If it is now in force,
-            // the race was benign.
-            if (runCatching { constraints.find(KEY_CONSTRAINT) }.getOrNull() != null) {
+            // the race was benign. One whose build failed (FalkorDB) is listed, yet enforces nothing.
+            if (runCatching { constraints.find(KEY_CONSTRAINT) }.getOrNull()?.takeUnless { it.buildFailed } != null) {
                 true
             } else {
                 logger.warn(

@@ -9,12 +9,15 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Every arity of {@code loadNearest} and {@code loadMatching} a Java caller had while they carried
- * {@code @JvmOverloads} is still there, on the interface both managers implement, and each hands
- * the full form the arguments it was given and the defaults for the rest.
+ * {@code @JvmOverloads} is still there, and {@code loadNearestAmong} has the same, on the interface
+ * both managers implement, and each hands the full form the arguments it was given and the defaults
+ * for the rest.
  */
 class JavaSearchOverloadsTest {
 
     private static final List<Float> VECTOR = List.of(0.1f, 0.2f);
+
+    private static final List<String> IDS = List.of("A", "B");
 
     private final GraphObjectOperations operations = mock(GraphObjectOperations.class);
 
@@ -90,6 +93,33 @@ class JavaSearchOverloadsTest {
         verify(operations).loadMatching(Object.class, "text", "graph", 5, 0.0);
     }
 
+    @Test
+    void loadNearestAmongWithOnlyTheRequiredArguments() {
+        when(operations.loadNearestAmong(Object.class, IDS, 5)).thenCallRealMethod();
+
+        operations.loadNearestAmong(Object.class, IDS, 5);
+
+        verify(operations).loadNearestAmong(Object.class, IDS, 5, null, null, null);
+    }
+
+    @Test
+    void loadNearestAmongWithAThreshold() {
+        when(operations.loadNearestAmong(Object.class, IDS, 5, 0.5)).thenCallRealMethod();
+
+        operations.loadNearestAmong(Object.class, IDS, 5, 0.5);
+
+        verify(operations).loadNearestAmong(Object.class, IDS, 5, 0.5, null, null);
+    }
+
+    @Test
+    void loadNearestAmongOnANamedProperty() {
+        when(operations.loadNearestAmong(Object.class, IDS, 5, 0.5, "embedding")).thenCallRealMethod();
+
+        operations.loadNearestAmong(Object.class, IDS, 5, 0.5, "embedding");
+
+        verify(operations).loadNearestAmong(Object.class, IDS, 5, 0.5, "embedding", null);
+    }
+
     /** The full forms, and the same arities on each manager, resolve from Java. */
     @Test
     void theFullFormsAndBothManagersResolve() {
@@ -97,6 +127,7 @@ class JavaSearchOverloadsTest {
         operations.loadNearest(Object.class, "embedding", VECTOR, 5, 0.5, 50, "Partition");
         operations.loadMatching(Object.class, "graph", 5, 0.2);
         operations.loadMatching(Object.class, "text", "graph", 5, 0.2);
+        operations.loadNearestAmong(Object.class, IDS, 5, 0.5, "embedding", 50);
 
         StatelessGraphObjectManager stateless = mock(StatelessGraphObjectManager.class);
         stateless.loadNearest(Object.class, VECTOR, 5, 0.5);
@@ -105,6 +136,9 @@ class JavaSearchOverloadsTest {
         stateless.loadNearest(Object.class, "embedding", VECTOR, 5, 0.5);
         stateless.loadNearest(Object.class, "embedding", VECTOR, 5, 0.5, 50);
         stateless.loadMatching(Object.class, "text", "graph", 5);
+        stateless.loadNearestAmong(Object.class, IDS, 5);
+        stateless.loadNearestAmong(Object.class, IDS, 5, 0.5);
+        stateless.loadNearestAmong(Object.class, IDS, 5, 0.5, "embedding");
 
         @SuppressWarnings("deprecation")
         GraphObjectManager deprecated = mock(GraphObjectManager.class);
@@ -114,5 +148,8 @@ class JavaSearchOverloadsTest {
         deprecated.loadNearest(Object.class, "embedding", VECTOR, 5, 0.5);
         deprecated.loadNearest(Object.class, "embedding", VECTOR, 5, 0.5, 50);
         deprecated.loadMatching(Object.class, "text", "graph", 5);
+        deprecated.loadNearestAmong(Object.class, IDS, 5);
+        deprecated.loadNearestAmong(Object.class, IDS, 5, 0.5);
+        deprecated.loadNearestAmong(Object.class, IDS, 5, 0.5, "embedding");
     }
 }

@@ -2,6 +2,7 @@ package org.drivine.oracle
 
 import com.zaxxer.hikari.HikariDataSource
 import org.drivine.DrivineException
+import org.drivine.backend.oracle.OracleSql
 import org.drivine.connection.Connection
 import org.drivine.connection.ConnectionProperties
 import org.drivine.connection.DataSourceMap
@@ -129,9 +130,9 @@ class OracleConnectionIntegrationTest {
     }
 
     @Test
-    fun `a Cypher statement is refused before it reaches the database`() {
-        val failure = assertFailsWith<DrivineException> { pm.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
-        assertTrue("SQL" in failure.message.orEmpty(), failure.message)
+    fun `a Cypher statement is compiled to SQL and runs`() {
+        // CypherQueryContract tests what Cypher compiles to; here, that a connection compiles it at all.
+        assertEquals(listOf<Any?>(2L), pm.query(QuerySpecification.withStatement(cypherStatement("RETURN 1 + 1"))))
     }
 
     @Test
@@ -149,6 +150,8 @@ class OracleConnectionIntegrationTest {
             assertEquals(3, pool.maximumPoolSize)
             assertEquals(20_000, pool.connectionTimeout)
             assertEquals("64", pool.dataSourceProperties.getProperty("oracle.jdbc.implicitStatementCacheSize"))
+            // Each session the pool opens makes no adaptive plan (OracleAdaptivePlansTest asks Oracle for the plan).
+            assertEquals(JdbcConnectionProvider.NO_ADAPTIVE_PLANS, pool.connectionInitSql)
             val connection = provider.connect()
             try {
                 assertEquals(listOf<Any>("Ada"), connection.query(spec("SELECT \$name FROM dual", "name" to "Ada")))
@@ -210,6 +213,22 @@ class OracleConnectionIntegrationTest {
         assertEquals(emptyList(), names())
         connection.commitTransaction()
         assertEquals(listOf("Ada"), names())
+    }
+
+    @Test
+    fun `a node of several labels a transaction has written and not committed is found by a scan of them all`() {
+        val graph = OracleTestDatabase.graphManager("labels")
+        OracleTestDatabase.clear(graph)
+        val connection = OracleTestDatabase.connections(graph).connect()
+        try {
+            connection.startTransaction()
+            connection.query(spec("INSERT INTO labels_node (labels, props) VALUES (JSON('[\"Dog\", \"Animal\"]'), JSON('{}'))"))
+            val scan = "SELECT COUNT(*) FROM labels_node n WHERE ${OracleSql.hasLabels("n", listOf("Dog", "Animal"), scanned = true)}"
+            assertEquals(listOf<Any>(1L), connection.query(spec(scan)))
+        } finally {
+            connection.rollbackTransaction()
+            connection.release()
+        }
     }
 
     @Test

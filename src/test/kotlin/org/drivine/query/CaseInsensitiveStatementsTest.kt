@@ -18,6 +18,10 @@ import org.drivine.backend.oracle.OracleSelect
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.postgres.PostgresLowerCopies
 import org.drivine.backend.postgres.PostgresSelect
+import org.drivine.backend.sqlite.SqliteGraph
+import org.drivine.backend.sqlite.SqliteLowerCopies
+import org.drivine.backend.sqlite.SqliteSelect
+import org.drivine.backend.sqlite.SqliteSql
 import org.drivine.connection.DatabaseType
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.FragmentModel
@@ -128,7 +132,7 @@ class CaseInsensitiveStatementsTest {
     }
 
     @Test
-    fun `Oracle and Postgres lowercase the value too, and Oracle reads the copy through its labelled index`() {
+    fun `Oracle, Postgres and SQLite lowercase the value too, and Oracle reads the copy through its labelled index`() {
         val equal = PropertyCondition("n.${LowerCopies.of("email")}", ComparisonOperator.EQUALS_LOWERED, "Ann@X.com")
         val contains = PropertyCondition("n.${LowerCopies.of("email")}", ComparisonOperator.CONTAINS_LOWERED, "NN@")
         val oracle = OracleGraph("g")
@@ -143,6 +147,9 @@ class CaseInsensitiveStatementsTest {
             "(n_.props ->> '__drivine.lower.email') = lower(CAST(\$_p0 AS text))",
             PostgresSelect(PostgresGraph("g"), CiAccount::class.java).predicate(listOf(equal)),
         )
+        val sqliteCopy = SqliteSql.property("n_", LowerCopies.of("email"))
+        assertEquals("$sqliteCopy = drivine_lower(CAST(\$_p0 AS TEXT))", SqliteSelect(SqliteGraph("g"), CiAccount::class.java).predicate(listOf(equal)))
+        assertEquals("instr($sqliteCopy, drivine_lower(CAST(\$_p0 AS TEXT))) > 0", SqliteSelect(SqliteGraph("g"), CiAccount::class.java).predicate(listOf(contains)))
     }
 
     @Test
@@ -350,7 +357,7 @@ class CaseInsensitiveStatementsTest {
     }
 
     @Test
-    fun `Oracle and Postgres fill a copy in with their own lowercasing, and record it in the graph's catalog`() {
+    fun `Oracle, Postgres and SQLite fill a copy in with their own lowercasing, and record it in the graph's catalog`() {
         val oracle = OracleLowerCopies(OracleGraph("g"))
         assertContains(oracle.fill("CiAccount", "email"), "SET n.props = JSON_TRANSFORM(n.props, SET '\$.\"__drivine.lower.email\"' = LOWER(JSON_VALUE(n.props, '\$.email')) REMOVE ON NULL)")
         assertContains(oracle.fill("CiAccount", "email"), "AND ROWNUM <= \$batch")
@@ -364,6 +371,12 @@ class CaseInsensitiveStatementsTest {
             setOf("CiAccount" to "email"),
             postgres.entries(listOf(mapOf("label" to "CiAccount", "properties" to listOf("email")), mapOf("label" to "Other"))),
         )
+
+        val sqlite = SqliteLowerCopies(SqliteGraph("g"))
+        assertEquals("SELECT drivine_lower_copies('g', 'CiAccount', 'email', CAST(\$batch AS INTEGER))", sqlite.fill("CiAccount", "email"))
+        assertContains(sqlite.record, "INSERT INTO g_schema (kind, label, properties, name, object_name, details)")
+        assertContains(sqlite.record, "VALUES ('LOWER_COPY', CAST(\$label AS TEXT), CAST(\$properties AS TEXT), NULL, NULL, '{}')")
+        assertContains(sqlite.read, "FROM g_schema WHERE kind = 'LOWER_COPY'")
     }
 
     // ----- The items that ignore case -----

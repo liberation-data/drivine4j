@@ -6,11 +6,14 @@ import org.drivine.connection.ConnectionProvider
 import org.drivine.connection.DataSourceMap
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.connection.DatabaseType
+import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.mapper.SubtypeRegistry
 import org.drivine.query.grammar.CypherDialect
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
+import org.mockito.Mockito
+import javax.sql.DataSource
 
 class SchemaTargetsTest {
 
@@ -118,6 +121,33 @@ class SchemaTargetsTest {
             SchemaTargets.resolve(listOf(SchemaCatalog.of(anIndex).forDatabase("neptune")), registry)
         }
         assertTrue(exception.message!!.contains("does not support schema management"))
+    }
+
+    /** A Postgres provider whose graph name cannot name tables: it serves plain SQL, and holds no schema (#364). */
+    private fun registryWithUnnamableGraph(): DatabaseRegistry {
+        val registry = registryOf("neo" to CypherDialect.NEO4J_5)
+        registry.register(JdbcConnectionProvider("pg", DatabaseType.POSTGRES, Mockito.mock(DataSource::class.java), graphName = "my-graph"))
+        return registry
+    }
+
+    @Test
+    fun `broadcast skips a provider whose graph name cannot name tables, and reports it`() {
+        val registry = registryWithUnnamableGraph()
+
+        val resolution = SchemaTargets.resolve(listOf(SchemaCatalog.of(anIndex)), registry)
+
+        assertEquals(setOf("neo"), resolution.databases)
+        assertEquals(setOf("pg"), resolution.skipped)
+    }
+
+    @Test
+    fun `named target on a provider whose graph name cannot name tables fails fast, saying why`() {
+        val registry = registryWithUnnamableGraph()
+
+        val exception = assertThrows<DrivineException> {
+            SchemaTargets.resolve(listOf(SchemaCatalog.of(anIndex).forDatabase("pg")), registry)
+        }
+        assertTrue(exception.message!!.contains("'my-graph' cannot name a graph on Postgres"), exception.message)
     }
 
     @Test

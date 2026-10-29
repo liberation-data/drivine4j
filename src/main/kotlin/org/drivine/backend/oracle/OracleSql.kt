@@ -59,6 +59,15 @@ internal object OracleSql {
     }
 
     /**
+     * The path of the property the keys [keys] lead to, each of a map in the one before, as a SQL literal: `'$.p.text'`, or
+     * with [suffix] after it, `'$.p.text.type()'`.
+     */
+    fun path(keys: List<String>, suffix: String = ""): String = path(keys.first(), keys.drop(1).joinToString("") { key ->
+        require(key.isNotEmpty()) { "A property name is empty: an empty name is no property a statement can read." }
+        ".${step(key)}"
+    } + suffix)
+
+    /**
      * Whether the node [alias] carries [label], written so the index over labels can answer it: the
      * form for a statement that reads every node of a label. A label is data, so it is written into
      * the path, quoted.
@@ -70,11 +79,23 @@ internal object OracleSql {
      * Whether the node [alias] carries [label], written so the index over labels cannot answer it:
      * the form for a node that is found some other way, by its id or at the end of a relationship.
      * Given the choice, Oracle reads every node of the label and tests each for the id, where the
-     * index over the id gives the one node. The label is looked for as JSON writes it, in quotes,
-     * among the labels as JSON writes them.
+     * index over the id gives the one node. The label is looked for by its text: see [holdsLabel].
      */
-    fun carriesLabel(alias: String, label: String): String =
-        "INSTR(JSON_SERIALIZE($alias.labels), ${literal(quoted(label))}) > 0"
+    fun carriesLabel(alias: String, label: String): String = holdsLabel("$alias.labels", label)
+
+    /**
+     * Whether the JSON array of labels [labels] holds [label], told by its text. `JSON_SERIALIZE` writes the array
+     * compactly, `["A","B"]`; with its brackets made commas and `,"` put after it, `,"A","B","`, each label is
+     * `,"label","`, and the label is looked for as that. The trims take one bracket at each end, since a label's quote
+     * stands beside each, and no labels at all leave `,,"`, which holds no label. Matched there, the needle is a whole
+     * label. Its first quote follows a comma, so isn't escaped: it opens a label or closes one. If it opens one, the
+     * label's text runs to the first unescaped quote, which is the one that closes the needle's label. If it closes one, a comma and an opening quote
+     * follow, which the needle has only when the label is `,`, and then the quote after that closes a label `,`.
+     * The label is written as `JSON_SERIALIZE` writes it ([serialized]), so one holding a control character is
+     * found, and one holding `","` is not taken for two.
+     */
+    fun holdsLabel(labels: String, label: String): String =
+        "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE($labels), ']'), '[') || ',\"', ${literal(",${serialized(label)},\"")}) > 0"
 
     /**
      * The property [key] of the node [alias], read as text, where the node carries [label], and null
@@ -102,14 +123,41 @@ internal object OracleSql {
     }
 
     /** [text] as JSON writes a string. */
-    private fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+    internal fun quoted(text: String): String = "\"${text.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+
+    /**
+     * [text] as Oracle's `JSON_SERIALIZE` writes a string, checked on Oracle Free 23 for every character: `"` and `\`
+     * escaped; backspace, tab, newline, form feed and carriage return as `\b`, `\t`, `\n`, `\f` and `\r`; every other
+     * character below U+0020, and U+007F, as `\u00XX` in upper case; U+2028 and U+2029 as `\u2028` and `\u2029`; and
+     * every other character as it is.
+     */
+    internal fun serialized(text: String): String = buildString {
+        append('"')
+        for (c in text) {
+            when (c) {
+                '"' -> append("\\\"")
+                '\\' -> append("\\\\")
+                '\b' -> append("\\b")
+                '\t' -> append("\\t")
+                '\n' -> append("\\n")
+                '\u000C' -> append("\\f")
+                '\r' -> append("\\r")
+                else -> if (c < ' ' || c == '\u007F' || c == '\u2028' || c == '\u2029') append("\\u").append(c.code.toString(16).uppercase().padStart(4, '0')) else append(c)
+            }
+        }
+        append('"')
+    }
 
     /**
      * Whether the node [alias] carries every one of [labels]; null when there are none to carry.
-     * [scanned] says the statement reads every node of the labels, and so may use the index over them.
+     * [scanned] says the statement reads every node of the labels, and so may use the index over them, for
+     * the first label alone: when two tests of the labels are answered by that index, Oracle (23.26) finds
+     * no node the open transaction has written and not yet committed. The rest are tested by the labels' text.
      */
     fun hasLabels(alias: String, labels: Collection<String>, scanned: Boolean = false): String? =
-        labels.takeIf { it.isNotEmpty() }?.joinToString(" AND ") { if (scanned) hasLabel(alias, it) else carriesLabel(alias, it) }
+        labels.takeIf { it.isNotEmpty() }?.withIndex()?.joinToString(" AND ") { (i, label) ->
+            if (scanned && i == 0) hasLabel(alias, label) else carriesLabel(alias, label)
+        }
 
     /** The property [key] of the node or relationship [alias], read as [kind]. The stamp is a column. */
     fun property(alias: String, key: String, kind: SqlKind = SqlKind.TEXT): String =
@@ -118,6 +166,16 @@ internal object OracleSql {
     /** Whether the node or relationship [alias] has the property [key] at all. */
     fun hasProperty(alias: String, key: String): String =
         if (key == Stamps.PROPERTY) "$alias.stamp IS NOT NULL" else "JSON_EXISTS($alias.props, ${path(key)})"
+
+    /** The embedding stored under [key] of the node [alias], as a vector. */
+    fun embedding(alias: String, key: String): String = "TO_VECTOR(JSON_QUERY($alias.props, ${path(key)} RETURNING CLOB))"
+
+    /**
+     * Whether the embedding stored under [key] of [alias] is of [dimensions]: a search measures only
+     * those, as Oracle refuses to measure vectors of two sizes against each other, and a vector index
+     * holds only those, so a node written with another is left out of it and not refused.
+     */
+    fun holdsEmbedding(alias: String, key: String, dimensions: Int): String = "VECTOR_DIMENSION_COUNT(${embedding(alias, key)}) = $dimensions"
 
     /**
      * The node [alias] as the map a load returns for it: the `doc` property the graph gives each

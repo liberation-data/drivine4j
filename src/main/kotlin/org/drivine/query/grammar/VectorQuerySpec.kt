@@ -33,6 +33,11 @@ import org.drivine.schema.SimilarityFunction
  *   derived from application data would otherwise be concatenated straight into Cypher. Left null for
  *   the ordinary case, where the label is a compile-time constant from the fragment and the emitted
  *   text is unchanged.
+ * @param vectorSource an expression the query vector is read from in place of [vectorParam], or null to
+ *   read the parameter. A search for each of many nodes reads each one's own embedding here (see
+ *   [org.drivine.query.NearestAmongBuilder]), so the vector differs from row to row.
+ * @param carried the variables in scope before the head that its closing `WITH` carries on beside the
+ *   node and the score. Empty for a search that starts the query, which has none in scope.
  */
 data class VectorQuerySpec(
     val label: String,
@@ -44,7 +49,15 @@ data class VectorQuerySpec(
     val rowLimitParam: String? = null,
     val indexNameParam: String? = null,
     val labelParam: String? = null,
+    val vectorSource: String? = null,
+    val carried: List<String> = emptyList(),
 ) {
+
+    /** The query vector as this query should spell it: the expression it is read from, or the bound parameter. */
+    fun vectorArgument(): String = vectorSource ?: "\$$vectorParam"
+
+    /** What the head's closing `WITH` carries before the node and the score: each of [carried] and a comma, or nothing. */
+    fun carriedPrefix(): String = carried.joinToString("") { "$it, " }
 
     /** The index-name argument as this query should spell it: a bound parameter, or a quoted literal. */
     fun indexNameArgument(): String = indexNameParam?.let { "\$$it" } ?: "'$indexName'"

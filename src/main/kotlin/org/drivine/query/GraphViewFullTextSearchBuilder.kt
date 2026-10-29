@@ -12,10 +12,12 @@ import org.drivine.query.grammar.FullTextQuerySpec
  * the relevance is threaded through as `_score`, and the same projection + required-relationship
  * `EXISTS` checks the normal load uses (via the shared [GraphViewProjectionAssembler]) are layered
  * on top. Results are wrapped as `{ value: <view>, score: _score } AS row`, ordered by relevance
- * (highest first) and capped at `topK` (a trailing `LIMIT`, since the full-text `CALL` takes no `k`).
+ * (highest first) and capped at `topK` by a trailing `LIMIT`.
  *
- * Filtering is **post-search**: required relationships (and the optional threshold / caller `where`)
- * prune the candidates the index returned, so the query can yield fewer than `topK` rows.
+ * Filtering is **post-search**: the head drops the hits without the root's labels beyond the indexed
+ * one, before it scales the scores; required relationships (and the optional threshold / caller
+ * `where`) then prune the candidates the index returned — no more than
+ * [FullTextSearchLimits.indexLimit] of them — so the query can yield fewer than `topK` rows.
  */
 internal class GraphViewFullTextSearchBuilder(
     viewModel: GraphViewModel,
@@ -40,8 +42,10 @@ internal class GraphViewFullTextSearchBuilder(
         val rootFieldName = assembler.rootFieldName
         val scoreVar = SCORE_VAR
 
-        // The grammar's CALL ... normalize ... WITH establishes `rootFieldName` and `scoreVar`.
-        val head = grammar.fullTextSearchHead(spec, rootFieldName, scoreVar)
+        // The grammar's CALL ... normalize ... WITH establishes `rootFieldName` and `scoreVar`. A node the
+        // index yields may lack the root's other labels; the head checks them before it scales the
+        // scores, so the best of the scale is a hit this search can return.
+        val head = grammar.fullTextSearchHead(spec.copy(labels = assembler.rootLabels()), rootFieldName, scoreVar)
 
         // Build the WITH projection first — it accumulates the prologs/bridge variables the prolog
         // section then reads. Carry the score through so the RETURN can reference it.

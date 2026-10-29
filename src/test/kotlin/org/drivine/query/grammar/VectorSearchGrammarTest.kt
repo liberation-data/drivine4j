@@ -103,28 +103,61 @@ class VectorSearchGrammarTest {
     }
 
     @Test
-    fun `FalkorDB queries by label and property, wraps vecf32, and normalizes distance to similarity`() {
+    fun `FalkorDB queries by label and property, wraps vecf32, and rescales its distance to the common score`() {
         val grammar = FalkorDbCypherGrammar(CallSubqueryEmitter())
         assertTrue(grammar.supportsVectorSearch)
 
         val cosine = grammar.vectorSearchHead(spec(SimilarityFunction.COSINE), "doc", "_score")
         assertTrue(cosine.contains("CALL db.idx.vector.queryNodes('Doc', 'embedding', \$topK, vecf32(\$queryVector))"))
-        // cosine distance d -> similarity 1 - d (higher = closer)
-        assertTrue(cosine.contains("WITH node AS doc, 1.0 - score AS _score"))
+        // cosine distance 1 - cos -> (1 + cos) / 2
+        assertTrue(cosine.contains("WITH node AS doc, 1.0 - score / 2.0 AS _score"), cosine)
 
         val euclidean = grammar.vectorSearchHead(spec(SimilarityFunction.EUCLIDEAN), "doc", "_score")
-        assertTrue(euclidean.contains("WITH node AS doc, 1.0 / (1.0 + score) AS _score"))
+        // euclidean distance d -> 1 / (1 + d²)
+        assertTrue(euclidean.contains("WITH node AS doc, 1.0 / (1.0 + score * score) AS _score"), euclidean)
     }
 
     @Test
-    fun `Memgraph queries by index name and uses the native similarity column`() {
+    fun `Memgraph queries by index name and rescales its distance to the common score`() {
         val grammar = MemgraphGrammar(CallSubqueryEmitter())
         assertTrue(grammar.supportsVectorSearch)
 
         val head = grammar.vectorSearchHead(spec(), "doc", "_score")
         assertTrue(head.contains("CALL vector_search.search('Doc_embedding_vector', \$topK, \$queryVector)"))
-        assertTrue(head.contains("YIELD node, similarity"))
-        assertTrue(head.contains("WITH node AS doc, similarity AS _score"))
+        // Not Memgraph's similarity, which is |1 - distance|: cos distance 1 - cos -> (1 + cos) / 2
+        assertTrue(head.contains("YIELD node, distance"), head)
+        assertTrue(head.contains("WITH node AS doc, 1.0 - distance / 2.0 AS _score"), head)
+
+        // l2sq distance d² -> 1 / (1 + d²)
+        val euclidean = grammar.vectorSearchHead(spec(SimilarityFunction.EUCLIDEAN), "doc", "_score")
+        assertTrue(euclidean.contains("WITH node AS doc, 1.0 / (1.0 + distance) AS _score"), euclidean)
+    }
+
+    /**
+     * `loadNearestAmong` searches from each seed's own embedding, inside an `UNWIND`: the vector is an
+     * expression, not a parameter, and the head's closing `WITH` must keep the seed's id in scope.
+     */
+    @Test
+    fun `each head reads its vector from an expression and carries variables in scope through its WITH`() {
+        val among = spec().copy(vectorSource = "seed.embedding", carried = listOf("_seedId"), rowLimitParam = "keep")
+
+        val neo4j = Neo4j5Grammar(ApocSortMapsEmitter()).vectorSearchHead(among, "n", "_score")
+        assertEquals(
+            """
+            CALL db.index.vector.queryNodes('Doc_embedding_vector', ${'$'}topK, seed.embedding)
+            YIELD node
+            WITH _seedId, node AS n, vector.similarity.cosine(node.embedding, seed.embedding) AS _score
+            """.trimIndent(),
+            neo4j,
+        )
+
+        val falkor = FalkorDbCypherGrammar(CallSubqueryEmitter()).vectorSearchHead(among, "n", "_score")
+        assertTrue(falkor.contains("CALL db.idx.vector.queryNodes('Doc', 'embedding', \$topK, seed.embedding)"), falkor)
+        assertTrue(falkor.contains("WITH _seedId, node AS n, 1.0 - score / 2.0 AS _score"), falkor)
+
+        val memgraph = MemgraphGrammar(CallSubqueryEmitter()).vectorSearchHead(among, "n", "_score")
+        assertTrue(memgraph.contains("CALL vector_search.search('Doc_embedding_vector', \$topK, seed.embedding)"), memgraph)
+        assertTrue(memgraph.contains("WITH _seedId, node AS n, 1.0 - distance / 2.0 AS _score"), memgraph)
     }
 
     @Test

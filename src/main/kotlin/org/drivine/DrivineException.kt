@@ -3,7 +3,7 @@ package org.drivine
 import org.drivine.query.QuerySpecification
 import kotlin.RuntimeException
 
-class DrivineException(
+open class DrivineException(
     message: String? = null,
     val rootCause: Throwable? = null,
     val spec: QuerySpecification<*>? = null

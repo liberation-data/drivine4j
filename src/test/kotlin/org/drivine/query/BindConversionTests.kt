@@ -13,7 +13,7 @@ import java.time.ZonedDateTime
 import java.util.*
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
-import kotlin.test.assertTrue
+import kotlin.test.fail
 
 /**
  * Tests for automatic type conversion in .bind() method.
@@ -31,6 +31,16 @@ import kotlin.test.assertTrue
 class BindConversionTests @Autowired constructor(
     private val manager: PersistenceManager
 ) {
+
+    /**
+     * A moment as the store gives it back: a graph engine's driver as a `ZonedDateTime`, and Oracle or
+     * Postgres as the ISO text they keep a moment as.
+     */
+    private fun moment(value: Any?): Instant = when {
+        value is ZonedDateTime -> value.toInstant()
+        value is String && !manager.type.speaksCypher -> ZonedDateTime.parse(value).toInstant()
+        else -> fail("A moment, and not ${value?.let { it::class.simpleName }}: $value")
+    }
 
     @BeforeEach
     fun setup() {
@@ -70,7 +80,7 @@ class BindConversionTests @Autowired constructor(
         )
 
         assertNotNull(savedValue, "createdAt should be saved")
-        assertTrue(savedValue is ZonedDateTime, "Instant should be stored as ZonedDateTime, got ${savedValue::class}")
+        assertEquals(testInstant, moment(savedValue))
     }
 
     @Test
@@ -155,7 +165,7 @@ class BindConversionTests @Autowired constructor(
         )
 
         assertNotNull(savedValue, "createdAt should be saved")
-        assertTrue(savedValue is ZonedDateTime, "Date should be stored as ZonedDateTime, got ${savedValue::class}")
+        assertEquals(testDate.toInstant(), moment(savedValue))
     }
 
     @Test
@@ -190,7 +200,7 @@ class BindConversionTests @Autowired constructor(
         val propsMap = props as Map<String, Any?>
         assertEquals(uuid, propsMap["uuid"])
         assertEquals("INACTIVE", propsMap["status"])
-        assertTrue(propsMap["createdAt"] is ZonedDateTime)
+        assertEquals(testInstant, moment(propsMap["createdAt"]))
     }
 
     @Test
@@ -268,6 +278,6 @@ class BindConversionTests @Autowired constructor(
         @Suppress("UNCHECKED_CAST")
         val timestampsList = savedTimestamps as List<*>
         assertEquals(2, timestampsList.size)
-        assertTrue(timestampsList.all { it is ZonedDateTime })
+        assertEquals(timestamps, timestampsList.map(::moment))
     }
 }

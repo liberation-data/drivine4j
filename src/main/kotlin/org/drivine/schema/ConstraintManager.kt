@@ -59,6 +59,11 @@ class ConstraintManager internal constructor(
      * caller decides what to do, save that a constraint that ignores case (see
      * [UniquenessConstraintSpec.ignoreCase]) first fills in the lowercased copies it is made over, as
      * [IndexManager.ensure] does. FalkorDB cannot make one, and throws a [DrivineException] before that.
+     * The one thing dropped unasked is a constraint whose build failed,
+     * which FalkorDB keeps listing though it enforces nothing: it is dropped and built again. A
+     * constraint FalkorDB still lists as under construction, from another process or an earlier run,
+     * is waited on, as one made here is: matching once built, and dropped and built again if its
+     * build fails.
      *
      * A failure counts as a [EnsureResult.Violation] only when the data shows one: the grammar
      * suspects it from the engine's error, and a key that repeats confirms it. Any other failure,
@@ -87,8 +92,19 @@ class ConstraintManager internal constructor(
 
     /** [ensure], of [spec] as it is made. */
     private fun ensureMade(spec: ConstraintSpec, violationSampleSize: Int, replaceBlockingIndex: Boolean): EnsureResult {
-        val existing = find(spec)
-        if (existing != null) {
+        // A constraint still being built, by another process or an earlier run, may yet fail: wait for
+        // its build to end, as for one made here. One dropped meanwhile is made again below.
+        val existing = find(spec)?.let { if (it.buildInProgress) awaitBuild(spec, untilListed = false) else it }
+        if (existing != null && existing.buildFailed) {
+            // FalkorDB keeps listing a constraint whose build failed, though it enforces nothing.
+            // It is not the constraint: drop it and build again, which gives a violation when the
+            // data still repeats a key.
+            dropFailedBuild(spec, existing)
+            logger.warn(
+                "Dropped {} {} on {}{}, whose build had failed, to build it again",
+                grammar.engine, spec.kind, spec.label, spec.properties
+            )
+        } else if (existing != null) {
             return if (grammar.matchesShape(existing, spec)) {
                 EnsureResult.AlreadyMatching(existing)
             } else {
@@ -158,7 +174,8 @@ class ConstraintManager internal constructor(
         introspect(grammar.listConstraintsQuery())?.let { grammar.parseConstraintRows(it) } ?: emptyList()
 
     /**
-     * Drops the constraint that [spec] refers to.
+     * Drops the constraint that [spec] refers to, including one whose build failed, which FalkorDB
+     * keeps listing though it enforces nothing.
      *
      * @return true if a constraint was found and dropped, false if none existed
      */
@@ -201,33 +218,50 @@ class ConstraintManager internal constructor(
     /**
      * Engines with asynchronous constraint creation (FalkorDB) return immediately from CREATE;
      * the constraint then transitions UNDER CONSTRUCTION → OPERATIONAL or FAILED. A FAILED
-     * constraint must be dropped (FalkorDB does not allow retrying a failed constraint); it is
-     * reported as a violation when the data confirms one, and thrown when it does not.
+     * constraint is dropped: it enforces nothing, yet stays listed, where it would be taken for the
+     * constraint by anything that reads the store. It is reported as a violation when the data
+     * confirms one, and thrown when it does not.
      */
     private fun awaitAsyncCreation(spec: ConstraintSpec, violationSampleSize: Int): EnsureResult {
+        val info = awaitBuild(spec, untilListed = true)!!
+        if (info.buildFailed) {
+            dropFailedBuild(spec, info)
+            val failed = DrivineException(
+                "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
+                    "but no key it covers repeats in the data"
+            )
+            return confirmedViolation(spec, violationSampleSize, failed) ?: throw failed
+        }
+        logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
+        return EnsureResult.Created(info)
+    }
+
+    /**
+     * Drops [failed], the constraint [spec] refers to, whose build failed. Another process waiting on the
+     * same build sees it fail too, and may drop it first: FalkorDB then refuses the drop, as there is no
+     * such constraint, which is no error once the failed build is no longer listed.
+     */
+    private fun dropFailedBuild(spec: ConstraintSpec, failed: SchemaItemInfo) {
+        try {
+            run(grammar.dropConstraint(failed))
+        } catch (e: Exception) {
+            if (find(spec)?.buildFailed == true) throw e
+            logger.debug("{} {} on {}{}, whose build had failed, was dropped already: {}", grammar.engine, spec.kind, spec.label, spec.properties, e.message)
+        }
+    }
+
+    /**
+     * Polls the constraint [spec] refers to until its build has ended, OPERATIONAL or FAILED, and returns
+     * it as last listed. Each poll reads the status from one listing, so a build that fails between two
+     * reads is never taken for built. While it is not listed, polling goes on when [untilListed] (a
+     * constraint just made, not yet visible), and otherwise ends with null (one dropped meanwhile).
+     */
+    private fun awaitBuild(spec: ConstraintSpec, untilListed: Boolean): SchemaItemInfo? {
         val deadline = System.currentTimeMillis() + asyncCreationTimeout.toMillis()
         while (System.currentTimeMillis() < deadline) {
             val info = find(spec)
-            val status = info?.status?.uppercase()
-            when {
-                info == null -> { /* not yet visible — keep polling */ }
-
-                status == null || status == "OPERATIONAL" -> {
-                    logger.info("Created {} {} on {}{}", grammar.engine, spec.kind, spec.label, spec.properties)
-                    return EnsureResult.Created(info)
-                }
-
-                status.contains("FAILED") -> {
-                    run(grammar.dropConstraint(info))
-                    val failed = DrivineException(
-                        "Constraint on ${spec.label}${spec.properties} failed to build on ${grammar.engine}, " +
-                            "but no key it covers repeats in the data"
-                    )
-                    return confirmedViolation(spec, violationSampleSize, failed) ?: throw failed
-                }
-
-                // UNDER CONSTRUCTION → keep polling
-            }
+            if (info == null && !untilListed) return null
+            if (info != null && !info.buildInProgress) return info
             Thread.sleep(asyncPollInterval.toMillis())
         }
         throw DrivineException(

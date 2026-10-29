@@ -16,11 +16,11 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * The statements that fill in the lowercased copies of a property (see [LowerCopies]) and record that
  * every node of a label has its copy, in the store's own language. The graph engines keep the record
- * on the store's `DrivineStore` node, Oracle and Postgres in the graph's catalog table: see
+ * on the store's `DrivineStore` node, Oracle, Postgres and SQLite in the graph's catalog table: see
  * [CypherLowerCopies] and the grammars of the SQL stores.
  *
  * On the graph engines a record names a label and a property as the JSON array
- * `["<label>","<property>"]`, written as [entry] writes it; Oracle and Postgres keep the two in
+ * `["<label>","<property>"]`, written as [entry] writes it; Oracle, Postgres and SQLite keep the two in
  * columns of a catalog row, and [entries] reads them back as the same pair.
  */
 interface LowerCopyStatements : ReservedNodeStatements {

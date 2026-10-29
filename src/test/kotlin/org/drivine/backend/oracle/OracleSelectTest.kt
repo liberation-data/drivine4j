@@ -42,7 +42,7 @@ class OracleSelectTest {
     private fun count(text: String, part: String): Int = Regex(Regex.escape(part)).findAll(text).count()
 
     private val scansClaim = "JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")')"
-    private val carriesClaim = "INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0"
+    private val carriesClaim = "INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0"
 
     // ----- load -----
 
@@ -115,7 +115,7 @@ class OracleSelectTest {
             WHERE EXISTS (
                 SELECT 1
                 FROM GRAPH_TABLE (g
-                    MATCH (shelf_ IS node) -[e IS edge WHERE e.type = 'KEPT_BY']-> (KEEPER IS node WHERE INSTR(JSON_SERIALIZE(KEEPER.labels), '"Keeper"') > 0)
+                    MATCH (shelf_ IS node) -[e IS edge WHERE e.type = 'KEPT_BY']-> (KEEPER IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(KEEPER.labels), ']'), '[') || ',"', ',"Keeper","') > 0)
                     COLUMNS (shelf_.nid AS src)) KEEPER
                 WHERE KEEPER.src = shelf_.nid)
         """.trimIndent()
@@ -154,13 +154,13 @@ class OracleSelectTest {
                 'companies' VALUE COALESCE((
                     SELECT JSON_ARRAYAGG(companies_.doc ORDER BY companies_.eid RETURNING JSON)
                     FROM GRAPH_TABLE (g
-                        MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (companies_ IS node WHERE INSTR(JSON_SERIALIZE(companies_.labels), '"Company"') > 0)
+                        MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (companies_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(companies_.labels), ']'), '[') || ',"', ',"Company","') > 0)
                         COLUMNS (claim_.nid AS src, e.eid, companies_.doc)) companies_
                     WHERE companies_.src = claim_.nid), JSON('[]')),
                 'people' VALUE COALESCE((
                     SELECT JSON_ARRAYAGG(people_.doc ORDER BY people_.eid RETURNING JSON)
                     FROM GRAPH_TABLE (g
-                        MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0)
+                        MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',"', ',"Human","') > 0)
                         COLUMNS (claim_.nid AS src, e.eid, people_.doc)) people_
                     WHERE people_.src = claim_.nid), JSON('[]'))
                 RETURNING JSON) AS result
@@ -181,7 +181,7 @@ class OracleSelectTest {
                 |    'keeper' VALUE (
                 |        SELECT keeper_.doc
                 |        FROM GRAPH_TABLE (g
-                |            MATCH (shelf_ IS node) -[e IS edge WHERE e.type = 'KEPT_BY']-> (keeper_ IS node WHERE INSTR(JSON_SERIALIZE(keeper_.labels), '"Keeper"') > 0)
+                |            MATCH (shelf_ IS node) -[e IS edge WHERE e.type = 'KEPT_BY']-> (keeper_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(keeper_.labels), ']'), '[') || ',"', ',"Keeper","') > 0)
                 |            COLUMNS (shelf_.nid AS src, e.eid, keeper_.doc)) keeper_
                 |        WHERE keeper_.src = shelf_.nid
                 |        ORDER BY keeper_.eid FETCH FIRST 1 ROWS ONLY)
@@ -213,8 +213,8 @@ class OracleSelectTest {
                 |            SELECT reached_.src, reached_.nid, ANY_VALUE(reached_.doc) AS doc
                 |            FROM GRAPH_TABLE (g
                 |                MATCH (claim_ IS node)
-                |                    -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '"Human"') > 0)
-                |                    -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(JSON_SERIALIZE(reached_.labels), '"Company"') > 0)
+                |                    -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(m1.labels), ']'), '[') || ',"', ',"Human","') > 0)
+                |                    -[e2 IS edge WHERE e2.type = 'WORKS_AT']-> (reached_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(reached_.labels), ']'), '[') || ',"', ',"Company","') > 0)
                 |                COLUMNS (claim_.nid AS src, reached_.nid, reached_.doc)) reached_
                 |            GROUP BY reached_.src, reached_.nid
                 |        ) employers_
@@ -351,12 +351,12 @@ class OracleSelectTest {
         fun reached(row: String, label: String) = """
             SELECT $row.nid
             FROM GRAPH_TABLE (g
-                MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> ($row IS node WHERE INSTR(JSON_SERIALIZE($row.labels), '"$label"') > 0)
+                MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> ($row IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE($row.labels), ']'), '[') || ',"', ',"$label","') > 0)
                 COLUMNS (claim_.nid AS src, $row.nid)) $row
             WHERE $row.src IN (
                 SELECT claim_.nid
                 FROM g_node claim_
-                WHERE INSTR(JSON_SERIALIZE(claim_.labels), '"Claim"') > 0
+                WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(claim_.labels), ']'), '[') || ',"', ',"Claim","') > 0
                   AND JSON_VALUE(claim_.props, '$.id') = ${'$'}id)
         """.trimIndent()
         assertEquals(reached("cascaded_", "Company") + "\nUNION\n" + reached("cascaded2_", "Human"), sql)
@@ -380,7 +380,7 @@ class OracleSelectTest {
         assertTrue(
             nested.contains(
                 "MATCH (memo_ IS node)\n" +
-                    "        -[e1 IS edge WHERE e1.type = 'COVERS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '\"Claim\"') > 0)\n" +
+                    "        -[e1 IS edge WHERE e1.type = 'COVERS']-> (m1 IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(m1.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0)\n" +
                     "        -[e2 IS edge WHERE e2.type = 'MENTIONS']-> (cascaded2_ IS node",
             ),
             nested,
@@ -433,7 +433,7 @@ class OracleSelectTest {
                     SELECT from_.nid
                     FROM g_node from_
                     WHERE JSON_VALUE(from_.props, '$.id') = ${'$'}_fromId
-                      AND INSTR(JSON_SERIALIZE(from_.labels), '"Human"') > 0))
+                      AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(from_.labels), ']'), '[') || ',"', ',"Human","') > 0))
             """.trimIndent(),
             out.relatedTo(listOf("Human"), "id", "_fromId", "MENTIONS", Direction.OUTGOING),
         )
@@ -496,10 +496,10 @@ class OracleSelectTest {
     }
 
     @Test
-    fun `the nearest by an exact measure reads every node that has the embedding`() {
+    fun `the nearest by an exact measure reads every node that has an embedding of the vector's size`() {
         val select = select(Shelf::class.java)
         val sql = select.nearestTo("embedding", SimilarityFunction.COSINE, null, listOf(0.1f, 0.2f), 7).squashed()
-        assertTrue(sql.startsWith("SELECT c.nid, c.labels, c.props, c.stamp, c.doc, (2 - VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB)), TO_VECTOR(\$_p0), COSINE)) / 2 AS score FROM GRAPH_TABLE (g MATCH (c IS node WHERE JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND JSON_EXISTS(c.props, '$.embedding'))"), sql)
+        assertTrue(sql.startsWith("SELECT c.nid, c.labels, c.props, c.stamp, c.doc, (2 - VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB)), TO_VECTOR(\$_p0), COSINE)) / 2 AS score FROM GRAPH_TABLE (g MATCH (c IS node WHERE JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND JSON_EXISTS(c.props, '$.embedding') AND VECTOR_DIMENSION_COUNT(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB))) = 2)"), sql)
         assertTrue(sql.endsWith("ORDER BY score DESC, c.nid FETCH FIRST \$_p1 ROWS ONLY"), sql)
         assertEquals(mapOf<String, Any?>("_p0" to listOf(0.1f, 0.2f), "_p1" to 7), select.bindings())
     }
@@ -507,7 +507,7 @@ class OracleSelectTest {
     @Test
     fun `a partition label narrows the nearest, and the Euclidean score is one over one plus the distance`() {
         val sql = select(Shelf::class.java).nearestTo("embedding", SimilarityFunction.EUCLIDEAN, "Hot", listOf(0.1f), 3).squashed()
-        assertTrue(sql.contains("JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND JSON_EXISTS(c.labels, '$[*]?(@ == \"Hot\")') AND JSON_EXISTS(c.props, '$.embedding')"), sql)
+        assertTrue(sql.contains("JSON_EXISTS(c.labels, '$[*]?(@ == \"Shelf\")') AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(c.labels), ']'), '[') || ',\"', ',\"Hot\",\"') > 0 AND JSON_EXISTS(c.props, '$.embedding')"), sql)
         assertTrue(sql.contains("1 / (1 + VECTOR_DISTANCE(TO_VECTOR(JSON_QUERY(c.props, '$.embedding' RETURNING CLOB)), TO_VECTOR(\$_p0), EUCLIDEAN_SQUARED)) AS score"), sql)
     }
 
@@ -516,7 +516,7 @@ class OracleSelectTest {
         val select = select(Shelf::class.java)
         val sql = select.nearestThrough("g_v_shelf", SimilarityFunction.COSINE, listOf(0.5f), 4).squashed()
         assertTrue(sql.contains("FROM (SELECT s.nid, VECTOR_DISTANCE(s.embedding, TO_VECTOR(\$_p0), COSINE) AS distance FROM g_v_shelf s ORDER BY distance FETCH APPROX FIRST \$_p1 ROWS ONLY) k"), sql)
-        assertTrue(sql.contains("JOIN g_node c ON c.nid = k.nid WHERE INSTR(JSON_SERIALIZE(c.labels), '\"Shelf\"') > 0"), sql)
+        assertTrue(sql.contains("JOIN g_node c ON c.nid = k.nid WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(c.labels), ']'), '[') || ',\"', ',\"Shelf\",\"') > 0"), sql)
         assertTrue(sql.contains("(2 - k.distance) / 2 AS score"), sql)
         assertTrue(sql.contains("JSON_TRANSFORM(c.props, SET '$.labels' = c.labels, SET '$.\"__drivine.stamp\"' = c.stamp) AS doc"), sql)
         assertEquals(mapOf<String, Any?>("_p0" to listOf(0.5f), "_p1" to 4), select.bindings())
@@ -550,7 +550,7 @@ class OracleSelectTest {
         val select = select(Shelf::class.java)
         val sql = select.matchingThrough("g_t_shelf", listOf("title", "body"), TextQuery.parse("graph +data -noise")).squashed()
         assertTrue(sql.contains("SELECT s.nid, SCORE(1) + SCORE(2) AS score FROM g_t_shelf s WHERE JSON_TEXTCONTAINS(s.doc, '$.title', \$_p0, 1) OR JSON_TEXTCONTAINS(s.doc, '$.body', \$_p0, 2)) k"), sql)
-        assertTrue(sql.contains("JOIN g_node c ON c.nid = k.nid WHERE INSTR(JSON_SERIALIZE(c.labels), '\"Shelf\"') > 0"), sql)
+        assertTrue(sql.contains("JOIN g_node c ON c.nid = k.nid WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(c.labels), ']'), '[') || ',\"', ',\"Shelf\",\"') > 0"), sql)
         assertTrue(sql.endsWith(") h WHERE h.score > 0"), sql)
         assertEquals(mapOf<String, Any?>("_p0" to "({graph} ACCUM {data}) AND {data} NOT {noise}"), select.bindings())
     }

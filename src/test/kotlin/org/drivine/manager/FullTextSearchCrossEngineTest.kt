@@ -67,6 +67,21 @@ private fun seed(pm: NonTransactionalPersistenceManager, awaitIndexes: Boolean) 
             """.trimIndent()
         )
     )
+    // Twelve articles match "zebra", each longer than the last so each scores below the last; the
+    // even ones are titled "keep". Created worst first, so the order they are stored in is not the
+    // order they rank in.
+    pm.execute(
+        QuerySpecification.withStatement(
+            """
+            UNWIND range(12, 1, -1) AS i
+            CREATE (:Article {
+                id: 'z' + toString(i),
+                title: CASE WHEN i % 2 = 0 THEN 'keep' ELSE 'drop' END,
+                body: 'zebra' + reduce(s = '', j IN range(1, i) | s + ' grass')
+            })
+            """.trimIndent()
+        )
+    )
     // Neo4j full-text indexes populate asynchronously — block until they catch up with the seed.
     if (awaitIndexes) pm.execute(QuerySpecification.withStatement("CALL db.awaitIndexes()"))
 }
@@ -106,6 +121,29 @@ private fun verify(gom: GraphObjectManager, pm: NonTransactionalPersistenceManag
         where { query.id eq "A" }
     }
     assertEquals(listOf("A"), filtered.map { it.value.id })
+
+    // A filter keeps the best of the hits it passes, not the first it is given: the limit after the
+    // filter takes no sort of its own, so the head must hand it the hits in score order.
+    val ranked = gom.loadMatching<ArticleNode>("zebra", topK = 20)
+    assertEquals(12, ranked.size)
+    val bestKept = ranked.filter { it.value.title == "keep" }.take(2).map { it.score }
+    val kept = gom.loadMatching(ArticleNode::class.java, ArticleNodeQueryDsl.INSTANCE, "zebra", topK = 2) {
+        where { query.title eq "keep" }
+    }
+    assertEquals(2, kept.size)
+    bestKept.zip(kept.map { it.score }).forEach { (best, found) -> assertEquals(best, found, 1e-9) }
+
+    // A cut that bites keeps the best hits, not the first the CALL yields: FalkorDB takes no limit on
+    // the CALL, and the articles were stored worst first.
+    assertEquals(ranked.take(3).map { it.value.id }, gom.loadMatching<ArticleNode>("zebra", topK = 3).map { it.value.id })
+
+    // topK bounds the index call too, so its edges must still run: none asked for, or every hit.
+    assertTrue(gom.loadMatching<ArticleNode>("zebra", topK = 0).isEmpty())
+    assertEquals(12, gom.loadMatching<ArticleNode>("zebra", topK = Int.MAX_VALUE).size)
+    val allKept = gom.loadMatching(ArticleNode::class.java, ArticleNodeQueryDsl.INSTANCE, "zebra", topK = Int.MAX_VALUE) {
+        where { query.title eq "keep" }
+    }
+    assertEquals(6, allKept.size)
 
     // A @PropertyBag survives the search projection. The bag has no single column to map, so an
     // explicit projection returns it empty while `load` returns it populated — and because filtering

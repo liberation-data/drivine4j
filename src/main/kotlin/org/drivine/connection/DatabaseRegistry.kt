@@ -4,7 +4,7 @@ import org.drivine.mapper.SubtypeRegistry
 
 /**
  * Registry of database connection providers.
- * Must be configured as a bean in your Spring configuration.
+ * The starter makes one as a bean; elsewhere, [org.drivine.Drivine] makes one.
  */
 class DatabaseRegistry(
     dataSourceMap: DataSourceMap,

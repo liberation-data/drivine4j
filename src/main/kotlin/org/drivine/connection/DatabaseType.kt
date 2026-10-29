@@ -27,10 +27,17 @@ enum class DatabaseType(
     MEMGRAPH("MEMGRAPH"),
 
     /**
-     * Oracle Database, 23ai or later, over JDBC. It speaks SQL: a graph is a SQL property graph
-     * over tables, read with `GRAPH_TABLE` and written as rows of those tables.
+     * Oracle Database, 23.9 or later, over JDBC (see `JdbcConnectionProvider.oracleRefusal`). It speaks SQL: a graph is a
+     * SQL property graph over tables, read with `GRAPH_TABLE` and written as rows of those tables.
      */
     ORACLE("ORACLE", speaksCypher = false),
+
+    /**
+     * SQLite, 3.45 or later, over JDBC with xerial's driver: a graph is the same two tables Oracle and
+     * Postgres keep, in a file, read with joins over them and written through functions Drivine
+     * registers on each connection. Built from properties with the file's path as the database name.
+     */
+    SQLITE("SQLITE", speaksCypher = false),
 
     /**
      * Embabel's Cypher engine — compiler, evaluator and store living inside the

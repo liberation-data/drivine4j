@@ -1,7 +1,9 @@
 package org.drivine.backend.sql
 
+import org.drivine.connection.Connection
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.manager.PersistenceManager
+import org.drivine.query.QuerySpecification
 
 /**
  * A graph as a SQL store keeps it: a table of nodes, a table of relationships, and a catalog of what
@@ -25,11 +27,7 @@ import org.drivine.manager.PersistenceManager
 internal abstract class SqlGraph(val name: String, engine: String, private val maxObjectName: Int) {
 
     init {
-        // The longest a name adds is a table beside the nodes, `_v__` and a hash with nothing readable, and that table's trigger.
-        val longest = maxObjectName - ("_v__".length + 8 + BESIDE.length)
-        require(Regex("[A-Za-z][A-Za-z0-9_]{0,${longest - 1}}").matches(name)) {
-            "'$name' cannot name a graph on $engine: it names tables, so it is letters, digits and underscores, begins with a letter, and is at most $longest long, so that what it names fits in $engine's $maxObjectName."
-        }
+        refusal(name, engine, maxObjectName)?.let { throw IllegalArgumentException(it) }
     }
 
     /** The table of nodes: a row each, with its labels, its properties and its stamp. */
@@ -67,10 +65,23 @@ internal abstract class SqlGraph(val name: String, engine: String, private val m
     }
 
     /**
+     * Makes the store if it is not there, each statement given to [run], which returns its rows. Each
+     * statement is safe to run again, and the store is looked for before anything is made, so a user
+     * who may read the tables but not make them gets nothing made over a store that is there.
+     */
+    internal abstract fun ensure(run: (String) -> List<Any?>)
+
+    /**
      * Makes the store if it is not there. Schema statements go on a connection of their own and never
      * on the caller's transaction.
      */
-    abstract fun ensure(persistenceManager: PersistenceManager)
+    fun ensure(persistenceManager: PersistenceManager) = ensure { persistenceManager.indexes.run(it) }
+
+    /**
+     * Makes the store if it is not there, on [connection], which is in auto-commit mode and in no
+     * transaction: how [JdbcConnectionProvider] makes the graph's tables before its first connection.
+     */
+    internal fun ensure(connection: Connection) = ensure { connection.query(QuerySpecification.withStatement(it)) }
 
     companion object {
         /** The graph of a manager that names none. */
@@ -78,5 +89,16 @@ internal abstract class SqlGraph(val name: String, engine: String, private val m
 
         /** The longest an object made beside another adds to its name: a trigger's `_t`, an index's `_i`. */
         private const val BESIDE = "_t"
+
+        /**
+         * Why [name] cannot name a graph on [engine], whose names are at most [maxObjectName] long; null where it can. A
+         * name that cannot is refused by the graph, and by a Cypher statement compiled over its tables.
+         */
+        internal fun refusal(name: String, engine: String, maxObjectName: Int): String? {
+            // The longest a name adds is a table beside the nodes, `_v__` and a hash with nothing readable, and that table's trigger.
+            val longest = maxObjectName - ("_v__".length + 8 + BESIDE.length)
+            if (Regex("[A-Za-z][A-Za-z0-9_]{0,${longest - 1}}").matches(name)) return null
+            return "'$name' cannot name a graph on $engine: it names tables, so it is letters, digits and underscores, begins with a letter, and is at most $longest long, so that what it names fits in $engine's $maxObjectName."
+        }
     }
 }

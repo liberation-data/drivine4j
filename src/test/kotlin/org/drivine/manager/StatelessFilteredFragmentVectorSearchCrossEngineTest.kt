@@ -36,6 +36,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -222,4 +223,18 @@ class StatelessFilteredFragmentVectorSearchPostgresTest {
     }
 
     @Test fun `filtered fragment vector search on Postgres`() = verify(buildGom(pm, registry), fixtures) { it }
+}
+
+class StatelessFilteredFragmentVectorSearchSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+    private val fixtures = SqliteTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun clean() {
+        SqliteTestDatabase.clear(pm)
+        ensureIndexes(pm)
+    }
+
+    @Test fun `filtered fragment vector search on SQLite`() = verify(buildGom(pm, registry), fixtures) { it }
 }

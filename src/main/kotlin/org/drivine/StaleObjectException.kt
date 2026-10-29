@@ -40,6 +40,13 @@ class StaleObjectException(
      * differed. When it is not null, the object's node may be as it was loaded.
      */
     cause: Throwable? = null,
+    /**
+     * True when the node carries the stamp the save compared, and a field the save compared with the
+     * object as it was loaded differs: another writer changed the field and left the stamp as it was,
+     * or the load ran while another writer committed and read its stamp with the data from before its
+     * write. Only a save on an engine whose reads take no snapshot (Neo4j) compares fields.
+     */
+    val fieldsDiffer: Boolean = false,
 ) : RuntimeException(
     when {
         cause != null ->
@@ -53,6 +60,13 @@ class StaleObjectException(
             Another object of the batch holds this node, and its save changed the node or a relationship of it before this one's stamp was compared.
             Expected stamp $expectedStamp, found ${foundStamp ?: "none"}.
             Save the objects one at a time, each from what the save before it returned, or give this object first in the batch.
+            """.trimIndent()
+        fieldsDiffer && !deleted ->
+            """
+            ${type.simpleName} '$id' has a field that is not as the object was loaded with, though its stamp says its own data is as the object was loaded with, so it was not saved.
+            Another writer changed the field and left the stamp as it was, or the load read the node while another writer committed.
+            Expected stamp $expectedStamp, found ${foundStamp ?: "none"}.
+            Load it again and re-apply the change: StatelessGraphObjectManager.update does this.
             """.trimIndent()
         else ->
             """

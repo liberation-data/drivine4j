@@ -6,6 +6,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNotNull
@@ -40,8 +41,12 @@ import org.testcontainers.utility.DockerImageName
 import sample.flatexpand.SeqExpandView
 import sample.stateless.Claim
 import sample.stateless.ClaimWithBagAndStatus
+import sample.stateless.ClaimWithDefaultTags
 import sample.stateless.ClaimWithRoles
 import sample.stateless.ClaimWithStatus
+import sample.stateless.ClaimWithTags
+import sample.stateless.ClaimWithTagsView
+import sample.stateless.SetProbe
 import sample.stateless.Sticker
 import sample.stateless.Finding
 import sample.stateless.Swatch
@@ -75,6 +80,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.Assumptions.assumeTrue
 
 /**
@@ -359,8 +365,9 @@ abstract class StatelessSaveSoundnessContract {
         // As a load sees the node when it is handed another writer's stamp with the data from before its write.
         run("MATCH (n:Finding {id: 'f1'}) SET n.sources = n.sources + 'theirs'")
 
-        assertFailsWith<StaleObjectException> { stateless.save(loaded.merge(Finding("f1", listOf("mine"))), from = loaded) }
+        val refused = assertFailsWith<StaleObjectException> { stateless.save(loaded.merge(Finding("f1", listOf("mine"))), from = loaded) }
 
+        assertContains(refused.message.orEmpty(), "Finding 'f1' has a field that is not as the object was loaded with")
         assertEquals(setOf("first", "theirs"), stateless.load<Finding>("f1")?.sources?.toSet(), "the other writer's change stands")
     }
 
@@ -405,6 +412,18 @@ abstract class StatelessSaveSoundnessContract {
 
         val itself = assertFailsWith<IllegalArgumentException> { stateless.save(loaded, from = loaded) }
         assertContains(itself.message.orEmpty(), "from is the Finding saved itself")
+
+        val memo = Memo("m1", "one")
+        val noStampField = assertFailsWith<IllegalArgumentException> { stateless.save(memo.copy(text = "two"), from = memo) }
+        assertContains(noStampField.message.orEmpty(), "Memo has no @NodeStamp field")
+        assertNull(stateless.load<Memo>("m1"), "nothing was written")
+
+        // A view is refused for its root's class, which is what would carry the stamp.
+        val view = MemoView(memo)
+        val noRootStampField = assertFailsWith<IllegalArgumentException> { stateless.save(view.copy(people = listOf(Human("h1", "Ada"))), from = view) }
+        assertContains(noRootStampField.message.orEmpty(), "Memo has no @NodeStamp field, so a save of a MemoView has no stamp")
+        assertNull(stateless.load<Memo>("m1"), "nothing was written")
+        assertNull(stateless.load<Human>("h1"), "nothing was written")
 
         assertEquals(listOf("first"), stateless.load<Finding>("f1")?.sources, "nothing was written")
     }
@@ -751,6 +770,16 @@ abstract class StatelessSaveSoundnessContract {
     }
 
     @Test
+    fun `a save from the object as loaded, of a node saved before a Default field was added, is written`() {
+        savedBeforeTheField()
+        val loaded = assertNotNull(stateless.load<ClaimWithStatus>("c1"))
+
+        stateless.save(loaded.copy(text = "two"), from = loaded)
+
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
     fun `an update of a node saved before a Default field was added loads again when the field is given another value under the same stamp`() {
         assumeReadsWithoutSnapshot()
         savedBeforeTheField()
@@ -762,10 +791,332 @@ abstract class StatelessSaveSoundnessContract {
         assertEquals("two", property("c1", "text"))
     }
 
+    // ----- A packed field another writer packed another way -----
+
+    /** A claim with packed tags, whose text is then rewritten as [text], leaving the stamp alone: as another library packs it. */
+    private fun packedAs(text: String) {
+        stateless.save(ClaimWithTags("c1", "one", tags = listOf("a", "b")))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.tags = $text")
+    }
+
+    @Test
+    fun `an update of a node whose packed field was packed with other spacing is written at the first attempt`() {
+        packedAs("'[\"a\", \"b\", \"c\"]'")
+
+        val updated = assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "two") })
+
+        assertEquals(listOf("a", "b", "c"), updated.tags)
+        assertEquals("two", property("c1", "text"))
+        assertEquals("[\"a\", \"b\", \"c\"]", property("c1", "tags"), "the packed text is left as the other writer packed it")
+    }
+
+    @Test
+    fun `an update of a view whose root's packed field was packed with other spacing is written at the first attempt`() {
+        packedAs("'[\"a\", \"b\"]'")
+
+        val updated = assertNotNull(stateless.update<ClaimWithTagsView>("c1", attempts = 1) { it.copy(claim = it.claim.copy(text = "two")) })
+
+        assertEquals(listOf("a", "b"), updated.claim.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `an update of a node whose packed field holds text that is not JSON, or a list, is written at the first attempt`() {
+        packedAs("'plain'")
+        assertEquals(listOf("plain"), assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "two") }).tags)
+        assertEquals("plain", property("c1", "tags"))
+
+        run("MATCH (c:Claim {id: 'c1'}) SET c.tags = ['x', 'y']")
+        assertEquals(listOf("x", "y"), assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "three") }).tags)
+        assertEquals("three", property("c1", "text"))
+    }
+
+    @Test
+    fun `an update of a node saved before a packed field with a default was added is written at the first attempt`() {
+        savedBeforeTheField()
+
+        val updated = assertNotNull(stateless.update<ClaimWithDefaultTags>("c1", attempts = 1) { it.copy(text = "two") })
+
+        assertEquals(listOf("new"), updated.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `update loads again when a packed field another writer packed another way differs under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        packedAs("'[\"a\", \"b\"]'")
+
+        val applied = appliedAfterUnmarked<ClaimWithTags>("c1", "MATCH (c:Claim {id: 'c1'}) SET c.tags = '[\"a\", \"theirs\"]'") { it.copy(text = "two") }
+
+        assertEquals(2, applied, "the save of the first load was refused")
+        assertEquals(listOf("a", "theirs"), stateless.load<ClaimWithTags>("c1")?.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `update loads again when a packed field loaded as its default is given a value under the same stamp`() {
+        assumeReadsWithoutSnapshot()
+        savedBeforeTheField()
+
+        val applied = appliedAfterUnmarked<ClaimWithDefaultTags>("c1", "MATCH (c:Claim {id: 'c1'}) SET c.tags = '[\"theirs\"]'") { it.copy(text = "two") }
+
+        assertEquals(2, applied, "the first save is refused: the node holds tags, and not the ones loaded")
+        assertEquals(listOf("theirs"), stateless.load<ClaimWithDefaultTags>("c1")?.tags)
+        assertEquals("two", property("c1", "text"))
+    }
+
+    @Test
+    fun `a save from the object as loaded compares a packed field as the node held it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val loaded = assertNotNull(stateless.load<ClaimWithTags>("c1"))
+
+        stateless.save(loaded.copy(text = "two"), from = loaded)
+
+        assertEquals("two", property("c1", "text"))
+        assertEquals(listOf("a", "b"), stateless.load<ClaimWithTags>("c1")?.tags)
+    }
+
+    @Test
+    fun `a save from the object an update returned compares a packed field the update left as the node holds it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val updated = assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(text = "two") })
+
+        stateless.save(updated.copy(text = "three"), from = updated)
+
+        assertEquals("three", property("c1", "text"))
+    }
+
+    @Test
+    fun `a save from the object an update returned compares a packed field the update wrote as the update packed it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val updated = assertNotNull(stateless.update<ClaimWithTags>("c1", attempts = 1) { it.copy(tags = listOf("c")) })
+
+        stateless.save(updated.copy(text = "three"), from = updated)
+
+        assertEquals("three", property("c1", "text"))
+        assertEquals(listOf("c"), stateless.load<ClaimWithTags>("c1")?.tags)
+    }
+
+    @Test
+    fun `a save from the object a save of other fields returned compares a packed field it left as the node holds it`() {
+        packedAs("'[\"a\", \"b\"]'")
+        val loaded = assertNotNull(stateless.load<ClaimWithTags>("c1"))
+        val saved = stateless.saveFields(loaded.copy(text = "two"), except = setOf("tags"), from = loaded)
+
+        stateless.save(saved.copy(text = "three"), from = saved)
+
+        assertEquals("three", property("c1", "text"))
+    }
+
+    @Test
+    fun `a save from a copy of the object as loaded compares a packed field as a save packs it`() {
+        assumeReadsWithoutSnapshot()
+        packedAs("'[\"a\", \"b\"]'")
+        val loaded = assertNotNull(stateless.load<ClaimWithTags>("c1"))
+
+        // No load made the copy, so nothing says what text the node held: the save is refused, which is safe.
+        assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(text = "two"), from = loaded.copy()) }
+
+        assertEquals("one", property("c1", "text"))
+    }
+
+    // ----- A set compared as the list it was loaded from -----
+
+    /** A set probe whose tags another writer stored as [list], a Cypher list, leaving the stamp as it was. */
+    private fun tagsStoredAs(list: String, id: String = "p1") {
+        stateless.save(SetProbe(id, "one", setOf("x")))
+        run("MATCH (n:SetProbe {id: '$id'}) SET n.tags = $list")
+    }
+
+    /** The list the node holds for the tags of the set probe [id], in its order. */
+    private fun storedTags(id: String = "p1"): List<*> = pm.query(
+        QuerySpecification.withStatement("MATCH (n:SetProbe {id: \$id}) RETURN n.tags").bind(mapOf("id" to id)).transform(List::class.java)
+    ).single()
+
+    private val twelve = listOf("quince", "apple", "mango", "kiwi", "banana", "lime", "cherry", "fig", "grape", "date", "lemon", "pear")
+
+    @Test
+    fun `a save from the object as loaded compares a set loaded from a list holding an item twice as the list`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        assertEquals(setOf("a", "b"), loaded.tags)
+
+        stateless.save(loaded.copy(name = "two"), from = loaded)
+
+        assertEquals("two", property("p1", "name"))
+        assertEquals(listOf("a", "b"), storedTags(), "a save of the whole object writes the set")
+    }
+
+    @Test
+    fun `an update compares a set loaded from a list holding an item twice as the list, and leaves the list as it is`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+
+        val updated = assertNotNull(stateless.update<SetProbe>("p1", attempts = 1) { it.copy(name = "two") })
+
+        assertEquals(setOf("a", "b"), updated.tags)
+        assertEquals("two", property("p1", "name"))
+        assertEquals(listOf("a", "a", "b"), storedTags(), "the update did not write the set")
+    }
+
+    @Test
+    fun `a set loaded from a list in an order of its own is compared as the list, by a save from the object as loaded and by an update`() {
+        assumeReadsWithoutSnapshot()
+        val orders = listOf(
+            listOf("omega", "beta", "mid", "alpha", "zeta"),
+            listOf("alpha", "beta", "mid", "omega", "zeta"),
+            twelve,
+        )
+        orders.forEachIndexed { index, order ->
+            val list = order.joinToString(", ", "[", "]") { "'$it'" }
+            tagsStoredAs(list, "s$index")
+            val loaded = assertNotNull(stateless.load<SetProbe>("s$index"))
+            stateless.save(loaded.copy(name = "two"), from = loaded)
+            assertEquals("two", property("s$index", "name"), "saved from the object as loaded: $order")
+
+            tagsStoredAs(list, "u$index")
+            assertNotNull(stateless.update<SetProbe>("u$index", attempts = 1) { it.copy(name = "two") })
+            assertEquals("two", property("u$index", "name"), "updated: $order")
+            assertEquals(order, storedTags("u$index"))
+        }
+    }
+
+    @Test
+    fun `a set saved in sorted order is saved again from the object as loaded, and updated`() {
+        val sorted = setOf("alpha", "beta", "mid", "omega", "zeta")
+        stateless.save(SetProbe("p1", "one", sorted))
+        stateless.save(SetProbe("p2", "one", twelve.sorted().toSet()))
+
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        stateless.save(loaded.copy(name = "two"), from = loaded)
+        assertNotNull(stateless.update<SetProbe>("p2", attempts = 1) { it.copy(name = "two") })
+
+        assertEquals(sorted, stateless.load<SetProbe>("p1")?.tags)
+        assertEquals("two", stateless.load<SetProbe>("p1")?.name)
+        assertEquals("two", stateless.load<SetProbe>("p2")?.name)
+    }
+
+    @Test
+    fun `a set loads in the order the node holds its list`() {
+        val order = listOf("zeta", "alpha", "omega", "beta", "mid") + twelve
+        stateless.save(SetProbe("p1", "one", order.toSet()))
+
+        assertEquals(order, stateless.load<SetProbe>("p1")?.tags?.toList())
+    }
+
+    @Test
+    fun `a set changed from one loaded from a list holding an item twice is written, by a save from the object as loaded and by an update`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['b', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+
+        stateless.save(loaded.copy(tags = loaded.tags + "new"), from = loaded)
+        assertEquals(setOf("a", "b", "new"), stateless.load<SetProbe>("p1")?.tags)
+
+        tagsStoredAs("['b', 'a', 'b']", "p2")
+        assertNotNull(stateless.update<SetProbe>("p2", attempts = 1) { it.copy(tags = it.tags - "a" + "c") })
+        assertEquals(listOf("b", "c"), storedTags("p2"))
+    }
+
+    @Test
+    fun `a set changed in another order is written, and saved again from the object the save returned`() {
+        stateless.save(SetProbe("p1", "one", setOf("a", "b")))
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+
+        val saved = stateless.save(loaded.copy(tags = setOf("c", "b", "a")), from = loaded)
+        stateless.save(saved.copy(name = "two"), from = saved)
+
+        assertEquals(listOf("c", "b", "a"), stateless.load<SetProbe>("p1")?.tags?.toList())
+        assertEquals("two", stateless.load<SetProbe>("p1")?.name)
+    }
+
+    @Test
+    fun `a save from the object an update or a save of other fields returned compares a set they left as the node holds it`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val updated = assertNotNull(stateless.update<SetProbe>("p1", attempts = 1) { it.copy(name = "two") })
+        stateless.save(updated.copy(name = "three"), from = updated)
+        assertEquals("three", property("p1", "name"))
+
+        tagsStoredAs("['a', 'a', 'b']", "p2")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p2"))
+        val saved = stateless.saveFields(loaded.copy(name = "two"), only = setOf("name"), from = loaded)
+        assertEquals(listOf("a", "a", "b"), storedTags("p2"), "only the name was written")
+        stateless.saveFields(saved.copy(name = "three"), only = setOf("name"), from = saved)
+        assertEquals("three", property("p2", "name"))
+    }
+
+    @Test
+    fun `a save from the object a save of the set returned compares the set as that save wrote it`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        val saved = stateless.saveFields(loaded.copy(tags = setOf("c", "a")), only = setOf("tags"), from = loaded)
+        assertEquals(listOf("c", "a"), storedTags())
+
+        stateless.save(saved.copy(name = "two"), from = saved)
+
+        assertEquals("two", property("p1", "name"))
+    }
+
+    @Test
+    fun `a save from the object as loaded is refused when another writer changed the set under the same stamp, and says a field differs`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        run("MATCH (n:SetProbe {id: 'p1'}) SET n.tags = ['a', 'b', 'theirs']")
+
+        val refused = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(name = "two"), from = loaded) }
+
+        assertTrue(refused.fieldsDiffer)
+        val message = refused.message.orEmpty()
+        assertContains(message, "SetProbe 'p1' has a field that is not as the object was loaded with, though its stamp says its own data is as the object was loaded with")
+        assertFalse("relationship" in message, message)
+        assertEquals(listOf("a", "b", "theirs"), storedTags(), "the other writer's change stands")
+    }
+
+    @Test
+    fun `a save from the object as loaded, refused because another writer saved the node, says it was changed and not that a field differs`() {
+        assumeReadsWithoutSnapshot()
+        tagsStoredAs("['a', 'a', 'b']")
+        val loaded = assertNotNull(stateless.load<SetProbe>("p1"))
+        stateless.save(loaded.copy(name = "theirs"))
+
+        val refused = assertFailsWith<StaleObjectException> { stateless.save(loaded.copy(name = "two"), from = loaded) }
+
+        assertFalse(refused.fieldsDiffer, refused.message)
+        assertContains(refused.message.orEmpty(), "SetProbe 'p1' was changed by another writer")
+        assertEquals("theirs", property("p1", "name"), "the other writer's change stands")
+    }
+
+    @Test
+    fun `a save from the view as loaded that replaces a list, so compares the whole stamp, says a field differs only where the stamp is as loaded`() {
+        assumeReadsWithoutSnapshot()
+        val loaded = stateless.save(ClaimView(Claim("c1", "one"), people = listOf(Human("ada", "Ada"))))
+        run("MATCH (c:Claim {id: 'c1'}) SET c.text = 'theirs'")
+
+        val fieldChanged = assertFailsWith<StaleObjectException> {
+            stateless.save(loaded.copy(people = emptyList()), Replace(ClaimView::people), from = loaded)
+        }
+        assertTrue(fieldChanged.fieldsDiffer, fieldChanged.message)
+
+        val reloaded = assertNotNull(stateless.load<ClaimView>("c1"))
+        run("MATCH (c:Claim {id: 'c1'}) CREATE (c)-[:MENTIONS]->(:Human {id: 'bob', name: 'Bob'}) SET ${Stamps.linksClause("c")}")
+
+        val relinked = assertFailsWith<StaleObjectException> {
+            stateless.save(reloaded.copy(people = emptyList()), Replace(ClaimView::people), from = reloaded)
+        }
+        assertFalse(relinked.fieldsDiffer, relinked.message)
+        assertContains(relinked.message.orEmpty(), "Claim 'c1' had a relationship added or removed by another writer")
+        assertEquals(listOf("c1->ada", "c1->bob"), edges("MENTIONS"))
+    }
+
     // ----- Inside a transaction -----
 
     @Test
     fun `a save in a transaction that read the node before another writer changed it is refused, and writes nothing`() {
+        assumeTrue(pm.type != DatabaseType.SQLITE, "SQLite has one writer: a transaction takes the write lock as it begins, so no other writer changes the node in it")
         val loaded = stateless.save(Claim("c1", "one"))
         val connection = connections.connect()
         connection.startTransaction()
@@ -925,4 +1276,10 @@ class StatelessSaveSoundnessPostgresTest : StatelessSaveSoundnessContract() {
     private val store = PostgresTestDatabase.graphManager("contracts")
     override val pm: PersistenceManager = PostgresTestDatabase.fixtures(store)
     override val connections: ConnectionProvider = PostgresTestDatabase.connections(store)
+}
+
+class StatelessSaveSoundnessSqliteTest : StatelessSaveSoundnessContract() {
+    private val store = SqliteTestDatabase.graphManager("contracts")
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(store)
+    override val connections: ConnectionProvider = SqliteTestDatabase.connections(store)
 }

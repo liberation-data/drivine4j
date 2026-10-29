@@ -66,17 +66,17 @@ class OracleRowSourcesTest {
     // ----- Nodes -----
 
     @Test
-    fun `the nodes of some labels are asked of the index, until the statement finds its roots some narrower way`() {
+    fun `a scan asks the index for the nodes of its first label, until the statement finds its roots some narrower way`() {
         val scanned = rows.nodes(listOf("Claim", "Hot"), "n_").whole().squashed()
         scope.narrowed = true
         val narrowed = rows.nodes(listOf("Claim", "Hot"), "n_").whole().squashed()
 
         assertEquals(
-            "GRAPH_TABLE (g MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")') AND JSON_EXISTS(n_.labels, '$[*]?(@ == \"Hot\")')) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
+            "GRAPH_TABLE (g MATCH (n_ IS node WHERE JSON_EXISTS(n_.labels, '$[*]?(@ == \"Claim\")') AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Hot\",\"') > 0) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
             scanned,
         )
         assertEquals(
-            "GRAPH_TABLE (g MATCH (n_ IS node WHERE INSTR(JSON_SERIALIZE(n_.labels), '\"Claim\"') > 0 AND INSTR(JSON_SERIALIZE(n_.labels), '\"Hot\"') > 0) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
+            "GRAPH_TABLE (g MATCH (n_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Claim\",\"') > 0 AND INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(n_.labels), ']'), '[') || ',\"', ',\"Hot\",\"') > 0) COLUMNS (n_.nid, n_.labels, n_.props, n_.stamp, n_.doc)) n_",
             narrowed,
         )
     }
@@ -100,7 +100,7 @@ class OracleRowSourcesTest {
         val sql = rows.reached("claim_", listOf(Step("MENTIONS", Direction.OUTGOING, listOf("Human"))), "people_").whole().squashed()
 
         assertEquals(
-            "GRAPH_TABLE (g MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '\"Human\"') > 0)" +
+            "GRAPH_TABLE (g MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',\"', ',\"Human\",\"') > 0)" +
                 " COLUMNS (claim_.nid AS src, e.eid, e.props AS eprops, people_.nid, people_.labels, people_.props, people_.stamp, people_.doc)) people_",
             sql,
         )
@@ -129,9 +129,9 @@ class OracleRowSourcesTest {
 
         assertTrue(
             ("    MATCH (claim_ IS node)\n" +
-                "        -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '\"Human\"') > 0)\n" +
+                "        -[e1 IS edge WHERE e1.type = 'MENTIONS']-> (m1 IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(m1.labels), ']'), '[') || ',\"', ',\"Human\",\"') > 0)\n" +
                 "        -[e2 IS edge WHERE e2.type = 'WORKS_AT']- (m2 IS node)\n" +
-                "        <-[e3 IS edge WHERE e3.type = 'OWNED_BY']- (t_ IS node WHERE INSTR(JSON_SERIALIZE(t_.labels), '\"Company\"') > 0)\n" +
+                "        <-[e3 IS edge WHERE e3.type = 'OWNED_BY']- (t_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(t_.labels), ']'), '[') || ',\"', ',\"Company\",\"') > 0)\n" +
                 "    COLUMNS (claim_.nid AS src, t_.nid, ") in sql,
             sql,
         )
@@ -143,7 +143,7 @@ class OracleRowSourcesTest {
         val sql = rows.reached("n_", listOf(Step("IT'S", Direction.OUTGOING, listOf("O'Brien \"the\" label"))), "t_").whole()
 
         assertTrue("e.type = 'IT''S'" in sql, sql)
-        assertTrue("'\"O''Brien \\\"the\\\" label\"'" in sql, sql)
+        assertTrue("',\"O''Brien \\\"the\\\" label\",\"'" in sql, sql)
     }
 
     @Test
@@ -186,7 +186,7 @@ class OracleRowSourcesTest {
             """
             SELECT people_.doc
             FROM GRAPH_TABLE (g
-                MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0)
+                MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',"', ',"Human","') > 0)
                 COLUMNS (claim_.nid AS src, e.eid, people_.doc)) people_
             WHERE people_.src = claim_.nid
             ORDER BY people_.eid
@@ -208,7 +208,7 @@ class OracleRowSourcesTest {
             EXISTS (
                 SELECT 1
                 FROM GRAPH_TABLE (g
-                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(JSON_SERIALIZE(people_.labels), '"Human"') > 0 AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0 AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
+                    MATCH (claim_ IS node) -[e IS edge WHERE e.type = 'MENTIONS']-> (people_ IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(people_.labels), ']'), '[') || ',"', ',"Human","') > 0 AND JSON_VALUE(people_.props, '$.name') = ${'$'}_p0 AND JSON_VALUE(people_.props, '$.id') = ${'$'}_p1)
                     COLUMNS (claim_.nid AS src)) people_
                 WHERE people_.src = claim_.nid)
             """.trimIndent(),
@@ -244,7 +244,7 @@ class OracleRowSourcesTest {
             where = listOf("JSON_VALUE(t_.props, '$.name') = \$_p0"),
         ).whole()
 
-        assertTrue("(m1 IS node WHERE INSTR(JSON_SERIALIZE(m1.labels), '\"Company\"') > 0)" in sql, sql)
+        assertTrue("(m1 IS node WHERE INSTR(',' || LTRIM(RTRIM(JSON_SERIALIZE(m1.labels), ']'), '[') || ',\"', ',\"Company\",\"') > 0)" in sql, sql)
         assertTrue("(t_ IS node WHERE JSON_VALUE(t_.props, '$.name') = \$_p0)" in sql, sql)
     }
 

@@ -33,6 +33,8 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
+import org.drivine.backend.sqlite.SqliteSql
 
 /**
  * A write that is not checked still says truly whether it changed the node, when another writer
@@ -213,4 +215,11 @@ class UncheckedWriteLockPostgresTest : UncheckedWriteLockContract() {
 
     // Over the expression a save finds a node by, so the index serves it.
     override val index = "CREATE INDEX IF NOT EXISTS contracts_node_id ON contracts_node ((props ->> 'id'))"
+}
+
+class UncheckedWriteLockSqliteTest : UncheckedWriteLockContract() {
+    override val pm: PersistenceManager = SqliteTestDatabase.fixtures(SqliteTestDatabase.graphManager("contracts"))
+
+    // Over the expression a save finds a node by, so the index serves it.
+    override val index = "CREATE INDEX IF NOT EXISTS contracts_node_id ON contracts_node (${SqliteSql.property("", "id")})"
 }

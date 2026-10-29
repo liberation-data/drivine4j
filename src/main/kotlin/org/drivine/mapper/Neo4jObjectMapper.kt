@@ -78,6 +78,10 @@ object Neo4jObjectMapper {
             registerModule(SimpleModule().apply {
                 addSerializer(Enum::class.java, EnumToStringSerializer())
                 addSerializer(UUID::class.java, UuidToStringSerializer())
+                // A set loads in the order the store holds its list, and is written back in that
+                // order, where Jackson's own HashSet would give it in hash order.
+                @Suppress("UNCHECKED_CAST")
+                addAbstractTypeMapping(Set::class.java as Class<Set<*>>, LinkedHashSet::class.java as Class<out Set<*>>)
             })
         }
     }

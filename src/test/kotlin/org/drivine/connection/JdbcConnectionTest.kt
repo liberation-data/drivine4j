@@ -7,6 +7,7 @@ import org.drivine.query.cypherStatement
 import org.drivine.query.sqlStatement
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.mockito.ArgumentCaptor
 import org.mockito.ArgumentMatchers.any
 import org.mockito.ArgumentMatchers.anyString
 import org.mockito.ArgumentMatchers.eq
@@ -184,12 +185,56 @@ class JdbcConnectionTest {
     }
 
     @Test
-    fun `a statement that is Cypher is refused, and one of no language is taken as SQL`() {
-        assertFailsWith<DrivineException> { connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
-        verify(jdbc, never()).prepareStatement(anyString())
+    fun `a statement that is Cypher is compiled to SQL, and one of no language is taken as SQL`() {
+        connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc).prepareStatement(prepared.capture())
+        // What reaches the database is the compiled SQL over the graph's tables, not the Cypher.
+        assertTrue(prepared.value.startsWith("SELECT ") && "_node" in prepared.value, prepared.value)
 
         connection.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
         verify(jdbc).prepareStatement("SELECT 1 FROM dual")
+    }
+
+    @Test
+    fun `on Oracle a statement compiled from Cypher is not kept in the driver's cache, and a SQL one, or one on Postgres, is`() {
+        // A kept compiled statement holds megabytes of Oracle's memory (#313); Drivine's own SQL is cheap to keep.
+        connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        verify(statement).isPoolable = false
+
+        Mockito.reset(statement)
+        answers(emptyList())
+        connection.query(QuerySpecification.withStatement("SELECT 1 FROM dual"))
+        JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES).query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        verify(statement, never()).isPoolable = Mockito.anyBoolean()
+    }
+
+    @Test
+    fun `a Cypher statement is compiled over the tables of the connection's graph, on a store whose SQL is compiled to`() {
+        JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.POSTGRES, "people")
+            .query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        val prepared = ArgumentCaptor.forClass(String::class.java)
+        verify(jdbc).prepareStatement(prepared.capture())
+        assertTrue("people_node" in prepared.value, prepared.value)
+
+        val refused = assertFailsWith<DrivineException> {
+            JdbcConnection(jdbc, JdbcResultMapper(), DatabaseType.NEO4J).query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n")))
+        }
+        assertEquals("A Cypher statement does not run on NEO4J yet.", refused.message)
+        verify(jdbc).prepareStatement(anyString())
+    }
+
+    @Test
+    fun `a Cypher statement over a graph whose name cannot name tables is refused, naming the graph and why, and plain SQL runs`() {
+        listOf(DatabaseType.ORACLE to "Oracle", DatabaseType.POSTGRES to "Postgres", DatabaseType.SQLITE to "SQLite").forEach { (type, engine) ->
+            val connection = JdbcConnection(jdbc, JdbcResultMapper(), type, "my-graph")
+
+            val refused = assertFailsWith<DrivineException> { connection.query(QuerySpecification.withStatement(cypherStatement("MATCH (n) RETURN n"))) }
+            assertTrue(refused.message.orEmpty().startsWith("'my-graph' cannot name a graph on $engine: it names tables"), refused.message)
+            connection.query(QuerySpecification.withStatement("SELECT 1 AS one"))
+        }
+        // Only the plain SQL reached the database.
+        verify(jdbc, Mockito.times(3)).prepareStatement(anyString())
     }
 
     @Test

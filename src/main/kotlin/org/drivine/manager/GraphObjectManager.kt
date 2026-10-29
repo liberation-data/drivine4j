@@ -42,7 +42,7 @@ import org.slf4j.LoggerFactory
  */
 @Deprecated(
     "Use StatelessGraphObjectManager (GraphObjectManagerFactory.stateless()). A save by this manager depends on its " +
-        "session's snapshot, so a node changed elsewhere gets a partial save. See the README: Migrating from GraphObjectManager.",
+        "session's snapshot, so a node changed elsewhere gets a partial save. See docs/15-migrating-from-graphobjectmanager.md: Migrating from GraphObjectManager.",
 )
 class GraphObjectManager internal constructor(
     private val persistenceManager: PersistenceManager,
@@ -314,6 +314,30 @@ class GraphObjectManager internal constructor(
         return executeScoredSearch(graphClass, backend.nearest(graphClass, null, querySpec, vector, topK, threshold, searchK, partitionLabel))
     }
 
+    override fun <T : Any> loadNearestAmong(
+        graphClass: Class<T>,
+        ids: Collection<String>,
+        topK: Int,
+        threshold: Double?,
+        property: String?,
+        searchK: Int?,
+    ): Map<String, List<Scored<String>>> {
+        requireValidSearchK(topK, searchK)
+        val set = ids.distinct()
+        // The index finds the seed itself first, so asking for one more than is kept is the least that
+        // can fill topK even when every other hit is in the set. Written even for no ids, so that a class,
+        // a property or a store the search refuses is refused alike.
+        val statement = backend.nearestAmong(graphClass, property, set, topK, threshold, searchK ?: (topK + 1))
+        if (set.isEmpty()) return emptyMap()
+        val found = persistenceManager.query(statement.spec().transform(Map::class.java)).associate { row ->
+            @Suppress("UNCHECKED_CAST")
+            val near = (row["near"] as List<Map<String, Any?>>).map { Scored(it["id"].toString(), (it["score"] as Number).toDouble()) }
+            row["seed"].toString() to near
+        }
+        // In the caller's order, which the store does not keep.
+        return set.filter { it in found }.associateWith { found.getValue(it) }
+    }
+
     /**
      * Guards the over-fetch knob. A [searchK] below [topK] would ask the index for fewer rows than the
      * caller wants back, which can only lose results — always a mistake rather than a tuning choice.
@@ -356,7 +380,7 @@ class GraphObjectManager internal constructor(
     }
 
     /**
-     * Reports a vector search that returned fewer rows than asked for.
+     * Reports a vector or full-text search that returned fewer rows than asked for.
      *
      * Filters run *after* the index yields, so a scoped search returns roughly `k × selectivity` rows —
      * ask for 40 against a 22%-selective filter and about 9 come back, drawn from the globally-nearest
@@ -374,9 +398,11 @@ class GraphObjectManager internal constructor(
         if (returned >= requested) return
         if (!logger.isDebugEnabled) return
         logger.debug(
-            "Vector search on {} returned {} of {} requested rows; the index was asked for {}. " +
-                "Filters apply after the index yields, so a scoped search thins the result — raise " +
-                "searchK to widen the search, or search a partition's own index.",
+            """
+            Search on {} returned {} of {} requested rows; the index was asked for {}. Filters apply
+            after the index yields, so a scoped search thins the result — for a vector search raise
+            searchK or search a partition's own index.
+            """.trimIndent().replace('\n', ' '),
             graphClass.simpleName, returned, requested, plan.indexK,
         )
     }
@@ -418,7 +444,7 @@ class GraphObjectManager internal constructor(
 
     /**
      * Reports when an ordered query has no range index to seek into. See [indexAdvice] for the
-     * levels, and the README's pagination section for why the index must mirror the ordering
+     * levels, and "Limit & Pagination" in docs/06-object-manager.md for why the index must mirror the ordering
      * exactly rather than merely overlap it.
      *
      * Only root-level orders participate — a collection sort happens inside a pattern comprehension,
@@ -524,17 +550,23 @@ class GraphObjectManager internal constructor(
     override fun <T : Any> delete(id: String, graphClass: Class<T>, whereClause: String?, cascade: CascadeType): Int {
         validateCascadeSupport(cascade)
         if (cascade == CascadeType.DELETE_ALL || cascade == CascadeType.DELETE_ORPHAN) refuseCascadeBelowDepth(id, graphClass, whereClause)
-        return persistenceManager.getOne(
-            backend.delete(graphClass, whereClause, cascade).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java)
-        )
+        return deleted(backend.delete(graphClass, whereClause, cascade).spec(mapOf(GraphBackend.ID_PARAM to id)).transform(Int::class.java))
     }
+
+    /**
+     * Runs a delete, and runs it again if the engine turned it away as contended, as a save is (see
+     * [SaveExecutor.whenNotContended]). Outside a transaction SQLite turns away a delete that read the
+     * nodes it takes before another connection wrote; a delete turned away has deleted nothing.
+     */
+    private fun deleted(spec: QuerySpecification<Int>): Int =
+        SaveExecutor(persistenceManager, backend).whenNotContended { persistenceManager.getOne(spec) }
 
     override fun <T : Any> deleteAll(graphClass: Class<T>): Int {
         return deleteAll(graphClass, null as String?)
     }
 
     override fun <T : Any> deleteAll(graphClass: Class<T>, whereClause: String?): Int =
-        persistenceManager.getOne(backend.deleteAll(graphClass, whereClause).spec().transform(Int::class.java))
+        deleted(backend.deleteAll(graphClass, whereClause).spec().transform(Int::class.java))
 
     override fun <T : Any, Q : Any> deleteAll(
         graphClass: Class<T>,
@@ -543,7 +575,7 @@ class GraphObjectManager internal constructor(
     ): Int {
         val querySpec = GraphQuerySpec(queryObject)
         querySpec.spec()
-        return persistenceManager.getOne(backend.deleteAll(graphClass, querySpec).spec().transform(Int::class.java))
+        return deleted(backend.deleteAll(graphClass, querySpec).spec().transform(Int::class.java))
     }
 
     /**
@@ -607,7 +639,9 @@ class GraphObjectManager internal constructor(
      * view; [StatelessGraphObjectManager.saveAll] writes fragments of several classes as one.
      *
      * Heterogeneous collections are supported: items are grouped by runtime class and each group is
-     * saved with its own model. The returned list is [objs] in input order, unchanged.
+     * saved with its own model. The returned list is [objs] in input order, unchanged. The roots of
+     * each class are upserted in the order of their ids, so two batches over the same roots lock them
+     * in the same order; the classes, and each item's relationship statements, go in the order given.
      *
      * **Batching strategy — "UNWIND the roots, pipeline the rest".** For each homogeneous group the
      * root-fragment upserts collapse into chunked `UNWIND $rows AS row MERGE (n:…{id}) SET n += row.props`

@@ -10,6 +10,7 @@ import org.drivine.annotation.GraphPath
 import org.drivine.annotation.GraphRelationship
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.Hop
+import org.drivine.annotation.JsonPacked
 import org.drivine.annotation.NodeFragment
 import org.drivine.annotation.NodeId
 import org.drivine.annotation.NodeStamp
@@ -84,6 +85,35 @@ data class ClaimWithOptionalStatus(
     val text: String,
     @NodeStamp val stamp: String? = null,
     val status: String? = "open",
+)
+
+/**
+ * A claim whose tags are packed as JSON text, which another writer may have packed another way: with
+ * other spacing, as text that is not JSON, or as a list.
+ */
+@NodeFragment(labels = ["Claim"])
+data class ClaimWithTags(
+    @NodeId val id: String,
+    val text: String,
+    @NodeStamp val stamp: String? = null,
+    @JsonPacked val tags: List<String>? = null,
+)
+
+/** A view whose root has packed tags. */
+@GraphView
+data class ClaimWithTagsView(
+    @Root val claim: ClaimWithTags,
+    @GraphRelationship(type = "MENTIONS", direction = Direction.OUTGOING)
+    val people: List<Human> = emptyList(),
+)
+
+/** A claim whose packed tags were added after nodes were saved without them: a load gives them their default. */
+@NodeFragment(labels = ["Claim"])
+data class ClaimWithDefaultTags(
+    @NodeId val id: String,
+    val text: String,
+    @NodeStamp val stamp: String? = null,
+    @Default @JsonPacked val tags: List<String> = listOf("new"),
 )
 
 /** A node type with no stamp field. */

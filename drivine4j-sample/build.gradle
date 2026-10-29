@@ -5,6 +5,13 @@ plugins {
     id 'io.spring.dependency-management' version '1.1.7'
 }
 
+// Versions the Boot BOM would manage down, which the root project's build used to set for this one
+// when it applied the Spring Boot plugin. Boot manages Kotlin to 1.9, and would take the Kotlin
+// compiler's own tools down with it. jfalkordb 0.13.0 is built on Jedis 8; Boot manages Jedis to 6.0.0,
+// which lacks DefaultJedisClientConfig.Builder.autoNegotiateProtocol and fails every FalkorDB connection.
+ext['kotlin.version'] = '2.2.20'
+ext['jedis.version'] = '8.0.1'
+
 dependencyManagement {
     imports {
         mavenBom 'org.springframework.boot:spring-boot-dependencies:3.5.7'
@@ -32,6 +39,9 @@ dependencies {
     testImplementation 'org.springframework:spring-tx:6.2.3'
     testImplementation 'org.springframework:spring-test:6.2.3'
 
+    // Reads the model file the build writes, in ModelFileTest. The version is the one Spring Boot manages.
+    testImplementation 'com.fasterxml.jackson.core:jackson-databind'
+
     // Testcontainers for Neo4j
     testImplementation 'org.testcontainers:neo4j:1.21.4'
     testImplementation 'org.testcontainers:junit-jupiter:1.21.4'
@@ -39,6 +49,10 @@ dependencies {
     // The JDBC driver a POSTGRES datasource needs, as an application adds it: CI runs the sample's
     // stateless tests on Postgres. The version is the one Spring Boot manages.
     testImplementation 'org.postgresql:postgresql:42.7.8'
+
+    // The JDBC driver an ORACLE datasource needs, as an application adds it: CI runs the sample's stateless
+    // tests on Oracle too. The version is the one Spring Boot manages.
+    testImplementation 'com.oracle.database.jdbc:ojdbc11:23.7.0.25.01'
 
     // Neptune IAM SigV4 auth
     testImplementation 'software.amazon.awssdk:auth:2.31.3'
@@ -69,13 +83,11 @@ kotlin {
 
 test {
     useJUnitPlatform()
+    // ModelFileTest reads the model file the build writes.
+    inputs.file('.drivine/model.json').optional()
     // See the root build: the collection sort strategy is an input of the tests.
     inputs.property('collectionSortStrategy', providers.environmentVariable('DATABASE_DATASOURCES_NEO_COLLECTION_SORT_STRATEGY').orElse(''))
-    // The images the tests run are pinned in one file, and each pin is an input of the tests.
-    rootProject.file('gradle/test-images.txt').readLines()
-        .collect { it.trim() }.findAll { it && !it.startsWith('#') }
-        .each { line ->
-            def (named, pinned) = line.split(/\s+/)
-            systemProperty "drivine.test.image.${named}", pinned
-        }
+    // The images the tests run are pinned in one file, and each pin is an input of the tests: see the root build.
+    rootProject.testImagePins.each { named, pinned -> systemProperty "drivine.test.image.${named}", pinned }
+    if (rootProject.testImagesUnpinned) systemProperty 'drivine.test.images.unpinned', 'true'
 }

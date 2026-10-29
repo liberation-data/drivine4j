@@ -3,7 +3,6 @@ package org.drivine.manager
 import org.drivine.DrivineException
 import org.drivine.connection.DatabaseRegistry
 import org.drivine.transaction.TransactionContextHolder
-import org.springframework.stereotype.Component
 import java.util.concurrent.ConcurrentHashMap
 
 

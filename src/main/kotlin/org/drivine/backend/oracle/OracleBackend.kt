@@ -54,8 +54,9 @@ internal class OracleBackend(
         val select = select(graphClass)
         val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_", partitionLabel = partitionLabel)
         // What the search measures is the nearest searchK, and of what is left of them topK come back.
-        // Through the index for the label when one has been made; else by measuring every node.
-        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
+        // Through the index for the label when one has been made for embeddings of the vector's size; else by
+        // measuring every node. Oracle refuses to measure a vector against an index of another size.
+        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property), dimensions = vector.size)
         val candidates = if (embeddings != null) {
             select.nearestThrough(embeddings, index.similarity, vector, searchK ?: topK)
         } else {
@@ -63,6 +64,14 @@ internal class OracleBackend(
         }
         val statement = select.scored(candidates, listOfNotNull(query?.let { select.predicate(it.conditions) }), threshold, topK.takeIf { searchK != null })
         return ScoredSearchPlan(statement.statement, statement.bindings, topK, searchK ?: topK)
+    }
+
+    /** Through the index for the label when one has been made, as [nearest] goes; else each root measures the others. */
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement {
+        val select = select(graphClass)
+        val index = VectorIndexResolver.resolve(select.rootFragment, property, "_", "_")
+        val embeddings = made(SchemaItemKind.VECTOR_INDEX, index.label, listOf(index.property))
+        return select.nearestAmong(index.property, index.similarity, ids, topK, threshold, embeddings, searchK)
     }
 
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan {
@@ -75,11 +84,17 @@ internal class OracleBackend(
         return ScoredSearchPlan(statement.statement, statement.bindings)
     }
 
-    /** The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not been made. */
-    private fun made(kind: SchemaItemKind, label: String, properties: List<String>): String? = persistenceManager.query(
+    /**
+     * The table a recorded index of [kind] on [label]'s [properties] is over; null when the index has not
+     * been made, or, given [dimensions], when it is a vector index made for embeddings of another size.
+     */
+    private fun made(kind: SchemaItemKind, label: String, properties: List<String>, dimensions: Int? = null): String? = persistenceManager.query(
         QuerySpecification
-            .withStatement("SELECT object_name FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL")
-            .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)))
+            .withStatement(
+                "SELECT object_name FROM ${graph.catalog} WHERE kind = \$kind AND label = \$label AND properties = \$properties AND object_name IS NOT NULL" +
+                    dimensions?.let { " AND JSON_VALUE(details, '$.dimensions' RETURNING NUMBER) = \$dimensions" }.orEmpty()
+            )
+            .bind(mapOf("kind" to kind.name, "label" to label, "properties" to OracleSchemaGrammar.json(properties)) + listOfNotNull(dimensions?.let { "dimensions" to it }))
             .transform(String::class.java)
     ).firstOrNull()
 

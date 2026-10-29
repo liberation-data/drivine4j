@@ -1,0 +1,488 @@
+package org.drivine.cypher
+
+import org.drivine.cypher.sql.OracleCypherCompiler
+import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqliteCypherCompiler
+import org.drivine.model.Stamps
+import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * Operations nested in one another compile to a statement that grows with them, not exponentially: an operand
+ * read more than once, to test its kind and then its value, is bound once where it is long. Unbound, the
+ * clause that stamps a node compiled to 650 KB on Oracle, which took half a gigabyte of a session's memory.
+ */
+class CompiledSizeTest {
+
+    private val compilers = listOf(OracleCypherCompiler("g"), PostgresCypherCompiler("g"), SqliteCypherCompiler("g"))
+
+    @Test
+    fun `the clause that stamps a node compiles to a statement of a few kilobytes on each store`() {
+        compilers.forEach { compiler ->
+            val sql = compiler.compile("MATCH (c:Claim {id: \$id}) SET ${Stamps.setClause("c")}", mapOf("id" to "x")).sql
+            assertTrue(sql.length < 20_000, "${compiler::class.simpleName}: ${sql.length} characters")
+        }
+    }
+
+    @Test
+    fun `a duration added to a value read from the store compiles to a statement that grows with each addition, not exponentially`() {
+        fun added(times: Int) = "MATCH (c:Claim) RETURN " + "(".repeat(times) + "c.day" + (1..times).joinToString("") { " + duration('P1D'))" }
+        compilers.forEach { compiler ->
+            val (one, two, four) = listOf(1, 2, 4).map { compiler.compile(added(it)).sql.length }
+            // A sum that may be a text writes each side as toString does, a float as Java writes it: on Oracle twice, the
+            // second time for a text past 4,000 bytes (#298).
+            assertTrue(one < 30_000, "${compiler::class.simpleName}: $one characters")
+            assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
+        }
+    }
+
+    @Test
+    fun `a WITH sorted by a duration added to a value read from the store, which is none of its items, compiles to a statement that grows with each addition, not exponentially`() {
+        fun added(times: Int) = "MATCH (c:Claim) WITH c ORDER BY " + "(".repeat(times) + "c.day" + (1..times).joinToString("") { " + duration('P1D'))" } + " RETURN c.id"
+        compilers.forEach { compiler ->
+            val (one, two, four) = listOf(1, 2, 4).map { compiler.compile(added(it)).sql.length }
+            assertTrue(one < 40_000, "${compiler::class.simpleName}: $one characters")
+            assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
+        }
+    }
+
+    @Test
+    fun `a sum of twice the terms compiles to about twice the statement`() {
+        fun sum(terms: Int) = "MATCH (c:Claim) RETURN " + (1..terms).joinToString(" + ") { "c.p$it" }
+        compilers.forEach { compiler ->
+            val (short, long) = listOf(8, 16).map { compiler.compile(sum(it)).sql.length }
+            assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
+        }
+    }
+
+    @Test
+    fun `a quantified path pattern of twice the hops, each node read by its WHERE, compiles to about twice the statement`() {
+        fun group(hops: Int) = "MATCH (a:Claim) ((n0)" + (1..hops).joinToString("") { "-[:R]->(n$it)" } +
+            " WHERE " + (1..hops).joinToString(" AND ") { "n${it - 1}.v < n$it.v" } + "){1,3} (b) RETURN b"
+        compilers.forEach { compiler ->
+            val (short, long) = listOf(4, 8).map { compiler.compile(group(it)).sql.length }
+            assertTrue(short < 20_000, "${compiler::class.simpleName}: $short characters")
+            assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
+        }
+    }
+
+    @Test
+    fun `items taken out of lists nested twice as deep, holding a relationship, compile to about twice the statement`() {
+        fun taken(depth: Int) = "MATCH (c:Claim)-[r:R]->() WITH ${"[".repeat(depth)}r, 1${"]".repeat(depth)} AS m RETURN m${"[0]".repeat(depth)} = 1"
+        compilers.forEach { compiler ->
+            val (short, long) = listOf(4, 8).map { compiler.compile(taken(it)).sql.length }
+            assertTrue(short < 20_000, "${compiler::class.simpleName}: $short characters")
+            assertTrue(long < 3 * short, "${compiler::class.simpleName}: $short, then $long characters")
+        }
+    }
+
+    @Test
+    fun `a sum writes a side as toString writes a float only where the statement gives neither side`() {
+        // A number the statement gives is written out at compile time, and a side added to one is a text where the sum is one.
+        val written = mapOf("PostgresCypherCompiler" to "to_char(", "OracleCypherCompiler" to "TO_CHAR(")
+        compilers.filter { it::class.simpleName in written }.forEach { compiler ->
+            fun writes(cypher: String, parameters: Map<String, Any?> = emptyMap()) =
+                compiler.compile(cypher, parameters).sql.split(written.getValue(compiler::class.simpleName!!)).size - 1
+            val once = writes("MATCH (c:Claim) RETURN c.a + c.b") / 2
+            assertTrue(once > 0, "${compiler::class.simpleName}")
+            assertEquals(0, writes("MATCH (c:Claim) RETURN c.a + 1, 2.5 + c.b, c.a + \$n", mapOf("n" to 1.5)), "${compiler::class.simpleName}")
+            assertEquals(once, writes("MATCH (c:Claim) RETURN 'x' + c.b"), "${compiler::class.simpleName}")
+            // NaN and the infinities are bound as texts on Postgres, so both sides of a sum with one are written as toString writes them.
+            assertEquals(2 * once, writes("MATCH (c:Claim) RETURN c.a + \$n", mapOf("n" to Double.NaN)), "${compiler::class.simpleName}")
+        }
+    }
+
+    @Test
+    fun `a sum writes a side the statement makes a text as its own text, and only a side that may be a float as toString writes it`() {
+        // Written as toString writes a float, a side that is always a text made `count('x' + toString(i))` 2.5 times as slow on Oracle (#268).
+        val written = mapOf("PostgresCypherCompiler" to "to_char(", "OracleCypherCompiler" to "TO_CHAR(")
+        compilers.filter { it::class.simpleName in written }.forEach { compiler ->
+            val name = compiler::class.simpleName!!
+            fun writes(cypher: String) = compiler.compile(cypher).sql.split(written.getValue(name)).size - 1
+            // toString writes its float once, and the sum writes the text it gives as it is.
+            val once = writes("MATCH (c:Claim) RETURN toString(c.i)")
+            assertTrue(once > 0, name)
+            assertEquals(once, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i)"), name)
+            assertEquals(0, writes("MATCH (c:Claim) RETURN 'a' + toUpper(c.s), trim(c.s) + substring(c.s, 1) + left(c.s, 2) + replace(c.s, 'a', 'b')"), name)
+            assertEquals(0, writes("MATCH (c:Claim)-[r]->() RETURN split(c.s, ',')[0] + reverse(toLower(c.s)) + type(r)"), name)
+            // Carried through a WITH, a collect and an UNWIND, still a text.
+            assertEquals(0, writes("MATCH (c:Claim) WITH toLower(c.s) AS t, collect(toUpper(c.s)) AS ts UNWIND ts AS u RETURN t + u + ts[0] + head(ts)"), name)
+            // A property may hold a float: it is written as toString writes it, beside a text or not. Oracle's sum writes such a
+            // side twice, the second time in the branch it takes for a text past 4,000 bytes (#298).
+            val side = if (compiler is OracleCypherCompiler) 2 * once else once
+            assertEquals(side, writes("MATCH (c:Claim) RETURN c.s + 'b'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) RETURN toUpper(c.s) + c.f"), name)
+            assertEquals(once + side, writes("MATCH (c:Claim) RETURN 'x' + toString(c.i) + c.f"), name)
+            // A CASE, a coalesce and a list written are a text, or hold texts, where each of theirs is; a text unwound is one.
+            assertEquals(0, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN toUpper(c.s) ELSE 'n' END + coalesce(toLower(c.s), 'z') + ['a', toUpper(c.s)][1]"), name)
+            assertEquals(0, writes("MATCH (c:Claim) RETURN ltrim(c.s) + rtrim(c.s) + right(c.s, 2)"), name)
+            assertEquals(0, writes("MATCH (c:Claim) UNWIND toUpper(c.s) AS u RETURN u + 'x'"), name)
+            // A list of texts kept distinct, sliced, its tail, its last, and an item an expression names, still holds texts.
+            assertEquals(0, writes("MATCH (c:Claim) WITH collect(DISTINCT toUpper(c.s)) AS ts RETURN last(ts) + ts[1..][0] + tail(ts)[0] + ts[size(ts) - 1]"), name)
+            assertEquals(0, writes("MATCH (c:Claim) WITH collect(toUpper(c.s)) AS ts RETURN reverse(ts)[0] + coalesce(ts, split('a,b', ','))[0]"), name)
+            // Joined to texts, too: the join writes its sides as any `+` does, and its item, added to a text, is written as it is.
+            val joined = "MATCH (c:Claim) WITH collect(toUpper(c.s)) AS ts, collect(c.f) AS fs RETURN (ts + ['a'])[0], ('b' + ts)[0], (ts + fs)[0]"
+            assertEquals(writes(joined), writes(joined.replace("[0],", "[0] + 'x',")), name)
+            assertEquals(writes(joined) + side, writes("$joined + 'x'"), name)
+            // Each query of a CALL's UNION makes it a text, and a write carries it on.
+            assertEquals(0, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN 'n' AS v } RETURN v + 'x'"), name)
+            assertEquals(0, writes("MATCH (c:Claim) WITH c, toUpper(c.s) AS t SET c.t = t RETURN t + 'x'"), name)
+            // Where any one of them may be a float, it is written as toString writes it.
+            assertEquals(side, writes("MATCH (c:Claim) RETURN CASE WHEN c.b THEN 'a' ELSE c.f END + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) RETURN coalesce(toUpper(c.s), c.f) + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) RETURN ['a', c.f][1] + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) CALL { WITH c RETURN toUpper(c.s) AS v UNION WITH c RETURN c.f AS v } RETURN v + 'x'"), name)
+            // The least and the greatest of texts are a text; of a property, which may hold a float, not.
+            assertEquals(0, writes("MATCH (c:Claim) WITH min(toUpper(c.s)) AS lo, max(toLower(c.s)) AS hi RETURN lo + hi + 'x'"), name)
+            assertEquals(side, writes("MATCH (c:Claim) WITH max(c.f) AS hi RETURN hi + 'x'"), name)
+        }
+    }
+
+    @Test
+    fun `an equality of values that hold no null in a list or a map compiles with no test for one`() {
+        // #225: a null a list or a map holds is tested for, and the two walked, only where one may hold one.
+        val tested = mapOf("PostgresCypherCompiler" to "jsonb_path_exists(", "OracleCypherCompiler" to "[[,:]null[],}]")
+        compilers.filter { it::class.simpleName in tested }.forEach { compiler ->
+            val test = tested.getValue(compiler::class.simpleName!!)
+            fun tests(cypher: String, parameters: Map<String, Any?> = emptyMap()) = compiler.compile(cypher, parameters).sql.contains(test)
+            assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, 2))), "${compiler::class.simpleName}")
+            assertTrue(!tests("MATCH (c:Claim) WITH c, c.list AS l RETURN [1, 2] = [1, 2], c.a = c.b, l = c.b, c.list IN \$ls, {x: 1} <> {x: 2}, size(l) = 2", mapOf("ls" to listOf(listOf(1)))), "${compiler::class.simpleName}")
+            // An item unwound from a list that holds no null holds none.
+            assertTrue(!tests("UNWIND [[1, 2], [3]] AS l RETURN l = [1, 2]"), "${compiler::class.simpleName}")
+            assertTrue(tests("UNWIND [[1, null], [3]] AS l RETURN l = [1, 2]"), "${compiler::class.simpleName}")
+            // Lists and maps written out are compared item by item.
+            assertTrue(!tests("MATCH (c:Claim) WITH c.a AS a, c.b AS b RETURN [a, b] = [b, a], {x: a} = {x: b}, a IN [b, null]"), "${compiler::class.simpleName}")
+            // A parameter's list that holds a null is compared item by item as the statement is compiled; a map is walked.
+            assertTrue(!tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(1, null, listOf(null, 2)))), "${compiler::class.simpleName}")
+            assertTrue(tests("MATCH (c:Claim) WHERE c.map = \$p RETURN c.id", mapOf("p" to mapOf("x" to null))), "${compiler::class.simpleName}")
+            assertTrue(tests("MATCH (c:Claim) WITH c, [c.a] AS l RETURN l = [c.b]"), "${compiler::class.simpleName}")
+            // As is a parameter's list with an item too long to write in the statement (#303).
+            assertTrue(tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf("x".repeat(2000), null))), "${compiler::class.simpleName}")
+            // Up to LITERAL_BYTES of JSON's text, its quotes and each character's UTF-8 bytes counted, an item is written.
+            listOf("x".repeat(998) to false, "x".repeat(999) to true, "é".repeat(499) to false, "é".repeat(500) to true).forEach { (text, walked) ->
+                assertEquals(walked, tests("MATCH (c:Claim) WHERE c.list = \$p RETURN c.id", mapOf("p" to listOf(listOf(text), null))), "${compiler::class.simpleName}: ${text.length}")
+            }
+        }
+    }
+
+    @Test
+    fun `a WHERE that searches a list that holds no null compiles to the search alone`() {
+        // #225: null and false keep no row alike, so a WHERE needs no test of the value being null.
+        compilers.forEach { compiler ->
+            val sql = compiler.compile("MATCH (c:Claim) WHERE c.a IN \$l AND (c.b IN [1, 2] OR c.c > 1) RETURN c.id", mapOf("l" to listOf(1, 2))).sql
+            assertTrue(!sql.contains("ELSE FALSE") && !sql.contains("THEN FALSE"), "${compiler::class.simpleName}: $sql")
+            // Nor of the list being null or holding a null, beside a value that holds none.
+            val nullable = compiler.compile("MATCH (c:Claim) WHERE 'a' IN c.tags AND c.a IN \$l RETURN c.id", mapOf("l" to listOf(1, null))).sql
+            assertTrue(!nullable.contains("ELSE FALSE") && !nullable.contains("THEN FALSE"), "${compiler::class.simpleName}: $nullable")
+            // Nor in a quantified path pattern's WHERE, which keeps a step where it is true.
+            val stepped = compiler.compile("MATCH (a:Claim) ((x)-[:R]->(y) WHERE y.a IN [1, 2]){1,3} (b) RETURN b.id").sql
+            assertTrue(!stepped.contains("ELSE FALSE") && !stepped.contains("THEN FALSE"), "${compiler::class.simpleName}: $stepped")
+            val returned = compiler.compile("MATCH (c:Claim) RETURN c.a IN \$l", mapOf("l" to listOf(1, 2))).sql
+            assertTrue(returned.contains("THEN FALSE"), "${compiler::class.simpleName}: $returned")
+        }
+    }
+
+    @Test
+    fun `an IN of an IN compiles to a statement that grows with each, not exponentially`() {
+        fun nested(times: Int, list: String) = "MATCH (c:Claim) RETURN " + "(".repeat(times) + "c.a" + (1..times).joinToString("") { " IN $list)" }
+        compilers.forEach { compiler ->
+            listOf("[true]", "c.list").forEach { list ->
+                val (two, four) = listOf(2, 4).map { compiler.compile(nested(it, list)).sql.length }
+                assertTrue(four < 3 * two, "${compiler::class.simpleName}: $two, then $four characters")
+            }
+        }
+    }
+
+    @Test
+    fun `values that may hold a null are walked on Postgres over arrays unnested, which the planner costs low`() {
+        // As the sort key's walk is: a set-returning function's 100 rows, multiplied through the walk, bring in its JIT.
+        val sql = PostgresCypherCompiler("g").compile("MATCH (c:Claim) WITH [c.a] AS l, [c.b] AS m RETURN l = m").sql
+        assertTrue(sql.contains("WITH RECURSIVE") && !sql.contains("FROM jsonb_array_elements(") && !sql.contains("jsonb_each("), sql)
+    }
+
+    @Test
+    fun `values that may hold a null are walked on Oracle by the store's function where they differ as JSON, and by none where the store has none`() {
+        // #270: a procedure's queries, and a reduce's step's, call no function of their own, so the store keeps it.
+        val write = "MATCH (c:Claim) WITH c, [c.a, null] AS l, [c.b] AS m SET c.e = l = m"
+        val stored = OracleCypherCompiler("g")
+        val sql = stored.compile(write).sql
+        assertTrue(stored.callsStoredNullsEqual && "THEN NULL ELSE (g_nulls_equal(" in sql && "cy_nulls_equal" !in sql, sql)
+        val folded = OracleCypherCompiler("g")
+        val reduced = folded.compile("MATCH (c:Claim) WITH [c.a, null] AS l RETURN reduce(acc = true, x IN [[1]] | acc AND x = l)").sql
+        assertTrue(folded.callsStoredNullsEqual && "THEN NULL ELSE (g_nulls_equal(" in reduced && "cy_nulls_equal" !in reduced, reduced)
+        // Without it, two that differ as JSON are false in a procedure, and a read declares the function itself.
+        val none = OracleCypherCompiler("g", nullsEqualStored = false)
+        val fallback = none.compile(write).sql
+        assertTrue(!none.callsStoredNullsEqual && "nulls_equal" !in fallback && "THEN NULL ELSE FALSE END" in fallback, fallback)
+        val read = OracleCypherCompiler("g", nullsEqualStored = false).compile("MATCH (c:Claim) WITH [c.a, null] AS l, [c.b] AS m RETURN l = m").sql
+        assertTrue(read.startsWith("WITH\nFUNCTION cy_nulls_equal(") && "THEN NULL ELSE (cy_nulls_equal(" in read, read)
+        // A statement that compares no value that may hold a null calls no function.
+        val flat = OracleCypherCompiler("g")
+        flat.compile("MATCH (c:Claim) SET c.e = c.a = c.b, c.f = c.list = [1]")
+        assertTrue(!flat.callsStoredNullsEqual)
+    }
+
+    @Test
+    fun `lists and maps written out that may hold a null are compared item by item, not built and compared whole`() {
+        val built = mapOf(
+            "PostgresCypherCompiler" to listOf("json_build_"), "OracleCypherCompiler" to listOf("JSON_ARRAY(", "JSON_OBJECT("), "SqliteCypherCompiler" to listOf("json_array(", "json_object("),
+        )
+        compilers.forEach { compiler ->
+            listOf("[a, b] = [b, a]", "{x: a} = {x: b}").forEach { equality ->
+                val sql = compiler.compile("MATCH (c:Claim) WITH c.a AS a, c.b AS b RETURN $equality AS e").sql
+                assertTrue(built.getValue(compiler::class.simpleName!!).none { sql.contains(it) }, "${compiler::class.simpleName}: $sql")
+            }
+        }
+    }
+
+    @Test
+    fun `a sort by a property on Postgres is by its JSON and its text, and only a list the statement makes is keyed as a list`() {
+        // Keyed as a list, a term costs thousands a row in the planner's estimate, which brings in its JIT for the whole
+        // statement past a few dozen rows. A text sorts by its code points (#273), in the same row, with no subquery.
+        val compiler = PostgresCypherCompiler("g")
+        val property = compiler.compile("MATCH (c:Claim) RETURN c.name ORDER BY c.name").sql.substringAfter("ORDER BY ")
+        assertEquals(
+            "ROW(CASE WHEN jsonb_typeof(p2.s1) = 'string' THEN '\"\"'::jsonb ELSE NULLIF(p2.s1, 'null'::jsonb) END, " +
+                "(CASE WHEN jsonb_typeof(p2.s1) = 'string' THEN (p2.s1 #>> '{}') END) COLLATE \"C\")",
+            property,
+        )
+        val list = compiler.compile("MATCH (c:Claim) WITH c.name AS n, collect(c.id) AS ids RETURN n ORDER BY ids").sql.substringAfter("ORDER BY ")
+        assertTrue(list.contains("WITH RECURSIVE"), list)
+        // Its items as arrays unnested, which the planner takes for 10 items, not a set-returning function's 100: a 150th of the cost.
+        assertTrue(!list.contains("FROM jsonb_array_elements(") && list.contains("unnest(ARRAY(SELECT jsonb_array_elements("), list)
+    }
+
+    @Test
+    fun `a round() to places the statement gives, nested under an aggregate, compiles one rounding, not both`() {
+        // #301: under an aggregate nothing is bound, so a CASE of both roundings, nested four deep, wrote the number out in
+        // both at each level. The places, written or given, pick the rounding when compiling.
+        fun nested(precision: String) = "UNWIND [1.5] AS x RETURN " + "round(".repeat(4) + "sum(x)" + "$precision)".repeat(4)
+        // Each compiled by a compiler of its own: where it binds a value, the subquery it binds it in is named by a count that a
+        // compiler keeps from one statement to the next, so the same statement compiled later may be a few characters longer.
+        listOf({ OracleCypherCompiler("g") }, { PostgresCypherCompiler("g") }, { SqliteCypherCompiler("g") }).forEach { compiler ->
+            val name = compiler()::class.simpleName
+            fun size(precision: String, parameters: Map<String, Any?> = emptyMap()) = compiler().compile(nested(precision), parameters).sql.length
+            val whole = size("")
+            listOf(", 0", ", -0.5", ", 0.9", ", -\$p").forEach { assertEquals(whole, size(it, mapOf("p" to 0.5)), "$name: round(x$it)") }
+            // A parameter, its key, and NaN, which Neo4j casts to 0 places.
+            listOf(0L, 0, 0.7, Double.NaN).forEach { assertEquals(whole, size(", \$p", mapOf("p" to it)), "$name: \$p = $it") }
+            assertEquals(whole, size(", \$m.p", mapOf("m" to mapOf("p" to 0L))), "$name")
+            // To 1 place or more, it rounds by places alone, and grows as the number does, not twice over at each level.
+            val read = size(", toInteger('1')")
+            listOf(size(", 1"), size(", \$p", mapOf("p" to 1.0))).forEach { places -> assertTrue(places < read, "$name: $places, then $read characters") }
+        }
+    }
+
+    @Test
+    fun `a sign() nested under an aggregate compiles to about the statement a ceil() does, reading its number once`() {
+        // Under an aggregate nothing is bound, so a sign that read its number twice wrote it out twice at each level:
+        // on Oracle, where a sign is not SIGN alone (#294), four deep was 14 times the statement a ceil() is.
+        fun nested(function: String) = "UNWIND [1.5] AS x RETURN " + "$function(".repeat(4) + "sum(x)" + ")".repeat(4)
+        compilers.forEach { compiler ->
+            val (sign, ceil) = listOf("sign", "ceil").map { compiler.compile(nested(it), emptyMap()).sql.length }
+            assertTrue(sign < ceil * 1.1, "${compiler::class.simpleName}: sign $sign, ceil $ceil characters")
+        }
+    }
+
+    @Test
+    fun `a sum reads each value it sums as often as an avg does, and grows under functions as an avg does`() {
+        // #304: on Oracle a sum tests whether any value it sums is a float. Nothing is bound under an aggregate, so a test
+        // that read each value as number() does, three times more, made a sum over nested functions twice the statement.
+        fun over(aggregate: String) = "MATCH (c:Claim) RETURN $aggregate(" + "ceil(".repeat(3) + "c.p" + ")".repeat(3) + ")"
+        fun under(aggregate: String, depth: Int) = "UNWIND [1.5] AS x RETURN " + "sign(".repeat(depth) + "$aggregate(x)" + ")".repeat(depth)
+        compilers.forEach { compiler ->
+            val name = compiler::class.simpleName
+            fun size(cypher: String) = compiler.compile(cypher, emptyMap()).sql.length
+            val (sum, avg) = listOf("sum", "avg").map { size(over(it)) }
+            assertTrue(sum < avg * 1.1, "$name: ${over("sum")}: sum $sum, avg $avg characters")
+            val (sumGrowth, avgGrowth) = listOf("sum", "avg").map { size(under(it, 4)).toDouble() / size(under(it, 2)) }
+            assertTrue(sumGrowth < avgGrowth * 1.1, "$name: from 2 levels to 4, sum grew $sumGrowth times, avg $avgGrowth")
+        }
+    }
+
+    @Test
+    fun `an aggregate of temporal arithmetic compiles to about the statement a WITH working its argument out first does`() {
+        // #333: an aggregate's argument was compiled with nothing bound, so count(Z + duration({minutes: i})) wrote the
+        // duration's fields and the addition's operands out again at each level: 1.0 MB on Postgres, 3.4 MB on Oracle and
+        // 2.0 MB on SQLite, and min() 10 MB on Oracle. Worked out first, for each row, it binds them as any item does.
+        val z = "datetime('2024-03-15T10:00:00+02:00')"
+        val within = "datetime('2024-03-15T09:30:00Z')"
+        // Each aggregating statement, and the same with a WITH working the aggregate's argument out first.
+        val statements = listOf("count", "collect", "min", "max", "sum", "avg").map { aggregate ->
+            val argument = if (aggregate in setOf("sum", "avg")) "($z + duration({minutes: i})).minute" else "$z + duration({minutes: i})"
+            "UNWIND range(1, 3) AS i RETURN $aggregate($argument)" to "UNWIND range(1, 3) AS i WITH $argument AS t RETURN $aggregate(t)"
+        } + listOf(
+            "UNWIND range(1, 3) AS i WITH i % 2 AS k, collect($z + duration({minutes: i})) AS l RETURN k ORDER BY l" to
+                "UNWIND range(1, 3) AS i WITH i % 2 AS k, $z + duration({minutes: i}) AS t WITH k, collect(t) AS l RETURN k ORDER BY l",
+            "UNWIND range(1, 3) AS i RETURN count(DISTINCT $z + duration({minutes: i}))" to
+                "UNWIND range(1, 3) AS i WITH $z + duration({minutes: i}) AS t RETURN count(DISTINCT t)",
+            "MATCH (n:E) RETURN sum(size([x IN [datetime(n.at), datetime(n.at) + duration('PT1H')] WHERE x > $within]))" to
+                "MATCH (n:E) WITH size([x IN [datetime(n.at), datetime(n.at) + duration('PT1H')] WHERE x > $within]) AS s RETURN sum(s)",
+            // Sorted beside a variable-length walk by an aggregate that is none of the items: too long for SQLite before.
+            "MATCH (a:E)-[:NEXT*1..2]->(b:E) RETURN a.id AS a, count(*) AS c ORDER BY sum((datetime(b.at) + duration({minutes: b.m})).minute)" to
+                "MATCH (a:E)-[:NEXT*1..2]->(b:E) WITH a, (datetime(b.at) + duration({minutes: b.m})).minute AS t RETURN a.id AS a, count(*) AS c ORDER BY sum(t)",
+        )
+        compilers.forEach { compiler ->
+            statements.forEach { (aggregating, first) ->
+                val (size, reference) = listOf(aggregating, first).map { compiler.compile(it, emptyMap()).sql.length }
+                assertTrue(size < 120_000 && size < reference * 1.2, "${compiler::class.simpleName}: $aggregating: $size characters, $reference with a WITH first")
+            }
+        }
+    }
+
+    @Test
+    fun `text functions, texts added and arithmetic over an aggregate's result compile to about the statement a WITH working the aggregate out first does`() {
+        // #373: an operation over an aggregate's result was compiled with nothing bound, as the aggregate is, so it wrote the
+        // aggregate out again at each level: max(n.title) + ': ' + max(n.first) + ' ' + max(n.last) ran the compiler out of memory
+        // on Oracle and compiled to 68 MB on Postgres, and toString() four deep over head(collect(…)) to 23 MB on Oracle.
+        fun four(function: String, over: String) = "$function(".repeat(4) + over + ")".repeat(4)
+        val texts = "max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)"
+        val worked = "WITH max(n.title) AS a, max(n.first) AS b, max(n.last) AS c"
+        val days = "((((n.day + duration('P1D')) + duration('P1D')) + duration('P1D')) + duration('P1D'))"
+        // Each statement, and the same with a WITH working its aggregates out first.
+        val statements = listOf(
+            "MATCH (n) RETURN $texts" to "MATCH (n) $worked RETURN a + ': ' + b + ' ' + c",
+            "MATCH (n) RETURN head(collect(n.title)) + ': ' + head(collect(n.first)) + ' ' + head(collect(n.last))" to
+                "MATCH (n) WITH collect(n.title) AS a, collect(n.first) AS b, collect(n.last) AS c RETURN head(a) + ': ' + head(b) + ' ' + head(c)",
+            "MATCH (n) RETURN ${four("toLower", "max(n.name)")}" to "MATCH (n) WITH max(n.name) AS m RETURN ${four("toLower", "m")}",
+            "MATCH (n) RETURN ${four("toLower", "head(collect(n.name))")}" to "MATCH (n) WITH collect(n.name) AS c RETURN ${four("toLower", "head(c)")}",
+            "MATCH (n) RETURN ${four("toLower", "collect(n.name)[0]")}" to "MATCH (n) WITH collect(n.name) AS c RETURN ${four("toLower", "c[0]")}",
+            "MATCH (n) RETURN ${four("trim", "max(n.name)")}" to "MATCH (n) WITH max(n.name) AS m RETURN ${four("trim", "m")}",
+            "MATCH (n) RETURN ${four("toString", "head(collect(n.name))")}" to "MATCH (n) WITH collect(n.name) AS c RETURN ${four("toString", "head(c)")}",
+            "MATCH (n) RETURN substring(substring(substring(substring(max(n.name), 0), 0), 0), 0)" to
+                "MATCH (n) WITH max(n.name) AS m RETURN substring(substring(substring(substring(m, 0), 0), 0), 0)",
+            "MATCH (n) RETURN (sum(n.a) + sum(n.b)) * 2 / count(*) - max(n.a)" to
+                "MATCH (n) WITH sum(n.a) AS a, sum(n.b) AS b, count(*) AS c, max(n.a) AS m RETURN (a + b) * 2 / c - m",
+            // Beside a grouping key, with DISTINCT, as an order term, and beside a variable-length walk.
+            "MATCH (n) RETURN n.k AS k, $texts AS t" to "MATCH (n) WITH n.k AS k, max(n.title) AS a, max(n.first) AS b, max(n.last) AS c RETURN k, a + ': ' + b + ' ' + c AS t",
+            "MATCH (n) RETURN DISTINCT $texts" to "MATCH (n) $worked RETURN DISTINCT a + ': ' + b + ' ' + c",
+            "MATCH (n) RETURN n.k AS k ORDER BY $texts" to
+                "MATCH (n) WITH n.k AS k, max(n.title) AS a, max(n.first) AS b, max(n.last) AS c RETURN k ORDER BY a + ': ' + b + ' ' + c",
+            // An order term that reads an item by its name, which ran the compiler out of memory.
+            "MATCH (n) RETURN n.k AS k, count(*) AS c ORDER BY ${four("toString", "count(*) * 10 + size(k)")}" to
+                "MATCH (n) WITH n.k AS k, count(*) AS x RETURN k, x AS c ORDER BY ${four("toString", "x * 10 + size(k)")}",
+            // And one where a comprehension's own name hides an item's, or the item's expression reads a name the comprehension binds.
+            "MATCH (n) RETURN n.k AS k, sum(n.a) AS m ORDER BY ${four("toString", "[k IN [1] | k + m][0]")} + toString(sum(n.a))" to
+                "MATCH (n) WITH n.k AS k, sum(n.a) AS x RETURN k, x AS m ORDER BY ${four("toString", "[k IN [1] | k + x][0]")} + toString(x)",
+            "MATCH (n) RETURN n.k AS k, sum(n.a) AS m ORDER BY ${four("toString", "[n IN [1] | n + size(k)][0]")} + toString(sum(n.a))" to
+                "MATCH (n) WITH n.k AS k, sum(n.a) AS x RETURN k, x AS m ORDER BY ${four("toString", "[n IN [1] | n + size(k)][0]")} + toString(x)",
+            // And one that reads an item nested deep, which the trial compile once compiled with nothing bound, out of memory on Oracle.
+            "MATCH (n) RETURN ${days} AS k, count(*) AS c ORDER BY ${four("toString", "count(*)")} + toString(k)" to
+                "MATCH (n) WITH ${days} AS k, count(*) AS x RETURN k, x AS c ORDER BY ${four("toString", "x")} + toString(k)",
+            "MATCH (n)-[*1..3]->(m) RETURN max(m.title) + ': ' + max(m.first) + ' ' + max(m.last)" to
+                "MATCH (n)-[*1..3]->(m) WITH max(m.title) AS a, max(m.first) AS b, max(m.last) AS c RETURN a + ': ' + b + ' ' + c",
+            "MATCH (n)-[*1..3]->(m) RETURN ${four("toLower", "max(m.name)")}" to "MATCH (n)-[*1..3]->(m) WITH max(m.name) AS x RETURN ${four("toLower", "x")}",
+            // An order term over an aggregate's result beside a walk is worked out first over the grouping WITH (see sortsFirst),
+            // as it is over a WITH's column.
+            "MATCH (n)-[*1..3]->(m) RETURN n.k AS k ORDER BY ${four("toLower", "max(m.name)")}" to
+                "MATCH (n)-[*1..3]->(m) WITH n.k AS k, max(m.name) AS x RETURN k ORDER BY ${four("toLower", "x")}",
+        )
+        compilers.forEach { compiler ->
+            statements.forEach { (over, first) ->
+                val (size, reference) = listOf(over, first).map { compiler.compile(it, emptyMap()).sql.length }
+                assertTrue(size < 120_000 && size < reference * 1.2, "${compiler::class.simpleName}: $over: $size characters, $reference with a WITH first")
+            }
+        }
+    }
+
+    @Test
+    fun `a value tested with IN against a long list literal of several kinds, a null among them, compiles to about the list's own statement`() {
+        // #360: each item was compared with the value on its own, the value written out at each, so -1 IN 1,001 such items
+        // compiled to 1.6 MB on Oracle, and ran out of PGA. Its constants are now tested at once, as one list, and its nulls are one null.
+        val kinds = listOf<(Int) -> String>({ "$it" }, { "'s$it'" }, { "null" }, { "$it.5" }, { "true" }, { "[$it, 'n']" }, { "{k: $it}" })
+        val list = (0 until 1001).joinToString(", ", "[", "]") { kinds[it % 7](it) }
+        compilers.forEach { compiler ->
+            val name = compiler::class.simpleName
+            val reference = compiler.compile("RETURN $list", emptyMap()).sql.length
+            listOf("-1", "0", "999999", "null", "[5, 'n']", "{k: 6}", "3.0", "true", "\$p").forEach { value ->
+                val size = compiler.compile("RETURN $value IN $list", mapOf("p" to -1)).sql.length
+                assertTrue(size < reference * 1.2, "$name: $value IN the list: $size characters, the list alone $reference")
+            }
+            listOf("MATCH (n) WHERE n.v IN $list RETURN n", "UNWIND [-1, [5, null]] AS x RETURN x IN $list").forEach { statement ->
+                val size = compiler.compile(statement, emptyMap()).sql.length
+                assertTrue(size < reference * 1.2, "$name: ${statement.take(40)}: $size characters, the list alone $reference")
+            }
+        }
+    }
+
+    @Test
+    fun `an aggregate's argument compiled only to see whether it binds a value leaves each function on Oracle declared once, under the name the query calls`() {
+        // Compiled to see, then again: a reduce() in it was declared twice, under one name or a name no query calls.
+        val z = "datetime('2024-03-15T10:00:00Z') + duration({minutes: x})"
+        listOf(
+            "UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + x))",
+            "UNWIND range(1, 3) AS i RETURN sum(reduce(a = 0, x IN [i] | a + ($z).minute))",
+            // And an operation over an aggregate's result, compiled to see whether it binds one (#373).
+            "UNWIND range(1, 3) AS i RETURN toLower(toLower(toString(reduce(a = max(i), x IN [1] | a + x)))) + 'x'",
+        ).forEach { statement ->
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            val declared = Regex("FUNCTION (cy_\\w+)\\(").findAll(sql).map { it.groupValues[1] }.toList()
+            assertEquals(declared.distinct(), declared, "$statement: $sql")
+            assertTrue(declared.isNotEmpty() && declared.all { name -> Regex("\\b$name\\(").findAll(sql).count() > 1 }, "$statement: $sql")
+        }
+        // Or an order term over one that reads an item declaring a function, compiled in the trial by the item's name: the
+        // statement declares what it does without the term, each once.
+        fun declared(statement: String) = Regex("FUNCTION (cy_\\w+)\\(").findAll(OracleCypherCompiler("g").compile(statement).sql).map { it.groupValues[1] }.toList()
+        val grouped = "UNWIND range(1, 3) AS i RETURN reduce(a = 0, x IN [i] | a + x) AS r, count(*) AS c"
+        val sorted = declared("$grouped ORDER BY toLower(toLower(toString(count(*)))) + toString(r)")
+        assertEquals(sorted.distinct(), sorted)
+        assertEquals(declared(grouped).size, sorted.size)
+        // Without the store's function, the query declares its own once, where the aggregate's argument binds a value or not.
+        listOf(
+            "UNWIND range(1, 3) AS i WITH i, [i, null] AS l, [i] AS m RETURN collect(l = m)",
+            "UNWIND range(1, 3) AS i WITH i, [i, null] AS l, [i] AS m RETURN collect(l = m AND (datetime('2024-03-15T10:00:00Z') + duration({minutes: i})).minute > 0)",
+        ).forEach { statement ->
+            val sql = OracleCypherCompiler("g", nullsEqualStored = false).compile(statement).sql
+            assertEquals(1, Regex("FUNCTION cy_nulls_equal\\(").findAll(sql).count(), "$statement: $sql")
+            assertTrue("THEN NULL ELSE (cy_nulls_equal(" in sql, "$statement: $sql")
+        }
+        // Two lists compared, in an aggregate's argument that binds a value or not, and in an order term beside a walk (#349).
+        listOf(
+            "MATCH (n) RETURN count(CASE WHEN n.l < [2] THEN 1 END)",
+            "MATCH (n) RETURN count(CASE WHEN n.l < [2] AND (datetime(n.at) + duration({minutes: n.m})).minute > 0 THEN 1 END)",
+            "MATCH (a)-[:NEXT*1..2]->(b) RETURN a.m AS a, count(*) AS c ORDER BY sum(CASE WHEN b.l < [2] THEN 1 ELSE 0 END)",
+        ).forEach { statement ->
+            PostgresCypherCompiler("g").compile(statement)
+            SqliteCypherCompiler("g").compile(statement)
+            val sql = OracleCypherCompiler("g").compile(statement).sql
+            assertEquals(1, Regex("FUNCTION cy_list_order\\(").findAll(sql).count(), "$statement: $sql")
+            assertTrue(Regex("\\bcy_list_order\\(").findAll(sql).count() > 1, "$statement: $sql")
+        }
+    }
+
+    @Test
+    fun `a term sorted by beside a variable-length walk, which is none of the items, compiles to about the statement a WITH working it out first does`() {
+        // #378: beside a walk, such a term was compiled with nothing bound, and wrote the duration's fields and the addition's
+        // operands out again at each level: 2.4 MB on Postgres, 5.6 MB on Oracle and 2.7 MB on SQLite. Worked out first, for
+        // each row, it binds them as any item does.
+        val walk = "MATCH (a:E)-[:NEXT*1..2]->(b:E)"
+        val minute = "(datetime(b.at) + duration({minutes: b.m})).minute"
+        // Each sorting statement, and the same with a WITH working the term out first.
+        val statements = listOf(
+            "$walk RETURN a.id AS a, b.id AS bb ORDER BY $minute, a, bb" to "$walk WITH a, b, $minute AS t RETURN a.id AS a, b.id AS bb ORDER BY t, a, bb",
+            // Reading an item by its name, and one named as a variable is.
+            "$walk RETURN a.id AS a, b.id AS bb ORDER BY (datetime(b.at) + duration({minutes: b.m + a})).minute DESC" to
+                "$walk WITH a, b, (datetime(b.at) + duration({minutes: b.m + a.id})).minute AS t RETURN a.id AS a, b.id AS bb ORDER BY t DESC",
+            "$walk RETURN a.id AS a, b.m AS b ORDER BY (datetime(a.at) + duration({minutes: b})).minute" to
+                "$walk WITH a, b, (datetime(a.at) + duration({minutes: b.m})).minute AS t RETURN a.id AS a, b.m AS b ORDER BY t",
+            // Reading an item by its name in a comprehension's projection: 273 MB on Oracle before.
+            "$walk RETURN a.id AS a, b.id AS bb ORDER BY [x IN [b.m] | (datetime(b.at) + duration({minutes: x + a})).minute][0]" to
+                "$walk WITH a, b, [x IN [b.m] | (datetime(b.at) + duration({minutes: x + a.id})).minute][0] AS t RETURN a.id AS a, b.id AS bb ORDER BY t",
+            "$walk WITH a, b ORDER BY $minute SKIP 1 LIMIT 3 RETURN a.id AS a" to "$walk WITH a, b, $minute AS t WITH a, b ORDER BY t SKIP 1 LIMIT 3 RETURN a.id AS a",
+            // Reading an item made anew, randomUUID(), by its name: SQLITE_TOOBIG before, where it was left to `project`.
+            "$walk RETURN randomUUID() AS u ORDER BY u + coalesce(toString($minute), '')" to
+                "$walk WITH b, randomUUID() AS u WITH u, u + coalesce(toString($minute), '') AS t RETURN u ORDER BY t",
+        )
+        // After DISTINCT, the term is worked out over the items' columns, after the walk, where it binds its values already.
+        val distinct = "$walk RETURN DISTINCT b.m AS m, b.at AS at ORDER BY (datetime(at) + duration({minutes: m})).minute"
+        compilers.forEach { compiler ->
+            statements.forEach { (sorting, first) ->
+                val (size, reference) = listOf(sorting, first).map { compiler.compile(it, emptyMap()).sql.length }
+                assertTrue(size < 60_000 && size < reference * 1.2, "${compiler::class.simpleName}: $sorting: $size characters, $reference with a WITH first")
+            }
+            val size = compiler.compile(distinct, emptyMap()).sql.length
+            assertTrue(size < 60_000, "${compiler::class.simpleName}: $distinct: $size characters")
+        }
+    }
+}

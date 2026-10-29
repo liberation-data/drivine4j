@@ -176,6 +176,9 @@ internal class CypherBackend(
             VectorSearchPlanner.planFiltered(graphClass, query, vector, topK, threshold, grammar, searchK, partitionLabel)
         }
 
+    override fun nearestAmong(graphClass: Class<*>, property: String?, ids: List<String>, topK: Int, threshold: Double?, searchK: Int): GraphStatement =
+        VectorSearchPlanner.planAmong(graphClass, property, ids, topK, threshold, searchK, grammar)
+
     override fun matching(graphClass: Class<*>, property: String?, query: GraphQuerySpec<*>?, text: String, topK: Int, threshold: Double): ScoredSearchPlan =
         if (query == null) {
             FullTextSearchPlanner.plan(graphClass, property, text, topK, threshold, grammar)
@@ -238,8 +241,10 @@ internal class CypherBackend(
                 alone = alone,
             )
         }
+        // Those an UNWIND cannot write first, as where the rest are one statement, so that the locks
+        // are taken in the same order however many statements the batch takes.
         return FragmentBatch(
-            unstamped = batches.buildBatchSpecs(plain.map { it.value }, CascadeType.NONE, nullPolicy, writeFields),
+            unstamped = batches.buildBatchSpecs((perItem + rows).map { it.value }, CascadeType.NONE, nullPolicy, writeFields),
             stamped = batches.buildStampedSpecs(batched, nullPolicy, writeFields),
             alone = alone,
         )

@@ -31,6 +31,9 @@ dependencies {
     // JavaPoet for code generation
     implementation 'com.squareup:javapoet:1.13.0'
 
+    // The model file, which the KSP processor writes too
+    implementation project(':drivine4j-codegen-model')
+
     // Testing
     testImplementation 'org.junit.jupiter:junit-jupiter-api:5.10.1'
     testRuntimeOnly 'org.junit.jupiter:junit-jupiter-engine:5.10.1'

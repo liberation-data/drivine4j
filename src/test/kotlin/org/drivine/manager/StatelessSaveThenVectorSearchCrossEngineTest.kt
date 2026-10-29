@@ -31,6 +31,7 @@ import org.drivine.oracle.OracleTestDatabase
 import org.drivine.oracle.OracleTests
 import org.drivine.postgres.PostgresTestDatabase
 import org.drivine.postgres.PostgresTests
+import org.drivine.sqlite.SqliteTestDatabase
 import org.junit.jupiter.api.BeforeEach
 
 /**
@@ -246,4 +247,20 @@ class StatelessSaveThenVectorSearchPostgresTest {
     @Test fun `save then loadNearest on Postgres`() = verifySingleSave(fixtures, registry)
 
     @Test fun `saveAll then loadNearest on Postgres`() = verifyBatchSave(fixtures, registry)
+}
+
+class StatelessSaveThenVectorSearchSqliteTest {
+    private val registry = SubtypeRegistry()
+    private val pm = SqliteTestDatabase.graphManager("contracts", registry)
+    private val fixtures = SqliteTestDatabase.fixtures(pm)
+
+    @BeforeEach
+    fun clean() {
+        SqliteTestDatabase.clear(pm)
+        pm.indexes.ensure(DOC_VECTOR_INDEX)
+    }
+
+    @Test fun `save then loadNearest on SQLite`() = verifySingleSave(fixtures, registry)
+
+    @Test fun `saveAll then loadNearest on SQLite`() = verifyBatchSave(fixtures, registry)
 }

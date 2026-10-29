@@ -1,0 +1,208 @@
+# Opens the release PR: "Release vX.Y.Z", which raises build.gradle's version on a branch release/vX.Y.Z. Every
+# published module takes the root's version from build.gradle. The PR also moves the other files that name the version
+# with it, the sample's model file (CI checks it is what the build writes) and the install snippets in the README and
+# docs/, as scripts/release_version.py's REFERENCES lists them. Merging the PR releases the version: release.yml runs on the
+# push to main. RELEASING.md describes the process.
+#
+# Run it from the Actions tab (Prepare release, Run workflow), or through the API, as the train controller in
+# liberation-data/drivine-release does:
+#
+#   gh workflow run prepare-release.yml -R liberation-data/drivine4j -f bump=minor
+#
+# A PR opened with GITHUB_TOKEN starts no workflow, so CI doesn't run on it by itself. With a RELEASE_PR_TOKEN secret
+# set (a token that can push and open pull requests here), the PR is opened with that, and CI runs.
+name: Prepare release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Which part of the version to raise. A prerelease is X.Y.Z-rc.N.
+        type: choice
+        options: [patch, minor, major, prerelease]
+        default: patch
+      version:
+        description: An exact version, X.Y.Z or X.Y.Z-suffix, used instead of bump.
+        type: string
+        required: false
+        default: ''
+  # The calling job must grant contents: write and pull-requests: write, which this job asks for.
+  workflow_call:
+    inputs:
+      bump:
+        description: Which part of the version to raise, patch, minor, major or prerelease.
+        type: string
+        required: false
+        default: patch
+      version:
+        description: An exact version, X.Y.Z or X.Y.Z-suffix, used instead of bump.
+        type: string
+        required: false
+        default: ''
+    secrets:
+      RELEASE_PR_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+# Named for this repository: under workflow_call the group belongs to the caller's repository, so with a bare
+# prepare-release the three libraries' runs, started together by the train controller, would share one group, and a
+# pending run would cancel another.
+concurrency:
+  group: prepare-release-liberation-data/drivine4j
+  cancel-in-progress: false
+
+env:
+  # Named rather than read from the run's context: a workflow_call from another repository runs in that repository's.
+  REPO: liberation-data/drivine4j
+  DEFAULT_BRANCH: main
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Has a token for this repository
+        env:
+          HAS_PR_TOKEN: ${{ secrets.RELEASE_PR_TOKEN != '' }}
+        run: |
+          if [[ "$GITHUB_REPOSITORY" != "$REPO" && "$HAS_PR_TOKEN" != true ]]; then
+            echo "::error::Called from $GITHUB_REPOSITORY, whose GITHUB_TOKEN can't push to $REPO. Pass a RELEASE_PR_TOKEN secret that can."
+            exit 1
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ env.REPO }}
+          ref: ${{ env.DEFAULT_BRANCH }}
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PR_TOKEN || github.token }}
+      - name: Test the version arithmetic
+        run: python3 scripts/test_release_version.py
+      # The new version: the exact one asked for, or build.gradle's raised by semver. It must be greater than the
+      # newest tag (vX.Y.Z, or 0.0.3 and 0.3.0, made by hand without the v), and neither its tag nor its branch may
+      # exist yet. The runner's python3 runs the script; it needs nothing installed.
+      - name: Work out the version
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXACT: ${{ inputs.version }}
+        run: |
+          current=$(sed -n "s/^version = '\([^']*\)'[[:space:]]*$/\1/p" build.gradle)
+          if [[ -z "$current" || "$current" == *$'\n'* ]]; then
+            echo "::error::build.gradle should have one line version = 'X.Y.Z'."
+            exit 1
+          fi
+          exact="${EXACT#v}"
+          if [[ -n "$exact" ]]; then
+            # Checked before the script sees it, so an input such as --foo can't be read as an option.
+            if ! [[ "$exact" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+              echo "::error::$exact isn't a version X.Y.Z (or X.Y.Z-suffix)."
+              exit 1
+            fi
+            version="$exact"
+          else
+            case "$BUMP" in
+              patch | minor | major | prerelease)
+                version=$(python3 scripts/release_version.py bump "$current" "$BUMP")
+                ;;
+              *)
+                echo "::error::bump is $BUMP. It must be patch, minor, major or prerelease."
+                exit 1
+                ;;
+            esac
+          fi
+          tag="v$version"
+          branch="release/$tag"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::$version isn't X.Y.Z (or X.Y.Z-suffix), so it can't be released."
+            exit 1
+          fi
+          # A bump that merged but wasn't released leaves build.gradle at the version asked for, and there would be
+          # nothing to commit.
+          if [[ "$version" == "$current" ]]; then
+            echo "::error::build.gradle's version is $version already. Pick a later version, or tag the commit by hand if merging it didn't release it."
+            exit 1
+          fi
+          if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then
+            echo "::error::$tag is already tagged. Pick a later version."
+            exit 1
+          fi
+          newest=$(git tag -l | python3 scripts/release_version.py newest)
+          if [[ -n "$newest" ]] && ! python3 scripts/release_version.py greater "$version" "${newest#v}"; then
+            echo "::error::$version isn't later than the last release, $newest, so merging it would release nothing. Pick a later version."
+            exit 1
+          fi
+          if git ls-remote --exit-code --heads origin "refs/heads/$branch" > /dev/null; then
+            echo "::error::The branch $branch already exists. Merge or close its PR and delete the branch, or pick another version."
+            exit 1
+          fi
+          echo "build.gradle's version $current becomes $version, on $branch"
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "branch=$branch"
+            echo "since=$newest"
+            echo "current=$current"
+          } >> "$GITHUB_OUTPUT"
+      - name: Raise the version
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python3 scripts/release_version.py set build.gradle "$VERSION"
+          # Read back as release.yml's check reads it, so a PR that bumps nothing isn't opened.
+          written=$(sed -n "s/^version = '\([^']*\)'[[:space:]]*$/\1/p" build.gradle)
+          if [[ "$written" != "$VERSION" ]]; then
+            echo "::error::build.gradle's version reads as '$written' after the change, not $VERSION."
+            exit 1
+          fi
+          # The other files that name the version: the sample's model file, as the code generator would write it at
+          # the new version, so CI's check that it is current passes, and the install snippets in the README and
+          # docs/. It fails, changing nothing, when one it expects isn't found; the list is in the script.
+          if ! python3 scripts/release_version.py references . "$VERSION" > "$RUNNER_TEMP/references"; then
+            echo "::error::A file that names the version isn't as scripts/release_version.py's REFERENCES expects. Change the list to match it."
+            exit 1
+          fi
+          git diff --stat
+      - name: Push the branch and open the PR
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PR_TOKEN || github.token }}
+          HAS_PR_TOKEN: ${{ secrets.RELEASE_PR_TOKEN != '' }}
+          VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+          SINCE: ${{ steps.version.outputs.since }}
+          CURRENT: ${{ steps.version.outputs.current }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "$BRANCH"
+          git add build.gradle
+          xargs git add -- < "$RUNNER_TEMP/references"
+          git commit -m "Release $TAG"
+          git push origin "refs/heads/$BRANCH"
+          body="$RUNNER_TEMP/release-pr.md"
+          {
+            echo "Bumps the version from $CURRENT to $VERSION. Merging this PR releases $TAG: release.yml publishes it to Maven Central and creates the GitHub release. See RELEASING.md."
+            echo
+            if [[ -n "$SINCE" ]]; then
+              echo "Commits since $SINCE:"
+              echo
+              git log --oneline --no-decorate "$SINCE..origin/$DEFAULT_BRANCH" | sed 's/^/- /'
+            else
+              echo "There is no earlier tag."
+            fi
+            if [[ "$HAS_PR_TOKEN" != true ]]; then
+              echo
+              echo "This PR was opened with GITHUB_TOKEN, so CI hasn't started on it. Push an empty commit to the branch, or close and reopen the PR, to start it."
+            fi
+          } > "$body"
+          url=$(gh pr create --repo "$REPO" --base "$DEFAULT_BRANCH" --head "$BRANCH" --title "Release $TAG" --body-file "$body")
+          echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [[ "$HAS_PR_TOKEN" != true ]]; then
+            note="Opened with GITHUB_TOKEN, so CI doesn't run on it by itself. Push an empty commit to $BRANCH, or close and reopen the PR, to start it."
+            echo "::notice::$note"
+            echo "$note" >> "$GITHUB_STEP_SUMMARY"
+          fi
