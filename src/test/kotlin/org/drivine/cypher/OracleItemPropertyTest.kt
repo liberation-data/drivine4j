@@ -259,6 +259,13 @@ class OracleItemPropertyTest {
     }
 
     @Test
+    fun `a grouping key an order term over the items reads is read through its text once, for the item and the GROUP BY`() {
+        // #413: worked out in the query that groups, the term read the key's text again at each level of the sum, 52 times.
+        val sql = OracleCypherCompiler("g").compile("MATCH (me:P)--(you:P) RETURN me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age)").sql
+        assertEquals(2, Regex("JSON_SERIALIZE").findAll(sql).count(), sql)
+    }
+
+    @Test
     fun `on Postgres a value a write takes from its row is read as elsewhere`() {
         val sql = PostgresCypherCompiler("g").compile("UNWIND \$ts AS t MATCH (n:Doc {id: t.id}) SET n.a = t.a", mapOf("ts" to emptyList<Any>())).sql
         assertTrue(!sql.contains("SERIALIZE") && sql.contains("'v1'") , sql)

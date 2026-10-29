@@ -1831,6 +1831,21 @@ abstract class CypherQueryContract {
         assertEquals(byBoth, query("$match WITH me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age) RETURN age, cnt"))
         assertEquals(byBoth, query("$match RETURN DISTINCT me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age)"))
         assertEquals(byBoth, query("$match RETURN me.age AS age, count(you.age) AS cnt ORDER BY age + count(you.age)"))
+        // Sorted, skipped and limited before the WITH's WHERE, as Cypher reads it; a node keying the groups, read by property.
+        assertEquals(listOf(20L), query("$match WITH me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age) SKIP 1 LIMIT 2 WHERE cnt = 1 RETURN age"))
+        assertEquals(listOf("B", "C", "D", "A"), query("$match WITH me, count(you) AS cnt ORDER BY me.age * count(you) RETURN me.name"))
+        // An aggregate that is no item; a comprehension that names its own variable as the key's; the key in a function.
+        assertEquals(byBoth, query("$match RETURN me.age AS age, count(*) AS c ORDER BY me.age + count(you.age)"))
+        assertEquals(byBoth, query("$match RETURN me.age AS age, count(you.age) AS cnt ORDER BY me.age + size([me IN [1] | me]) + count(you.age)"))
+        assertEquals(
+            listOf(listOf(10L, 3L), listOf(11L, 1L), listOf(20L, 1L), listOf(21L, 1L)),
+            query("$match RETURN me.age AS age, count(*) AS cnt ORDER BY toString(me.age) + count(*)"),
+        )
+        // Two keys, one a part of the other.
+        assertEquals(
+            listOf(listOf(11L, 12L, 1L), listOf(10L, 11L, 3L), listOf(20L, 21L, 1L), listOf(21L, 22L, 1L)),
+            query("$match RETURN me.age AS a, me.age + 1 AS b, count(*) AS cnt ORDER BY me.age + 1 + count(*), me.age * 2 - count(*)"),
+        )
         // Beside a variable-length walk, where the key is read as elsewhere.
         assertEquals(
             listOf(listOf(11L, 1L), listOf(20L, 1L), listOf(21L, 1L), listOf(10L, 3L)),
