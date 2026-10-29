@@ -3,6 +3,8 @@ package org.drivine.mapper
 import com.fasterxml.jackson.core.exc.InputCoercionException
 import com.fasterxml.jackson.databind.DeserializationFeature
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.cypher.sql.PostgresCypherCompiler
+import org.drivine.cypher.sql.SqliteCypherCompiler
 import java.math.BigDecimal
 import java.math.BigInteger
 import java.sql.ResultSet
@@ -39,6 +41,9 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
         private const val ORACLE_BINARY_DOUBLE = 101
         private const val ORACLE_VECTOR = -105
 
+        /** The driver's own JSON value, which it reads a value it writes no text of as: see [json]. */
+        private const val ORACLE_JSON_VALUE = "oracle.sql.json.OracleJsonValue"
+
         /** Postgres's own types, told by name: the driver reports them as `OTHER`, or a time zone as none. */
         private const val POSTGRES_VECTOR = -10_105
 
@@ -47,6 +52,12 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
 
         /** Reads whole numbers past a `Long` as `BigInteger`, for [readJson] to make floats of. */
         private val wideJson = ObjectMapper()
+
+        /** Reads floats as `BigDecimal`, for [nonFiniteRead] to tell a number that stands for NaN or an infinity from a double. */
+        private val exactJson = ObjectMapper().enable(DeserializationFeature.USE_BIG_DECIMAL_FOR_FLOATS)
+
+        /** How a store whose JSON holds no NaN writes it, where a statement is given one: see [SqliteCypherCompiler]. */
+        private val NAN_TAG = mapOf("\$numberDouble" to "NaN")
 
         /**
          * The JSON [text] as maps, lists and values, a whole number as a `Long`. A whole number past a `Long`'s range is a
@@ -57,6 +68,29 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             json.readValue(text, Any::class.java)
         } catch (e: InputCoercionException) {
             widened(wideJson.readValue(text, Any::class.java))
+        }
+
+        /**
+         * The JSON [text] as [readJson] reads it, of a statement given NaN or an infinity ([nonFinite]), with each value that stands
+         * for one the double it is: see [nonFiniteRead]. Else as [readJson] reads it.
+         */
+        private fun readJson(text: String, nonFinite: Boolean): Any? =
+            if (nonFinite) nonFiniteRead(exactJson.readValue(text, Any::class.java)) else readJson(text)
+
+        /**
+         * [value], read with its floats as `BigDecimal`, with each whole number a `Long` (past a `Long`'s range a `Double`, as
+         * [widened] makes it), each float a `Double`, and each value that stands for NaN or an infinity the double it is: a number
+         * past any double's, as Postgres writes one ([PostgresCypherCompiler.read]), and `{"${'$'}numberDouble": "NaN"}`, as SQLite
+         * writes NaN ([SqliteCypherCompiler]).
+         */
+        private fun nonFiniteRead(value: Any?): Any? = when (value) {
+            is Int -> value.toLong()
+            is BigInteger -> value.toDouble()
+            is BigDecimal -> PostgresCypherCompiler.read(value)
+            NAN_TAG -> Double.NaN
+            is Map<*, *> -> value.mapValuesTo(LinkedHashMap()) { (_, v) -> nonFiniteRead(v) }
+            is List<*> -> value.map(::nonFiniteRead)
+            else -> value
         }
 
         /** [value] with each whole number a `Long`, and each past a `Long`'s range a `Double`. */
@@ -74,7 +108,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
          * as its bytes, and text as a `String`, or with [json] as the JSON it holds. Drivine's own
          * statements over a SQLite graph return documents as JSON text, and say so (see `JdbcConnection`).
          */
-        fun sqliteRows(results: ResultSet, json: Boolean): List<JdbcRow> {
+        fun sqliteRows(results: ResultSet, json: Boolean, nonFinite: Boolean = false): List<JdbcRow> {
             val meta = results.metaData
             val columns = 1..meta.columnCount
             val keys = columns.map { meta.getColumnLabel(it) }
@@ -84,7 +118,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
                     when (val value = results.getObject(column)) {
                         is Int, is Short, is Byte -> (value as Number).toLong()
                         is Float -> value.toDouble()
-                        is String -> if (json) readJson(value) else value
+                        is String -> if (json) readJson(value, nonFinite) else value
                         else -> value
                     }
                 })
@@ -92,8 +126,11 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             return rows
         }
 
-        /** Reads every row of [results] out of the driver, so the statement can be closed. */
-        fun rows(results: ResultSet): List<JdbcRow> {
+        /**
+         * Reads every row of [results] out of the driver, so the statement can be closed: the rows of a compiled Cypher
+         * statement given NaN or an infinity with [nonFinite], whose JSON may hold values that stand for them (see [nonFiniteRead]).
+         */
+        fun rows(results: ResultSet, nonFinite: Boolean = false): List<JdbcRow> {
             val meta = results.metaData
             val columns = 1..meta.columnCount
             val keys = columns.map { meta.getColumnLabel(it) }
@@ -112,7 +149,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             }
             val rows = mutableListOf<JdbcRow>()
             while (results.next()) {
-                rows += JdbcRow(keys, columns.map { column -> value(results, column, types[column - 1]) })
+                rows += JdbcRow(keys, columns.map { column -> value(results, column, types[column - 1], nonFinite) })
             }
             return rows
         }
@@ -122,8 +159,8 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
          * drivers give such a value, and never as a locator or a driver's own class that would not
          * outlive the statement.
          */
-        private fun value(results: ResultSet, column: Int, type: Int): Any? = when (type) {
-            ORACLE_JSON -> results.getString(column)?.let(::readJson)
+        private fun value(results: ResultSet, column: Int, type: Int, nonFinite: Boolean): Any? = when (type) {
+            ORACLE_JSON -> json(results, column, nonFinite)
             Types.CLOB, Types.NCLOB, Types.LONGVARCHAR, Types.LONGNVARCHAR -> results.getString(column)
             Types.NUMERIC, Types.DECIMAL -> results.getBigDecimal(column)?.let(::number)
             Types.FLOAT, Types.DOUBLE, Types.REAL, ORACLE_BINARY_FLOAT, ORACLE_BINARY_DOUBLE ->
@@ -142,6 +179,45 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
             POSTGRES_VECTOR -> results.getString(column)?.let { json.readValue(it, List::class.java).map { n -> (n as Number).toDouble() } }
             Types.ARRAY -> results.getArray(column)?.let { array -> try { (array.array as Array<*>).toList() } finally { array.free() } }
             else -> results.getObject(column)
+        }
+
+        /**
+         * The JSON of [column], read as [readJson] reads it. Oracle's driver writes no text of a JSON value that holds a
+         * `BINARY_DOUBLE` NaN or infinity, and fails: such a value is read through the driver's own JSON value, by [oracleJson].
+         */
+        private fun json(results: ResultSet, column: Int, nonFinite: Boolean): Any? = try {
+            results.getString(column)?.let { readJson(it, nonFinite) }
+        } catch (e: NumberFormatException) {
+            val type = Class.forName(ORACLE_JSON_VALUE, true, results.javaClass.classLoader)
+            oracleJson(results.getObject(column, type))
+        }
+
+        /**
+         * [value], Oracle's JSON value (`oracle.sql.json.OracleJsonValue`, which Drivine does not compile against), as maps, lists and
+         * values, as [readJson] reads its text: a `BINARY_DOUBLE` or `BINARY_FLOAT` as a `Double`, NaN and the infinities among them,
+         * and a `NUMBER` as [number] makes it. A map is a `Map` of such values, and a list a `List`.
+         */
+        private fun oracleJson(value: Any?): Any? = when (value) {
+            null -> null
+            is Map<*, *> -> value.entries.associateTo(LinkedHashMap()) { (key, item) -> key as String to oracleJson(item) }
+            is List<*> -> value.map(::oracleJson)
+            else -> when (oracleCall(value, "getOracleJsonType").toString()) {
+                "NULL" -> null
+                "TRUE" -> true
+                "FALSE" -> false
+                "STRING" -> oracleCall(value, "getString")
+                "DOUBLE", "FLOAT" -> (oracleCall(value, "doubleValue") as Number).toDouble()
+                "DECIMAL" -> number(oracleCall(value, "bigDecimalValue") as BigDecimal)
+                else -> value.toString()
+            }
+        }
+
+        /** The public method [name] of no arguments of one of the interfaces [target]'s class has, called on [target]. */
+        private fun oracleCall(target: Any, name: String): Any? {
+            fun interfaces(type: Class<*>): Sequence<Class<*>> =
+                (type.interfaces.asSequence() + (type.superclass?.let(::interfaces) ?: emptySequence())).flatMap { sequenceOf(it) + interfaces(it) }
+            val method = interfaces(target.javaClass).firstNotNullOf { type -> type.methods.firstOrNull { it.name == name && it.parameterCount == 0 } }
+            return method.invoke(target)
         }
 
         /** A number with no fraction is a `Long` where it fits; any other is a `Double`. */
