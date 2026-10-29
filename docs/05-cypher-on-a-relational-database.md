@@ -118,6 +118,9 @@ place in the statement it stands at.
 - [Oracle](09-supported-engines.md#oracle) reads an empty text as null.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
+- NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
+  nothing and ordered with nothing, and arithmetic keeps it. Oracle stores them too. SQLite stores an infinity, and
+  refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb` holds neither.
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).
   Two values whose kind it leaves open, such as two parameters or two properties, compare as null where they hold
   lists. Two maps compare as null, and two that differ do in a list too, where Neo4j orders them.

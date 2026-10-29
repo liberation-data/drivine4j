@@ -319,6 +319,15 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a row that holds NaN gives each other value in it as a row without NaN gives it`() {
+        // Oracle's driver writes no text of such a row, and it is read through the driver's own JSON value instead (#295).
+        assertEquals(
+            listOf(listOf(Double.NaN, "s", null, true, false, 2L, 1.5, mapOf("k" to Double.NaN, "t" to "u"), listOf(1L, Double.NEGATIVE_INFINITY))),
+            query("RETURN [\$p, 's', null, true, false, 2, 1.5, {k: \$p, t: 'u'}, [1, \$n]]", mapOf("p" to Double.NaN, "n" to Double.NEGATIVE_INFINITY)),
+        )
+    }
+
+    @Test
     fun `a quotient of floats is written without the zeros its scale leaves`() {
         // The spec's float arithmetic steps skip Postgres, which works a float out in exact decimal (#188): these it gives as a double does.
         assertEquals(

@@ -165,9 +165,19 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             val result = super.arithmetic(x, y, operator)
             val infinite = "(abs(${number(x)}) = $INFINITY OR abs(${number(y)}) = $INFINITY)" + if (operator == "/") " AND ${number(y)} <> 0" else ""
             "CASE WHEN ${typeOf(x)} = 'number' AND ${typeOf(y)} = 'number' AND (${isNaN(x)} OR ${isNaN(y)} OR ($result IS NULL AND $infinite)) " +
-                "THEN ${literal(SqliteCypherValues.write(SqliteCypherValues.NAN))} ELSE $result END"
+                "THEN $NAN_JSON ELSE $result END"
         }
     }
+
+    /** NaN, where a number of the group is NaN, or where it holds both infinities: SQLite's own `sum` passes NaN by, and gives null for `∞ + -∞`. */
+    override fun sum(json: String, distinct: String) = nanOfGroup(json, super.sum(json, distinct))
+
+    /** NaN where [sum] is. */
+    override fun avg(json: String, distinct: String) = nanOfGroup(json, super.avg(json, distinct))
+
+    /** [summed], of the JSON values [json] of a group, or NaN as [sum] gives it, where the statement is given NaN or an infinity. */
+    private fun nanOfGroup(json: String, summed: String) = if (!nonFinite) summed else
+        "(CASE WHEN max(${isNaN(json)}) = 1 OR max(${number(json)}) = $INFINITY AND min(${number(json)}) = -$INFINITY THEN $NAN_JSON ELSE $summed END)"
 
     /** By [SqliteFunctions.LIST_ORDER], which walks the two as Cypher does. */
     override fun listOrder(x: String, y: String) = "${SqliteFunctions.LIST_ORDER}($x, $y)"
@@ -500,5 +510,8 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
         /** An infinity, as SQLite reads the number its JSON writes for one. */
         const val INFINITY = "9e999"
+
+        /** NaN, as a statement given it writes it, as SQL: see the class. */
+        val NAN_JSON = literal(SqliteCypherValues.write(SqliteCypherValues.NAN))
     }
 }

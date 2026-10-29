@@ -499,6 +499,16 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     }
 
     /**
+     * In `BINARY_DOUBLE` where the group holds a double, as [sum] adds it: NaN and the infinities are doubles, which [number] reads
+     * as no `NUMBER`, so the average would pass them by (#295).
+     */
+    override fun avg(json: String, distinct: String): String {
+        val double = "MAX(JSON_VALUE($json, '\$?(@.type() == \"double\")')) IS NOT NULL"
+        return "CASE WHEN $double THEN JSON_SCALAR(avg(${distinct}JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING BINARY_DOUBLE))) " +
+            "ELSE ${super.avg(json, distinct)} END"
+    }
+
+    /**
      * In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. Each is read as
      * a `BINARY_DOUBLE` there, which NaN and the infinities are, where [number] reads them as no `NUMBER`.
      */

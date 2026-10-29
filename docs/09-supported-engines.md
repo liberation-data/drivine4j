@@ -271,7 +271,8 @@ declares the function itself.
   label and type something has now, read from the nodes and relationships; any other procedure is refused. A parameter
   may be named by a keyword (`$limit`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
-  statement fails: JSON holds neither.
+  statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
+  are the floats they are, and are stored as them, as in Neo4j.
 - A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
   costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
   This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed
@@ -574,6 +575,9 @@ relationships with it.
   from a graph engine's only around its 16th significant digit, and still comes back as a float. It shows only
   where a result is compared for exact equality with one worked out in doubles, which is fragile with floats
   anyway. A float's text carries no trailing zeros: `toString(4.0 / 2)` is `"2.0"`.
+- `jsonb` holds no NaN or infinity. A statement given one as a parameter writes it as a number past any double's,
+  and works with it as the float it is, as Neo4j does; the rows give it back as that float. A statement that writes
+  and is given one is refused, rather than store that number.
 - A statement that writes and returns rows is one with `RETURNING`, or a data-modifying `WITH`: one
   statement, which writes nothing when it fails.
 - A raw `whereClause` is a SQL predicate. A property of the root may be written as Cypher writes it
@@ -736,6 +740,10 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   mixes an integer past 2^53 with a float, can be more accurate than Neo4j's in its last digit: `9007199254740993`
   and `0.5` sum to `9.007199254740994E15`, where Neo4j gives `9.007199254740992E15`. A result still comes back as a
   float.
+- An infinity is the number SQLite's JSON writes for one, and is stored. Its JSON holds no NaN: a statement given one
+  as a parameter writes it as `{"$numberDouble": "NaN"}`, works with it as the float it is, as Neo4j does, and gives
+  it back as NaN. A statement that writes and is given NaN is refused, rather than store that map. A float divided by
+  zero is still null.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.
