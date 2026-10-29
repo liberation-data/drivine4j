@@ -14,8 +14,9 @@ three repositories at once.
    lists the commits since the last tag.
 2. **Review and merge the release PR.** It passes CI like any other PR. Merging it is the release point.
 3. **CI publishes.** The merge, a push to the default branch that changes the version file, runs
-   `.github/workflows/release.yml`. It runs the full gate, builds, checks, publishes, and creates the GitHub release
-   with its tag `vX.Y.Z` on the merge commit. Nothing is built from a laptop.
+   `.github/workflows/release.yml`. It runs the full gate, unless CI has already passed on the same tree, builds,
+   checks, publishes, and creates the GitHub release with its tag `vX.Y.Z` on the merge commit. Nothing is built from
+   a laptop.
 4. **Credentials.** Repository secrets or trusted publishing (OIDC), held in a GitHub environment named `release`.
    Give that environment required reviewers: now that merging publishes, their approval of the run is the human
    checkpoint before anything goes out.
@@ -43,8 +44,24 @@ git push origin vX.Y.Z
     bump, for example.
   - On a tag push it fails, saying why, unless the tag is `vX.Y.Z` (or `vX.Y.Z-suffix`), its version equals the build
     file's, and the tagged commit is on the default branch.
-- **`gate`** runs the repository's full CI, `ci.yml`, unchanged. A push to the default branch that releases nothing
-  skips it, as `ci.yml` runs on that push anyway.
+- **`trust`** looks for a `ci.yml` run that has already passed on the git tree being released
+  (`git rev-parse HEAD^{tree}` of the commit the run checked out), so that `gate` needn't run CI again. Trees are
+  compared, not commits: a squash merge of a release PR that was up to date with the default branch has the tree its
+  pull request run tested. `scripts/ci_trust.py` does it, reading the GitHub API with `actions: read`.
+  - A run counts when it is from a push or a pull request (the nightly, which runs without the pins, doesn't), its
+    head commit has this tree, and every job of its latest attempt concluded success. A pull request run tests the
+    pull request's merge ref, not its head, so `ci.yml`'s first job records the tree it checked out as an artifact,
+    `ci-tree-<tree>`, and a pull request run counts only when it recorded this tree as well. A run of a fork's
+    pull request is believed for the same reason: its head has this tree, so the `ci.yml` it ran is the one being
+    released.
+  - When one has passed, `gate` is skipped. When one is still going, as the push run on the merge commit is when
+    the release starts beside it, `trust` waits for it, up to an hour: if it passes `gate` is skipped, and if it fails
+    or is cancelled the release fails, linking it. Re-running the release's failed jobs then runs `gate`, unless that
+    CI run has been re-run too, which `trust` then waits for or trusts. When none counts, or the wait runs out, or
+    the API can't be asked, `gate` runs as before.
+  - The run's summary links the run trusted, or says of each run it looked at why it didn't count.
+- **`gate`** runs the repository's full CI, `ci.yml`, unchanged, unless `trust` found it has already passed on this
+  tree. A push to the default branch that releases nothing skips both, as `ci.yml` runs on that push anyway.
 - **`build`** builds the release artifacts from the checked-out ref, checks them, runs a smoke test, and uploads them
   as the run's artifact.
 - **`publish`** runs on a release alone, in the `release` environment. It publishes the exact files `build` made.
@@ -59,7 +76,9 @@ failed jobs.
 
 A **dry run** is everything but `publish` and `github-release`. Run it from the Actions tab (Release, Run workflow,
 on any branch or tag), and it runs by itself on a pull request that changes the release machinery, a release PR
-included. Only a merged version bump or a pushed tag publishes.
+included. Only a merged version bump or a pushed tag publishes. `trust` skips its `gate` as it does a release's: a
+manual run on the default branch trusts the push run on its commit, and a pull request's dry run the pull request's
+own run, when the pull request is up to date with its base.
 
 ## drivine4j: Maven Central
 
@@ -80,9 +99,9 @@ included. Only a merged version bump or a pushed tag publishes.
   `drivine4j-codegen-java`, `drivine4j-codegen-model`, `drivine4j-coroutines`, `drivine4j-spring` and
   `drivine4j-spring-boot-starter`. `drivine4j-sample` is not. A new published module is added to `MODULES` in
   `release.yml` and to `publishAggregation` in the root `build.gradle`, or `build` fails.
-- **Build:** `./gradlew build -x test -x standaloneTest zipAggregationPublication`, with no Gradle cache (the gate
-  ran the tests). Every module's publication is staged and signed, as nmcp stages it, and zipped into the one bundle
-  nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
+- **Build:** `./gradlew build -x test -x standaloneTest zipAggregationPublication`, with no Gradle cache (the gate,
+  or the CI run `trust` found on this tree, ran the tests). Every module's publication is staged and signed, as nmcp
+  stages it, and zipped into the one bundle nmcp uploads, `build/nmcp/zip/publicationAggregated.zip`.
 - **Checks:** every module has its jar, sources jar, javadoc jar, pom and Gradle module file, each with a signature that
   verifies, and its pom names the version. `build` also fails a release whose version Maven Central already has, and
   only warns when Maven Central can't be asked (the portal rejects a duplicate anyway). Before any of it, `check`
@@ -107,6 +126,11 @@ included. Only a merged version bump or a pushed tag publishes.
   `npm version --preid rc` does and orders versions by semver precedence, so a prerelease `X.Y.Z-rc.N` comes before
   `X.Y.Z` and `rc.10` after `rc.9`. It needs only the runner's `python3`. Its tests,
   `python3 scripts/test_release_version.py`, run in CI, in `check` and in "Prepare release" before either uses it.
+- **CI trust:** `scripts/ci_trust.py` is drivine-python's, byte for byte, and its tests, `python3
+  scripts/test_ci_trust.py`, are drivine-python's on unittest. They run in CI's `release-version` job, and in `trust`
+  before it uses the script. No job in `ci.yml` may have a condition (`if:` on a job): one a condition skipped leaves
+  part of the tree untested, so `trust` doesn't count a run with one, and the gate runs every time. A condition on a
+  step is fine.
 
 The same build, locally, publishing nothing (unsigned, or add `SIGN=true` with `SIGNING_KEY` and `SIGNING_PASSWORD`):
 
