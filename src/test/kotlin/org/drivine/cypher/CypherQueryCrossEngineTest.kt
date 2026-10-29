@@ -1816,6 +1816,62 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an order term over an aggregate that reads a grouping key, as it is grouped by`() {
+        // #413: on Oracle, `me.age` in the term read the properties, where the key is grouped by as read through its text, and
+        // Oracle refused it (ORA-00979). Sorted by the key alone, A, B, C, D; by the key and the count, B, A, C, D.
+        clear()
+        seed(
+            "CREATE (a:CyKey {name: 'A', age: 10, born: date('2000-01-01')}), (b:CyKey {name: 'B', age: 11, born: date('2000-01-05')}), " +
+                "(c:CyKey {name: 'C', age: 20, born: date('2000-01-20')}), (d:CyKey {name: 'D', age: 21, born: date('2000-01-25')}), " +
+                "(a)-[:K]->(b), (a)-[:K]->(c), (a)-[:K]->(d)"
+        )
+        val match = "MATCH (me:CyKey)--(you:CyKey)"
+        val byBoth = listOf(listOf(11L, 1L), listOf(10L, 3L), listOf(20L, 1L), listOf(21L, 1L))
+        assertEquals(byBoth, query("$match RETURN me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age)"))
+        assertEquals(byBoth, query("$match WITH me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age) RETURN age, cnt"))
+        assertEquals(byBoth, query("$match RETURN DISTINCT me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age)"))
+        assertEquals(byBoth, query("$match RETURN me.age AS age, count(you.age) AS cnt ORDER BY age + count(you.age)"))
+        // Sorted, skipped and limited before the WITH's WHERE, as Cypher reads it; a node keying the groups, read by property.
+        assertEquals(listOf(20L), query("$match WITH me.age AS age, count(you.age) AS cnt ORDER BY me.age + count(you.age) SKIP 1 LIMIT 2 WHERE cnt = 1 RETURN age"))
+        assertEquals(listOf("B", "C", "D", "A"), query("$match WITH me, count(you) AS cnt ORDER BY me.age * count(you) RETURN me.name"))
+        // An aggregate that is no item; a comprehension that names its own variable as the key's; the key in a function.
+        assertEquals(byBoth, query("$match RETURN me.age AS age, count(*) AS c ORDER BY me.age + count(you.age)"))
+        assertEquals(byBoth, query("$match RETURN me.age AS age, count(you.age) AS cnt ORDER BY me.age + size([me IN [1] | me]) + count(you.age)"))
+        assertEquals(
+            listOf(listOf(10L, 3L), listOf(11L, 1L), listOf(20L, 1L), listOf(21L, 1L)),
+            query("$match RETURN me.age AS age, count(*) AS cnt ORDER BY toString(me.age) + count(*)"),
+        )
+        // Two keys, one a part of the other.
+        assertEquals(
+            listOf(listOf(11L, 12L, 1L), listOf(10L, 11L, 3L), listOf(20L, 21L, 1L), listOf(21L, 22L, 1L)),
+            query("$match RETURN me.age AS a, me.age + 1 AS b, count(*) AS cnt ORDER BY me.age + 1 + count(*), me.age * 2 - count(*)"),
+        )
+        // Beside a variable-length walk, where the key is read as elsewhere.
+        assertEquals(
+            listOf(listOf(11L, 1L), listOf(20L, 1L), listOf(21L, 1L), listOf(10L, 3L)),
+            query("MATCH (me:CyKey)-[:K*1..1]-(you:CyKey) RETURN me.age AS age, count(you) AS cnt ORDER BY me.age * count(you)"),
+        )
+        assertEquals(
+            listOf(listOf(10L, 3L), listOf(11L, 1L), listOf(20L, 1L), listOf(21L, 1L)),
+            query("$match RETURN me.age AS age, count(you.age) AS cnt ORDER BY me.age"),
+        )
+        // A key that is an expression, and several keys.
+        assertEquals(
+            listOf(listOf(12L, 1L), listOf(11L, 3L), listOf(21L, 1L), listOf(22L, 1L)),
+            query("$match RETURN me.age + 1 AS k, count(*) AS cnt ORDER BY me.age + 1 + count(*)"),
+        )
+        assertEquals(
+            listOf(listOf("A", 10L, 3L), listOf("D", 21L, 1L), listOf("C", 20L, 1L), listOf("B", 11L, 1L)),
+            query("$match RETURN me.name AS name, me.age AS age, count(*) AS cnt ORDER BY me.age * count(*) DESC, me.name"),
+        )
+        // A temporal key: A's 30 days are past C's 10.
+        assertEquals(
+            listOf("B", "C", "A", "D"),
+            query("$match RETURN me.name AS name, me.born AS born, count(*) AS cnt ORDER BY me.born + duration({days: 10 * count(*)})").map { (it as List<*>).first() },
+        )
+    }
+
+    @Test
     fun `a day and a moment are their ISO text`() {
         // A graph engine's driver gives a day and a moment as values of its own.
         if (!compiles) return
