@@ -101,6 +101,15 @@ class SqliteCypherFunctionsTest {
     }
 
     @Test
+    fun `drivine_round rounds in decimal, and leaves an infinity as it is`() {
+        // An infinity, which SQLite stores and a statement may be given (#295), as Neo4j rounds it.
+        assertEquals(
+            listOf(2.35, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, null),
+            row("SELECT drivine_round(2.345, 2, 'HALF_UP'), drivine_round(9e999, 2, 'HALF_UP'), drivine_round(-9e999, 0, 'HALF_DOWN'), drivine_round(NULL, 0, 'HALF_UP')"),
+        )
+    }
+
+    @Test
     fun `drivine_sort_key orders lists as Cypher does, a text before one it begins, and leaves any other value as it is`() {
         // Each list's place in the array; read back in the order of their keys.
         val lists = "[[1, null], [\"ab\"], [true], [], [1e300], [\"a\\u0002\"], [[1]], [-1], [null], [\"a\"], [{\"a\": 1}], [1, 2], [false], [\"a\\u0001\"], [-2.5], [1], [0]]"
