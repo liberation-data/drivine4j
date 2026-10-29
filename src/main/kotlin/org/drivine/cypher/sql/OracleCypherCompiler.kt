@@ -288,7 +288,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * is read so: a property inside an item (`[n.a]`, `collect(n.a)`) is read as [propertyOf] reads it, and isn't worked
      * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
      * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
-     * it takes a text from the row it is writing: see [rowValue]; and so is an unwound item's value an item gives: see [itemValue].
+     * it takes a text from the row it is writing: see [rowValue]; so is an unwound item's value an item gives: see [itemValue];
+     * and so is an item of a list read by its place: see [listItem].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -344,11 +345,31 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     override fun itemValue(json: String, key: String) = throughText(json, listOf(key))
 
     /** The value at [keys] in the JSON [json]: a text read with one path from [json] written out as text, anything else as JSON. */
-    private fun throughText(json: String, keys: List<String>) = shared(json) { (x) ->
-        val path = OracleSql.path(keys)
-        "CASE WHEN JSON_VALUE($x, ${OracleSql.path(keys, ".type()")}) = 'string' " +
-            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($x RETURNING CLOB), $path RETURNING CLOB)) ELSE JSON_QUERY($x, $path RETURNING JSON) END"
-    }
+    private fun throughText(json: String, keys: List<String>) = shared(json) { (x) -> throughText(x, OracleSql.path(keys), OracleSql.path(keys, ".type()")) }
+
+    /**
+     * The value at the path [path] in the JSON [json], with [passing] its `PASSING` clause where it has one: a text read with
+     * that path from [json] written out as text, anything else as JSON. [typed] is the path to its kind, `.type()`.
+     */
+    private fun throughText(json: String, path: String, typed: String, passing: String = "") =
+        "CASE WHEN JSON_VALUE($json, $typed$passing) = 'string' " +
+            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($json RETURNING CLOB), $path$passing RETURNING CLOB)) ELSE JSON_QUERY($json, $path$passing RETURNING JSON) END"
+
+    /**
+     * The item at the path [path] of the JSON list [json], `'$[0]'`, read as [throughText] reads a value: a text from the list
+     * written out as text, anything else as JSON, as before.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#388), to be removed with it.** A statement crashed the session where
+     * it took a text past 32 KB from a list as JSON, `JSON_QUERY(list, '$[$i]' RETURNING JSON)`, for each of two or more rows,
+     * from the second run on: an item of a list `split` made, read by index, by `head` or `last`, or after a slice, of a stored
+     * list, and of one a `WITH` passed on. Its text read straight from the list by its path, `JSON_VALUE(list, '$[0]'
+     * RETURNING CLOB)`, ran clean too, but a value the item is read as whole, returned or passed on, needs it as JSON. An
+     * item is read as text only where it is a text: the list is written out whole for it, so a short text of a long list
+     * costs that list's length. To remove it, read the item with `JSON_QUERY(… RETURNING JSON)` again, once an Oracle release
+     * no longer crashes on the repro in `docs/oracle-long-json-string-crash.md`, and `CypherQueryOracleTest`'s "a text past
+     * 32 KB that is an item of a list" test still passes without it.
+     */
+    private fun listItem(json: String, path: String, passing: String = "") = throughText(json, path, "${path.dropLast(1)}.type()'", passing)
 
     /**
      * A value in a parameter that is a map, `${'$'}p.text`, read with one path from the text the parameter is bound as, and
@@ -369,10 +390,10 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return doubled
     }
 
-    /** Counted from the end where negative: a JSON path counts from the start. */
+    /** Counted from the end where negative: a JSON path counts from the start. Read as [listItem] reads an item. */
     override fun element(json: String, index: String) = shared(json, index) { (list, i) ->
         val at = "JSON_VALUE($i, '$' RETURNING NUMBER)"
-        "JSON_QUERY($list, '\$[\$i]' PASSING CASE WHEN $at < 0 THEN JSON_VALUE($list, '\$.size()' RETURNING NUMBER) + $at ELSE $at END AS \"i\" RETURNING JSON)"
+        listItem(list, "'\$[\$i]'", " PASSING CASE WHEN $at < 0 THEN JSON_VALUE($list, '\$.size()' RETURNING NUMBER) + $at ELSE $at END AS \"i\"")
     }
 
     /** A JSON path names a key as it is written, so a key an expression gives is not read: `map[key]` is null, where `list[i]` reads its item. */
@@ -633,8 +654,9 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
-        "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"
-        "last" -> "JSON_QUERY($json, '\$[last]' RETURNING JSON)"
+        // An item read so where it is a text past 32 KB crashed the session: see [listItem].
+        "head" -> listItem(json, "'\$[0]'")
+        "last" -> listItem(json, "'\$[last]'")
         "abs" -> "CASE WHEN ${kind(json)} = 'double' THEN JSON_SCALAR(ABS(TO_BINARY_DOUBLE(${number(json)}))) ELSE JSON_SCALAR(ABS(${number(json)})) END"
         "keys" -> keys(json)
         else -> null

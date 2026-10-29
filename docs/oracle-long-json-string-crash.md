@@ -120,3 +120,18 @@ So did serializing it with `EXTENDED` and reading it back as extended JSON. Driv
 other type with the plain `JSON_QUERY`, which didn't crash for a list or a map that holds a long text (see
 `OracleCypherCompiler.rowValue`). Unlike the repro above, these were seen only through Drivine's blocks, not in a
 standalone script.
+
+## An item of a list, read by its place
+
+The same crash comes from a text past 32 KB taken out of a list as JSON (liberation-data/drivine4j#388): an item of a
+list that `split` makes, of a stored list, or of one a `WITH` passes on, read with `JSON_QUERY(list, '$[0]' RETURNING
+JSON)`, over two or more rows, closed the session from the second run of the statement on. Reading it from the list's
+text ran clean in fresh containers, three runs each, and so did `JSON_VALUE(list, '$[0]' RETURNING CLOB)`:
+
+```sql
+JSON(JSON_QUERY(JSON_SERIALIZE(list RETURNING CLOB), '$[0]' RETURNING CLOB))
+```
+
+Drivine reads an item so where it is a text, and an item of any other type with the plain `JSON_QUERY` (see
+`OracleCypherCompiler.listItem`). An unwound item, which `JSON_TABLE` takes out, ran clean as it was. A list made of a
+long property, `JSON_ARRAY(JSON_QUERY(props, '$.a' RETURNING JSON), 'y')`, crashes in its making, and isn't worked around.

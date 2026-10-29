@@ -1364,6 +1364,55 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a text past 32 KB that is an item of a list, read by its place on two rows, is read whole`() {
+        // On Oracle an item of a list was taken out as JSON, JSON_QUERY(list, '$[$i]' RETURNING JSON): a text past 32 KB so
+        // closed the session from the second run on (ORA-03113, #388), as #255's did, given two rows or more. A node of
+        // another label holds the same values, and is not read.
+        clear()
+        val (a, b) = "a".repeat(40_000) to "b".repeat(33_000)
+        val props = "{bio: \$bio, tags: \$tags, i: 0}"
+        query("CREATE (:CyItem $props), (:CyItem $props), (:CyItemOther $props)", mapOf("bio" to a + "x" + b, "tags" to listOf(a, "y")))
+        val all = "MATCH (n:CyItem)"
+        fun each(value: Any?) = listOf(value, value)
+        val statements = listOf(
+            // The issue's: by index, of a list split makes, and of one a WITH passes on.
+            "$all RETURN size(split(n.bio, 'x')[0])" to each(40_000L),
+            "$all WITH split(n.bio, 'x') AS parts RETURN size(parts[0])" to each(40_000L),
+            // Returned or passed on whole, counted from the end, and by an index the statement works out.
+            "$all RETURN split(n.bio, 'x')[0]" to each(a),
+            "$all WITH split(n.bio, 'x') AS parts RETURN parts[1]" to each(b),
+            "$all WITH split(n.bio, 'x')[1] AS part RETURN size(part)" to each(33_000L),
+            "$all RETURN size(split(n.bio, 'x')[-1])" to each(33_000L),
+            "$all RETURN size(split(n.bio, 'x')[n.i])" to each(40_000L),
+            // By head and last, and after a slice.
+            "$all RETURN size(head(split(n.bio, 'x')))" to each(40_000L),
+            "$all RETURN last(split(n.bio, 'x'))" to each(b),
+            "$all RETURN size(split(n.bio, 'x')[0..1][0])" to each(40_000L),
+            "$all RETURN size(split(n.bio, 'x')[1..][0])" to each(33_000L),
+            // Unwound, which read it whole already.
+            "$all UNWIND split(n.bio, 'x') AS part RETURN size(part) AS s ORDER BY s" to listOf(33_000L, 33_000L, 40_000L, 40_000L),
+            // Read by text functions.
+            "$all RETURN [size(split(n.bio, 'x')[0] + 'z'), split(n.bio, 'x')[1] ENDS WITH 'b', substring(split(n.bio, 'x')[0], 39998), right(toUpper(split(n.bio, 'x')[1]), 2)]" to
+                each(listOf(40_001L, true, "aa", "BB")),
+            // Of a stored list.
+            "$all RETURN size(n.tags[0])" to each(40_000L),
+            "$all RETURN n.tags[0]" to each(a),
+            "$all RETURN [size(head(n.tags)), last(n.tags)]" to each(listOf(40_000L, "y")),
+            "$all RETURN count(split(n.bio, 'x')[0])" to listOf(2L),
+        )
+        onOneSession { query ->
+            // Oracle closed the session from the second run on.
+            repeat(3) { run -> for ((cypher, expected) in statements) assertEquals(expected, query(cypher), "$cypher, run ${run + 1}") }
+        }
+        // An item of every other kind is read as it was.
+        assertEquals(
+            listOf(listOf(1L, "a", 2.0, listOf(3L), mapOf("k" to 4L), null, "y", 1L, null)),
+            query("WITH [1, 'a', 2.0, [3], {k: 4}, null] AS l RETURN [i IN range(0, 5) | l[i]] + [head(['y']), last([2, 1]), head([])]"),
+        )
+        clear()
+    }
+
+    @Test
     fun `texts compare and sort by their code points, not by a locale's collation`() {
         // Beside the spec's cases since v0.6.10 (#273): Postgres compared and sorted texts by the database's collation.
         clear()
