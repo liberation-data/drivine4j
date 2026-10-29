@@ -358,10 +358,14 @@ class CompiledSizeTest {
             "MATCH (n) RETURN DISTINCT $texts" to "MATCH (n) $worked RETURN DISTINCT a + ': ' + b + ' ' + c",
             "MATCH (n) RETURN n.k AS k ORDER BY $texts" to
                 "MATCH (n) WITH n.k AS k, max(n.title) AS a, max(n.first) AS b, max(n.last) AS c RETURN k ORDER BY a + ': ' + b + ' ' + c",
+            // An order term that reads an item by its name, which ran the compiler out of memory.
+            "MATCH (n) RETURN n.k AS k, count(*) AS c ORDER BY ${four("toString", "count(*) * 10 + size(k)")}" to
+                "MATCH (n) WITH n.k AS k, count(*) AS x RETURN k, x AS c ORDER BY ${four("toString", "x * 10 + size(k)")}",
             "MATCH (n)-[*1..3]->(m) RETURN max(m.title) + ': ' + max(m.first) + ' ' + max(m.last)" to
                 "MATCH (n)-[*1..3]->(m) WITH max(m.title) AS a, max(m.first) AS b, max(m.last) AS c RETURN a + ': ' + b + ' ' + c",
             "MATCH (n)-[*1..3]->(m) RETURN ${four("toLower", "max(m.name)")}" to "MATCH (n)-[*1..3]->(m) WITH max(m.name) AS x RETURN ${four("toLower", "x")}",
-            // An order term beside a walk binds nothing, worked out first or not (see `project`): as it does with a WITH first.
+            // An order term over an aggregate's result beside a walk is worked out first over the grouping WITH (see sortsFirst),
+            // as it is over a WITH's column.
             "MATCH (n)-[*1..3]->(m) RETURN n.k AS k ORDER BY ${four("toLower", "max(m.name)")}" to
                 "MATCH (n)-[*1..3]->(m) WITH n.k AS k, max(m.name) AS x RETURN k ORDER BY ${four("toLower", "x")}",
         )

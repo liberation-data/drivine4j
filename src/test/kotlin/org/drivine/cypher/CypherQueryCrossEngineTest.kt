@@ -1743,6 +1743,10 @@ abstract class CypherQueryContract {
         assertEquals(listOf("Mr: Cy Ames"), query("$walk RETURN min(e.title) + ': ' + min(e.first) + ' ' + min(e.last)"))
         val sorted = "toLower(toLower(max(e.last))) + toString(sum(e.a))"
         assertEquals(listOf(listOf("Cy", "cole5"), listOf("Ann", "cole8")), query("$walk RETURN s.first AS s, $sorted AS t ORDER BY $sorted"))
+        assertEquals(listOf(listOf("Cy", "cole5")), query("$walk RETURN s.first AS s, $sorted AS t ORDER BY $sorted DESC SKIP 1 LIMIT 1"))
+        // An order term that reads an item by its name beside an aggregate, with a walk and without.
+        assertEquals(listOf(listOf("y", 5L), listOf("x", 4L)), query("$all RETURN n.k AS k, sum(n.a) AS m ORDER BY toString(10 - sum(n.a)) + toLower(toLower(k))"))
+        assertEquals(listOf(listOf("Cy", 5L), listOf("Ann", 8L)), query("$walk RETURN s.first AS s, sum(e.a) AS c ORDER BY toLower(toLower(s)) + toString(sum(e.a)) DESC"))
         // Beside a key that is an expression, in a CASE and in a map.
         val texts = "toLower(max(n.title)) + ': ' + toLower(max(n.last))"
         assertEquals(listOf(listOf(2L, "dr: bell"), listOf(4L, "mr: ames"), listOf(6L, "ms: cole")), query("$all RETURN n.a + 1 AS k, $texts AS t ORDER BY k"))
