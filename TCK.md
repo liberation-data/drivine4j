@@ -105,7 +105,7 @@ On `main` when the baselines were written, of 3,896 scenarios. The baselines hol
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Neo4j | 3,821 (98.1%) | 3,821 (98.1%) | 0 | 2 | 9 | 5 | 59 |
 | Postgres | 2,357 (60.5%) | 2,307 (59.2%) | 635 | 183 | 654 | 8 | 59 |
-| Oracle | 2,338 (60.0%) | 2,291 (58.8%) | 635 | 205 | 656 | 3 | 59 |
+| Oracle | 2,341 (60.1%) | 2,294 (58.9%) | 635 | 204 | 656 | 1 | 59 |
 | SQLite | 2,311 (59.3%) | 2,304 (59.1%) | 635 | 171 | 697 | 23 | 59 |
 
 Neo4j is the ceiling: the 16 scenarios it fails beside the harness's 59 are where Neo4j itself differs from
