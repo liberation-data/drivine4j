@@ -117,7 +117,7 @@ Java applications don't need it):
 
 ```kotlin
 dependencies {
-    implementation("org.drivine:drivine4j-coroutines:0.4.0")
+    implementation("org.drivine:drivine4j-coroutines:0.4.1")
 }
 ```
 
