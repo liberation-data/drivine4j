@@ -1759,6 +1759,65 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `keys() gives each row's own keys, of a node, a relationship, a map or a parameter, in a comprehension, a quantifier, a DISTINCT or an order`() {
+        // On Oracle every row had the first row's keys (#414): the map's data guide was worked out by a subquery in a lateral
+        // view's select list, which Oracle works out once. The spec's cases read one row's keys only.
+        clear()
+        seed(
+            "CREATE (a:Keyed {id: 1, name: 'Andres', surname: 'Lopez'}), (b:Keyed {id: 2, otherName: 'Andres', otherSurname: 'Lopez'}), " +
+                "(c:Keyed {id: 3, a: 1}), (d:Keyed {id: 4, b: 2}), (a)-[:KEYED {w: 1, p: 1}]->(b), (c)-[:KEYED {w: 2, q: 2, z: 3}]->(d)"
+        )
+        assertEquals(
+            listOf(
+                listOf(1L, "id"), listOf(1L, "name"), listOf(1L, "surname"), listOf(2L, "id"), listOf(2L, "otherName"), listOf(2L, "otherSurname"),
+                listOf(3L, "a"), listOf(3L, "id"), listOf(4L, "b"), listOf(4L, "id"),
+            ),
+            query("MATCH (n:Keyed) UNWIND keys(n) AS k RETURN n.id, k ORDER BY n.id, k"),
+        )
+        // The TCK's Graph8 #2.
+        assertEquals(
+            listOf("a", "b", "id", "name", "otherName", "otherSurname", "surname"),
+            query("MATCH (n:Keyed) UNWIND keys(n) AS x RETURN DISTINCT x ORDER BY x"),
+        )
+        assertEquals(listOf(listOf(3L, 3L, 2L, 2L)), query("MATCH (n:Keyed) WITH n ORDER BY n.id RETURN collect(size(keys(n)))"))
+        assertEquals(listOf(false, false, false, true), query("MATCH (n:Keyed) RETURN 'b' IN keys(n) ORDER BY n.id"))
+        assertEquals(
+            listOf(emptyList(), emptyList(), listOf("a!"), listOf("b!")),
+            query("MATCH (n:Keyed) RETURN [k IN keys(n) WHERE k IN ['a', 'b'] | k + '!'] ORDER BY n.id"),
+        )
+        assertEquals(
+            listOf(listOf(1L, "p"), listOf(1L, "w"), listOf(2L, "q"), listOf(2L, "w"), listOf(2L, "z")),
+            query("MATCH (:Keyed)-[r:KEYED]->() UNWIND keys(r) AS k RETURN r.w, k ORDER BY r.w, k"),
+        )
+        assertEquals(listOf(listOf("a"), listOf("b")), query("UNWIND [{a: 1}, {b: 2}] AS m RETURN keys(m)"))
+        assertEquals(listOf(listOf("a"), listOf("b")), query("UNWIND \$ms AS m RETURN keys(m)", mapOf("ms" to listOf(mapOf("a" to 1L), mapOf("b" to 2L)))))
+        assertEquals(listOf(listOf(listOf("a"), listOf("b"))), query("WITH [{a: 1}, {b: 2}] AS ms RETURN [m IN ms | keys(m)]"))
+        assertEquals(
+            listOf(listOf(listOf("a"), listOf("c")), listOf(listOf("b"), listOf("c"))),
+            query("UNWIND [{a: 1}, {b: 2}] AS m RETURN [x IN [m, {c: 3}] | keys(x)]"),
+        )
+        assertEquals(listOf(listOf("a"), listOf("b")), query("UNWIND [{b: 1}, {a: 2}, {b: 3}] AS m RETURN DISTINCT keys(m) ORDER BY keys(m)"))
+        assertEquals(listOf(2L, 1L), query("UNWIND [{b: 1}, {a: 2}] AS m RETURN coalesce(m.a, m.b) ORDER BY keys(m)"))
+        // A quantifier over each row's keys in a WHERE, the keys of a relationship an OPTIONAL MATCH didn't find, and of maps
+        // in a list each row holds.
+        assertEquals(
+            listOf(4L),
+            query(
+                "UNWIND \$rows AS row MATCH (n:Keyed {id: row.id}) WHERE any(k IN keys(row.props) WHERE k = 'b') RETURN n.id",
+                mapOf("rows" to listOf(mapOf("id" to 1L, "props" to mapOf("a" to 1L)), mapOf("id" to 4L, "props" to mapOf("b" to 2L)))),
+            ),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(2L, null), listOf(3L, 3L), listOf(4L, null)),
+            query("MATCH (n:Keyed) OPTIONAL MATCH (n)-[r:KEYED]->() RETURN n.id, size(keys(r)) ORDER BY n.id"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(3L)),
+            query("UNWIND [[{a: 1}, {b: 2, c: 3}], [{d: 4, e: 5, f: 6}]] AS l RETURN [x IN l | size(keys(x))]"),
+        )
+    }
+
+    @Test
     fun `texts, text functions and arithmetic over an aggregate's result, beside grouping keys, a walk, DISTINCT and an order`() {
         // #373: an operation over an aggregate's result is worked out over the aggregate's column, where it would bind a value;
         // the three aggregates concatenated ran the compiler out of memory on Oracle, and compiled to 68 MB on Postgres.
