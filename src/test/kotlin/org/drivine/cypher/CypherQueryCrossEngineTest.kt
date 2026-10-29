@@ -328,6 +328,15 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a list that holds NaN is sorted with NaN after every number in it`() {
+        // NaN is a number in a list's sort key, and sorts after the infinity, as it does alone (#295).
+        assertEquals(
+            listOf(listOf(1L, 2.0), listOf(1L, Double.POSITIVE_INFINITY), listOf(1L, Double.NaN)),
+            query("UNWIND [[1, \$p], [1, \$i], [1, 2.0]] AS x RETURN x ORDER BY x", mapOf("p" to Double.NaN, "i" to Double.POSITIVE_INFINITY)),
+        )
+    }
+
+    @Test
     fun `a quotient of floats is written without the zeros its scale leaves`() {
         // The spec's float arithmetic steps skip Postgres, which works a float out in exact decimal (#188): these it gives as a double does.
         assertEquals(

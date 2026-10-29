@@ -155,5 +155,5 @@ internal object SqliteCypherValues {
     }
 
     /** The number SQLite writes for an infinity, which it reads as one. */
-    private const val INFINITY = "9e999"
+    const val INFINITY = "9e999"
 }

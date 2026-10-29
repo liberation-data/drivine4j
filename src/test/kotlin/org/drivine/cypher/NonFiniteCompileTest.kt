@@ -49,6 +49,20 @@ class NonFiniteCompileTest {
     }
 
     @Test
+    fun `a statement is given NaN or an infinity in a float, an array, a union and a write alike`() {
+        // Each says so, as its rows are read by it.
+        val postgres = PostgresCypherCompiler("g")
+        assertTrue(postgres.compile("RETURN \$p", mapOf("p" to Float.NaN)).nonFinite)
+        assertTrue(postgres.compile("RETURN \$p", mapOf("p" to floatArrayOf(1f, Float.POSITIVE_INFINITY))).nonFinite)
+        assertTrue(postgres.compile("RETURN \$p", mapOf("p" to doubleArrayOf(Double.NEGATIVE_INFINITY))).nonFinite)
+        assertTrue(postgres.compile("RETURN \$p", mapOf("p" to arrayOf<Any?>(mapOf("x" to Double.NaN)))).nonFinite)
+        assertTrue(postgres.compile("RETURN \$p AS x UNION RETURN 1 AS x", mapOf("p" to Double.NaN)).nonFinite)
+        assertFalse(postgres.compile("RETURN \$p AS x UNION RETURN 1 AS x", mapOf("p" to 1.5)).nonFinite)
+        assertTrue(OracleCypherCompiler("g").compile("CREATE (n:A {x: \$p}) RETURN n.x", mapOf("p" to Double.NaN)).nonFinite)
+        assertTrue(SqliteCypherCompiler("g").compile("CREATE (n:A {x: \$p}) RETURN n.x", mapOf("p" to Double.POSITIVE_INFINITY)).nonFinite)
+    }
+
+    @Test
     fun `the numbers Postgres writes for NaN and the infinities are read back as them`() {
         assertTrue(PostgresCypherCompiler.read(BigDecimal("2e309").add(BigDecimal("0.5"))).isNaN())
         assertEquals(Double.POSITIVE_INFINITY, PostgresCypherCompiler.read(BigDecimal("1e309").add(BigDecimal("0.5"))))
