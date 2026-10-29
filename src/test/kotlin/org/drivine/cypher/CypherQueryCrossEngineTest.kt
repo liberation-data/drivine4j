@@ -2379,6 +2379,18 @@ class CypherQueryPostgresTest : CypherQueryContract() {
     override fun seed(cypher: String) = PostgresTestDatabase.seed(manager, cypher)
 
     override fun clear() = PostgresTestDatabase.clear(manager)
+
+    @Test
+    fun `toInteger of NaN and the infinities is the long Java casts each to, as on Neo4j`() {
+        // `numeric`'s NaN and infinities have no whole number: 0 and the long's ends, as Neo4j gives (#295).
+        assertEquals(
+            listOf(listOf(0L, Long.MAX_VALUE, Long.MIN_VALUE, 2L)),
+            pm.query(
+                QuerySpecification.withStatement(CypherStatement("RETURN [toInteger(\$p), toInteger(\$i), toInteger(\$n), toInteger(2.7)]"))
+                    .bind(mapOf("p" to Double.NaN, "i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)),
+            ),
+        )
+    }
 }
 
 @OracleTests
@@ -2411,4 +2423,28 @@ class CypherQuerySqliteTest : CypherQueryContract() {
     override val compiles = true
     override fun seed(cypher: String) = SqliteTestDatabase.seed(manager, cypher)
     override fun clear() = SqliteTestDatabase.clear(manager)
+
+    @Test
+    fun `an infinity is rounded to itself, as on Neo4j`() {
+        // SQLite stores an infinity, and rounds it by Drivine's function, in decimal, which holds none (#295).
+        assertEquals(
+            listOf(listOf(Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, Double.POSITIVE_INFINITY)),
+            pm.query(
+                QuerySpecification.withStatement(CypherStatement("RETURN [round(\$i), round(\$n), round(\$i, 2, 'HALF_DOWN')]"))
+                    .bind(mapOf("i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)),
+            ),
+        )
+    }
+
+    @Test
+    fun `NaN worked out from stored infinities by a statement given none comes back as NaN`() {
+        // SQLite's JSON writes NaN as a map of its own, which the rows give back as NaN, whatever the statement is given (#295).
+        clear()
+        try {
+            pm.execute(QuerySpecification.withStatement(CypherStatement("CREATE (:Inf {b: \$i, c: [\$n]})")).bind(mapOf("i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)))
+            assertEquals(listOf(listOf(Double.NaN, Double.POSITIVE_INFINITY)), pm.query(QuerySpecification.withStatement(CypherStatement("MATCH (n:Inf) RETURN [n.b + n.c[0], round(n.b)]"))))
+        } finally {
+            clear()
+        }
+    }
 }

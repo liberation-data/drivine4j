@@ -359,7 +359,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "toupper" -> "to_jsonb(upper(${text(json)}))"
         "trim" -> "to_jsonb(btrim(${text(json)}))"
         "tostring" -> "to_jsonb(${asText(json)})"
-        "tointeger" -> scalar("trunc(${numeric(json)})")
+        // NaN and the infinities, where the statement is given one, as Java casts them to a long, as Neo4j does: 0, and the long's ends.
+        "tointeger" -> if (!nonFinite) "to_jsonb(trunc(${numeric(json)}))" else shared(numeric(json)) { (n) ->
+            "to_jsonb(CASE $n WHEN 'NaN' THEN 0 WHEN 'Infinity' THEN ${Long.MAX_VALUE} WHEN '-Infinity' THEN ${Long.MIN_VALUE} ELSE trunc($n) END)"
+        }
         "tofloat" -> scalar(float(numeric(json)))
         "head" -> "($json -> 0)"
         "last" -> "($json -> -1)"

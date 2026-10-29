@@ -60,6 +60,12 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
         private val NAN_TAG = mapOf("\$numberDouble" to "NaN")
 
         /**
+         * [NAN_TAG] as SQLite's JSON text writes it: a statement given no NaN works one out where it adds infinities SQLite
+         * stores (`∞ + -∞`), and its rows are read for NaN where they hold it.
+         */
+        private const val SQLITE_NAN_TEXT = "{\"\$numberDouble\":\"NaN\"}"
+
+        /**
          * The JSON [text] as maps, lists and values, a whole number as a `Long`. A whole number past a `Long`'s range is a
          * `Double`: no Cypher integer is that large, so it is a float whose fraction the store dropped, as Postgres's
          * `jsonb` writes `1e20` as `100000000000000000000`.
@@ -106,7 +112,9 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
          * Reads every row of a SQLite result out of the driver. SQLite types a value and not a column,
          * so each value is read as what it is: a whole number as a `Long`, a real as a `Double`, a blob
          * as its bytes, and text as a `String`, or with [json] as the JSON it holds. Drivine's own
-         * statements over a SQLite graph return documents as JSON text, and say so (see `JdbcConnection`).
+         * statements over a SQLite graph return documents as JSON text, and say so (see `JdbcConnection`): those of a
+         * compiled Cypher statement given NaN or an infinity with [nonFinite], and any that holds NaN as SQLite writes it, are
+         * read for NaN and the infinities (see [nonFiniteRead]).
          */
         fun sqliteRows(results: ResultSet, json: Boolean, nonFinite: Boolean = false): List<JdbcRow> {
             val meta = results.metaData
@@ -118,7 +126,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
                     when (val value = results.getObject(column)) {
                         is Int, is Short, is Byte -> (value as Number).toLong()
                         is Float -> value.toDouble()
-                        is String -> if (json) readJson(value, nonFinite) else value
+                        is String -> if (json) readJson(value, nonFinite || SQLITE_NAN_TEXT in value) else value
                         else -> value
                     }
                 })
