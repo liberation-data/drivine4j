@@ -1,10 +1,14 @@
 package org.drivine.connection
 
+import org.drivine.DrivineException
 import org.drivine.backend.oracle.OracleGraph
 import org.drivine.backend.oracle.OracleSchemaGrammar
 import org.drivine.backend.postgres.PostgresGraph
 import org.drivine.backend.postgres.PostgresSchemaGrammar
 import org.drivine.backend.sqlite.SqliteGraph
+import org.drivine.query.QuerySpecification
+import org.drivine.query.cypherStatement
+import org.drivine.query.sqlStatement
 import org.drivine.schema.UnsupportedSchemaGrammar
 import org.junit.jupiter.api.Test
 import org.mockito.Mockito
@@ -13,6 +17,7 @@ import org.mockito.Mockito.times
 import org.mockito.Mockito.verify
 import org.mockito.Mockito.`when`
 import java.io.PrintWriter
+import java.sql.DatabaseMetaData
 import java.sql.PreparedStatement
 import java.sql.SQLException
 import java.util.concurrent.CountDownLatch
@@ -486,6 +491,61 @@ class JdbcConnectionProviderTest {
         JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource, ownsDataSource = true).end()
 
         Mockito.verifyNoInteractions(dataSource)
+    }
+
+    // ----- The Oracle version, read on the first connection -----
+
+    /** Metadata of an Oracle whose driver gives [major] and [minor], and [full] in its product version. */
+    private fun oracle(major: Int, minor: Int, full: String): DatabaseMetaData = Mockito.mock(DatabaseMetaData::class.java).also {
+        `when`(it.databaseMajorVersion).thenReturn(major)
+        `when`(it.databaseMinorVersion).thenReturn(minor)
+        `when`(it.databaseProductVersion).thenReturn("Oracle Database 23ai Free Release $full - Develop, Learn, and Run for Free\nVersion $full")
+    }
+
+    @Test
+    fun `an Oracle older than 23_9 is refused with the version it is and why, and 23_9 or later is not`() {
+        assertEquals(
+            "Drivine needs Oracle 23.9 or later (it uses UUID()); this database is 23.8.0.25.04. " +
+                "Upgrade, or use an Oracle Free image 23.9 or newer. Plain SQL over this provider still runs; Cypher does not.",
+            JdbcConnectionProvider.oracleRefusal(oracle(23, 8, "23.8.0.25.04")),
+        )
+        assertContains(JdbcConnectionProvider.oracleRefusal(oracle(19, 0, "19.3.0.0.0")).orEmpty(), "this database is 19.3.0.0.0")
+        assertNull(JdbcConnectionProvider.oracleRefusal(oracle(23, 9, "23.9.0.25.07")))
+        // As the driver gives Oracle Free 23.26.3: minor version 26.
+        assertNull(JdbcConnectionProvider.oracleRefusal(oracle(23, 26, "23.26.3.0.0")))
+        assertNull(JdbcConnectionProvider.oracleRefusal(oracle(26, 1, "26.1.0.0.0")))
+        // A product version with no number in it names the version by the driver's major and minor.
+        val bare = oracle(21, 3, "").also { `when`(it.databaseProductVersion).thenReturn(null) }
+        assertContains(JdbcConnectionProvider.oracleRefusal(bare).orEmpty(), "this database is 21.3.")
+    }
+
+    @Test
+    fun `on an Oracle older than 23_9 a connection is handed out and runs SQL, and Cypher is refused with why, the version read once`() {
+        val old = oracle(23, 8, "23.8.0.25.04")
+        val ensuring = recording().also { `when`(it.metaData).thenReturn(old) }
+        val handedOut = recording().also { `when`(it.metaData).thenReturn(old) }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+
+        val connection = provider.connect()
+        assertEquals(emptyList(), connection.query(QuerySpecification.withStatement(sqlStatement("SELECT 1 FROM dual"))))
+        val refused = assertFailsWith<DrivineException> { connection.query(QuerySpecification.withStatement(cypherStatement("RETURN randomUUID()"))) }
+        assertContains(refused.message.orEmpty(), "Drivine needs Oracle 23.9 or later (it uses UUID()); this database is 23.8.0.25.04.")
+        assertFailsWith<DrivineException> { provider.connect().query(QuerySpecification.withStatement(cypherStatement("RETURN 1"))) }
+
+        verify(ensuring, times(1)).metaData
+        verify(handedOut, never()).metaData
+    }
+
+    @Test
+    fun `an Oracle whose metadata cannot be read is not refused Cypher`() {
+        val ensuring = recording().also { `when`(it.metaData).thenThrow(SQLException("closed")) }
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+
+        JdbcConnectionProvider("default", DatabaseType.ORACLE, source).connect().query(QuerySpecification.withStatement(cypherStatement("RETURN 1")))
+
+        verify(handedOut).prepareStatement(Mockito.anyString())
     }
 
     // ----- The builder -----

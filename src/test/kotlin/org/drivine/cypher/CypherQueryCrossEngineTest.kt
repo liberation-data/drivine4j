@@ -258,9 +258,24 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `randomUUID gives a new UUID each time`() {
-        val (a, b) = query("UNWIND [1, 2] AS x RETURN randomUUID()").map { it as String }
-        assertTrue(a != b && Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}").matches(a), "$a $b")
+    fun `randomUUID gives a new random version 4 UUID each time, in lower case, seldom sharing a long prefix with the one before`() {
+        // Oracle's SYS_GUID() gave version 0 values that shared their first 12 characters, a counter changing (#401).
+        val uuids = query("UNWIND range(1, 50) AS i RETURN randomUUID()").map { it as String }
+        val version4 = Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}")
+        assertEquals(50, uuids.toSet().size, "$uuids")
+        uuids.forEach { assertTrue(version4.matches(it), "not a lower-case version 4 UUID: $it") }
+        // Two random UUIDs share 5 characters once in about a million; three such pairs in 49, about once in 6e13 runs.
+        assertTrue(uuids.zipWithNext().count { (a, b) -> a.commonPrefixWith(b).length > 4 } <= 2, "$uuids share long prefixes")
+    }
+
+    @Test
+    fun `randomUUID read into a longer expression is made again for each row`() {
+        // An Oracle expression for randomUUID() past SHARED_ABOVE is bound in a subquery of its own, which Oracle makes once
+        // for the statement, so each row would read the same one: one made of DBMS_RANDOM digits did (#401).
+        listOf("randomUUID() + ''", "'id-' + randomUUID()").forEach { expression ->
+            val values = query("UNWIND range(1, 100) AS i RETURN $expression").map { it as String }
+            assertEquals(100, values.toSet().size, "$expression: $values")
+        }
     }
 
     @Test

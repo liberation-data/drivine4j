@@ -877,8 +877,13 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     /** `ROW_NUMBER()` takes an order of its own; `ROWNUM` counts the rows as the query gives them. */
     override val rowNumber = "ROWNUM"
 
-    /** Oracle's GUID, in a UUID's form: unique, though not random as a version 4 UUID is. */
-    override fun uuid() = "LOWER(REGEXP_REPLACE(RAWTOHEX(SYS_GUID()), '(.{8})(.{4})(.{4})(.{4})(.{12})', '\\1-\\2-\\3-\\4-\\5'))"
+    /**
+     * Oracle's `UUID()`, a random version 4 UUID, as Neo4j's is, written in lower case with hyphens (#401). Oracle added it
+     * in 23.9, which is why Drivine needs 23.9 or later: see `JdbcConnectionProvider.oracleRefusal`. Not `SYS_GUID()`, whose
+     * consecutive values share all but a counter's digits, which left a stamp's token about 16 bits that changed, in order.
+     * Short enough not to be bound once for the statement (see [SHARED_ABOVE]), so each row gets a UUID of its own.
+     */
+    override fun uuid() = "LOWER(REGEXP_REPLACE(RAWTOHEX(UUID()), '(.{8})(.{4})(.{4})(.{4})(.{12})', '\\1-\\2-\\3-\\4-\\5'))"
 
     /**
      * Worked out as a `NUMBER`, then made the nearest double: Oracle fails where Neo4j gives NaN or an infinity, `LN(0)`,

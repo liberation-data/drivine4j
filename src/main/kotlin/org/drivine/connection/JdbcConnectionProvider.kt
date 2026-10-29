@@ -42,7 +42,8 @@ import javax.sql.DataSource
  * this provider: the connection is handed out, and a statement over tables that are not there says
  * so. A store reached as a user that cannot make tables, where the check finds nothing to go on, works
  * as before. So does a graph name that cannot name tables: plain SQL works whatever the name, and
- * Cypher over the graph is refused with why.
+ * Cypher over the graph is refused with why. So does an Oracle older than 23.9, found from the first
+ * connection's metadata: plain SQL works, and Cypher, which needs Oracle's `UUID()`, is refused with why.
  *
  * Java sees a constructor for each arity, so a caller compiled against fewer parameters still builds after one is added
  * last.
@@ -95,6 +96,13 @@ class JdbcConnectionProvider @JvmOverloads constructor(
 
     private val ensuringGraph = Any()
 
+    /**
+     * Why this store runs no Cypher, found as the graph's tables are made: an Oracle older than 23.9 (see [oracleRefusal]).
+     * Each connection is still handed out, and plain SQL runs; a Cypher statement is refused with this.
+     */
+    @Volatile
+    private var cypherRefusal: String? = null
+
     /** The data source behind this provider. Closed by [end] only if this provider made it. */
     override val nativeDriver: DataSource
         get() = dataSource
@@ -138,7 +146,8 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     }
 
     /** A connection from [dataSource], its Oracle session set to make no adaptive plan (see [withoutAdaptivePlans]). */
-    private fun open(): JdbcConnection = JdbcConnection(withoutAdaptivePlans(dataSource.connection), JdbcResultMapper(subtypeRegistry), type, graphName)
+    private fun open(): JdbcConnection =
+        JdbcConnection(withoutAdaptivePlans(dataSource.connection), JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal)
 
     /**
      * Makes the graph's tables when they are not there, once for this provider: after the first time,
@@ -169,9 +178,13 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      * connections do of themselves: on one that commits nothing (`autoCommit = false`, as an application's pool may be
      * set), what they make would be rolled back as the connection goes back to its pool (#365). The connection is put
      * back as it was before it is closed.
+     *
+     * On Oracle it first reads the database's version from the session's metadata, which needs no grant, once for the
+     * provider: see [oracleRefusal].
      */
     private fun makeTables(graph: SqlGraph) {
         val session = withoutAdaptivePlans(dataSource.connection)
+        if (type == DatabaseType.ORACLE) checkVersion(session)
         val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName)
         val failure = try {
             val committing = session.autoCommit
@@ -206,6 +219,20 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Finds, from [session]'s metadata, whether the Oracle behind it is too old for Cypher, and logs it if so. Metadata that
+     * cannot be read refuses nothing: the database says what is missing when a statement needs it.
+     */
+    private fun checkVersion(session: java.sql.Connection) {
+        cypherRefusal = try {
+            session.metaData?.let(::oracleRefusal)
+        } catch (e: Exception) {
+            logger.debug("Could not read the version of {} database '{}'.", type, name, e)
+            null
+        }
+        cypherRefusal?.let { logger.warn("{} database '{}': {}", type, name, it) }
+    }
+
     override fun end() {
         if (ownsDataSource) (dataSource as? AutoCloseable)?.close()
     }
@@ -224,6 +251,25 @@ class JdbcConnectionProvider @JvmOverloads constructor(
          * statement. One statement can ask for an adaptive plan again: `/*+ OPT_PARAM('optimizer_adaptive_plans' 'true') */`.
          */
         const val NO_ADAPTIVE_PLANS = "ALTER SESSION SET OPTIMIZER_ADAPTIVE_PLANS = FALSE"
+
+        /**
+         * Why Drivine runs no Cypher on the Oracle [metaData] describes: one older than 23.9, which has no `UUID()`, the
+         * random version 4 UUID compiled Cypher's `randomUUID()` is (#401). Null for 23.9 or later. The driver gives 23.26.3
+         * as major version 23, minor version 26.
+         */
+        internal fun oracleRefusal(metaData: java.sql.DatabaseMetaData): String? {
+            val major = metaData.databaseMajorVersion
+            val minor = metaData.databaseMinorVersion
+            if (major > ORACLE_MAJOR || (major == ORACLE_MAJOR && minor >= ORACLE_MINOR)) return null
+            // "... Release 23.8.0.25.04 - ...\nVersion 23.8.0.25.04": the full version, where the driver gives it.
+            val version = Regex("""\d+(?:\.\d+)+""").findAll(metaData.databaseProductVersion.orEmpty()).lastOrNull()?.value ?: "$major.$minor"
+            return "Drivine needs Oracle $ORACLE_MAJOR.$ORACLE_MINOR or later (it uses UUID()); this database is $version. " +
+                "Upgrade, or use an Oracle Free image $ORACLE_MAJOR.$ORACLE_MINOR or newer. Plain SQL over this provider still runs; Cypher does not."
+        }
+
+        /** The oldest Oracle Drivine runs Cypher on, 23.9: see [oracleRefusal]. */
+        private const val ORACLE_MAJOR = 23
+        private const val ORACLE_MINOR = 9
 
         /** The statements the Oracle driver keeps prepared on each connection. */
         private const val STATEMENT_CACHE = 64

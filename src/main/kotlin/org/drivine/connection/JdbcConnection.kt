@@ -63,6 +63,8 @@ class JdbcConnection(
      * lock is taken as the transaction begins, and every other writer to the file waits for it.
      */
     private val lockWarning: Duration = Duration.ofSeconds(5),
+    /** Why the store runs no Cypher, an Oracle older than 23.9, as its provider found it; null where it runs Cypher. */
+    private val cypherRefusal: String? = null,
 ) : Connection {
 
     private val logger = LoggerFactory.getLogger(JdbcConnection::class.java)
@@ -132,6 +134,8 @@ class JdbcConnection(
         // A graph name that cannot name tables is refused here, when Cypher is first run, and not as the connection is had:
         // plain SQL works whatever the name, as it did before the provider made the graph's tables (#364).
         refusedGraph?.let { throw DrivineException(it, spec = spec) }
+        // So is an Oracle older than 23.9, which has no UUID() for randomUUID().
+        cypherRefusal?.let { throw DrivineException(it, spec = spec) }
         val compiled = when (type) {
             DatabaseType.POSTGRES -> PostgresCypherCompiler(graphName).compile(spec.statement!!.text, spec.parameters)
             DatabaseType.ORACLE -> oracleCompiled(spec.statement!!.text, spec.parameters)
