@@ -21,7 +21,7 @@ import org.drivine.manager.PersistenceManager
  * one called `contracts`, as on Postgres, which folds both to lower case. The tables keep the case of the
  * name that made them.
  */
-internal class SqliteGraph(name: String) : SqlGraph(name, "SQLite", MAX_OBJECT_NAME) {
+internal class SqliteGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_NAME) {
 
     /** What makes the store, when it is not there. */
     val ddl: List<String> = listOf(
@@ -72,6 +72,12 @@ internal class SqliteGraph(name: String) : SqlGraph(name, "SQLite", MAX_OBJECT_N
     }
 
     companion object {
+        /** The store's name, for what is said of a graph name it cannot take. */
+        private const val ENGINE = "SQLite"
+
+        /** Why [name] cannot name a graph here; null where it can (see [SqlGraph.refusal]). */
+        fun refusal(name: String): String? = SqlGraph.refusal(name, ENGINE, MAX_OBJECT_NAME)
+
         /** SQLite takes a name of any length; this keeps one as long as the other stores' do. */
         private const val MAX_OBJECT_NAME = 63
 

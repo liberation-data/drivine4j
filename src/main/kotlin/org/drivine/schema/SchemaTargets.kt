@@ -8,8 +8,9 @@ import org.drivine.connection.DatabaseRegistry
  *
  * The rules differ by target so that the "broadcast by default" model stays safe on a mixed fleet:
  *  - [DatabaseTarget.All] (the default) contributes every schema-capable registered database;
- *    engines without DDL support (Neptune, openCypher) are reported in [Resolution.skipped] rather
- *    than failing startup.
+ *    engines without DDL support (Neptune, openCypher), and a provider with a
+ *    [org.drivine.connection.ConnectionProvider.schemaRefusal], are reported in [Resolution.skipped]
+ *    rather than failing startup.
  *  - [DatabaseTarget.Named] is strict — an unknown or schema-incapable named target throws, because
  *    the consumer explicitly asked for schema on a database that can't provide it.
  */
@@ -46,9 +47,9 @@ object SchemaTargets {
                             "Registered databases: ${registry.databaseNames}"
                     )
                 if (capableByName[resolved] != true) {
+                    val why = registry.connectionProvider(resolved)?.schemaRefusal ?: "whose engine does not support schema management."
                     throw DrivineException(
-                        "Schema catalog explicitly targets database '$requested' (resolved to '$resolved'), " +
-                            "whose engine does not support schema management."
+                        "Schema catalog explicitly targets database '$requested' (resolved to '$resolved'), $why"
                     )
                 }
                 databases += resolved
