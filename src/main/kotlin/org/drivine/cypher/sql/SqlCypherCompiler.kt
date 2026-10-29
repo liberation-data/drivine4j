@@ -2009,8 +2009,12 @@ abstract class SqlCypherCompiler(graph: String) {
                     // subquery: carried out of a WITH's query, one so bound closes Oracle's (23.26) session (ORA-03113), as
                     // `WITH b ORDER BY toString(coalesce(b.name, b.title))` did, its argument long enough to be bound. Elsewhere
                     // it does, so operations nested in it compile to a statement that grows with them, not exponentially.
+                    // Where rows are grouped, a part of it that is an item keying the groups reads that item's column value, as
+                    // the GROUP BY does: Oracle refuses another read of the key (ORA-00979), as `me.age` read from the
+                    // properties beside `me.age AS age` read through its text ([itemProperty]) was (#413).
                     else -> {
-                        val term = { carried(column, { expression(sort.expression, select.scope + compiled.toMap()) }, sort.expression) }
+                        val (read, keys) = if (aggregating) keysRead(sort.expression, items, columns) else sort.expression to emptyMap()
+                        val term = { carried(column, { expression(read, select.scope + compiled.toMap() + keys) }, sort.expression) }
                         if (select.walks) unshared(term) else term()
                     }
                 }
@@ -2064,6 +2068,31 @@ abstract class SqlCypherCompiler(graph: String) {
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
             val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + order.map { (column, _) -> column to false }
             return Projected(outer, scope, order, kinds)
+        }
+
+        /**
+         * [term], each part of it that is an item of a grouping projection keying the groups, one of [items], read by a
+         * name no variable has, and what each such name is bound to: the item's value among [columns], as it is grouped by.
+         * A part whose variables a comprehension, a quantifier or a reduce in [term] binds again is left as it is.
+         */
+        private fun keysRead(term: Expression, items: List<Projection.Item>, columns: List<Pair<String, Value>>): Pair<Expression, Map<String, Value>> {
+            val rebound = buildSet {
+                contains(term) { e ->
+                    when (e) {
+                        is Expression.ListComprehension -> add(e.variable)
+                        is Expression.Quantifier -> add(e.variable)
+                        is Expression.Reduce -> { add(e.accumulator); add(e.variable) }
+                        else -> {}
+                    }
+                    false
+                }
+            }
+            val keys = items.withIndex().filter { (_, item) -> !contains(item.expression, ::isAggregate) && variablesIn(item.expression).let { it.isNotEmpty() && it.none(rebound::contains) } }
+                .associate { (i, item) -> item.expression to i }
+            val bound = mutableMapOf<String, Value>()
+            // Named as no variable is, unless quoted so.
+            val read = replaced(term) { part -> keys[part]?.let { i -> Expression.Variable("#key ${i + 1}").also { bound[it.name] = columns[i].second } } }
+            return read to bound
         }
 
         /**
