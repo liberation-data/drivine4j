@@ -299,6 +299,12 @@ declares the function itself.
   (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)
   ([#338](https://github.com/liberation-data/drivine4j/issues/338)). It goes once an Oracle release no longer fails
   the repro in [docs/oracle-on-true-in-scalar-subquery-crash.md](../docs/oracle-on-true-in-scalar-subquery-crash.md).
+- A compiled query that reads the graph's node or relationship table twice or more, and each query of a write that
+  does, carries the hint `NO_JSON_TABLE_TRANSFORM`. This works around an Oracle bug, seen on 23.26.3: Oracle's JSON
+  table transformation reads several JSON values of one node's row by one `JSON_TABLE`, and so rewritten beside
+  another node's table the query lost that node's label and property tests, giving rows its pattern doesn't have and
+  values of the wrong node, or crashing the session (ORA-03113)
+  ([#415](https://github.com/liberation-data/drivine4j/issues/415)). A query of one table carries no hint.
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields

@@ -1968,6 +1968,17 @@ abstract class CypherQueryContract {
         assertEquals(listOf(listOf(3L, 1L)), query("MATCH (a:N1)-->(b:N2) RETURN b.n + 1, b.n - 1"))
         assertEquals(listOf(listOf(-9L, 2L)), query("MATCH (b:N2) WITH b MATCH (a:N1) RETURN a.n - a.m, b.n"))
         assertEquals(listOf(3L, 5L), query("MATCH (a:N1), (b:N2) RETURN a.n + b.n AS s UNION ALL MATCH (a:N2), (b:N3) RETURN a.n + b.n AS s"))
+        // Beside a node of no label that a property filters, and between two nodes of one label, the label test was lost too.
+        clear()
+        seed(
+            """
+            CREATE (a:N1 {n: 1, m: 10, s: 'x', l: [1]}) CREATE (b:N2 {n: 2, m: 20, s: 'y', l: [2]}) CREATE (c:N3 {n: 3, m: 30, s: 'z', l: [3]})
+            CREATE (d:N2 {n: 4, m: 40, s: 'w', l: [4]})
+            CREATE (a)-[:R {w: 1}]->(b), (a)-[:R {w: 2}]->(c), (b)-[:R {w: 3}]->(d), (c)-[:R {w: 4}]->(d)
+            """
+        )
+        assertEquals(listOf(listOf(-9L, 2L), listOf(-9L, 3L)), query("MATCH (a:N1), (b) WHERE b.n > 1 AND b.m < 35 RETURN a.n - a.m, b.n ORDER BY b.n"))
+        assertEquals(listOf(listOf(-18L, -36L, 3L)), query("MATCH (a:N2)-[r:R]->(b:N2) RETURN a.n - a.m, b.n - b.m, r.w"))
     }
 }
 
