@@ -269,6 +269,16 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `randomUUID read into a longer expression is made again for each row`() {
+        // An Oracle expression for randomUUID() past SHARED_ABOVE is bound in a subquery of its own, which Oracle makes once
+        // for the statement, so each row would read the same one: one made of DBMS_RANDOM digits did (#401).
+        listOf("randomUUID() + ''", "'id-' + randomUUID()").forEach { expression ->
+            val values = query("UNWIND range(1, 100) AS i RETURN $expression").map { it as String }
+            assertEquals(100, values.toSet().size, "$expression: $values")
+        }
+    }
+
+    @Test
     fun `a walk read through a WITH, then sorted by toString in a second WITH, keeps that order`() {
         // Not in the spec yet: the walk is a query inside the one the second WITH sorts, and its term, carried out, is bound in no subquery (#192).
         clear()

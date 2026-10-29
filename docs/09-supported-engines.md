@@ -9,7 +9,7 @@ Drivine4j supports multiple graph database engines from the same codebase. Switc
 | FalkorDB | `FALKORDB` | Passthrough (no multi-statement) | CALL subquery | None |
 | Amazon Neptune | `NEPTUNE` | Full ACID | CALL subquery | IAM SigV4 or None (tunnel) |
 | Memgraph | `MEMGRAPH` | Full ACID | CALL subquery | Basic (user/pass) or None |
-| Oracle 23ai / 26ai | `ORACLE` | Full ACID | In the statement | User and password |
+| Oracle 23.9+ | `ORACLE` | Full ACID | In the statement | User and password |
 | Postgres 14+ | `POSTGRES` | Full ACID | In the statement | User and password |
 | SQLite 3.45+ | `SQLITE` | Full ACID, one writer at a time | In the statement | None (a file) |
 
@@ -158,10 +158,15 @@ database:
 
 ### Oracle
 
-Oracle Database 23ai or later, over JDBC. Oracle does not speak Cypher: Drivine reads a graph with
+Oracle Database 23.9 or later, over JDBC. Oracle does not speak Cypher: Drivine reads a graph with
 SQL/PGQ (`GRAPH_TABLE`) and writes it as rows, since Oracle refuses data manipulation through a
 property graph. Models, the query DSL and `StatelessGraphObjectManager` are the same as on the graph
 engines. Add the driver yourself: `com.oracle.database.jdbc:ojdbc11`.
+
+Drivine needs 23.9 because Cypher's `randomUUID()` is Oracle's `UUID()`, a random version 4 UUID,
+which Oracle added in 23.9. A provider reads the version from its first connection's metadata, which
+needs no grant. On an older Oracle, plain SQL still runs, and a Cypher statement is refused with the
+version found.
 
 ```yaml
 database:

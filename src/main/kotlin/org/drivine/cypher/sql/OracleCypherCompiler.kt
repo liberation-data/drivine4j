@@ -878,16 +878,12 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     override val rowNumber = "ROWNUM"
 
     /**
-     * A random version 4 UUID, in lower case, made of `DBMS_RANDOM` digits, as Neo4j's is (#401). Not `SYS_GUID()`, whose
+     * Oracle's `UUID()`, a random version 4 UUID, as Neo4j's is, written in lower case with hyphens (#401). Oracle added it
+     * in 23.9, which is why Drivine needs 23.9 or later: see `JdbcConnectionProvider.oracleRefusal`. Not `SYS_GUID()`, whose
      * consecutive values share all but a counter's digits, which left a stamp's token about 16 bits that changed, in order.
-     * Not `UUID()`, which Oracle added in 23.9, nor `DBMS_CRYPTO`, which a user may call only once a DBA grants it.
-     * `DBMS_RANDOM` is not cryptographically strong, as a UUID need not be.
+     * Short enough not to be bound once for the statement (see [SHARED_ABOVE]), so each row gets a UUID of its own.
      */
-    override fun uuid(): String {
-        fun digits(n: Int) = "LPAD(LOWER(TO_CHAR(TRUNC(DBMS_RANDOM.VALUE(0, ${1L shl (4 * n)})), 'FM${"X".repeat(n)}')), $n, '0')"
-        val variant = "SUBSTR('89ab', 1 + TRUNC(DBMS_RANDOM.VALUE(0, 4)), 1)"
-        return "(${digits(8)} || '-' || ${digits(4)} || '-4' || ${digits(3)} || '-' || $variant || ${digits(3)} || '-' || ${digits(12)})"
-    }
+    override fun uuid() = "LOWER(REGEXP_REPLACE(RAWTOHEX(UUID()), '(.{8})(.{4})(.{4})(.{4})(.{12})', '\\1-\\2-\\3-\\4-\\5'))"
 
     /**
      * Worked out as a `NUMBER`, then made the nearest double: Oracle fails where Neo4j gives NaN or an infinity, `LN(0)`,

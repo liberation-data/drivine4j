@@ -6,6 +6,8 @@ import org.drivine.backend.oracle.OracleStoredFunctions
 import org.drivine.connection.DatabaseType
 import org.drivine.connection.JdbcConnectionProvider
 import org.drivine.connection.TablesOnFirstConnectionContract
+import org.drivine.query.QuerySpecification
+import org.drivine.query.cypherStatement
 import org.drivine.test.OracleTestContainer
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.BeforeEach
@@ -16,6 +18,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -131,6 +134,24 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
 
             open().connect().release()
             assertTrue(OracleStoredFunctions.nullsEqual(session, "drivine"), "asked again once the provider has ensured the graph")
+        }
+    }
+
+    /**
+     * The test image is Oracle 23.9 or later, which has `UUID()`: a user with no grant beyond the developer role reads the
+     * version from its session's metadata, and its provider runs Cypher's `randomUUID()`.
+     */
+    @Test
+    fun `an Oracle of 23_9 or later, read by a user with no grant to read the instance, runs Cypher's randomUUID`() {
+        DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), user, PASSWORD).use { session ->
+            assertNull(JdbcConnectionProvider.oracleRefusal(session.metaData), session.metaData.databaseProductVersion)
+        }
+        val connection = open().connect()
+        try {
+            val uuid = connection.query(QuerySpecification.withStatement(cypherStatement("RETURN randomUUID() AS u")).transform(String::class.java)).single()
+            assertTrue(Regex("[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}").matches(uuid), uuid)
+        } finally {
+            connection.release()
         }
     }
 
