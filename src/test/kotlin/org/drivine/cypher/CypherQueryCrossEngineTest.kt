@@ -1318,6 +1318,102 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `CONTAINS finds a text past 32 KB in a text of any length, given, stored, on several rows and in a write`() {
+        // On Oracle INSTR refuses to look for a text past 32,767 UTF-16 units (ORA-22828, #312). Each text is looked for as a
+        // parameter, as a property on the node beside it, and of each node in a cross join, three times on one session.
+        clear()
+        val long = "aB".repeat(20_000)
+        val pair = "\uD83D\uDE00"
+        val cases = listOf(
+            // A short text in a long one, and texts just within and just past what INSTR looks for.
+            long to "aB", long to "zz", long to long.substring(1, 32_768), long to long.substring(1, 32_769),
+            long to long.substring(0, 32_768) + "z",
+            // A long text in a longer one, found only at its end, and not found.
+            long + "c" to "aB".repeat(19_000) + "c", long + "c" to "aB".repeat(19_000) + "d",
+            // As long: the issue's own, and one that differs in its last character.
+            long to long, long to long.dropLast(1) + "b",
+            // Longer than the text.
+            long to long + "x", "abc" to long,
+            // Empty and null.
+            long to "", "" to long, long to null, null to long,
+            // Three-byte characters, past 32 KB within INSTR's units and past them.
+            "€".repeat(40_000) to "€".repeat(32_767), "€".repeat(40_000) to "€".repeat(33_000), "€".repeat(40_000) to "€".repeat(33_000) + "x",
+            // Characters past U+FFFF: across the 1,000th unit the search starts with, across INSTR's 32,767th, and only those.
+            "z" + "x".repeat(999) + pair + "y".repeat(40_000) to "x".repeat(999) + pair + "y".repeat(39_000),
+            "z" + "y".repeat(32_766) + pair + "y".repeat(100) to "y".repeat(32_766) + pair + "y".repeat(10),
+            "z" + pair.repeat(20_000) + "q" to pair.repeat(19_000) + "q", "z" + pair.repeat(20_000) + "q" to pair.repeat(19_000) + "z",
+            // A long text whose first units are nowhere in the text, so no place is compared.
+            long to "c".repeat(33_000),
+        )
+        // Oracle's empty text is null, so CONTAINS of one is null there.
+        fun expected(t: String?, x: String?) = when {
+            t == null || x == null -> null
+            pm.type == DatabaseType.ORACLE && (t.isEmpty() || x.isEmpty()) -> null
+            else -> t.contains(x)
+        }
+        val parameters = cases.withIndex().flatMap { (i, case) -> listOf("t$i" to case.first, "x$i" to case.second) }.toMap()
+        // One node at a time: on Oracle, UNWIND of a list of texts past 32 KB into CREATE closes the session.
+        for ((i, case) in cases.withIndex()) query("CREATE (:CyContains {i: \$i, t: \$t, x: \$x})", mapOf("i" to i, "t" to case.first, "x" to case.second))
+        val each = cases.map { (t, x) -> expected(t, x) }
+        onOneSession(parameters) { query ->
+            repeat(3) { run ->
+                for ((i, case) in cases.withIndex()) {
+                    val (t, x) = case
+                    val described = "${x?.length} in ${t?.length}, case $i, run ${run + 1}"
+                    assertEquals(listOf(expected(t, x)), query("WITH \$t$i AS t, \$x$i AS x RETURN t CONTAINS x"), "given, $described")
+                }
+                assertEquals(each, query("MATCH (n:CyContains) RETURN n.t CONTAINS n.x ORDER BY n.i"), "stored, run ${run + 1}")
+                // The text of one node, looked for in each other's; and in a write, which runs as a block of its own.
+                assertEquals(
+                    cases.map { expected(it.first, long) },
+                    query("MATCH (n:CyContains {i: 7}), (m:CyContains) RETURN m.t CONTAINS n.x ORDER BY m.i"),
+                    "across nodes, run ${run + 1}",
+                )
+                assertEquals(each, query("MATCH (n:CyContains) SET n.r = n.t CONTAINS n.x WITH n ORDER BY n.i RETURN n.r"), "written, run ${run + 1}")
+            }
+        }
+        clear()
+    }
+
+    @Test
+    fun `CONTAINS of a text past 32 KB in an aggregate's argument, over an aggregate's result and beside a grouping key`() {
+        // On Oracle the search of a text past 32,767 UTF-16 units is a subquery (#312): here an aggregate reads it, it reads
+        // an aggregate's result, and it is a grouping key.
+        clear()
+        val long = "aB".repeat(20_000)
+        val found = "aB".repeat(19_000) + "c"
+        val texts = listOf(long + "c" to found, long to found, long + "c" to found)
+        for ((i, case) in texts.withIndex()) query("CREATE (:CyContainsAgg {i: \$i, k: \$k, t: \$t, x: \$x})", mapOf("i" to i, "k" to i % 2, "t" to case.first, "x" to case.second))
+        val all = "MATCH (n:CyContainsAgg)"
+        assertEquals(listOf(2L), query("$all RETURN count(CASE WHEN n.t CONTAINS n.x THEN 1 END)"))
+        assertEquals(listOf(listOf(0L, 2L), listOf(1L, 0L)), query("$all RETURN n.k AS k, count(CASE WHEN n.t CONTAINS n.x THEN 1 END) AS c ORDER BY k"))
+        assertEquals(listOf(listOf(0L, true), listOf(1L, false)), query("$all RETURN DISTINCT n.k AS k, n.t CONTAINS n.x AS c ORDER BY k"))
+        assertEquals(listOf(listOf(0L, true, 1L), listOf(1L, false, 1L), listOf(2L, true, 1L)), query("$all RETURN n.i AS i, n.t CONTAINS n.x AS c, count(*) AS m ORDER BY i"))
+        assertEquals(listOf(true), query("$all WITH n ORDER BY n.i RETURN head(collect(n.t)) CONTAINS head(collect(n.x))"))
+        assertEquals(listOf(listOf(0L, true), listOf(1L, false)), query("$all WITH n ORDER BY n.i RETURN n.k AS k, head(collect(n.t)) CONTAINS last(collect(n.x)) AS c ORDER BY k"))
+        clear()
+    }
+
+    @Test
+    fun `CONTAINS of a text past 32 KB filters in a WHERE and runs in the step of a reduce()`() {
+        // On Oracle the search of a text past 32,767 UTF-16 units is a subquery (#312): here a WHERE filters by it, and a
+        // reduce() runs it in its function's own query.
+        clear()
+        val long = "aB".repeat(20_000)
+        val found = "aB".repeat(19_000) + "c"
+        val texts = listOf(long + "c", long, long + "c")
+        for ((i, t) in texts.withIndex()) query("CREATE (:CyContainsWhere {i: \$i, t: \$t, x: \$x})", mapOf("i" to i, "t" to t, "x" to found))
+        val all = "MATCH (n:CyContainsWhere)"
+        assertEquals(listOf(0L, 2L), query("$all WHERE n.t CONTAINS n.x RETURN n.i ORDER BY n.i"))
+        assertEquals(listOf(1L), query("$all WHERE NOT n.t CONTAINS n.x RETURN n.i ORDER BY n.i"))
+        assertEquals(
+            listOf(listOf(true, false, true)),
+            query("$all WITH n ORDER BY n.i WITH collect(n.t) AS ts, head(collect(n.x)) AS x RETURN reduce(acc = [], s IN ts | acc + [s CONTAINS x])"),
+        )
+        clear()
+    }
+
+    @Test
     fun `a stored text past 32 KB that a text function or a sum reads beside a long value, on two rows, is read whole`() {
         // On Oracle a value past SHARED_ABOVE's length is bound in a subquery, and a property beside it was bound too, taken
         // out as JSON and read as a CLOB: a text past 32 KB so closed the session from the second run on (ORA-03113, #370),
