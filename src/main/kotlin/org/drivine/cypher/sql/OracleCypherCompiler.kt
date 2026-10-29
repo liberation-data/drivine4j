@@ -791,6 +791,25 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     override fun called(query: String) = "SELECT /*+ NO_MERGE */ * FROM (\n${indent(query)}\n)"
 
     /**
+     * A query that reads the graph's tables twice or more is not rewritten by Oracle's JSON table transformation
+     * (`NO_JSON_TABLE_TRANSFORM`), which reads several JSON values of a column, `n1.props`, by one `JSON_TABLE`: so
+     * rewritten, a node's table beside another table, or beside a subquery of one, lost the tests of that node's labels
+     * and properties, and the query gave rows its pattern doesn't have, and values of the wrong node (#415):
+     * `MATCH (a:N1), (b:N2) RETURN a.n + b.n` gave a row for each two nodes, and so did `a.n - a.m`, `toUpper(a.s),
+     * size(a.s)` and `a.l + b.l`. Seen on Oracle 23.26.3 (gvenzl/oracle-free 23). The hint is the statement's, whichever
+     * query of it holds it, so the outermost one holds it. A query of one table reads as it did: none lost a test.
+     */
+    override fun planned(query: String): String {
+        if (graphTable.findAll(query).count() < 2) return query
+        val hints = HINTED.find(query)?.takeIf { it.range.first == 0 }?.groups?.get(1)
+        return if (hints != null) query.replaceRange(hints.range, "${hints.value} $NO_JSON_TABLE_TRANSFORM")
+        else query.replaceFirst(Regex("^SELECT "), "SELECT /*+ $NO_JSON_TABLE_TRANSFORM */ ")
+    }
+
+    /** A read of the graph's node or relationship table: see [planned]. */
+    private val graphTable = Regex("\\b(?:${Regex.escape(nodes)}|${Regex.escape(edges)}) \\w")
+
+    /**
      * An optional join is on `1 = 1`, not `ON TRUE`: in a scalar subquery, as a `COUNT { … }` is, Oracle refuses a join on
      * `TRUE` followed by a `WHERE … AND …` (ORA-00907), and crashes the session on one without (ORA-07445 in `qcsjccqb`,
      * ORA-03113 to the client) (#338). See docs/oracle-on-true-in-scalar-subquery-crash.md.
@@ -998,6 +1017,12 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
         const val SHORT_TEXT = 4000
+
+        /** The hint that turns Oracle's JSON table transformation off: see [planned]. */
+        private const val NO_JSON_TABLE_TRANSFORM = "NO_JSON_TABLE_TRANSFORM"
+
+        /** A query that opens with hints, and those hints: Oracle reads the first hint comment of a query alone. */
+        private val HINTED = Regex("""SELECT /\*\+ (.*?) \*/""")
 
         /**
          * The most characters of a text [sharedSum] binds as JSON: one of 40,001, bound as JSON beside a long value, closed the

@@ -66,6 +66,9 @@ abstract class SqlCypherCompiler(graph: String) {
     private fun withFunctions(compiled: CompiledCypher): CompiledCypher =
         if (functions.isEmpty()) compiled else compiled.copy(sql = "WITH\n${functions.joinToString("\n")}\n${compiled.sql}")
 
+    /** The query [query], a statement of its own that opens with `SELECT`, with what the store's planner is told of it: nothing here. */
+    protected open fun planned(query: String): String = query
+
     /**
      * Whether a value's identity is carried out of a query as a column of its own (see [Value.Json.identity]): not where the
      * queries of a `UNION` in `CALL { … }` would give different columns, which compare by their properties instead.
@@ -102,7 +105,7 @@ abstract class SqlCypherCompiler(graph: String) {
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
-            return withFunctions(CompiledCypher(writer.query(query), writer.parameters.values))
+            return withFunctions(CompiledCypher(planned(writer.query(query)), writer.parameters.values))
         }
         procedural = true
         // A procedure takes its parameters as one object, and reads each from it.
@@ -204,7 +207,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val key = comparable(Value.Json("u.result", ordered = true))
             "SELECT d.result FROM (\n${indent("SELECT $key AS result, MIN(u.part * 1000000000.0 + u.n) AS k FROM (\n${indent(rows)}\n) u\nGROUP BY $key")}\n) d\nORDER BY d.k"
         }
-        return CompiledCypher(sql, writer.parameters.values)
+        return CompiledCypher(planned(sql), writer.parameters.values)
     }
 
     // ----- A store's SQL -----
@@ -771,15 +774,15 @@ abstract class SqlCypherCompiler(graph: String) {
     protected fun statements(program: List<ProcedureStep>, depth: Int = 0): List<String> = program.flatMap { step ->
         fun line(text: String) = text.prependIndent("    ".repeat(depth))
         when (step) {
-            is ProcedureStep.Select -> listOf(line("SELECT ${step.expression} INTO ${step.variable}${step.from};"))
+            is ProcedureStep.Select -> listOf(line("${planned("SELECT ${step.expression} INTO ${step.variable}${step.from}")};"))
             is ProcedureStep.Let -> listOf(line("${step.variable} := ${step.expression};"))
             is ProcedureStep.Loop ->
-                listOf(line(if (step.multiline) "FOR ${step.record} IN (\n${indent(step.query)}\n) LOOP" else "FOR ${step.record} IN (${step.query}) LOOP")) +
+                listOf(line(if (step.multiline) "FOR ${step.record} IN (\n${indent(planned(step.query))}\n) LOOP" else "FOR ${step.record} IN (${planned(step.query)}) LOOP")) +
                     statements(step.body, depth + 1) + line("END LOOP;")
             is ProcedureStep.If -> listOf(line("IF ${step.condition} THEN")) + statements(step.body, depth + 1) + line("END IF;")
             is ProcedureStep.Raise -> listOf(line(raise(step.message)))
             is ProcedureStep.Execute -> listOf(line("${step.statement}${step.into?.let { " INTO $it" }.orEmpty()};"))
-            is ProcedureStep.Return -> returnRows(step.query).map(::line)
+            is ProcedureStep.Return -> returnRows(planned(step.query)).map(::line)
         }
     }
 
