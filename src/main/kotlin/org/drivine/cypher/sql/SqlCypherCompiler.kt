@@ -66,6 +66,9 @@ abstract class SqlCypherCompiler(graph: String) {
     private fun withFunctions(compiled: CompiledCypher): CompiledCypher =
         if (functions.isEmpty()) compiled else compiled.copy(sql = "WITH\n${functions.joinToString("\n")}\n${compiled.sql}")
 
+    /** The query [query], a statement of its own that opens with `SELECT`, with what the store's planner is told of it: nothing here. */
+    protected open fun planned(query: String): String = query
+
     /**
      * Whether a value's identity is carried out of a query as a column of its own (see [Value.Json.identity]): not where the
      * queries of a `UNION` in `CALL { … }` would give different columns, which compare by their properties instead.
@@ -102,7 +105,7 @@ abstract class SqlCypherCompiler(graph: String) {
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
-            return withFunctions(CompiledCypher(writer.query(query), writer.parameters.values))
+            return withFunctions(CompiledCypher(planned(writer.query(query)), writer.parameters.values))
         }
         procedural = true
         // A procedure takes its parameters as one object, and reads each from it.
@@ -204,7 +207,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val key = comparable(Value.Json("u.result", ordered = true))
             "SELECT d.result FROM (\n${indent("SELECT $key AS result, MIN(u.part * 1000000000.0 + u.n) AS k FROM (\n${indent(rows)}\n) u\nGROUP BY $key")}\n) d\nORDER BY d.k"
         }
-        return CompiledCypher(sql, writer.parameters.values)
+        return CompiledCypher(planned(sql), writer.parameters.values)
     }
 
     // ----- A store's SQL -----
@@ -771,15 +774,15 @@ abstract class SqlCypherCompiler(graph: String) {
     protected fun statements(program: List<ProcedureStep>, depth: Int = 0): List<String> = program.flatMap { step ->
         fun line(text: String) = text.prependIndent("    ".repeat(depth))
         when (step) {
-            is ProcedureStep.Select -> listOf(line("SELECT ${step.expression} INTO ${step.variable}${step.from};"))
+            is ProcedureStep.Select -> listOf(line("${planned("SELECT ${step.expression} INTO ${step.variable}${step.from}")};"))
             is ProcedureStep.Let -> listOf(line("${step.variable} := ${step.expression};"))
             is ProcedureStep.Loop ->
-                listOf(line(if (step.multiline) "FOR ${step.record} IN (\n${indent(step.query)}\n) LOOP" else "FOR ${step.record} IN (${step.query}) LOOP")) +
+                listOf(line(if (step.multiline) "FOR ${step.record} IN (\n${indent(planned(step.query))}\n) LOOP" else "FOR ${step.record} IN (${planned(step.query)}) LOOP")) +
                     statements(step.body, depth + 1) + line("END LOOP;")
             is ProcedureStep.If -> listOf(line("IF ${step.condition} THEN")) + statements(step.body, depth + 1) + line("END IF;")
             is ProcedureStep.Raise -> listOf(line(raise(step.message)))
             is ProcedureStep.Execute -> listOf(line("${step.statement}${step.into?.let { " INTO $it" }.orEmpty()};"))
-            is ProcedureStep.Return -> returnRows(step.query).map(::line)
+            is ProcedureStep.Return -> returnRows(planned(step.query)).map(::line)
         }
     }
 
@@ -1996,6 +1999,10 @@ abstract class SqlCypherCompiler(graph: String) {
                 val column = "s${i + 1}"
                 // An order term that is an item, as written, is that item: so it may be ordered by where rows are compared.
                 val item = items.indexOfFirst { it.expression == sort.expression }
+                // A variable an item is named after is that item, not the variable of that name before it.
+                val overItems = if (!aggregating) null else replaced(sort.expression) { part ->
+                    if (part is Expression.Variable && part.name in itemColumns) part else items.firstOrNull { it.expression == part }?.let { Expression.Variable(it.name) }
+                }
                 when {
                     contains(sort.expression) { it is Expression.Variable && it.name in anew } && variablesIn(sort.expression).all { it in itemColumns } -> {
                         after[column] = sortable(expression(sort.expression, itemColumns))
@@ -2004,13 +2011,23 @@ abstract class SqlCypherCompiler(graph: String) {
                     item >= 0 -> carried(column, { compiled[item].second }, sort.expression)
                     compared && !contains(sort.expression) { isAggregate(it) || it is Expression.Variable && it.name.startsWith("#aggregate") } ->
                         after[column] = sortable(expression(sort.expression, itemColumns))
+                    // Where rows are grouped, so is one whose every aggregate and key is an item, each such part read by its item's
+                    // name, as aggregatesFirst reads it: worked out in the query, each key is read again as the GROUP BY reads it
+                    // ([keysRead]), on Oracle through its text ([itemProperty]), at each level of an operation over it, and
+                    // `me.age + count(you.age)` compiled to twice what it did in 0.3.0 (#413).
+                    overItems != null && !holdsSubquery(overItems) && !contains(overItems, ::isAggregate) && variablesIn(overItems).all { it in itemColumns } ->
+                        after[column] = sortable(expression(overItems, itemColumns))
                     // One that aggregates reads the rows it aggregates, as an item does; so does one that reads an aggregate
                     // aggregatesFirst worked out first, which no item is. Beside a variable-length walk it binds no value in a
                     // subquery: carried out of a WITH's query, one so bound closes Oracle's (23.26) session (ORA-03113), as
                     // `WITH b ORDER BY toString(coalesce(b.name, b.title))` did, its argument long enough to be bound. Elsewhere
                     // it does, so operations nested in it compile to a statement that grows with them, not exponentially.
+                    // Where rows are grouped, a part of it that is an item keying the groups reads that item's column value, as
+                    // the GROUP BY does: Oracle refuses another read of the key (ORA-00979), as `me.age` read from the
+                    // properties beside `me.age AS age` read through its text ([itemProperty]) was (#413).
                     else -> {
-                        val term = { carried(column, { expression(sort.expression, select.scope + compiled.toMap()) }, sort.expression) }
+                        val (read, keys) = if (aggregating) keysRead(sort.expression, items, columns) else sort.expression to emptyMap()
+                        val term = { carried(column, { expression(read, select.scope + compiled.toMap() + keys) }, sort.expression) }
                         if (select.walks) unshared(term) else term()
                     }
                 }
@@ -2064,6 +2081,21 @@ abstract class SqlCypherCompiler(graph: String) {
             val scope = items.zip(columns).associate { (item, pair) -> item.name to pair.second.columnsOf(PENDING, pair.first) }
             val kinds = columns.flatMap { (column, value) -> value.columnKinds(column) } + order.map { (column, _) -> column to false }
             return Projected(outer, scope, order, kinds)
+        }
+
+        /**
+         * [term], each part of it that is an item of a grouping projection keying the groups, one of [items], read by a
+         * name no variable has, and what each such name is bound to: the item's value among [columns], as it is grouped by.
+         * [replaced] reads no comprehension's, quantifier's or reduce's own expressions, so a part it reads is never one
+         * whose variables such a one binds again: a key is read beside `[me IN [1] | me]` as anywhere else.
+         */
+        private fun keysRead(term: Expression, items: List<Projection.Item>, columns: List<Pair<String, Value>>): Pair<Expression, Map<String, Value>> {
+            val keys = items.withIndex().filter { (_, item) -> !contains(item.expression, ::isAggregate) && variablesIn(item.expression).isNotEmpty() }
+                .associate { (i, item) -> item.expression to i }
+            val bound = mutableMapOf<String, Value>()
+            // Named as no variable is, unless quoted so.
+            val read = replaced(term) { part -> keys[part]?.let { i -> Expression.Variable("#key ${i + 1}").also { bound[it.name] = columns[i].second } } }
+            return read to bound
         }
 
         /**

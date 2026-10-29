@@ -646,15 +646,17 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * The map is bound first: the data guide's query reads a column of a row outside it, and not an expression of one.
      * The guide's paths are read by their places, as [temporalElements] reads them: a `JSON_TABLE` over the guide of a map
      * that holds a list of temporal values worked out item by item stalls the parse as one over the list does (#331, #347).
-     * They are so read for every map, not only one the statement makes hold such a list: over the guide, which a subquery
-     * gives, they are read many times faster than `JSON_TABLE` reads them (`keys(n)` of 100,000 nodes: 0.4 s, not 4.8 s).
+     * They are so read for every map, not only one the statement makes hold such a list.
+     * The guide is worked out by the lateral view itself, as its one aggregate over `DUAL`: a subquery that works it out,
+     * in that view's select list, is worked out once, and every row then had the first row's keys (#414). The keys of
+     * 100,000 maps so take 7 s, where a `JSON_TABLE` over each guide takes 4.4 s.
      * Null has no keys, and gives null.
      */
     private fun keys(json: String): String = bound(json) { (map) -> "CASE WHEN ${kind(map)} = 'object' THEN ${keysOf(map)} END" }
 
     private fun keysOf(json: String): String {
         val key = """CASE WHEN SUBSTR(d.p, 3, 1) = '"' THEN JSON_VALUE(JSON(SUBSTR(d.p, 3)), '${'$'}') ELSE SUBSTR(d.p, 3) END"""
-        val paths = temporalElements("(SELECT JSON_DATAGUIDE($json, 2) FROM DUAL)", "dg")
+        val paths = temporalElements("JSON_DATAGUIDE($json, 2)", "dg")
         val guide = """(SELECT JSON_VALUE(dg.item, '${'$'}."o:path"' RETURNING VARCHAR2(4000)) AS p FROM $paths) d"""
         val topLevel = """REGEXP_LIKE(d.p, '^\${'$'}\.(\w+|"([^"\\]|\\.)*")${'$'}')"""
         return "(SELECT COALESCE(JSON_ARRAYAGG(g.k ORDER BY g.k RETURNING JSON), JSON('[]')) FROM (SELECT $key AS k FROM $guide WHERE $topLevel) g)"
@@ -787,6 +789,25 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * the query returns is then read as null (`CALL { WITH n RETURN n.day AS d } RETURN d + duration('P1D')`).
      */
     override fun called(query: String) = "SELECT /*+ NO_MERGE */ * FROM (\n${indent(query)}\n)"
+
+    /**
+     * A query that reads the graph's tables twice or more is not rewritten by Oracle's JSON table transformation
+     * (`NO_JSON_TABLE_TRANSFORM`), which reads several JSON values of a column, `n1.props`, by one `JSON_TABLE`: so
+     * rewritten, a node's table beside another table, or beside a subquery of one, lost the tests of that node's labels
+     * and properties, and the query gave rows its pattern doesn't have, and values of the wrong node (#415):
+     * `MATCH (a:N1), (b:N2) RETURN a.n + b.n` gave a row for each two nodes, and so did `a.n - a.m`, `toUpper(a.s),
+     * size(a.s)` and `a.l + b.l`. Seen on Oracle 23.26.3 (gvenzl/oracle-free 23). The hint is the statement's, whichever
+     * query of it holds it, so the outermost one holds it. A query of one table reads as it did: none lost a test.
+     */
+    override fun planned(query: String): String {
+        if (graphTable.findAll(query).count() < 2) return query
+        val hints = HINTED.find(query)?.takeIf { it.range.first == 0 }?.groups?.get(1)
+        return if (hints != null) query.replaceRange(hints.range, "${hints.value} $NO_JSON_TABLE_TRANSFORM")
+        else query.replaceFirst(Regex("^SELECT "), "SELECT /*+ $NO_JSON_TABLE_TRANSFORM */ ")
+    }
+
+    /** A read of the graph's node or relationship table: see [planned]. */
+    private val graphTable = Regex("\\b(?:${Regex.escape(nodes)}|${Regex.escape(edges)}) \\w")
 
     /**
      * An optional join is on `1 = 1`, not `ON TRUE`: in a scalar subquery, as a `COUNT { … }` is, Oracle refuses a join on
@@ -996,6 +1017,12 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** The most bytes a `VARCHAR2` holds in SQL, as a database is made by default (`MAX_STRING_SIZE = STANDARD`). */
         const val SHORT_TEXT = 4000
+
+        /** The hint that turns Oracle's JSON table transformation off: see [planned]. */
+        private const val NO_JSON_TABLE_TRANSFORM = "NO_JSON_TABLE_TRANSFORM"
+
+        /** A query that opens with hints, and those hints: Oracle reads the first hint comment of a query alone. */
+        private val HINTED = Regex("""SELECT /\*\+ (.*?) \*/""")
 
         /**
          * The most characters of a text [sharedSum] binds as JSON: one of 40,001, bound as JSON beside a long value, closed the

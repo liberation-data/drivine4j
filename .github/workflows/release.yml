@@ -3,8 +3,8 @@
 # - A push to main that raises build.gradle's version (the merge of a "Release vX.Y.Z" PR) publishes it, and tags
 #   the commit vX.Y.Z. A push to main that changes build.gradle without raising the version publishes nothing.
 # - A push of a tag vX.Y.Z, by hand, publishes too: the fallback.
-# - Either way, the full CI runs, every published module is built, signed and checked, and nmcp uploads them to the
-#   Central Portal in one bundle, as one deployment.
+# - Either way, the full CI runs, unless CI has already passed on the same tree; every published module is built,
+#   signed and checked, and nmcp uploads them to the Central Portal in one bundle, as one deployment.
 # - workflow_dispatch, and a pull request that changes the release machinery, are dry runs: everything but the
 #   publish, signed with a throwaway key, with the Maven repository and the Central Portal bundle left as the run's
 #   artifact to inspect.
@@ -32,6 +32,8 @@ on:
       - drivine4j-*/build.gradle
       - scripts/release_version.py
       - scripts/test_release_version.py
+      - scripts/ci_trust.py
+      - scripts/test_ci_trust.py
 
 permissions:
   contents: read
@@ -132,20 +134,59 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
-  # The full CI, as ci.yml runs it on a push or a pull request. A push that releases nothing stops at check: ci.yml
-  # runs on the same push to main by itself.
-  gate:
+  # Whether ci.yml has already passed on the git tree this run builds, from a push or a pull request, so the gate
+  # needn't run it again: the release PR's run, when it was up to date with main and squash merged, or the push run on
+  # the merge commit, which starts beside this one and is waited for. A run on this tree that fails fails the release.
+  # scripts/ci_trust.py says how a run's tree is known, and why a pull request's run can be believed; the step summary
+  # links the run trusted, or says why none was. Skipped, as the gate is, on a push that releases nothing.
+  trust:
     needs: check
     if: needs.check.outputs.publish == 'true' || github.event_name != 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      # The checkout's, as for the workflow.
+      contents: read
+      # Reading ci.yml's runs, their jobs and their artifacts.
+      actions: read
+    outputs:
+      trusted: ${{ steps.trust.outputs.trusted }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The script that decides whether to skip the gate, tested with the runner's python3 and nothing installed, as
+      # check tests the version arithmetic.
+      - name: Test the CI trust script
+        run: python3 scripts/test_ci_trust.py
+      # On a pull request the checkout is its merge ref, and ci.yml's runs for it name its head commit. The script
+      # reads the standard library alone, so the runner's python3 runs it, as check's does.
+      - name: Look for a run of CI on this tree
+        id: trust
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          python3 scripts/ci_trust.py "$GITHUB_REPOSITORY" "$tree" "$(git rev-parse HEAD)" "$PR_HEAD"
+
+  # The full CI, as ci.yml runs it on a push or a pull request, unless trust found it has already passed on this tree.
+  # A push that releases nothing stops at check: ci.yml runs on the same push to main by itself.
+  gate:
+    needs: [check, trust]
+    if: needs.trust.outputs.trusted != 'true'
     uses: ./.github/workflows/ci.yml
     permissions:
       contents: read
       # ci.yml's test reports are check runs (mikepenz/action-junit-report).
       checks: write
 
-  # A push that releases nothing skips gate, and so this and the jobs after it.
+  # Runs when the gate passed, or was skipped because trust found CI had passed on this tree. A failed or cancelled
+  # check, trust or gate stops it, and so does a gate skipped for any other reason (a push that releases nothing).
   build:
-    needs: [check, gate]
+    needs: [check, trust, gate]
+    if: >-
+      ${{ !cancelled() && needs.check.result == 'success' && needs.trust.result == 'success' &&
+      (needs.gate.result == 'success' ||
+      (needs.gate.result == 'skipped' && needs.trust.outputs.trusted == 'true')) }}
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.check.outputs.version }}
@@ -177,8 +218,9 @@ jobs:
           gpg --batch --pinentry-mode loopback --passphrase dry-run \
             --quick-gen-key 'Drivine release dry run <dry-run@invalid>' rsa3072 sign 1d
           gpg --batch --pinentry-mode loopback --passphrase dry-run --armor --export-secret-keys > "$RUNNER_TEMP/dry-run-key.asc"
-      # Every module, as ci.yml builds it (the gate ran the tests), then the bundle nmcp uploads: every published
-      # module's publication, staged and signed, in one zip, build/nmcp/zip/publicationAggregated.zip.
+      # Every module, as ci.yml builds it (the gate, or the CI run trust found on this tree, ran the tests), then the
+      # bundle nmcp uploads: every published module's publication, staged and signed, in one zip,
+      # build/nmcp/zip/publicationAggregated.zip.
       - name: Build, sign and bundle the publications
         run: |
           SIGNING_KEY="$(cat "$RUNNER_TEMP/dry-run-key.asc")" \
@@ -220,9 +262,11 @@ jobs:
   # nmcp signs and uploads in one Gradle build, so this job builds the bundle again from the same commit,
   # signed with the release key, checks it as build checked its own, and uploads it as one deployment: the Central
   # Portal releases every module or none.
+  # A skipped gate is still upstream of this job, so its condition checks build's result itself rather than leave it
+  # to the default, which would skip it.
   publish:
     needs: [check, build]
-    if: needs.check.outputs.publish == 'true'
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.check.outputs.publish == 'true' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -288,6 +332,7 @@ jobs:
 
   github-release:
     needs: [check, publish]
+    if: ${{ !cancelled() && needs.publish.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

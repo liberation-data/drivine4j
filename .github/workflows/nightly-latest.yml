@@ -3,8 +3,8 @@
 # pins, so it fails only for its own change; this run is where an engine's new release shows up. Before
 # it builds, each test job says which release each image is. See TEST_CONTAINERS.md, "Pinned images and the nightly run".
 #
-# Keep the jobs in step with ci.yml. They leave out its test report, coverage, model file check and
-# version script tests, which say nothing of an engine's release.
+# Keep the jobs in step with ci.yml. They leave out its test report, coverage, model file check,
+# version script tests and tree record (for release.yml's trust), which say nothing of an engine's release.
 name: Nightly on latest images
 
 on:
