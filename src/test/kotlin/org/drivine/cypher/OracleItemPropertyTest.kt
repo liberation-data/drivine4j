@@ -276,4 +276,39 @@ class OracleItemPropertyTest {
         val sql = PostgresCypherCompiler("g").compile("MATCH (n:Doc) RETURN n.a").sql
         assertTrue(sql.contains("(n1.props -> 'a')"), sql)
     }
+
+    @Test
+    fun `an item of a list read by its place is read through the list's text where it is a text`() {
+        // Taken out of the list as JSON, a text past 32 KB closed the session from the second run on, given two rows (#388).
+        // So the item's kind is read first, and only an item of another kind is taken out as JSON, in the CASE's ELSE.
+        val shapes = listOf(
+            "RETURN size(split(n.a, 'x')[0])", "WITH split(n.a, 'x') AS parts RETURN size(parts[0])", "RETURN split(n.a, 'x')[0]",
+            "WITH split(n.a, 'x') AS parts RETURN parts[-1]", "RETURN size(split(n.a, 'x')[n.i])", "RETURN size(split(n.a, 'x')[0..1][0])",
+            "RETURN n.tags[0]", "RETURN [x IN range(0, 1) | toUpper(n.tags[x])]",
+        )
+        for (shape in shapes) {
+            val sql = OracleCypherCompiler("g").compile("MATCH (n:Doc) $shape").sql
+            // Each read of the item is its kind's, its text's, and in the ELSE, its JSON's.
+            val (kinds, texts, all) = listOf("'\$[\$i].type()' PASSING ", "RETURNING CLOB), '\$[\$i]' PASSING ", "'\$[\$i]' PASSING ").map { Regex.escape(it).toRegex().findAll(sql).count() }
+            assertTrue(kinds > 0 && texts == kinds && all == 2 * kinds, "$shape: $sql")
+            assertTrue(Regex(Regex.escape("ELSE JSON_QUERY(")).findAll(sql).count() >= kinds, "$shape: $sql")
+            // The node's label test stays.
+            assertEquals(1, Regex(Regex.escape("JSON_EXISTS(")).findAll(sql).count(), "$shape: $sql")
+        }
+        // By head and last; of a stored list, its kind read by the property's own path (see direct).
+        val ends = OracleCypherCompiler("g").compile("MATCH (n:Doc) RETURN [size(head(split(n.a, 'x'))), last(split(n.a, 'x')), head(n.tags)]").sql
+        assertTrue(ends.contains("'\$[0].type()') = 'string'") && ends.contains("'\$[last].type()') = 'string'"), ends)
+        assertTrue(ends.contains("RETURNING CLOB), '\$[0]' RETURNING CLOB)") && ends.contains("RETURNING CLOB), '\$[last]' RETURNING CLOB)"), ends)
+        assertTrue(ends.contains("JSON_VALUE(n1.props, '\$.tags[0].type()') = 'string'"), ends)
+        for (end in listOf("0", "last")) {
+            val (texts, all) = listOf("RETURNING CLOB), '\$[$end]' RETURNING CLOB)", "'\$[$end]' RETURNING").map { Regex.escape(it).toRegex().findAll(ends).count() }
+            assertTrue(texts > 0 && all == 2 * texts, ends)
+        }
+        // An unwound item is read as it was: JSON_TABLE's item did not close the session.
+        val unwound = OracleCypherCompiler("g").compile("MATCH (n:Doc) UNWIND split(n.a, 'x') AS p RETURN size(p)").sql
+        assertTrue(!unwound.contains("RETURNING CLOB), '\$["), unwound)
+        // Postgres reads an item as before.
+        val postgres = PostgresCypherCompiler("g").compile("MATCH (n:Doc) RETURN [split(n.a, 'x')[0], head(n.tags), last(n.tags)]").sql
+        assertTrue(postgres.contains("-> 0)") && postgres.contains("-> -1)") && !postgres.contains("CLOB"), postgres)
+    }
 }

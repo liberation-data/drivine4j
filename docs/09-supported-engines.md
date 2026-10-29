@@ -294,6 +294,11 @@ declares the function itself.
   (`WITH n {.a} AS m RETURN m.a`); after a write, which carries its rows on, such a value is read from the item's text too.
   A pattern that matches on such a text (`MERGE (n:X {a: r.a})`) compares it as JSON, which Oracle refuses past about
   32 KB (ORA-40180), leaving the session open.
+- So are reads of a list's item by its place ([#388](https://github.com/liberation-data/drivine4j/issues/388)): an item
+  read by index, by `head()` or `last()`, or after a slice, of a list `split` makes, a stored list, or one a `WITH`
+  passes on (`split(n.bio, 'x')[0]`, `head(n.tags)`), is read from the list's text where it is a text, at about 1.4 to
+  2.5 times a plain read, and the list is written out whole for it. Any other item is read as before, and so is an
+  unwound item. A list made of a long property (`[n.bio, 'y']`) still takes the property out as JSON, as above.
 - An `OPTIONAL CALL` or an `OPTIONAL MATCH` is joined `ON 1 = 1`, where Postgres joins `ON TRUE`. This works around
   an Oracle bug, seen on 23.26.3: in a scalar subquery, as a `COUNT { … }` is compiled, a join `ON TRUE` is refused
   (ORA-00907) or crashes the session (ORA-03113, with ORA-07445 in the alert log)
