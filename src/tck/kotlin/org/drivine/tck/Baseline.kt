@@ -63,6 +63,15 @@ class Baseline(val store: String, val tck: String, val scenarios: Int, val featu
 
     val passing: Int get() = features.values.sumOf { it.size }
 
+    /**
+     * Why a run of the TCK version [tck] can't be held to this baseline, or null when it can. A scenario is keyed by its
+     * place in its feature, and another version may add or drop scenarios and so move those places: the gate would read
+     * the moves as regressions.
+     */
+    fun refusal(tck: String): String? = if (tck == this.tck) null else
+        "The baseline for $store was written on ${this.tck}, and this run is $tck: a scenario's place in its feature may " +
+            "have moved between them. Rewrite the baseline with -Ptck.baseline.update=true alone, and read what it drops."
+
     /** One feature to a line, so a fix's diff names the features it moved. */
     fun write(file: File) {
         val json = ObjectMapper()

@@ -1,6 +1,6 @@
 {
   "store": "oracle",
-  "tck": "openCypher TCK 2024.2",
+  "tck": "openCypher TCK 2024.2, tck-api 1.0.0-M23",
   "scenarios": 3896,
   "passing": 2338,
   "features": {

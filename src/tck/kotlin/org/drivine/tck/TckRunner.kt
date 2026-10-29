@@ -374,8 +374,9 @@ fun measure(store: Store): SideEffectOps.State {
             scala.Tuple3<CypherValue, CypherValue, CypherValue>(actual(id), actual(k), canonical(actual(v)))
         }
     }
-    val props = triples("MATCH (n) RETURN elementId(n) AS id, properties(n) AS p") +
-        triples("MATCH ()-[r]->() RETURN elementId(r) AS id, properties(r) AS p")
+    // One column, a list, as the compiler warns on each statement that returns several.
+    val props = triples("MATCH (n) RETURN [elementId(n), properties(n)] AS row") +
+        triples("MATCH ()-[r]->() RETURN [elementId(r), properties(r)] AS row")
     return SideEffectOps.State(
         scala.collection.immutable.Set.from(CollectionConverters.asScala(nodes)),
         scala.collection.immutable.Set.from(CollectionConverters.asScala(rels)),
@@ -504,6 +505,10 @@ fun main() {
             exitProcess(2)
         }
     } else null
+    baseline?.refusal(tckVersion)?.let {
+        System.err.println(it)
+        exitProcess(2)
+    }
 
     val all = CollectionConverters.asJava(CypherTCK.allTckScenarios()).sortedWith(
         compareBy({ it.sourceFile().toString() }, { opt(it.number()) as Int? ?: 0 }, { opt(it.exampleIndex()) as Int? ?: 0 }),

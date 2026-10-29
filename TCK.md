@@ -19,7 +19,8 @@ The other properties: `-Ptck.timeout=30`, the seconds a scenario has before it c
 `-Ptck.limit=100`, the first hundred scenarios only; `-Ptck.debug=true`, each query and its rows printed.
 
 The TCK is opt-in. The `tck` source set, its `tck` configuration (which alone holds the TCK's dependencies)
-and the `tck` task are left out of `build`, `check` and `test`. The stores start as the tests' do, from the
+and the `tck` task are left out of `build`, `check` and `test`; `check` compiles the harness and runs
+`tckTest` (below), which needs no database. The stores start as the tests' do, from the
 images pinned in `gradle/test-images.txt`. A whole run takes about 15 s on SQLite, 50 s on Postgres, 70 s on
 Neo4j and 95 s on Oracle, once the store is up.
 
@@ -73,7 +74,10 @@ Gate on sqlite: 1 regressed, 0 missing, 0 newly passing (baseline 2312).
 ```
 
 It fails, too, on a scenario of the baseline that the TCK no longer has. What a run gains never fails it. A
-run filtered by `tck.features` or `tck.limit` is gated on the scenarios it ran.
+run filtered by `tck.features` or `tck.limit` is gated on the scenarios it ran. A baseline records the TCK
+version it was written on, features and `tck-api`, and the gate refuses a run of another version: a new
+version may add or drop scenarios and so move the places that key them, which would read as regressions.
+Moving the TCK to a new version means rewriting each store's baseline with the ratchet alone.
 
 **The ratchet**, `-Ptck.baseline.update=true`, rewrites the baseline of the store that ran from the run, and
 says which scenarios of the old baseline the new one drops. It refuses a filtered run, which would forget
@@ -86,6 +90,8 @@ git add src/tck/resources/tck-baseline-postgres.json
 ```
 
 With both properties a run is gated first, and the baseline is rewritten only if the gate passes.
+
+`./gradlew tckTest` tests the gate and the ratchet themselves, with no database; `tck` and `check` run it.
 
 **Nightly**, the `tck` job of `.github/workflows/nightly-latest.yml` runs the gate on each of the four stores,
 on the pinned images, and a failure opens the nightly run's issue as the other jobs' do. It doesn't run on
