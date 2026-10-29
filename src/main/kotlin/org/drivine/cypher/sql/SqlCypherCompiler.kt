@@ -2215,23 +2215,25 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * Whether [shared] would bind a value in [term], over an aggregate's result, where [term] is no aggregate itself:
          * each aggregate in it compiled as it is, with nothing bound ([aggregating]), and the operations over them with
-         * [shared] on. Compiled only to see, as [binds] is. An order term reads each item it names by its name, in [named],
-         * as that item's expression; where a comprehension's own name would hide that name, or a variable of that expression,
-         * the term is left as it was.
+         * [shared] on. Compiled only to see, as [binds] is. An order term reads each item it names, in [named], by its name:
+         * the item's value, compiled over the rows [select] reads as `project` compiles it, is bound to that name, so a comprehension's own name hides
+         * it as it hides any variable, and the item's expression is never read where a comprehension binds its variables.
          */
         private fun bindsOverAggregates(term: Expression, select: Select, named: Map<String, Expression> = emptyMap()): Boolean {
             if (isAggregate(term) || !contains(term, ::isAggregate)) return false
-            val read = scoped(term) { v, local ->
-                named[v.name]?.takeIf { v.name !in local && local.none { name -> name in variablesIn(it) } }
-            }
-            if (variablesIn(read).any { it in named && it !in select.scope }) return false
             return binds {
+                // Each item compiled as `project` compiles it, with shared on where it does not aggregate, lest one nested deep be
+                // written out again at each level; what it binds is its own, not the term's.
+                val items = named.filterKeys { it in variablesIn(term) }.mapValues { (_, item) ->
+                    val was = sharedBindings
+                    aggregating(item) { expression(item, select.scope) }.also { sharedBindings = was }
+                }
                 val results = mutableMapOf<String, Value>()
                 // Named as no variable is, unless quoted so.
-                val over = replaced(read) { part ->
+                val over = replaced(term) { part ->
                     if (!isAggregate(part)) null else Expression.Variable("#over${results.size + 1}").also { results[it.name] = unshared { expression(part, select.scope) } }
                 }
-                expression(over, select.scope + results)
+                expression(over, select.scope + items + results)
             }
         }
 

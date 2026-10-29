@@ -339,6 +339,7 @@ class CompiledSizeTest {
         fun four(function: String, over: String) = "$function(".repeat(4) + over + ")".repeat(4)
         val texts = "max(n.title) + ': ' + max(n.first) + ' ' + max(n.last)"
         val worked = "WITH max(n.title) AS a, max(n.first) AS b, max(n.last) AS c"
+        val days = "((((n.day + duration('P1D')) + duration('P1D')) + duration('P1D')) + duration('P1D'))"
         // Each statement, and the same with a WITH working its aggregates out first.
         val statements = listOf(
             "MATCH (n) RETURN $texts" to "MATCH (n) $worked RETURN a + ': ' + b + ' ' + c",
@@ -361,6 +362,14 @@ class CompiledSizeTest {
             // An order term that reads an item by its name, which ran the compiler out of memory.
             "MATCH (n) RETURN n.k AS k, count(*) AS c ORDER BY ${four("toString", "count(*) * 10 + size(k)")}" to
                 "MATCH (n) WITH n.k AS k, count(*) AS x RETURN k, x AS c ORDER BY ${four("toString", "x * 10 + size(k)")}",
+            // And one where a comprehension's own name hides an item's, or the item's expression reads a name the comprehension binds.
+            "MATCH (n) RETURN n.k AS k, sum(n.a) AS m ORDER BY ${four("toString", "[k IN [1] | k + m][0]")} + toString(sum(n.a))" to
+                "MATCH (n) WITH n.k AS k, sum(n.a) AS x RETURN k, x AS m ORDER BY ${four("toString", "[k IN [1] | k + x][0]")} + toString(x)",
+            "MATCH (n) RETURN n.k AS k, sum(n.a) AS m ORDER BY ${four("toString", "[n IN [1] | n + size(k)][0]")} + toString(sum(n.a))" to
+                "MATCH (n) WITH n.k AS k, sum(n.a) AS x RETURN k, x AS m ORDER BY ${four("toString", "[n IN [1] | n + size(k)][0]")} + toString(x)",
+            // And one that reads an item nested deep, which the trial compile once compiled with nothing bound, out of memory on Oracle.
+            "MATCH (n) RETURN ${days} AS k, count(*) AS c ORDER BY ${four("toString", "count(*)")} + toString(k)" to
+                "MATCH (n) WITH ${days} AS k, count(*) AS x RETURN k, x AS c ORDER BY ${four("toString", "x")} + toString(k)",
             "MATCH (n)-[*1..3]->(m) RETURN max(m.title) + ': ' + max(m.first) + ' ' + max(m.last)" to
                 "MATCH (n)-[*1..3]->(m) WITH max(m.title) AS a, max(m.first) AS b, max(m.last) AS c RETURN a + ': ' + b + ' ' + c",
             "MATCH (n)-[*1..3]->(m) RETURN ${four("toLower", "max(m.name)")}" to "MATCH (n)-[*1..3]->(m) WITH max(m.name) AS x RETURN ${four("toLower", "x")}",
@@ -412,6 +421,13 @@ class CompiledSizeTest {
             assertEquals(declared.distinct(), declared, "$statement: $sql")
             assertTrue(declared.isNotEmpty() && declared.all { name -> Regex("\\b$name\\(").findAll(sql).count() > 1 }, "$statement: $sql")
         }
+        // Or an order term over one that reads an item declaring a function, compiled in the trial by the item's name: the
+        // statement declares what it does without the term, each once.
+        fun declared(statement: String) = Regex("FUNCTION (cy_\\w+)\\(").findAll(OracleCypherCompiler("g").compile(statement).sql).map { it.groupValues[1] }.toList()
+        val grouped = "UNWIND range(1, 3) AS i RETURN reduce(a = 0, x IN [i] | a + x) AS r, count(*) AS c"
+        val sorted = declared("$grouped ORDER BY toLower(toLower(toString(count(*)))) + toString(r)")
+        assertEquals(sorted.distinct(), sorted)
+        assertEquals(declared(grouped).size, sorted.size)
         // Without the store's function, the query declares its own once, where the aggregate's argument binds a value or not.
         listOf(
             "UNWIND range(1, 3) AS i WITH i, [i, null] AS l, [i] AS m RETURN collect(l = m)",
