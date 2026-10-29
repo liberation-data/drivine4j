@@ -265,8 +265,10 @@ class CompiledSizeTest {
             fun size(precision: String, parameters: Map<String, Any?> = emptyMap()) = compiler().compile(nested(precision), parameters).sql.length
             val whole = size("")
             listOf(", 0", ", -0.5", ", 0.9", ", -\$p").forEach { assertEquals(whole, size(it, mapOf("p" to 0.5)), "$name: round(x$it)") }
-            // A parameter, its key, and NaN, which Neo4j casts to 0 places.
-            listOf(0L, 0, 0.7, Double.NaN).forEach { assertEquals(whole, size(", \$p", mapOf("p" to it)), "$name: \$p = $it") }
+            // A parameter, its key, and NaN, which Neo4j casts to 0 places: beside the statement given NaN and no places, as a
+            // statement given NaN works it out as a float where a store's JSON holds none (#295).
+            listOf(0L, 0, 0.7).forEach { assertEquals(whole, size(", \$p", mapOf("p" to it)), "$name: \$p = $it") }
+            assertEquals(size("", mapOf("p" to Double.NaN)), size(", \$p", mapOf("p" to Double.NaN)), "$name: \$p = NaN")
             assertEquals(whole, size(", \$m.p", mapOf("m" to mapOf("p" to 0L))), "$name")
             // To 1 place or more, it rounds by places alone, and grows as the number does, not twice over at each level.
             val read = size(", toInteger('1')")
