@@ -6,10 +6,35 @@ on:
     branches: [ main, develop ]
   pull_request:
     branches: [ main, develop ]
-  # release.yml runs this as its gate, on the tag it releases.
+  # release.yml runs this as its gate, on the commit it releases, unless a push or pull_request run of it has already
+  # passed on the same tree.
   workflow_call:
 
 jobs:
+  # Records the git tree this run tests, as an artifact named ci-tree-<tree>, so a release of the same tree can trust
+  # this run and skip its gate (scripts/ci_trust.py). It matters on a pull request, which tests its merge ref, not the
+  # head commit the run names. It has no condition, as no job here may: release.yml trusts a run only when every job
+  # in it passed, and a job skipped by a condition doesn't.
+  tree:
+    name: record the tree
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Work out the tree
+        id: tree
+        run: |
+          tree=$(git rev-parse 'HEAD^{tree}')
+          echo "tree=$tree" >> "$GITHUB_OUTPUT"
+          echo "$tree $(git rev-parse HEAD)" > ci-tree.txt
+          echo "This run tests tree $tree, of commit $(git rev-parse HEAD)." >> "$GITHUB_STEP_SUMMARY"
+      # Overwritten when the run is re-run, as an artifact's name is unique within a run.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ci-tree-${{ steps.tree.outputs.tree }}
+          path: ci-tree.txt
+          if-no-files-found: error
+          overwrite: true
+
   # The Cypher spec's copies are the tag VERSION names, unchanged, and a later tag is shown as a warning.
   cypher-spec:
     runs-on: ubuntu-latest
@@ -22,7 +47,7 @@ jobs:
 
   # The version script's tests, which also check that its list of the files naming the version (the sample's model
   # file and the README's install snippets) matches them, so a snippet added or reworded fails here and not in the
-  # next Prepare release.
+  # next Prepare release. And the tests of release.yml's other script, ci_trust.py.
   release-version:
     runs-on: ubuntu-latest
     steps:
@@ -31,6 +56,9 @@ jobs:
 
       - name: Test the version script
         run: python3 scripts/test_release_version.py
+
+      - name: Test the CI trust script
+        run: python3 scripts/test_ci_trust.py
 
   test:
     runs-on: ubuntu-latest

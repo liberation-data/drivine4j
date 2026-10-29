@@ -99,6 +99,9 @@ class OracleZonedListSortTest {
         val keys = OracleCypherCompiler("g").compile(keyed).sql
         assertTrue(keys.contains("PASSING dg_r.n - 1"), keys)
         assertFalse(keys.contains("JSON_TABLE((SELECT JSON_DATAGUIDE"), keys)
+        // Worked out by the lateral view itself: a subquery in its select list is worked out once, for every row (#414).
+        assertTrue(keys.contains("LATERAL (SELECT /*+ NO_MERGE */ JSON_DATAGUIDE("), keys)
+        assertFalse(keys.contains("(SELECT JSON_DATAGUIDE"), keys)
     }
 
     @Test
