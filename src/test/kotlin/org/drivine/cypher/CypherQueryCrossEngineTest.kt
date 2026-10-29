@@ -1759,7 +1759,7 @@ abstract class CypherQueryContract {
     }
 
     @Test
-    fun `keys() gives each row's own keys, of a node, a relationship, a map or a parameter, in a comprehension, a DISTINCT or an order`() {
+    fun `keys() gives each row's own keys, of a node, a relationship, a map or a parameter, in a comprehension, a quantifier, a DISTINCT or an order`() {
         // On Oracle every row had the first row's keys (#414): the map's data guide was worked out by a subquery in a lateral
         // view's select list, which Oracle works out once. The spec's cases read one row's keys only.
         clear()
@@ -1798,6 +1798,23 @@ abstract class CypherQueryContract {
         )
         assertEquals(listOf(listOf("a"), listOf("b")), query("UNWIND [{b: 1}, {a: 2}, {b: 3}] AS m RETURN DISTINCT keys(m) ORDER BY keys(m)"))
         assertEquals(listOf(2L, 1L), query("UNWIND [{b: 1}, {a: 2}] AS m RETURN coalesce(m.a, m.b) ORDER BY keys(m)"))
+        // A quantifier over each row's keys in a WHERE, the keys of a relationship an OPTIONAL MATCH didn't find, and of maps
+        // in a list each row holds.
+        assertEquals(
+            listOf(4L),
+            query(
+                "UNWIND \$rows AS row MATCH (n:Keyed {id: row.id}) WHERE any(k IN keys(row.props) WHERE k = 'b') RETURN n.id",
+                mapOf("rows" to listOf(mapOf("id" to 1L, "props" to mapOf("a" to 1L)), mapOf("id" to 4L, "props" to mapOf("b" to 2L)))),
+            ),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(2L, null), listOf(3L, 3L), listOf(4L, null)),
+            query("MATCH (n:Keyed) OPTIONAL MATCH (n)-[r:KEYED]->() RETURN n.id, size(keys(r)) ORDER BY n.id"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 2L), listOf(3L)),
+            query("UNWIND [[{a: 1}, {b: 2, c: 3}], [{d: 4, e: 5, f: 6}]] AS l RETURN [x IN l | size(keys(x))]"),
+        )
     }
 
     @Test
