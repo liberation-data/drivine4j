@@ -30,7 +30,8 @@ import java.math.RoundingMode
  * number, so a statement given one ([nonFinite]) writes it as `{"${'$'}numberDouble": "NaN"}` ([SqliteCypherValues.NAN]), which it
  * takes for a number ([typeOf]), equal to nothing and ordered with nothing; arithmetic over it gives it, as does arithmetic over an
  * infinity that gives NaN, and it is written as Java writes it. The rows give it back as NaN (see
- * [org.drivine.mapper.JdbcResultMapper]). A statement that writes refuses NaN, as the store would keep that map in its place.
+ * [org.drivine.mapper.JdbcResultMapper]). A statement that writes refuses NaN, as the store would keep that map in its place, and
+ * fails where it writes NaN it works out ([finite]).
  */
 class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
@@ -485,9 +486,17 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun appended(list: String, item: String) = "json_insert($list, '$[#]', json($item))"
 
     /** A merge patch onto an empty map leaves out each entry whose value is null. */
-    override fun stripNulls(json: String) = "json_patch('{}', $json)"
+    override fun stripNulls(json: String) = "json_patch('{}', ${finite(json)})"
 
-    override fun merged(props: String, map: String) = "json_patch($props, $map)"
+    override fun merged(props: String, map: String) = "json_patch($props, ${finite(map)})"
+
+    /**
+     * The JSON map [json], which a statement writes, failing where it holds NaN: worked out from an infinity given or stored
+     * (`${'$'}i - ${'$'}i`, `n.inf + n.negative`), it is the map the class writes for it, which the store would keep in its place.
+     */
+    private fun finite(json: String) = shared(json) { (x) ->
+        "CASE WHEN instr($x, $NAN_JSON) > 0 THEN ${SqliteFunctions.FAIL}(${literal(NAN_WRITTEN)}) ELSE $x END"
+    }
 
     override fun withoutLabel(labels: String, label: String) =
         "(SELECT json_group_array(l.value ORDER BY l.key) FROM json_each($labels) l WHERE l.value <> ${literal(label)})"
@@ -510,6 +519,9 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
         /** An infinity, as SQLite reads the number its JSON writes for one. */
         const val INFINITY = SqliteCypherValues.INFINITY
+
+        /** Why a statement that writes NaN it works out fails: see [finite]. */
+        const val NAN_WRITTEN = "A statement that writes works out NaN, which SQLite's JSON holds as no number: it would store another value in its place."
 
         /** NaN, as a statement given it writes it, as SQL: see the class. */
         val NAN_JSON = literal(SqliteCypherValues.write(SqliteCypherValues.NAN))
