@@ -951,12 +951,13 @@ abstract class SqlCypherCompiler(graph: String) {
          * of it alone, `count(o)`, as one of the row's query, which it refuses in a FROM, and so does SQLite; Oracle's aggregate
          * reads a variable of an unwound row as null there, so `sum(i + o)` gave 0 (#368). Kept apart with [boundSelect], or
          * Oracle merges it back. Bound as the call's own, so a `WITH *` a projection works out first carries them: not a name
-         * the call binds itself, as a CALL within it yields one, and not under a `RETURN *`, which would return them.
+         * the call binds itself, as a CALL within it yields one, and not where its `RETURN` and each `WITH` is `*`, which would
+         * return them: a `WITH` of named items before a `RETURN *` passes on only those, as it does without them.
          */
         private fun importsApart(scope: Map<String, Value>, clauses: List<Clause>): Pair<String, Map<String, Value>>? {
             val projections = clauses.mapNotNull { (it as? Clause.With)?.projection ?: (it as? Clause.Return)?.projection }
             if (projections.none { p -> (p.items.map { it.expression } + p.orderBy.map { it.expression }).any { contains(it, ::isAggregate) } }) return null
-            if (projections.last().star) return null
+            if (projections.all { it.star }) return null
             val declared = clauses.flatMap { clause ->
                 when (clause) {
                     is Clause.Unwind -> listOf(clause.variable)

@@ -1796,6 +1796,43 @@ abstract class CypherQueryContract {
             listOf(listOf("Carrie", 2L, 1997L), listOf("Hugo", 2L, null), listOf("Keanu", 2L, 1994L), listOf("Laurence", 2L, 1991L)),
             query("MATCH (p:Person) CALL { WITH p UNWIND [10, 20] AS i RETURN count(p) AS n, sum(i) + max(p.born) AS t } RETURN p.name, n, t ORDER BY p.name"),
         )
+        // Each row's own values, a null among them; two imports; a map and a relationship.
+        assertEquals(
+            listOf(listOf(1L, 3L, listOf(1L, 1L, 1L), 1L), listOf(null, 0L, emptyList<Any>(), null)),
+            query("UNWIND [1, null] AS o CALL (o) { UNWIND range(1, 3) AS i RETURN count(o) AS n, collect(o) AS c, max(o) AS s } RETURN o, n, c, s ORDER BY o"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 10L, 23L, listOf(1L, 1L), 2L), listOf(1L, 20L, 43L, listOf(1L, 1L), 2L), listOf(2L, 10L, 43L, listOf(2L, 2L), 2L), listOf(2L, 20L, 83L, listOf(2L, 2L), 2L)),
+            query("UNWIND [1, 2] AS a UNWIND [10, 20] AS b CALL { WITH a, b UNWIND range(1, 2) AS i RETURN sum(a * b + i) AS s, collect(a) AS ca, count(b) AS nb } RETURN a, b, s, ca, nb ORDER BY a, b"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 5L, listOf(mapOf("a" to 1L), mapOf("a" to 1L))), listOf(2L, 7L, listOf(mapOf("a" to 2L), mapOf("a" to 2L)))),
+            query("UNWIND [{a: 1}, {a: 2}] AS o CALL { WITH o UNWIND range(1, 2) AS i RETURN sum(o.a + i) AS s, collect(o) AS c } RETURN o.a, s, c ORDER BY o.a"),
+        )
+        assertEquals(
+            listOf(listOf("Laurence", listOf("Morpheus", "Morpheus"), 2L)),
+            query("MATCH (p:Person {name: 'Laurence'})-[r:ACTED_IN]->() CALL { WITH r UNWIND [1, 2] AS i RETURN collect(r.role) AS rs, count(r) AS n } RETURN p.name, rs, n"),
+        )
+        // In each query of a UNION in the CALL, in a CALL within the CALL, and in a CALL after a write.
+        assertEquals(
+            listOf(listOf(1L, 4L), listOf(1L, 5L), listOf(2L, 5L), listOf(2L, 7L)),
+            query("UNWIND [1, 2] AS o CALL (o) { UNWIND [1, 2] AS i RETURN sum(i + o) AS s UNION ALL UNWIND [3] AS i RETURN sum(i + o) AS s } RETURN o, s ORDER BY o, s"),
+        )
+        assertEquals(
+            listOf(listOf(1L, listOf(9L, 12L)), listOf(2L, listOf(12L, 18L))),
+            query("UNWIND [1, 2] AS o CALL (o) { UNWIND [1, 2] AS j CALL (o, j) { UNWIND range(1, 3) AS i RETURN sum(o * j + i) AS s } RETURN collect(s) AS ss } RETURN o, ss ORDER BY o"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 5L, listOf(1L, 1L), 2L), listOf(2L, 7L, listOf(1L, 1L), 2L)),
+            query("CREATE (x:CyCallWrite {v: 1}) WITH x UNWIND range(1, 2) AS o CALL { WITH o, x UNWIND range(1, 2) AS i RETURN sum(i + o) AS s, collect(x.v) AS xs, count(o) AS n } RETURN o, s, xs, n ORDER BY o"),
+        )
+        // Under a RETURN * after a WITH that names what it passes on; and a variable the CALL unwinds itself, of a name the row has.
+        assertEquals(listOf(listOf(1L, 9L), listOf(2L, 12L)), query("UNWIND [1, 2] AS o CALL { WITH o UNWIND range(1, 3) AS i WITH sum(i + o) AS s RETURN * } RETURN o, s ORDER BY o"))
+        assertEquals(
+            listOf(listOf(1L, 9L, listOf(1L, 1L, 1L)), listOf(2L, 12L, listOf(2L, 2L, 2L))),
+            query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 3) AS i WITH sum(i + o) AS s, collect(o) AS c RETURN * } RETURN o, s, c ORDER BY o"),
+        )
+        assertEquals(listOf(listOf(1L, 11L), listOf(2L, 11L)), query("UNWIND [1, 2] AS o CALL { UNWIND [5, 6] AS o RETURN sum(o) AS s } RETURN o, s ORDER BY o"))
     }
 }
 
