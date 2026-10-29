@@ -239,7 +239,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return depth == 0 && !quoted
     }
 
-    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [split], [replaceText] and [reversedText], which read them otherwise. */
+    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [containsText], [split], [replaceText] and [reversedText], which read them otherwise. */
     private var long = false
 
     override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'boolean' THEN JSON_VALUE($x, '$' RETURNING BOOLEAN) END" }
@@ -616,8 +616,43 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         if (long) shared(a, b) { (t, x) -> "(LENGTH($t) >= LENGTH($x) AND DBMS_LOB.COMPARE($t, $x, LENGTH($x), LENGTH($t) - LENGTH($x) + 1, 1) = 0)" }
         else shared(b) { (x) -> "(SUBSTR($a, -LENGTH($x)) = $x)" }
 
-    /** Of CLOBs too (see [texts]), though `INSTR` looks for no text past 32 KB (ORA-22828). */
-    override fun containsText(a: String, b: String) = "(INSTR($a, $b) > 0)"
+    /**
+     * By `INSTR`, of `VARCHAR2`s, and of CLOBs (see [texts]) where the text looked for is at most [SEARCHED_TEXT] UTF-16
+     * units: `INSTR` refuses a longer one (ORA-22828, #312), and `DBMS_LOB.INSTR` one past 4,000 bytes (ORA-22835). A
+     * longer one is in the text where the two are as long and `DBMS_LOB.COMPARE` finds them equal, and where it is
+     * shorter, where [searched] finds it. The CLOBs are bound, so a property is read inside the bound subquery: see [texts].
+     *
+     * Each way gives a number, 1 where the text is found, and only the `CASE` that chooses between them is compared with 1:
+     * `(SELECT … MODEL …) = 1` and `> 0` were false where the subquery alone gave 1, as was a `CASE` with the comparison
+     * in a branch; a `CASE` of numbers compared outside gave the right answer in a select, a `WHERE`, a cross join, a
+     * `COUNT(CASE …)` and a PL/SQL block.
+     */
+    override fun containsText(a: String, b: String) =
+        if (!long) "(INSTR($a, $b) > 0)"
+        else bound(a, b) { (t, x) ->
+            "(CASE WHEN $t IS NULL OR $x IS NULL THEN NULL WHEN LENGTH($x) <= $SEARCHED_TEXT THEN SIGN(INSTR($t, $x)) " +
+                "WHEN LENGTH($x) >= LENGTH($t) THEN CASE WHEN LENGTH($x) = LENGTH($t) AND DBMS_LOB.COMPARE($t, $x) = 0 THEN 1 ELSE 0 END " +
+                "ELSE ${searched(t, x)} END = 1)"
+        }
+
+    /**
+     * 1 where the CLOB [x], longer than [SEARCHED_TEXT] units and shorter than the CLOB [t], is in [t], else -1. At each
+     * place in turn where its first [SEARCHED_PREFIX] units are, `INSTR` finding each from the one before, it is compared
+     * whole by `DBMS_LOB.COMPARE`. A recursive `WITH` would carry the place from one to the next, but reads no column of
+     * the row it is in (ORA-00904); the `MODEL` clause carries it, and does. So the time grows with the length of [t] and
+     * with how many places are compared, each as far as the two are equal: as `INSTR`'s own, which compares at each place.
+     *
+     * The first units may end on the first of a pair, which `SUBSTR` of a CLOB cuts where `DBMS_LOB.SUBSTR` refuses to
+     * (ORA-22831): `INSTR` finds the half where the whole pair is, and the comparison is of the whole text.
+     */
+    private fun searched(t: String, x: String): String {
+        val prefix = "SUBSTR($x, 1, $SEARCHED_PREFIX)"
+        val found = "CASE WHEN cs_at[0] = 0 OR cs_at[0] > LENGTH($t) - LENGTH($x) + 1 THEN -1 " +
+            "WHEN DBMS_LOB.COMPARE($t, $x, LENGTH($x), cs_at[0], 1) = 0 THEN 1 ELSE 0 END"
+        return "(SELECT cs_found FROM DUAL MODEL DIMENSION BY (0 cs_i) MEASURES (INSTR($t, $prefix) cs_at, 0 cs_found) " +
+            "RULES ITERATE ($SEARCHED_PLACES) UNTIL (cs_found[0] <> 0) " +
+            "(cs_found[0] = $found, cs_at[0] = CASE WHEN cs_found[0] = 0 THEN INSTR($t, $prefix, cs_at[0] + 1) ELSE cs_at[0] END))"
+    }
 
     /** Of a property, read from the properties by its own path: see [direct]. */
     override fun function(name: String, json: String): String? = functionOf(name, json)?.let { direct(it, json) }
@@ -1023,6 +1058,21 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** A query that opens with hints, and those hints: Oracle reads the first hint comment of a query alone. */
         private val HINTED = Regex("""SELECT /\*\+ (.*?) \*/""")
+
+        /**
+         * The most UTF-16 units of a text `INSTR` looks for in a CLOB: 32,767 of one byte, or of three, or 16,385 pairs, each
+         * two units; one more it refuses (ORA-22828). See [containsText].
+         */
+        const val SEARCHED_TEXT = 32_767
+
+        /** How many units of a longer text [containsText] looks for first, with `INSTR`, before comparing it whole there. */
+        const val SEARCHED_PREFIX = 1000
+
+        /**
+         * The most places [containsText] compares a long text at, as `MODEL`'s `ITERATE` takes a number: 2^32 - 1, far more
+         * than a stored text has units, so the search stops where the text is found or no place is left first.
+         */
+        const val SEARCHED_PLACES = 4_294_967_295L
 
         /**
          * The most characters of a text [sharedSum] binds as JSON: one of 40,001, bound as JSON beside a long value, closed the
