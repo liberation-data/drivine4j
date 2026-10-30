@@ -622,7 +622,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
          * The double the number [number] in the rows of a statement given NaN or an infinity is: NaN where it stands for it, as
          * [standIn] writes it, and an infinity where it is past any double's, as the number that stands for one is.
          */
-        fun read(number: BigDecimal): Double = when {
+        internal fun read(number: BigDecimal): Double = when {
             number.compareTo(NOT_A_NUMBER) == 0 -> Double.NaN
             number >= BigDecimal(INFINITE) -> Double.POSITIVE_INFINITY
             number <= BigDecimal(INFINITE).negate() -> Double.NEGATIVE_INFINITY
