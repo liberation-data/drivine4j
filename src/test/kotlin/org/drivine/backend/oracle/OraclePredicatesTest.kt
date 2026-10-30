@@ -375,6 +375,27 @@ class OraclePredicatesTest {
     }
 
     @Test
+    fun `a condition on a list read over several hops asks a path of each length to its depth`() {
+        val window = sample.conditiondepth.CdWindowView::class.java
+        fun asked(depths: Map<String, Int>) = assertNotNull(
+            OracleSelect(graph, window, depthOverrides = depths)
+                .predicate(listOf(RelationshipCondition("following", listOf(PropertyCondition("following.text", ComparisonOperator.EQUALS, "c"))))),
+        )
+        val target = "(following_ IS node WHERE ${carries("following_", "CdNode")} AND JSON_VALUE(following_.props, '$.text') = \$_p0)"
+        val walked = asked(emptyMap())
+        // No quantified step: one with a bound value in its pattern fails on Oracle Free (ORA-00600 [qctcte1]).
+        assertFalse("->{" in walked, walked)
+        assertEquals(2, Regex("EXISTS").findAll(walked).count(), walked)
+        assertTrue("-[e IS edge WHERE e.type = 'NEXT']-> $target" in walked, walked)
+        assertTrue("-[e2 IS edge WHERE e2.type = 'NEXT']-> $target" in walked, walked)
+        assertTrue(walked.startsWith("(EXISTS ") && " OR EXISTS " in walked, walked)
+        assertEquals(3, Regex("EXISTS").findAll(asked(mapOf("following" to 3))).count())
+        val one = asked(mapOf("following" to 1))
+        assertEquals(1, Regex("EXISTS").findAll(one).count(), one)
+        assertTrue("-[e IS edge WHERE e.type = 'NEXT']-> $target" in one, one)
+    }
+
+    @Test
     fun `a negated relationship condition asks that no related node meets it`() {
         val sql = view().predicate(listOf(RelationshipCondition("people", listOf(PropertyCondition("people.name", ComparisonOperator.EQUALS, "ada")), negate = true)))
         assertTrue(assertNotNull(sql).startsWith("NOT EXISTS ("), sql)

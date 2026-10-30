@@ -7,6 +7,7 @@ import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
 import org.drivine.query.GraphTypeLabels
+import org.drivine.query.RelationshipDepth
 import org.drivine.query.dsl.CollectionSortSpec
 
 /**
@@ -115,7 +116,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
     private fun relationship(
         parent: String, relationship: RelationshipModel, visits: Map<String, Int>, parentField: String?, viewPath: String? = parentField,
     ): String {
-        val depth = depthOverrides[relationship.fieldName] ?: relationship.maxDepth
+        val depth = RelationshipDepth.of(relationship, depthOverrides)
         val nothing = if (relationship.isCollection) emptyArray else "NULL"
         val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
         val labels = GraphTypeLabels.targetLabels(relationship)
@@ -125,21 +126,21 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
         val targetIsView = targetType.isAnnotationPresent(GraphView::class.java)
         val sort = sortOf(relationship, parentField)
 
-        if (relationship.isPath) return distinct(parent, relationship, Step.reaching(relationship, labels), targetType, visits)
+        // The nodes the field reads, which a condition on it tests: see Step.read.
+        val steps = Step.read(relationship, depthOverrides)
+        if (relationship.isPath) return distinct(parent, relationship, steps, targetType, visits)
         if (relationship.isRecursive) {
             return if (depth == 0) nothing else recursive(parent, relationship, labels, visits, 1, depth, sort)
         }
         if (targetIsView && (visits[targetType.name] ?: 0) >= depth && targetType.name in visits) return nothing
-        if (relationship.isCollection && !targetIsView && !relationship.isRelationshipFragment && depth > 1) {
-            return distinct(parent, relationship, Step.reaching(relationship, labels, depth), targetType, visits)
-        }
+        if (RelationshipDepth.hops(relationship, depthOverrides) > 1) return distinct(parent, relationship, steps, targetType, visits)
 
         val row = scope.row(relationship.fieldName)
         // A view this holds is reached by the path to this one and the field, which a sort below it names.
         val target = element(row, targetType, visits, viewPath?.let { "${it}_${relationship.fieldName}" } ?: relationship.fieldName)
         // A relationship fragment is the relationship's own properties, with the node it leads to under the target field.
         val value = if (relationship.isRelationshipFragment) withTarget(row, relationship.targetFieldName!!, target) else target
-        return gathered(parent, Step.reaching(relationship, labels), row, value, relationship.isCollection, sort?.let { sorted(row, targetType, it) })
+        return gathered(parent, steps, row, value, relationship.isCollection, sort?.let { sorted(row, targetType, it) })
     }
 
     /** The node [row] as an element of a relationship field: a fragment's map, or a nested view. */

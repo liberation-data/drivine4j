@@ -694,7 +694,10 @@ Neo4j, `size([(root)-[:HAS_MENTION]->(m:Mention) WHERE … | 1]) > 0` on Memgrap
 FalkorDB — with `none{}` wrapping it in `NOT (…)`. The related node must carry the field's target labels,
 as the load matches them, on every store: a condition tests only the nodes the field would load, so a
 node of another label at the end of the same relationship neither matches `any { }` nor fails `none { }`.
-The same holds of a relationship of a nested view, and of a single-valued relationship. `any{}` is the explicit form of the flat
+The same holds of a relationship of a nested view, and of a single-valued relationship. A list of fragments
+read over several hops (`maxDepth` above 1) is tested to the same depth the load reads it, a `depth(…)` given
+for the query included: `following.any { text eq "c" }` on a field of `maxDepth = 2` walks
+`-[:NEXT*1..2]->`, and finds a node two hops away, as the load would give it. `any{}` is the explicit form of the flat
 `mentions.resolvedId eq id` shorthand; prefer it for `none`, for correlated multi-condition blocks,
 or for clarity. (Backends without subquery support throw, per the grammar default.)
 

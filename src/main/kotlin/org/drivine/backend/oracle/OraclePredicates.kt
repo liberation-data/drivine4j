@@ -3,6 +3,7 @@ package org.drivine.backend.oracle
 import org.drivine.backend.sql.RelationshipConditions
 import org.drivine.backend.sql.KeysetPredicate
 import org.drivine.backend.sql.SqlKind
+import org.drivine.backend.sql.Step
 import org.drivine.annotation.GraphView
 import org.drivine.backend.oracle.OracleSql.hasLabels
 import org.drivine.backend.oracle.OracleSql.path
@@ -10,7 +11,6 @@ import org.drivine.backend.oracle.OracleSql.property
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
-import org.drivine.query.GraphTypeLabels
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.NullPlacement
@@ -35,6 +35,7 @@ import org.drivine.query.dsl.WhereCondition
  * @param viewModel the view whose relationship fields a condition may name; null for a fragment
  * @param rootLabels the labels of the root
  * @param labelled the labelled indexes there are, which a condition on the root may be read through
+ * @param depthOverrides the depths the query reads relationship fields to, by field, which a condition on one walks too
  */
 internal class OraclePredicates(
     private val scope: OracleStatementScope,
@@ -45,6 +46,7 @@ internal class OraclePredicates(
     private val viewModel: GraphViewModel?,
     private val rootLabels: () -> List<String> = { emptyList() },
     private val labelled: LabelledIndexes = LabelledIndexes.NONE,
+    private val depthOverrides: Map<String, Int> = emptyMap(),
 ) {
 
     /**
@@ -146,7 +148,8 @@ internal class OraclePredicates(
 
     /**
      * Whether some node the field loads meets the conditions on it; none does, when the condition is negated. Those
-     * are the nodes related through the field that carry its target's labels, here and on a nested field.
+     * are the nodes related through the field that carry its target's labels, as many hops away as the load reads
+     * ([Step.read]), here and on a nested field.
      */
     private fun related(condition: WhereCondition.RelationshipCondition, rows: Map<String, String>, model: GraphViewModel?): String {
         requireNotNull(model) { "A condition on the relationship '${condition.relationshipName}' needs a @GraphView to find it in." }
@@ -164,11 +167,13 @@ internal class OraclePredicates(
         val targetType = relationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }
         // A pattern holds no subquery (`ORA-40988`), so a condition written with one is asked of the pattern's rows.
         val (onRows, inPattern) = direct.partition(::holdsSubquery)
-        val found = this.rows.exists(
-            parent, this.rows.steps(relationship, GraphTypeLabels.targetLabels(relationship)), row,
-            where = directPredicates(inPattern, target, row),
-            predicates = directPredicates(onRows, target, row) + nestedPredicates(nested, targetType, target, row),
-        )
+        val where = directPredicates(inPattern, target, row)
+        val predicates = directPredicates(onRows, target, row) + nestedPredicates(nested, targetType, target, row)
+        // A path of each length, not a quantified step (`->{1,2}`), which fails with a bound value in its
+        // pattern on Oracle Free 23.26 (`ORA-00600 [qctcte1]`): see Step.spelled.
+        val found = Step.anyPath(Step.read(relationship, depthOverrides)) { steps ->
+            this.rows.exists(parent, steps, row, where = where, predicates = predicates)
+        }
         return if (condition.negate) "NOT $found" else found
     }
 
@@ -216,10 +221,11 @@ internal class OraclePredicates(
                 val below = nestedPredicates(deeper, nestedType, "${target}_$name", nestedRow)
                 val (onRows, inPattern) = conditions.partition(::holdsSubquery)
                 val names = mapOf("${target}_$name" to nestedRow)
-                rows.exists(
-                    row, rows.steps(nestedRelationship, GraphTypeLabels.targetLabels(nestedRelationship)), nestedRow,
-                    where = inPattern.map { one(it, names, null) }, predicates = onRows.map { one(it, names, null) } + below,
-                )
+                val where = inPattern.map { one(it, names, null) }
+                val predicates = onRows.map { one(it, names, null) } + below
+                Step.anyPath(Step.read(nestedRelationship, depthOverrides)) { steps ->
+                    rows.exists(row, steps, nestedRow, where = where, predicates = predicates)
+                }
             }
     }
 

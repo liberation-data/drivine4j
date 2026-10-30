@@ -70,7 +70,7 @@ internal class OracleSelect(
     val relationshipFields: Set<String> = viewModel?.relationships?.map { it.fieldName }?.toSet().orEmpty()
 
     private val rows = OracleRowSources(graph, scope)
-    private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled)
+    private val predicates = OraclePredicates(scope, rows, rootAlias, root, rootModel, viewModel, ::rootLabels, labelled, depthOverrides)
     private val shorthand = CypherShorthand(rootAlias, root) { row, key -> property(row, key) }
 
     // ----- Statements -----
