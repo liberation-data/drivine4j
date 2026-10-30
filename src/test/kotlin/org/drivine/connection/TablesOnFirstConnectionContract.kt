@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit
 import kotlin.test.assertContains
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * The graph's tables, made by a [JdbcConnectionProvider] before its first connection: Cypher through a
@@ -135,6 +136,58 @@ abstract class TablesOnFirstConnectionContract {
         writeAtOnce(managers, objectManagers = setOf(0, 2, 4))
         assertEquals(6, names(managers.first()).size)
         assertEquals(tablesOf("drivine"), tables("drivine"))
+    }
+
+    /**
+     * Whether the store [graph]'s tables are in is whole: on Oracle, the property graph over them, made last, is there
+     * too. The tables themselves are checked through [tables].
+     */
+    protected open fun whole(graph: String): Boolean = true
+
+    private fun merge(pm: PersistenceManager, i: Int) = pm.execute(cypher("MERGE (:Person {name: \$name})", mapOf("name" to "n$i")))
+
+    /**
+     * Each pool makes the tables on its first connection while the other pools' first statements, compiled writes, and
+     * object managers' own making run: on Oracle, DDL over a table that other sessions' writes hold could deadlock on its
+     * library cache lock (`ORA-04020`), and the provider then went on without tables, so every statement over them failed
+     * (#450). Three rounds, each a graph of its own and six pools let go at once, each pool ended after its round.
+     */
+    @Test
+    fun `many pools and object managers that first use a graph together make its tables once, round after round`() {
+        repeat(3) { round ->
+            val graph = "swarm$round"
+            val providers = List(6) { provider(graph) }
+            try {
+                val managers = providers.map(::manager)
+                val pool = Executors.newFixedThreadPool(30)
+                val start = CountDownLatch(1)
+                try {
+                    val writes = List(24) { i ->
+                        pool.submit {
+                            start.await()
+                            val pm = managers[i % managers.size]
+                            if (writesAtOnce) merge(pm, i) else names(pm)
+                        }
+                    }
+                    val objectManagers = managers.filterIndexed { i, _ -> i % 2 == 0 }.map { pm ->
+                        pool.submit {
+                            start.await()
+                            StatelessGraphObjectManager(pm, Neo4jObjectMapper.instance, SubtypeRegistry())
+                        }
+                    }
+                    start.countDown()
+                    (writes + objectManagers).forEach { it.get(3, TimeUnit.MINUTES) }
+                } finally {
+                    pool.shutdown()
+                }
+                if (!writesAtOnce) repeat(24) { i -> merge(managers[i % managers.size], i) }
+                assertEquals(List(24) { "n$it" }.sorted(), names(managers.first()))
+                assertEquals(tablesOf(graph), tables(graph))
+                assertTrue(whole(graph), "the store of graph '$graph' is whole")
+            } finally {
+                providers.forEach { runCatching { it.end() } }
+            }
+        }
     }
 
     /** Before 0.4.0 the provider made no tables, and plain SQL worked whatever the graph's name (#364). */

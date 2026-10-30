@@ -207,7 +207,9 @@ class JdbcConnectionProviderTest {
 
     @Test
     fun `each connection is a new one from the data source, which is the provider's native driver`() {
-        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, dataSource)
+        // Connections whose statements run: tables that fail to be made would be tried again on the next connection.
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenAnswer { recording() } }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
 
         val first = provider.connect()
         val second = provider.connect()
@@ -215,8 +217,8 @@ class JdbcConnectionProviderTest {
         assertIs<JdbcConnection>(first)
         assertNotSame(first, second)
         // And one before them, which the graph's tables are made on.
-        verify(dataSource, times(3)).connection
-        assertSame(dataSource, provider.nativeDriver)
+        verify(source, times(3)).connection
+        assertSame(source, provider.nativeDriver)
     }
 
     // ----- The graph's tables, made before the first connection -----
@@ -305,22 +307,115 @@ class JdbcConnectionProviderTest {
         verify(source, times(9)).connection
     }
 
+    /** The graph is not taken as made after a failure, so the provider's next connection makes the tables (#450). */
     @Test
-    fun `tables that cannot be made are logged and not tried again, and the connection is handed out`() {
-        val handedOut = recording()
+    fun `tables that cannot be made are logged, the connection is handed out, and the next connection makes them`() {
         val refusing = Mockito.mock(java.sql.Connection::class.java).also {
-            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(SQLException("ORA-01031: insufficient privileges"))
+            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(SQLException("ORA-01031: insufficient privileges", "42000", 1031))
             `when`(it.createStatement()).thenAnswer { Mockito.mock(java.sql.Statement::class.java) }
         }
-        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(refusing, handedOut) }
+        val ensuring = recording()
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(refusing, handedOut, ensuring, handedOut) }
         val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
 
         assertIs<JdbcConnection>(provider.connect())
-        provider.connect()
-
+        // A failure that is not another session's is not run again within the connect.
         verify(refusing, times(1)).prepareStatement(Mockito.anyString())
         verify(refusing).close()
+
+        provider.connect()
+        provider.connect()
+
+        assertEquals(listOf(OracleGraph(JdbcConnectionProvider.DEFAULT_GRAPH).ensuring.trim()), statementsOn(ensuring))
+        verify(ensuring).close()
+        assertEquals(emptyList(), statementsOn(handedOut))
+        verify(source, times(5)).connection
+    }
+
+    /** As when the DDL of one pool's first connection and other pools' first writes each wait on the other's lock (#450). */
+    @Test
+    fun `tables turned away by another session's on Oracle are made again on the same connection, and once made are not made again`() {
+        val deadlock = SQLException("ORA-04020: deadlock detected while trying to lock object DRIVINE.DRIVINE_NODE", "61000", 4020)
+        val ensuring = recording().also {
+            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(deadlock).thenAnswer { Mockito.mock(PreparedStatement::class.java) }
+        }
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+
+        repeat(3) { provider.connect().release() }
+
+        assertEquals(List(2) { OracleGraph(JdbcConnectionProvider.DEFAULT_GRAPH).ensuring.trim() }, statementsOn(ensuring))
+        verify(ensuring).close()
+        verify(source, times(4)).connection
+    }
+
+    /**
+     * An object manager makes the tables itself, through a retry of its own, on connections the provider makes them for
+     * first (see [OracleGraph.ensured]): where every block deadlocks, the provider's runs once within each of the object
+     * manager's attempts, and the attempts don't multiply.
+     */
+    @Test
+    fun `a first connection asked for within a retry of making the tables runs its block once per attempt`() {
+        val deadlocked = recording().also {
+            `when`(it.prepareStatement(Mockito.anyString()))
+                .thenThrow(SQLException("ORA-04020: deadlock detected while trying to lock object DRIVINE.DRIVINE_NODE", "61000", 4020))
+        }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(deadlocked) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+        val schema = org.drivine.schema.SchemaExecutor(provider)
+
+        val thrown = assertFailsWith<SQLException> { OracleGraph(JdbcConnectionProvider.DEFAULT_GRAPH).ensure { schema.query(it) } }
+
+        assertEquals(4020, thrown.errorCode)
+        // Each attempt: the provider's block on its first connection, once, then the object manager's own.
+        assertEquals(2 * org.drivine.backend.sql.DdlContention.ATTEMPTS, statementsOn(deadlocked).size)
+        assertTrue(org.drivine.backend.sql.DdlContention.gaveUp(thrown))
+    }
+
+    @Test
+    fun `tables turned away by a deadlock on Postgres are made again on the same connection`() {
+        val deadlock = SQLException("ERROR: deadlock detected", "40P01")
+        val ensuring = recording().also {
+            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(deadlock).thenAnswer { Mockito.mock(PreparedStatement::class.java) }
+        }
+        val handedOut = recording()
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(ensuring, handedOut) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source, graphName = "tenant_a")
+
+        repeat(2) { provider.connect().release() }
+
+        assertEquals(List(2) { PostgresGraph("tenant_a").ensuring.trim() }, statementsOn(ensuring))
         verify(source, times(3)).connection
+    }
+
+    /**
+     * Threads that wait while the first makes the tables are each handed a connection whether it failed or not, and after
+     * a failure the first of them makes the tables: the graph is never taken as made after a failure (#450).
+     */
+    @Test
+    fun `threads waiting on a first connection whose tables failed are handed out, and the first of them makes the tables`() {
+        val shared = recording().also {
+            `when`(it.prepareStatement(Mockito.anyString()))
+                .thenThrow(SQLException("ORA-01031: insufficient privileges", "42000", 1031))
+                .thenAnswer { Mockito.mock(PreparedStatement::class.java) }
+        }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(shared) }
+        val provider = JdbcConnectionProvider("default", DatabaseType.ORACLE, source)
+
+        val pool = Executors.newFixedThreadPool(8)
+        try {
+            val start = CountDownLatch(1)
+            (1..8).map { pool.submit { start.await(); provider.connect().release() } }.also { start.countDown() }.forEach { it.get(1, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdown()
+        }
+        provider.connect().release()
+
+        // Once failed, once made; then a flag is read.
+        assertEquals(2, statementsOn(shared).size)
+        verify(source, times(11)).connection
     }
 
     @Test
@@ -417,12 +512,13 @@ class JdbcConnectionProviderTest {
     }
 
     @Test
-    fun `tables that cannot be made on a connection that commits none put it back as it was, and are not tried again`() {
+    fun `tables that cannot be made on a connection that commits none put it back as it was, and the next connection tries again`() {
         val refusing = recording().also {
-            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(SQLException("permission denied for schema public"))
+            `when`(it.prepareStatement(Mockito.anyString())).thenThrow(SQLException("permission denied for schema public", "42501"))
         }
+        val ensuring = recording()
         val handedOut = recording()
-        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(refusing, handedOut) }
+        val source = Mockito.mock(DataSource::class.java).also { `when`(it.connection).thenReturn(refusing, handedOut, ensuring, handedOut) }
         val provider = JdbcConnectionProvider("default", DatabaseType.POSTGRES, source)
 
         assertIs<JdbcConnection>(provider.connect())
@@ -433,7 +529,8 @@ class JdbcConnectionProviderTest {
         order.verify(refusing).prepareStatement(Mockito.anyString())
         order.verify(refusing).autoCommit = false
         order.verify(refusing).close()
-        verify(source, times(3)).connection
+        assertEquals(1, statementsOn(ensuring).size)
+        verify(source, times(4)).connection
     }
 
     @Test
