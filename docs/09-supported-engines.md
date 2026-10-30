@@ -310,6 +310,11 @@ declares the function itself.
   another node's table the query lost that node's label and property tests, giving rows its pattern doesn't have and
   values of the wrong node, or crashing the session (ORA-03113)
   ([#415](https://github.com/liberation-data/drivine4j/issues/415)). A query of one table carries no hint.
+- A list worked out on each row by a subquery (`keys(n)`, `[i IN range(1, k) | i]`, `[(p)-->(q) | q.name]`) is read
+  from a derived table inside a lateral view. This works around an Oracle bug, seen on 23.26.3: a subquery that reads
+  the row, in the select list of a lateral view that begins a subquery's `FROM`, was worked out once for the
+  statement and not for each row, so `WHERE 'b' IN keys(n)` found nothing
+  ([#433](https://github.com/liberation-data/drivine4j/issues/433)).
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
@@ -892,6 +897,30 @@ is never removed. Names beginning `__drivine.` are reserved: a field or bag may 
 
 A fragment may carry one `@NodeLabels` field. `saveAll` saves such a fragment one statement per
 object. On a relationship target in a `@GraphView`, a `String` field adds and does not remove.
+
+### @CaseInsensitive: lookups that ignore case
+
+`eqIgnoreCase` and `containsIgnoreCase` lowercase the property in the statement (`toLower(n.email) = $p`), and an engine cannot read a property wrapped in a function from an index: a lookup by email alone reads every node of the label. Declare the field `@CaseInsensitive`, and an index that ignores case over it, and the lookup is read from the index:
+
+```kotlin
+@NodeFragment(labels = ["Account"])
+data class Account(
+    @NodeId val id: String,
+    @CaseInsensitive @Unique(ignoreCase = true) val email: String,
+)
+
+accounts.loadAll(Account::class.java, AccountQueryDsl.INSTANCE) { where { query.email eqIgnoreCase "Ann@Example.com" } }
+```
+
+- **The copy.** Every save of the node also writes a lowercased copy of the property, under `__drivine.lower.<property>` (the property's stored name, so a `@GraphProperty` name is the one copied), beside the stamp. The database lowercases it, from the property as the save left it: `SET n.`__drivine.lower.email` = toLower(n.email)` on the graph engines, `LOWER` on Oracle, `lower` on Postgres, and on SQLite Drivine's own `drivine_lower`, which lowercases as Unicode does where SQLite's `lower` lowers only ASCII. A property with no value has no copy, and on Oracle neither has an empty text. `save`, `saveAll` (with `only` or `except` too), `create`, `patch`, `patchAll` and the deprecated `GraphObjectManager` all keep it in step. The copy is no part of whether a save changed the node: a save that leaves the property as it was gives no new stamp, and the Neo4j check of `update` and `save(edited, from)` does not compare it.
+- **Hidden.** A load does not read the copy, and a flat `@PropertyBag` never holds it: names beginning `__drivine.` are Drivine's.
+- **The index.** `@RangeIndex(ignoreCase = true)`, `@Unique(ignoreCase = true)` and Neo4j's `@TextIndex(ignoreCase = true)`, or `RangeIndexSpec(…, ignoreCase = true)`, `UniquenessConstraintSpec(…, ignoreCase = true)` and `TextIndexSpec(…, ignoreCase = true)`, are made over the copy and named `<Label>_<property>_ci_range` and so on, apart from an item over the property itself. A uniqueness constraint that ignores case refuses `A@x.com` beside `a@x.com`. The annotations are refused on a field that is not `@CaseInsensitive`, since no save would keep its copy. A spec of your own that ignores case should be over a `@CaseInsensitive` field for the same reason.
+- **Filling the copy in.** A node saved before the field was `@CaseInsensitive` has no copy. `ensure` of an item that ignores case first fills the copy in on every node of the label, ten thousand at a time, then records that it has: on the store's `DrivineStore` node on the graph engines (the list `lowered`, each entry `["<Label>","<property>"]`), and as a row of kind `LOWER_COPY` in `<graph>_schema` on Oracle, Postgres and SQLite. A recorded copy is not filled in again by an `ensure` that finds the item there; `recreate`, or an `ensure` that makes the item anew, fills it in again.
+- **The lookup.** Once the copy of a property is recorded for a label of the fragment, `eqIgnoreCase` and `containsIgnoreCase` on it compare with the copy, the value lowercased by the database too: `n.`__drivine.lower.email` = toLower($p)` (`= LOWER(…)` on Oracle, `= lower(…)` on Postgres, `= drivine_lower(…)` on SQLite). Until then they lowercase the property itself, as for any other field, and find the nodes saved before there were copies. A process learns of a copy another process recorded within a minute. This is a load's, a count's, a `deleteAll`'s, a grouped read's and a patch's condition on the root; a condition on a related node and the filter of a vector or full-text search lowercase the property itself, as does an empty value.
+- **Which index serves what.** On Neo4j a RANGE index over the copy serves equality and a prefix, and a TEXT index `CONTAINS`. On Memgraph and FalkorDB the index serves equality. On Oracle and Postgres the copy is in the range index over the label's nodes, as any property is, and on SQLite in a partial index of its own, as any property's range index is; an equality is read from it.
+- **FalkorDB makes no uniqueness constraint over the copy.** `GRAPH.CONSTRAINT` takes a property only by a plain name, and refuses one with a dot in it ([FalkorDB/FalkorDB#551](https://github.com/FalkorDB/FalkorDB/issues/551)). `ensure` of a constraint that ignores case throws a `DrivineException` there, before anything is filled in or made. A range index over the copy is made, and serves the lookup.
+- **Writes that bypass Drivine** (Cypher or SQL of your own) do not keep the copy in step: a node so written is missed by a lookup once the copy is recorded. So is one saved by a process whose fragment is not yet `@CaseInsensitive`, as while an upgrade rolls out. Write the copy as Drivine does, `SET ${LowerCopies.setClause("n", "email")}` in a `SET` of its own after the one that writes the property, or `recreate` the index to fill every copy in again.
+- **A field that is no longer `@CaseInsensitive`** keeps its copies and its record. Nothing reads them: a lookup on the field lowercases the property itself again, and the copies are left as they were, harmless, and out of step once the property changes. Drop the index that ignored case, which the annotations no longer allow. Should the field be made `@CaseInsensitive` again, `ensure` its index before a lookup runs: the index is made anew, so the copies are filled in again. The record is still there, so a lookup reads the copies at once, stale until then.
 
 ### Relationships of a Runtime Type
 

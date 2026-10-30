@@ -56,7 +56,10 @@ class ConstraintManager internal constructor(
      * Never destructive unless asked: existing mismatched constraints surface as [EnsureResult.Drift];
      * existing violating data surfaces as [EnsureResult.Violation]; a plain index in the way of the
      * constraint surfaces as [EnsureResult.BlockedByIndex]. In each case nothing is changed and the
-     * caller decides what to do. The one thing dropped unasked is a constraint whose build failed,
+     * caller decides what to do, save that a constraint that ignores case (see
+     * [UniquenessConstraintSpec.ignoreCase]) first fills in the lowercased copies it is made over, as
+     * [IndexManager.ensure] does, again where the constraint is not there yet. FalkorDB cannot make one, and throws a [DrivineException] before that.
+     * The one thing dropped unasked is a constraint whose build failed,
      * which FalkorDB keeps listing though it enforces nothing: it is dropped and built again. A
      * constraint FalkorDB still lists as under construction, from another process or an earlier run,
      * is waited on, as one made here is: matching once built, and dropped and built again if its
@@ -80,6 +83,16 @@ class ConstraintManager internal constructor(
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
     ): EnsureResult {
+        grammar.requireConstrainable(spec.made())
+        // A constraint that ignores case is made over copies that every node of its label has, so a
+        // node saved before there were copies is held to it too. One made anew fills them in again,
+        // recorded or not: they may have gone out of step while it was gone.
+        indexManager.fillIn(spec) { find(spec) == null }
+        return ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)
+    }
+
+    /** [ensure], of [spec] as it is made. */
+    private fun ensureMade(spec: ConstraintSpec, violationSampleSize: Int, replaceBlockingIndex: Boolean): EnsureResult {
         // A constraint still being built, by another process or an earlier run, may yet fail: wait for
         // its build to end, as for one made here. One dropped meanwhile is made again below.
         val existing = find(spec)?.let { if (it.buildInProgress) awaitBuild(spec, untilListed = false) else it }
@@ -132,7 +145,7 @@ class ConstraintManager internal constructor(
                 if (repeated.isNotEmpty()) return violation(spec, repeated, violationSampleSize)
                 run(grammar.dropIndex(index))
                 logger.info("Dropped index {} on {}{}, in the way of a constraint that replaces it", index.name, spec.label, spec.properties)
-                return ensure(spec, violationSampleSize, replaceBlockingIndex = false)
+                return ensureMade(spec, violationSampleSize, replaceBlockingIndex = false)
             }
             throw e
         }
@@ -153,7 +166,8 @@ class ConstraintManager internal constructor(
     /** Finds the existing constraint that [spec] refers to, or null if none exists. */
     fun find(spec: ConstraintSpec): SchemaItemInfo? {
         val rows = introspect(grammar.listConstraintsQuery()) ?: return null
-        return grammar.parseConstraintRows(rows).firstOrNull { grammar.matchesIdentity(it, spec) }
+        val made = spec.made()
+        return grammar.parseConstraintRows(rows).firstOrNull { grammar.matchesIdentity(it, made) }
     }
 
     /** Lists all managed constraints on the database. */
@@ -178,7 +192,8 @@ class ConstraintManager internal constructor(
      *
      * Returns [EnsureResult.Recreated] on success, or [EnsureResult.Violation] if existing data
      * prevents recreation (in which case the previous constraint has already been dropped), or
-     * [EnsureResult.BlockedByIndex] as [ensure] does.
+     * [EnsureResult.BlockedByIndex] as [ensure] does. A constraint that ignores case fills the
+     * lowercased copies in again on every node of its label, recorded or not.
      */
     @JvmOverloads
     fun recreate(
@@ -186,11 +201,14 @@ class ConstraintManager internal constructor(
         violationSampleSize: Int = DEFAULT_VIOLATION_SAMPLE_SIZE,
         replaceBlockingIndex: Boolean = false,
     ): EnsureResult {
+        grammar.requireConstrainable(spec.made())
         val existing = find(spec)
         if (existing != null) {
             run(grammar.dropConstraint(existing))
         }
-        return when (val result = ensure(spec, violationSampleSize, replaceBlockingIndex)) {
+        // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
+        indexManager.fillIn(spec) { true }
+        return when (val result = ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)) {
             is EnsureResult.Created -> EnsureResult.Recreated(existing, result.info)
             else -> result
         }

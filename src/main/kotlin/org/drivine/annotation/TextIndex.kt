@@ -23,4 +23,9 @@ package org.drivine.annotation
 annotation class TextIndex(
     /** Explicit index name; empty derives one from label and property. */
     val name: String = "",
+    /**
+     * Whether the index is over the lowercased copy a `@CaseInsensitive` field keeps (see
+     * [CaseInsensitive]), so that it serves `containsIgnoreCase`.
+     */
+    val ignoreCase: Boolean = false,
 )

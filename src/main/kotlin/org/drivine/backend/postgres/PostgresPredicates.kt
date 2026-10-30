@@ -167,6 +167,9 @@ internal class PostgresPredicates(
             ComparisonOperator.ENDS_WITH -> string().let { "right($text, length($it)) = $it" }
             ComparisonOperator.CONTAINS_IGNORE_CASE -> "strpos(lower($text), ${PostgresSql.text(scope.bound(value?.toString()?.lowercase()))}) > 0"
             ComparisonOperator.EQUALS_IGNORE_CASE -> "lower($text) = ${PostgresSql.text(scope.bound(value?.toString()?.lowercase()))}"
+            // A lowercased copy, compared with the value as Postgres lowercases it.
+            ComparisonOperator.EQUALS_LOWERED -> "$text = lower(${string()})"
+            ComparisonOperator.CONTAINS_LOWERED -> "strpos($text, lower(${string()})) > 0"
             ComparisonOperator.MATCHES -> matches(text, value?.toString().orEmpty())
         }
     }

@@ -48,6 +48,21 @@ class PostgresGraphIntegrationTest {
     }
 
     @Test
+    fun `a store an earlier version made is made again over its rows, with the functions this version adds`() {
+        PostgresGraph(graph).ensure(manager)
+        manager.execute(spec("INSERT INTO made_node (labels, props) VALUES ('[\"Person\"]', '{\"id\": \"ada\"}')"))
+        // As drivine:6 left it: no function for the lowercased copies (@CaseInsensitive).
+        manager.execute(spec("DROP FUNCTION made_lowered(jsonb, jsonb)"))
+        manager.execute(spec("COMMENT ON TABLE made_node IS 'drivine:6'"))
+
+        PostgresGraph(graph).ensure(manager)
+        val comment = PostgresTestDatabase.pm.getOne(spec("SELECT obj_description(to_regclass('made_node'), 'pg_class')").transform(String::class.java))
+        assertEquals(PostgresGraph.VERSION, comment)
+        assertEquals(listOf(true), manager.query(spec("SELECT to_regprocedure('made_lowered(jsonb, jsonb)') IS NOT NULL").transform(Boolean::class.java)))
+        assertEquals(listOf(1L), manager.query(spec("SELECT COUNT(*) FROM made_node")))
+    }
+
+    @Test
     fun `processes that each find the store missing make it one after the other`() {
         val pool = Executors.newFixedThreadPool(8)
         try {

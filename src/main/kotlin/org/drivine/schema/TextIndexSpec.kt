@@ -1,5 +1,7 @@
 package org.drivine.schema
 
+import org.drivine.model.LowerCopies
+
 /**
  * Neo4j's TEXT index over a single string property: `CREATE TEXT INDEX … FOR (n:Label) ON (n.prop)`.
  *
@@ -14,12 +16,24 @@ package org.drivine.schema
  * @param label node label, e.g. `"Chunk"`
  * @param property the string property, e.g. `"title"`
  * @param name explicit index name; null derives `"${label}_${property}_text"`
+ * @param ignoreCase whether the index is over the lowercased copy that a `@CaseInsensitive` field
+ *   keeps (see [LowerCopies]), so that it serves `containsIgnoreCase`; ensuring it fills the copies in,
+ *   as a [RangeIndexSpec] that ignores case does
  */
 data class TextIndexSpec @JvmOverloads constructor(
     override val label: String,
     val property: String,
     override val name: String? = null,
+    val ignoreCase: Boolean = false,
 ) : IndexSpec {
+
+    @Deprecated("Binary compatibility with callers compiled before ignoreCase", level = DeprecationLevel.HIDDEN)
+    constructor(label: String, property: String, name: String?, mask: Int, marker: kotlin.jvm.internal.DefaultConstructorMarker?) :
+        this(label, property, if (mask and 4 != 0) null else name)
+
+    @Deprecated("Binary compatibility with callers compiled before ignoreCase", level = DeprecationLevel.HIDDEN)
+    fun copy(label: String = this.label, property: String = this.property, name: String? = this.name): TextIndexSpec =
+        copy(label = label, property = property, name = name, ignoreCase = ignoreCase)
 
     init {
         requireNameNotWhitespace(name, "TextIndexSpec")
@@ -31,5 +45,11 @@ data class TextIndexSpec @JvmOverloads constructor(
     override val kind: SchemaItemKind
         get() = SchemaItemKind.TEXT_INDEX
 
-    override fun defaultName(): String = "${label}_${property}_text"
+    override fun defaultName(): String = "${label}_${property}_${if (ignoreCase) "ci_" else ""}text"
+
+    override val inventoryKey: String
+        get() = if (ignoreCase) made().inventoryKey else super.inventoryKey
+
+    /** The index as it is made: over the copy, when it ignores case, and named as this one is. */
+    internal fun made(): TextIndexSpec = if (ignoreCase) TextIndexSpec(label, LowerCopies.of(property), effectiveName) else this
 }

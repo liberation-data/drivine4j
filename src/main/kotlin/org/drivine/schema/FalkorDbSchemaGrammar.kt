@@ -1,5 +1,7 @@
 package org.drivine.schema
 
+import org.drivine.DrivineException
+
 /**
  * Schema DDL and introspection for FalkorDB.
  *
@@ -93,6 +95,20 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
         else -> item.properties.map {
             SchemaStatement.Cypher("DROP INDEX FOR (n:${id(item.label)}) ON (n.${id(it)})")
         }
+    }
+
+    /**
+     * `GRAPH.CONSTRAINT` takes a label and properties as plain identifiers, and has no way to quote
+     * one: a property whose name holds a dot, a bag's key or a lowercased copy, can be indexed and
+     * not constrained (FalkorDB/FalkorDB#551).
+     */
+    override fun requireConstrainable(spec: ConstraintSpec) {
+        val refused = spec.properties.filterNot { CONSTRAINABLE.matches(it) }.ifEmpty { return }
+        throw DrivineException(
+            "FalkorDB cannot make the ${spec.kind} ${spec.effectiveName} on ${spec.label}${spec.properties}: GRAPH.CONSTRAINT takes only " +
+                "a plain name for a property, and ${refused.joinToString { "'$it'" }} is not one. A uniqueness constraint that ignores " +
+                "case is over the lowercased copy, named so. See https://github.com/FalkorDB/FalkorDB/issues/551"
+        )
     }
 
     override fun createConstraint(spec: ConstraintSpec): List<SchemaStatement> = when (spec) {
@@ -292,6 +308,11 @@ class FalkorDbSchemaGrammar : SchemaGrammar {
     }
 
     private fun id(name: String): String = SchemaGrammar.identifier(name)
+
+    private companion object {
+        /** A name `GRAPH.CONSTRAINT` takes, as FalkorDB checks it. */
+        val CONSTRAINABLE = Regex("[A-Za-z_][A-Za-z0-9_]*")
+    }
 
     private fun similarityName(similarity: SimilarityFunction): String = similarity.name.lowercase()
 

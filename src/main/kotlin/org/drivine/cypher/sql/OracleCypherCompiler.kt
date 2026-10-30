@@ -413,29 +413,40 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         (listOf(hasLabel(labels, all.first())) + all.drop(1).map { OracleSql.holdsLabel(labels, it) }).joinToString(" AND ")
 
     /**
-     * A list that holds a subquery is read from a lateral view first: a subquery in `JSON_TABLE`'s argument
+     * A list that holds a subquery is read from a lateral view first, [listView]: a subquery in `JSON_TABLE`'s argument
      * reads no table beside it in the `FROM`.
      */
     override fun elements(json: String, alias: String): String {
         val items = "COLUMNS (item_no FOR ORDINALITY, item JSON PATH '\$')) $alias"
         if (!json.contains("SELECT", ignoreCase = true)) return "JSON_TABLE($json, '\$[*]' $items"
-        return "LATERAL (SELECT $json AS list) ${alias}_l CROSS JOIN JSON_TABLE(${alias}_l.list, '\$[*]' $items"
+        return "${listView(json, alias, hint = "")} ${alias}_l CROSS JOIN JSON_TABLE(${alias}_l.list, '\$[*]' $items"
     }
+
+    /**
+     * A lateral view of one column, `list`, the list [json] that holds a subquery, worked out in a derived table inside it.
+     * Oracle 23 works out a subquery that reads the row outside it once, and not for each row, where it is in the lateral
+     * view's own select list and that view is first in the `FROM` of a subquery: `WHERE 'b' IN keys(n)` then found nothing
+     * (#433). Worked out in a derived table, it is worked out for each row. A derived table alone reads no table beside it
+     * in the `FROM`, as `UNWIND` puts the list, so the lateral view stays around it. [hint] goes in both select lists.
+     */
+    private fun listView(json: String, alias: String, hint: String) =
+        "LATERAL (SELECT $hint${alias}_v.list FROM (SELECT $hint$json AS list FROM DUAL) ${alias}_v)"
 
     /**
      * Each item read by its place, from as many rows as the list has items, as [range] makes them: Oracle 23 takes many
      * seconds, or minutes, to parse a `JSON_TABLE` over a list of temporal values worked out with temporal arithmetic, item
      * by item in a comprehension (#331), and neither a query timeout nor a kill ends the parse. `JSON_QUERY` reads the same
      * list in moments, at about ten times the cost of `JSON_TABLE` for a short list, so a list of other values is read by
-     * [elements]. The list is worked out once, in a lateral view of its own, and its places counted in another: where they
-     * are counted over the list's own view, or the list is written out again where it is read, Oracle reads an `EXISTS` over
-     * its items with the wrong row's columns. It reads as `JSON_TABLE`'s `$[*]` does: no rows for null, and one for a value
-     * that is no list.
+     * [elements]. The list is worked out once, in a lateral view of its own ([listView] where it holds a subquery), and its
+     * places counted in another: where they are counted over the list's own view, or the list is written out again where it
+     * is read, Oracle reads an `EXISTS` over its items with the wrong row's columns. It reads as `JSON_TABLE`'s `$[*]` does:
+     * no rows for null, and one for a value that is no list.
      */
     override fun temporalElements(json: String, alias: String): String {
         val (list, place) = "${alias}_l" to "${alias}_r"
         val size = "JSON_VALUE($list.list, '\$.size()' RETURNING NUMBER)"
-        return "LATERAL (SELECT /*+ NO_MERGE */ $json AS list FROM DUAL) $list CROSS JOIN " +
+        val view = if (json.contains("SELECT", ignoreCase = true)) listView(json, alias, hint = "/*+ NO_MERGE */ ") else "LATERAL (SELECT /*+ NO_MERGE */ $json AS list FROM DUAL)"
+        return "$view $list CROSS JOIN " +
             "LATERAL (SELECT $place.n AS item_no, JSON_QUERY($list.list, '\$[\$i]' PASSING $place.n - 1 AS \"i\" RETURNING JSON) AS item " +
             "FROM (SELECT LEVEL n FROM DUAL CONNECT BY LEVEL <= GREATEST(NVL($size, 0), 1)) $place WHERE $place.n <= $size) $alias"
     }

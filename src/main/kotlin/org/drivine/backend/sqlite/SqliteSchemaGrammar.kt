@@ -6,6 +6,7 @@ import org.drivine.backend.sqlite.SqliteSql.literal
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
+import org.drivine.schema.LowerCopyStatements
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
@@ -53,6 +54,8 @@ internal class SqliteSchemaGrammar(private val graph: SqliteGraph) : SchemaGramm
     override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = SqliteVersionMarker(graph, label, scopeProperty)
 
     override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = SqliteStoreStamp(graph, label, keyProperty)
+
+    override fun lowerCopies(): LowerCopyStatements = SqliteLowerCopies(graph)
 
     /** [text] as a schema statement. */
     private fun statement(text: String): SchemaStatement = SchemaStatement.Cypher(text.trimIndent())

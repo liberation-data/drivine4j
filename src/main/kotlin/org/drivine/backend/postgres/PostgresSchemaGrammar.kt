@@ -5,6 +5,7 @@ import org.drivine.backend.postgres.PostgresSql.literal
 import org.drivine.schema.ConstraintSpec
 import org.drivine.schema.FullTextIndexSpec
 import org.drivine.schema.IndexSpec
+import org.drivine.schema.LowerCopyStatements
 import org.drivine.schema.RangeIndexSpec
 import org.drivine.schema.SchemaGrammar
 import org.drivine.schema.SchemaItemInfo
@@ -56,6 +57,8 @@ internal class PostgresSchemaGrammar(private val graph: PostgresGraph) : SchemaG
     override fun versionMarker(label: String, scopeProperty: String): VersionMarkerStatements = PostgresVersionMarker(graph, label, scopeProperty)
 
     override fun storeStamp(label: String, keyProperty: String): StoreStampStatements = PostgresStoreStamp(graph, label, keyProperty)
+
+    override fun lowerCopies(): LowerCopyStatements = PostgresLowerCopies(graph)
 
     /** [text] as a schema statement. */
     private fun statement(text: String): SchemaStatement = SchemaStatement.Cypher(text.trimIndent())

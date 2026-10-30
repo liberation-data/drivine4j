@@ -110,14 +110,18 @@ place in the statement it stands at.
 A value whose kind the statement fixes (a literal, a list or a map written, or a variable a `WITH` binds to one) is
 refused where an operator or a function takes another kind, as Neo4j refuses it when it plans the statement:
 `RETURN 123 AND true` fails with `AND takes a truth value, not an integer, as in Neo4j.`, and so do
-`WITH 123 AS x RETURN x.num`, `RETURN 1 IN 'foo'` and `range(0, 10, 0)`. A value whose kind is known only when the row
-is read, such as a property or a parameter, is compiled: where it is of the wrong kind, the statement may give null
+`WITH 123 AS x RETURN x.num` and `RETURN 1 IN 'foo'`. A step of 0 in `range()`, written or given, a parameter given as
+the index of a list or a map written that isn't indexed by its kind, as in `WITH [1] AS l RETURN l[$k]` given a text,
+and a map, or a list of maps or of lists, written in `SET`, are refused too, though Neo4j fails on them only when a row
+reaches them: such a statement is refused even where it would match nothing. A statement is compiled for each call,
+with the parameters it is given, so a value given refuses that call alone. A value whose kind is known only when the
+row is read, such as a property or a parameter, is compiled: where it is of the wrong kind, the statement may give null
 where Neo4j fails.
 
-So is a variable used as two kinds, `MATCH (a)-[a]->()` or `WITH true AS n MATCH (n)`, which fails with
-`a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.`, and one a pattern makes where it
-is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship variable bound
-as something else.
+A variable used as two kinds is refused too, as Neo4j refuses it: `MATCH (a)-[a]->()` or `WITH true AS n MATCH (n)`
+fails with `a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.` So is one a pattern
+makes where it is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship
+variable bound as something else.
 
 ### Where the stores differ
 

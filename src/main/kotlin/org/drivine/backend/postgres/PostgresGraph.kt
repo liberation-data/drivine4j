@@ -99,7 +99,7 @@ internal class PostgresGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_N
         private const val MAX_OBJECT_NAME = 63
 
         /** What the node table's comment says of a store this version made. */
-        const val VERSION = "drivine:6"
+        const val VERSION = "drivine:7"
 
         /** The graph [persistenceManager] speaks to, made in the store if it is not there. */
         fun ensured(persistenceManager: PersistenceManager): PostgresGraph =

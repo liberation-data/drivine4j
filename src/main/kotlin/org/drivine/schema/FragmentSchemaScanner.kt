@@ -38,8 +38,27 @@ internal object FragmentSchemaScanner {
         val specs = mutableListOf<SchemaItemSpec>()
         specs += classLevelSpecs(fragmentClass, label, onDisk)
         specs += propertyLevelSpecs(fragmentClass, label, dimensionProvider, onDisk)
+        requireCopied(specs, model, fragmentClass)
         // A violation's sample names each conflicting node by the fragment's @NodeId too.
         return specs.map { if (it is UniquenessConstraintSpec) it.copy(nodeIdProperty = nodeId) else it }
+    }
+
+    /**
+     * An item that ignores case is over the lowercased copies a `@CaseInsensitive` field keeps, and a
+     * save keeps none of another field: such an item would hold the nodes there were when it was
+     * ensured, and no node saved after.
+     */
+    private fun requireCopied(specs: List<SchemaItemSpec>, model: FragmentModel?, fragmentClass: Class<*>) {
+        val copied = model?.lowerCopied.orEmpty()
+        specs.forEach { spec ->
+            val uncopied = spec.lowercased.filter { it !in copied }
+            if (uncopied.isNotEmpty()) {
+                throw DrivineException(
+                    "${spec.kind} ${spec.effectiveName} on ${fragmentClass.simpleName} ignores case, and ${uncopied.joinToString { "'$it'" }} " +
+                        "is not the property of a @CaseInsensitive field, which a save keeps a lowercased copy of. Add @CaseInsensitive to the field."
+                )
+            }
+        }
     }
 
     /** The fragment's model, or null when it cannot be read: its fields are then named as declared, and it has no `@NodeId`. */
@@ -71,7 +90,7 @@ internal object FragmentSchemaScanner {
                     "Class-level @RangeIndex on ${fragmentClass.simpleName} must declare properties"
                 )
             }
-            specs += RangeIndexSpec(label, annotation.properties.map(onDisk), annotation.name.ifEmpty { null })
+            specs += RangeIndexSpec(label, annotation.properties.map(onDisk), annotation.name.ifEmpty { null }, annotation.ignoreCase)
         }
 
         fragmentClass.getAnnotationsByType(FullTextIndex::class.java).forEach { annotation ->
@@ -94,7 +113,7 @@ internal object FragmentSchemaScanner {
                     "Class-level @Unique on ${fragmentClass.simpleName} must declare properties"
                 )
             }
-            specs += UniquenessConstraintSpec(label, annotation.properties.map(onDisk), annotation.name.ifEmpty { null })
+            specs += UniquenessConstraintSpec(label, annotation.properties.map(onDisk), annotation.name.ifEmpty { null }, ignoreCase = annotation.ignoreCase)
         }
 
         return specs
@@ -136,7 +155,7 @@ internal object FragmentSchemaScanner {
 
                     is RangeIndex -> {
                         requireNoProperties(annotation.properties, "@RangeIndex", fragmentClass, fieldName)
-                        RangeIndexSpec(label, property, annotation.name.ifEmpty { null })
+                        RangeIndexSpec(label, property, annotation.name.ifEmpty { null }, annotation.ignoreCase)
                     }
 
                     is FullTextIndex -> {
@@ -149,11 +168,11 @@ internal object FragmentSchemaScanner {
                         )
                     }
 
-                    is TextIndex -> TextIndexSpec(label, property, annotation.name.ifEmpty { null })
+                    is TextIndex -> TextIndexSpec(label, property, annotation.name.ifEmpty { null }, annotation.ignoreCase)
 
                     is Unique -> {
                         requireNoProperties(annotation.properties, "@Unique", fragmentClass, fieldName)
-                        UniquenessConstraintSpec(label, property, annotation.name.ifEmpty { null })
+                        UniquenessConstraintSpec(label, property, annotation.name.ifEmpty { null }, ignoreCase = annotation.ignoreCase)
                     }
 
                     else -> null
