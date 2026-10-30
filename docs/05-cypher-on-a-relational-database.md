@@ -127,6 +127,10 @@ where Neo4j fails.
 - [SQLite](09-supported-engines.md#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
   adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](09-supported-engines.md#oracle) reads an empty text as null.
+- A `sum()` of integers that passes a long's range is a float, as on Neo4j, which goes on as a double where a long
+  would overflow. Neo4j's answer follows the order the rows come in, and SQL keeps none, so Oracle and Postgres give
+  a float where the sum passes the range in some order: where its positive values alone, or its negative ones, pass it.
+  SQLite fails with `integer overflow`.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).

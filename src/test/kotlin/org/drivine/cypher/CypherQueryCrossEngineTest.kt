@@ -705,6 +705,50 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an integer sum past a long's range is a float, as Neo4j goes on summing as a double, and one in range a long`() {
+        // #339: Oracle's NUMBER and Postgres's numeric sum exactly, and gave toString(sum(x)) as an integer past a long's range.
+        // Neo4j's answer follows the order the rows come in, and SQL keeps none: a sum that passes the range on the way, its
+        // positive values or its negative ones alone, is a float. SQLite's sum() fails where it would pass the range.
+        clear()
+        seed("CREATE (:S {k: 'a', x: 9223372036854775807}), (:S {k: 'a', x: 1}), (:S {k: 'b', x: 1}), (:S {k: 'b', x: 2})")
+        fun kinds(value: Any?): Any? = if (value is List<*>) value.map(::kinds) else value?.let { it to it::class.simpleName }
+        // Oracle writes every double's text from 17 digits, toString(2.0 ^ 63) as 9.2233720368547758E18, where Java writes
+        // the fewest that tell it apart: a sum past the range is written as Oracle writes the double it is.
+        fun text(double: String) = if (pm.type == DatabaseType.ORACLE) query("RETURN toString($double)").single() else double
+        val past = listOf(
+            "UNWIND [9223372036854775807, 1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(9.223372036854776E18, text("9.223372036854776E18")),
+            "UNWIND [-9223372036854775807, -2] AS x RETURN [sum(x), toString(sum(x))]" to listOf(-9.223372036854776E18, text("-9.223372036854776E18")),
+            "UNWIND [9223372036854775807, 9223372036854775807] AS x RETURN [sum(x), toString(sum(x))]" to listOf(1.8446744073709552E19, text("1.8446744073709552E19")),
+            // Past it on the way and back in range at the end: a float, as Neo4j gives it, which sums these in this order.
+            "UNWIND [9223372036854775807, 1, -1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(9.223372036854776E18, text("9.223372036854776E18")),
+            "UNWIND [9223372036854775807, 9223372036854775807, -9223372036854775807, -9223372036854775807] AS x RETURN sum(x)" to 0.0,
+            // Its negative values alone past it, and the sum back in range: the sum less its positive values.
+            "UNWIND [-9223372036854775807, -2, 4] AS x RETURN [sum(x), toString(sum(x))]" to listOf(-9.223372036854776E18, text("-9.223372036854776E18")),
+            "UNWIND [9223372036854775807, 9223372036854775807, 1] AS x RETURN sum(DISTINCT x)" to 9.223372036854776E18,
+            "UNWIND [9223372036854775807, 1] AS x WITH sum(x) AS s RETURN [s, toString(s), s > 0]" to listOf(9.223372036854776E18, text("9.223372036854776E18"), true),
+            "MATCH (n:S) WITH n.k AS k, sum(n.x) AS s ORDER BY k RETURN collect([k, s, toString(s)])" to listOf(listOf("a", 9.223372036854776E18, text("9.223372036854776E18")), listOf("b", 3L, "3")),
+        )
+        val within = listOf(
+            "UNWIND [9223372036854775806, 1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(Long.MAX_VALUE, "9223372036854775807"),
+            "UNWIND [-9223372036854775807, -1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(Long.MIN_VALUE, "-9223372036854775808"),
+            "UNWIND [9223372036854775807, 9223372036854775807] AS x RETURN sum(DISTINCT x)" to Long.MAX_VALUE,
+            "UNWIND [9223372036854775807, -1] AS x RETURN sum(x)" to Long.MAX_VALUE - 1,
+            "UNWIND [] AS x RETURN [sum(x), toString(sum(x))]" to listOf(0L, "0"),
+            "MATCH (n:S) WHERE n.k = 'b' RETURN sum(n.x)" to 3L,
+        )
+        // Each that differs, so a store's every difference shows at once.
+        val differing = (if (pm.type == DatabaseType.SQLITE) within else past + within).mapNotNull { (statement, value) ->
+            val given = kinds(query(statement).single())
+            if (given == kinds(value)) null else "$statement: $given, not ${kinds(value)}"
+        }
+        assertEquals(emptyList(), differing)
+        if (pm.type == DatabaseType.SQLITE) past.forEach { (statement, _) ->
+            val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+            assertTrue(failed.contains("integer overflow"), "$statement: $failed")
+        }
+    }
+
+    @Test
     fun `an aggregate of floats gives a float, whole or not, and a sum of integers an integer`() {
         // #304: Oracle's NUMBER keeps no kind, so a sum of floats that was whole came back an integer there. Each value is
         // checked with its kind: 2.0 is not 2.

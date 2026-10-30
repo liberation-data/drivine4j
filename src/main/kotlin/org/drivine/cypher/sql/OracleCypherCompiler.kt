@@ -488,13 +488,15 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * an aggregate, so each value is written out where it is read: each read is one path that tests the value's kind
      * itself, a text not summed and a number with a fraction written with a point, or with a negative exponent, `1E-41`,
      * as Oracle writes one of more than 40 digits, so a sum reads it three times, as [number] alone does. A path compares
-     * no item to another, `@ != @.floor()` failing with ORA-40597, so a fraction is told by how it is written.
+     * no item to another, `@ != @.floor()` failing with ORA-40597, so a fraction is told by how it is written. Integers are
+     * summed as `NUMBER`s, exactly, and as doubles where their sum [passesLong], which reads each value three times more.
      */
     override fun sum(json: String, distinct: String): String {
-        fun summed(type: String) = "sum(${distinct}JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING $type))"
+        fun summed(type: String) = "JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING $type)"
         val fraction = "@.string() has substring \".\" || @.string() has substring \"E-\""
         val float = "MAX(JSON_VALUE($json, '\$?(@.type() == \"double\" || (@.type() == \"number\" && ($fraction)))')) IS NOT NULL"
-        return "CASE WHEN $float THEN JSON_SCALAR(${summed("BINARY_DOUBLE")}) ELSE JSON_SCALAR(COALESCE(${summed("NUMBER")}, 0)) END"
+        return "CASE WHEN $float OR ${passesLong(summed("NUMBER"), distinct)} THEN JSON_SCALAR(sum($distinct${summed("BINARY_DOUBLE")})) " +
+            "ELSE JSON_SCALAR(COALESCE(sum($distinct${summed("NUMBER")}), 0)) END"
     }
 
     /** In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. */
