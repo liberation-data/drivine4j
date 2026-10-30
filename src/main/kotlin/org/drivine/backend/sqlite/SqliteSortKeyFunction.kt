@@ -7,8 +7,8 @@ import org.sqlite.Function
  * `drivine_sort_key(json)`: a list as text that orders, as SQLite orders text, as Cypher orders lists: item by item,
  * a list that begins another first, and items of different kinds as Cypher orders kinds (a map, a list, a text, a truth
  * value, a number, then null last). Each item is its kind's rank, then itself: a number by the bits of its double, so
- * their text orders as the numbers do; a text up to a mark below any character; a list its own items, then its end, which
- * comes before any item. Null where the value is null; a value that is no list, its JSON text.
+ * their text orders as the numbers do, NaN after them all; a text up to a mark below any character; a list its own
+ * items, then its end, which comes before any item. Null where the value is null; a value that is no list, its JSON text.
  */
 internal class SqliteSortKeyFunction : Function() {
 
@@ -26,6 +26,8 @@ internal class SqliteSortKeyFunction : Function() {
 
     private fun item(node: JsonNode, out: StringBuilder) {
         when {
+            // NaN, as a statement given it writes it, is a number, whose bits come after every other's, an infinity's too.
+            SqliteCypherValues.isNaN(node) -> out.append('5').append(number(Double.NaN))
             node.isObject -> out.append('1').also { text(SqliteCypherValues.write(SqliteCypherValues.canonical(node)), out) }
             node.isArray -> out.append('2').also { list(node, out) }
             node.isTextual -> out.append('3').also { text(node.textValue(), out) }

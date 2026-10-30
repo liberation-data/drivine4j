@@ -116,8 +116,15 @@ place in the statement it stands at.
 - [SQLite](09-supported-engines.md#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
   adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](09-supported-engines.md#oracle) reads an empty text as null.
-- Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
-  as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
+- Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store.
+  A float divided by zero fails on Postgres, gives null on SQLite, and on Oracle is the NaN or
+  infinity Neo4j gives.
+- NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
+  nothing and ordered with nothing, and `+`, `-`, `*` and `/` keep it. Where Neo4j gives NaN or an infinity from `%`,
+  `^` or a function of numbers (`abs`, `sqrt` …) given one, Oracle gives null. So does SQLite for NaN, and for an
+  infinity it gives null from `%`, the infinity from `^`, `abs`, `round` and `floor`, and fails from `sqrt`, `log` and
+  `exp`. Oracle stores them too. SQLite stores an infinity, and
+  refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb` holds neither.
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).
   Two values whose kind it leaves open, such as two parameters or two properties, compare as null where they hold
   lists. Two maps compare as null, and two that differ do in a list too, where Neo4j orders them.

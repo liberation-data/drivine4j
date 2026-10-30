@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.JsonNode
 import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.DecimalNode
 import com.fasterxml.jackson.databind.node.ObjectNode
+import org.drivine.DrivineException
 import org.drivine.cypher.ast.RelationshipPattern
 import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.Stamps
@@ -19,6 +20,13 @@ import java.security.MessageDigest
  * `json`, which keeps its keys in the order written, and is cast to `jsonb` where it is compared. A list
  * of ids is an array of `bigint`. A statement that writes carries its rows as `jsonb`, so a map carried
  * past a write has its keys in `jsonb`'s order.
+ *
+ * `jsonb` holds no NaN and no infinity. A statement given one ([nonFinite]) writes each as a number past any double's, which no
+ * double is equal to: an infinity as [INFINITY], just past [INFINITE], and NaN as [NOT_A_NUMBER], past that.
+ * So they are numbers, and order as Cypher orders them, NaN after the infinity; they are read as `numeric`'s NaN and infinities,
+ * which arithmetic keeps, and a result that is one is written back so ([scalar]). NaN is equal to nothing and ordered with
+ * nothing, and each is written as Java writes it ([asText]). The rows give each back as the double it is (see
+ * [org.drivine.mapper.JdbcResultMapper]). A statement that writes refuses them, as the store would keep that number in their place.
  */
 class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
@@ -39,9 +47,11 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     /**
      * [node] with each float in it that is a whole number a decimal of one place, `10000000.0`, from its shortest decimal: the
-     * double's exact value, `999999999999999983222784.0` for `1e24`, is no number Postgres works out or reads as that float.
+     * double's exact value, `999999999999999983222784.0` for `1e24`, is no number Postgres works out or reads as that float. NaN
+     * and the infinities are the numbers that stand for them: see the class.
      */
     private fun wholeFloats(node: JsonNode): JsonNode = when {
+        (node.isDouble || node.isFloat) && !node.doubleValue().isFinite() -> DecimalNode(standIn(node.doubleValue()))
         (node.isDouble || node.isFloat) && node.doubleValue().let { it.isFinite() && it == Math.rint(it) } ->
             DecimalNode(BigDecimal.valueOf(node.doubleValue()).setScale(1))
         node is ObjectNode -> node.apply { properties().toList().forEach { (key, value) -> set<JsonNode>(key, wholeFloats(value)) } }
@@ -53,7 +63,15 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun comparable(value: Value.Json) = if (value.ordered) "CAST(${value.sql} AS jsonb)" else value.sql
 
-    override fun scalar(sql: String) = "to_jsonb($sql)"
+    /**
+     * Where the statement is given NaN or an infinity, a `numeric` or a `double precision` that is one, which `to_jsonb` writes as
+     * a text, `"NaN"`, as the number that stands for it: see the class.
+     */
+    override fun scalar(sql: String) = if (!nonFinite) "to_jsonb($sql)" else shared(sql) { (s) ->
+        "CASE WHEN pg_typeof($s) IN ('numeric'::regtype, 'double precision'::regtype) AND jsonb_typeof(to_jsonb($s)) = 'string' " +
+            "THEN CASE to_jsonb($s) #>> '{}' WHEN 'NaN' THEN $NOT_A_NUMBER_JSON WHEN 'Infinity' THEN $INFINITY_JSON ELSE $NEGATIVE_INFINITY_JSON END " +
+            "ELSE to_jsonb($s) END"
+    }
 
     override fun typeOf(json: String) = "jsonb_typeof($json)"
 
@@ -61,7 +79,26 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun nullIfJsonNull(json: String) = "NULLIF($json, 'null'::jsonb)"
 
-    override fun number(json: String) = shared(json) { (x) -> "CASE WHEN jsonb_typeof($x) = 'number' THEN CAST($x #>> '{}' AS numeric) END" }
+    /** Where the statement is given NaN or an infinity, a number past any double's is `numeric`'s NaN or infinity: see the class. */
+    override fun number(json: String) = shared(json) { (x) ->
+        val read = "CAST($x #>> '{}' AS numeric)"
+        if (!nonFinite) "CASE WHEN jsonb_typeof($x) = 'number' THEN $read END"
+        else "CASE WHEN jsonb_typeof($x) = 'number' THEN CASE WHEN $x = $NOT_A_NUMBER_JSON THEN 'NaN'::numeric " +
+            "WHEN $x >= '$INFINITE'::jsonb THEN 'Infinity'::numeric WHEN $x <= '-$INFINITE'::jsonb THEN '-Infinity'::numeric ELSE $read END END"
+    }
+
+    /** Whether the JSON [json] is NaN, as a statement given one writes it: see the class. */
+    private fun isNaN(json: String) = "($json = $NOT_A_NUMBER_JSON)"
+
+    /** Whether the JSON [json] is or holds NaN, at any depth, as a statement given one writes it: see the class. */
+    private fun holdsNaN(json: String) = "jsonb_path_exists($json, '\$.** ? (@ == \$n)', jsonb_build_object('n', $NOT_A_NUMBER_JSON))"
+
+    /** Equal as JSON, where the statement is given NaN or an infinity, and holding no NaN, which is equal to nothing. */
+    override fun jsonEquals(x: String, y: String) =
+        if (!nonFinite) super.jsonEquals(x, y) else shared(x, y) { (a, b) -> "($a = $b AND NOT ${holdsNaN(a)})" }
+
+    /** As [jsonEquals] where the statement is given NaN or an infinity, which may be the value given. */
+    override fun givenEquals(x: String, y: String, given: Any) = if (!nonFinite) super.givenEquals(x, y, given) else jsonEquals(x, y)
 
     override fun integral(json: String) = shared(json) { (x) -> "(jsonb_typeof($x) = 'number' AND ($x #>> '{}') ~ '^-?[0-9]+$')" }
 
@@ -187,9 +224,13 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun bytewise(text: String) = "($text) COLLATE \"C\""
 
-    /** Texts by their code points ([codePointText]); values of any other kind as `jsonb` compares them. */
+    /**
+     * Texts by their code points ([codePointText]); values of any other kind as `jsonb` compares them. Where the statement is
+     * given NaN or an infinity, NaN is ordered with nothing: the comparison is false, as in Cypher.
+     */
     override fun ordered(x: String, operator: String, y: String) =
-        "CASE WHEN jsonb_typeof($x) = 'string' THEN ${textOf(x)} COLLATE \"C\" $operator ${textOf(y)} ELSE $x $operator $y END"
+        "CASE WHEN jsonb_typeof($x) = 'string' THEN ${textOf(x)} COLLATE \"C\" $operator ${textOf(y)} " +
+            (if (nonFinite) "WHEN ${isNaN(x)} OR ${isNaN(y)} THEN FALSE " else "") + "ELSE $x $operator $y END"
 
     /**
      * The pairs of [x]'s and [y]'s items, and of their items' where both are lists, at any depth, walked together by place, as
@@ -200,9 +241,11 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun listOrder(x: String, y: String): String {
         fun items(json: String, alias: String) = "SELECT ${alias}e.v, ${alias}e.n FROM unnest(ARRAY(SELECT jsonb_array_elements($json))) WITH ORDINALITY ${alias}e (v, n)"
         val kind = "jsonb_typeof(low.a)"
+        // A pair with NaN in it, where the statement is given one, is not equal, nor ordered.
+        val nan = if (nonFinite) " OR ${isNaN("low.a")} OR ${isNaN("low.b")}" else ""
         val unequal = "low.a IS NULL OR low.b IS NULL OR $kind <> jsonb_typeof(low.b) OR $kind = 'null' " +
-            "OR $kind <> 'array' AND (low.a <> low.b OR $kind = 'object' AND ${holdsNull("low.a")})"
-        val order = "CASE WHEN low.a IS NULL THEN -1 WHEN low.b IS NULL THEN 1 WHEN $kind <> jsonb_typeof(low.b) OR $kind NOT IN ('number', 'string', 'boolean') THEN NULL " +
+            "OR $kind <> 'array' AND (low.a <> low.b OR $kind = 'object' AND ${holdsNull("low.a")})$nan"
+        val order = "CASE WHEN low.a IS NULL THEN -1 WHEN low.b IS NULL THEN 1 WHEN $kind <> jsonb_typeof(low.b) OR $kind NOT IN ('number', 'string', 'boolean')$nan THEN NULL " +
             "WHEN ${ordered("low.a", "<", "low.b")} THEN -1 ELSE 1 END"
         return "(WITH RECURSIVE low (a, b, place) AS (SELECT $x, $y, CAST(ARRAY[] AS bigint[]) UNION ALL " +
             "SELECT lop.a, lop.b, low.place || lop.n FROM low CROSS JOIN LATERAL (SELECT loa.v AS a, lob.v AS b, COALESCE(loa.n, lob.n) AS n " +
@@ -221,7 +264,7 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     }
 
     override fun add(a: String, b: String, given: Pair<Any?, Any?>) =
-        "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN to_jsonb(${number(a)} + ${number(b)}) " +
+        "CASE WHEN jsonb_typeof($a) = 'number' AND jsonb_typeof($b) = 'number' THEN ${scalar("${number(a)} + ${number(b)}")} " +
             "WHEN jsonb_typeof($a) = 'array' AND jsonb_typeof($b) = 'array' THEN $a || $b " +
             "WHEN jsonb_typeof($a) = 'array' THEN $a || jsonb_build_array($b) " +
             "WHEN jsonb_typeof($b) = 'array' THEN jsonb_build_array($a) || $b " +
@@ -234,11 +277,17 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * The JSON [json], a text, a number or a truth value, as `toString` gives it: a float, a `numeric` with a fraction, without
      * the zeros `numeric`'s scale leaves after its digits (`trim_scale`), as Java writes a double: with no exponent from 10^-3 up
      * to 10^7, a point and a digit after it at least, `2.0`, and else as `1.0E7`, `1.2E-4`. Postgres works a float out in
-     * `numeric`, exactly, so its digits may differ from a double's in the last places: `0.1 * 3` is `0.3`.
+     * `numeric`, exactly, so its digits may differ from a double's in the last places: `0.1 * 3` is `0.3`. NaN and the infinities,
+     * where the statement is given one, by Java's names, alone and in a list or a map.
      */
     private fun asText(json: String) = shared(json) { (x) ->
         val exact = "trim_scale(CAST($x #>> '{}' AS numeric))"
-        "CASE WHEN jsonb_typeof($x) = 'number' AND NOT ${integral(x)} THEN ${shared(exact) { (n) -> floatText(n) }} ELSE $x #>> '{}' END"
+        val nonFinite = if (!nonFinite) "" else "WHEN ${isNaN(x)} THEN 'NaN' WHEN jsonb_typeof($x) = 'number' AND $x >= '$INFINITE'::jsonb THEN 'Infinity' " +
+            "WHEN jsonb_typeof($x) = 'number' AND $x <= '-$INFINITE'::jsonb THEN '-Infinity' "
+        // A list or a map writes the number that stands for NaN or an infinity in it out in full: by Java's name instead.
+        val text = if (!this.nonFinite) "$x #>> '{}'" else listOf("-${INFINITY.toPlainString()}" to "-Infinity", INFINITY.toPlainString() to "Infinity", NOT_A_NUMBER.toPlainString() to "NaN")
+            .fold("$x #>> '{}'") { text, (standIn, name) -> "replace($text, '$standIn', '$name')" }
+        "CASE ${nonFinite}WHEN jsonb_typeof($x) = 'number' AND NOT ${integral(x)} THEN ${shared(exact) { (n) -> floatText(n) }} ELSE $text END"
     }
 
     /** The `numeric` [n], a float without trailing zeros, as Java writes a double: see [asText]. */
@@ -313,18 +362,24 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
         "toupper" -> "to_jsonb(upper(${text(json)}))"
         "trim" -> "to_jsonb(btrim(${text(json)}))"
         "tostring" -> "to_jsonb(${asText(json)})"
-        "tointeger" -> "to_jsonb(trunc(${numeric(json)}))"
-        "tofloat" -> "to_jsonb(${float(numeric(json))})"
+        // NaN and the infinities, where the statement is given one, as Java casts them to a long, as Neo4j does: 0, and the long's ends.
+        "tointeger" -> if (!nonFinite) "to_jsonb(trunc(${numeric(json)}))" else shared(numeric(json)) { (n) ->
+            "to_jsonb(CASE $n WHEN 'NaN' THEN 0 WHEN 'Infinity' THEN ${Long.MAX_VALUE} WHEN '-Infinity' THEN ${Long.MIN_VALUE} ELSE trunc($n) END)"
+        }
+        "tofloat" -> scalar(float(numeric(json)))
         "head" -> "($json -> 0)"
         "last" -> "($json -> -1)"
-        "abs" -> "to_jsonb(abs(${number(json)}))"
+        "abs" -> scalar("abs(${number(json)})")
         else -> null
     }
 
-    /** The JSON [json] as a `numeric`, where it is a number or a text that writes one: null for any other text, as Cypher converts it. */
+    /** The JSON [json] as a `numeric`, where it is a number (as [number] reads it) or a text that writes one: null for any other text, as Cypher converts it. */
     private fun numeric(json: String) = shared(json) { (x) ->
-        "CASE WHEN jsonb_typeof($x) = 'number' OR ($x #>> '{}') ~ ${literal(NUMERIC_TEXT)} THEN CAST($x #>> '{}' AS numeric) END"
+        "CASE WHEN jsonb_typeof($x) = 'number' THEN ${number(x)} WHEN ($x #>> '{}') ~ ${literal(NUMERIC_TEXT)} THEN CAST($x #>> '{}' AS numeric) END"
     }
+
+    override fun refuseNonFiniteWrite(parameters: Map<String, Any?>) =
+        throw DrivineException(NON_FINITE_WRITE.format("NaN or an infinity", "Postgres's `jsonb`"))
 
     override fun page(skip: String?, limit: String?) = listOfNotNull(skip?.let { "OFFSET $it" }, limit?.let { "LIMIT $it" })
 
@@ -496,6 +551,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun roundPlaces(number: String, precision: String) = super.roundPlaces(number, heldPlaces(precision))
 
+    /** Where the statement is given NaN or an infinity, 0 for NaN, as Neo4j casts Java's signum of it: `numeric`'s `SIGN` gives NaN. */
+    override fun signOf(number: String) =
+        if (!nonFinite) super.signOf(number) else shared(number) { (n) -> "CASE WHEN $n = 'NaN' THEN 0 ELSE ${super.signOf(n)} END" }
+
     override fun roundTo(number: String, precision: String, mode: RoundingMode) = super.roundTo(number, heldPlaces(precision), mode)
 
     private fun heldPlaces(precision: String) = shared(precision) { (p) -> "CASE WHEN $p > $MOST_PLACES THEN $MOST_PLACES ELSE $p END" }
@@ -519,26 +578,55 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
 
     override fun withoutLabel(labels: String, label: String) = "($labels - ${literal(label)})"
 
-    private companion object {
+    companion object {
         /** A property read, `(n1.props -> 'name')`: the row's column, and the key. */
-        val PROPERTY_READ = Regex("""^\(([\w.]+) -> ('(?:[^']|'')*')\)$""")
+        private val PROPERTY_READ = Regex("""^\(([\w.]+) -> ('(?:[^']|'')*')\)$""")
 
         /**
          * The characters of a text in a list that [codePoints] orders by their code points: at most 4 bytes each, 32 bits, which
          * are 16,000 places, and Postgres holds 16,383 after a number's point.
          */
-        const val CODE_POINT_PREFIX = 500
+        private const val CODE_POINT_PREFIX = 500
 
         /** The most places `round()` rounds to: past them, a double, the least of which is near 4.9E-324, has no digit. */
-        const val MOST_PLACES = 400
+        private const val MOST_PLACES = 400
 
         /** A text Postgres reads as a `numeric`, spaces around it allowed. */
-        const val NUMERIC_TEXT = """^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$"""
+        private const val NUMERIC_TEXT = """^\s*[+-]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?\s*$"""
 
         /**
          * Below it, `exp` is nearer 0 than the least double, half of 2^-1074, and Java gives 0.0: ln(2^-1075) is
          * -745.13321910194120…, and this is the least double Java's `exp` gives more than 0.0 for.
          */
-        const val EXP_UNDERFLOW = "-745.1332191019411"
+        private const val EXP_UNDERFLOW = "-745.1332191019411"
+
+        /** Where the numbers that stand for the infinities begin, past any double's, which is under 1.8e308: see the class. */
+        private const val INFINITE = "1e309"
+
+        /** The numbers that stand for NaN and the infinities, written as JSON: see the class. */
+        private const val NOT_A_NUMBER_JSON = "to_jsonb(2e309 + 0.5)"
+        private const val INFINITY_JSON = "to_jsonb(1e309 + 0.5)"
+        private const val NEGATIVE_INFINITY_JSON = "to_jsonb(-1e309 - 0.5)"
+
+        private val NOT_A_NUMBER: BigDecimal = BigDecimal("2e309").add(BigDecimal("0.5"))
+        private val INFINITY: BigDecimal = BigDecimal(INFINITE).add(BigDecimal("0.5"))
+
+        /** The number a statement given [value], NaN or an infinity, writes for it: see the class. */
+        private fun standIn(value: Double): BigDecimal = when {
+            value.isNaN() -> NOT_A_NUMBER
+            value > 0 -> INFINITY
+            else -> INFINITY.negate()
+        }
+
+        /**
+         * The double the number [number] in the rows of a statement given NaN or an infinity is: NaN where it stands for it, as
+         * [standIn] writes it, and an infinity where it is past any double's, as the number that stands for one is.
+         */
+        internal fun read(number: BigDecimal): Double = when {
+            number.compareTo(NOT_A_NUMBER) == 0 -> Double.NaN
+            number >= BigDecimal(INFINITE) -> Double.POSITIVE_INFINITY
+            number <= BigDecimal(INFINITE).negate() -> Double.NEGATIVE_INFINITY
+            else -> number.toDouble()
+        }
     }
 }

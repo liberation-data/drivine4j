@@ -64,7 +64,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
     /**
      * A float that is a whole number, `2.0`, written as Oracle's extended JSON writes a double, `{"${'$'}numberDouble": "2.0"}`, which
-     * `JSON(… EXTENDED)` reads as one: Oracle reads JSON's `2.0` as the number 2, a whole number, as it reads `2`. Not in a
+     * `JSON(… EXTENDED)` reads as one: Oracle reads JSON's `2.0` as the number 2, a whole number, as it reads `2`. So are NaN and
+     * the infinities, `{"${'$'}numberDouble": "NaN"}`, which JSON writes as no number, and `BINARY_DOUBLE` holds. Not in a
      * value that holds a map with a key as extended JSON's are, `{"${'$'}numberLong": "5"}`, which `JSON(… EXTENDED)` would read as
      * the value it writes: such a value is written as JSON is, its floats that are whole numbers read as whole numbers. A
      * statement that writes binds all its parameters as one text, and reads as extended JSON only those of them with such
@@ -89,7 +90,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * `BigDecimal` is no float: it stays the number it is, every digit kept.
      */
     private fun doubles(node: JsonNode, doubled: () -> Unit): JsonNode = when {
-        (node.isDouble || node.isFloat) && node.doubleValue().let { it.isFinite() && it == Math.rint(it) } -> {
+        (node.isDouble || node.isFloat) && node.doubleValue().let { !it.isFinite() || it == Math.rint(it) } -> {
             doubled()
             JsonNodeFactory.instance.objectNode().put(DOUBLE, node.doubleValue().toString())
         }
@@ -497,11 +498,32 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return "CASE WHEN $float THEN JSON_SCALAR(${summed("BINARY_DOUBLE")}) ELSE JSON_SCALAR(COALESCE(${summed("NUMBER")}, 0)) END"
     }
 
-    /** In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. */
+    /**
+     * In `BINARY_DOUBLE` where the group holds a double, as [sum] adds it: NaN and the infinities are doubles, which [number] reads
+     * as no `NUMBER`, so the average would pass them by (#295).
+     */
+    override fun avg(json: String, distinct: String): String {
+        val double = "MAX(JSON_VALUE($json, '\$?(@.type() == \"double\")')) IS NOT NULL"
+        return "CASE WHEN $double THEN JSON_SCALAR(avg(${distinct}JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING BINARY_DOUBLE))) " +
+            "ELSE ${super.avg(json, distinct)} END"
+    }
+
+    /**
+     * In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. Each is read as
+     * a `BINARY_DOUBLE` there, which NaN and the infinities are, where [number] reads them as no `NUMBER`.
+     */
     override fun arithmetic(a: String, b: String, operator: String) =
         "CASE WHEN ${kind(a)} = 'double' OR ${kind(b)} = 'double' " +
-            "THEN JSON_SCALAR(TO_BINARY_DOUBLE(${number(a)}) $operator TO_BINARY_DOUBLE(${number(b)})) " +
+            "THEN JSON_SCALAR(${binaryDouble(a)} $operator ${binaryDouble(b)}) " +
             "ELSE JSON_SCALAR(${number(a)} $operator ${number(b)}) END"
+
+    /**
+     * The JSON [json] as a `BINARY_DOUBLE`, where it is a number: a double, NaN and the infinities among them, as it is, and a
+     * `NUMBER` made one. A value of no other kind is read so: a list so read beside a list closed the session.
+     */
+    private fun binaryDouble(json: String) = shared(json) { (x) ->
+        "CASE ${kind(x)} WHEN 'double' THEN JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE) WHEN 'float' THEN JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE) ELSE TO_BINARY_DOUBLE(${number(x)}) END"
+    }
 
     /** A side that is a property is read from the properties by its own path: see [direct]. */
     override fun add(a: String, b: String, given: Pair<Any?, Any?>) = direct(direct(
@@ -580,6 +602,33 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     /** `TO_CHAR`'s scientific notation, `1.E+07`, `-1.2E-04`, as Java's: `1.0E7`, `-1.2E-4`. */
     private fun scientific(text: String) = "REGEXP_REPLACE(REPLACE($text, '.E', '.0E'), 'E\\+?(-?)0*([0-9])', 'E\\1\\2')"
 
+    /**
+     * Equal as JSON, and holding no NaN, which is equal to nothing (#409): Oracle's JSON finds a `BINARY_DOUBLE` NaN equal to
+     * itself. Only a value equal to the other is read for NaN.
+     */
+    override fun jsonEquals(x: String, y: String) = shared(x, y) { (a, b) -> "($a = $b AND NOT ${holdsNaN(a)})" }
+
+    /** As [jsonEquals] where the value given is or holds NaN; as JSON compares it otherwise, which finds no other value equal to NaN. */
+    override fun givenEquals(x: String, y: String, given: Any) =
+        if (holdsNonFinite(given, Double::isNaN)) jsonEquals(x, y) else super.givenEquals(x, y, given)
+
+    /** As `JSON` orders them, but NaN, which it orders after every number, and which Cypher orders with nothing: false (#409). */
+    override fun ordered(x: String, operator: String, y: String) = shared(x, y) { (a, b) ->
+        "(NOT (${isNaN(a)} OR ${isNaN(b)}) AND $a $operator $b)"
+    }
+
+    /** Whether the JSON [json] is NaN: a `BINARY_DOUBLE` that is. */
+    private fun isNaN(json: String) = shared(json) { (x) -> "(${kind(x)} = 'double' AND JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE) IS NAN)" }
+
+    /**
+     * Whether the JSON [json] is or holds NaN, at any depth: a list or a map by its text as extended JSON writes it, where a
+     * double is `{"${'$'}numberDouble": "Nan"}`, which no text it holds can hold unescaped. Oracle's JSON path walks no list
+     * within a list.
+     */
+    private fun holdsNaN(json: String) = shared(json) { (x) ->
+        "(${isNaN(x)} OR ${kind(x)} IN ('array', 'object') AND INSTR(JSON_SERIALIZE($x RETURNING CLOB EXTENDED), '$EXTENDED_NAN') > 0)"
+    }
+
     /** `JSON_EQUAL`, which compares values larger than `=` does, with ORA-40180 past about 32 KB. */
     override fun identityEquals(x: String, y: String) = "JSON_EQUAL($x, $y)"
 
@@ -621,7 +670,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
             "($NULLS_EQUAL($x, $y) = 1)"
         }
         fun text(json: String) = "JSON_SERIALIZE($json RETURNING VARCHAR2(4000) NULL ON ERROR)"
-        return "CASE WHEN ${text(x)} = ${text(y)} THEN NULL ELSE $walked END"
+        // Two of one text that hold NaN are not equal where it is: the pair it is in is not (#409).
+        return "CASE WHEN ${text(x)} = ${text(y)} AND ${holdsNaN(x)} THEN FALSE WHEN ${text(x)} = ${text(y)} THEN NULL ELSE $walked END"
     }
 
     /**
@@ -698,7 +748,14 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         "trim" -> texts(json) { (t) -> scalar("TRIM($t)") }
         // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
         "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
-        "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
+        // NaN and the infinities, which no NUMBER holds, as Java casts them to a long, as Neo4j does: 0, and the long's ends.
+        "tointeger" -> shared(json) { (x) ->
+            val double = "JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE)"
+            "CASE WHEN ${kind(x)} <> 'double' THEN JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($x, '\$') DEFAULT NULL ON CONVERSION ERROR))) " +
+                "WHEN $double IS NAN THEN JSON_SCALAR(0) WHEN $double = BINARY_DOUBLE_INFINITY THEN JSON_SCALAR(${Long.MAX_VALUE}) " +
+                "WHEN $double = -BINARY_DOUBLE_INFINITY THEN JSON_SCALAR(${Long.MIN_VALUE}) " +
+                "ELSE JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($x, '\$') DEFAULT NULL ON CONVERSION ERROR))) END"
+        }
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
         // An item read so where it is a text past 32 KB crashed the session: see [listItem].
         "head" -> listItem(json, "'\$[0]'")
@@ -1126,6 +1183,9 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         /** The key of a double in Oracle's extended JSON. */
         private const val DOUBLE = "\$numberDouble"
 
+        /** NaN, as `JSON_SERIALIZE(… EXTENDED)` writes it: see [holdsNaN]. */
+        private const val EXTENDED_NAN = "{\"\$numberDouble\":\"Nan\"}"
+
         /** The function a query declares that compares two values that may hold a null, where the store keeps none: see [nullsEqual]. */
         private const val NULLS_EQUAL = "cy_nulls_equal"
 
@@ -1217,6 +1277,17 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
          */
         internal fun listOrderFunction(name: String): String = listOf(
             "FUNCTION $name(cy_x JSON, cy_y JSON) RETURN NUMBER IS",
+            // The double extended JSON writes as `{"${'$'}numberDouble": "1.5"}`, NaN as "Nan" and the infinities as "Inf" and "-Inf"; null for any other value.
+            "    FUNCTION dbl(a JSON_ELEMENT_T) RETURN BINARY_DOUBLE IS",
+            "        o JSON_OBJECT_T;",
+            "        s VARCHAR2(64);",
+            "    BEGIN",
+            "        IF NOT a.is_Object THEN RETURN NULL; END IF;",
+            "        o := TREAT(a AS JSON_OBJECT_T);",
+            "        IF o.get_Size <> 1 OR NOT o.has('\$numberDouble') THEN RETURN NULL; END IF;",
+            "        s := o.get_String('\$numberDouble');",
+            "        RETURN TO_BINARY_DOUBLE(CASE WHEN s = 'Nan' THEN 'NaN' ELSE s END DEFAULT NULL ON CONVERSION ERROR);",
+            "    END;",
             "    FUNCTION cmp(a JSON_ELEMENT_T, b JSON_ELEMENT_T) RETURN NUMBER IS",
             "        c NUMBER;",
             "        sa VARCHAR2(32767);",
@@ -1228,8 +1299,17 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
             "        ks JSON_KEY_LIST;",
             "        too_long EXCEPTION;",
             "        PRAGMA EXCEPTION_INIT(too_long, -40478);",
+            "        da BINARY_DOUBLE;",
+            "        db BINARY_DOUBLE;",
             "    BEGIN",
             "        IF a.is_Null OR b.is_Null THEN RETURN NULL; END IF;",
+            // A double, as extended JSON writes it, beside a number: NaN is ordered with nothing, and an infinity after any other.
+            "        IF (dbl(a) IS NOT NULL OR a.is_Number) AND (dbl(b) IS NOT NULL OR b.is_Number) AND (dbl(a) IS NOT NULL OR dbl(b) IS NOT NULL) THEN",
+            "            da := NVL(dbl(a), TO_BINARY_DOUBLE(a.to_Number));",
+            "            db := NVL(dbl(b), TO_BINARY_DOUBLE(b.to_Number));",
+            "            IF da IS NAN OR db IS NAN THEN RETURN NULL; END IF;",
+            "            RETURN CASE WHEN da < db THEN -1 WHEN da > db THEN 1 ELSE 0 END;",
+            "        END IF;",
             "        IF a.is_Array AND b.is_Array THEN",
             "            la := TREAT(a AS JSON_ARRAY_T);",
             "            lb := TREAT(b AS JSON_ARRAY_T);",
@@ -1266,7 +1346,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
             "        RETURN NULL;",
             "    END;",
             "BEGIN",
-            "    RETURN cmp(JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_x RETURNING CLOB)), JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_y RETURNING CLOB)));",
+            "    RETURN cmp(JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_x RETURNING CLOB EXTENDED)), JSON_ELEMENT_T.parse(JSON_SERIALIZE(cy_y RETURNING CLOB EXTENDED)));",
             "END;",
         ).joinToString("\n")
     }

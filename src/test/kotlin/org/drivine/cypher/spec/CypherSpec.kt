@@ -82,7 +82,7 @@ data class CypherSpec(
     private fun check(case: Case, index: Int, step: Step, store: String, run: (Step) -> List<Any?>) {
         val where = "${case.name}, step ${index + 1}, on $store: ${step.cypher.trim()}"
         if (step.error != null) {
-            val failure = runCatching { run(step) }.exceptionOrNull() ?: fail("Expected a failure: $where")
+            val failure = runCatching { run(step.copy(parameters = expanded(step.parameters))) }.exceptionOrNull() ?: fail("Expected a failure: $where")
             when (val error = step.error) {
                 is String -> assertEquals(error, failure.message, where)
                 is List<*> -> if (failure.message !in error) fail("Expected one of $error, but was <${failure.message}>: $where")
@@ -94,12 +94,18 @@ data class CypherSpec(
         assertEquals(canonical(expanded(expected), step, step.unordered), canonical(rows, step, step.unordered), where)
     }
 
-    /** [value] with each `{$repeat: text, times: n}` in it written out: [text] repeated [n] times. */
+    /**
+     * [value] with each `{$repeat: text, times: n}` in it written out, [text] repeated [n] times, and each `{$float: "NaN"}`,
+     * `{$float: "Infinity"}` and `{$float: "-Infinity"}` the double it names.
+     */
     @Suppress("UNCHECKED_CAST")
     private fun <T> expanded(value: T): T = when (value) {
         is Map<*, *> -> (
-            if (value.keys == setOf("\$repeat", "times")) (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
-            else value.mapValues { (_, item) -> expanded(item) }
+            when (value.keys) {
+                setOf("\$repeat", "times") -> (value["\$repeat"] as String).repeat((value["times"] as Number).toInt())
+                setOf("\$float") -> (value["\$float"] as String).toDouble()
+                else -> value.mapValues { (_, item) -> expanded(item) }
+            }
         ) as T
         is List<*> -> value.map { expanded(it) } as T
         else -> value
