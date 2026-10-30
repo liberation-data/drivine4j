@@ -834,6 +834,12 @@ abstract class SqlCypherCompiler(graph: String) {
 
         private fun alias(prefix: String) = "$prefix${++counter}"
 
+        /** The variables made here for a randomUUID() made first, for each row: no variable of the statement's, though one may be quoted as named alike. */
+        private val madeAnew = mutableSetOf<String>()
+
+        /** A variable of [madeAnew]'s, new. */
+        private fun anewVariable() = alias(ANEW).also { madeAnew += it }
+
         fun query(query: Query): String {
             var select = Select(emptyMap())
             for (clause in query.clauses) {
@@ -869,7 +875,7 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** The rows [select] reads with a UUID made for each, in a `WITH *` of its own, and its variable's name, which is no variable of the statement's: see `project`. */
         private fun seededRows(select: Select): Pair<Select, String> {
-            val seed = "$ANEW${++counter}"
+            val seed = anewVariable()
             val made = Projection(false, true, listOf(Projection.Item(Expression.Function("randomUUID", false, emptyList()), seed)), emptyList(), null, null)
             return with(select, Clause.With(made, null), select.scope.filterKeys { it !in select.bound }, apart = true) to seed
         }
@@ -883,7 +889,9 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun anewCall(select: Select, call: Clause.Call): Select {
             if (!holdsAnew(call.query)) return select.also { call(it, call) }
             val (seeded, seed) = seededRows(select)
-            fun read(clauses: List<Clause>) = listOf(Clause.Unwind(Expression.ListLiteral(listOf(Expression.Variable(seed))), "$seed row")) + clauses
+            // The variable its query unwinds the UUID to is no variable of the statement's either.
+            val row = "$seed row".also { madeAnew += it }
+            fun read(clauses: List<Clause>) = listOf(Clause.Unwind(Expression.ListLiteral(listOf(Expression.Variable(seed))), row)) + clauses
             val query = Query(read(call.query.clauses), call.query.unions.map { it.copy(clauses = read(it.clauses)) })
             return seeded.also { call(it, call.copy(query = query)) }
         }
@@ -928,7 +936,7 @@ abstract class SqlCypherCompiler(graph: String) {
             var inner = Select(row.scope)
             patterns(inner, match.patterns, metByPaths)
             where?.let { inner = if (seed == null) filtered(inner, it) else filtered(inner, seeded(it, seed, inBody = true), ::isSeeded) }
-            val found = inner.bound.filterKeys { it !in row.scope && !it.startsWith(ANEW) }
+            val found = inner.bound.filterKeys { it !in row.scope && it !in madeAnew }
             if (found.isEmpty() && inner.sources.isEmpty()) return row
             val name = alias("o")
             // Each variable found under a name of its own: a variable may be called what SQL will not take.
@@ -1002,7 +1010,7 @@ abstract class SqlCypherCompiler(graph: String) {
          * imports is gone after one.
          */
         private fun calledPart(select: Select, call: Clause.Call, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
-            val imported = VariableKinds.imports(call, clauses, select.scope.keys).let { imports -> select.scope.filterKeys { it in imports } }
+            val imported = calledScope(call, clauses, select.scope)
             var inner = Select(imported)
             importsApart(imported, clauses)?.let { (source, imports) ->
                 inner.source(source)
@@ -1013,6 +1021,18 @@ abstract class SqlCypherCompiler(graph: String) {
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /**
+         * The variables of the row, [scope], that the query [clauses] of [call] sees: those it imports ([VariableKinds.imports]),
+         * and each the compiler made for it, whatever it imports. Those are no variables of the statement's: the UUID made for
+         * each row that `anewCall` unwinds before the clauses, so a query holding a randomUUID() reads the row (#412). Imports
+         * are read from the clauses after that `UNWIND`, as the statement wrote them, so a leading `WITH` imports still (#410).
+         */
+        private fun calledScope(call: Clause.Call, clauses: List<Clause>, scope: Map<String, Value>): Map<String, Value> {
+            val written = clauses.dropWhile { it is Clause.Unwind && it.variable in madeAnew }
+            val imports = VariableKinds.imports(call, written, scope.keys.filterNot { it in madeAnew })
+            return scope.filterKeys { it in imports || it in madeAnew }
         }
 
         /**
@@ -2054,7 +2074,7 @@ abstract class SqlCypherCompiler(graph: String) {
         fun project(select: Select, projection: Projection, final: Boolean): Projected {
             // As in Neo4j, a star gives the variables in the order of their names, before the items named after it.
             // Not a randomUUID() made first for a CALL or a condition (see `anewCall`), which the statement never named.
-            val starred = select.bound.keys.filterNot { it.startsWith(ANEW) }.sorted()
+            val starred = select.bound.keys.filterNot { it in madeAnew }.sorted()
             val items = (if (projection.star) starred.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
             if (items.isEmpty()) throw DrivineException("A projection has at least one item.")
             // Before aggregatesFirst, which names each variable it groups by as an item of its own.
@@ -2238,11 +2258,11 @@ abstract class SqlCypherCompiler(graph: String) {
             val inBodies = terms.any { seeded(it, ANEW) != it }
             if (!inBodies && terms.none { (whole || !alone(it)) && holds(it) }) return null
             val made = mutableListOf<Projection.Item>()
-            val seed = if (!inBodies) null else "$ANEW${++counter}".also { made += Projection.Item(Expression.Function("randomUUID", false, emptyList()), it) }
+            val seed = if (!inBodies) null else anewVariable().also { made += Projection.Item(Expression.Function("randomUUID", false, emptyList()), it) }
             val reads = terms.map { term ->
                 if (!whole && alone(term)) term
                 else replaced(term) { e ->
-                    if (anew(e)) Expression.Variable("$ANEW${++counter}").also { made += Projection.Item(e, it.name) } else e.takeIf(::isSeeded)
+                    if (anew(e)) Expression.Variable(anewVariable()).also { made += Projection.Item(e, it.name) } else e.takeIf(::isSeeded)
                 }
                     .let { read -> if (seed == null) read else seeded(read, seed) }
             }
