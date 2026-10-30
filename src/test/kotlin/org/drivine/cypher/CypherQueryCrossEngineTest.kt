@@ -302,6 +302,12 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS u ORDER BY u" to 100,
             "UNWIND range(1, 100) AS i CALL { RETURN randomUUID() AS u } RETURN u" to 100,
             "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) + '-' AS u } RETURN u" to 100,
+            // However the CALL imports, it reads the UUID made for its row, which it never names (#410).
+            "UNWIND range(1, 100) AS i CALL () { RETURN toUpper(randomUUID()) AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL (i) { RETURN toString(i) + randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { WITH i RETURN toString(i) + randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { WITH i WITH i AS j RETURN toString(j) + randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) AS u UNION RETURN 'x' AS u } RETURN u" to 101,
             "UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u" to 100,
             // Two items written alike are a UUID each, as in Neo4j.
             "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS a, toUpper(randomUUID()) AS b" to 200,

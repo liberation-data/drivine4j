@@ -1002,7 +1002,7 @@ abstract class SqlCypherCompiler(graph: String) {
          * imports is gone after one.
          */
         private fun calledPart(select: Select, call: Clause.Call, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
-            val imported = VariableKinds.imports(call, clauses, select.scope.keys).let { imports -> select.scope.filterKeys { it in imports } }
+            val imported = calledScope(call, clauses, select.scope)
             var inner = Select(imported)
             importsApart(imported, clauses)?.let { (source, imports) ->
                 inner.source(source)
@@ -1013,6 +1013,18 @@ abstract class SqlCypherCompiler(graph: String) {
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /**
+         * The variables of the row, [scope], that the query [clauses] of [call] sees: those it imports ([VariableKinds.imports]),
+         * and each the compiler made for it, whatever it imports. Those are no variables of the statement's: the UUID made for
+         * each row that `anewCall` unwinds before the clauses, so a query holding a randomUUID() reads the row (#412). Imports
+         * are read from the clauses after that `UNWIND`, as the statement wrote them, so a leading `WITH` imports still (#410).
+         */
+        private fun calledScope(call: Clause.Call, clauses: List<Clause>, scope: Map<String, Value>): Map<String, Value> {
+            val written = clauses.dropWhile { it is Clause.Unwind && it.variable.startsWith(ANEW) }
+            val imports = VariableKinds.imports(call, written, scope.keys.filterNot { it.startsWith(ANEW) })
+            return scope.filterKeys { it in imports || it.startsWith(ANEW) }
         }
 
         /**

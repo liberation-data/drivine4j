@@ -291,6 +291,11 @@ class CompilerRefusalTest {
                     "a is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
                 "MATCH (a), (b) CALL (a) { CALL (b) { MATCH (b)-->(d) RETURN d } RETURN d.x AS x } RETURN x" to
                     "b is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                // A CALL holding a randomUUID() reads the UUID made for its row, and still imports only what it names.
+                "UNWIND [1] AS i CALL { RETURN toString(i) + randomUUID() AS u } RETURN u" to
+                    "i is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                "UNWIND [1] AS i CALL (x) { RETURN randomUUID() AS u } RETURN u" to
+                    "x is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
             ).forEach { (cypher, message) ->
                 val store = compiler()::class.simpleName
                 assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
@@ -314,6 +319,8 @@ class CompilerRefusalTest {
                 "MATCH (a) CALL { WITH * WHERE true RETURN 1 AS x } RETURN x",
                 "MATCH (a) CALL { UNWIND [1] AS x RETURN x UNION WITH a WHERE true RETURN 1 AS x } RETURN x",
                 "MATCH (a) CALL { WITH a WHERE a.x > 1 SET a.y = 1 } RETURN a",
+                // One holding a randomUUID() too, whose query reads a UUID made for the row before its WITH.
+                "MATCH (a) CALL { WITH a AS c RETURN c.x + randomUUID() AS x } RETURN x",
             ).forEach { cypher ->
                 val refused = assertThrows<DrivineException>("$store: $cypher") { compiler.compile(cypher) }.message!!
                 assertTrue(refused.startsWith("The importing WITH of a CALL { … } names variables of the row alone, as in Cypher"), "$store: $cypher: $refused")
