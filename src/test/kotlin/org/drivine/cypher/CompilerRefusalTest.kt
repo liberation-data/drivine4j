@@ -296,6 +296,9 @@ class CompilerRefusalTest {
                     "i is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
                 "UNWIND [1] AS i CALL (x) { RETURN randomUUID() AS u } RETURN u" to
                     "x is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                // A variable quoted as the compiler names its own is imported as any other is.
+                "UNWIND [1] AS `#anew9` CALL () { RETURN `#anew9` AS x } RETURN x" to
+                    "#anew9 is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
             ).forEach { (cypher, message) ->
                 val store = compiler()::class.simpleName
                 assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
