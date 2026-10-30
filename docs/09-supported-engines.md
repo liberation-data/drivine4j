@@ -272,7 +272,8 @@ declares the function itself.
   may be named by a keyword (`$limit`), as in Neo4j. Functions of numbers (`exp`, `log`, `sin`, `atan2`, `round` by a
   mode …) give the floats Neo4j gives, but where Neo4j gives NaN or an infinity (`log(0)`, `sqrt(-1)`, `exp(1000)`) the
   statement fails. NaN and the infinities given as parameters, or worked out by dividing a float by zero (`0.0 / 0.0`),
-  are the floats they are, and are stored as them, as in Neo4j.
+  are the floats they are, and are stored as them, as in Neo4j; but `%`, `^` and functions of numbers given one give
+  null, where Neo4j gives NaN or an infinity.
 - A property that a `RETURN` or a `WITH` returns or passes on (`RETURN n.name`) is read through its text, which
   costs about 2.4 to 3.8 times a plain read: 100,000 rows of `RETURN n.name` take about 490 ms, against 150 ms.
   This works around an Oracle bug, seen on 23.26.3: a string past about 32 KB taken from JSON as JSON, returned or fed
