@@ -279,6 +279,64 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `randomUUID inside a larger expression in a read is made again for each row`() {
+        // A term holding randomUUID() was bound in a subquery that reads nothing of the row, or a CALL's was joined so, and the
+        // store made it once for the statement: each row read the same one (#412). Each statement gives a value for each of
+        // 100 rows, and the count of distinct values among them. Not one in an aggregate's argument, which Neo4j refuses.
+        fun distinct(rows: List<Any?>) = rows.flatMap { row -> (row as? List<*>)?.map { it.toString() } ?: listOf(row.toString()) }.toSet().size
+        val shapes = listOf(
+            "left(replace(randomUUID(), '-', ''), 16)",
+            "substring(randomUUID(), 0, 16)",
+            "toUpper(randomUUID())",
+            "[x IN [1] | randomUUID()][0]",
+            "CASE WHEN i > 0 THEN randomUUID() END",
+            "CASE WHEN true THEN toUpper(randomUUID()) END",
+            "{u: randomUUID()}.u",
+            "{u: randomUUID()}",
+            "coalesce(null, randomUUID()) + toString(i % 2)",
+        ).associate { "UNWIND range(1, 100) AS i RETURN $it" to 100 } + mapOf(
+            "UNWIND range(1, 100) AS i RETURN [randomUUID(), randomUUID()]" to 200,
+            "UNWIND range(1, 100) AS i RETURN [x IN range(1, 3) | toUpper(randomUUID())]" to 300,
+            "UNWIND range(1, 100) AS i RETURN reduce(s = '', x IN [1, 2] | s + randomUUID())" to 100,
+            "UNWIND range(1, 100) AS i UNWIND [toUpper(randomUUID())] AS u RETURN u" to 100,
+            "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS u ORDER BY u" to 100,
+            "UNWIND range(1, 100) AS i CALL { RETURN randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) + '-' AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u" to 100,
+        )
+        val failed = shapes.mapNotNull { (cypher, expected) ->
+            distinct(query(cypher)).takeIf { it != expected }?.let { "$cypher: $it distinct of $expected" }
+        }
+        // A condition that reads one keeps about half of 1,000 rows, not all of them or none.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val kept = listOf(
+            "UNWIND range(1, 1000) AS i WITH i WHERE left(randomUUID(), 1) < '8' RETURN count(*)",
+            "UNWIND range(1, 1000) AS i WITH i WHERE [x IN [1] | left(randomUUID(), 1)][0] < '8' RETURN count(*)",
+            "UNWIND range(1, 1000) AS i MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' RETURN count(*)",
+        ).mapNotNull { cypher -> (query(cypher).single() as Long).takeIf { it == 0L || it == 1000L }?.let { "$cypher: $it of 1000 kept" } }
+        assertEquals(emptyList(), failed + kept, (failed + kept).joinToString("\n"))
+    }
+
+    @Test
+    fun `randomUUID bound by a WITH is one value for each row, the same however often the row reads it`() {
+        // One value for each row, not for each read of it (#412).
+        val rows = query("UNWIND range(1, 100) AS i WITH i, randomUUID() AS u RETURN u AS a, u AS b, toUpper(u) AS c, left(replace(u, '-', ''), 16) AS d").map { it as List<*> }
+        assertEquals(100, rows.map { it[0] }.toSet().size, "${rows.take(3)}")
+        rows.forEach { (a, b, upper, short) ->
+            assertEquals(a, b)
+            assertEquals((a as String).uppercase(), upper)
+            assertEquals(a.replace("-", "").take(16), short)
+        }
+        val made = query("UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u AS a, toLower(u) AS b, u + '' AS c").map { it as List<*> }
+        assertEquals(100, made.map { it[0] }.toSet().size, "${made.take(3)}")
+        made.forEach { (a, lower, plus) ->
+            assertEquals((a as String).lowercase(), lower)
+            assertEquals(a, plus)
+        }
+    }
+
+    @Test
     fun `a walk read through a WITH, then sorted by toString in a second WITH, keeps that order`() {
         // Not in the spec yet: the walk is a query inside the one the second WITH sorts, and its term, carried out, is bound in no subquery (#192).
         clear()
