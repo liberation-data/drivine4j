@@ -351,6 +351,17 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a map given beside NaN that is keyed as a store's JSON writes a double comes back as the map it is`() {
+        // SQLite's JSON writes NaN as such a map, which it takes for NaN: no other store reads one so (#295).
+        if (pm.type == DatabaseType.SQLITE) return
+        val tagged = mapOf("\$numberDouble" to "NaN")
+        assertEquals(
+            listOf(listOf(tagged, Double.NaN), listOf(tagged)),
+            query("UNWIND [[\$m, \$p], [\$m]] AS x RETURN x", mapOf("m" to tagged, "p" to Double.NaN)),
+        )
+    }
+
+    @Test
     fun `a list that holds NaN is sorted with NaN after every number in it`() {
         // NaN is a number in a list's sort key, and sorts after the infinity, as it does alone (#295).
         assertEquals(
