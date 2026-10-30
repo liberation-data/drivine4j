@@ -160,6 +160,117 @@ abstract class CypherTemporalContract {
     }
 
     @Test
+    fun `a value truncates to a millennium, a century, a decade, a week-based year or a microsecond, as on Neo4j`() {
+        // #422: refused on the SQL stores before. Neo4j's millennium starts in 2000 and its century in 1900, where Postgres's
+        // date_trunc starts them in 2001 and 1901. Until the spec holds these, held here.
+        assertEquals(
+            mapOf(
+                "millennium" to 2000L, "lastMillennium" to 1000L, "century" to 2000L, "decade" to 2010L,
+                "decadeStart" to listOf(1980L, 1L, 1L, 0L, "+01:00"), "weekYear" to listOf(1983L, 1L, 3L), "weekYearBefore" to listOf(2019L, 12L, 30L),
+                "weekYearZone" to "+02:00", "localMicros" to 645876L, "micros" to 645876L,
+            ),
+            one(
+                """
+                WITH date.truncate('weekYear', date('1984-01-01')) AS w, date.truncate('weekYear', date('2020-12-31')) AS w2,
+                     datetime.truncate('decade', datetime('1984-10-11T12:31:14+01:00')) AS d
+                RETURN {millennium: date.truncate('millennium', date('2017-10-11')).year, lastMillennium: date.truncate('millennium', date('1999-12-31')).year,
+                        century: date.truncate('century', date('2017-05-05')).year, decade: date.truncate('decade', date('2019-05-05')).year,
+                        decadeStart: [d.year, d.month, d.day, d.hour, d.timezone],
+                        weekYear: [w.year, w.month, w.day], weekYearBefore: [w2.year, w2.month, w2.day],
+                        weekYearZone: datetime.truncate('weekYear', datetime('2021-01-03T10:00+02:00')).timezone,
+                        localMicros: localtime.truncate('microsecond', localtime('12:31:14.645876')).microsecond,
+                        micros: datetime.truncate('microsecond', datetime('2017-10-11T12:31:14.645876-01:00')).microsecond}
+                """,
+            ),
+        )
+    }
+
+    @Test
+    fun `a truncation's map of fields is laid over the value cut short, as Neo4j lays it`() {
+        // #422: the third argument was refused on the SQL stores. Until the spec holds these, held here.
+        assertEquals(
+            mapOf(
+                "day" to 2L, "dayOfWeek" to 2L, "sunday" to 14L, "month" to 3L, "moved" to listOf(2000L, 9L, 27L),
+                "weekYear" to listOf(1983L, 1L, 5L), "none" to 2000L, "noMap" to 1L,
+            ),
+            one(
+                """
+                WITH date.truncate('month', date('1984-10-11'), {year: 2000, dayOfWeek: 3}) AS moved, date.truncate('weekYear', date('1984-01-01'), {day: 5}) AS w
+                RETURN {day: date.truncate('month', date('1984-10-11'), {day: 2}).day,
+                        dayOfWeek: date.truncate('month', date('1984-10-11'), {dayOfWeek: 2}).day,
+                        sunday: date.truncate('week', date('1984-10-11'), {dayOfWeek: 7}).day,
+                        month: date.truncate('year', date('1984-10-11'), {month: 3}).month,
+                        moved: [moved.year, moved.month, moved.day], weekYear: [w.year, w.month, w.day],
+                        none: date.truncate('millennium', date('2017-10-11'), {}).year,
+                        noMap: date.truncate('month', date('2017-10-11'), null).day}
+                """,
+            ),
+        )
+        // A millisecond or a microsecond makes the whole fraction, but a microsecond given a value cut to the millisecond is added to it.
+        assertEquals(
+            mapOf(
+                "second" to listOf(3L, 645000L), "hour" to listOf(12L, 6L), "millisecond" to 5000L, "carried" to 645007L,
+                "microsecond" to 7L, "both" to 7000L, "bothFromSecond" to 7008L,
+            ),
+            one(
+                """
+                WITH datetime('2017-10-11T12:31:14.645876+01:00') AS t
+                WITH t, datetime.truncate('millisecond', t, {second: 3}) AS second, localtime.truncate('hour', t, {minute: 6}) AS hour
+                RETURN {second: [second.second, second.microsecond], hour: [hour.hour, hour.minute],
+                        millisecond: datetime.truncate('microsecond', t, {millisecond: 5}).microsecond,
+                        carried: datetime.truncate('millisecond', t, {microsecond: 7}).microsecond,
+                        microsecond: datetime.truncate('second', t, {microsecond: 7}).microsecond,
+                        both: datetime.truncate('millisecond', t, {millisecond: 7, microsecond: 8}).microsecond,
+                        bothFromSecond: datetime.truncate('second', t, {millisecond: 7, microsecond: 8}).microsecond}
+                """,
+            ),
+        )
+        // A field that is null is given as its least, written or read: no hour, the first month, Monday, no fraction.
+        assertEquals(
+            mapOf("hour" to 0L, "month" to 1L, "monday" to 8L, "fraction" to 0L, "read" to listOf(0L, 7L)),
+            one(
+                """
+                WITH {} AS m
+                WITH datetime.truncate('minute', datetime('2017-10-11T12:31:14+01:00'), {hour: m.h, second: coalesce(m.s, 7)}) AS read
+                RETURN {hour: datetime.truncate('second', datetime('2017-10-11T12:31:14+01:00'), {hour: null}).hour,
+                        month: date.truncate('day', date('1984-10-11'), {month: null}).month,
+                        monday: date.truncate('day', date('1984-10-11'), {dayOfWeek: null}).day,
+                        fraction: datetime.truncate('millisecond', datetime('2017-10-11T12:31:14.645876+01:00'), {millisecond: null, microsecond: 8}).microsecond,
+                        read: [read.hour, read.second]}
+                """,
+            ),
+        )
+        // A time zone keeps the wall clock, and a value of none is at UTC.
+        assertEquals(
+            mapOf("zoned" to listOf(11L, 0L, "+05:00"), "time" to listOf(12L, "+05:00"), "fromLocal" to "+05:00", "utc" to "Z", "fromDate" to "Z"),
+            one(
+                """
+                WITH datetime.truncate('day', datetime('2017-10-11T12:31:14+01:00'), {timezone: '+05:00'}) AS zoned,
+                     time.truncate('hour', time('12:31:14-01:00'), {timezone: '+05:00'}) AS time
+                RETURN {zoned: [zoned.day, zoned.hour, zoned.timezone], time: [time.hour, time.timezone],
+                        fromLocal: datetime.truncate('day', localdatetime('2017-10-11T12:31:14'), {timezone: '+05:00'}).timezone,
+                        utc: datetime.truncate('day', datetime('2017-10-11T12:31:14+01:00'), {timezone: '+00:00'}).timezone,
+                        fromDate: datetime.truncate('day', date('2017-10-11'), {}).timezone}
+                """,
+            ),
+        )
+    }
+
+    @Test
+    fun `a value read from the store truncates with a map of fields, whatever its kind`() {
+        // On a SQL store a stored value is of the kind its text tells, so each kind is cut and given its fields as such.
+        // Neo4j fails a truncation of null, where the SQL stores give null, so no node here is without one.
+        query("CREATE (:CyTrunc {id: 1, at: datetime('2017-10-11T12:31:14.645876+01:00')}), (:CyTrunc {id: 2, at: date('2017-10-11')})")
+        assertEquals(
+            listOf(listOf(1L, 2010L, 2L, 3L, "+01:00"), listOf(2L, 2010L, 2L, 3L, "Z")),
+            query(
+                "MATCH (n:CyTrunc) WITH n, datetime.truncate('decade', n.at, {day: 2, hour: 3}) AS d " +
+                    "RETURN n.id AS id, d.year AS year, d.day AS day, d.hour AS hour, d.timezone AS zone ORDER BY id",
+            ),
+        )
+    }
+
+    @Test
     fun `rows beside a variable-length walk sort by temporal arithmetic that is none of the items, as they do on Neo4j`() {
         // #378: beside a walk, such a term bound nothing, and wrote the arithmetic's operands out again at each level: too
         // long for SQLite. It is worked out first, for each row, and sorts as it did.

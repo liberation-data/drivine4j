@@ -14,7 +14,9 @@ import java.time.LocalTime
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.time.format.DateTimeParseException
+import java.time.temporal.ChronoField
 import java.time.temporal.ChronoUnit
+import java.time.temporal.IsoFields
 import java.time.temporal.TemporalAdjusters
 
 /**
@@ -30,7 +32,8 @@ import java.time.temporal.TemporalAdjusters
  * - `add_time(timestamp, days, seconds)`: so many days and seconds later.
  * - `months_between(from, to)`: the whole months a calendar counts from one to the other, negative where `to` is before.
  * - `seconds_between(from, to)`: the seconds from one to the other, with their fraction.
- * - `truncate(timestamp, unit)`: cut to the `year`, `quarter`, `month`, ISO `week`, `day`, `hour`, `minute`, `second` or `millisecond`.
+ * - `truncate(timestamp, unit)`: cut to the `millennium`, `century`, `decade`, `year`, ISO `weekYear`, `quarter`, `month`, ISO `week`,
+ *   `day`, `hour`, `minute`, `second`, `millisecond` or `microsecond`, as Neo4j cuts.
  *
  * A text of the kind's shape that names no such value, a 30th of February, fails the statement, as it does on Postgres.
  */
@@ -101,6 +104,12 @@ internal class SqliteTemporalFunction : Function() {
         "minute" -> clock.truncatedTo(ChronoUnit.MINUTES)
         "second" -> clock.truncatedTo(ChronoUnit.SECONDS)
         "millisecond" -> clock.truncatedTo(ChronoUnit.MILLIS)
+        "microsecond" -> clock.truncatedTo(ChronoUnit.MICROS)
+        // The year less its years into the span, counted toward zero, as Neo4j counts: -1234's millennium is -1000.
+        "millennium" -> clock.toLocalDate().withYear(clock.year - clock.year % 1000).withDayOfYear(1).atStartOfDay()
+        "century" -> clock.toLocalDate().withYear(clock.year - clock.year % 100).withDayOfYear(1).atStartOfDay()
+        "decade" -> clock.toLocalDate().withYear(clock.year - clock.year % 10).withDayOfYear(1).atStartOfDay()
+        "weekYear" -> clock.toLocalDate().with(IsoFields.WEEK_OF_WEEK_BASED_YEAR, 1).with(ChronoField.DAY_OF_WEEK, 1).atStartOfDay()
         else -> throw SQLException("A timestamp is not truncated to $unit.")
     }
 

@@ -18,7 +18,18 @@ import kotlin.test.assertTrue
  */
 class CompilerRefusalTest {
 
-    private val spec = CypherSpec.load("refusals.yaml")
+    /**
+     * The spec's refusals, but for the steps of [COMPILED], which the spec at the tag drivine4j runs refuses and the
+     * compiler now compiles: drivine-cypher-spec#33 drops them. Remove this when drivine4j moves to the tag that has it.
+     */
+    private val spec = CypherSpec.load("refusals.yaml").let { spec ->
+        spec.copy(cases = spec.cases.map { case -> case.copy(steps = case.steps.filterNot { it.cypher in COMPILED }) })
+    }
+
+    private companion object {
+        /** #422: a truncation to the decade. */
+        val COMPILED = setOf("RETURN date.truncate('decade', date('2024-03-15'))")
+    }
 
     @TestFactory
     fun postgres() = spec.tests("postgres", before = {}) { step -> PostgresCypherCompiler("g").compile(step.cypher, step.parameters); emptyList() }
@@ -305,6 +316,48 @@ class CompilerRefusalTest {
         listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
             val refused = assertThrows<DrivineException> { compiler.compile("RETURN date('2024-02-30')") }.message!!
             assertTrue(refused.startsWith("'2024-02-30' is no date"), refused)
+        }
+    }
+
+    @Test
+    fun `a truncation's map of fields Neo4j fails on, or that the stores have no SQL for yet, is refused`() {
+        // #422: a truncation took no third argument before. Until the spec holds these (drivine-cypher-spec#33), held here.
+        val refused = listOf(
+            "RETURN date.truncate('month', date('2024-03-15'), {}, {})" to "date.truncate() takes a unit, a value and a map of fields.",
+            "RETURN date.truncate('fortnight', date('2024-03-15'))" to
+                "date.truncate() truncates to millennium, century, decade, year, weekYear, quarter, month, week, day, hour, minute, second, millisecond or microsecond, not fortnight.",
+            "RETURN date.truncate('day', date('2024-03-15'), {hour: 5})" to "date.truncate() takes no field hour.",
+            "RETURN localdatetime.truncate('day', localdatetime('2024-03-15T10:00'), {timezone: '+05:00'})" to "localdatetime.truncate() takes no field timezone.",
+            "RETURN localtime.truncate('hour', localtime('10:30'), {day: 2})" to "localtime.truncate() takes no field day.",
+            "RETURN date.truncate('day', date('2024-03-15'), {foo: 1})" to "date.truncate() takes no field foo.",
+            "RETURN date.truncate('month', date('2024-03-15'), {day: 2, dayOfWeek: 3})" to "date.truncate() takes a day or a day of the week, not both.",
+            "RETURN date.truncate('month', date('2024-03-15'), {day: null, dayOfWeek: 3})" to "date.truncate() takes a day or a day of the week, not both.",
+            "RETURN date.truncate('week', date('2024-03-15'), {dayOfWeek: 9})" to "date.truncate() takes a day of the week from 1 to 7, not 9.",
+            "RETURN date.truncate('month', date('2024-03-15'), {day: 2.7})" to "date.truncate() takes a whole number for day, not 2.7.",
+            "RETURN date.truncate('month', date('2024-03-15'), {year: '2000'})" to "date.truncate() takes a whole number for year, not '2000'.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: '+0500'})" to "'+0500' is no time zone.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: 'bogus'})" to "'bogus' is no time zone.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: null})" to "datetime.truncate() takes a time zone, not null.",
+            // Not compiled yet: sub-microsecond digits, the fields of a week or a quarter, a zone by name, and what an expression gives.
+            "RETURN datetime.truncate('day', date('2024-03-15'), {nanosecond: 2})" to "datetime.truncate() of a map with nanosecond is Cypher, and is not compiled to SQL yet.",
+            "RETURN date.truncate('month', date('2024-03-15'), {week: 2})" to "date.truncate() of a map with week is Cypher, and is not compiled to SQL yet.",
+            "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: 'Europe/Stockholm'})" to "The time zone 'Europe/Stockholm' is Cypher, and is not compiled to SQL yet.",
+            "WITH {day: 2} AS fields RETURN date.truncate('month', date('2024-03-15'), fields)" to
+                "A truncation's fields that an expression gives is Cypher, and is not compiled to SQL yet.",
+            "WITH '+01:00' AS zone RETURN datetime.truncate('day', date('2024-03-15'), {timezone: zone})" to
+                "A truncation to a time zone an expression gives is Cypher, and is not compiled to SQL yet.",
+        )
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                assertEquals(message, assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message, cypher)
+            }
+            // The units the spec's tag refuses, and fields of every kind the stores have SQL for, compile.
+            listOf(
+                "RETURN date.truncate('decade', date('2024-03-15'))",
+                "RETURN date.truncate('weekYear', date('2024-03-15'), {dayOfWeek: 2, year: 2000, month: null})",
+                "RETURN datetime.truncate('microsecond', datetime('2024-03-15T10:00Z'), {hour: 1, minute: 2, second: 3, millisecond: 4, microsecond: 5, timezone: 'Z'})",
+                "WITH 3 AS d RETURN localdatetime.truncate('millennium', \$at, {day: d})",
+            ).forEach { compiler.compile(it, mapOf("at" to "2024-03-15T10:00")) }
         }
     }
 }
