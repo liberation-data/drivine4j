@@ -62,9 +62,13 @@ internal object DdlContention {
      * Retries don't multiply. Run within another run of this on the same thread, as the provider's first connection is
      * when an object manager making the tables asks for a connection, [statement] is run once, and the run outside
      * retries; and a failure given up on is not run again by a retry outside.
+     *
+     * [turnedAway] says which failures are a deadlock with another session's, a SQL store's ([contended]) unless
+     * given: a graph engine's DDL is run again on its own engine's, as the store identity's constraint is (#473).
      */
     fun <T> whenNotContended(
         pause: (attempt: Int) -> Long = { SaveExecutor.contendedPause(it) },
+        turnedAway: (Throwable) -> Boolean = ::contended,
         statement: () -> T,
     ): T {
         if (running.get()) return statement()
@@ -75,7 +79,7 @@ internal object DdlContention {
                 try {
                     return statement()
                 } catch (failure: Exception) {
-                    if (!contended(failure)) throw failure.apply { first?.let(::addSuppressed) }
+                    if (gaveUp(failure) || !turnedAway(failure)) throw failure.apply { first?.let(::addSuppressed) }
                     val earlier = first
                     if (earlier == null) first = failure else if (earlier !== failure) earlier.addSuppressed(failure)
                     // No pause after the last attempt: nothing follows it.
