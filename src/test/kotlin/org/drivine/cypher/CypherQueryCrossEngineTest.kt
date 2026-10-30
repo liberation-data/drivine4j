@@ -303,6 +303,9 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 100) AS i CALL { RETURN randomUUID() AS u } RETURN u" to 100,
             "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) + '-' AS u } RETURN u" to 100,
             "UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u" to 100,
+            // Two items written alike are a UUID each, as in Neo4j.
+            "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS a, toUpper(randomUUID()) AS b" to 200,
+            "UNWIND range(1, 100) AS i WITH toUpper(randomUUID()) AS a, toUpper(randomUUID()) AS b RETURN a, b" to 200,
         )
         val failed = shapes.mapNotNull { (cypher, expected) ->
             distinct(query(cypher)).takeIf { it != expected }?.let { "$cypher: $it distinct of $expected" }
@@ -314,8 +317,47 @@ abstract class CypherQueryContract {
             "UNWIND range(1, 1000) AS i WITH i WHERE left(randomUUID(), 1) < '8' RETURN count(*)",
             "UNWIND range(1, 1000) AS i WITH i WHERE [x IN [1] | left(randomUUID(), 1)][0] < '8' RETURN count(*)",
             "UNWIND range(1, 1000) AS i MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' RETURN count(*)",
+            // An OPTIONAL MATCH's lateral query read nothing of the row, and Oracle and SQLite worked it out once.
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE randomUUID() < '8' RETURN count(p)",
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' RETURN count(p)",
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE [x IN [1] | left(randomUUID(), 1)][0] < '8' RETURN count(p)",
+            // Made for each of the 4 people a row finds, not once for the row: some of them kept, not all or none.
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person) WHERE left(randomUUID(), 1) < '8' WITH i, count(p) AS c WHERE c > 0 AND c < 4 RETURN count(*)",
+            // Two OPTIONAL MATCHes, each a UUID of its own: one kept and not the other in about half the rows.
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' " +
+                "OPTIONAL MATCH (q:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' WITH p, q WHERE (p IS NULL) <> (q IS NULL) RETURN count(*)",
+            // A shortest path's condition, met where its one path is found.
+            "UNWIND range(1, 1000) AS i MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) " +
+                "MATCH p = shortestPath((a)-[:KNOWS*]->(b)) WHERE left(randomUUID(), 1) < '8' RETURN count(p)",
+            "UNWIND range(1, 1000) AS i MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) " +
+                "MATCH p = allShortestPaths((a)-[:KNOWS*]->(b)) WHERE left(randomUUID(), 1) < '8' RETURN count(p)",
+            // Made again for each item: one of two kept in about half the rows, which Postgres and Oracle kept both or neither of.
+            "UNWIND range(1, 1000) AS i WITH i WHERE single(x IN range(1, 2) WHERE left(randomUUID(), 1) < '8') RETURN count(*)",
+            "UNWIND range(1, 1000) AS i WITH i WHERE size([x IN range(1, 2) WHERE left(randomUUID(), 1) < '8' | x]) = 1 RETURN count(*)",
         ).mapNotNull { cypher -> (query(cypher).single() as Long).takeIf { it == 0L || it == 1000L }?.let { "$cypher: $it of 1000 kept" } }
-        assertEquals(emptyList(), failed + kept, (failed + kept).joinToString("\n"))
+        // One for each item a pattern comprehension finds, 8 of them, where Postgres refused the statement and SQLite gave one row.
+        val found = listOf(
+            "MATCH (p:Person) RETURN p.name, [(p)-->() | toUpper(randomUUID())]",
+            "MATCH (p:Person) RETURN p.name, [(p)-->(m) WHERE left(randomUUID(), 1) <> 'z' | left(randomUUID(), 36)]",
+        ).mapNotNull { cypher ->
+            val rows = query(cypher).map { it as List<*> }
+            val made = rows.flatMap { it[1] as List<*> }
+            "$cypher: $rows".takeIf { rows.size != 4 || made.size != 8 || made.toSet().size != 8 }
+        }
+        // The UUID made first for the row is no variable of the statement's.
+        val starred = listOf(
+            "UNWIND range(1, 2) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE randomUUID() < 'z' RETURN *",
+            "UNWIND range(1, 2) AS i CALL { RETURN toUpper(randomUUID()) AS u } RETURN *",
+            "UNWIND range(1, 2) AS i WITH * WHERE left(randomUUID(), 1) < 'z' RETURN *, 1 AS one",
+        ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 2 || rows.any { (it as List<*>).size != 2 } }?.let { "$cypher: $it" } }
+        // An OPTIONAL MATCH that finds nothing, or keeps nothing it finds, keeps the row, with nulls.
+        val nulls = listOf(
+            "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Nobody'}) WHERE randomUUID() < 'z' RETURN i, p",
+            "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '0' RETURN i, p",
+            "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Nobody'}) WHERE randomUUID() < 'z' OPTIONAL MATCH (p)-->(m) WHERE toUpper(randomUUID()) < 'Z' RETURN i, p, m",
+        ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 3 || rows.any { (it as List<*>).drop(1).any { v -> v != null } } }?.let { "$cypher: $it" } }
+        val wrong = failed + kept + found + starred + nulls
+        assertEquals(emptyList(), wrong, wrong.joinToString("\n"))
     }
 
     @Test
