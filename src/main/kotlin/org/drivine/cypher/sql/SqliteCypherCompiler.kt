@@ -26,7 +26,7 @@ import java.math.RoundingMode
  * A statement that writes is a procedure, as on the other stores, which a function Drivine registers carries out:
  * see [procedure].
  *
- * An infinity is the number SQLite's JSON writes for one, `9e999`, which it reads as the infinity. NaN SQLite's JSON holds as no
+ * An infinity is the number SQLite's JSON writes for one, `9.0e+999`, which it reads as the infinity. NaN SQLite's JSON holds as no
  * number, so a statement given one ([nonFinite]) writes it as `{"${'$'}numberDouble": "NaN"}` ([SqliteCypherValues.NAN]), which it
  * takes for a number ([typeOf]), equal to nothing and ordered with nothing; arithmetic over it gives it, as does arithmetic over an
  * infinity that gives NaN, and it is written as Java writes it. The rows give it back as NaN (see
