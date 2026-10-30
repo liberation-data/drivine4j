@@ -2202,6 +2202,22 @@ abstract class CypherQueryContract {
             query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 3) AS i WITH sum(i + o) AS s, collect(o) AS c RETURN * } RETURN o, s, c ORDER BY o"),
         )
         assertEquals(listOf(listOf(1L, 11L), listOf(2L, 11L)), query("UNWIND [1, 2] AS o CALL { UNWIND [5, 6] AS o RETURN sum(o) AS s } RETURN o, s ORDER BY o"))
+        // Under a RETURN that aggregates after a WITH *; an aggregate within a comprehension or a CASE; an import renamed by the
+        // first WITH; a boolean and a path imported. Found in the ports of this test (drivine#429), whose compilers failed them.
+        assertEquals(listOf(listOf(1L, 9L), listOf(2L, 12L)), query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 3) AS i WITH * RETURN sum(i + o) AS s } RETURN o, s ORDER BY o"))
+        assertEquals(
+            listOf(listOf(1L, listOf(2L, 2L, 2L), "many"), listOf(2L, listOf(3L, 3L, 3L), "many")),
+            query("UNWIND [1, 2] AS o CALL (o) { UNWIND range(1, 3) AS i RETURN [x IN collect(o) | x + 1] AS c, CASE WHEN count(o) > 2 THEN 'many' ELSE 'few' END AS k } RETURN o, c, k ORDER BY o"),
+        )
+        assertEquals(listOf(listOf(1L, 9L), listOf(2L, 12L)), query("UNWIND [1, 2] AS o CALL (o) { WITH o AS x UNWIND range(1, 3) AS i RETURN sum(x + i) AS s } RETURN o, s ORDER BY o"))
+        assertEquals(
+            listOf(listOf(1L, listOf(false, false), 5L), listOf(2L, listOf(true, true), 7L)),
+            query("UNWIND [1, 2] AS o WITH o, o > 1 AS b CALL (o, b) { UNWIND [1, 2] AS i RETURN collect(b) AS bs, sum(i + o) AS s } RETURN o, bs, s ORDER BY o"),
+        )
+        assertEquals(
+            listOf(listOf(2L, listOf(1L, 1L))),
+            query("MATCH path = (p:Person {name: 'Laurence'})-[:ACTED_IN]->() CALL (path) { UNWIND [1, 2] AS i RETURN count(path) AS n, collect(length(path)) AS ls } RETURN n, ls"),
+        )
     }
 
     @Test
