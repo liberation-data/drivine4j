@@ -1900,7 +1900,7 @@ cases:
         error: true
 
   - name: "NaN and the infinities as parameters"
-    description: "A NaN or infinite parameter, alone or in a list or a map, is the float it is, as on Neo4j: NaN is equal to nothing and ordered with nothing, arithmetic keeps it, and it is no text, though one put together with it writes it as Java does."
+    description: "A NaN or infinite parameter, alone or in a list or a map, is the float it is, as on Neo4j: NaN is equal to nothing and ordered with nothing, `+`, `-`, `*` and `/` keep it, and it is no text, though one put together with it writes it as Java does."
     steps:
       - only: [neo4j, sql]
         cypher: "RETURN [$p, $i, $n, $l, $m]"
