@@ -27,6 +27,14 @@ data class TextIndexSpec @JvmOverloads constructor(
     val ignoreCase: Boolean = false,
 ) : IndexSpec {
 
+    @Deprecated("Binary compatibility with callers compiled before ignoreCase", level = DeprecationLevel.HIDDEN)
+    constructor(label: String, property: String, name: String?, mask: Int, marker: kotlin.jvm.internal.DefaultConstructorMarker?) :
+        this(label, property, if (mask and 4 != 0) null else name)
+
+    @Deprecated("Binary compatibility with callers compiled before ignoreCase", level = DeprecationLevel.HIDDEN)
+    fun copy(label: String = this.label, property: String = this.property, name: String? = this.name): TextIndexSpec =
+        copy(label = label, property = property, name = name, ignoreCase = ignoreCase)
+
     init {
         requireNameNotWhitespace(name, "TextIndexSpec")
     }

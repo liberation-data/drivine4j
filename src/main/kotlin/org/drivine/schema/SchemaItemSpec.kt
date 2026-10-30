@@ -29,8 +29,15 @@ package org.drivine.schema
  *     this(label, properties, if (mask and 4 != 0) null else name)
  * ```
  *
- * The generated `copy` has the same synthetic shape and no such remedy, so a Kotlin caller of `copy`
- * still needs the Drivine it was compiled against.
+ * The generated `copy`, and its synthetic `copy$default`, change shape too. Keep them with a hidden
+ * `copy` of the previous parameters, with the same defaults, that forwards to the new one and keeps
+ * the new option as it is; its own `copy$default` then has the previous descriptor:
+ *
+ * ```kotlin
+ * @Deprecated("Binary compatibility with callers compiled before newOption", level = DeprecationLevel.HIDDEN)
+ * fun copy(label: String = this.label, properties: List<String> = this.properties, name: String? = this.name): RangeIndexSpec =
+ *     copy(label = label, properties = properties, name = name, newOption = newOption)
+ * ```
  *
  * @see IndexSpec
  * @see ConstraintSpec

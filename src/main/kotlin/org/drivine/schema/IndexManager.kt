@@ -48,14 +48,15 @@ class IndexManager internal constructor(
 
     /**
      * Fills in the lowercased copies [spec] is made over, when it ignores case: see [LowerCopyCatalog].
-     * [again] fills them in whether or not they are recorded as there.
+     * Where [again] says so, asked only of an item that ignores case and after a manager with no
+     * [owner] has refused it, they are filled in whether or not they are recorded as there.
      */
-    internal fun fillIn(spec: SchemaItemSpec, again: Boolean = false) {
+    internal fun fillIn(spec: SchemaItemSpec, again: () -> Boolean = { false }) {
         val properties = spec.lowercased.ifEmpty { return }
         val copies = lowerCopies ?: throw DrivineException(
             "${spec.kind} ${spec.effectiveName} on ${spec.label}${spec.properties} ignores case, and this manager has no store to fill the lowercased copies in through."
         )
-        copies.fillIn(spec.label, properties, again)
+        copies.fillIn(spec.label, properties, again())
     }
 
     private val logger = LoggerFactory.getLogger(IndexManager::class.java)
@@ -78,12 +79,15 @@ class IndexManager internal constructor(
      * Never destructive: if an index exists with a different shape, returns [EnsureResult.Drift]
      * and changes nothing; call [recreate] to replace it. An index that ignores case (see
      * [RangeIndexSpec.ignoreCase]) first fills in the lowercased copy on the nodes of its label that
-     * have none, and records that they all have it, whatever the result.
+     * have none, and records that they all have it, whatever the result. Where the index is not there
+     * yet, the copies are filled in again even if recorded, as by [recreate], since those a field kept
+     * before it lost `@CaseInsensitive` went out of step meanwhile.
      */
     fun ensure(spec: IndexSpec): EnsureResult {
         requireSupported(spec)
-        // An index that ignores case is made over copies that every node of its label has.
-        fillIn(spec)
+        // An index that ignores case is made over copies that every node of its label has. One made
+        // anew fills them in again, recorded or not: they may have gone out of step while it was gone.
+        fillIn(spec) { find(spec) == null }
         return ensureMade(spec.made())
     }
 
@@ -184,7 +188,7 @@ class IndexManager internal constructor(
     fun recreate(spec: IndexSpec): EnsureResult.Recreated {
         requireSupported(spec)
         // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
-        fillIn(spec, again = true)
+        fillIn(spec) { true }
         return recreateMade(spec.made())
     }
 

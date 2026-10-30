@@ -33,6 +33,10 @@ data class RangeIndexSpec @JvmOverloads constructor(
     constructor(label: String, property: String, name: String?, mask: Int, marker: kotlin.jvm.internal.DefaultConstructorMarker?) :
         this(label, listOf(property), if (mask and 4 != 0) null else name)
 
+    @Deprecated("Binary compatibility with callers compiled before ignoreCase", level = DeprecationLevel.HIDDEN)
+    fun copy(label: String = this.label, properties: List<String> = this.properties, name: String? = this.name): RangeIndexSpec =
+        copy(label = label, properties = properties, name = name, ignoreCase = ignoreCase)
+
     init {
         require(properties.isNotEmpty()) { "RangeIndexSpec requires at least one property" }
         requireNameNotWhitespace(name, "RangeIndexSpec")

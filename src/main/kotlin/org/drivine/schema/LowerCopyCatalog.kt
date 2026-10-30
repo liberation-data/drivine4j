@@ -1,7 +1,10 @@
 package org.drivine.schema
 
 import com.fasterxml.jackson.databind.ObjectMapper
+import org.drivine.backend.GraphBackends
 import org.drivine.manager.PersistenceManager
+import org.drivine.manager.SaveExecutor
+import org.drivine.mapper.Neo4jObjectMapper
 import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
 import org.drivine.query.QuerySpecification
@@ -115,7 +118,8 @@ class CypherLowerCopies(
  * milliseconds while a property is asked after, on a schema connection of its own (see [CatalogReads]). Until a
  * read has come back, a property counts as not filled in, and the DSL lowercases the property itself,
  * which gives the same answer without the index. A record is never taken back: every save keeps the
- * copy in step, and `recreate` fills it in again where a write that bypassed Drivine left it out of
+ * copy in step, and `recreate`, or an `ensure` that makes the item anew, fills it in again where a
+ * write that bypassed Drivine, or one made while the field was not `@CaseInsensitive`, left it out of
  * step.
  *
  * @param owner the auto-commit manager the copies are filled in and recorded through
@@ -133,6 +137,9 @@ internal class LowerCopyCatalog(
     private val statements: LowerCopyStatements by lazy {
         owner.reservedNode("the record of lowercased copies", { lowerCopies() }) { CypherLowerCopies() }
     }
+
+    /** Runs the record again when the store turns it away as contended. */
+    private val recording: SaveExecutor by lazy { SaveExecutor(owner, GraphBackends.of(owner, Neo4jObjectMapper.instance)) }
 
     /** What this process has recorded. */
     private val recorded = ConcurrentHashMap.newKeySet<Pair<String, String>>()
@@ -166,11 +173,16 @@ internal class LowerCopyCatalog(
                 filled += written
             } while (written >= BATCH)
             // The graph engines keep the record on the store's own node, which is made when it is not there.
-            StoreIdentityResolver(owner).resolve()
-            owner.execute(
-                QuerySpecification.withStatement(statements.record)
-                    .bind(mapOf("label" to label, "properties" to LowerCopyStatements.json(listOf(property)), "entry" to LowerCopyStatements.entry(label, property)))
-            )
+            // The SQL stores keep it in their catalog, and need no store node.
+            if (statements is CypherLowerCopies) StoreIdentityResolver(owner).resolve()
+            // Memgraph turns away the second of two processes recording at once rather than wait for the
+            // node's lock; recording again is harmless, so it is run again, as a contended save is.
+            recording.whenNotContended {
+                owner.execute(
+                    QuerySpecification.withStatement(statements.record)
+                        .bind(mapOf("label" to label, "properties" to LowerCopyStatements.json(listOf(property)), "entry" to LowerCopyStatements.entry(label, property)))
+                )
+            }
             recorded += label to property
             logger.info("Filled in the lowercased copy of {}.{} on {} node(s), and recorded every node has it", label, property, filled)
         }

@@ -392,6 +392,14 @@ class CaseInsensitiveStatementsTest {
         val unique = UniquenessConstraintSpec("CiAccount", "email", nodeIdProperty = "id", ignoreCase = true)
         assertEquals(UniquenessConstraintSpec("CiAccount", listOf(LowerCopies.of("email")), "CiAccount_email_ci_unique", "id"), unique.made())
         assertEquals(TextIndexSpec("CiAccount", LowerCopies.of("email"), "CiAccount_email_ci_text"), TextIndexSpec("CiAccount", "email", ignoreCase = true).made())
+
+        // The marker's inventory keys, which the other libraries write alike.
+        assertEquals("UNIQUENESS_CONSTRAINT:CiAccount:__drivine.lower.email:CiAccount_email_ci_unique", unique.inventoryKey)
+        assertEquals("TEXT_INDEX:CiAccount:__drivine.lower.email:CiAccount_email_ci_text", TextIndexSpec("CiAccount", "email", ignoreCase = true).inventoryKey)
+        assertEquals(
+            "RANGE_INDEX:CiAccount:__drivine.lower.email,__drivine.lower.name:CiAccount_email_name_ci_range",
+            RangeIndexSpec("CiAccount", listOf("email", "name"), ignoreCase = true).inventoryKey,
+        )
     }
 
     @Test
@@ -418,6 +426,39 @@ class CaseInsensitiveStatementsTest {
         assertEquals(
             UniquenessConstraintSpec("L", "p", nodeIdProperty = "id"),
             UniquenessConstraintSpec::class.java.getConstructor(text, text, text, text, mask, marker).newInstance("L", "p", null, "id", 4, null),
+        )
+        assertEquals(TextIndexSpec("L", "p"), TextIndexSpec::class.java.getConstructor(text, text, text, mask, marker).newInstance("L", "p", null, 4, null))
+    }
+
+    @Test
+    fun `a Kotlin caller compiled before ignoreCase that copies a spec still links, and keeps ignoreCase`() {
+        // The copy and copy$default such a caller links to: bit i of the mask is set where it left parameter i out.
+        val text = String::class.java
+        val list = List::class.java
+        val mask = Int::class.javaPrimitiveType
+        val marker = Any::class.java
+        val range = RangeIndexSpec("L", "p", ignoreCase = true)
+        val textIndex = TextIndexSpec("L", "p", ignoreCase = true)
+        val unique = UniquenessConstraintSpec("L", "p", nodeIdProperty = "id", ignoreCase = true)
+
+        assertEquals(range.copy(name = "n"), RangeIndexSpec::class.java.getMethod("copy", text, list, text).invoke(range, "L", listOf("p"), "n"))
+        assertEquals(
+            range.copy(label = "M"),
+            RangeIndexSpec::class.java.getMethod("copy\$default", RangeIndexSpec::class.java, text, list, text, mask, marker).invoke(null, range, "M", null, null, 6, null),
+        )
+        assertEquals(textIndex.copy(name = "n"), TextIndexSpec::class.java.getMethod("copy", text, text, text).invoke(textIndex, "L", "p", "n"))
+        assertEquals(
+            textIndex.copy(property = "q"),
+            TextIndexSpec::class.java.getMethod("copy\$default", TextIndexSpec::class.java, text, text, text, mask, marker).invoke(null, textIndex, null, "q", null, 5, null),
+        )
+        assertEquals(
+            unique.copy(name = "n"),
+            UniquenessConstraintSpec::class.java.getMethod("copy", text, list, text, text).invoke(unique, "L", listOf("p"), "n", "id"),
+        )
+        assertEquals(
+            unique.copy(nodeIdProperty = "key"),
+            UniquenessConstraintSpec::class.java.getMethod("copy\$default", UniquenessConstraintSpec::class.java, text, list, text, text, mask, marker)
+                .invoke(null, unique, null, null, null, "key", 7, null),
         )
     }
 

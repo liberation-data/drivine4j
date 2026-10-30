@@ -36,6 +36,14 @@ data class CiRedone(@NodeId val id: String, @CaseInsensitive val email: String? 
 @NodeFragment(labels = ["CiMember"])
 data class CiMember(@NodeId val id: String, @CaseInsensitive @Unique(ignoreCase = true) val email: String? = null)
 
+/** Its email regains `@CaseInsensitive` after a while without it, written then as [CiReturningPlain]. */
+@NodeFragment(labels = ["CiReturning"])
+data class CiReturning(@NodeId val id: String, @CaseInsensitive val email: String? = null)
+
+/** [CiReturning] as it is while its email is not `@CaseInsensitive`: a save leaves the copy as it was. */
+@NodeFragment(labels = ["CiReturning"])
+data class CiReturningPlain(@NodeId val id: String, val email: String? = null)
+
 /** Many of them, for a plan that reads an index. */
 @NodeFragment(labels = ["CiPlanned"])
 data class CiPlanned(@NodeId val id: String, @CaseInsensitive val email: String? = null)

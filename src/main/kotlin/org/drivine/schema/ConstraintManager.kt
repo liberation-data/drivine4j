@@ -58,7 +58,7 @@ class ConstraintManager internal constructor(
      * constraint surfaces as [EnsureResult.BlockedByIndex]. In each case nothing is changed and the
      * caller decides what to do, save that a constraint that ignores case (see
      * [UniquenessConstraintSpec.ignoreCase]) first fills in the lowercased copies it is made over, as
-     * [IndexManager.ensure] does. FalkorDB cannot make one, and throws a [DrivineException] before that.
+     * [IndexManager.ensure] does, again where the constraint is not there yet. FalkorDB cannot make one, and throws a [DrivineException] before that.
      * The one thing dropped unasked is a constraint whose build failed,
      * which FalkorDB keeps listing though it enforces nothing: it is dropped and built again. A
      * constraint FalkorDB still lists as under construction, from another process or an earlier run,
@@ -85,8 +85,9 @@ class ConstraintManager internal constructor(
     ): EnsureResult {
         grammar.requireConstrainable(spec.made())
         // A constraint that ignores case is made over copies that every node of its label has, so a
-        // node saved before there were copies is held to it too.
-        indexManager.fillIn(spec)
+        // node saved before there were copies is held to it too. One made anew fills them in again,
+        // recorded or not: they may have gone out of step while it was gone.
+        indexManager.fillIn(spec) { find(spec) == null }
         return ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)
     }
 
@@ -206,7 +207,7 @@ class ConstraintManager internal constructor(
             run(grammar.dropConstraint(existing))
         }
         // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
-        indexManager.fillIn(spec, again = true)
+        indexManager.fillIn(spec) { true }
         return when (val result = ensureMade(spec.made(), violationSampleSize, replaceBlockingIndex)) {
             is EnsureResult.Created -> EnsureResult.Recreated(existing, result.info)
             else -> result

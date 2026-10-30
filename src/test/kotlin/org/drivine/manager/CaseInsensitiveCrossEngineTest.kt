@@ -42,6 +42,7 @@ import org.drivine.test.SharedFalkorDb
 import org.drivine.test.SharedMemgraph
 import org.drivine.test.SharedNeo4j
 import org.junit.jupiter.api.AfterAll
+import org.junit.jupiter.api.Assumptions.assumeFalse
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
@@ -50,6 +51,9 @@ import org.neo4j.driver.GraphDatabase
 import org.neo4j.driver.summary.Plan
 import org.testcontainers.containers.GenericContainer
 import org.testcontainers.containers.Neo4jContainer
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import sample.caseinsensitive.CiAccount
 import sample.caseinsensitive.CiAccountQueryDsl
 import sample.caseinsensitive.CiAccountView
@@ -59,6 +63,8 @@ import sample.caseinsensitive.CiLate
 import sample.caseinsensitive.CiMember
 import sample.caseinsensitive.CiPlanned
 import sample.caseinsensitive.CiRedone
+import sample.caseinsensitive.CiReturning
+import sample.caseinsensitive.CiReturningPlain
 
 /**
  * `@CaseInsensitive`: a save keeps a lowercased copy of the property, which loads do not see; an
@@ -231,6 +237,25 @@ abstract class CaseInsensitiveContract {
     }
 
     @Test
+    fun `managers recording copies at once each keep theirs, and record each once`() {
+        val copies = assertNotNull(pm.indexes.lowerCopies)
+        val properties = (1..4).map { "p$it" }
+        val start = CountDownLatch(1)
+        // Each property twice: two record the same copy at once, and others different ones beside them.
+        val pool = Executors.newFixedThreadPool(properties.size * 2)
+        try {
+            val recording = (properties + properties).map { property ->
+                pool.submit { start.await(); copies.fillIn("CiLate", listOf(property), again = true) }
+            }
+            start.countDown()
+            recording.forEach { it.get(1, TimeUnit.MINUTES) }
+        } finally {
+            pool.shutdownNow()
+        }
+        assertEquals(properties.map { "CiLate" to it }.toSet(), recorded().filter { it.first == "CiLate" }.toSet())
+    }
+
+    @Test
     fun `recreate fills the copies in again, where a write that bypassed Drivine left one out of step`() {
         val spec = RangeIndexSpec("CiRedone", "email", ignoreCase = true)
         stateless.save(CiRedone("l1", "Ann@X.com"))
@@ -247,6 +272,46 @@ abstract class CaseInsensitiveContract {
         pm.indexes.recreate(spec)
         assertEquals("anne@x.com", copy("CiRedone", "l1"))
         assertEquals("bob@x.com", copy("CiRedone", "l2"))
+    }
+
+    @Test
+    fun `an index made anew fills the copies in again, which went out of step while the field was not CaseInsensitive`() {
+        val spec = RangeIndexSpec("CiReturning", "email", ignoreCase = true)
+        pm.indexes.drop(spec)
+        stateless.save(CiReturning("r1", "Ann@X.com"))
+        pm.indexes.ensure(spec)
+        // The annotation is taken away: the index goes, and a save leaves the copy as it was.
+        pm.indexes.drop(spec)
+        stateless.save(CiReturningPlain("r1", "Bob@X.com"))
+        assertEquals("ann@x.com", copy("CiReturning", "r1"))
+
+        // Given back, the copies are still recorded; the index made anew fills them in again all the same.
+        assertTrue(pm.indexes.ensure(spec) is EnsureResult.Created)
+        assertEquals("bob@x.com", copy("CiReturning", "r1"))
+        fun found(email: String): Set<String> = stateless.loadAll(CiReturning::class.java, CiEmailQueryDsl.INSTANCE) {
+            where { query.email eqIgnoreCase email }
+        }.map { it.id }.toSet()
+        assertTrue(readsCopy(lookup(CiReturning::class.java, "BOB@x.com")))
+        assertEquals(setOf("r1"), found("BOB@x.com"))
+        assertEquals(emptySet(), found("ann@x.com"))
+    }
+
+    @Test
+    fun `a constraint made anew fills the copies in again, and is held to the copies as they are now`() {
+        assumeFalse(this is CaseInsensitiveFalkorDbTest, "FalkorDB makes no constraint over the copy")
+        val spec = UniquenessConstraintSpec("CiReturning", "email", ignoreCase = true)
+        // The index of the test beside this one would stand in the way of the constraint on Neo4j.
+        pm.indexes.drop(RangeIndexSpec("CiReturning", "email", ignoreCase = true))
+        pm.constraints.drop(spec)
+        stateless.saveAll(listOf(CiReturning("r1", "Ann@X.com"), CiReturning("r2", "Bob@X.com")))
+        pm.constraints.ensure(spec)
+        pm.constraints.drop(spec)
+        // Saved while the field was not @CaseInsensitive: its copy says Ann, though its email is now Bob's.
+        stateless.save(CiReturningPlain("r1", "BOB@x.com"))
+
+        val result = pm.constraints.ensure(spec)
+        assertTrue(result is EnsureResult.Violation, "$result")
+        assertEquals("bob@x.com", copy("CiReturning", "r1"))
     }
 
     @Test

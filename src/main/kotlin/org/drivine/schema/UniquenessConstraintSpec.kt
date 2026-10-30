@@ -37,6 +37,14 @@ data class UniquenessConstraintSpec @JvmOverloads constructor(
     constructor(label: String, property: String, name: String?, nodeIdProperty: String?, mask: Int, marker: kotlin.jvm.internal.DefaultConstructorMarker?) :
         this(label, listOf(property), if (mask and 4 != 0) null else name, if (mask and 8 != 0) null else nodeIdProperty)
 
+    @Deprecated("Binary compatibility with callers compiled before ignoreCase", level = DeprecationLevel.HIDDEN)
+    fun copy(
+        label: String = this.label,
+        properties: List<String> = this.properties,
+        name: String? = this.name,
+        nodeIdProperty: String? = this.nodeIdProperty,
+    ): UniquenessConstraintSpec = copy(label = label, properties = properties, name = name, nodeIdProperty = nodeIdProperty, ignoreCase = ignoreCase)
+
     init {
         require(properties.isNotEmpty()) { "UniquenessConstraintSpec requires at least one property" }
         requireNameNotWhitespace(name, "UniquenessConstraintSpec")
