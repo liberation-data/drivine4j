@@ -2,6 +2,7 @@ package org.drivine.schema
 
 import org.drivine.DrivineException
 import org.drivine.connection.ConnectionProvider
+import org.drivine.manager.PersistenceManager
 import org.slf4j.LoggerFactory
 import java.time.Duration
 
@@ -32,10 +33,31 @@ class IndexManager internal constructor(
     val grammar: SchemaGrammar,
     private val asyncDropTimeout: Duration = Duration.ofSeconds(30),
     private val asyncPollInterval: Duration = Duration.ofMillis(200),
+    /** The auto-commit manager this one is of, which an item that ignores case fills its copies in through; null for none. */
+    private val owner: PersistenceManager? = null,
 ) {
 
-    internal constructor(connectionProvider: ConnectionProvider) :
-        this(SchemaExecutor(connectionProvider), connectionProvider.schemaGrammar)
+    internal constructor(connectionProvider: ConnectionProvider, owner: PersistenceManager? = null) :
+        this(SchemaExecutor(connectionProvider), connectionProvider.schemaGrammar, owner = owner)
+
+    /**
+     * Which lowercased copies every node of a label has, which an index or a constraint that ignores
+     * case fills in when it is ensured. Null for a manager with no [owner] to fill them in through.
+     */
+    internal val lowerCopies: LowerCopyCatalog? by lazy { owner?.let { LowerCopyCatalog(it, ::run) } }
+
+    /**
+     * Fills in the lowercased copies [spec] is made over, when it ignores case: see [LowerCopyCatalog].
+     * Where [again] says so, asked only of an item that ignores case and after a manager with no
+     * [owner] has refused it, they are filled in whether or not they are recorded as there.
+     */
+    internal fun fillIn(spec: SchemaItemSpec, again: () -> Boolean = { false }) {
+        val properties = spec.lowercased.ifEmpty { return }
+        val copies = lowerCopies ?: throw DrivineException(
+            "${spec.kind} ${spec.effectiveName} on ${spec.label}${spec.properties} ignores case, and this manager has no store to fill the lowercased copies in through."
+        )
+        copies.fillIn(spec.label, properties, again())
+    }
 
     private val logger = LoggerFactory.getLogger(IndexManager::class.java)
 
@@ -55,10 +77,22 @@ class IndexManager internal constructor(
      * Ensures an index matching [spec] exists. Idempotent — safe to call on every startup.
      *
      * Never destructive: if an index exists with a different shape, returns [EnsureResult.Drift]
-     * and changes nothing; call [recreate] to replace it.
+     * and changes nothing; call [recreate] to replace it. An index that ignores case (see
+     * [RangeIndexSpec.ignoreCase]) first fills in the lowercased copy on the nodes of its label that
+     * have none, and records that they all have it, whatever the result. Where the index is not there
+     * yet, the copies are filled in again even if recorded, as by [recreate], since those a field kept
+     * before it lost `@CaseInsensitive` went out of step meanwhile.
      */
     fun ensure(spec: IndexSpec): EnsureResult {
         requireSupported(spec)
+        // An index that ignores case is made over copies that every node of its label has. One made
+        // anew fills them in again, recorded or not: they may have gone out of step while it was gone.
+        fillIn(spec) { find(spec) == null }
+        return ensureMade(spec.made())
+    }
+
+    /** [ensure], of [spec] as it is made. */
+    private fun ensureMade(spec: IndexSpec): EnsureResult {
         val items = introspectIndexes(spec.kind)
         val existing = items.firstOrNull { grammar.matchesIdentity(it, spec) }
         if (existing == null) {
@@ -115,7 +149,8 @@ class IndexManager internal constructor(
     /** Finds the existing index that [spec] refers to, or null if none exists. */
     fun find(spec: IndexSpec): SchemaItemInfo? {
         requireSupported(spec)
-        return introspectIndexes(spec.kind).firstOrNull { grammar.matchesIdentity(it, spec) }
+        val made = spec.made()
+        return introspectIndexes(made.kind).firstOrNull { grammar.matchesIdentity(it, made) }
     }
 
     /** Lists all managed indexes (vector, range, fulltext, and on Neo4j text) on the database. */
@@ -140,16 +175,25 @@ class IndexManager internal constructor(
      */
     fun drop(spec: IndexSpec): Boolean {
         val existing = find(spec) ?: return false
-        dropExisting(existing, spec)
+        dropExisting(existing, spec.made())
         return true
     }
 
     /**
      * Drops (if present) and recreates the index described by [spec]. Destructive — previously
      * indexed data may need re-processing (e.g. re-embedding after a vector dimension change).
+     * An index that ignores case fills the lowercased copies in again on every node of its label,
+     * recorded or not.
      */
     fun recreate(spec: IndexSpec): EnsureResult.Recreated {
         requireSupported(spec)
+        // The copies are filled in again too, where a write that bypassed Drivine left one out of step.
+        fillIn(spec) { true }
+        return recreateMade(spec.made())
+    }
+
+    /** [recreate], of [spec] as it is made. */
+    private fun recreateMade(spec: IndexSpec): EnsureResult.Recreated {
         val existing = find(spec)
         if (existing != null) {
             dropExisting(existing, spec)

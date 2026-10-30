@@ -39,7 +39,7 @@ class NonTransactionalPersistenceManager(
     /** Cached: the stamp cannot change under a live connection, and every caller wants the same answer. */
     override val storeIdentity: StoreIdentity by lazy { StoreIdentityResolver(this).resolve() }
 
-    override val indexes: IndexManager by lazy { IndexManager(connectionProvider) }
+    override val indexes: IndexManager by lazy { IndexManager(connectionProvider, owner = this) }
 
     override val constraints: ConstraintManager by lazy { ConstraintManager(connectionProvider, indexes) }
 

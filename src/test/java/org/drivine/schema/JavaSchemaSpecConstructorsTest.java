@@ -29,11 +29,13 @@ class JavaSchemaSpecConstructorsTest {
 
     @Test
     void rangeIndexSpecAtEveryArity() {
-        RangeIndexSpec full = new RangeIndexSpec("Doc", TITLE, null);
+        RangeIndexSpec full = new RangeIndexSpec("Doc", TITLE, null, false);
 
         assertEquals(full, new RangeIndexSpec("Doc", TITLE));
+        assertEquals(full, new RangeIndexSpec("Doc", TITLE, null));
         assertEquals(full, new RangeIndexSpec("Doc", "title"));
         assertEquals(full, new RangeIndexSpec("Doc", "title", null));
+        assertEquals(full, new RangeIndexSpec("Doc", "title", null, false));
     }
 
     @Test
@@ -49,20 +51,23 @@ class JavaSchemaSpecConstructorsTest {
 
     @Test
     void textIndexSpecAtEveryArity() {
-        TextIndexSpec full = new TextIndexSpec("Doc", "title", null);
+        TextIndexSpec full = new TextIndexSpec("Doc", "title", null, false);
 
         assertEquals(full, new TextIndexSpec("Doc", "title"));
+        assertEquals(full, new TextIndexSpec("Doc", "title", null));
     }
 
     @Test
     void uniquenessConstraintSpecAtEveryArity() {
-        UniquenessConstraintSpec full = new UniquenessConstraintSpec("Doc", TITLE, null, null);
+        UniquenessConstraintSpec full = new UniquenessConstraintSpec("Doc", TITLE, null, null, false);
 
         assertEquals(full, new UniquenessConstraintSpec("Doc", TITLE));
         assertEquals(full, new UniquenessConstraintSpec("Doc", TITLE, null));
+        assertEquals(full, new UniquenessConstraintSpec("Doc", TITLE, null, null));
         assertEquals(full, new UniquenessConstraintSpec("Doc", "title"));
         assertEquals(full, new UniquenessConstraintSpec("Doc", "title", null));
         assertEquals(full, new UniquenessConstraintSpec("Doc", "title", null, null));
+        assertEquals(full, new UniquenessConstraintSpec("Doc", "title", null, null, false));
     }
 
     @Test

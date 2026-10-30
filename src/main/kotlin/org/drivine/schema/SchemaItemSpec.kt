@@ -29,8 +29,15 @@ package org.drivine.schema
  *     this(label, properties, if (mask and 4 != 0) null else name)
  * ```
  *
- * The generated `copy` has the same synthetic shape and no such remedy, so a Kotlin caller of `copy`
- * still needs the Drivine it was compiled against.
+ * The generated `copy`, and its synthetic `copy$default`, change shape too. Keep them with a hidden
+ * `copy` of the previous parameters, with the same defaults, that forwards to the new one and keeps
+ * the new option as it is; its own `copy$default` then has the previous descriptor:
+ *
+ * ```kotlin
+ * @Deprecated("Binary compatibility with callers compiled before newOption", level = DeprecationLevel.HIDDEN)
+ * fun copy(label: String = this.label, properties: List<String> = this.properties, name: String? = this.name): RangeIndexSpec =
+ *     copy(label = label, properties = properties, name = name, newOption = newOption)
+ * ```
  *
  * @see IndexSpec
  * @see ConstraintSpec
@@ -93,3 +100,29 @@ internal fun requireNameNotWhitespace(name: String?, specType: String) {
             "Use null or \"\" to derive a name from the label and properties."
     }
 }
+
+/**
+ * The item as it is made: one that ignores case is made over the lowercased copies of its properties
+ * (see [org.drivine.model.LowerCopies]), under its own name; any other as it is declared.
+ */
+internal fun SchemaItemSpec.made(): SchemaItemSpec = when (this) {
+    is RangeIndexSpec -> made()
+    is TextIndexSpec -> made()
+    is UniquenessConstraintSpec -> made()
+    else -> this
+}
+
+/** [made], for an index. */
+internal fun IndexSpec.made(): IndexSpec = (this as SchemaItemSpec).made() as IndexSpec
+
+/** [made], for a constraint. */
+internal fun ConstraintSpec.made(): ConstraintSpec = (this as SchemaItemSpec).made() as ConstraintSpec
+
+/** The properties whose lowercased copies the item is made over; none for one that does not ignore case. */
+internal val SchemaItemSpec.lowercased: List<String>
+    get() = when (this) {
+        is RangeIndexSpec -> properties.takeIf { ignoreCase }
+        is TextIndexSpec -> properties.takeIf { ignoreCase }
+        is UniquenessConstraintSpec -> properties.takeIf { ignoreCase }
+        else -> null
+    }.orEmpty()

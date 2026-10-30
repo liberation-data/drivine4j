@@ -11,6 +11,8 @@ import java.sql.Connection
  *
  * - [WRITE] carries out a plan of steps: see [SqliteWriteFunction].
  * - [DELETE] deletes the nodes a statement selected, and counts them: see [SqliteDeleteFunction].
+ * - [LOWER_COPIES] fills in the lowercased copies of a property, and counts the nodes it wrote: see
+ *   [SqliteLowerCopiesFunction].
  * - [SIMILARITY] scores an embedding against a vector: see [SqliteSimilarityFunction].
  * - [REGEXP_COUNT] counts the matches of a regular expression, and [REGEXP] is SQLite's `REGEXP`
  *   operator: see [SqliteRegexpCountFunction] and [SqliteRegexpFunction].
@@ -41,6 +43,7 @@ internal object SqliteFunctions {
 
     const val WRITE = "drivine_write"
     const val DELETE = "drivine_delete"
+    const val LOWER_COPIES = "drivine_lower_copies"
     const val SIMILARITY = "drivine_similarity"
     const val REGEXP_COUNT = "drivine_regexp_count"
     const val LOWER = "drivine_lower"
@@ -74,6 +77,7 @@ internal object SqliteFunctions {
         val patterns = SqlitePatterns()
         Function.create(connection, WRITE, SqliteWriteFunction(connection), 6, 0)
         Function.create(connection, DELETE, SqliteDeleteFunction(connection), 2, 0)
+        Function.create(connection, LOWER_COPIES, SqliteLowerCopiesFunction(connection), 4, 0)
         Function.create(connection, CYPHER, SqliteCypherFunction(connection), 2, 0)
         Function.create(connection, SIMILARITY, SqliteSimilarityFunction(), 3, Function.FLAG_DETERMINISTIC)
         Function.create(connection, REGEXP_COUNT, SqliteRegexpCountFunction(patterns), 2, Function.FLAG_DETERMINISTIC)

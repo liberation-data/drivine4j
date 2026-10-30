@@ -32,6 +32,8 @@ persistenceManager.constraints.ensure(UniquenessConstraintSpec("Membership", lis
 | `BlockedByIndex` | Constraint only: a plain range index over the same label and properties is in the way of it, and is named. Neo4j alone refuses a constraint for one, since its constraint brings its own index. Nothing changed — drop the index, or ensure with `replaceBlockingIndex = true` (`drivine.schema.replace-blocking-index=true`), which drops it and makes the constraint |
 | `Recreated` | From an explicit `recreate(spec)` — old item dropped, new one created |
 
+**An item that ignores case** (`ignoreCase = true`) is made over the lowercased copy a `@CaseInsensitive` field keeps, and `ensure` fills the copy in first: see [@CaseInsensitive](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case).
+
 **A TEXT index is Neo4j's.** `TextIndexSpec` (or `@TextIndex` on a property) makes `CREATE TEXT INDEX … FOR (n:Label) ON (n.prop)`. That index is over one string property and serves `CONTAINS`, `STARTS WITH` and `ENDS WITH` on it. It is not a full-text index, and Neo4j lists, drift-checks and drops it as a kind of its own (`SchemaItemKind.TEXT_INDEX`), so the two can stand on the same property. No other engine has one. There, `ensure`, `recreate`, `find` and `drop` throw a `DrivineException` before anything runs, rather than make another index in its place, and applying a catalog that declares one fails for its owner. Mind the names: what Memgraph calls a `TEXT INDEX` is a full-text index, declared with `FullTextIndexSpec` / `@FullTextIndex`.
 
 ### Declarative: SchemaCatalog bean

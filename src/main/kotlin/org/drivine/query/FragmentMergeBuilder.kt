@@ -6,6 +6,7 @@ import java.util.Objects
 import org.drivine.manager.NullPolicy
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
+import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
 import org.drivine.query.grammar.CypherGrammar
 
@@ -23,6 +24,7 @@ import org.drivine.query.grammar.CypherGrammar
  *    store through [storedKeys] when the object is untracked.
  * 5. Write a `@NodeLabels` field as labels: its contents are added, and under [NullPolicy.CLEAR] the
  *    members of a closed set that it no longer holds are removed.
+ * 6. Write the lowercased copy of each `@CaseInsensitive` field, from the node as written (see [LowerCopies]).
  *
  * [grammar] is optional; when null (e.g. in unit tests that only assert plain SET shape) vector
  * fields are written plainly, exactly as any other field.
@@ -323,6 +325,9 @@ internal class FragmentMergeBuilder(
             if (removeClauses.isNotEmpty()) append("\nREMOVE ").append(removeClauses.joinToString(", "))
             if (addLabels.isNotEmpty()) append("\nSET n").append(labelExpression(addLabels))
             if (dropLabels.isNotEmpty()) append("\nREMOVE n").append(labelExpression(dropLabels))
+            // The lowercased copies, from the properties as now written: in a SET of their own, since an
+            // engine may read every value of one SET before it writes any.
+            LowerCopies.clause("n", fragmentModel.lowerCopied)?.let { append("\n").append(it) }
         }
         val carried = fragmentModel.stampField?.let { allProps[it] as? String }
         val stampWrite = offered?.let {
