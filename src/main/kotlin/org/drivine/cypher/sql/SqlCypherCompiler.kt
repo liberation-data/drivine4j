@@ -492,6 +492,16 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
 
     /**
+     * Whether a `sum` of the SQL numbers [numbers], [distinct] each once where it is `DISTINCT `, is past a long's
+     * range (#339): on a store that sums integers exactly, the sum is a double there, as Neo4j's is. Neo4j goes on as a
+     * double from the row where a long would overflow, so its answer follows the order the rows come in:
+     * `[9223372036854775807, 1, -1]` is a double there, where the sum here, back in range, is a long. SQL keeps no
+     * order, and the total is told by the sum the statement works out anyway, so no value is read again.
+     */
+    protected fun passesLong(numbers: String, distinct: String) =
+        "sum($distinct$numbers) NOT BETWEEN ${Long.MIN_VALUE} AND ${Long.MAX_VALUE}"
+
+    /**
      * Where the JSON [json]'s kind comes among the others, as Cypher orders values of several kinds: a map,
      * a list, a text, a truth value, then a number. JSON orders them otherwise on each store.
      */
