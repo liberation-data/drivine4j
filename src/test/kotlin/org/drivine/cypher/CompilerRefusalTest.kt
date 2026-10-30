@@ -114,18 +114,32 @@ class CompilerRefusalTest {
             "RETURN properties(1)" to "properties() takes a node, a relationship or a map, not an integer, as in Neo4j.",
             "WITH 'Cypher' AS t RETURN properties(t)" to "properties() takes a node, a relationship or a map, not a text, as in Neo4j.",
             "RETURN properties([true, false])" to "properties() takes a node, a relationship or a map, not a list, as in Neo4j.",
+            // Read in the step of reduce(), which Oracle gives the row as JSON, a variable is of the kind the statement made it.
+            "WITH 1 AS x RETURN reduce(a = 0, y IN [1] | a + x.num)" to "An integer has no properties.",
+            "WITH 'a' AS x RETURN reduce(a = true, y IN [1] | a AND x)" to "AND takes a truth value, not a text, as in Neo4j.",
+            // A kind each query of a UNION gives alike is kept.
+            "CALL { RETURN 1 AS x UNION RETURN 2 AS x } RETURN x.num" to "An integer has no properties.",
             "CREATE (a) SET a.maplist = [{num: 1}]" to
                 "A property is a number, a text, a truth value, a temporal value or a list of them, not a list of maps or lists, as in Neo4j.",
             "MATCH (a) SET a.m = {num: 1}" to "A property is a number, a text, a truth value, a temporal value or a list of them, not a map, as in Neo4j.",
         )
-        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+        // A compiler is made for each statement, as a connection makes one: one that has compiled a write compiles the next as one.
+        listOf({ PostgresCypherCompiler("g") }, { OracleCypherCompiler("g") }, { SqliteCypherCompiler("g") }).forEach { compiler ->
             refused.forEach { (cypher, message) ->
-                assertEquals(message, assertThrows<DrivineException>("${compiler::class.simpleName}: $cypher") { compiler.compile(cypher) }.message, "${compiler::class.simpleName}: $cypher")
+                val store = compiler()::class.simpleName
+                assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
             }
-            assertEquals(
-                "range() takes a step other than 0, as in Neo4j.",
-                assertThrows<DrivineException> { compiler.compile("RETURN range(2, 8, \$s)", mapOf("s" to 0)) }.message,
-            )
+            // A parameter's value is known as the statement is compiled, once for each call: a step of 0 would never end, and
+            // an index given of another kind is refused as one written is.
+            listOf(
+                Triple("RETURN range(2, 8, \$s)", mapOf("s" to 0), "range() takes a step other than 0, as in Neo4j."),
+                Triple("WITH [1] AS l RETURN l[\$k]", mapOf("k" to "a"), "A list is indexed by an integer, not a text, as in Neo4j."),
+                Triple("WITH {a: 1} AS m RETURN m[\$k]", mapOf("k" to 1), "A map is indexed by a text, not an integer, as in Neo4j."),
+                // A value carried across a write is of the kind the statement made it.
+                Triple("WITH 1 AS x CREATE (n) RETURN x.num", emptyMap(), "An integer has no properties."),
+            ).forEach { (cypher, parameters, message) ->
+                assertEquals(message, assertThrows<DrivineException>(cypher) { compiler().compile(cypher, parameters) }.message, cypher)
+            }
             // A value whose kind is known only when the row is read, a property, a parameter or an unwound item, is compiled, as
             // Neo4j plans it; and so are null and the kinds each takes.
             listOf(
@@ -138,7 +152,21 @@ class CompilerRefusalTest {
                 "MATCH (a) SET a.tags = ['x', 'y'], a.n = -1" to emptyMap(),
                 // A variable each query of a UNION makes of another kind is of none known.
                 "CALL { RETURN 1 AS x UNION RETURN {a: 1} AS x } RETURN x.a" to emptyMap(),
-            ).forEach { (cypher, parameters) -> compiler.compile(cypher, parameters) }
+                // A variable a later WITH, a comprehension, a quantifier or a reduce() binds again is of the kind that one makes it.
+                "WITH 1 AS x WITH {a: 1} AS x RETURN x.a" to emptyMap(),
+                "WITH 1 AS x RETURN [x IN [{a: 1}] | x.a], [x IN [true] WHERE x], any(x IN [true] WHERE x), reduce(x = true, y IN [true] | x AND y)" to emptyMap(),
+                // A CASE, a coalesce(), a list joined, an item of a list or a map written, or a parameter, is of no kind known.
+                "WITH CASE WHEN true THEN {a: 1} ELSE 1 END AS x, coalesce(null, {a: 1}) AS y, [1] + [{a: 1}] AS z RETURN x.a, y.a, z[1]" to emptyMap(),
+                "RETURN [{a: 1}][0].a, [true][0] AND true, {a: true}.a AND true, {a: [1]}['a'][0]" to emptyMap(),
+                "WITH \$p AS x RETURN x.a, x AND true, x[0], 1 IN x, properties(x)" to mapOf("p" to mapOf("a" to 1)),
+                "WITH [1] AS l, {a: 1} AS m RETURN l[\$i], m[\$k]" to mapOf("i" to 0, "k" to "a"),
+                "WITH {a: 1} AS m CREATE (n) RETURN m.a" to emptyMap(),
+                // A name a WITH or an UNWIND binds again after a write is of the kind that one makes it.
+                "WITH 1 AS x CREATE (n {v: x}) WITH n AS x RETURN x.v" to emptyMap(),
+                "WITH 1 AS x CREATE (n {v: x}) WITH n.v AS x RETURN x.a" to emptyMap(),
+                "WITH 1 AS x CREATE (n) WITH {a: 1} AS x CREATE (m) RETURN x.a" to emptyMap(),
+                "WITH 1 AS x CREATE (n) WITH 1 AS y UNWIND [{a: 1}] AS x RETURN x.a" to emptyMap(),
+            ).forEach { (cypher, parameters) -> compiler().compile(cypher, parameters) }
         }
     }
 

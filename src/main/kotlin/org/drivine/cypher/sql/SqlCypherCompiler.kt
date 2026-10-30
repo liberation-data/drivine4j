@@ -1577,7 +1577,7 @@ abstract class SqlCypherCompiler(graph: String) {
                             itemItems = carried[variable]?.itemItems, temporals = carried[variable]?.temporals == true,
                             list = carried[variable]?.list == true, itemLists = carried[variable]?.itemLists == true,
                             text = carried[variable]?.text == true, texts = carried[variable]?.texts == true,
-                            rowKeys = if (written) listOf(key) else null, fromList = !written,
+                            rowKeys = if (written) listOf(key) else null, fromList = !written, known = carried[variable]?.known,
                         ),
                     )
                     // A list or a path that is null is held as JSON's null, and read as SQL's.
@@ -2633,7 +2633,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         context = context,
                         contextStep = { accumulator, item, map ->
                             // A value read from the map is of the kind the statement made it.
-                            val inner = read.associateWith { (scope.getValue(it) as? Value.Json).let { v -> Value.Json(propertyOf(map, it), temporal = v?.temporal, items = v?.items) } } +
+                            val inner = read.associateWith { (scope.getValue(it) as? Value.Json).let { v -> Value.Json(propertyOf(map, it), temporal = v?.temporal, items = v?.items, known = v?.known) } } +
                                 mapOf(expression.accumulator to Value.Json(accumulator), expression.variable to Value.Json(item, temporal = itemsOf(listed), temporals = itemTemporalsOf(listed)))
                             val was = givenParameters
                             givenParameters = given.associateWith { Value.Json(propertyOf(map, "$$it"), temporal = Temporal.ofValue(parameters.value(it))) }
@@ -2785,7 +2785,9 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * Refuses [index], `subject[index]`, where the statement writes its subject as a value that is no list or map, or its
          * index as a value of a kind its subject is not indexed by ([knownKind]): a list by an integer, a map by a text. As
-         * Neo4j refuses it; where the subject's kind is left open, it is compiled as before.
+         * Neo4j refuses it; where the subject's kind is left open, it is compiled as before. An index given as a parameter is of
+         * its value's kind ([known]): the statement is compiled for each call, and its SQL is already made by that value, a
+         * text read as a property and a number as an item, so one of the other kind would be read as neither.
          */
         private fun indexOfKind(index: Expression.Index, scope: Map<String, Value>) {
             val subject = knownKind(index.subject, scope) ?: return
@@ -2794,7 +2796,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 Value.Known.MAP -> Value.Known.TEXT
                 else -> throw DrivineException("${subject.noun.replaceFirstChar(Char::uppercase)} is not a list or a map, and is indexed as one, as in Neo4j.")
             }
-            val kind = knownKind(index.index, scope) ?: return
+            val kind = knownKind(index.index, scope) ?: (index.index as? Expression.Parameter)?.let { Value.Known.of(known(it)) } ?: return
             if (kind != by) throw DrivineException("${subject.noun.replaceFirstChar(Char::uppercase)} is indexed by ${by.noun}, not ${kind.noun}, as in Neo4j.")
         }
 
@@ -2841,7 +2843,9 @@ abstract class SqlCypherCompiler(graph: String) {
                     is Value.Relationship -> return Value.Json(itemProperty(subject.props, expression.key), flat = true)
                     // A value of an unwound item, but a temporal value's field, and one a write reads from its row as rowValue does.
                     // It may hold temporal values deeper, as property() has it, so that a list of them is read by its places (#369).
-                    is Value.Json -> if (subject.fromList && subject.temporal == null && subject.rowKeys == null && expression.key !in temporals.fieldNames)
+                    // One of a kind known other than a map is left to property(), which refuses it.
+                    is Value.Json -> if (subject.fromList && subject.temporal == null && subject.rowKeys == null && expression.key !in temporals.fieldNames &&
+                        (subject.known == null || subject.known == Value.Known.MAP))
                         return Value.Json(itemValue(comparable(subject), expression.key), temporals = subject.temporals)
                     else -> {}
                 }
