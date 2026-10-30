@@ -253,14 +253,19 @@ class SqliteCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
             (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN '\"NaN\"' ELSE " else "") +
             "CASE json_type($x) WHEN 'text' THEN $x WHEN 'null' THEN NULL WHEN 'real' THEN json_quote(${SqliteFunctions.FLOAT_TEXT}($x ->> '$')) ELSE json_quote('' || $x) END" + if (nonFinite) " END" else ""
         }
+        // NaN, where the statement is given it, as Java casts it to a long, as Neo4j does: 0. An infinity is cast so already.
         "tointeger" -> shared(json) { (x) ->
+            (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN '0' ELSE " else "") +
             "CASE json_type($x) WHEN 'integer' THEN $x WHEN 'real' THEN json_quote(CAST($x ->> '$' AS INTEGER)) " +
                 "WHEN 'text' THEN CASE WHEN trim($x ->> '$') REGEXP '^[+-]?[0-9]+$' THEN json_quote(CAST(trim($x ->> '$') AS INTEGER)) " +
-                "WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(CAST(trim($x ->> '$') AS REAL) AS INTEGER)) END END"
+                "WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(CAST(trim($x ->> '$') AS REAL) AS INTEGER)) END END" +
+                if (nonFinite) " END" else ""
         }
         "tofloat" -> shared(json) { (x) ->
+            (if (nonFinite) "CASE WHEN ${isNaN(x)} THEN $x ELSE " else "") +
             "CASE json_type($x) WHEN 'integer' THEN json_quote(CAST($x ->> '$' AS REAL)) WHEN 'real' THEN $x " +
-                "WHEN 'text' THEN CASE WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(trim($x ->> '$') AS REAL)) END END"
+                "WHEN 'text' THEN CASE WHEN ($x ->> '$') REGEXP ${literal(NUMERIC_TEXT)} THEN json_quote(CAST(trim($x ->> '$') AS REAL)) END END" +
+                if (nonFinite) " END" else ""
         }
         "head" -> "($json -> 0)"
         "last" -> "($json -> -1)"

@@ -137,7 +137,8 @@ variable bound as something else.
   `[9223372036854775807, 1, -1]`, is a float there and a long on Oracle and Postgres, which keep no order and tell the
   total alone. SQLite fails with `integer overflow` wherever a running total passes the range.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
-  as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
+  as JSON holds neither. A float divided by zero fails on Postgres, gives null on SQLite, and on Oracle is the NaN or
+  infinity Neo4j gives.
 - NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
   nothing and ordered with nothing, and arithmetic keeps it. Oracle stores them too. SQLite stores an infinity, and
   refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb` holds neither.
