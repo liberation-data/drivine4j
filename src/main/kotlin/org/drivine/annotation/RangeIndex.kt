@@ -33,4 +33,9 @@ annotation class RangeIndex(
     val properties: Array<String> = [],
     /** Explicit index name; empty derives one from label and properties. */
     val name: String = "",
+    /**
+     * Whether the index is over the lowercased copy of each property, which a `@CaseInsensitive` field
+     * keeps (see [CaseInsensitive]), so that it serves `eqIgnoreCase`.
+     */
+    val ignoreCase: Boolean = false,
 )

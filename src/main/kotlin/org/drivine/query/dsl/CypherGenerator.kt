@@ -501,6 +501,9 @@ object CypherGenerator {
                 val paramName = generateParamName(condition.propertyPath, index)
                 "toLower($lhs) = \$$paramName"
             }
+            // A lowercased copy, compared with the value as the engine lowercases it.
+            ComparisonOperator.EQUALS_LOWERED -> "$lhs = toLower(\$${generateParamName(condition.propertyPath, index)})"
+            ComparisonOperator.CONTAINS_LOWERED -> "$lhs CONTAINS toLower(\$${generateParamName(condition.propertyPath, index)})"
             ComparisonOperator.CONTAINS,
             ComparisonOperator.STARTS_WITH,
             ComparisonOperator.ENDS_WITH -> {
@@ -730,6 +733,8 @@ object CypherGenerator {
             ComparisonOperator.HAS_ELEMENT -> "\$${generateParamName(condition.propertyPath, index)} IN $lhs"
             ComparisonOperator.CONTAINS_IGNORE_CASE -> "toLower($lhs) CONTAINS \$${generateParamName(condition.propertyPath, index)}"
             ComparisonOperator.EQUALS_IGNORE_CASE -> "toLower($lhs) = \$${generateParamName(condition.propertyPath, index)}"
+            ComparisonOperator.EQUALS_LOWERED -> "$lhs = toLower(\$${generateParamName(condition.propertyPath, index)})"
+            ComparisonOperator.CONTAINS_LOWERED -> "$lhs CONTAINS toLower(\$${generateParamName(condition.propertyPath, index)})"
             else -> {
                 val paramName = generateParamName(condition.propertyPath, index)
                 "$lhs ${condition.operator.cypherOperator} \$$paramName"

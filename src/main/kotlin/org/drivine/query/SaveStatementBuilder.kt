@@ -9,6 +9,7 @@ import org.drivine.manager.RemovedTargets
 import org.drivine.mapper.toMap
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
+import org.drivine.model.LowerCopies
 import org.drivine.model.RelationshipModel
 import org.drivine.model.Stamps
 import org.drivine.query.grammar.CypherGrammar
@@ -278,6 +279,7 @@ internal class SaveStatementBuilder(
             line("WITH $carried, row, n, row.i + '/' + $found AS _i, $ROW_CHANGES_NODE AS _changed")
             line("SET n += row.props, ${Stamps.restamp("n", "_changed", MARK)}")
             if (handsBack) line("REMOVE ${Stamps.unmark("n")}")
+            LowerCopies.clause("n", model.lowerCopied)?.let(::line)
             if (!group.link) {
                 if (handsBack) {
                     line("WITH ${roots(depth)}, _ns, _is, collect(n) AS _n, collect(_i) AS _j")

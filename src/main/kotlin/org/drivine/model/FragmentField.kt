@@ -71,6 +71,12 @@ data class FragmentField(
      * quoted; a save never writes the field's value, it writes a new stamp when it changes the node.
      */
     val stamp: Boolean = false,
+
+    /**
+     * Whether this field carries `@CaseInsensitive`: a save writes a lowercased copy of it beside it,
+     * under [LowerCopies.of] its [propertyName].
+     */
+    val caseInsensitive: Boolean = false,
 )
 
 /** The raw `@PropertyBag` / `@CompositeProperty` annotation values for a field. */

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.node.ArrayNode
 import com.fasterxml.jackson.databind.node.JsonNodeFactory
 import com.fasterxml.jackson.databind.node.ObjectNode
 import org.drivine.backend.sql.WriteReturns
+import org.drivine.model.LowerCopies
 import org.drivine.model.Stamps
 import org.drivine.query.PatchOutcomes
 import java.sql.ResultSet
@@ -26,6 +27,9 @@ import java.sql.ResultSet
  *   a new second token once, at the end.
  * - A `patch` step writes to a node that is there, and only where it meets the query the plan was
  *   given, if any.
+ * - A `node` step, and a `patch` step that changes its node, write the lowercased copy of each property
+ *   they name under `lower`, from what the node then holds (see [LowerCopies]). The copies are no part
+ *   of whether a step changed the node: one that only puts a copy in step keeps the node's stamp.
  *
  * Numbers are read and written as the decimals they are written as, so a property no step writes keeps
  * its text, and two values are the same where Postgres's `jsonb` says so: `1.5` is `1.50`.
@@ -208,13 +212,15 @@ internal class SqlitePlanWriter(
                 if (relabel || made) labels = strings(now)
             }
 
+            // The copies are written from what the step leaves, and are no part of whether it changed the node.
+            val copied = lowered(o, step["lower"])
             if (made) {
                 // A node that is made is written once, whole, with a stamp of its own. A uniqueness constraint
                 // may refuse it: once, the node is looked for again, as on Postgres; a second time, the
                 // constraint is on something other than this node's key, and refuses this save.
                 val inserted = statements.rows(
                     "INSERT INTO $nodesTable (labels, props, stamp) VALUES (?, ?, ?) ON CONFLICT DO NOTHING RETURNING nid",
-                    json.writeValueAsString(labels), json.writeValueAsString(o), fresh,
+                    json.writeValueAsString(labels), json.writeValueAsString(copied), fresh,
                 ) { it.getLong(1) }.firstOrNull()
                 if (inserted != null) {
                     nid = inserted
@@ -222,22 +228,27 @@ internal class SqlitePlanWriter(
                 }
                 tries++
                 if (tries > 1) {
-                    statements.update("INSERT INTO $nodesTable (labels, props, stamp) VALUES (?, ?, ?)", json.writeValueAsString(labels), json.writeValueAsString(o), fresh)
+                    statements.update("INSERT INTO $nodesTable (labels, props, stamp) VALUES (?, ?, ?)", json.writeValueAsString(labels), json.writeValueAsString(copied), fresh)
                 }
             } else {
                 row!!
                 nid = row.nid
                 val same = same(o, row.props)
+                // Whether the properties, copies and all, are as they were.
+                val kept = same(copied, row.props)
                 // A new first token only if the step changes the node, or the node has no stamp of two tokens yet.
                 val two = twoTokens(stamp)
                 if (two == null || !same || relabel) {
                     stamp = fresh.take(16) + (two?.drop(16) ?: fresh.drop(16))
                     if (relabel) statements.update("UPDATE $nodesTable SET labels = ? WHERE nid = ?", json.writeValueAsString(labels), nid)
-                    if (!same) {
-                        statements.update("UPDATE $nodesTable SET props = ?, stamp = ? WHERE nid = ?", json.writeValueAsString(o), stamp, nid)
+                    if (!kept) {
+                        statements.update("UPDATE $nodesTable SET props = ?, stamp = ? WHERE nid = ?", json.writeValueAsString(copied), stamp, nid)
                     } else {
                         statements.update("UPDATE $nodesTable SET stamp = ? WHERE nid = ?", stamp, nid)
                     }
+                } else if (!kept) {
+                    // Only a copy was out of step with its property: the node keeps its stamp.
+                    statements.update("UPDATE $nodesTable SET props = ? WHERE nid = ?", json.writeValueAsString(copied), nid)
                 }
                 break
             }
@@ -388,9 +399,11 @@ internal class SqlitePlanWriter(
         val row = find(shapes[step["s"].asInt()], step["k"].asText()) ?: return
         val fresh = step["fresh"].asText()
         val met = patchedIf?.let { query -> statements.rows(query, row.nid) { it.getLong(1) }.single() } ?: 1L
-        val o = row.props.deepCopy()
+        var o = row.props.deepCopy()
         if (met > 0) setAndUnset(o, step)
         val same = same(o, row.props)
+        // A node the step changes has its copies written from what it now holds.
+        if (!same) o = lowered(o, step["lower"])
         val two = twoTokens(row.stamp)
         if (two == null || !same) {
             val stamp = fresh.take(16) + (two?.drop(16) ?: fresh.drop(16))
@@ -433,6 +446,21 @@ internal class SqlitePlanWriter(
     private fun setAndUnset(o: ObjectNode, step: JsonNode) {
         (step["set"] as? ObjectNode)?.let { o.setAll<ObjectNode>(it) }
         step["unset"]?.forEach { o.remove(it.asText()) }
+    }
+
+    /**
+     * [o] with the lowercased copy of each property [keys] names, from what [o] holds, and without the
+     * copy of one that holds nothing: see [LowerCopies]. It is lowercased as [SqliteLowerFunction]
+     * lowercases what a lookup compares the copy with. [o] itself where [keys] names none.
+     */
+    private fun lowered(o: ObjectNode, keys: JsonNode?): ObjectNode {
+        val names = strings(keys).ifEmpty { return o }
+        val copied = o.deepCopy()
+        names.forEach { key ->
+            val value = copied[key]?.takeUnless { it.isNull }
+            if (value == null) copied.remove(LowerCopies.of(key)) else copied.put(LowerCopies.of(key), value.asText().lowercase())
+        }
+        return copied
     }
 
     /**

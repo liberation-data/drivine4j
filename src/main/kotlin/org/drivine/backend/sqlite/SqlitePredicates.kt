@@ -176,6 +176,9 @@ internal class SqlitePredicates(
             ComparisonOperator.ENDS_WITH -> string().let { "(length($it) = 0 AND $text IS NOT NULL OR substr($text, -length($it)) = $it)" }
             ComparisonOperator.CONTAINS_IGNORE_CASE -> "instr(${lower(text)}, ${lowered()}) > 0"
             ComparisonOperator.EQUALS_IGNORE_CASE -> "${lower(text)} = ${lowered()}"
+            // A lowercased copy, compared with the value as SQLite lowercases it: see LowerCopies.
+            ComparisonOperator.EQUALS_LOWERED -> "$text = ${lower(string())}"
+            ComparisonOperator.CONTAINS_LOWERED -> "instr($text, ${lower(string())}) > 0"
             ComparisonOperator.MATCHES -> matches(text, value?.toString().orEmpty())
         }
     }

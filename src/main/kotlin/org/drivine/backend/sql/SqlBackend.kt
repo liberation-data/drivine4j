@@ -205,6 +205,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
                     shape, key(row.id), row.index.toString(),
                     set = row.values.filterValues { it != null },
                     unset = if (clears) row.values.filterValues { it == null }.keys.toList() else emptyList(),
+                    lower = model.lowerCopied,
                 )
             }
             QuerySpecification.withStatement(plan.text(WriteReturns.EACH_STAMP)).bind(plan.bindings()).transform(String::class.java)
@@ -223,7 +224,7 @@ internal abstract class SqlBackend<S : SqlSelect>(objectMapper: ObjectMapper) : 
         val plan = WritePlan(blocks)
         plan.patch(
             plan.shape(model.labels, idProperty), key(id), "0",
-            set = values.filterValues { it != null }, unset = values.filterValues { it == null }.keys.toList(),
+            set = values.filterValues { it != null }, unset = values.filterValues { it == null }.keys.toList(), lower = model.lowerCopied,
         )
         val patchedIf = select.meeting(conditions)
         return GraphStatement(plan.text(WriteReturns.EACH_STAMP, patchedIf), plan.bindings(patchedIf) + patchedIfBindings(select))

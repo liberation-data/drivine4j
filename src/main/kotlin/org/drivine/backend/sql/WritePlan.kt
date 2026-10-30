@@ -47,6 +47,8 @@ internal data class NodeShape(val labels: List<String>, val key: String)
  * @param addLabels the labels to give the node, and [dropLabels] those to take from it
  * @param bags the property bags whose stale stored keys the block clears, for a root saved under `CLEAR` without a digest
  * @param owned how the labels an open `@NodeLabels` field holds are recorded on the node, when it has one
+ * @param lower the properties whose lowercased copy the block writes, from what the node holds once
+ *   the step's writes are done: see `LowerCopies`
  */
 internal class NodeWrites(
     val set: Map<String, Any?> = emptyMap(),
@@ -55,6 +57,7 @@ internal class NodeWrites(
     val addLabels: List<String> = emptyList(),
     val dropLabels: List<String> = emptyList(),
     val owned: OwnedLabels? = null,
+    val lower: List<String> = emptyList(),
 )
 
 /** A property bag whose stored keys the block clears when the object no longer holds them: see the store's `owns`. */
@@ -139,6 +142,7 @@ internal class WritePlan(private val blocks: WriteBlocks) {
             "set" to writes.set.takeIf { it.isNotEmpty() }, "unset" to writes.unset.takeIf { it.isNotEmpty() },
             "bags" to writes.bags.map { it.toMap() }.takeIf { it.isNotEmpty() },
             "add" to writes.addLabels.takeIf { it.isNotEmpty() }, "drop" to writes.dropLabels.takeIf { it.isNotEmpty() }, "owned" to writes.owned?.toMap(),
+            "lower" to writes.lower.takeIf { it.isNotEmpty() },
             "i" to index,
             "root" to root?.let { true }, "carried" to root?.carried, "expect" to root?.expect,
             "whole" to root?.whole?.takeIf { it }, "create" to false.takeIf { root?.mode == RootMode.FOUND },
@@ -183,11 +187,12 @@ internal class WritePlan(private val blocks: WriteBlocks) {
      * The step that writes [set] to the node of [shape] whose stored id is [storedId], and removes
      * [unset] from it, if the node is there. It makes no node: one that is not there is left out of
      * what the block hands back. The node is returned under [index], with whether the step changed it.
+     * It writes the lowercased copy of each of [lower] on a node it changed, as a `node` step does.
      */
-    fun patch(shape: Int, storedId: String, index: String, set: Map<String, Any?>, unset: List<String>) =
+    fun patch(shape: Int, storedId: String, index: String, set: Map<String, Any?>, unset: List<String>, lower: List<String> = emptyList()) =
         add(
             StepKind.PATCH, "s" to shape, "k" to storedId, "i" to index, "fresh" to fresh(),
-            "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() },
+            "set" to set.takeIf { it.isNotEmpty() }, "unset" to unset.takeIf { it.isNotEmpty() }, "lower" to lower.takeIf { it.isNotEmpty() },
         )
 
     /**

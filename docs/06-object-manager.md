@@ -1059,7 +1059,7 @@ The `@SortedBy` annotation:
 - `startsWith` - STARTS WITH
 - `endsWith` - ENDS WITH
 - `matches` - regex match (`=~`) — *not supported on FalkorDB*
-- `containsIgnoreCase` / `eqIgnoreCase` - case-insensitive contains / equals (`toLower(...)`)
+- `containsIgnoreCase` / `eqIgnoreCase` - case-insensitive contains / equals (`toLower(...)`), read from an index on a [`@CaseInsensitive`](09-supported-engines.md#caseinsensitive-lookups-that-ignore-case) field
 
 **Null Checking:**
 - `isNull()` - IS NULL

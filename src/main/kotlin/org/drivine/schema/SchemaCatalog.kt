@@ -262,7 +262,7 @@ class SchemaCatalog private constructor(
          * which knows the property its nodes are identified by, wins.
          */
         private fun deduplicate(specs: List<SchemaItemSpec>): List<SchemaItemSpec> {
-            val byKey = specs.groupBy { Triple(it.kind, it.label, it.properties.toSet()) }
+            val byKey = specs.groupBy { Triple(it.kind, it.label, it.made().properties.toSet()) }
             return byKey.map { (key, group) -> resolveDeclarations(key, group) }
         }
 

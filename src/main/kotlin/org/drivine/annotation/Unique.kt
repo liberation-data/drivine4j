@@ -33,4 +33,9 @@ annotation class Unique(
     val properties: Array<String> = [],
     /** Explicit constraint name; empty derives one from label and properties. */
     val name: String = "",
+    /**
+     * Whether the constraint is over the lowercased copy of each property, which a `@CaseInsensitive` field
+     * keeps (see [CaseInsensitive]), so that it refuses `A@x.com` beside `a@x.com`.
+     */
+    val ignoreCase: Boolean = false,
 )
