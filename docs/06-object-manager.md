@@ -689,9 +689,12 @@ graphObjectManager.loadAll<PropositionView> {
 }
 ```
 
-Rendered as an existence subquery, per engine — `EXISTS { (root)-[:HAS_MENTION]->(m) WHERE … }` on
-Neo4j, `size([(root)-[:HAS_MENTION]->(m) WHERE … | 1]) > 0` on Memgraph, a `CALL`-subquery count on
-FalkorDB — with `none{}` wrapping it in `NOT (…)`. `any{}` is the explicit form of the flat
+Rendered as an existence subquery, per engine — `EXISTS { (root)-[:HAS_MENTION]->(m:Mention) WHERE … }` on
+Neo4j, `size([(root)-[:HAS_MENTION]->(m:Mention) WHERE … | 1]) > 0` on Memgraph, a `CALL`-subquery count on
+FalkorDB — with `none{}` wrapping it in `NOT (…)`. The related node must carry the field's target labels,
+as the load matches them, on every store: a condition tests only the nodes the field would load, so a
+node of another label at the end of the same relationship neither matches `any { }` nor fails `none { }`.
+The same holds of a relationship of a nested view, and of a single-valued relationship. `any{}` is the explicit form of the flat
 `mentions.resolvedId eq id` shorthand; prefer it for `none`, for correlated multi-condition blocks,
 or for clarity. (Backends without subquery support throw, per the grammar default.)
 

@@ -118,7 +118,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
         val depth = depthOverrides[relationship.fieldName] ?: relationship.maxDepth
         val nothing = if (relationship.isCollection) emptyArray else "NULL"
         val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
-        val labels = GraphTypeLabels.labelsForType(targetType)
+        val labels = GraphTypeLabels.targetLabels(relationship)
         require(labels.isNotEmpty()) {
             "No labels defined for relationship target ${targetType.name}. @NodeFragment or @GraphView must specify at least one label."
         }
@@ -222,8 +222,7 @@ internal abstract class SqlViewSelect<Scope : StatementScope>(
     /** A relationship field that is one object and may not be null leaves out the roots that have none. */
     protected fun requiredRelationships(): List<String> =
         viewModel?.relationships.orEmpty().filter { !it.isNullable && !it.isCollection }.map { relationship ->
-            val targetType = if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType
-            exists(root, Step.reaching(relationship, GraphTypeLabels.labelsForType(targetType)), scope.row(relationship.fieldName))
+            exists(root, Step.reaching(relationship, GraphTypeLabels.targetLabels(relationship)), scope.row(relationship.fieldName))
         }
 
     companion object {
