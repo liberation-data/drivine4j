@@ -1940,6 +1940,16 @@ cases:
         cypher: "RETURN ['a' + $p, $p + 'a', 'a' + $i, 'a' + $n, toString($p), toString($i), toString($n), $p STARTS WITH 'N']"
         parameters: {p: {$float: "NaN"}, i: {$float: "Infinity"}, n: {$float: "-Infinity"}}
         rows: [["aNaN", "NaNa", "aInfinity", "a-Infinity", "NaN", "Infinity", "-Infinity", null]]
+      - note: "toInteger() casts NaN and the infinities as Java does, to 0 and a long's ends."
+        only: [neo4j, sql]
+        cypher: "RETURN [toInteger($p), toInteger($i) = 9223372036854775807, toInteger($n) < -9223372036854775807, toFloat($p), toFloat($i), toFloat($n)]"
+        parameters: {p: {$float: "NaN"}, i: {$float: "Infinity"}, n: {$float: "-Infinity"}}
+        rows: [[0, true, true, {$float: "NaN"}, {$float: "Infinity"}, {$float: "-Infinity"}]]
+      - note: "SQLite writes a list's text as its JSON, and Oracle gives none."
+        only: [neo4j, postgres]
+        cypher: "RETURN toString($l)"
+        parameters: {l: [1.0, {$float: "NaN"}, {$float: "Infinity"}, {$float: "-Infinity"}]}
+        rows: ["[1.0, NaN, Infinity, -Infinity]"]
       - only: [neo4j, sql]
         cypher: "WITH $p AS x, $l AS l RETURN [x = x, x, l + [1], l + x, coalesce(x, 1)]"
         parameters: {p: {$float: "NaN"}, l: [{$float: "NaN"}]}

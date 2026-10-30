@@ -117,7 +117,8 @@ place in the statement it stands at.
   adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](09-supported-engines.md#oracle) reads an empty text as null.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
-  as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
+  as JSON holds neither. A float divided by zero fails on Postgres, gives null on SQLite, and on Oracle is the NaN or
+  infinity Neo4j gives.
 - NaN and the infinities given as parameters are the floats they are on each SQL store, as on Neo4j: NaN is equal to
   nothing and ordered with nothing, and arithmetic keeps it. Oracle stores them too. SQLite stores an infinity, and
   refuses a statement that writes and is given NaN; Postgres refuses one given either, as its `jsonb` holds neither.

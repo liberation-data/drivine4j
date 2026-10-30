@@ -278,13 +278,16 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      * the zeros `numeric`'s scale leaves after its digits (`trim_scale`), as Java writes a double: with no exponent from 10^-3 up
      * to 10^7, a point and a digit after it at least, `2.0`, and else as `1.0E7`, `1.2E-4`. Postgres works a float out in
      * `numeric`, exactly, so its digits may differ from a double's in the last places: `0.1 * 3` is `0.3`. NaN and the infinities,
-     * where the statement is given one, by Java's names.
+     * where the statement is given one, by Java's names, alone and in a list or a map.
      */
     private fun asText(json: String) = shared(json) { (x) ->
         val exact = "trim_scale(CAST($x #>> '{}' AS numeric))"
         val nonFinite = if (!nonFinite) "" else "WHEN ${isNaN(x)} THEN 'NaN' WHEN jsonb_typeof($x) = 'number' AND $x >= '$INFINITE'::jsonb THEN 'Infinity' " +
             "WHEN jsonb_typeof($x) = 'number' AND $x <= '-$INFINITE'::jsonb THEN '-Infinity' "
-        "CASE ${nonFinite}WHEN jsonb_typeof($x) = 'number' AND NOT ${integral(x)} THEN ${shared(exact) { (n) -> floatText(n) }} ELSE $x #>> '{}' END"
+        // A list or a map writes the number that stands for NaN or an infinity in it out in full: by Java's name instead.
+        val text = if (!this.nonFinite) "$x #>> '{}'" else listOf("-${INFINITY.toPlainString()}" to "-Infinity", INFINITY.toPlainString() to "Infinity", NOT_A_NUMBER.toPlainString() to "NaN")
+            .fold("$x #>> '{}'") { text, (standIn, name) -> "replace($text, '$standIn', '$name')" }
+        "CASE ${nonFinite}WHEN jsonb_typeof($x) = 'number' AND NOT ${integral(x)} THEN ${shared(exact) { (n) -> floatText(n) }} ELSE $text END"
     }
 
     /** The `numeric` [n], a float without trailing zeros, as Java writes a double: see [asText]. */

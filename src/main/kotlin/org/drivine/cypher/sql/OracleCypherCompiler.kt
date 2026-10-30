@@ -748,7 +748,14 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         "trim" -> texts(json) { (t) -> scalar("TRIM($t)") }
         // A text past 4,000 bytes, which asText reads as null, is read as a CLOB.
         "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
-        "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
+        // NaN and the infinities, which no NUMBER holds, as Java casts them to a long, as Neo4j does: 0, and the long's ends.
+        "tointeger" -> shared(json) { (x) ->
+            val double = "JSON_VALUE($x, '\$' RETURNING BINARY_DOUBLE)"
+            "CASE WHEN ${kind(x)} <> 'double' THEN JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($x, '\$') DEFAULT NULL ON CONVERSION ERROR))) " +
+                "WHEN $double IS NAN THEN JSON_SCALAR(0) WHEN $double = BINARY_DOUBLE_INFINITY THEN JSON_SCALAR(${Long.MAX_VALUE}) " +
+                "WHEN $double = -BINARY_DOUBLE_INFINITY THEN JSON_SCALAR(${Long.MIN_VALUE}) " +
+                "ELSE JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($x, '\$') DEFAULT NULL ON CONVERSION ERROR))) END"
+        }
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
         // An item read so where it is a text past 32 KB crashed the session: see [listItem].
         "head" -> listItem(json, "'\$[0]'")
