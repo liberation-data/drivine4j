@@ -114,6 +114,11 @@ refused where an operator or a function takes another kind, as Neo4j refuses it 
 is read, such as a property or a parameter, is compiled: where it is of the wrong kind, the statement may give null
 where Neo4j fails.
 
+So is a variable used as two kinds, `MATCH (a)-[a]->()` or `WITH true AS n MATCH (n)`, which fails with
+`a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.`, and one a pattern makes where it
+is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship variable bound
+as something else.
+
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
