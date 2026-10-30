@@ -120,7 +120,7 @@ class ProjectedPredicateRenderingTest {
 
         assertEquals(
             "shelf.id = \$param_shelf_id_0 AND NOT (" +
-                "EXISTS { (shelf)-[:KEPT_BY]->(keeper) WHERE keeper.display_name = \$param_keeper_display_name_1 } " +
+                "EXISTS { (shelf)-[:KEPT_BY]->(keeper:Keeper) WHERE keeper.display_name = \$param_keeper_display_name_1 } " +
                 "AND shelf.title = \$param_shelf_title_2)",
             rendered,
         )
