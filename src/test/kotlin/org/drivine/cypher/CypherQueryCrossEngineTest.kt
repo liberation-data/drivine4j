@@ -2004,6 +2004,26 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a list each row works out by a subquery is read for each row in a CALL, a WITH, an OPTIONAL MATCH, a COUNT, a comprehension and reduce`() {
+        // #433: each reads keys(n) where a subquery's FROM may begin with the list's view. Before the fix, Oracle gave the OPTIONAL
+        // MATCH no m.b and the COUNT 0 on every row.
+        clear()
+        seed("CREATE (:K {a: 1}), (:K {b: 2}), (:K {a: 3, b: 4})")
+        assertEquals(listOf(2L), query("MATCH (n:K) CALL { WITH n RETURN keys(n) AS ks } WITH n, ks WHERE 'b' IN ks RETURN count(n)"))
+        assertEquals(listOf(2L), query("MATCH (n:K) WITH n, [k IN keys(n) | k] AS ks WHERE 'b' IN ks RETURN count(n)"))
+        assertEquals(listOf(2L), query("MATCH (n:K) WHERE size([k IN keys(n) WHERE k = 'b']) > 0 RETURN count(n)"))
+        assertEquals(listOf(2L), query("MATCH (n:K) WHERE reduce(s = 0, k IN keys(n) | s + CASE WHEN k = 'b' THEN 1 ELSE 0 END) = 1 RETURN count(n)"))
+        assertEquals(
+            listOf(listOf(1L, null), listOf(3L, 4L), listOf(null, null)),
+            query("MATCH (n:K) OPTIONAL MATCH (m:K) WHERE m.a = n.a AND 'b' IN keys(m) RETURN n.a, m.b ORDER BY n.a"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 0L), listOf(3L, 3L), listOf(null, 3L)),
+            query("MATCH (n:K) RETURN n.a, COUNT { MATCH (m:K) WHERE 'b' IN keys(n) } ORDER BY n.a"),
+        )
+    }
+
+    @Test
     fun `texts, text functions and arithmetic over an aggregate's result, beside grouping keys, a walk, DISTINCT and an order`() {
         // #373: an operation over an aggregate's result is worked out over the aggregate's column, where it would bind a value;
         // the three aggregates concatenated ran the compiler out of memory on Oracle, and compiled to 68 MB on Postgres.

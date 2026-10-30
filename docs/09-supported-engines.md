@@ -310,6 +310,11 @@ declares the function itself.
   another node's table the query lost that node's label and property tests, giving rows its pattern doesn't have and
   values of the wrong node, or crashing the session (ORA-03113)
   ([#415](https://github.com/liberation-data/drivine4j/issues/415)). A query of one table carries no hint.
+- A list worked out on each row by a subquery (`keys(n)`, `[i IN range(1, k) | i]`, `[(p)-->(q) | q.name]`) is read
+  from a derived table inside a lateral view. This works around an Oracle bug, seen on 23.26.3: a subquery that reads
+  the row, in the select list of a lateral view that begins a subquery's `FROM`, was worked out once for the
+  statement and not for each row, so `WHERE 'b' IN keys(n)` found nothing
+  ([#433](https://github.com/liberation-data/drivine4j/issues/433)).
 - openCypher's temporal values are their ISO 8601 text, as the store keeps a moment. `date`, `localtime`,
   `time`, `localdatetime`, `datetime` and `duration` make one of a text, of a map of its fields (a calendar
   date's and a clock's, not a week's or an ordinal day's), or of the moment the statement runs. Their fields
