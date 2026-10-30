@@ -319,6 +319,29 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `a stored infinity and a stored NaN are matched, compared, made distinct and sorted as Neo4j does`() {
+        // Postgres stores neither, and SQLite no NaN: each refuses the write that would (#295, #409).
+        if (pm.type == DatabaseType.POSTGRES) return
+        clear()
+        try {
+            val infinities = mapOf("i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)
+            query("CREATE (:Nn {b: \$i, c: \$n, k: 2})", infinities)
+            assertEquals(listOf(2L), query("MATCH (n:Nn {b: \$i}) WHERE n.c = \$n AND \$i IN [n.b] RETURN n.k", infinities))
+            assertEquals(listOf(Double.NEGATIVE_INFINITY, 1.0, Double.POSITIVE_INFINITY), query("MATCH (n:Nn) UNWIND [n.b, n.c, 1.0] AS x RETURN x ORDER BY x"))
+            if (pm.type == DatabaseType.SQLITE) return
+            val nan = mapOf("p" to Double.NaN)
+            query("CREATE (:Nn {a: \$p, l: [\$p, 1.0], k: 1})", nan)
+            assertEquals(listOf(0L), query("MATCH (n:Nn {a: \$p}) RETURN count(n)", nan))
+            assertEquals(listOf(0L), query("MATCH (n:Nn) WHERE n.a IN [n.a] OR n.l = n.l RETURN count(n)"))
+            assertEquals(listOf(2L), query("MATCH (n:Nn) WITH DISTINCT n.a AS a RETURN count(*)"))
+            assertEquals(listOf(2L, 1L), query("MATCH (n:Nn) RETURN n.k ORDER BY n.a DESC"))
+            assertEquals(listOf(listOf(Double.NaN, Double.NaN, listOf(Double.NaN))), query("MATCH (n:Nn) RETURN [max(n.a), min(n.a), collect(n.a)]"))
+        } finally {
+            clear()
+        }
+    }
+
+    @Test
     fun `a row that holds NaN gives each other value in it as a row without NaN gives it`() {
         // Oracle's driver writes no text of such a row, and it is read through the driver's own JSON value instead (#295).
         assertEquals(
