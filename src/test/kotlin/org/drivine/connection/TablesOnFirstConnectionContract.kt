@@ -156,9 +156,8 @@ abstract class TablesOnFirstConnectionContract {
     fun `many pools and object managers that first use a graph together make its tables once, round after round`() {
         repeat(3) { round ->
             val graph = "swarm$round"
-            val providers = List(6) { provider(graph) }
             try {
-                val managers = providers.map(::manager)
+                val managers = List(6) { manager(open(graph)) }
                 val pool = Executors.newFixedThreadPool(30)
                 val start = CountDownLatch(1)
                 try {
@@ -185,7 +184,8 @@ abstract class TablesOnFirstConnectionContract {
                 assertEquals(tablesOf(graph), tables(graph))
                 assertTrue(whole(graph), "the store of graph '$graph' is whole")
             } finally {
-                providers.forEach { runCatching { it.end() } }
+                // Each round's pools ended before the next's open: the store takes so many sessions at once.
+                endAll()
             }
         }
     }

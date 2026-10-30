@@ -3,7 +3,6 @@ package org.drivine.manager
 import org.drivine.DrivineException
 import org.drivine.StaleObjectException
 import org.drivine.backend.GraphBackend
-import org.drivine.backend.sql.DdlContention
 import org.drivine.mapper.ResultPostProcessor
 import org.drivine.model.Stamps
 import org.drivine.query.MergeStatement
@@ -202,12 +201,9 @@ internal class SaveExecutor(private val persistenceManager: PersistenceManager, 
         throw checkNotNull(first)
     }
 
-    /**
-     * Whether the backend says a cause of this failure is contention: see [GraphBackend.contended]. Not a deadlock that
-     * making the graph's tables already ran again as often as it allows ([DdlContention.gaveUp]): retries don't multiply.
-     */
+    /** Whether the backend says a cause of this failure is contention: see [GraphBackend.contended]. */
     private fun DrivineException.isRetryable(): Boolean =
-        !DdlContention.gaveUp(this) && generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
+        generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any(backend::contended)
 
     internal companion object {
         /**
