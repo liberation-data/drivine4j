@@ -1003,7 +1003,7 @@ abstract class SqlCypherCompiler(graph: String) {
             // A value is of a temporal kind where each query makes it of that one. It is at keys of a write's row ([Value.Json.rowKeys])
             // only where each query takes it from those: a property of it is read from the row there, which would read the first
             // query's value for every query's rows (#336). It is read from an unwound item ([Value.Json.fromList]) only where each
-            // query reads it from one.
+            // query reads it from one. Its kind is known only where each query writes it as a value of that one.
             val scope = projected.first().scope.mapValues { (variable, value) ->
                 val all = projected.map { it.scope.getValue(variable) as? Value.Json }
                 if (value !is Value.Json) value
@@ -1012,6 +1012,7 @@ abstract class SqlCypherCompiler(graph: String) {
                     rowKeys = all.map { it?.rowKeys }.distinct().singleOrNull(), fromList = all.all { it?.fromList == true },
                     itemItems = all.map { it?.itemItems }.distinct().singleOrNull(), temporals = all.any { it?.temporals == true },
                     text = all.all { it?.text == true }, texts = all.all { it?.texts == true },
+                    known = all.map { it?.known }.distinct().singleOrNull(),
                 )
             }
             return Projected(sql, scope, emptyList(), projected.first().columns)
@@ -1860,6 +1861,11 @@ abstract class SqlCypherCompiler(graph: String) {
             when (item) {
                 is SetItem.Property -> {
                     val (table, id, row) = target(item.variable, "SET")
+                    // A map written, or a list written that holds one or a list, is no property, as Neo4j refuses it, and as drivine's saves do.
+                    val written = item.value
+                    if (written is Expression.MapLiteral || written is Expression.ListLiteral && written.items.any { it is Expression.MapLiteral || it is Expression.ListLiteral }) {
+                        throw DrivineException("A property is a number, a text, a truth value, a temporal value or a list of them, not ${if (written is Expression.MapLiteral) "a map" else "a list of maps or lists"}, as in Neo4j.")
+                    }
                     evaluate(VALUE, item.value) { scope -> comparable(json(expression(item.value, scope))) }
                     if (table == nodes && item.key == Stamps.PROPERTY) execute("UPDATE $nodes SET stamp = ${text(VALUE)} WHERE nid = $row")
                     else execute("UPDATE $table SET props = ${merged("props", jsonObject(listOf(item.key to VALUE)))} WHERE $id = $row")
@@ -2486,17 +2492,21 @@ abstract class SqlCypherCompiler(graph: String) {
         /** Whether the expression [evaluate] has begun is read by a `WHERE` for its truth alone, as [filtering] said as it began. */
         private var filtered = false
 
-        /** The value [expression] gives in [scope]: see [evaluate]. Marked [Value.Json.flat] where it is known to hold no null in a list or a map. */
+        /**
+         * The value [expression] gives in [scope]: see [evaluate]. Marked [Value.Json.flat] where it is known to hold no null in a list or a map,
+         * and with its [Value.Json.known] kind where the statement writes it as a value of one.
+         */
         fun expression(expression: Expression, scope: Map<String, Value>): Value {
             val outer = filtering
             // Only a condition joined by AND or OR is read for its truth alone: NOT, a CASE or a function reads null apart from false.
             filtering = outer && expression is Expression.Binary && (expression.operator == Operator.AND || expression.operator == Operator.OR)
             filtered = outer
-            val value = try {
+            val evaluated = try {
                 evaluate(expression, scope)
             } finally {
                 filtering = outer
             }
+            val value = if (evaluated is Value.Json && evaluated.known == null) knownKind(expression, scope)?.let { evaluated.copy(known = it) } ?: evaluated else evaluated
             return when {
                 value is Value.Json && !value.flat && flat(expression, scope) -> value.copy(flat = true)
                 value is Value.Entities && !value.flat && flat(expression, scope) -> value.copy(flat = true)
@@ -2557,6 +2567,7 @@ abstract class SqlCypherCompiler(graph: String) {
             is Expression.Binary -> binary(expression, scope)
             is Expression.Unary -> unary(expression, scope)
             is Expression.Index -> {
+                indexOfKind(expression, scope)
                 val index = expression.index
                 val listed by lazy { expression(expression.subject, scope) }
                 val subject = { comparable(json(listed)) }
@@ -2756,6 +2767,44 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
+         * The kind of value [expression] is in [scope], where the statement writes it as one ([Value.Json.known]): a literal, a
+         * negated number, a list or a map written, or a variable bound to one. Read from the statement alone, compiling nothing,
+         * so a check may run before its operand is compiled. Null where the kind is left open, as it is for a property, a
+         * parameter or a function's value: Neo4j checks those when the row is read.
+         */
+        private fun knownKind(expression: Expression, scope: Map<String, Value>): Value.Known? = when (expression) {
+            is Expression.Literal -> Value.Known.of(expression.value)
+            is Expression.Unary -> knownKind(expression.operand, scope)
+                ?.takeIf { expression.operator == Expression.Unary.Operator.NEGATE && (it == Value.Known.INTEGER || it == Value.Known.FLOAT) }
+            is Expression.ListLiteral -> Value.Known.LIST
+            is Expression.MapLiteral -> Value.Known.MAP
+            is Expression.Variable -> (scope[expression.name] as? Value.Json)?.known
+            else -> null
+        }
+
+        /**
+         * Refuses [index], `subject[index]`, where the statement writes its subject as a value that is no list or map, or its
+         * index as a value of a kind its subject is not indexed by ([knownKind]): a list by an integer, a map by a text. As
+         * Neo4j refuses it; where the subject's kind is left open, it is compiled as before.
+         */
+        private fun indexOfKind(index: Expression.Index, scope: Map<String, Value>) {
+            val subject = knownKind(index.subject, scope) ?: return
+            val by = when (subject) {
+                Value.Known.LIST -> Value.Known.INTEGER
+                Value.Known.MAP -> Value.Known.TEXT
+                else -> throw DrivineException("${subject.noun.replaceFirstChar(Char::uppercase)} is not a list or a map, and is indexed as one, as in Neo4j.")
+            }
+            val kind = knownKind(index.index, scope) ?: return
+            if (kind != by) throw DrivineException("${subject.noun.replaceFirstChar(Char::uppercase)} is indexed by ${by.noun}, not ${kind.noun}, as in Neo4j.")
+        }
+
+        /** Refuses [expression], an operand of [operator], where its kind is known ([knownKind]) to be other than a truth value, as Neo4j refuses it. */
+        private fun requireCondition(expression: Expression, scope: Map<String, Value>, operator: String) {
+            val kind = knownKind(expression, scope) ?: return
+            if (kind != Value.Known.BOOLEAN) throw DrivineException("$operator takes a truth value, not ${kind.noun}, as in Neo4j.")
+        }
+
+        /**
          * A value in a parameter that is a map, `${'$'}p.text`, `${'$'}p.a.b` or `${'$'}p['a'].b`, each key a property or an index
          * [known] as a text, read at once from the text the parameter is bound as, where the store reads it so (see
          * [Parameters.json]). Oracle crashed the session where a statement took a parameter past 32 KB as JSON, then the
@@ -2804,7 +2853,9 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Entities -> throw DrivineException("A list has no properties.")
             is Value.Node -> Value.Json(if (key == Stamps.PROPERTY) scalar(subject.stamp) else propertyOf(subject.props, key))
             is Value.Relationship -> Value.Json(propertyOf(subject.props, key))
-            is Value.Json -> temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key) }
+            // A value the statement writes as one of a kind other than a map has none, as Neo4j says when it plans the statement.
+            is Value.Json -> subject.known?.takeIf { it != Value.Known.MAP }?.let { throw DrivineException("${it.noun.replaceFirstChar(Char::uppercase)} has no properties.") }
+                ?: temporalField(subject, key) ?: subject.rowKeys?.let { keys -> Value.Json(rowValue(keys + key), rowKeys = keys + key) }
                 ?: propertyOf(comparable(subject), key).let { taken ->
                     Value.Json(taken, identity = identityOf(subject, taken, true) { propertyOf(it, key) }, temporals = subject.temporals)
                 }
@@ -3039,6 +3090,7 @@ abstract class SqlCypherCompiler(graph: String) {
         private fun binary(binary: Expression.Binary, scope: Map<String, Value>): Value {
             val filter = filtered
             if (binary.operator == Operator.AND || binary.operator == Operator.OR || binary.operator == Operator.XOR) {
+                listOf(binary.left, binary.right).forEach { requireCondition(it, scope, binary.operator.name) }
                 val left = bool(expression(binary.left, scope))
                 val right = bool(expression(binary.right, scope))
                 return Value.Bool(
@@ -3049,6 +3101,9 @@ abstract class SqlCypherCompiler(graph: String) {
                         else -> "(($left) <> ($right))"
                     }
                 )
+            }
+            if (binary.operator == Operator.IN) knownKind(binary.right, scope)?.takeIf { it != Value.Known.LIST }?.let { kind ->
+                throw DrivineException("IN takes a list, not ${kind.noun}, as in Neo4j.")
             }
             if (binary.operator == Operator.EQUALS || binary.operator == Operator.NOT_EQUALS || binary.operator == Operator.IN) {
                 itemwise(binary, scope)?.let { return Value.Bool(if (binary.operator == Operator.NOT_EQUALS) "(NOT $it)" else it) }
@@ -3532,6 +3587,7 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         private fun unary(unary: Expression.Unary, scope: Map<String, Value>): Value {
+            if (unary.operator == Expression.Unary.Operator.NOT) requireCondition(unary.operand, scope, "NOT")
             val operand = expression(unary.operand, scope)
             return when (unary.operator) {
                 Expression.Unary.Operator.NOT -> Value.Bool("(NOT (${bool(operand)}))")
@@ -3590,7 +3646,7 @@ abstract class SqlCypherCompiler(graph: String) {
             return when (val name = function.name.lowercase()) {
                 "properties" -> when (val subject = one()) {
                     is Value.Node, is Value.Relationship -> json(subject)
-                    else -> subject
+                    else -> subject.also { requireKind(it, Value.Known.MAP) { kind -> "properties() takes a node, a relationship or a map, not $kind, as in Neo4j." } }
                 }
                 "labels" -> (one() as? Value.Node)?.let { Value.Json(it.labels) } ?: throw DrivineException("labels() takes a node.")
                 "type" -> (one() as? Value.Relationship)?.let { Value.Json(scalar(it.type), text = true) } ?: throw DrivineException("type() takes a relationship.")
@@ -3657,6 +3713,11 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 "range" -> {
                     if (arguments.size !in 2..3) throw DrivineException("range() takes a start, an end and a step.")
+                    arguments.forEach { requireKind(it, Value.Known.INTEGER) { kind -> "range() takes integers, not $kind, as in Neo4j." } }
+                    // A step written or given as 0 would never reach the end.
+                    if (function.arguments.getOrNull(2)?.let(::known).let { it is Long && it == 0L || it is Int && it == 0 }) {
+                        throw DrivineException("range() takes a step other than 0, as in Neo4j.")
+                    }
                     val (from, to) = arguments.map { number(comparable(json(it))) }
                     Value.Json(range(from, to, arguments.getOrNull(2)?.let { number(comparable(json(it))) } ?: "1"), list = true)
                 }
@@ -3780,6 +3841,16 @@ abstract class SqlCypherCompiler(graph: String) {
                     )
                 }
             }
+        }
+
+        /**
+         * Refuses [value], an argument, where the statement writes it as a value of a kind ([Value.Json.known]) other than
+         * [allowed], with the [message] of that kind's noun, as Neo4j refuses it when it plans the statement. A value whose
+         * kind the statement leaves open is compiled as before.
+         */
+        private fun requireKind(value: Value, allowed: Value.Known, message: (String) -> String) {
+            val kind = (value as? Value.Json)?.known ?: return
+            if (kind != allowed) throw DrivineException(message(kind.noun))
         }
 
         /**
@@ -3935,10 +4006,14 @@ abstract class SqlCypherCompiler(graph: String) {
             is Value.Path -> throw DrivineException("A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p).")
         }
 
-        /** A value as a condition: a boolean as itself, JSON's `true` and `false` as theirs, anything else as null. */
+        /**
+         * A value as a condition: a boolean as itself, JSON's `true` and `false` as theirs, anything else as null. One the statement
+         * writes as a value of another kind ([Value.Json.known]) is refused, as Neo4j refuses it when it plans the statement.
+         */
         fun bool(value: Value): String = when (value) {
             is Value.Bool -> value.sql
-            is Value.Json -> boolOf(comparable(value))
+            is Value.Json -> value.known?.takeIf { it != Value.Known.BOOLEAN }?.let { throw DrivineException("${it.noun.replaceFirstChar(Char::uppercase)} is not a condition, as in Neo4j.") }
+                ?: boolOf(comparable(value))
             else -> throw DrivineException("A node, a relationship or a path is not a condition.")
         }
 

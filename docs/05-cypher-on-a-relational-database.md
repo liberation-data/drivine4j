@@ -107,6 +107,13 @@ Cypher the compiler doesn't take is refused by name before anything is sent, wit
 `SKIP or LIMIT of an expression is Cypher, and is not compiled to SQL yet.` Text that isn't Cypher is refused with the
 place in the statement it stands at.
 
+A value whose kind the statement fixes (a literal, a list or a map written, or a variable a `WITH` binds to one) is
+refused where an operator or a function takes another kind, as Neo4j refuses it when it plans the statement:
+`RETURN 123 AND true` fails with `AND takes a truth value, not an integer, as in Neo4j.`, and so do
+`WITH 123 AS x RETURN x.num`, `RETURN 1 IN 'foo'` and `range(0, 10, 0)`. A value whose kind is known only when the row
+is read, such as a property or a parameter, is compiled: where it is of the wrong kind, the statement may give null
+where Neo4j fails.
+
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
