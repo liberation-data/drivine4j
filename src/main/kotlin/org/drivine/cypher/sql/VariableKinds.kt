@@ -86,21 +86,24 @@ internal object VariableKinds {
                     inner[clause.variable] = Kind.ANY
                     clauses(clause.clauses, inner, foreach = true)
                 }
-                is Clause.Call -> called(clause.query, current).forEach { (name, kind) -> current[name] = kind }
+                is Clause.Call -> called(clause, current).forEach { (name, kind) -> current[name] = kind }
             }
         }
         return returned
     }
 
     /**
-     * What a `CALL { … }` returns, of the kinds each of its queries returns, read from the row [scope] holds: only a variable
-     * its leading `WITH` imports as it is, or with `*`, of the kind it is; any other of the row is a new variable there, as in Neo4j.
+     * What [call] returns, of the kinds each of its queries returns, read from the row [scope] holds: only a variable its
+     * brackets import, `CALL (a) { … }` or `CALL (*) { … }`, or where it has none its leading `WITH` imports as it is, or
+     * with `*`, of the kind it is; any other of the row is a new variable there, as in Neo4j.
      */
-    private fun called(query: Query, scope: Scope): Map<String, Kind> {
+    private fun called(call: Clause.Call, scope: Scope): Map<String, Kind> {
+        val query = call.query
         val parts = (listOf(query.clauses) + query.unions.map { it.clauses }).map { clauses ->
-            val importing = (clauses.firstOrNull() as? Clause.With)?.projection
-            val imported = importing?.items.orEmpty().filter { (it.expression as? Expression.Variable)?.name == it.name }.map { it.name }.toSet()
-            val inner = Scope(scope.kinds.filterTo(LinkedHashMap()) { (name, _) -> importing?.star == true || name in imported })
+            val importing = (clauses.firstOrNull() as? Clause.With)?.projection.takeIf { call.imports == null }
+            val imported = call.imports?.toSet()
+                ?: importing?.items.orEmpty().filter { (it.expression as? Expression.Variable)?.name == it.name }.map { it.name }.toSet()
+            val inner = Scope(scope.kinds.filterTo(LinkedHashMap()) { (name, _) -> call.importsAll || importing?.star == true || name in imported })
             clauses(clauses, inner)
         }
         return parts.first().mapValues { (name, kind) -> if (parts.all { it[name] == kind }) kind else Kind.ANY }

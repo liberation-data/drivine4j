@@ -207,6 +207,10 @@ class CompilerRefusalTest {
             "MATCH (a) CREATE (b)-[a:R]->()" to "a is bound already, so a CREATE makes no relationship of it, as in Neo4j.",
             "WITH 1 AS r MERGE ()-[r:R]->()" to "r is bound already, so a MERGE makes no relationship of it, as in Neo4j.",
             "MATCH (a) CALL { WITH a CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            // A CALL imports by its brackets as by its first WITH.
+            "MATCH (a) CALL (a) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH (a) CALL (a) { MATCH ()-[a]->() RETURN 1 AS x } RETURN x" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) CALL (*) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
             "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE (r)-[:T]->())" to "r is a relationship, and is used as a node: a variable is of one kind, as in Neo4j.",
             "MATCH p = (a)-[*]->(b) RETURN size(p)" to "size() takes a list or a text, not a path, as in Neo4j: length() takes a path.",
         )
@@ -251,6 +255,10 @@ class CompilerRefusalTest {
                 "MATCH (a) WITH [(a)-[r]->() | r] AS rs MATCH ()-[r]->() RETURN r",
                 "MATCH (a) WHERE EXISTS { MATCH (a)-[r]->() } MATCH ()-[r]->() RETURN r",
                 "MATCH (a) CALL { WITH a MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
+                "MATCH (a) CALL (a) { MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
+                "MATCH (a) CALL (a) { CREATE (a)-[:R]->(b) RETURN b } RETURN b",
+                "MATCH ()-[n]->(m) FOREACH (n IN [m] | CREATE (n)-[:R]->())",
+                "MATCH (a) WITH a, 1 AS b ORDER BY size([(a)-->(x) | x]) RETURN b",
                 "MATCH (a) MATCH p = (a)-->() RETURN nodes(p)",
                 "MATCH ()-[r*]->() RETURN size(r)",
                 "WITH [] AS r MATCH ()-[r*]-() RETURN r",
@@ -263,6 +271,7 @@ class CompilerRefusalTest {
                 "MATCH (a)-[r]->() RETURN EXISTS { (a)-[r]->() } AS e" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a)-[r]->(b) MERGE (a)-[r]->(b)" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a) CALL { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
+                "MATCH (a) CALL () { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE ()-[r:T]->())" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a) CALL { WITH a RETURN a AS b UNION WITH a MATCH ()-[b]->() RETURN b } RETURN b" to
                     "A UNION in CALL { … } whose queries return values of different kinds is Cypher, and is not compiled to SQL yet.",
