@@ -272,6 +272,23 @@ class CypherReaderTest {
     }
 
     @Test
+    fun `a call of a subquery reads the variables its brackets import`() {
+        // Each form: whether it is OPTIONAL, the variables its brackets name (null with no brackets), and whether it imports each, (*).
+        listOf(
+            "MATCH (a) CALL { WITH a RETURN a AS x } RETURN x" to Triple(false, null, false),
+            "MATCH (a) CALL () { RETURN 1 AS x } RETURN x" to Triple(false, emptyList<String>(), false),
+            "MATCH (a), (b) CALL (a, b) { RETURN a AS x } RETURN x" to Triple(false, listOf("a", "b"), false),
+            "MATCH (a), (b) CALL(a,b){ RETURN a AS x } RETURN x" to Triple(false, listOf("a", "b"), false),
+            "MATCH (a) CALL (*) { RETURN a AS x } RETURN x" to Triple(false, emptyList<String>(), true),
+            "MATCH (a) OPTIONAL CALL (a) { MATCH (a)-->(b) RETURN b } RETURN b" to Triple(true, listOf("a"), false),
+            "MATCH (a) CALL (a) { SET a.x = 1 } IN TRANSACTIONS OF 5 ROWS" to Triple(false, listOf("a"), false),
+        ).forEach { (cypher, expected) ->
+            val call = CypherReader.read(cypher).clauses.filterIsInstance<Clause.Call>().single()
+            assertEquals(expected, Triple(call.optional, call.imports, call.importsAll), cypher)
+        }
+    }
+
+    @Test
     fun `cypher the compiler does not take is refused by name, and what is not cypher with where`() {
         assertEquals(
             "A procedure call (CALL) is Cypher, and is not compiled to SQL yet.",

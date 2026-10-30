@@ -128,7 +128,7 @@ object CypherReader {
         }
         context.oC_Set() != null -> Clause.Set(set(context.oC_Set()))
         context.oC_Remove() != null -> Clause.Remove(context.oC_Remove().oC_RemoveItem().map(::removeItem))
-        context.oC_SubqueryCall() != null -> context.oC_SubqueryCall().let { call -> Clause.Call(call.OPTIONAL() != null, regular(call.oC_RegularQuery())) }
+        context.oC_SubqueryCall() != null -> subquery(context.oC_SubqueryCall())
         context.oC_Foreach() != null -> context.oC_Foreach().let { foreach ->
             Clause.Foreach(name(foreach.oC_Variable()), expression(foreach.oC_Expression()), foreach.oC_UpdatingClause().map(::updating))
         }
@@ -160,10 +160,16 @@ object CypherReader {
 
     private fun labels(context: OC_NodeLabelsContext): List<String> = context.oC_NodeLabel().map { name(it.oC_LabelName().oC_SchemaName()) }
 
+    /** `CALL { … }`, with the variables its brackets import where it has them, `CALL (a, b) { … }` or `CALL (*) { … }`. */
+    private fun subquery(call: OC_SubqueryCallContext): Clause.Call = Clause.Call(
+        call.OPTIONAL() != null,
+        regular(call.oC_RegularQuery()),
+        imports = if (call.children.any { it.text == "(" }) call.oC_Variable().map(::name) else null,
+        importsAll = call.children.any { it.text == "*" },
+    )
+
     private fun reading(context: OC_ReadingClauseContext): Clause = when {
-        context.oC_SubqueryCall() != null -> context.oC_SubqueryCall().let { call ->
-            Clause.Call(call.OPTIONAL() != null, regular(call.oC_RegularQuery()))
-        }
+        context.oC_SubqueryCall() != null -> subquery(context.oC_SubqueryCall())
         context.oC_Match() != null -> context.oC_Match().let { match ->
             Clause.Match(match.OPTIONAL() != null, patterns(match.oC_Pattern()), match.oC_Where()?.let { expression(it.oC_Expression()) })
         }

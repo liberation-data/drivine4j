@@ -104,12 +104,12 @@ On `main` when the baselines were written, of 3,896 scenarios. The baselines hol
 | store | lenient pass | strict pass | refused on purpose | wrong result | wrong or missing error | crash or stall | harness limitation |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | Neo4j | 3,821 (98.1%) | 3,821 (98.1%) | 0 | 2 | 9 | 5 | 59 |
-| Postgres | 2,521 (64.7%) | 2,481 (63.7%) | 635 | 183 | 490 | 8 | 59 |
-| Oracle | 2,503 (64.2%) | 2,468 (63.3%) | 635 | 204 | 494 | 1 | 59 |
-| SQLite | 2,485 (63.8%) | 2,478 (63.6%) | 635 | 171 | 523 | 23 | 59 |
+| Postgres | 2,684 (68.9%) | 2,644 (67.9%) | 482 | 183 | 480 | 8 | 59 |
+| Oracle | 2,666 (68.4%) | 2,631 (67.5%) | 482 | 204 | 484 | 1 | 59 |
+| SQLite | 2,648 (68.0%) | 2,641 (67.8%) | 482 | 171 | 513 | 23 | 59 |
 
 Neo4j is the ceiling: the 16 scenarios it fails beside the harness's 59 are where Neo4j itself differs from
 the TCK, an error it doesn't raise or one it raises where the TCK expects rows. On the SQL stores most of the
-gap is what Drivine's compiler refuses on purpose (635), its own errors on statements the TCK runs (403 on
-Postgres), and statements it runs where the TCK expects an error (87 on Postgres).
+gap is what Drivine's compiler refuses on purpose (482), its own errors on statements the TCK runs (403 on
+Postgres), and statements it runs where the TCK expects an error (77 on Postgres).
 `build/tck/report.md` has the pass rate of each area.

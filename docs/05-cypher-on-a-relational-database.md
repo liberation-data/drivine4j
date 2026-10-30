@@ -118,6 +118,11 @@ with the parameters it is given, so a value given refuses that call alone. A val
 row is read, such as a property or a parameter, is compiled: where it is of the wrong kind, the statement may give null
 where Neo4j fails.
 
+A variable used as two kinds is refused too, as Neo4j refuses it: `MATCH (a)-[a]->()` or `WITH true AS n MATCH (n)`
+fails with `a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.` So is one a pattern
+makes where it is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship
+variable bound as something else.
+
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.
@@ -127,6 +132,10 @@ where Neo4j fails.
 - [SQLite](09-supported-engines.md#sqlite) adds floats in `sum()` and `avg()` as doubles, as Neo4j does, but corrects for rounding as it
   adds, so a long sum of floats can be more accurate than Neo4j's in its last digit.
 - [Oracle](09-supported-engines.md#oracle) reads an empty text as null.
+- A `sum()` of integers past a long's range is a float on Oracle and Postgres, as on Neo4j. Neo4j goes on as a
+  double from the row where a long would overflow, so a sum that passes the range on the way and comes back into it,
+  `[9223372036854775807, 1, -1]`, is a float there and a long on Oracle and Postgres, which keep no order and tell the
+  total alone. SQLite fails with `integer overflow` wherever a running total passes the range.
 - Where Neo4j gives NaN or an infinity from a function (`log(0)`, `sqrt(-1)`), the statement fails on each SQL store,
   as JSON holds neither. A float divided by zero fails on Postgres, and gives null on SQLite.
 - `<`, `<=`, `>` and `>=` order two lists item by item where the statement makes one of them a list (`n.tags < ['b']`).

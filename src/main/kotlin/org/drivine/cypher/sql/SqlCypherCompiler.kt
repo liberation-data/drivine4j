@@ -102,6 +102,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** The statement [query], read already, with its parameters' values [parameters], as SQL: a query, or a procedure where it writes. */
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
+        // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
+        VariableKinds.check(query)
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
@@ -144,6 +146,9 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** [body] over the sides [a] and [b] of a `+`, as [shared] binds them: see Oracle's. */
     protected open fun sharedSum(a: String, b: String, body: (List<String>) -> String): String = shared(a, b, body = body)
+
+    /** [body] over the sides [a] and [b] of a comparison, an `IN` among them, as [shared] binds them: see Oracle's. */
+    protected open fun sharedCompared(a: String, b: String, body: (List<String>) -> String): String = shared(a, b, body = body)
 
     /** [shared], of a list of values, as [Temporals] and a store's [TemporalSql] take it. */
     protected val sharedList: (List<String>, (List<String>) -> String) -> String = { values, body -> shared(*values.toTypedArray(), body = body) }
@@ -403,6 +408,12 @@ abstract class SqlCypherCompiler(graph: String) {
     /** Whether the JSON value [x] is equal to [y], the JSON of [given], a value the statement gives that is not null. */
     protected open fun givenEquals(x: String, y: String, given: Any) = "$x = $y"
 
+    /**
+     * Whether [item], an item of a list whose items the statement writes or is given, [items], each a text, a number, a truth
+     * value or null, is equal to the JSON value [value], as an `IN` tests it: null or false where it is not.
+     */
+    protected open fun givenItemEquals(item: String, value: String, items: List<Any?>) = jsonEquals(item, value)
+
     /** Whether the JSON values [x] and [y], of one kind, a number, a text or a truth value, stand as [operator] says (`<`, `>=`…). */
     protected open fun ordered(x: String, operator: String, y: String) = "$x $operator $y"
 
@@ -479,6 +490,16 @@ abstract class SqlCypherCompiler(graph: String) {
      * A store whose numbers keep whether they are floats sums them as they are: a float where any is one, as in Cypher.
      */
     protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
+
+    /**
+     * Whether a `sum` of the SQL numbers [numbers], [distinct] each once where it is `DISTINCT `, is past a long's
+     * range (#339): on a store that sums integers exactly, the sum is a double there, as Neo4j's is. Neo4j goes on as a
+     * double from the row where a long would overflow, so its answer follows the order the rows come in:
+     * `[9223372036854775807, 1, -1]` is a double there, where the sum here, back in range, is a long. SQL keeps no
+     * order, and the total is told by the sum the statement works out anyway, so no value is read again.
+     */
+    protected fun passesLong(numbers: String, distinct: String) =
+        "sum($distinct$numbers) NOT BETWEEN ${Long.MIN_VALUE} AND ${Long.MAX_VALUE}"
 
     /**
      * Where the JSON [json]'s kind comes among the others, as Cypher orders values of several kinds: a map,
@@ -3129,7 +3150,7 @@ abstract class SqlCypherCompiler(graph: String) {
                         Operator.LESS_THAN to "<", Operator.GREATER_THAN to ">", Operator.LESS_THAN_OR_EQUAL to "<=", Operator.GREATER_THAN_OR_EQUAL to ">=",
                     ).getValue(binary.operator)
                     if (listed(left, right)) Value.Bool(listCompared(left, a, right, b, operator))
-                    else Value.Bool(shared(a, b) { (x, y) -> "CASE WHEN ${typeOf(x)} = ${typeOf(y)} AND ${typeOf(x)} IN ('number', 'string', 'boolean') THEN ${ordered(x, operator, y)} END" })
+                    else Value.Bool(sharedCompared(a, b) { (x, y) -> "CASE WHEN ${typeOf(x)} = ${typeOf(y)} AND ${typeOf(x)} IN ('number', 'string', 'boolean') THEN ${ordered(x, operator, y)} END" })
                 }
                 // Two lists of nodes, or of relationships, are together a list of them.
                 Operator.ADD -> if (left is Value.Entities && right is Value.Entities && left.relationships == right.relationships) {
@@ -3252,7 +3273,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val indexed = if (given is String || given is Boolean) indexedEquality(a, b) else null
             // Null is equal to nothing, itself included: the comparison is null, as in Cypher. A value the statement
             // is given that is not null needs no test of its own, and a property that is not there is SQL's null.
-            val equal = if (given != null) givenEquals(a, b, given).let { if (stored) it else "CASE WHEN NOT ${isJsonNull(a)} THEN $it END" } else shared(a, b) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${jsonEquals(x, y)} END" }
+            val equal = if (given != null) givenEquals(a, b, given).let { if (stored) it else "CASE WHEN NOT ${isJsonNull(a)} THEN $it END" } else sharedCompared(a, b) { (x, y) -> "CASE WHEN NOT ${isJsonNull(x)} AND NOT ${isJsonNull(y)} THEN ${jsonEquals(x, y)} END" }
             return if (indexed != null) "($indexed AND $equal)" else equal
         }
 
@@ -3501,7 +3522,12 @@ abstract class SqlCypherCompiler(graph: String) {
                 else -> comparable(json(left))
             }
             val equals: (String, String) -> String = if (identities) ::identityEquals else ::jsonEquals
-            fun matches(item: String, value: String) = if (id != null) "$item = $value" else equals(item, value)
+            val items = if (id == null && !identities) givenItems(binary.right) else null
+            fun matches(item: String, value: String) = when {
+                id != null -> "$item = $value"
+                items != null -> givenItemEquals(item, value, items)
+                else -> equals(item, value)
+            }
             val within = isFlat(right)
             // A node, a relationship or a value of one kind holds no null; nor does an item of a list that holds none.
             val whole = id != null || scalar(binary.left, scope) || isFlat(left)
@@ -3515,15 +3541,15 @@ abstract class SqlCypherCompiler(graph: String) {
                 // the store, which is SQL's null where it is not there) is in a list that may hold a null only where it is not null.
                 val nullable = !within && id == null && !present(binary.left) && !stored(binary.left, scope) && holdsNull("x") != null
                 if (!nullable) return "EXISTS (SELECT 1 FROM ${elementsOf(right, list, i)} WHERE ${matches(item(i), x)})"
-                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) AND NOT ${isJsonNull(v)})" }
+                return sharedCompared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) AND NOT ${isJsonNull(v)})" }
             }
             // A value that may be null, in a list that is not and holds none: in where an item is equal, null where the value is
             // null, else not, written so the store still answers the first as it did, as a semi-join.
             if (present(binary.right) && within && whole && filled) {
                 val i = alias("i")
-                return shared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) OR CASE WHEN NOT ${isJsonNull(v)} THEN FALSE END)" }
+                return sharedCompared(list, x) { (l, v) -> "(EXISTS (SELECT 1 FROM ${elementsOf(right, l, i)} WHERE ${matches(item(i), v)}) OR CASE WHEN NOT ${isJsonNull(v)} THEN FALSE END)" }
             }
-            return shared(list, x) { (l, v) ->
+            return sharedCompared(list, x) { (l, v) ->
                 val (i, j) = alias("i") to alias("i")
                 val cases = mutableListOf<String>()
                 if (!present(binary.right)) cases += "WHEN ${isJsonNull(l)} THEN NULL"
@@ -3540,6 +3566,22 @@ abstract class SqlCypherCompiler(graph: String) {
                 }
                 "CASE ${cases.joinToString(" ")} ELSE FALSE END"
             }
+        }
+
+        /**
+         * The items of the list [expression] where the statement writes or is given each, a list literal of literals and parameters,
+         * or a parameter: null where it is not so given, or holds a list or a map, whose items [givenItemEquals] doesn't know.
+         */
+        private fun givenItems(expression: Expression): List<Any?>? = when (expression) {
+            is Expression.ListLiteral -> expression.items.map { item ->
+                when (item) {
+                    is Expression.Literal -> item.value
+                    is Expression.Parameter -> parameterTree(item.name)?.let { if (it.isContainerNode) return null else scalarOf(it) }
+                    else -> return null
+                }
+            }.takeIf { values -> values.none { it is List<*> || it is Map<*, *> } }
+            is Expression.Parameter -> parameterTree(expression.name)?.takeIf { it.isArray && it.none(JsonNode::isContainerNode) }?.map(::scalarOf)
+            else -> null
         }
 
         /**

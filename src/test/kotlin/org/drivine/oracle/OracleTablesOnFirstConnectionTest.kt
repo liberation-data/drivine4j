@@ -92,6 +92,15 @@ class OracleTablesOnFirstConnectionTest : TablesOnFirstConnectionContract() {
             }
         }
 
+    /** The property graph, made last, is there. */
+    override fun whole(graph: String): Boolean =
+        DriverManager.getConnection(OracleTestContainer.getJdbcUrl(), user, PASSWORD).use { c ->
+            c.prepareStatement("SELECT COUNT(*) FROM user_property_graphs WHERE graph_name = ?").use { s ->
+                s.setString(1, graph.uppercase())
+                s.executeQuery().use { it.next(); it.getInt(1) == 1 }
+            }
+        }
+
     /**
      * A statement that another session's lock turns away (`ORA-00054`) is tried again until the lock is
      * let go, and not given up on: the index the block makes waits for the session that holds its table.

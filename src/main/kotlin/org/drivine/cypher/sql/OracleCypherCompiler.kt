@@ -20,7 +20,7 @@ import java.util.IdentityHashMap
  * order written. Oracle keeps a number as a number, so a stored `2.0` reads as `2`; a floating-point
  * number the statement writes, or a parameter's that is a whole number, is a `BINARY_DOUBLE`, and stays one. A text Oracle reads out of JSON is a
  * `VARCHAR2` of at most 4,000 bytes, and one longer is read as a CLOB where it is measured, cut, changed, searched or reversed (see
- * [texts]). An empty text is null, as Oracle's empty text is. `reduce` is a function the query
+ * [texts]), or compared (see [jsonEquals] and [ordered]). An empty text is null, as Oracle's empty text is. `reduce` is a function the query
  * declares, and does not run in a statement that writes, in the step of a `reduce`, or where its step reads a path.
  *
  * A list of ids is text, each id between commas (`,1,2,`): Oracle has no array, and a recursive query
@@ -219,6 +219,109 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
             }
         }
     }
+
+    /**
+     * The sides of a comparison, an `IN` among them, bound as a sum's are (see [sharedSum]), and each property read by its own
+     * path where it is not bound (see [direct]): [jsonEquals] and [ordered] read a text as a `VARCHAR2` or a CLOB, and not as
+     * JSON, which Oracle refuses to compare past about 32 KB (ORA-40180, #389). Taken out as JSON and compared, a stored text
+     * past 32 KB, on two rows or more, closed the session on the first run or a later one (ORA-03113), as #255's did.
+     *
+     * Not in a statement that writes, nor in the step of a `reduce()`, where two values are compared as JSON, as before (see
+     * [asJson]).
+     */
+    override fun sharedCompared(a: String, b: String, body: (List<String>) -> String): String {
+        if (asJson) return shared(a, b, body = body)
+        if (propertyRead(a) != null || propertyRead(b) != null) readsCompared = true
+        return sharedSum(a, b) { sides -> sides.fold(body(sides)) { sql, side -> direct(sql, side) } }
+    }
+
+    /**
+     * Whether a comparison reads a property by its own path (see [sharedCompared]): the statement is then not rewritten by
+     * Oracle's JSON table transformation (see [planned]), which read the reads of one node's properties together, and lost
+     * them where a quantifier's subquery, bound as a comparison's side, read them: `all(x IN [1] WHERE p.born > 1962) = true`
+     * was null for each person (the spec's "Quantifiers of null"), and right with the hint, or with the property taken out
+     * as JSON first.
+     */
+    private var readsCompared = false
+
+    /**
+     * Whether two values are compared as JSON, as [jsonEquals] and [ordered] compared them before #389: in a statement that
+     * writes and in the step of a `reduce()`, which run as PL/SQL. There a CLOB read from an unwound row's JSON closed the
+     * session (ORA-03113), where the JSON was refused (ORA-40180) and the session stayed open: `UNWIND $items AS t MERGE (n {a:
+     * t.a})` with a text past 32 KB, `CypherWriteContract`'s "a text past 32 KB from an unwound parameter…". So a text past
+     * 32 KB is refused there, as before.
+     */
+    private val asJson get() = procedural || folding
+
+    /**
+     * As JSON, but where either is a text past 4,000 bytes, or empty, which a `VARCHAR2` doesn't hold: then two texts as
+     * [textOrder] compares them, and a text is equal to no value of another kind, and is compared with SQL's null, a property
+     * that isn't there, as null. `=` of JSON refuses a value past about 32 KB,
+     * a text among them, whatever the other is (ORA-40180, #389): `n.bio = 'abc'` failed where one node's bio was so long. Each
+     * is read as a `VARCHAR2` first, and its kind only where that is null. A list or a map that holds a long text is compared as
+     * JSON, and refused. Each side is read more than once, so a long one is bound, as [sharedCompared] binds it.
+     */
+    override fun jsonEquals(x: String, y: String) = if (asJson) "$x = $y" else sharedCompared(x, y) { (a, b) ->
+        "CASE WHEN ${short(a)} IS NOT NULL AND ${short(b)} IS NOT NULL THEN $a = $b " +
+            "WHEN ${kind(a)} = 'string' AND ${kind(b)} = 'string' THEN ${clobOrder(a, "=", b)} " +
+            "WHEN ${kind(a)} IS NULL OR ${kind(b)} IS NULL THEN NULL WHEN ${kind(a)} = 'string' OR ${kind(b)} = 'string' THEN FALSE ELSE $a = $b END"
+    }
+
+    /**
+     * [jsonEquals], but where [given] is a number, a truth value, or a text of 1 to 4,000 bytes, which is read as a `VARCHAR2`:
+     * then only the other side is tested, and where it is a text that isn't, it is longer, and not equal. A property read from
+     * the store is not null as JSON, and so needs no test of its own.
+     */
+    override fun givenEquals(x: String, y: String, given: Any): String {
+        if (asJson) return "$x = $y"
+        if (!readShort(given)) return jsonEquals(x, y)
+        return sharedCompared(x, y) { (a, b) -> "CASE WHEN ${short(a)} IS NOT NULL OR NVL(${kind(a)}, 'null') <> 'string' THEN $a = $b ELSE FALSE END" }
+    }
+
+    /**
+     * Where each of [items] is null or read as a `VARCHAR2` (see [givenEquals]), [item] equal as JSON to [value], or to null where
+     * [value] is a text that isn't, and is longer than any of them: a plain equality, as before: an `IN` of three items over 20,000
+     * rows took 28 ms, against 14 ms before, where [jsonEquals], which tests both sides in a `CASE`, took 90 ms.
+     */
+    override fun givenItemEquals(item: String, value: String, items: List<Any?>): String {
+        if (asJson || !items.all { it == null || readShort(it) }) return jsonEquals(item, value)
+        return sharedCompared(item, value) { (a, b) -> "$a = CASE WHEN ${short(b)} IS NOT NULL OR NVL(${kind(b)}, 'null') <> 'string' THEN $b END" }
+    }
+
+    /** Whether the value [given] is a number, a truth value or a text of 1 to [SHORT_TEXT] bytes, which `JSON_VALUE` reads as a `VARCHAR2`. */
+    private fun readShort(given: Any) =
+        given is Number || given is Boolean || given is String && given.isNotEmpty() && given.toByteArray(Charsets.UTF_8).size <= SHORT_TEXT
+
+    /**
+     * Two texts, as [textOrder] orders them; any other two of one kind as JSON. JSON ordered a text past 32 KB, read from the
+     * store on two rows or more, and closed the session on the first run or a later one (ORA-03113, #389). Its sides are
+     * bound, and a property read by its own path, by [sharedCompared].
+     */
+    override fun ordered(x: String, operator: String, y: String) =
+        if (asJson) "$x $operator $y" else "CASE WHEN ${kind(x)} = 'string' THEN ${textOrder(x, operator, y)} ELSE $x $operator $y END"
+
+    /**
+     * Whether the JSON texts [x] and [y] stand as [operator] says, `=`, `<`, `>=`…: as `VARCHAR2`s where both are read so, which
+     * compare by their bytes, so by their code points; else as CLOBs, by `DBMS_LOB.COMPARE`, which compares the whole of each,
+     * a shorter one that starts the other first. An empty text, null as a CLOB, comes before any other. A CLOB is compared by
+     * its UTF-16 units, so between two texts past 4,000 bytes that first differ where one has a character past U+FFFF and the
+     * other one from U+E000 to U+FFFF, the order is the other way round from Cypher's.
+     */
+    private fun textOrder(x: String, operator: String, y: String) =
+        "CASE WHEN ${short(x)} IS NOT NULL AND ${short(y)} IS NOT NULL THEN ${short(x)} $operator ${short(y)} ELSE ${clobOrder(x, operator, y)} END"
+
+    /**
+     * Whether the JSON texts [x] and [y] stand as [operator] says, as CLOBs: see [textOrder]. Each is a CLOB by `TO_CLOB` too:
+     * `JSON_VALUE(JSON('null'), '$' RETURNING CLOB)`, of a null a list writes, is a null of no type to `DBMS_LOB.COMPARE`, which
+     * then matched more than one of its declarations (PLS-307).
+     */
+    private fun clobOrder(x: String, operator: String, y: String): String {
+        val (cx, cy) = "TO_CLOB(JSON_VALUE($x, '\$' RETURNING CLOB))" to "TO_CLOB(JSON_VALUE($y, '\$' RETURNING CLOB))"
+        return "NVL(DBMS_LOB.COMPARE($cx, $cy), SIGN(NVL(LENGTH($cx), 0) - NVL(LENGTH($cy), 0))) $operator 0"
+    }
+
+    /** The JSON [json] as a `VARCHAR2`, where it is a text of at most 4,000 bytes, a number or a truth value; else null. */
+    private fun short(json: String) = "JSON_VALUE($json, '\$')"
 
     /** The properties and the path of [json] where it is a property as [propertyOf] reads it, `JSON_QUERY(props, '$.a' RETURNING JSON)`. */
     private fun propertyRead(json: String): Pair<String, String>? =
@@ -487,14 +590,17 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * doubles, as Neo4j sums them: as `NUMBER`s, 1e300 would be dropped, and 0.1 + 0.2 would be 0.3. Nothing is bound under
      * an aggregate, so each value is written out where it is read: each read is one path that tests the value's kind
      * itself, a text not summed and a number with a fraction written with a point, or with a negative exponent, `1E-41`,
-     * as Oracle writes one of more than 40 digits, so a sum reads it three times, as [number] alone does. A path compares
-     * no item to another, `@ != @.floor()` failing with ORA-40597, so a fraction is told by how it is written.
+     * as Oracle writes one of more than 40 digits, so a sum reads it four times, once more than [number] alone does. A
+     * path compares no item to another, `@ != @.floor()` failing with ORA-40597, so a fraction is told by how it is
+     * written. Integers are summed as `NUMBER`s, exactly, and as doubles where their sum is past a long's range: see
+     * [passesLong].
      */
     override fun sum(json: String, distinct: String): String {
-        fun summed(type: String) = "sum(${distinct}JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING $type))"
+        fun summed(type: String) = "JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING $type)"
         val fraction = "@.string() has substring \".\" || @.string() has substring \"E-\""
         val float = "MAX(JSON_VALUE($json, '\$?(@.type() == \"double\" || (@.type() == \"number\" && ($fraction)))')) IS NOT NULL"
-        return "CASE WHEN $float THEN JSON_SCALAR(${summed("BINARY_DOUBLE")}) ELSE JSON_SCALAR(COALESCE(${summed("NUMBER")}, 0)) END"
+        return "CASE WHEN $float OR ${passesLong(summed("NUMBER"), distinct)} THEN JSON_SCALAR(sum($distinct${summed("BINARY_DOUBLE")})) " +
+            "ELSE JSON_SCALAR(COALESCE(sum($distinct${summed("NUMBER")}), 0)) END"
     }
 
     /** In `BINARY_DOUBLE` where either is one, so a float stays a float, as in Cypher: `NUMBER` keeps no such kind. */
@@ -865,10 +971,11 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * and properties, and the query gave rows its pattern doesn't have, and values of the wrong node (#415):
      * `MATCH (a:N1), (b:N2) RETURN a.n + b.n` gave a row for each two nodes, and so did `a.n - a.m`, `toUpper(a.s),
      * size(a.s)` and `a.l + b.l`. Seen on Oracle 23.26.3 (gvenzl/oracle-free 23). The hint is the statement's, whichever
-     * query of it holds it, so the outermost one holds it. A query of one table reads as it did: none lost a test.
+     * query of it holds it, so the outermost one holds it. A query of one table reads as it did, none lost a test, but where
+     * a comparison reads a property by its own path (see [readsCompared]).
      */
     override fun planned(query: String): String {
-        if (graphTable.findAll(query).count() < 2) return query
+        if (graphTable.findAll(query).count() < 2 && !readsCompared) return query
         val hints = HINTED.find(query)?.takeIf { it.range.first == 0 }?.groups?.get(1)
         return if (hints != null) query.replaceRange(hints.range, "${hints.value} $NO_JSON_TABLE_TRANSFORM")
         else query.replaceFirst(Regex("^SELECT "), "SELECT /*+ $NO_JSON_TABLE_TRANSFORM */ ")

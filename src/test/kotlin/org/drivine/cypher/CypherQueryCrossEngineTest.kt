@@ -705,6 +705,58 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `an integer sum past a long's range is a float, as on Neo4j, and one in range a long`() {
+        // #339: Oracle's NUMBER and Postgres's numeric sum exactly, and gave toString(sum(x)) as an integer past a long's range.
+        // A sum past the range is a float there now, as on Neo4j. SQLite's sum() fails where a running total would pass it.
+        clear()
+        seed("CREATE (:S {k: 'a', x: 9223372036854775807}), (:S {k: 'a', x: 1}), (:S {k: 'b', x: 1}), (:S {k: 'b', x: 2})")
+        fun kinds(value: Any?): Any? = if (value is List<*>) value.map(::kinds) else value?.let { it to it::class.simpleName }
+        // Oracle writes every double's text from 17 digits, toString(2.0 ^ 63) as 9.2233720368547758E18, where Java writes
+        // the fewest that tell it apart: a sum past the range is written as Oracle writes the double it is.
+        fun text(double: String) = if (pm.type == DatabaseType.ORACLE) query("RETURN toString($double)").single() else double
+        val past = listOf(
+            "UNWIND [9223372036854775807, 1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(9.223372036854776E18, text("9.223372036854776E18")),
+            "UNWIND [-9223372036854775807, -2] AS x RETURN [sum(x), toString(sum(x))]" to listOf(-9.223372036854776E18, text("-9.223372036854776E18")),
+            "UNWIND [9223372036854775807, 9223372036854775807] AS x RETURN [sum(x), toString(sum(x))]" to listOf(1.8446744073709552E19, text("1.8446744073709552E19")),
+            "UNWIND [9223372036854775807, 9223372036854775807, 1] AS x RETURN sum(DISTINCT x)" to 9.223372036854776E18,
+            "UNWIND [9223372036854775807, 1] AS x WITH sum(x) AS s RETURN [s, toString(s), s > 0]" to listOf(9.223372036854776E18, text("9.223372036854776E18"), true),
+            "MATCH (n:S) WITH n.k AS k, sum(n.x) AS s ORDER BY k RETURN collect([k, s, toString(s)])" to listOf(listOf("a", 9.223372036854776E18, text("9.223372036854776E18")), listOf("b", 3L, "3")),
+        )
+        // Past the range on the way and back in it at the end. Neo4j goes on as a double from the row where a long would
+        // overflow, so its answer follows the order the rows come in: a float for these, and a long for [MAX, -1, 1] below.
+        // SQL keeps no order, so Oracle and Postgres tell the total alone, and give a long.
+        val back = listOf(
+            "UNWIND [9223372036854775807, 1, -1] AS x RETURN [sum(x), toString(sum(x))]"
+                to (listOf(9.223372036854776E18, "9.223372036854776E18") to listOf(Long.MAX_VALUE, "9223372036854775807")),
+            "UNWIND [9223372036854775807, 9223372036854775807, -9223372036854775807, -9223372036854775807] AS x RETURN sum(x)" to (0.0 to 0L),
+            "UNWIND [-9223372036854775807, -2, 4] AS x RETURN [sum(x), toString(sum(x))]"
+                to (listOf(-9.223372036854776E18, "-9.223372036854776E18") to listOf(-9223372036854775805L, "-9223372036854775805")),
+        )
+        val within = listOf(
+            "UNWIND [9223372036854775806, 1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(Long.MAX_VALUE, "9223372036854775807"),
+            "UNWIND [-9223372036854775807, -1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(Long.MIN_VALUE, "-9223372036854775808"),
+            "UNWIND [9223372036854775807, -1, 1] AS x RETURN sum(x)" to Long.MAX_VALUE,
+            "UNWIND [9223372036854775807, 9223372036854775807] AS x RETURN sum(DISTINCT x)" to Long.MAX_VALUE,
+            "UNWIND [9223372036854775807, -1] AS x RETURN sum(x)" to Long.MAX_VALUE - 1,
+            "UNWIND [] AS x RETURN [sum(x), toString(sum(x))]" to listOf(0L, "0"),
+            "MATCH (n:S) WHERE n.k = 'b' RETURN sum(n.x)" to 3L,
+        )
+        val neo4j = pm.type == DatabaseType.NEO4J
+        val sqlite = pm.type == DatabaseType.SQLITE
+        val expected = within + if (sqlite) emptyList() else past + back.map { (statement, value) -> statement to if (neo4j) value.first else value.second }
+        // Each that differs, so a store's every difference shows at once.
+        val differing = expected.mapNotNull { (statement, value) ->
+            val given = kinds(query(statement).single())
+            if (given == kinds(value)) null else "$statement: $given, not ${kinds(value)}"
+        }
+        assertEquals(emptyList(), differing)
+        if (sqlite) (past.map { it.first } + back.map { it.first }).forEach { statement ->
+            val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+            assertTrue(failed.contains("integer overflow"), "$statement: $failed")
+        }
+    }
+
+    @Test
     fun `an aggregate of floats gives a float, whole or not, and a sum of integers an integer`() {
         // #304: Oracle's NUMBER keeps no kind, so a sum of floats that was whole came back an integer there. Each value is
         // checked with its kind: 2.0 is not 2.
@@ -1505,6 +1557,78 @@ abstract class CypherQueryContract {
             listOf(listOf(1L, "a", 2.0, listOf(3L), mapOf("k" to 4L), null, "y", 1L, null)),
             query("WITH [1, 'a', 2.0, [3], {k: 4}, null] AS l RETURN [i IN range(0, 5) | l[i]] + [head(['y']), last([2, 1]), head([])]"),
         )
+        clear()
+    }
+
+    @Test
+    fun `a text past 32 KB compares as equal, unequal, in a list and in order, stored, given and beside a long value, on several rows`() {
+        // On Oracle two values were compared as JSON: = and IN with a text past 32 KB on either side were refused (ORA-40180,
+        // #389), and <, >, <= and >= of one read from the store on two rows or more closed the session on the first run or a
+        // later one (ORA-03113). A node of another label holds the same text, and is not read.
+        clear()
+        val long = "a".repeat(40_000) + "x"
+        // Equal, equal again, differing in the last character either way, short, null, and a number.
+        val values = listOf(long, long, long.dropLast(1) + "y", long.dropLast(1) + "w", "abc", null, 5L)
+        // And a short text of each, to compare the long ones with through a long value.
+        val shorts = listOf("abc", "zzz", "a", null, "abc", "b", "q")
+        for (i in values.indices) query("CREATE (:CyCompare {i: \$i, t: \$t, s: \$s})", mapOf("i" to i, "t" to values[i], "s" to shorts[i]))
+        query("CREATE (:CyCompareOther {i: 0, t: \$t})", mapOf("t" to long))
+        // As Cypher compares two values: null beside null, a text and a number are not equal and are not ordered.
+        fun compared(a: Any?, operator: String, b: Any?): Boolean? {
+            if (a == null || b == null) return null
+            val order = when {
+                a is String && b is String -> a.compareTo(b)
+                a is Long && b is Long -> a.compareTo(b)
+                else -> return when (operator) { "=" -> false; "<>" -> true; else -> null }
+            }
+            return when (operator) { "=" -> order == 0; "<>" -> order != 0; "<" -> order < 0; ">" -> order > 0; "<=" -> order <= 0; else -> order >= 0 }
+        }
+        // An empty text, which Oracle reads as null, as a VARCHAR2 and as a CLOB, comes before any other.
+        val given = mapOf("same" to long, "last" to long.dropLast(1) + "y", "short" to "abc", "empty" to "", "none" to null, "number" to 5L)
+        val list = listOf(long, "abc", 5L)
+        // A value too long to write as SQL, so bound beside the property: the issue's own form, of a node's short text, and of
+        // a long text a parameter gives.
+        val bound = "toLower(trim(coalesce(\$p.q, m.s)))"
+        val boundLong = "toLower(trim(coalesce(\$p.q, \$same)))"
+        val pairs = values.indices.flatMap { i -> values.indices.map { j -> i to j } }
+        fun count(of: List<Boolean?>) = listOf(of.count { it == true }.toLong())
+        // Texts of an unwound parameter's items, two of them long, compared in a read.
+        val rows = listOf(long, long.dropLast(1) + "y", "abc")
+        onOneSession(given + mapOf("p" to mapOf("q" to null), "list" to list, "prefix" to long.take(32_768), "rows" to rows.map { mapOf("a" to it) })) { query ->
+            repeat(3) { run ->
+                for (operator in listOf("=", "<>", "<", ">", "<=", ">=")) {
+                    val described = "$operator, run ${run + 1}"
+                    val stored = pairs.map { (i, j) -> compared(values[i], operator, values[j]) }
+                    assertEquals(stored, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t $operator m.t ORDER BY n.i, m.i"), "stored, $described")
+                    assertEquals(count(stored), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t $operator m.t RETURN count(*)"), "stored in a WHERE, $described")
+                    val beside = pairs.map { (i, j) -> compared(values[i], operator, shorts[j]) }
+                    assertEquals(beside, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t $operator $bound ORDER BY n.i, m.i"), "beside a long value, $described")
+                    assertEquals(count(beside), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t $operator $bound RETURN count(*)"), "beside a long value in a WHERE, $described")
+                    assertEquals(values.map { compared(it, operator, long) }, query("MATCH (n:CyCompare) RETURN n.t $operator $boundLong ORDER BY n.i"), "beside a long text, $described")
+                    val unwound = rows.flatMap { row -> values.map { compared(it, operator, row) } }
+                    assertEquals(count(unwound), query("UNWIND \$rows AS r MATCH (n:CyCompare) WHERE n.t $operator r.a RETURN count(*)"), "an unwound item's text, $described")
+                    for ((name, value) in given) {
+                        assertEquals(values.map { compared(it, operator, value) }, query("MATCH (n:CyCompare) RETURN n.t $operator \$$name ORDER BY n.i"), "given $name, $described")
+                        for ((other, otherValue) in given) {
+                            assertEquals(listOf(compared(value, operator, otherValue)), query("WITH \$$name AS a, \$$other AS b RETURN a $operator b"), "$name and $other, $described")
+                        }
+                    }
+                }
+                // IN, of a list the statement writes, of one a parameter gives, and of a bound value's.
+                val inLists = pairs.map { (i, j) -> if (values[i] == null || values[j] == null) null else values[i] == values[j] }
+                assertEquals(inLists, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t IN [m.t] ORDER BY n.i, m.i"), "IN, run ${run + 1}")
+                assertEquals(count(inLists), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t IN [m.t] RETURN count(*)"), "IN in a WHERE, run ${run + 1}")
+                val inBound = pairs.map { (i, j) -> if (values[i] == null || shorts[j] == null) null else values[i] == shorts[j] }
+                assertEquals(inBound, query("MATCH (n:CyCompare), (m:CyCompare) RETURN n.t IN [$bound] ORDER BY n.i, m.i"), "IN beside a long value, run ${run + 1}")
+                assertEquals(count(inBound), query("MATCH (n:CyCompare), (m:CyCompare) WHERE n.t IN [$bound] RETURN count(*)"), "IN beside a long value in a WHERE, run ${run + 1}")
+                assertEquals(values.map { it?.let { it == long } }, query("MATCH (n:CyCompare) RETURN n.t IN [$boundLong, 'x'] ORDER BY n.i"), "IN beside a long text, run ${run + 1}")
+                assertEquals(values.map { it?.let { it in list } }, query("MATCH (n:CyCompare) RETURN n.t IN \$list ORDER BY n.i"), "IN a given list, run ${run + 1}")
+                assertEquals(count(values.map { it?.let { it in list } }), query("MATCH (n:CyCompare) WHERE n.t IN \$list RETURN count(*)"), "IN a given list in a WHERE, run ${run + 1}")
+                // A long text the statement makes, beside no property and no long value.
+                assertEquals(listOf(true), query("WITH \$same AS t, \$prefix AS x RETURN substring(t, 0, 32768) = x"), "made, run ${run + 1}")
+                assertEquals(listOf(listOf(true, false, true)), query("WITH \$same AS t RETURN [substring(t, 0, 40001) = t, substring(t, 0, 40000) = t, substring(t, 0, 40000) < t]"), "made, run ${run + 1}")
+            }
+        }
         clear()
     }
 

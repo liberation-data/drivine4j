@@ -171,6 +171,119 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `a variable used as two kinds, or made where it is bound already, is refused, as Neo4j refuses it`() {
+        // Neo4j's VariableTypeConflict and VariableAlreadyBound: before, most were refused as not compiled yet ("bound before its
+        // pattern", "a path is not a value"), and MATCH (a) CREATE (a) made nothing. Until the spec holds them, held here.
+        val refused = listOf(
+            "MATCH (a)-[a]->() RETURN a" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH ()-[r]-(r) RETURN r" to "r is a relationship, and is used as a node: a variable is of one kind, as in Neo4j.",
+            "MATCH (r) MATCH ()-[r]-() RETURN r" to "r is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (r)-[]-()-[r*]-() RETURN r" to "r is a node, and is used as a list of relationships: a variable is of one kind, as in Neo4j.",
+            "MATCH ()-[r*]-() MATCH ()-[r]-() RETURN r" to "r is a list of relationships, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH p = ()-->() MATCH (p) RETURN p" to "p is a path, and is used as a node: a variable is of one kind, as in Neo4j.",
+            "WITH true AS n MATCH (n) RETURN n" to "n is a truth value, and is used as a node: a variable is of one kind, as in Neo4j.",
+            "WITH [] AS r MATCH ()-[r]-() RETURN r" to "r is a list, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "WITH {x: 1} AS r MATCH ()-[r*]-() RETURN r" to "r is a map, and is used as a list of relationships: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) WITH a AS r MATCH ()-[r]-() RETURN r" to "r is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) WITH * MATCH ()-[a]->() RETURN a" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) WITH 1 AS a MATCH ()-[a]->() RETURN a" to "a is an integer, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) RETURN [(a)-[a]->() | 1] AS l" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) WHERE (a)-[a]->() RETURN a" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) WHERE EXISTS { MATCH ()-[a]->() } RETURN a" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) RETURN COUNT { (a)-[a]->() } AS c" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) CALL { WITH a MATCH ()-[a]->() RETURN 1 AS x } RETURN x" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "CALL { MATCH (a) RETURN a } MATCH ()-[a]->() RETURN a" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH ()-[r]->() CREATE (a)-[:R]->(r)" to "r is a relationship, and is used as a node: a variable is of one kind, as in Neo4j.",
+            "MATCH p = (p)-[]-() RETURN p" to "p is bound already, so a pattern binds no path to it, as in Neo4j.",
+            "MATCH ()-[p]->() MATCH p = ()-->() RETURN p" to "p is bound already, so a pattern binds no path to it, as in Neo4j.",
+            "UNWIND [1] AS p MATCH p = ()-->() RETURN p" to "p is bound already, so a pattern binds no path to it, as in Neo4j.",
+            "MATCH (a) CREATE (a)" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH (a) MERGE (a)" to "a is bound already, so a MERGE makes no node of it, as in Neo4j.",
+            "CREATE (n), (n)" to "n is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH (a) CREATE (a)-[:R]->(b), (b)" to "b is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH ()-[r]->() CREATE (r)" to "r is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "CREATE (n:Foo)-[:T1]->(), (n:Bar)-[:T2]->()" to "n is bound already, so a CREATE or MERGE makes no node of it with labels or properties.",
+            "CREATE (n)-[r:T]->(), ()-[r:T]->()" to "r is bound already, so a CREATE makes no relationship of it, as in Neo4j.",
+            "MATCH (a) CREATE (b)-[a:R]->()" to "a is bound already, so a CREATE makes no relationship of it, as in Neo4j.",
+            "WITH 1 AS r MERGE ()-[r:R]->()" to "r is bound already, so a MERGE makes no relationship of it, as in Neo4j.",
+            "MATCH (a) CALL { WITH a CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            // A CALL imports by its brackets as by its first WITH.
+            "MATCH (a) CALL (a) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH (a) CALL (a) { MATCH ()-[a]->() RETURN 1 AS x } RETURN x" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
+            "MATCH (a) CALL (*) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE (r)-[:T]->())" to "r is a relationship, and is used as a node: a variable is of one kind, as in Neo4j.",
+            "MATCH p = (a)-[*]->(b) RETURN size(p)" to "size() takes a list or a text, not a path, as in Neo4j: length() takes a path.",
+        )
+        // A compiler is made for each statement, as a connection makes one.
+        listOf({ PostgresCypherCompiler("g") }, { OracleCypherCompiler("g") }, { SqliteCypherCompiler("g") }).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                val store = compiler()::class.simpleName
+                assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
+            }
+            // Neo4j takes each of these: a node bound before an OPTIONAL MATCH or a MERGE that joins it up, a name a WITH, a
+            // UNION, a pattern comprehension, an EXISTS or a CALL that imports nothing leaves to a new variable, a list a
+            // variable-length relationship matches, a value whose kind the statement leaves open, and a variable bound
+            // already that a CREATE or a MERGE in a FOREACH names.
+            listOf(
+                "MATCH (a) OPTIONAL MATCH (a)-->(b) RETURN b",
+                "MATCH (a) OPTIONAL MATCH (a) RETURN a",
+                "OPTIONAL MATCH (a) MATCH (a)-->() RETURN a",
+                "MATCH (a) MERGE (a)-[:R]->(b)",
+                "MATCH (a) MERGE (b)-[:R]->(a)",
+                "MATCH (a) MERGE (a)-[:R]->(a)",
+                "CREATE (a) MERGE (a)-[:R]->(b)",
+                "MATCH (a)-[r]->(b) MERGE (a)-[s:T]->(b)",
+                "MATCH (n) CREATE (n)-[:R]->(n)",
+                "CREATE (n)-[:T1]->(), (n)-[:T2]->()",
+                "MATCH (a) CREATE (b), (a)-[:R]->(b)",
+                "MATCH (n) FOREACH (x IN [1] | CREATE (n)-[:R]->())",
+                "MATCH (n) FOREACH (x IN [1] | CREATE (n))",
+                "FOREACH (x IN [1] | CREATE (n), (n))",
+                "MATCH (a) FOREACH (x IN [1] | MERGE (a)-[:R]->())",
+                "MATCH (a) WITH a SKIP 0 MERGE (a)-[:R]->()",
+                "MATCH (a) CALL { CREATE (a) RETURN 1 AS x } RETURN x",
+                "MATCH (a)-[r*]->() WITH r MATCH ()-[r*]->() RETURN r",
+                "MATCH (a) RETURN [(a)-->(a) | 1] AS l",
+                "WITH 1 AS p RETURN [p = ()-->() | length(p)] AS l",
+                "MATCH (a), (a)-->() RETURN a",
+                "MATCH (n) WITH n MATCH (n:L) RETURN n",
+                "MATCH (a) WITH a AS b, a AS c MATCH (b)-->(c) RETURN b",
+                "MATCH ()-[a]->() WITH 1 AS x MATCH (a) RETURN a",
+                "MATCH ()-[r]->() RETURN r UNION ALL MATCH (r) RETURN r",
+                "MATCH (a) RETURN [a IN [1] | a] AS x",
+                "MATCH (n) RETURN [p = (n)-->() | length(p)] AS x",
+                "MATCH (a) WITH [(a)-[r]->() | r] AS rs MATCH ()-[r]->() RETURN r",
+                "MATCH (a) WHERE EXISTS { MATCH (a)-[r]->() } MATCH ()-[r]->() RETURN r",
+                "MATCH (a) CALL { WITH a MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
+                "MATCH (a) CALL (a) { MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
+                "MATCH (a) CALL (a) { CREATE (a)-[:R]->(b) RETURN b } RETURN b",
+                "MATCH ()-[n]->(m) FOREACH (n IN [m] | CREATE (n)-[:R]->())",
+                "MATCH (a) WITH a, 1 AS b ORDER BY size([(a)-->(x) | x]) RETURN b",
+                "MATCH (a) MATCH p = (a)-->() RETURN nodes(p)",
+                "MATCH ()-[r*]->() RETURN size(r)",
+                "WITH [] AS r MATCH ()-[r*]-() RETURN r",
+                "MATCH (a) WITH collect(a) AS ns UNWIND ns AS n MATCH (n)-->(m) RETURN m",
+            ).forEach { compiler().compile(it) }
+            // Neo4j takes these too, and the compiler refuses them for what it does not compile yet, as before. So it refuses a
+            // relationship bound before a CREATE or a MERGE that makes it again, as the spec has it, which Neo4j refuses as bound already.
+            listOf(
+                "MATCH ()-[r]->() WITH r MATCH ()-[r]->() RETURN r" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
+                "MATCH (a)-[r]->() RETURN EXISTS { (a)-[r]->() } AS e" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
+                "MATCH (a)-[r]->(b) MERGE (a)-[r]->(b)" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
+                "MATCH (a) CALL { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
+                "MATCH (a) CALL () { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
+                "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE ()-[r:T]->())" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
+                "MATCH (a) CALL { WITH a RETURN a AS b UNION WITH a MATCH ()-[b]->() RETURN b } RETURN b" to
+                    "A UNION in CALL { … } whose queries return values of different kinds is Cypher, and is not compiled to SQL yet.",
+                "MATCH p = ()-->() RETURN [p = ()-->() | p] AS x" to "A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p).",
+            ).forEach { (cypher, message) ->
+                val store = compiler()::class.simpleName
+                assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
+            }
+        }
+    }
+
+    @Test
     fun `two lists compared in a statement that writes are refused on Oracle, whose block calls no function the query declares`() {
         // #349: Oracle compares two lists by a function the query declares, which a procedure's queries do not call.
         val cypher = "CREATE (n:N {a: [1] < [2]})"
