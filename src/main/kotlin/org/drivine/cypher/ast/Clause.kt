@@ -32,9 +32,11 @@ sealed interface Clause {
 
     /**
      * `CALL { … }`: for each row, the rows [query] gives, read from the variables around it, with what it returns
-     * bound for the clauses after; with [optional], a row it gives none for is kept, with nulls.
+     * bound for the clauses after; with [optional], a row it gives none for is kept, with nulls. [imports] are the
+     * variables its brackets import, `CALL (a, b) { … }`, and with [importsAll] it imports each, `CALL (*) { … }`; with
+     * no brackets, null, its first `WITH` imports them.
      */
-    data class Call(val optional: Boolean, val query: Query) : Clause
+    data class Call(val optional: Boolean, val query: Query, val imports: List<String>? = null, val importsAll: Boolean = false) : Clause
 
     /** `FOREACH (x IN list | …)`: [clauses] written for each item of [list], bound to [variable]; the rows are left as they were. */
     data class Foreach(val variable: String, val list: Expression, val clauses: List<Clause>) : Clause

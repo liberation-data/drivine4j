@@ -118,6 +118,11 @@ with the parameters it is given, so a value given refuses that call alone. A val
 row is read, such as a property or a parameter, is compiled: where it is of the wrong kind, the statement may give null
 where Neo4j fails.
 
+A variable used as two kinds is refused too, as Neo4j refuses it: `MATCH (a)-[a]->()` or `WITH true AS n MATCH (n)`
+fails with `a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.` So is one a pattern
+makes where it is bound already: `MATCH (a) CREATE (a)`, a path variable bound before its `MATCH`, or a relationship
+variable bound as something else.
+
 ### Where the stores differ
 
 - A temporal value comes back as its ISO 8601 text, where a graph engine's driver gives a value of its own.

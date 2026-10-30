@@ -102,6 +102,8 @@ abstract class SqlCypherCompiler(graph: String) {
 
     /** The statement [query], read already, with its parameters' values [parameters], as SQL: a query, or a procedure where it writes. */
     fun compile(query: Query, parameters: Map<String, Any?>): CompiledCypher {
+        // A variable used as two kinds, or made where it is bound already, is refused for that, before what is not compiled yet.
+        VariableKinds.check(query)
         if (query.unions.isNotEmpty()) return withFunctions(union(query, parameters))
         if (query.clauses.none(::writes)) {
             val writer = Writer(Parameters(parameters, ::parameterJson, ::parameterCount, text = ::parameterText, asPath = parameterPath))
