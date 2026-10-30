@@ -82,6 +82,95 @@ class CompilerRefusalTest {
     }
 
     @Test
+    fun `a value the statement writes as one of a kind an operator or a function does not take is refused, as Neo4j refuses it`() {
+        // #420: each gave null, false or a value. In the spec's refusals from v0.6.20; until this copy moves to it, held here too.
+        val refused = listOf(
+            "RETURN 123 AND true" to "AND takes a truth value, not an integer, as in Neo4j.",
+            "RETURN false OR 'foo'" to "OR takes a truth value, not a text, as in Neo4j.",
+            "RETURN [true] XOR false" to "XOR takes a truth value, not a list, as in Neo4j.",
+            "RETURN null AND {}" to "AND takes a truth value, not a map, as in Neo4j.",
+            "RETURN NOT -1.5" to "NOT takes a truth value, not a float, as in Neo4j.",
+            "WITH 123 AS x WITH x AS y RETURN NOT y" to "NOT takes a truth value, not an integer, as in Neo4j.",
+            "MATCH (n) WHERE 1 RETURN n" to "An integer is not a condition, as in Neo4j.",
+            "WITH 'a' AS x MATCH (n) WHERE x RETURN n" to "A text is not a condition, as in Neo4j.",
+            "RETURN CASE WHEN [] THEN 'a' END" to "A list is not a condition, as in Neo4j.",
+            "RETURN [x IN [1, 2] WHERE 'a']" to "A text is not a condition, as in Neo4j.",
+            "RETURN any(x IN [1] WHERE 1.5)" to "A float is not a condition, as in Neo4j.",
+            "WITH 123 AS x RETURN x.num" to "An integer has no properties.",
+            "WITH 'abc' AS s MATCH (n) RETURN s.size" to "A text has no properties.",
+            "WITH [1] AS l RETURN l.num" to "A list has no properties.",
+            "WITH true AS b RETURN b.num" to "A truth value has no properties.",
+            "WITH true AS list, 0 AS idx RETURN list[idx]" to "A truth value is not a list or a map, and is indexed as one, as in Neo4j.",
+            "RETURN 'abc'[0]" to "A text is not a list or a map, and is indexed as one, as in Neo4j.",
+            "WITH [1, 2, 3] AS list, 4.7 AS idx RETURN list[idx]" to "A list is indexed by an integer, not a float, as in Neo4j.",
+            "RETURN [1, 2, 3]['1']" to "A list is indexed by an integer, not a text, as in Neo4j.",
+            "RETURN {a: 1}[1]" to "A map is indexed by a text, not an integer, as in Neo4j.",
+            "RETURN 1 IN 123" to "IN takes a list, not an integer, as in Neo4j.",
+            "WITH {x: []} AS m RETURN 1 IN m" to "IN takes a list, not a map, as in Neo4j.",
+            "RETURN range(0, 1, 1.1)" to "range() takes integers, not a float, as in Neo4j.",
+            "RETURN range(true, 1)" to "range() takes integers, not a truth value, as in Neo4j.",
+            "RETURN range(2, 8, 0)" to "range() takes a step other than 0, as in Neo4j.",
+            "RETURN range(2, 8, -0)" to "range() takes a step other than 0, as in Neo4j.",
+            "RETURN properties(1)" to "properties() takes a node, a relationship or a map, not an integer, as in Neo4j.",
+            "WITH 'Cypher' AS t RETURN properties(t)" to "properties() takes a node, a relationship or a map, not a text, as in Neo4j.",
+            "RETURN properties([true, false])" to "properties() takes a node, a relationship or a map, not a list, as in Neo4j.",
+            // Read in the step of reduce(), which Oracle gives the row as JSON, a variable is of the kind the statement made it.
+            "WITH 1 AS x RETURN reduce(a = 0, y IN [1] | a + x.num)" to "An integer has no properties.",
+            "WITH 'a' AS x RETURN reduce(a = true, y IN [1] | a AND x)" to "AND takes a truth value, not a text, as in Neo4j.",
+            // A kind each query of a UNION gives alike is kept.
+            "CALL { RETURN 1 AS x UNION RETURN 2 AS x } RETURN x.num" to "An integer has no properties.",
+            "CREATE (a) SET a.maplist = [{num: 1}]" to
+                "A property is a number, a text, a truth value, a temporal value or a list of them, not a list of maps or lists, as in Neo4j.",
+            "MATCH (a) SET a.m = {num: 1}" to "A property is a number, a text, a truth value, a temporal value or a list of them, not a map, as in Neo4j.",
+        )
+        // A compiler is made for each statement, as a connection makes one: one that has compiled a write compiles the next as one.
+        listOf({ PostgresCypherCompiler("g") }, { OracleCypherCompiler("g") }, { SqliteCypherCompiler("g") }).forEach { compiler ->
+            refused.forEach { (cypher, message) ->
+                val store = compiler()::class.simpleName
+                assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
+            }
+            // A parameter's value is known as the statement is compiled, once for each call: a step of 0 would never end, and
+            // an index given of another kind is refused as one written is.
+            listOf(
+                Triple("RETURN range(2, 8, \$s)", mapOf("s" to 0), "range() takes a step other than 0, as in Neo4j."),
+                Triple("WITH [1] AS l RETURN l[\$k]", mapOf("k" to "a"), "A list is indexed by an integer, not a text, as in Neo4j."),
+                Triple("WITH {a: 1} AS m RETURN m[\$k]", mapOf("k" to 1), "A map is indexed by a text, not an integer, as in Neo4j."),
+                // A value carried across a write is of the kind the statement made it.
+                Triple("WITH 1 AS x CREATE (n) RETURN x.num", emptyMap(), "An integer has no properties."),
+            ).forEach { (cypher, parameters, message) ->
+                assertEquals(message, assertThrows<DrivineException>(cypher) { compiler().compile(cypher, parameters) }.message, cypher)
+            }
+            // A value whose kind is known only when the row is read, a property, a parameter or an unwound item, is compiled, as
+            // Neo4j plans it; and so are null and the kinds each takes.
+            listOf(
+                "MATCH (n) WHERE n.flag AND NOT n.other RETURN n" to emptyMap(),
+                "RETURN \$p AND true" to mapOf("p" to 1),
+                "MATCH (n) RETURN n.x.y, n.x[0], 1 IN n.x, range(0, n.x), properties(n.x)" to emptyMap(),
+                "UNWIND [{a: 1}] AS m RETURN m.a, m['a']" to emptyMap(),
+                "RETURN NOT null, null XOR true, null.num, null[0], [1, 2, 3][null], 1 IN null, properties(null)" to emptyMap(),
+                "WITH {a: 1} AS m, 'a' AS k RETURN m.a, m[k], properties(m), [1, 2][-1], range(0, 10, -2)" to emptyMap(),
+                "MATCH (a) SET a.tags = ['x', 'y'], a.n = -1" to emptyMap(),
+                // A variable each query of a UNION makes of another kind is of none known.
+                "CALL { RETURN 1 AS x UNION RETURN {a: 1} AS x } RETURN x.a" to emptyMap(),
+                // A variable a later WITH, a comprehension, a quantifier or a reduce() binds again is of the kind that one makes it.
+                "WITH 1 AS x WITH {a: 1} AS x RETURN x.a" to emptyMap(),
+                "WITH 1 AS x RETURN [x IN [{a: 1}] | x.a], [x IN [true] WHERE x], any(x IN [true] WHERE x), reduce(x = true, y IN [true] | x AND y)" to emptyMap(),
+                // A CASE, a coalesce(), a list joined, an item of a list or a map written, or a parameter, is of no kind known.
+                "WITH CASE WHEN true THEN {a: 1} ELSE 1 END AS x, coalesce(null, {a: 1}) AS y, [1] + [{a: 1}] AS z RETURN x.a, y.a, z[1]" to emptyMap(),
+                "RETURN [{a: 1}][0].a, [true][0] AND true, {a: true}.a AND true, {a: [1]}['a'][0]" to emptyMap(),
+                "WITH \$p AS x RETURN x.a, x AND true, x[0], 1 IN x, properties(x)" to mapOf("p" to mapOf("a" to 1)),
+                "WITH [1] AS l, {a: 1} AS m RETURN l[\$i], m[\$k]" to mapOf("i" to 0, "k" to "a"),
+                "WITH {a: 1} AS m CREATE (n) RETURN m.a" to emptyMap(),
+                // A name a WITH or an UNWIND binds again after a write is of the kind that one makes it.
+                "WITH 1 AS x CREATE (n {v: x}) WITH n AS x RETURN x.v" to emptyMap(),
+                "WITH 1 AS x CREATE (n {v: x}) WITH n.v AS x RETURN x.a" to emptyMap(),
+                "WITH 1 AS x CREATE (n) WITH {a: 1} AS x CREATE (m) RETURN x.a" to emptyMap(),
+                "WITH 1 AS x CREATE (n) WITH 1 AS y UNWIND [{a: 1}] AS x RETURN x.a" to emptyMap(),
+            ).forEach { (cypher, parameters) -> compiler().compile(cypher, parameters) }
+        }
+    }
+
+    @Test
     fun `two lists compared in a statement that writes are refused on Oracle, whose block calls no function the query declares`() {
         // #349: Oracle compares two lists by a function the query declares, which a procedure's queries do not call.
         val cypher = "CREATE (n:N {a: [1] < [2]})"

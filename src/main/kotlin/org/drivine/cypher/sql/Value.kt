@@ -57,7 +57,29 @@ sealed interface Value {
          * [SqlCypherCompiler.itemValue] reads it.
          */
         val fromList: Boolean = false,
+        /**
+         * Where the statement writes it as a value of one kind, so that its kind is known when compiling, as Neo4j knows it
+         * when it plans the statement: a number, a text or a truth value written, a list or a map written, or a variable a
+         * `WITH` binds to one. Null where the statement leaves its kind open, as for a property or a parameter.
+         */
+        val known: Known? = null,
     ) : Value
+
+    /** A kind of value the statement writes: see [Json.known]. [noun] names a value of it, as a message does. */
+    enum class Known(val noun: String) {
+        INTEGER("an integer"), FLOAT("a float"), TEXT("a text"), BOOLEAN("a truth value"), LIST("a list"), MAP("a map");
+
+        companion object {
+            /** The kind of the literal [value], as the reader gives it: null for null. */
+            fun of(value: Any?): Known? = when (value) {
+                is Long, is Int -> INTEGER
+                is Double, is Float -> FLOAT
+                is String -> TEXT
+                is Boolean -> BOOLEAN
+                else -> null
+            }
+        }
+    }
 
     /** A truth value: SQL's boolean, with its null for Cypher's. */
     data class Bool(val sql: String) : Value
