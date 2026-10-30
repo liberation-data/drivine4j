@@ -551,6 +551,10 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
      */
     override fun roundPlaces(number: String, precision: String) = super.roundPlaces(number, heldPlaces(precision))
 
+    /** Where the statement is given NaN or an infinity, 0 for NaN, as Neo4j casts Java's signum of it: `numeric`'s `SIGN` gives NaN. */
+    override fun signOf(number: String) =
+        if (!nonFinite) super.signOf(number) else shared(number) { (n) -> "CASE WHEN $n = 'NaN' THEN 0 ELSE ${super.signOf(n)} END" }
+
     override fun roundTo(number: String, precision: String, mode: RoundingMode) = super.roundTo(number, heldPlaces(precision), mode)
 
     private fun heldPlaces(precision: String) = shared(precision) { (p) -> "CASE WHEN $p > $MOST_PLACES THEN $MOST_PLACES ELSE $p END" }

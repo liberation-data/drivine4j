@@ -2414,6 +2414,18 @@ class CypherQueryPostgresTest : CypherQueryContract() {
             ),
         )
     }
+
+    @Test
+    fun `sign of NaN is 0, as on Neo4j`() {
+        // `numeric`'s sign of its NaN is NaN, where Java's signum casts NaN to the integer 0 (#295).
+        assertEquals(
+            listOf(listOf(0L, 1L, -1L, -1L)),
+            pm.query(
+                QuerySpecification.withStatement(CypherStatement("RETURN [sign(\$p), sign(\$i), sign(\$n), sign(-2.5)]"))
+                    .bind(mapOf("p" to Double.NaN, "i" to Double.POSITIVE_INFINITY, "n" to Double.NEGATIVE_INFINITY)),
+            ),
+        )
+    }
 }
 
 @OracleTests
