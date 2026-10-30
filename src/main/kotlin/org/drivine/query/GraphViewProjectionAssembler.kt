@@ -233,11 +233,7 @@ internal class GraphViewProjectionAssembler(
                 }
 
                 val direction = Directions.directionString(rel)
-
-                // Get labels for the target - for relationship fragments, use the target node type
-                val targetType = if (rel.isRelationshipFragment) rel.targetNodeType!! else rel.elementType
-                val targetLabels = GraphTypeLabels.labelsForType(targetType)
-                val targetLabelString = targetLabels.joinToString(":")
+                val targetLabelString = GraphTypeLabels.targetLabels(rel).joinToString(":")
 
                 grammar.existenceCheck(rootFieldName, direction, targetLabelString)
             }
@@ -418,8 +414,8 @@ internal class GraphViewProjectionAssembler(
         // Direct target reference pattern (existing behavior)
         val direction = Directions.directionString(rel)
 
-        // Get all labels for the target type
-        val targetLabels = GraphTypeLabels.labelsForType(rel.elementType)
+        // Get all labels for the target type: those a condition on the field tests too
+        val targetLabels = GraphTypeLabels.targetLabels(rel)
         if (targetLabels.isEmpty()) {
             throw IllegalArgumentException("No labels defined for relationship target ${rel.elementType.name}. @GraphFragment or @GraphView must specify at least one label.")
         }
@@ -682,7 +678,7 @@ internal class GraphViewProjectionAssembler(
 
         // Get labels for the target node type
         val targetNodeType = rel.targetNodeType!!
-        val targetLabels = GraphTypeLabels.labelsForType(targetNodeType)
+        val targetLabels = GraphTypeLabels.targetLabels(rel)
         if (targetLabels.isEmpty()) {
             throw IllegalArgumentException("No labels defined for relationship fragment target ${targetNodeType.name}. @GraphFragment or @GraphView must specify at least one label.")
         }

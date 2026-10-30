@@ -3,6 +3,7 @@ package org.drivine.query
 import org.drivine.annotation.GraphView
 import org.drivine.annotation.NodeFragment
 import org.drivine.model.GraphViewModel
+import org.drivine.model.RelationshipModel
 
 /**
  * Resolves the Neo4j labels for a graph type. Shared by the load and delete query builders so
@@ -35,4 +36,12 @@ internal object GraphTypeLabels {
         }
         return emptyList()
     }
+
+    /**
+     * The labels the node a relationship field leads to carries: those of the node a relationship
+     * fragment holds, and otherwise those of the field's own type. A load reads only the nodes that
+     * carry them, and a condition on the field tests only those, so the two find the same nodes.
+     */
+    fun targetLabels(relationship: RelationshipModel): List<String> =
+        labelsForType(if (relationship.isRelationshipFragment) relationship.targetNodeType!! else relationship.elementType)
 }
