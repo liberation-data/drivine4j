@@ -490,17 +490,14 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
 
     /**
-     * Whether a `sum` of the SQL numbers [numbers], [distinct] each once where it is `DISTINCT `, passes a long's range, where
-     * Neo4j goes on summing as a double (#339): on a store that sums integers exactly, the sum is a double there. Neo4j's
-     * answer follows the order the rows come in, `[9223372036854775807, 1, -1]` a double and `[9223372036854775807, -1, 1]`
-     * a long, and SQL keeps none, so it is where the sum passes the range in some order: where its positive values alone,
-     * or its negative ones, pass it. The negative ones are the sum less the positive ones, as the sum is an aggregate the
-     * statement works out anyway: a third reads each value again, and costs as much as the second.
+     * Whether a `sum` of the SQL numbers [numbers], [distinct] each once where it is `DISTINCT `, is past a long's
+     * range (#339): on a store that sums integers exactly, the sum is a double there, as Neo4j's is. Neo4j goes on as a
+     * double from the row where a long would overflow, so its answer follows the order the rows come in:
+     * `[9223372036854775807, 1, -1]` is a double there, where the sum here, back in range, is a long. SQL keeps no
+     * order, and the total is told by the sum the statement works out anyway, so no value is read again.
      */
-    protected fun passesLong(numbers: String, distinct: String): String {
-        val positive = "sum(${distinct}GREATEST($numbers, 0))"
-        return "$positive > ${Long.MAX_VALUE} OR sum($distinct$numbers) - $positive < ${Long.MIN_VALUE}"
-    }
+    protected fun passesLong(numbers: String, distinct: String) =
+        "sum($distinct$numbers) NOT BETWEEN ${Long.MIN_VALUE} AND ${Long.MAX_VALUE}"
 
     /**
      * Where the JSON [json]'s kind comes among the others, as Cypher orders values of several kinds: a map,

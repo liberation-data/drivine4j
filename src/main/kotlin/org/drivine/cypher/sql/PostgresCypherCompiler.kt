@@ -77,8 +77,8 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun float(sql: String) = "(trim_scale(CAST($sql AS numeric)) + 0.0)"
 
     /**
-     * Summed as `numeric`, exactly, and where it [passesLong] a double: through `double precision` and its text, which
-     * keeps the digits Java writes, where a cast to `numeric` would keep 15.
+     * Summed as `numeric`, exactly, and past a long's range ([passesLong]) a double: through `double precision` and its
+     * text, which keeps the digits Java writes, where a cast to `numeric` would keep 15.
      */
     override fun sum(json: String, distinct: String): String {
         val numbers = number(json)

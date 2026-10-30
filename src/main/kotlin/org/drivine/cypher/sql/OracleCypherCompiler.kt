@@ -590,9 +590,10 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * doubles, as Neo4j sums them: as `NUMBER`s, 1e300 would be dropped, and 0.1 + 0.2 would be 0.3. Nothing is bound under
      * an aggregate, so each value is written out where it is read: each read is one path that tests the value's kind
      * itself, a text not summed and a number with a fraction written with a point, or with a negative exponent, `1E-41`,
-     * as Oracle writes one of more than 40 digits, so a sum reads it three times, as [number] alone does. A path compares
-     * no item to another, `@ != @.floor()` failing with ORA-40597, so a fraction is told by how it is written. Integers are
-     * summed as `NUMBER`s, exactly, and as doubles where their sum [passesLong], which reads each value three times more.
+     * as Oracle writes one of more than 40 digits, so a sum reads it four times, once more than [number] alone does. A
+     * path compares no item to another, `@ != @.floor()` failing with ORA-40597, so a fraction is told by how it is
+     * written. Integers are summed as `NUMBER`s, exactly, and as doubles where their sum is past a long's range: see
+     * [passesLong].
      */
     override fun sum(json: String, distinct: String): String {
         fun summed(type: String) = "JSON_VALUE($json, '\$?(@.type() != \"string\")' RETURNING $type)"

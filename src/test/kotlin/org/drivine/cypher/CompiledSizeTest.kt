@@ -291,14 +291,15 @@ class CompiledSizeTest {
     fun `a sum reads each value it sums about as often as an avg does, and grows under functions as an avg does`() {
         // #304: on Oracle a sum tests whether any value it sums is a float. Nothing is bound under an aggregate, so a test
         // that read each value as number() does, three times more, made a sum over nested functions twice the statement.
-        // #339: a sum reads each value again, its positive ones twice and itself once, to tell one past a long's range.
+        // #339: a sum writes its own sum out again to tell one past a long's range, which makes it 1.17 times an avg on
+        // Oracle and 1.27 on Postgres.
         fun over(aggregate: String) = "MATCH (c:Claim) RETURN $aggregate(" + "ceil(".repeat(3) + "c.p" + ")".repeat(3) + ")"
         fun under(aggregate: String, depth: Int) = "UNWIND [1.5] AS x RETURN " + "sign(".repeat(depth) + "$aggregate(x)" + ")".repeat(depth)
         compilers.forEach { compiler ->
             val name = compiler::class.simpleName
             fun size(cypher: String) = compiler.compile(cypher, emptyMap()).sql.length
             val (sum, avg) = listOf("sum", "avg").map { size(over(it)) }
-            assertTrue(sum < avg * 1.5, "$name: ${over("sum")}: sum $sum, avg $avg characters")
+            assertTrue(sum < avg * 1.3, "$name: ${over("sum")}: sum $sum, avg $avg characters")
             val (sumGrowth, avgGrowth) = listOf("sum", "avg").map { size(under(it, 4)).toDouble() / size(under(it, 2)) }
             assertTrue(sumGrowth < avgGrowth * 1.1, "$name: from 2 levels to 4, sum grew $sumGrowth times, avg $avgGrowth")
         }
