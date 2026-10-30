@@ -9,6 +9,7 @@ import org.drivine.backend.sql.StatementScope
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
+import org.drivine.query.GraphTypeLabels
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.ExpressionOrder
@@ -92,7 +93,10 @@ internal class SqlitePredicates(
         is WhereCondition.NotCondition -> "NOT (${all(condition.conditions, rows, model)})"
     }
 
-    /** Whether some node related through the field meets the conditions on it; none does, when the condition is negated. */
+    /**
+     * Whether some node the field loads meets the conditions on it; none does, when the condition is negated. Those
+     * are the nodes related through the field that carry its target's labels, here and on a nested field.
+     */
     private fun related(condition: WhereCondition.RelationshipCondition, rows: Map<String, String>, model: GraphViewModel?): String {
         requireNotNull(model) { "A condition on the relationship '${condition.relationshipName}' needs a @GraphView to find it in." }
         val relationship = model.relationships.find { it.fieldName == condition.relationshipName }
@@ -108,7 +112,7 @@ internal class SqlitePredicates(
         }
         val targetType = relationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }
         val found = this.rows.exists(
-            parent, this.rows.steps(relationship, emptyList()), row,
+            parent, this.rows.steps(relationship, GraphTypeLabels.targetLabels(relationship)), row,
             directPredicates(direct, target, row) + nestedPredicates(nested, targetType, target, row),
         )
         return if (condition.negate) "NOT $found" else found
@@ -144,8 +148,7 @@ internal class SqlitePredicates(
                 val nestedType = nestedRelationship.let { if (it.isRelationshipFragment) it.targetNodeType!! else it.elementType }
                 val below = nestedPredicates(deeper, nestedType, "${target}_$name", nestedRow)
                 val names = mapOf("${target}_$name" to nestedRow)
-                // No labels: a condition on a relationship is met by whatever node it leads to.
-                rows.exists(row, rows.steps(nestedRelationship, emptyList()), nestedRow, conditions.map { one(it, names, null) } + below)
+                rows.exists(row, rows.steps(nestedRelationship, GraphTypeLabels.targetLabels(nestedRelationship)), nestedRow, conditions.map { one(it, names, null) } + below)
             }
     }
 

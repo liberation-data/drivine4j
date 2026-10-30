@@ -738,7 +738,7 @@ stamped and checked as elsewhere. Deleting a node's row deletes its relationship
   too. SQLite also corrects for rounding as it adds (Kahan–Babuška summation), so a long sum of floats, or one that
   mixes an integer past 2^53 with a float, can be more accurate than Neo4j's in its last digit: `9007199254740993`
   and `0.5` sum to `9.007199254740994E15`, where Neo4j gives `9.007199254740992E15`. A result still comes back as a
-  float.
+  float. A `sum()` of integers that passes a long's range fails with `integer overflow`, where Neo4j gives a float.
 - A raw `whereClause` is a SQL predicate, as on Postgres: `n.note = 'unverified'`, or SQL over
   `n.props`, `n.labels` and `n.stamp`. SQLite's `->>` gives a JSON value as the SQL value it is (`true`
   as 1), where Postgres gives its text.

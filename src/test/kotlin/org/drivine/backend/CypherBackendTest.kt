@@ -352,7 +352,7 @@ class CypherBackendTest {
         val patch = backend().patch(ClaimView::class.java, "c1", mapOf("note" to "narrated"), conditions)
 
         assertContains(patch.statement, "MATCH (claim:Claim {id: \$id})")
-        assertContains(patch.statement, "WITH claim, coalesce((EXISTS { (claim)-[:MENTIONS]->(people) WHERE people.name = \$param_people_name_0 }), false) AS _met")
+        assertContains(patch.statement, "WITH claim, coalesce((EXISTS { (claim)-[:MENTIONS]->(people:Human) WHERE people.name = \$param_people_name_0 }), false) AS _met")
         assertContains(patch.statement, "SET claim.note = \$_v0)")
     }
 

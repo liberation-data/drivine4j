@@ -492,6 +492,16 @@ abstract class SqlCypherCompiler(graph: String) {
     protected open fun sum(json: String, distinct: String) = scalar("COALESCE(sum($distinct${number(json)}), 0)")
 
     /**
+     * Whether a `sum` of the SQL numbers [numbers], [distinct] each once where it is `DISTINCT `, is past a long's
+     * range (#339): on a store that sums integers exactly, the sum is a double there, as Neo4j's is. Neo4j goes on as a
+     * double from the row where a long would overflow, so its answer follows the order the rows come in:
+     * `[9223372036854775807, 1, -1]` is a double there, where the sum here, back in range, is a long. SQL keeps no
+     * order, and the total is told by the sum the statement works out anyway, so no value is read again.
+     */
+    protected fun passesLong(numbers: String, distinct: String) =
+        "sum($distinct$numbers) NOT BETWEEN ${Long.MIN_VALUE} AND ${Long.MAX_VALUE}"
+
+    /**
      * Where the JSON [json]'s kind comes among the others, as Cypher orders values of several kinds: a map,
      * a list, a text, a truth value, then a number. JSON orders them otherwise on each store.
      */
@@ -840,11 +850,42 @@ abstract class SqlCypherCompiler(graph: String) {
          * of its own. [outer] is what a subquery reads from the row it is in.
          */
         private fun read(select: Select, clause: Clause, outer: Map<String, Value> = emptyMap()): Select = when (clause) {
-            is Clause.Match -> select.also { match(it, clause) }
-            is Clause.Unwind -> select.also { unwind(it, clause) }
+            is Clause.Match -> match(select, clause)
+            is Clause.Unwind -> anewBefore(select, listOf(clause.list), whole = true)
+                ?.let { (made, read) -> made.also { unwind(it, clause.copy(list = read.single())) } } ?: select.also { unwind(it, clause) }
             is Clause.With -> with(select, clause, outer)
-            is Clause.Call -> select.also { call(it, clause) }
+            is Clause.Call -> anewCall(select, clause)
             else -> error("${clause::class.simpleName} reads nothing")
+        }
+
+        /**
+         * The rows [select] reads kept where [where] holds; each randomUUID() it reads ([anew] tells one) made first, for each
+         * row, as [anewBefore] makes it, then the condition over those rows.
+         */
+        private fun filtered(select: Select, where: Expression, anew: (Expression) -> Boolean = ::isAnew): Select {
+            val (made, read) = anewBefore(select, listOf(where), whole = true, anew) ?: (select to listOf(where))
+            return made.also { it.where += condition(read.single(), it.scope) }
+        }
+
+        /** The rows [select] reads with a UUID made for each, in a `WITH *` of its own, and its variable's name, which is no variable of the statement's: see `project`. */
+        private fun seededRows(select: Select): Pair<Select, String> {
+            val seed = "$ANEW${++counter}"
+            val made = Projection(false, true, listOf(Projection.Item(Expression.Function("randomUUID", false, emptyList()), seed)), emptyList(), null, null)
+            return with(select, Clause.With(made, null), select.scope.filterKeys { it !in select.bound }, apart = true) to seed
+        }
+
+        /**
+         * A `CALL { … }` over the rows [select] reads; one whose query holds a randomUUID() ([holdsAnew]) first given a UUID
+         * made for each row, in a `WITH *` of its own, which its query unwinds before its own clauses. A query that reads nothing
+         * of the row it is joined to is worked out once for the statement, by each store, and every row was given the same
+         * UUID (#412): so it reads the row. That UUID is no variable of the statement's: see `project`.
+         */
+        private fun anewCall(select: Select, call: Clause.Call): Select {
+            if (!holdsAnew(call.query)) return select.also { call(it, call) }
+            val (seeded, seed) = seededRows(select)
+            fun read(clauses: List<Clause>) = listOf(Clause.Unwind(Expression.ListLiteral(listOf(Expression.Variable(seed))), "$seed row")) + clauses
+            val query = Query(read(call.query.clauses), call.query.unions.map { it.copy(clauses = read(it.clauses)) })
+            return seeded.also { call(it, call.copy(query = query)) }
         }
 
         /** A `WITH`: a query of its own, which the rest of the statement reads from, as it reads [outer]. */
@@ -855,38 +896,49 @@ abstract class SqlCypherCompiler(graph: String) {
             next.walks = select.walks
             // A value made anew for each row is one value however often the clauses after read it: see [once]. Kept apart
             // from the query that reads it, where that query must not have it merged in: see `casesFirst`.
-            val anew = with.projection.items.any { item -> contains(item.expression, ::isAnew) }
+            val anew = with.projection.items.any { item -> holdsAnew(item.expression) }
             val sql = if (anew) once(projected.sql) else projected.sql
             next.source("(\n${indent(if (apart) called(sql) else sql)}\n) $name")
             projected.scope.forEach { (variable, value) -> next.bind(variable, value.columnsOf(name)) }
             projected.order.forEach { (column, descending) -> next.order += "$name.$column" to descending }
-            with.where?.let { next.where += condition(it, next.scope) }
-            return next
+            return with.where?.let { filtered(next, it) } ?: next
         }
 
-        private fun match(select: Select, match: Clause.Match) {
+        /**
+         * A `MATCH` over the rows [select] reads. Each randomUUID() its condition reads is made for each row it finds, first
+         * ([filtered]). An `OPTIONAL MATCH` finds its rows in a lateral query, which reads nothing of the row where its pattern
+         * does not: Oracle and SQLite worked it out once for the statement, and kept every row's match or none (#412). There
+         * each is read beside a UUID made first for the row ([seededRows], [seeded]), so the lateral query reads the row, then
+         * made for each row it finds. A shortest path's condition is met where its paths are found, in a lateral query too,
+         * which Postgres worked out once where each row joins the same two nodes: each is read beside the row's UUID there as
+         * well, and made in the condition.
+         */
+        private fun match(select: Select, match: Clause.Match): Select {
             // A shortest path is the shortest of the paths that meet the WHERE, as Cypher finds it: the WHERE is met where they are found.
             val shortestWhere = match.where?.takeIf { match.patterns.last().shortest != null }
             val where = match.where.takeIf { shortestWhere == null }
+            val seededFirst = match.where?.let(::holdsAnew) == true && (match.optional || shortestWhere != null)
+            val (row, seed) = if (seededFirst) seededRows(select) else select to null
+            val metByPaths = shortestWhere?.let { if (seed == null) it else seeded(it, seed, inBody = true) }
             if (!match.optional) {
-                patterns(select, match.patterns, shortestWhere)
-                where?.let { select.where += condition(it, select.scope) }
-                return
+                patterns(row, match.patterns, metByPaths)
+                return where?.let { filtered(row, it) } ?: row
             }
             // What is found is read by a lateral query, joined to keep the row when it finds nothing.
-            val inner = Select(select.scope)
-            patterns(inner, match.patterns, shortestWhere)
-            where?.let { inner.where += condition(it, inner.scope) }
-            val found = inner.bound.filterKeys { it !in select.scope }
-            if (found.isEmpty() && inner.sources.isEmpty()) return
+            var inner = Select(row.scope)
+            patterns(inner, match.patterns, metByPaths)
+            where?.let { inner = if (seed == null) filtered(inner, it) else filtered(inner, seeded(it, seed, inBody = true), ::isSeeded) }
+            val found = inner.bound.filterKeys { it !in row.scope && !it.startsWith(ANEW) }
+            if (found.isEmpty() && inner.sources.isEmpty()) return row
             val name = alias("o")
             // Each variable found under a name of its own: a variable may be called what SQL will not take.
             val named = found.entries.map { (variable, value) -> Triple(variable, value, alias("v")) }
             val columns = named.flatMap { (_, value, column) -> value.columns(column) }.ifEmpty { listOf("1 AS one") }
             val kinds = named.flatMap { (_, value, column) -> value.columnKinds(column) }.ifEmpty { listOf("one" to false) }
             val text = listOf("SELECT ${columns.joinToString(", ")}") + inner.from() + listOfNotNull(inner.whereClause())
-            select.join(lateral(text.joinToString("\n"), name, optional = true, kinds))
-            named.forEach { (variable, value, column) -> select.bind(variable, value.columnsOf(PENDING, column).laterally(name, kinds)) }
+            row.join(lateral(text.joinToString("\n"), name, optional = true, kinds))
+            named.forEach { (variable, value, column) -> row.bind(variable, value.columnsOf(PENDING, column).laterally(name, kinds)) }
+            return row
         }
 
         /**
@@ -929,7 +981,7 @@ abstract class SqlCypherCompiler(graph: String) {
             if (call.query.clauses.last() !is Clause.Return) unsupported("A CALL { … } that returns nothing")
             if (call.query.clauses.any(::writes)) unsupported("A write in CALL { … }")
             val order = rowOrder
-            val projected = if (call.query.unions.isEmpty()) calledPart(select, call.query.clauses, null, distinct = false) else calledUnion(select, call.query)
+            val projected = if (call.query.unions.isEmpty()) calledPart(select, call, call.query.clauses, null, distinct = false) else calledUnion(select, call)
             rowOrder = order
             redeclared(projected.scope.keys, select.bound.keys)
             val name = alias("c")
@@ -943,16 +995,21 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
-         * One query of a `CALL { … }`, for the row [select] reads: its returned items in the order [names] lists
-         * them, where a `UNION` names them so, and kept distinct with [distinct].
+         * One query of [call], [clauses], for the row [select] reads: its returned items in the order [names] lists
+         * them, where a `UNION` names them so, and kept distinct with [distinct]. It sees only the variables of the row it
+         * imports ([VariableKinds.imports]): any other name in it is a new variable, as in Cypher (#410). What its brackets
+         * import it sees throughout, after a `WITH` that does not pass it on too, as Neo4j has it; what a leading `WITH`
+         * imports is gone after one.
          */
-        private fun calledPart(select: Select, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
-            var inner = Select(select.scope)
-            importsApart(select.scope, clauses)?.let { (source, imports) ->
+        private fun calledPart(select: Select, call: Clause.Call, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
+            val imported = VariableKinds.imports(call, clauses, select.scope.keys).let { imports -> select.scope.filterKeys { it in imports } }
+            var inner = Select(imported)
+            importsApart(imported, clauses)?.let { (source, imports) ->
                 inner.source(source)
                 imports.forEach(inner::bind)
             }
-            clauses.dropLast(1).forEach { inner = read(inner, it, select.scope) }
+            val outer = if (call.imports != null || call.importsAll) imported else emptyMap()
+            clauses.dropLast(1).forEach { inner = read(inner, it, outer) }
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
@@ -988,7 +1045,8 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
-        private fun calledUnion(select: Select, query: Query): Projected {
+        private fun calledUnion(select: Select, call: Clause.Call): Projected {
+            val query = call.query
             val parts = listOf(query.clauses) + query.unions.map { it.clauses }
             if (query.unions.map { it.all }.distinct().size > 1) throw DrivineException("UNION and UNION ALL are not mixed in one statement, as in Cypher.")
             val returns = parts.map { it.last() as Clause.Return }
@@ -996,7 +1054,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val names = returns.first().projection.items.map { it.name }
             if (returns.any { r -> r.projection.items.map { it.name }.toSet() != names.toSet() }) throw DrivineException("Each query of a UNION returns the same names, as in Cypher.")
             val distinct = !query.unions.first().all
-            var projected = parts.map { calledPart(select, it, names, distinct) }
+            var projected = parts.map { calledPart(select, call, it, names, distinct) }
             if (projected.map { p -> p.scope.values.map { it::class } }.distinct().size > 1) unsupported("A UNION in CALL { … } whose queries return values of different kinds")
             // A map or a list that holds a node carries a column more, of its identity. Where one query's value has it and
             // another's has none, as `collect([r])` beside `[]`, the queries are compiled again without identities, so their
@@ -1005,7 +1063,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val was = identities
                 identities = false
                 try {
-                    projected = parts.map { calledPart(select, it, names, distinct) }
+                    projected = parts.map { calledPart(select, call, it, names, distinct) }
                 } finally {
                     identities = was
                 }
@@ -1565,10 +1623,13 @@ abstract class SqlCypherCompiler(graph: String) {
         /**
          * Binds into [select] each variable the row [row] holds, of [needed] where given: a node or a relationship is read from
          * its table, as it is now. With [written], [row] is [ROW], and a value and each property of it are read as [rowValue]
-         * reads them, for a statement that works out what a write writes.
+         * reads them, for a statement that works out what a write writes. Each is of its kind in [held], and a value as it was
+         * carried in [values]: those of the rows now, but for a row held from before.
          */
-        private fun bindRow(select: Select, row: String, needed: Set<String>? = null, written: Boolean = false) {
-            kinds.filterKeys { needed == null || it in needed }.forEach { (variable, kind) ->
+        private fun bindRow(
+            select: Select, row: String, needed: Set<String>? = null, written: Boolean = false, held: Map<String, Kind> = kinds, values: Map<String, Value.Json> = carried,
+        ) {
+            held.filterKeys { needed == null || it in needed }.forEach { (variable, kind) ->
                 val key = key(variable)
                 when (kind) {
                     Kind.NODE -> {
@@ -1584,11 +1645,11 @@ abstract class SqlCypherCompiler(graph: String) {
                     Kind.VALUE -> select.bind(
                         variable,
                         Value.Json(
-                            if (written) rowValue(listOf(key)) else propertyOf(row, key), temporal = carried[variable]?.temporal, items = carried[variable]?.items,
-                            itemItems = carried[variable]?.itemItems, temporals = carried[variable]?.temporals == true,
-                            list = carried[variable]?.list == true, itemLists = carried[variable]?.itemLists == true,
-                            text = carried[variable]?.text == true, texts = carried[variable]?.texts == true,
-                            rowKeys = if (written) listOf(key) else null, fromList = !written, known = carried[variable]?.known,
+                            if (written) rowValue(listOf(key)) else propertyOf(row, key), temporal = values[variable]?.temporal, items = values[variable]?.items,
+                            itemItems = values[variable]?.itemItems, temporals = values[variable]?.temporals == true,
+                            list = values[variable]?.list == true, itemLists = values[variable]?.itemLists == true,
+                            text = values[variable]?.text == true, texts = values[variable]?.texts == true,
+                            rowKeys = if (written) listOf(key) else null, fromList = !written, known = values[variable]?.known,
                         ),
                     )
                     // A list or a path that is null is held as JSON's null, and read as SQL's.
@@ -1674,11 +1735,27 @@ abstract class SqlCypherCompiler(graph: String) {
             val returnedCarried = hashMapOf<String, Value.Json>()
             let(kept, ROWS)
             if (ret != null) assign(gathered, literalJson(emptyList<Any>()))
+            // Only what the call imports is seen in it: any other name in it is a new variable, as in Cypher (#410).
+            val imported = VariableKinds.imports(call, call.query.clauses, before.keys)
+            val clauses = imported(call, imported)
+            // Read again after each WITH, where brackets import them: see below.
+            val rebound = (call.imports != null || call.importsAll) && clauses.any { it is Clause.With }
             eachRow(kept) {
-                if (ret != null) let(caller, "$RECORD.item")
+                if (ret != null || rebound) let(caller, "$RECORD.item")
+                restore(before.filterKeys { it in imported }, carriedBefore.filterKeys { it in imported })
                 var select = rows()
-                for (clause in imported(call.query.clauses)) {
-                    select = if (clause is Clause.Return) with(select, Clause.With(clause.projection, null)) else next(select, clause)
+                for (clause in clauses) {
+                    select = when {
+                        clause is Clause.Return -> with(select, Clause.With(clause.projection, null))
+                        // What brackets import is seen throughout the call, as Neo4j has it, after a WITH that does not pass it on too:
+                        // read again from the row the call is written for, so `CALL (a) { WITH 1 AS one CREATE (a)-[:R]->() }` joins
+                        // the row's a, not a new node. Its WHERE reads them too, so it is met after.
+                        clause is Clause.With && rebound -> with(select, clause.copy(where = null)).also { w ->
+                            bindRow(w, caller, imported - w.scope.keys, held = before, values = carriedBefore)
+                            clause.where?.let { w.where += condition(it, w.scope) }
+                        }
+                        else -> next(select, clause)
+                    }
                 }
                 if (ret != null) {
                     // The rows this row gives, after those of the rows before it: each the row the call was written for,
@@ -1720,12 +1797,18 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        /** [clauses] without an importing `WITH` of variables alone that opens them: every variable of the row is seen. */
-        private fun imported(clauses: List<Clause>): List<Clause> {
+        /**
+         * The clauses of [call] without a `WITH` that opens them and passes on variables it [imports] alone, as they are:
+         * the row holds those already, and what brackets import is seen after it anyway, as Neo4j has it, so
+         * `CALL (a, b) { WITH a SET b.x = 1 }` sets b's.
+         */
+        private fun imported(call: Clause.Call, imports: Set<String>): List<Clause> {
+            val clauses = call.query.clauses
             val first = clauses.firstOrNull() as? Clause.With ?: return clauses
             val projection = first.projection
             val importing = first.where == null && !projection.distinct && projection.orderBy.isEmpty() && projection.skip == null && projection.limit == null &&
-                projection.items.all { (it.expression as? Expression.Variable)?.name == it.name }
+                projection.items.all { (it.expression as? Expression.Variable)?.name == it.name } &&
+                (projection.star || projection.items.all { it.name in imports })
             return if (importing) clauses.drop(1) else clauses
         }
 
@@ -1970,10 +2053,13 @@ abstract class SqlCypherCompiler(graph: String) {
          */
         fun project(select: Select, projection: Projection, final: Boolean): Projected {
             // As in Neo4j, a star gives the variables in the order of their names, before the items named after it.
-            val items = (if (projection.star) select.bound.keys.sorted().map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
+            // Not a randomUUID() made first for a CALL or a condition (see `anewCall`), which the statement never named.
+            val starred = select.bound.keys.filterNot { it.startsWith(ANEW) }.sorted()
+            val items = (if (projection.star) starred.map { Projection.Item(Expression.Variable(it), it) } else emptyList()) + projection.items
             if (items.isEmpty()) throw DrivineException("A projection has at least one item.")
             // Before aggregatesFirst, which names each variable it groups by as an item of its own.
             requireExplicitGrouping(items)
+            anewFirst(select, projection, items)?.let { (made, kept) -> return project(made, kept, final) }
             casesFirst(select, projection, items)?.let { (cased, kept) -> return project(cased, kept, final) }
             // After casesFirst, which refuses what it must of an aggregate's CASE before working it out first.
             sharedFirst(select, projection, items)?.let { (shared, kept) -> return project(shared, kept, final) }
@@ -2113,6 +2199,56 @@ abstract class SqlCypherCompiler(graph: String) {
             // Named as no variable is, unless quoted so.
             val read = replaced(term) { part -> keys[part]?.let { i -> Expression.Variable("#key ${i + 1}").also { bound[it.name] = columns[i].second } } }
             return read to bound
+        }
+
+        /**
+         * The rows [select] reads with each randomUUID() that a term of the projection reads inside a larger expression made
+         * first ([anewBefore]), and the projection with the term reading that UUID's column; null where there is none. A term
+         * that is a randomUUID() alone is a column of the projection already. Two items written alike are given a UUID each,
+         * as in Neo4j; an order term written as an item reads that item's, as Neo4j sorts by the item.
+         */
+        private fun anewFirst(select: Select, projection: Projection, items: List<Projection.Item>): Pair<Select, Projection>? {
+            val itemTerms = items.map { it.expression }
+            val orderTerms = projection.orderBy.map { it.expression }.filter { it !in itemTerms }.distinct()
+            val (made, read) = anewBefore(select, itemTerms + orderTerms, whole = false) ?: return null
+            val reads = itemTerms.zip(read).reversed().toMap() + orderTerms.zip(read.drop(items.size))
+            val kept = projection.copy(
+                star = false,
+                items = items.zip(read) { item, term -> item.copy(expression = term) },
+                orderBy = projection.orderBy.map { it.copy(expression = reads.getValue(it.expression)) },
+            )
+            return made to kept
+        }
+
+        /**
+         * The rows [select] reads with each randomUUID() that [terms] read made first, for each row, in a `WITH *` of its own,
+         * and each term as it reads that UUID's column, in their order; null where there is none, or, where not [whole], where
+         * each is a term alone. Worked out in the term, the UUID could be bound in a subquery that reads nothing of the row
+         * ([shared]), or read in a comprehension's subquery that reads nothing of it either, and each store works such a
+         * subquery out once for the statement: every row was given the same UUID (#412). Made first, it is a column of the
+         * row, as a `WITH`'s own randomUUID() is ([once]). One in a comprehension's, a quantifier's, a reduce's or a pattern
+         * comprehension's own expressions is made again for each item there, as in Neo4j: it is read beside a UUID made first
+         * for the row ([seeded]), so that subquery reads the row. Each call is a UUID of its own, in two terms written alike
+         * too, as in Neo4j, where `randomUUID() = randomUUID()` is false. [anew] tells a call: see [match] for another.
+         */
+        private fun anewBefore(select: Select, terms: List<Expression>, whole: Boolean, anew: (Expression) -> Boolean = ::isAnew): Pair<Select, List<Expression>>? {
+            // A call read beside a row's UUID already ([isSeeded]) reads the row: left as it is, as a call alone is.
+            fun alone(term: Expression) = anew(term) || isSeeded(term)
+            fun holds(e: Expression): Boolean = anew(e) || (!isSeeded(e) && children(e).any(::holds))
+            val inBodies = terms.any { seeded(it, ANEW) != it }
+            if (!inBodies && terms.none { (whole || !alone(it)) && holds(it) }) return null
+            val made = mutableListOf<Projection.Item>()
+            val seed = if (!inBodies) null else "$ANEW${++counter}".also { made += Projection.Item(Expression.Function("randomUUID", false, emptyList()), it) }
+            val reads = terms.map { term ->
+                if (!whole && alone(term)) term
+                else replaced(term) { e ->
+                    if (anew(e)) Expression.Variable("$ANEW${++counter}").also { made += Projection.Item(e, it.name) } else e.takeIf(::isSeeded)
+                }
+                    .let { read -> if (seed == null) read else seeded(read, seed) }
+            }
+            val with = Projection(false, true, made, emptyList(), null, null)
+            // Kept apart, as sortsFirst keeps its own, so no store merges it back into the query that reads it.
+            return with(select, Clause.With(with, null), select.scope.filterKeys { it !in select.bound }, apart = true) to reads
         }
 
         /**
@@ -4363,6 +4499,77 @@ abstract class SqlCypherCompiler(graph: String) {
 
         /** Whether [expression] is a call of `randomUUID()`, the one function compiled here that gives a value anew each time it is called. */
         fun isAnew(expression: Expression): Boolean = expression is Expression.Function && expression.name.equals("randomUUID", ignoreCase = true)
+
+        /** What the name of a variable begins with that holds a randomUUID() made first, for each row: see `anewFirst`. Named as no variable is, unless quoted so. */
+        const val ANEW = "#anew"
+
+        /**
+         * Whether [expression] holds a call of randomUUID() anywhere: in a comprehension's, a quantifier's, a reduce's or a
+         * pattern comprehension's own expressions too, where [contains] does not look. Not in a subquery's query.
+         */
+        fun holdsAnew(expression: Expression): Boolean = when (expression) {
+            is Expression.ListComprehension -> listOfNotNull(expression.list, expression.where, expression.projection).any(::holdsAnew)
+            is Expression.Quantifier -> listOfNotNull(expression.list, expression.where).any(::holdsAnew)
+            is Expression.Reduce -> listOf(expression.initial, expression.list, expression.expression).any(::holdsAnew)
+            is Expression.PatternComprehension -> listOfNotNull(expression.where, expression.projection).any(::holdsAnew)
+            else -> isAnew(expression) || children(expression).any(::holdsAnew)
+        }
+
+        /** Whether a clause of [query], or of a query it calls, holds a call of randomUUID() ([holdsAnew]) in its expressions. */
+        fun holdsAnew(query: Query): Boolean = (listOf(query.clauses) + query.unions.map { it.clauses }).flatten().any { clause ->
+            fun projected(projection: Projection) = (projection.items.map { it.expression } + projection.orderBy.map { it.expression }).any(::holdsAnew)
+            when (clause) {
+                is Clause.With -> projected(clause.projection) || clause.where?.let(::holdsAnew) == true
+                is Clause.Return -> projected(clause.projection)
+                is Clause.Unwind -> holdsAnew(clause.list)
+                is Clause.Match -> clause.where?.let(::holdsAnew) == true
+                is Clause.Call -> holdsAnew(clause.query)
+                else -> false
+            }
+        }
+
+        /**
+         * [expression] with each randomUUID() in a comprehension's, a quantifier's, a reduce's or a pattern comprehension's own
+         * expressions read beside the variable [seed], made anew for each row: `CASE WHEN seed IS NULL THEN null ELSE randomUUID() END`,
+         * which is randomUUID() still, as [seed] is never null. So the subquery that works the body out reads the row, and a
+         * store works it out again for each row, as it does not for a subquery that reads nothing of it (#412). One so read
+         * already is left as it is ([isSeeded]). Each item's variable is read beside [seed] too ([own]), the path's of a pattern
+         * comprehension, named here where it has none: read beside the row's alone, a value bound in a subquery ([shared]) reads
+         * nothing of the item, and Postgres and Oracle worked it out once for all of them, so `[x IN range(1, 20) WHERE left(randomUUID(), 1) < '8' | x]`
+         * kept every item or none; and an aggregate of a pattern comprehension's body that reads only the row's columns is an
+         * aggregate of the row's query, which Postgres refuses and SQLite works out over every row.
+         */
+        fun seeded(expression: Expression, seed: String, inBody: Boolean = false, own: List<String> = emptyList()): Expression = replaced(expression) { e ->
+            fun body(part: Expression, variable: String) = seeded(part, seed, inBody = true, own = own + variable)
+            fun same(part: Expression) = seeded(part, seed, inBody, own)
+            when {
+                isSeeded(e) -> e
+                inBody && isAnew(e) -> {
+                    val condition = (listOf(seed) + own).map<String, Expression> { Expression.Unary(Expression.Unary.Operator.IS_NULL, Expression.Variable(it)) }
+                        .reduce { a, b -> Expression.Binary(Expression.Binary.Operator.AND, a, b) }
+                    Expression.Case(null, listOf(condition to Expression.Literal(null)), e)
+                }
+                e is Expression.ListComprehension ->
+                    e.copy(list = same(e.list), where = e.where?.let { body(it, e.variable) }, projection = e.projection?.let { body(it, e.variable) })
+                e is Expression.Quantifier -> e.copy(list = same(e.list), where = e.where?.let { body(it, e.variable) })
+                e is Expression.Reduce -> e.copy(initial = same(e.initial), list = same(e.list), expression = body(e.expression, e.variable))
+                // Named only where its body holds one, so a statement without randomUUID() is compiled as it was.
+                e is Expression.PatternComprehension && listOfNotNull(e.where, e.projection).any(::holdsAnew) -> {
+                    val path = e.pattern.variable ?: "$seed path${own.size}"
+                    e.copy(pattern = e.pattern.copy(variable = path), where = e.where?.let { body(it, path) }, projection = body(e.projection, path))
+                }
+                else -> null
+            }
+        }
+
+        /** Whether [expression] is a randomUUID() read beside a variable made first for the row, as [seeded] reads one. */
+        fun isSeeded(expression: Expression): Boolean {
+            if (expression !is Expression.Case) return false
+            var condition = expression.alternatives.singleOrNull()?.first
+            while (condition is Expression.Binary && condition.operator == Expression.Binary.Operator.AND) condition = condition.left
+            return condition is Expression.Unary && condition.operator == Expression.Unary.Operator.IS_NULL &&
+                (condition.operand as? Expression.Variable)?.name?.startsWith(ANEW) == true
+        }
 
         fun isAggregate(expression: Expression): Boolean =
             expression == Expression.CountStar || (expression is Expression.Function && expression.name.lowercase() in AGGREGATES)

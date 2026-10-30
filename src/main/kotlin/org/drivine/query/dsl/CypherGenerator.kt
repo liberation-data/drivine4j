@@ -2,7 +2,9 @@ package org.drivine.query.dsl
 
 import org.drivine.model.GraphViewModel
 import org.drivine.model.RelationshipModel
+import org.drivine.query.Directions
 import org.drivine.query.FragmentQueryBuilder
+import org.drivine.query.GraphTypeLabels
 import org.drivine.query.projectedKey
 import org.drivine.query.projectedKeyOrNull
 import org.drivine.query.grammar.CypherGrammar
@@ -746,7 +748,9 @@ object CypherGenerator {
      * Builds a Cypher condition for relationship target filtering.
      * Uses EXISTS with pattern matching.
      *
-     * Example: EXISTS { (issue)-[:ASSIGNED_TO]->(assignee) WHERE assignee.name = $param }
+     * Example: EXISTS { (issue)-[:ASSIGNED_TO]->(assignee:Person) WHERE assignee.name = $param }
+     *
+     * The far node carries the field's target labels, so only the nodes the field loads are tested.
      */
     private fun buildRelationshipCondition(
         condition: WhereCondition.RelationshipCondition,
@@ -788,12 +792,8 @@ object CypherGenerator {
         fun finalize(inlineCondition: String): String =
             if (condition.negate) "NOT ($inlineCondition)" else inlineCondition
 
-        // Build the relationship pattern based on direction
-        val relationshipPattern = when (relationship.direction) {
-            org.drivine.annotation.Direction.OUTGOING -> "($rootAlias)-[:${relationship.type}]->($targetAlias)"
-            org.drivine.annotation.Direction.INCOMING -> "($rootAlias)<-[:${relationship.type}]-($targetAlias)"
-            org.drivine.annotation.Direction.UNDIRECTED -> "($rootAlias)-[:${relationship.type}]-($targetAlias)"
-        }
+        // The relationship to the nodes the field loads: those that carry its target's labels
+        val relationshipPattern = "($rootAlias)" + hopTo(relationship, targetAlias)
 
         // Separate direct properties from nested relationship properties
         val targetViewModel = runCatching { GraphViewModel.from(relationship.elementType) }.getOrNull()
@@ -919,12 +919,9 @@ object CypherGenerator {
             bridgeVars.addAll(result.bridgeVariables)
             return finalize(result.inlineCondition)
         } else {
-            val direction = when (relationship.direction) {
-                org.drivine.annotation.Direction.OUTGOING -> "-[:${relationship.type}]->"
-                org.drivine.annotation.Direction.INCOMING -> "<-[:${relationship.type}]-"
-                org.drivine.annotation.Direction.UNDIRECTED -> "-[:${relationship.type}]-"
-            }
-            return finalize(grammar.existenceCheck(rootAlias, direction, ""))
+            // An empty block: whether the field loads a node at all.
+            val targetLabels = GraphTypeLabels.targetLabels(relationship).joinToString(":")
+            return finalize(grammar.existenceCheck(rootAlias, arrowsTo(relationship), targetLabels))
         }
     }
 
@@ -981,7 +978,7 @@ object CypherGenerator {
      * Example: When filtering RaisedAndAssignedIssue by raisedBy.worksFor.name:
      * - parentAlias = "raisedBy"
      * - nestedRelationshipName = "worksFor"
-     * - Generates: EXISTS { (raisedBy)-[:WORKS_FOR]->(worksFor) WHERE worksFor.name = $param }
+     * - Generates: EXISTS { (raisedBy)-[:WORKS_FOR]->(raisedBy_worksFor:Organization) WHERE raisedBy_worksFor.name = $param }
      */
     private fun buildNestedRelationshipCondition(
         parentAlias: String,
@@ -1001,13 +998,9 @@ object CypherGenerator {
                 "Available relationships: ${targetViewModel.relationships.map { it.fieldName }}"
             )
 
-        // Build the relationship pattern
+        // The relationship to the nodes the nested field loads
         val nestedAlias = "${parentAlias}_${nestedRelationshipName}"
-        val relationshipPattern = when (nestedRel.direction) {
-            org.drivine.annotation.Direction.OUTGOING -> "($parentAlias)-[:${nestedRel.type}]->($nestedAlias)"
-            org.drivine.annotation.Direction.INCOMING -> "($parentAlias)<-[:${nestedRel.type}]-($nestedAlias)"
-            org.drivine.annotation.Direction.UNDIRECTED -> "($parentAlias)-[:${nestedRel.type}]-($nestedAlias)"
-        }
+        val relationshipPattern = "($parentAlias)" + hopTo(nestedRel, nestedAlias)
 
         // Its own conditions, and those of the levels below it, each a check of its own within this one.
         val nestedViewModel = runCatching { GraphViewModel.from(nestedRel.elementType) }.getOrNull()
@@ -1058,12 +1051,7 @@ object CypherGenerator {
                     "Available relationships: ${parentViewModel.relationships.map { it.fieldName }}"
                 )
             val nestedAlias = "${parentAlias}_${nestedRelName}"
-            val nestedDirection = when (nestedRel.direction) {
-                org.drivine.annotation.Direction.OUTGOING -> "-[:${nestedRel.type}]->"
-                org.drivine.annotation.Direction.INCOMING -> "<-[:${nestedRel.type}]-"
-                org.drivine.annotation.Direction.UNDIRECTED -> "-[:${nestedRel.type}]-"
-            }
-            path.add("${nestedDirection}($nestedAlias)")
+            path.add(hopTo(nestedRel, nestedAlias))
             val nestedViewModel = runCatching { GraphViewModel.from(nestedRel.elementType) }.getOrNull()
             val (direct, deeper) = separateNestedConditions(nestedConds, nestedAlias, nestedViewModel)
             direct.forEach { cond -> whereClauses.add(buildPropertyCondition(cond as WhereCondition.PropertyCondition, indexOf.getValue(cond))) }
@@ -1073,6 +1061,27 @@ object CypherGenerator {
                 )
             }
         }
+    }
+
+    /**
+     * One hop of a condition's pattern along [relationship] to the node it names [alias], with the
+     * labels of the field's target: `-[:HOLDS]->(entries:Entry)`. A condition so tests only the nodes
+     * the field loads ([GraphTypeLabels.targetLabels]), and not any node the relationship leads to.
+     * A `@GraphPath` is each of its hops, the node between two carrying the hop's label where it names
+     * one, as the load walks it: the conditions are on the node the path ends at.
+     */
+    private fun hopTo(relationship: RelationshipModel, alias: String): String {
+        val labels = GraphTypeLabels.targetLabels(relationship).joinToString("") { ":$it" }
+        return "${arrowsTo(relationship)}($alias$labels)"
+    }
+
+    /** What leads to the node [relationship] ends at, without that node: its arrow, or a path's hops and the nodes between them. */
+    private fun arrowsTo(relationship: RelationshipModel): String {
+        if (!relationship.isPath) return Directions.directionString(relationship)
+        return relationship.hops.mapIndexed { i, hop ->
+            val arrow = Directions.hopArrow(hop.type, hop.direction)
+            if (i == relationship.hops.lastIndex) arrow else "$arrow(${hop.intermediateLabel?.let { ":$it" }.orEmpty()})"
+        }.joinToString("")
     }
 
     private fun notAView(alias: String, relationship: RelationshipModel) = IllegalArgumentException(

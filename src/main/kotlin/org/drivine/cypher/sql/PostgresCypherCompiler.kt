@@ -77,6 +77,17 @@ class PostgresCypherCompiler(graph: String) : SqlCypherCompiler(graph) {
     override fun float(sql: String) = "(trim_scale(CAST($sql AS numeric)) + 0.0)"
 
     /**
+     * Summed as `numeric`, exactly, and past a long's range ([passesLong]) a double: through `double precision` and its
+     * text, which keeps the digits Java writes, where a cast to `numeric` would keep 15.
+     */
+    override fun sum(json: String, distinct: String): String {
+        val numbers = number(json)
+        val sum = "sum($distinct$numbers)"
+        return "CASE WHEN ${passesLong(numbers, distinct)} THEN ${scalar(float("CAST(CAST($sum AS double precision) AS text)"))} " +
+            "ELSE ${scalar("COALESCE($sum, 0)")} END"
+    }
+
+    /**
      * As any store works it out, in `numeric`, and a quotient without the zeros `numeric`'s division leaves after its digits:
      * `4.0 / 2` is `2.0`, not `2.0000000000000000`. Postgres works a float out exactly, so a result may differ from a double's
      * in the last digits: `0.1 * 3` is `0.3`, where Cypher gives `0.30000000000000004` (#188).

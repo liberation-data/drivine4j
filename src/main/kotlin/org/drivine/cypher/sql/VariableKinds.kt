@@ -52,9 +52,10 @@ internal object VariableKinds {
 
     /**
      * [clauses] in turn, over [scope]: what their `RETURN` returns, of the kinds it returns. Within a `FOREACH`, [foreach],
-     * a `CREATE` or a `MERGE` may name a variable bound already, as Neo4j takes it there.
+     * a `CREATE` or a `MERGE` may name a variable bound already, as Neo4j takes it there. [kept] stay in scope after each
+     * `WITH` that does not name them, as what a `CALL`'s brackets import does.
      */
-    private fun clauses(clauses: List<Clause>, scope: Scope, foreach: Boolean = false): Map<String, Kind> {
+    private fun clauses(clauses: List<Clause>, scope: Scope, foreach: Boolean = false, kept: Map<String, Kind> = emptyMap()): Map<String, Kind> {
         var current = scope
         var returned = emptyMap<String, Kind>()
         for (clause in clauses) {
@@ -67,7 +68,9 @@ internal object VariableKinds {
                     expression(clause.list, current)
                     current[clause.variable] = Kind.ANY
                 }
-                is Clause.With -> current = projected(clause.projection, current, clause.where)
+                is Clause.With -> current = projected(clause.projection, current, clause.where).also { next ->
+                    kept.forEach { (name, kind) -> if (next[name] == null) next[name] = kind }
+                }
                 is Clause.Return -> returned = projected(clause.projection, current, null).kinds
                 is Clause.Create -> {
                     val made = mutableSetOf<String>()
@@ -100,13 +103,39 @@ internal object VariableKinds {
     private fun called(call: Clause.Call, scope: Scope): Map<String, Kind> {
         val query = call.query
         val parts = (listOf(query.clauses) + query.unions.map { it.clauses }).map { clauses ->
-            val importing = (clauses.firstOrNull() as? Clause.With)?.projection.takeIf { call.imports == null }
-            val imported = call.imports?.toSet()
-                ?: importing?.items.orEmpty().filter { (it.expression as? Expression.Variable)?.name == it.name }.map { it.name }.toSet()
-            val inner = Scope(scope.kinds.filterTo(LinkedHashMap()) { (name, _) -> call.importsAll || importing?.star == true || name in imported })
-            clauses(clauses, inner)
+            val imported = imports(call, clauses, scope.kinds.keys)
+            val inner = scope.kinds.filterTo(LinkedHashMap()) { (name, _) -> name in imported }
+            clauses(clauses, Scope(inner), kept = if (call.imports != null || call.importsAll) inner.toMap() else emptyMap())
         }
         return parts.first().mapValues { (name, kind) -> if (parts.all { it[name] == kind }) kind else Kind.ANY }
+    }
+
+    /**
+     * The variables of the row, of [names], that the query [clauses] of [call] imports, as Neo4j has it: those its brackets
+     * name, `CALL (a, b) { … }`, or each with `CALL (*) { … }`; with no brackets, those its leading `WITH` names as they are,
+     * or each with `WITH *`; none where it has neither, `CALL () { … }` or `CALL { MATCH … }`. The compiler reads a call's
+     * scope from it too, so the two agree. Refuses a bracketed name not of the row, and, as Neo4j does (its 42I28), a leading
+     * `WITH` that names a variable of the row, or `*`, with anything more: such a `WITH` imports, and one that names none is
+     * any `WITH`, `CALL { WITH 1 AS one WHERE … }`.
+     */
+    fun imports(call: Clause.Call, clauses: List<Clause>, names: Collection<String>): Set<String> {
+        val all = names.toSet()
+        if (call.importsAll) return all
+        call.imports?.let { imports ->
+            imports.firstOrNull { it !in all }?.let { throw DrivineException("$it is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.") }
+            return imports.toSet()
+        }
+        val with = clauses.firstOrNull() as? Clause.With ?: return emptySet()
+        val leading = with.projection
+        if (!leading.star && leading.items.none { (it.expression as? Expression.Variable)?.name in all }) return emptySet()
+        val plain = leading.items.all { (it.expression as? Expression.Variable)?.name == it.name }
+        if (!plain || with.where != null || leading.distinct || leading.orderBy.isNotEmpty() || leading.skip != null || leading.limit != null) {
+            throw DrivineException(
+                "The importing WITH of a CALL { … } names variables of the row alone, as in Cypher: no alias, expression, DISTINCT, WHERE, ORDER BY, SKIP " +
+                    "or LIMIT. Import them with CALL (a, b) { … }, and work on them in a WITH after."
+            )
+        }
+        return if (leading.star) all else all intersect leading.items.map { it.name }.toSet()
     }
 
     /**

@@ -10,6 +10,7 @@ import org.drivine.backend.oracle.OracleSql.property
 import org.drivine.model.FragmentModel
 import org.drivine.model.GraphViewModel
 import org.drivine.model.Stamps
+import org.drivine.query.GraphTypeLabels
 import org.drivine.query.dsl.ComparisonOperator
 import org.drivine.query.dsl.CypherGenerator
 import org.drivine.query.dsl.NullPlacement
@@ -143,7 +144,10 @@ internal class OraclePredicates(
         is WhereCondition.NotCondition -> "NOT (${all(condition.conditions, rows, model)})"
     }
 
-    /** Whether some node related through the field meets the conditions on it; none does, when the condition is negated. */
+    /**
+     * Whether some node the field loads meets the conditions on it; none does, when the condition is negated. Those
+     * are the nodes related through the field that carry its target's labels, here and on a nested field.
+     */
     private fun related(condition: WhereCondition.RelationshipCondition, rows: Map<String, String>, model: GraphViewModel?): String {
         requireNotNull(model) { "A condition on the relationship '${condition.relationshipName}' needs a @GraphView to find it in." }
         val relationship = model.relationships.find { it.fieldName == condition.relationshipName }
@@ -161,7 +165,7 @@ internal class OraclePredicates(
         // A pattern holds no subquery (`ORA-40988`), so a condition written with one is asked of the pattern's rows.
         val (onRows, inPattern) = direct.partition(::holdsSubquery)
         val found = this.rows.exists(
-            parent, this.rows.steps(relationship, emptyList()), row,
+            parent, this.rows.steps(relationship, GraphTypeLabels.targetLabels(relationship)), row,
             where = directPredicates(inPattern, target, row),
             predicates = directPredicates(onRows, target, row) + nestedPredicates(nested, targetType, target, row),
         )
@@ -212,9 +216,8 @@ internal class OraclePredicates(
                 val below = nestedPredicates(deeper, nestedType, "${target}_$name", nestedRow)
                 val (onRows, inPattern) = conditions.partition(::holdsSubquery)
                 val names = mapOf("${target}_$name" to nestedRow)
-                // No labels: a condition on a relationship is met by whatever node it leads to.
                 rows.exists(
-                    row, rows.steps(nestedRelationship, emptyList()), nestedRow,
+                    row, rows.steps(nestedRelationship, GraphTypeLabels.targetLabels(nestedRelationship)), nestedRow,
                     where = inPattern.map { one(it, names, null) }, predicates = onRows.map { one(it, names, null) } + below,
                 )
             }

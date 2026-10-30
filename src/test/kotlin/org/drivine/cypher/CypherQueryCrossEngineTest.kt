@@ -279,6 +279,106 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `randomUUID inside a larger expression in a read is made again for each row`() {
+        // A term holding randomUUID() was bound in a subquery that reads nothing of the row, or a CALL's was joined so, and the
+        // store made it once for the statement: each row read the same one (#412). Each statement gives a value for each of
+        // 100 rows, and the count of distinct values among them. Not one in an aggregate's argument, which Neo4j refuses.
+        fun distinct(rows: List<Any?>) = rows.flatMap { row -> (row as? List<*>)?.map { it.toString() } ?: listOf(row.toString()) }.toSet().size
+        val shapes = listOf(
+            "left(replace(randomUUID(), '-', ''), 16)",
+            "substring(randomUUID(), 0, 16)",
+            "toUpper(randomUUID())",
+            "[x IN [1] | randomUUID()][0]",
+            "CASE WHEN i > 0 THEN randomUUID() END",
+            "CASE WHEN true THEN toUpper(randomUUID()) END",
+            "{u: randomUUID()}.u",
+            "{u: randomUUID()}",
+            "coalesce(null, randomUUID()) + toString(i % 2)",
+        ).associate { "UNWIND range(1, 100) AS i RETURN $it" to 100 } + mapOf(
+            "UNWIND range(1, 100) AS i RETURN [randomUUID(), randomUUID()]" to 200,
+            "UNWIND range(1, 100) AS i RETURN [x IN range(1, 3) | toUpper(randomUUID())]" to 300,
+            "UNWIND range(1, 100) AS i RETURN reduce(s = '', x IN [1, 2] | s + randomUUID())" to 100,
+            "UNWIND range(1, 100) AS i UNWIND [toUpper(randomUUID())] AS u RETURN u" to 100,
+            "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS u ORDER BY u" to 100,
+            "UNWIND range(1, 100) AS i CALL { RETURN randomUUID() AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i CALL { RETURN toUpper(randomUUID()) + '-' AS u } RETURN u" to 100,
+            "UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u" to 100,
+            // Two items written alike are a UUID each, as in Neo4j.
+            "UNWIND range(1, 100) AS i RETURN toUpper(randomUUID()) AS a, toUpper(randomUUID()) AS b" to 200,
+            "UNWIND range(1, 100) AS i WITH toUpper(randomUUID()) AS a, toUpper(randomUUID()) AS b RETURN a, b" to 200,
+        )
+        val failed = shapes.mapNotNull { (cypher, expected) ->
+            distinct(query(cypher)).takeIf { it != expected }?.let { "$cypher: $it distinct of $expected" }
+        }
+        // A condition that reads one keeps about half of 1,000 rows, not all of them or none.
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val kept = listOf(
+            "UNWIND range(1, 1000) AS i WITH i WHERE left(randomUUID(), 1) < '8' RETURN count(*)",
+            "UNWIND range(1, 1000) AS i WITH i WHERE [x IN [1] | left(randomUUID(), 1)][0] < '8' RETURN count(*)",
+            "UNWIND range(1, 1000) AS i MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' RETURN count(*)",
+            // An OPTIONAL MATCH's lateral query read nothing of the row, and Oracle and SQLite worked it out once.
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE randomUUID() < '8' RETURN count(p)",
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' RETURN count(p)",
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE [x IN [1] | left(randomUUID(), 1)][0] < '8' RETURN count(p)",
+            // Made for each of the 4 people a row finds, not once for the row: some of them kept, not all or none.
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person) WHERE left(randomUUID(), 1) < '8' WITH i, count(p) AS c WHERE c > 0 AND c < 4 RETURN count(*)",
+            // Two OPTIONAL MATCHes, each a UUID of its own: one kept and not the other in about half the rows.
+            "UNWIND range(1, 1000) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' " +
+                "OPTIONAL MATCH (q:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '8' WITH p, q WHERE (p IS NULL) <> (q IS NULL) RETURN count(*)",
+            // A shortest path's condition, met where its one path is found.
+            "UNWIND range(1, 1000) AS i MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) " +
+                "MATCH p = shortestPath((a)-[:KNOWS*]->(b)) WHERE left(randomUUID(), 1) < '8' RETURN count(p)",
+            "UNWIND range(1, 1000) AS i MATCH (a:Person {name: 'Laurence'}), (b:Person {name: 'Carrie'}) " +
+                "MATCH p = allShortestPaths((a)-[:KNOWS*]->(b)) WHERE left(randomUUID(), 1) < '8' RETURN count(p)",
+            // Made again for each item: one of two kept in about half the rows, which Postgres and Oracle kept both or neither of.
+            "UNWIND range(1, 1000) AS i WITH i WHERE single(x IN range(1, 2) WHERE left(randomUUID(), 1) < '8') RETURN count(*)",
+            "UNWIND range(1, 1000) AS i WITH i WHERE size([x IN range(1, 2) WHERE left(randomUUID(), 1) < '8' | x]) = 1 RETURN count(*)",
+        ).mapNotNull { cypher -> (query(cypher).single() as Long).takeIf { it == 0L || it == 1000L }?.let { "$cypher: $it of 1000 kept" } }
+        // One for each item a pattern comprehension finds, 8 of them, where Postgres refused the statement and SQLite gave one row.
+        val found = listOf(
+            "MATCH (p:Person) RETURN p.name, [(p)-->() | toUpper(randomUUID())]",
+            "MATCH (p:Person) RETURN p.name, [(p)-->(m) WHERE left(randomUUID(), 1) <> 'z' | left(randomUUID(), 36)]",
+        ).mapNotNull { cypher ->
+            val rows = query(cypher).map { it as List<*> }
+            val made = rows.flatMap { it[1] as List<*> }
+            "$cypher: $rows".takeIf { rows.size != 4 || made.size != 8 || made.toSet().size != 8 }
+        }
+        // The UUID made first for the row is no variable of the statement's.
+        val starred = listOf(
+            "UNWIND range(1, 2) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE randomUUID() < 'z' RETURN *",
+            "UNWIND range(1, 2) AS i CALL { RETURN toUpper(randomUUID()) AS u } RETURN *",
+            "UNWIND range(1, 2) AS i WITH * WHERE left(randomUUID(), 1) < 'z' RETURN *, 1 AS one",
+        ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 2 || rows.any { (it as List<*>).size != 2 } }?.let { "$cypher: $it" } }
+        // An OPTIONAL MATCH that finds nothing, or keeps nothing it finds, keeps the row, with nulls.
+        val nulls = listOf(
+            "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Nobody'}) WHERE randomUUID() < 'z' RETURN i, p",
+            "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Keanu'}) WHERE left(randomUUID(), 1) < '0' RETURN i, p",
+            "UNWIND range(1, 3) AS i OPTIONAL MATCH (p:Person {name: 'Nobody'}) WHERE randomUUID() < 'z' OPTIONAL MATCH (p)-->(m) WHERE toUpper(randomUUID()) < 'Z' RETURN i, p, m",
+        ).mapNotNull { cypher -> query(cypher).takeIf { rows -> rows.size != 3 || rows.any { (it as List<*>).drop(1).any { v -> v != null } } }?.let { "$cypher: $it" } }
+        val wrong = failed + kept + found + starred + nulls
+        assertEquals(emptyList(), wrong, wrong.joinToString("\n"))
+    }
+
+    @Test
+    fun `randomUUID bound by a WITH is one value for each row, the same however often the row reads it`() {
+        // One value for each row, not for each read of it (#412).
+        val rows = query("UNWIND range(1, 100) AS i WITH i, randomUUID() AS u RETURN u AS a, u AS b, toUpper(u) AS c, left(replace(u, '-', ''), 16) AS d").map { it as List<*> }
+        assertEquals(100, rows.map { it[0] }.toSet().size, "${rows.take(3)}")
+        rows.forEach { (a, b, upper, short) ->
+            assertEquals(a, b)
+            assertEquals((a as String).uppercase(), upper)
+            assertEquals(a.replace("-", "").take(16), short)
+        }
+        val made = query("UNWIND range(1, 100) AS i WITH i, toUpper(randomUUID()) AS u RETURN u AS a, toLower(u) AS b, u + '' AS c").map { it as List<*> }
+        assertEquals(100, made.map { it[0] }.toSet().size, "${made.take(3)}")
+        made.forEach { (a, lower, plus) ->
+            assertEquals((a as String).lowercase(), lower)
+            assertEquals(a, plus)
+        }
+    }
+
+    @Test
     fun `a walk read through a WITH, then sorted by toString in a second WITH, keeps that order`() {
         // Not in the spec yet: the walk is a query inside the one the second WITH sorts, and its term, carried out, is bound in no subquery (#192).
         clear()
@@ -701,6 +801,58 @@ abstract class CypherQueryContract {
         ).forEach { statement ->
             val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
             if (compiles) assertTrue(failed.contains("round() takes a precision from 0 to 2147483647, as in Neo4j."), "$statement: $failed")
+        }
+    }
+
+    @Test
+    fun `an integer sum past a long's range is a float, as on Neo4j, and one in range a long`() {
+        // #339: Oracle's NUMBER and Postgres's numeric sum exactly, and gave toString(sum(x)) as an integer past a long's range.
+        // A sum past the range is a float there now, as on Neo4j. SQLite's sum() fails where a running total would pass it.
+        clear()
+        seed("CREATE (:S {k: 'a', x: 9223372036854775807}), (:S {k: 'a', x: 1}), (:S {k: 'b', x: 1}), (:S {k: 'b', x: 2})")
+        fun kinds(value: Any?): Any? = if (value is List<*>) value.map(::kinds) else value?.let { it to it::class.simpleName }
+        // Oracle writes every double's text from 17 digits, toString(2.0 ^ 63) as 9.2233720368547758E18, where Java writes
+        // the fewest that tell it apart: a sum past the range is written as Oracle writes the double it is.
+        fun text(double: String) = if (pm.type == DatabaseType.ORACLE) query("RETURN toString($double)").single() else double
+        val past = listOf(
+            "UNWIND [9223372036854775807, 1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(9.223372036854776E18, text("9.223372036854776E18")),
+            "UNWIND [-9223372036854775807, -2] AS x RETURN [sum(x), toString(sum(x))]" to listOf(-9.223372036854776E18, text("-9.223372036854776E18")),
+            "UNWIND [9223372036854775807, 9223372036854775807] AS x RETURN [sum(x), toString(sum(x))]" to listOf(1.8446744073709552E19, text("1.8446744073709552E19")),
+            "UNWIND [9223372036854775807, 9223372036854775807, 1] AS x RETURN sum(DISTINCT x)" to 9.223372036854776E18,
+            "UNWIND [9223372036854775807, 1] AS x WITH sum(x) AS s RETURN [s, toString(s), s > 0]" to listOf(9.223372036854776E18, text("9.223372036854776E18"), true),
+            "MATCH (n:S) WITH n.k AS k, sum(n.x) AS s ORDER BY k RETURN collect([k, s, toString(s)])" to listOf(listOf("a", 9.223372036854776E18, text("9.223372036854776E18")), listOf("b", 3L, "3")),
+        )
+        // Past the range on the way and back in it at the end. Neo4j goes on as a double from the row where a long would
+        // overflow, so its answer follows the order the rows come in: a float for these, and a long for [MAX, -1, 1] below.
+        // SQL keeps no order, so Oracle and Postgres tell the total alone, and give a long.
+        val back = listOf(
+            "UNWIND [9223372036854775807, 1, -1] AS x RETURN [sum(x), toString(sum(x))]"
+                to (listOf(9.223372036854776E18, "9.223372036854776E18") to listOf(Long.MAX_VALUE, "9223372036854775807")),
+            "UNWIND [9223372036854775807, 9223372036854775807, -9223372036854775807, -9223372036854775807] AS x RETURN sum(x)" to (0.0 to 0L),
+            "UNWIND [-9223372036854775807, -2, 4] AS x RETURN [sum(x), toString(sum(x))]"
+                to (listOf(-9.223372036854776E18, "-9.223372036854776E18") to listOf(-9223372036854775805L, "-9223372036854775805")),
+        )
+        val within = listOf(
+            "UNWIND [9223372036854775806, 1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(Long.MAX_VALUE, "9223372036854775807"),
+            "UNWIND [-9223372036854775807, -1] AS x RETURN [sum(x), toString(sum(x))]" to listOf(Long.MIN_VALUE, "-9223372036854775808"),
+            "UNWIND [9223372036854775807, -1, 1] AS x RETURN sum(x)" to Long.MAX_VALUE,
+            "UNWIND [9223372036854775807, 9223372036854775807] AS x RETURN sum(DISTINCT x)" to Long.MAX_VALUE,
+            "UNWIND [9223372036854775807, -1] AS x RETURN sum(x)" to Long.MAX_VALUE - 1,
+            "UNWIND [] AS x RETURN [sum(x), toString(sum(x))]" to listOf(0L, "0"),
+            "MATCH (n:S) WHERE n.k = 'b' RETURN sum(n.x)" to 3L,
+        )
+        val neo4j = pm.type == DatabaseType.NEO4J
+        val sqlite = pm.type == DatabaseType.SQLITE
+        val expected = within + if (sqlite) emptyList() else past + back.map { (statement, value) -> statement to if (neo4j) value.first else value.second }
+        // Each that differs, so a store's every difference shows at once.
+        val differing = expected.mapNotNull { (statement, value) ->
+            val given = kinds(query(statement).single())
+            if (given == kinds(value)) null else "$statement: $given, not ${kinds(value)}"
+        }
+        assertEquals(emptyList(), differing)
+        if (sqlite) (past.map { it.first } + back.map { it.first }).forEach { statement ->
+            val failed = assertThrows<Exception>(statement) { query(statement) }.message!!
+            assertTrue(failed.contains("integer overflow"), "$statement: $failed")
         }
     }
 
@@ -2350,6 +2502,76 @@ abstract class CypherQueryContract {
         assertEquals(
             listOf(listOf(2L, listOf(1L, 1L))),
             query("MATCH path = (p:Person {name: 'Laurence'})-[:ACTED_IN]->() CALL (path) { UNWIND [1, 2] AS i RETURN count(path) AS n, collect(length(path)) AS ls } RETURN n, ls"),
+        )
+    }
+
+    @Test
+    fun `a CALL sees only the variables it imports, and a name it does not import is a new variable in it`() {
+        // Not in the spec yet (#410). A CALL saw every variable of its row, so an inner MATCH that reused a name it did not
+        // import joined to the row's variable, and gave no rows, or was refused where it bound a relationship of a node's
+        // name. The rows are Neo4j's (2026.10).
+        clear()
+        seed(requireNotNull(CypherSpec.load("queries.yaml").graph))
+        val titles = listOf("Johnny Mnemonic", "The Matrix", "The Matrix Reloaded")
+        // A CALL with no brackets and no leading WITH imports nothing.
+        assertEquals(listOf(listOf(12L, 3L)), query("MATCH (p:Person) CALL { MATCH (p:Movie) RETURN p.title AS t } RETURN count(*) AS n, count(DISTINCT t) AS d"))
+        assertEquals(
+            listOf(listOf("Carrie", 3L), listOf("Hugo", 3L), listOf("Keanu", 3L), listOf("Laurence", 3L)),
+            query("MATCH (p:Person) CALL { MATCH (p:Movie) RETURN count(p) AS n } RETURN p.name, n ORDER BY p.name"),
+        )
+        // CALL () imports nothing.
+        assertEquals(
+            titles.map { listOf("Keanu", it) },
+            query("MATCH (p:Person {name: 'Keanu'}) CALL () { MATCH (p:Movie) RETURN p.title AS t } RETURN p.name, t ORDER BY t"),
+        )
+        // CALL (a) imports a alone, and a leading WITH a alone: b in it is new.
+        assertEquals(
+            titles.map { listOf("Carrie", it) },
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL (a) { MATCH (a)-[:ACTED_IN]->(b) RETURN b.title AS t } RETURN b.name, t ORDER BY t"),
+        )
+        assertEquals(
+            titles.map { listOf("Carrie", it) },
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL { WITH a MATCH (a)-[:ACTED_IN]->(b) RETURN b.title AS t } RETURN b.name, t ORDER BY t"),
+        )
+        // A node's name, not imported, is a relationship's in the CALL.
+        assertEquals(listOf(listOf("Keanu", 2L)), query("MATCH (a:Person {name: 'Keanu'}) CALL { MATCH ()-[a:KNOWS]->() RETURN count(a) AS n } RETURN a.name, n"))
+        assertEquals(
+            listOf(listOf("Laurence", "Carrie"), listOf("Laurence", "Keanu")),
+            query("MATCH (a:Person {name: 'Laurence'}) CALL () { MATCH ()-[a:KNOWS]->(b) RETURN b.name AS k } RETURN a.name, k ORDER BY k"),
+        )
+        assertEquals(
+            listOf(listOf("The Matrix", 4L)),
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Movie {title: 'The Matrix'}) CALL (a) { MATCH (a)-[b]->() RETURN count(b) AS n } RETURN b.title, n"),
+        )
+        // What a leading WITH imports is gone after a WITH that does not pass it on.
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL { WITH a WITH 1 AS one MATCH (a:Movie) RETURN count(a) AS n } RETURN n"))
+        // What brackets import is seen throughout the CALL, after a WITH that does not pass it on too, as Neo4j has it.
+        assertEquals(
+            listOf("Carrie"),
+            query("MATCH (a:Person {name: 'Keanu'}), (b:Person {name: 'Carrie'}) CALL (a, b) { WITH 1 AS one RETURN b.name AS n } RETURN n"),
+        )
+        assertEquals(
+            listOf(3L),
+            query("MATCH (a:Person {name: 'Keanu'}) CALL (a) { MATCH (a)-[:ACTED_IN]->(m) WITH m MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"),
+        )
+        assertEquals(
+            listOf(listOf("Carrie", 3L), listOf("Hugo", 3L), listOf("Keanu", 3L), listOf("Laurence", 3L)),
+            query("MATCH (a:Person) CALL (a) { UNWIND [1, 2] AS i WITH i RETURN a.name AS n, sum(i) AS s } RETURN n, s ORDER BY n"),
+        )
+        // CALL (*), and a leading WITH *, import every variable.
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL (*) { MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"))
+        assertEquals(
+            listOf(3L),
+            query("MATCH (a:Person {name: 'Keanu'}) CALL (*) { MATCH (a)-[:ACTED_IN]->(m) WITH m MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"),
+        )
+        assertEquals(listOf(3L), query("MATCH (a:Person {name: 'Keanu'}) CALL { WITH * MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n } RETURN n"))
+        // In a UNION, each query imports what its own leading WITH names.
+        assertEquals(
+            listOf(listOf("Keanu", 3L), listOf("Keanu", 3L)),
+            query(
+                "MATCH (a:Person {name: 'Keanu'}) CALL { WITH a MATCH (a)-[:ACTED_IN]->(m) RETURN count(m) AS n " +
+                    "UNION ALL MATCH (a:Movie) RETURN count(a) AS n } RETURN a.name, n"
+            ),
         )
     }
 
