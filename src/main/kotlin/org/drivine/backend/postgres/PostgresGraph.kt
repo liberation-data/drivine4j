@@ -1,5 +1,6 @@
 package org.drivine.backend.postgres
 
+import org.drivine.backend.sql.DdlContention
 import org.drivine.backend.sql.SqlGraph
 import org.drivine.manager.PersistenceManager
 
@@ -83,9 +84,13 @@ internal class PostgresGraph(name: String) : SqlGraph(name, ENGINE, MAX_OBJECT_N
         ${'$'}ensure${'$'}
     """.trimIndent()
 
-    /** Runs [ensuring]. */
+    /**
+     * Runs [ensuring], again after a pause when Postgres turned it away as a deadlock (`40P01`) with other sessions'
+     * writes, as the block's statements over tables already in use may meet (see [DdlContention]). The block runs in one
+     * transaction, so a block turned away made nothing, and run again it makes the store, or finds it made (#450).
+     */
     override fun ensure(run: (String) -> List<Any?>) {
-        run(ensuring)
+        DdlContention.whenNotContended { run(ensuring) }
     }
 
     companion object {

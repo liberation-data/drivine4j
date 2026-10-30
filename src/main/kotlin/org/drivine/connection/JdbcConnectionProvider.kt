@@ -36,12 +36,15 @@ import javax.sql.DataSource
  * whatever the data source's connections start in, and never on a caller's transaction. Threads that ask for their first connections at once wait for the one that
  * makes the tables; two processes are kept apart by the statements themselves, as two object
  * managers are: a lock of the graph's own on Postgres, `ORA-00955` taken as made and `ORA-00054`
- * waited out on Oracle, and SQLite's lock on the file.
+ * waited out on Oracle, and SQLite's lock on the file. A block turned away all the same by a
+ * deadlock with another session's, as with other pools' first writes (`ORA-04020`, `ORA-00060`,
+ * `40P01`), is run again after a pause (#450).
  *
- * Where making them fails once a connection is had, it is logged as a warning and not tried again by
- * this provider: the connection is handed out, and a statement over tables that are not there says
- * so. A store reached as a user that cannot make tables, where the check finds nothing to go on, works
- * as before. So does a graph name that cannot name tables: plain SQL works whatever the name, and
+ * Where making them fails once a connection is had, it is logged as a warning, and the connection is
+ * handed out: a statement over tables that are not there says so. The graph is not taken as made, so
+ * the provider's next connection tries again; not where the user may not make them, or the store may
+ * not be written (see [cannotMake]), which would be refused alike on every connection. A store reached
+ * as a user that cannot make tables, where the check finds nothing to go on, works as before. So does a graph name that cannot name tables: plain SQL works whatever the name, and
  * Cypher over the graph is refused with why. So does an Oracle older than 23.9, found from the first
  * connection's metadata: plain SQL works, and Cypher, which needs Oracle's `UUID()`, is refused with why.
  *
@@ -90,7 +93,7 @@ class JdbcConnectionProvider @JvmOverloads constructor(
     override val schemaRefusal: String?
         get() = graphRefusal(type, graphName)
 
-    /** Whether the graph's tables have been made, or found, by this provider: see [ensureGraph]. */
+    /** Whether the graph's tables have been made, or found, by this provider: see [ensureGraph]. Set after a failure only where [cannotMake]. */
     @Volatile
     private var graphEnsured = false
 
@@ -150,10 +153,15 @@ class JdbcConnectionProvider @JvmOverloads constructor(
         JdbcConnection(withoutAdaptivePlans(dataSource.connection), JdbcResultMapper(subtypeRegistry), type, graphName, cypherRefusal = cypherRefusal)
 
     /**
-     * Makes the graph's tables when they are not there, once for this provider: after the first time,
-     * a connection costs a read of a flag. A failure to get or to close the connection they are made
-     * on, or to set it to commit each statement, is thrown, and the next connection tries again; a
-     * failure of the statements is logged, and not tried again.
+     * Makes the graph's tables when they are not there, once for this provider: after the first time
+     * they are made, a connection costs a read of a flag. A failure to get or to close the connection
+     * they are made on, or to set it to commit each statement, is thrown, and the next connection tries
+     * again. A failure of the statements, once the graph has run them again for as long as another
+     * session's deadlocked with them (see `DdlContention`), is logged, the connection is handed out, and
+     * the next connection tries again: the graph is marked made only once they have run (#450), or once
+     * they are refused as the user's or the store's to make none ([cannotMake]). Threads
+     * that ask for a connection meanwhile wait for the one making the tables, and after a failure the
+     * first of them tries again.
      *
      * A graph name that cannot name tables makes none, and is logged: every connection is handed out,
      * as before the provider made tables, and a Cypher statement over the graph is refused, naming the
@@ -166,12 +174,15 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             val refusal = graphRefusal(type, graphName)
             if (refusal != null) {
                 logger.warn("No tables made for graph '{}' on {} database '{}': {} Plain SQL works; Cypher, object managers and schema over the graph do not. Give the provider a graph name that can name tables.", graphName, type, name, refusal)
+                graphEnsured = true
             } else {
-                graph?.let(::makeTables)
+                graphEnsured = graph?.let(::makeTables) ?: true
             }
-            graphEnsured = true
         }
     }
+
+    /** Whether a failure to make the tables has been logged as a warning: those after it are logged at debug. */
+    private var warnedOfTables = false
 
     /**
      * Runs [graph]'s statements on a connection of its own that commits each statement, whatever the data source's
@@ -179,10 +190,13 @@ class JdbcConnectionProvider @JvmOverloads constructor(
      * set), what they make would be rolled back as the connection goes back to its pool (#365). The connection is put
      * back as it was before it is closed.
      *
-     * On Oracle it first reads the database's version from the session's metadata, which needs no grant, once for the
-     * provider: see [oracleRefusal].
+     * On Oracle it first reads the database's version from the session's metadata, which needs no grant: see
+     * [oracleRefusal].
+     *
+     * Whether the statements ran, or are not to be run again ([cannotMake]): a failure of theirs is logged. Called under
+     * [ensuringGraph].
      */
-    private fun makeTables(graph: SqlGraph) {
+    private fun makeTables(graph: SqlGraph): Boolean {
         val session = withoutAdaptivePlans(dataSource.connection)
         if (type == DatabaseType.ORACLE) checkVersion(session)
         val connection = JdbcConnection(session, JdbcResultMapper(subtypeRegistry), type, graphName)
@@ -211,12 +225,22 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             throw e
         }
         connection.release(failure)
-        failure?.let {
+        if (failure == null) return true
+        if (cannotMake(type, failure)) {
             logger.warn(
-                "Could not make the tables of graph '{}' on {} database '{}'; statements over them will fail if they are not there.",
-                graphName, type, name, it,
+                "Could not make the tables of graph '{}' on {} database '{}': the user may not make them, or the database may not be written. Statements over them will fail if they are not there. The provider does not try again.",
+                graphName, type, name, failure,
             )
+            return true
         }
+        val message = "Could not make the tables of graph '{}' on {} database '{}'; statements over them will fail if they are not there. The next connection tries again."
+        if (warnedOfTables) {
+            logger.debug(message, graphName, type, name, failure)
+        } else {
+            logger.warn(message, graphName, type, name, failure)
+            warnedOfTables = true
+        }
+        return false
     }
 
     /**
@@ -266,6 +290,33 @@ class JdbcConnectionProvider @JvmOverloads constructor(
             return "Drivine needs Oracle $ORACLE_MAJOR.$ORACLE_MINOR or later (it uses UUID()); this database is $version. " +
                 "Upgrade, or use an Oracle Free image $ORACLE_MAJOR.$ORACLE_MINOR or newer. Plain SQL over this provider still runs; Cypher does not."
         }
+
+        /**
+         * Whether [failure], or a cause under it, says the tables of a [type] store are not this provider's to make: the
+         * user may not make them (`ORA-01031`, `42501`), or the database may not be written (`ORA-16000`, a hot standby's
+         * `25006`). Run again on the next connection, the block would be refused alike, on every connection: a user that
+         * may read a store but not make it, where the block finds it to make, would pay for it on each.
+         *
+         * It is taken so for this provider only, not for the store: a grant given later, or a standby made primary, is
+         * found by the next provider made over the store, as when the application restarts.
+         */
+        internal fun cannotMake(type: DatabaseType, failure: Throwable): Boolean =
+            generateSequence(failure) { it.cause }.take(MAX_CAUSE_DEPTH).any {
+                it is java.sql.SQLException && when (type) {
+                    DatabaseType.ORACLE -> it.errorCode in ORACLE_CANNOT_MAKE
+                    DatabaseType.POSTGRES -> it.sqlState in POSTGRES_CANNOT_MAKE
+                    else -> false
+                }
+            }
+
+        /** Insufficient privileges, and a database open for reading only. */
+        private val ORACLE_CANNOT_MAKE = setOf(1031, 16000)
+
+        /** Insufficient privilege, and a statement that writes in a transaction that may only read. */
+        private val POSTGRES_CANNOT_MAKE = setOf("42501", "25006")
+
+        /** How far down a failure's causes the store's own error is looked for. */
+        private const val MAX_CAUSE_DEPTH = 10
 
         /** The oldest Oracle Drivine runs Cypher on, 23.9: see [oracleRefusal]. */
         private const val ORACLE_MAJOR = 23
