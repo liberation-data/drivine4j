@@ -88,6 +88,25 @@ abstract class CypherWriteContract {
             listOf(listOf(2L, 4L)),
             query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CALL (a) { CREATE (b:CyWrite {id: 4}) RETURN b.id AS made } RETURN [b.id, made]"),
         )
+        // What brackets import is seen after a leading WITH that does not pass it on, as Neo4j has it.
+        assertEquals(listOf(true), query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CALL (a, b) { WITH a SET b.seen = true } RETURN b.seen"))
+        // ... and after any WITH: a CREATE of it joins the row's node, and a SET writes it.
+        query("MATCH (a:CyWrite {id: 1}) CALL (a) { WITH 1 AS one CREATE (a)-[:S]->(:CyWrite {id: 5}) } RETURN 1")
+        assertEquals(listOf(listOf(1L, 5L)), query("MATCH (a:CyWrite)-[:S]->(b) RETURN [a.id, b.id]"))
+        assertEquals(listOf(5L), query("MATCH (a:CyWrite {id: 1}) CALL (a) { MATCH (c:CyWrite {id: 5}) WITH c SET a.next = c.id RETURN a.next AS n } RETURN n"))
+        assertEquals(listOf(1L), query("MATCH (a:CyWrite {id: 2}) CALL (*) { WITH 1 AS one SET a.one = one } RETURN a.one"))
+        // An aggregate over no rows still gives its row, and the WITH's WHERE reads what brackets import.
+        assertEquals(listOf(0L), query("MATCH (a:CyWrite {id: 1}) CALL (a) { MATCH (c:CyNone) WITH count(c) AS n SET a.none = n RETURN a.none AS v } RETURN v"))
+        assertEquals(listOf(listOf(1L, 5L)), query("MATCH (a:CyWrite {id: 1}) CALL (a) { MATCH (c:CyWrite) WITH c WHERE c.id = a.next SET c.prev = a.id RETURN c.prev AS p, c.id AS i } RETURN [p, i]"))
+        // Reading the imports again after a WITH that aggregates, or keeps rows distinct, gives one row for each row of the call.
+        assertEquals(
+            listOf(listOf(1L, 8L, 8L), listOf(2L, 8L, 8L)),
+            query("MATCH (a:CyWrite) WHERE a.id IN [1, 2] CALL (a) { MATCH (c:CyWrite) WITH count(*) AS n SET a.count = n RETURN n } RETURN [a.id, n, a.count] ORDER BY a.id"),
+        )
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(2L, 1L)),
+            query("MATCH (a:CyWrite) WHERE a.id IN [1, 2] CALL (a) { MATCH (c:CyWrite) WITH DISTINCT 1 AS one SET a.d = one RETURN one } RETURN [a.id, a.d] ORDER BY a.id"),
+        )
     }
 
     @Test

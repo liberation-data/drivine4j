@@ -211,6 +211,9 @@ class CompilerRefusalTest {
             "MATCH (a) CALL (a) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
             "MATCH (a) CALL (a) { MATCH ()-[a]->() RETURN 1 AS x } RETURN x" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
             "MATCH (a) CALL (*) { CREATE (a) } RETURN 1" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            // What brackets import is in scope after a WITH that does not name it, as Neo4j has it (#410).
+            "MATCH (a) CALL (a) { WITH 1 AS one CREATE (a) RETURN one } RETURN one" to "a is bound already, so a CREATE makes no node of it, as in Neo4j.",
+            "MATCH (a) CALL (*) { WITH 1 AS one MATCH ()-[a]->() RETURN one } RETURN one" to "a is a node, and is used as a relationship: a variable is of one kind, as in Neo4j.",
             "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE (r)-[:T]->())" to "r is a relationship, and is used as a node: a variable is of one kind, as in Neo4j.",
             "MATCH p = (a)-[*]->(b) RETURN size(p)" to "size() takes a list or a text, not a path, as in Neo4j: length() takes a path.",
         )
@@ -263,6 +266,8 @@ class CompilerRefusalTest {
                 "MATCH (a), (b) CALL (a) { MATCH ()-[b]->() RETURN 1 AS x } RETURN x",
                 "MATCH (a) CALL { WITH a WITH 1 AS one MATCH ()-[a]->() RETURN 1 AS x } RETURN x",
                 "MATCH (a) CALL () { CREATE (a) RETURN 1 AS x } RETURN x",
+                // A procedure's call imports each variable of the row, so its WHERE reads them.
+                "MATCH (a) CALL db.labels() YIELD label WHERE label = a.kind RETURN label",
                 "MATCH ()-[n]->(m) FOREACH (n IN [m] | CREATE (n)-[:R]->())",
                 "MATCH (a) WITH a, 1 AS b ORDER BY size([(a)-->(x) | x]) RETURN b",
                 "MATCH (a) MATCH p = (a)-->() RETURN nodes(p)",
@@ -280,10 +285,47 @@ class CompilerRefusalTest {
                 "MATCH (a) CALL { WITH a RETURN a AS b UNION WITH a MATCH ()-[b]->() RETURN b } RETURN b" to
                     "A UNION in CALL { … } whose queries return values of different kinds is Cypher, and is not compiled to SQL yet.",
                 "MATCH p = ()-->() RETURN [p = ()-->() | p] AS x" to "A path is not a value drivine gives the same on each store: use nodes(p), relationships(p) and length(p).",
+                // A CALL's brackets import only variables of its row, as Neo4j has it (#410).
+                "MATCH (a) CALL (x) { RETURN 1 AS n } RETURN n" to "x is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                "MATCH (a) WITH 1 AS x CALL db.labels() YIELD label WHERE label = a.kind RETURN label" to
+                    "a is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
+                "MATCH (a), (b) CALL (a) { CALL (b) { MATCH (b)-->(d) RETURN d } RETURN d.x AS x } RETURN x" to
+                    "b is not defined: a variable is bound by a pattern, a WITH or an UNWIND before it is used.",
             ).forEach { (cypher, message) ->
                 val store = compiler()::class.simpleName
                 assertEquals(message, assertThrows<DrivineException>("$store: $cypher") { compiler().compile(cypher) }.message, "$store: $cypher")
             }
+        }
+    }
+
+    @Test
+    fun `a CALL's leading WITH that imports names variables of the row alone, as Neo4j has it`() {
+        // Not in the spec yet (#410): Neo4j refuses an importing WITH with anything more (its 42I28), which was compiled as any WITH.
+        listOf(PostgresCypherCompiler("g"), OracleCypherCompiler("g"), SqliteCypherCompiler("g")).forEach { compiler ->
+            val store = compiler::class.simpleName
+            listOf(
+                "MATCH (a), (b) CALL { WITH a, b AS c MATCH (a)-->(c) RETURN c.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a AS c MATCH (c)-->(d) RETURN d.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a WHERE a.x > 1 RETURN count(*) AS n } RETURN a, n",
+                "MATCH (a) CALL { WITH a ORDER BY a.x LIMIT 1 MATCH (a)-->(d) RETURN d.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a SKIP 0 RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { WITH DISTINCT a MATCH (a)-->(d) RETURN d.x AS x } RETURN x",
+                "MATCH (a) CALL { WITH a, 1 AS one MATCH (a)-->(d) RETURN d.x + one AS x } RETURN x",
+                "MATCH (a) CALL { WITH * WHERE true RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { UNWIND [1] AS x RETURN x UNION WITH a WHERE true RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { WITH a WHERE a.x > 1 SET a.y = 1 } RETURN a",
+            ).forEach { cypher ->
+                val refused = assertThrows<DrivineException>("$store: $cypher") { compiler.compile(cypher) }.message!!
+                assertTrue(refused.startsWith("The importing WITH of a CALL { … } names variables of the row alone, as in Cypher"), "$store: $cypher: $refused")
+            }
+            // A leading WITH that names no variable of the row as it is imports nothing, and is any WITH; so is one of a CALL with brackets.
+            listOf(
+                "MATCH (a) CALL { WITH 1 AS one WHERE one > 0 RETURN one } RETURN one",
+                "MATCH (a) CALL { WITH DISTINCT 1 AS one RETURN one } RETURN one",
+                "MATCH (a) CALL { WITH a AS a RETURN 1 AS one } RETURN one",
+                "MATCH (a) CALL (a) { WITH a WHERE a.x > 1 RETURN a.x AS x } RETURN x",
+                "MATCH (a) CALL (a) { WITH DISTINCT a, 1 AS one ORDER BY a.x LIMIT 1 RETURN one } RETURN one",
+            ).forEach { compiler.compile(it) }
         }
     }
 
