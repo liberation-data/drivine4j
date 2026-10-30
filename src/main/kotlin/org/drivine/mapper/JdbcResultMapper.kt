@@ -78,24 +78,25 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
 
         /**
          * The JSON [text] as [readJson] reads it, of a statement given NaN or an infinity ([nonFinite]), with each value that stands
-         * for one the double it is: see [nonFiniteRead]. Else as [readJson] reads it.
+         * for one the double it is: see [nonFiniteRead], which reads [NAN_TAG] as NaN where [tagged], in SQLite's rows. Else as
+         * [readJson] reads it.
          */
-        private fun readJson(text: String, nonFinite: Boolean): Any? =
-            if (nonFinite) nonFiniteRead(exactJson.readValue(text, Any::class.java)) else readJson(text)
+        private fun readJson(text: String, nonFinite: Boolean, tagged: Boolean = false): Any? =
+            if (nonFinite) nonFiniteRead(exactJson.readValue(text, Any::class.java), tagged) else readJson(text)
 
         /**
          * [value], read with its floats as `BigDecimal`, with each whole number a `Long` (past a `Long`'s range a `Double`, as
          * [widened] makes it), each float a `Double`, and each value that stands for NaN or an infinity the double it is: a number
-         * past any double's, as Postgres writes one ([PostgresCypherCompiler.read]), and `{"${'$'}numberDouble": "NaN"}`, as SQLite
-         * writes NaN ([SqliteCypherCompiler]).
+         * past any double's, as Postgres writes one ([PostgresCypherCompiler.read]), and, where [tagged], `{"${'$'}numberDouble": "NaN"}`,
+         * as SQLite writes NaN ([SqliteCypherCompiler]): elsewhere such a map is the map given.
          */
-        private fun nonFiniteRead(value: Any?): Any? = when (value) {
-            is Int -> value.toLong()
-            is BigInteger -> value.toDouble()
-            is BigDecimal -> PostgresCypherCompiler.read(value)
-            NAN_TAG -> Double.NaN
-            is Map<*, *> -> value.mapValuesTo(LinkedHashMap()) { (_, v) -> nonFiniteRead(v) }
-            is List<*> -> value.map(::nonFiniteRead)
+        private fun nonFiniteRead(value: Any?, tagged: Boolean): Any? = when {
+            value is Int -> value.toLong()
+            value is BigInteger -> value.toDouble()
+            value is BigDecimal -> PostgresCypherCompiler.read(value)
+            tagged && value == NAN_TAG -> Double.NaN
+            value is Map<*, *> -> value.mapValuesTo(LinkedHashMap()) { (_, v) -> nonFiniteRead(v, tagged) }
+            value is List<*> -> value.map { nonFiniteRead(it, tagged) }
             else -> value
         }
 
@@ -126,7 +127,7 @@ class JdbcResultMapper(subtypeRegistry: SubtypeRegistry? = null) : GraphResultMa
                     when (val value = results.getObject(column)) {
                         is Int, is Short, is Byte -> (value as Number).toLong()
                         is Float -> value.toDouble()
-                        is String -> if (json) readJson(value, nonFinite || SQLITE_NAN_TEXT in value) else value
+                        is String -> if (json) readJson(value, nonFinite || SQLITE_NAN_TEXT in value, tagged = true) else value
                         else -> value
                     }
                 })
