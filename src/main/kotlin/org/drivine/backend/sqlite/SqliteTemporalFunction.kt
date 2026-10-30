@@ -1,6 +1,7 @@
 package org.drivine.backend.sqlite
 
 import org.drivine.cypher.sql.Temporal
+import org.drivine.cypher.sql.TemporalSql
 import org.sqlite.Function
 import org.sqlite.core.Codes
 import java.math.BigDecimal
@@ -106,9 +107,7 @@ internal class SqliteTemporalFunction : Function() {
         "millisecond" -> clock.truncatedTo(ChronoUnit.MILLIS)
         "microsecond" -> clock.truncatedTo(ChronoUnit.MICROS)
         // The year less its years into the span, counted toward zero, as Neo4j counts: -1234's millennium is -1000.
-        "millennium" -> clock.toLocalDate().withYear(clock.year - clock.year % 1000).withDayOfYear(1).atStartOfDay()
-        "century" -> clock.toLocalDate().withYear(clock.year - clock.year % 100).withDayOfYear(1).atStartOfDay()
-        "decade" -> clock.toLocalDate().withYear(clock.year - clock.year % 10).withDayOfYear(1).atStartOfDay()
+        in TemporalSql.YEARS_OF -> TemporalSql.YEARS_OF.getValue(unit).let { years -> LocalDate.of(clock.year - clock.year % years, 1, 1).atStartOfDay() }
         "weekYear" -> clock.toLocalDate().with(IsoFields.WEEK_OF_WEEK_BASED_YEAR, 1).with(ChronoField.DAY_OF_WEEK, 1).atStartOfDay()
         else -> throw SQLException("A timestamp is not truncated to $unit.")
     }

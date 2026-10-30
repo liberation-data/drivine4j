@@ -332,7 +332,19 @@ class CompilerRefusalTest {
             "RETURN date.truncate('day', date('2024-03-15'), {foo: 1})" to "date.truncate() takes no field foo.",
             "RETURN date.truncate('month', date('2024-03-15'), {day: 2, dayOfWeek: 3})" to "date.truncate() takes a day or a day of the week, not both.",
             "RETURN date.truncate('month', date('2024-03-15'), {day: null, dayOfWeek: 3})" to "date.truncate() takes a day or a day of the week, not both.",
+            // Neo4j takes a day of the week with a year alone, not with a month, though it is null.
+            "RETURN date.truncate('month', date('2024-03-15'), {month: 2, dayOfWeek: 3})" to "date.truncate() takes a month or a day of the week, not both.",
+            "RETURN date.truncate('weekYear', date('2024-03-15'), {dayOfWeek: 2, year: 2000, month: null})" to "date.truncate() takes a month or a day of the week, not both.",
             "RETURN date.truncate('week', date('2024-03-15'), {dayOfWeek: 9})" to "date.truncate() takes a day of the week from 1 to 7, not 9.",
+            // A number past its field's range, which a store would carry into the next field, as Neo4j fails it.
+            "RETURN date.truncate('year', date('2017-02-11'), {month: -1})" to "date.truncate() takes a month from 1 to 12, not -1.",
+            "RETURN localtime.truncate('hour', localtime('12:00'), {hour: 24})" to "localtime.truncate() takes an hour from 0 to 23, not 24.",
+            "RETURN localtime.truncate('second', localtime('12:00'), {millisecond: 1000})" to "localtime.truncate() takes a millisecond from 0 to 999, not 1000.",
+            "RETURN localtime.truncate('second', localtime('12:00'), {microsecond: 1000000})" to "localtime.truncate() takes a microsecond from 0 to 999999, not 1000000.",
+            "RETURN localtime.truncate('second', localtime('12:00'), {millisecond: 5, microsecond: 1000})" to
+                "localtime.truncate() takes a microsecond from 0 to 999 beside a millisecond, not 1000.",
+            "RETURN localtime.truncate('millisecond', localtime('12:00'), {microsecond: 1000})" to
+                "localtime.truncate() takes a microsecond from 0 to 999 beside a millisecond, not 1000.",
             "RETURN date.truncate('month', date('2024-03-15'), {day: 2.7})" to "date.truncate() takes a whole number for day, not 2.7.",
             "RETURN date.truncate('month', date('2024-03-15'), {year: '2000'})" to "date.truncate() takes a whole number for year, not '2000'.",
             "RETURN datetime.truncate('day', date('2024-03-15'), {timezone: '+0500'})" to "'+0500' is no time zone.",
@@ -354,7 +366,8 @@ class CompilerRefusalTest {
             // The units the spec's tag refuses, and fields of every kind the stores have SQL for, compile.
             listOf(
                 "RETURN date.truncate('decade', date('2024-03-15'))",
-                "RETURN date.truncate('weekYear', date('2024-03-15'), {dayOfWeek: 2, year: 2000, month: null})",
+                "RETURN date.truncate('weekYear', date('2024-03-15'), {dayOfWeek: 2, year: 2000})",
+                "RETURN localtime.truncate('second', localtime('12:00'), {microsecond: 999999})",
                 "RETURN datetime.truncate('microsecond', datetime('2024-03-15T10:00Z'), {hour: 1, minute: 2, second: 3, millisecond: 4, microsecond: 5, timezone: 'Z'})",
                 "WITH 3 AS d RETURN localdatetime.truncate('millennium', \$at, {day: d})",
             ).forEach { compiler.compile(it, mapOf("at" to "2024-03-15T10:00")) }
