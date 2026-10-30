@@ -1963,6 +1963,47 @@ abstract class CypherQueryContract {
     }
 
     @Test
+    fun `x IN a list each row works out by a subquery finds the row's items, in a WHERE, an EXISTS, a RETURN, a quantifier and an UNWIND`() {
+        // Not in the spec yet: on Oracle such a list was worked out by a subquery in a lateral view's select list, which Oracle
+        // works out once, not for each row, where that view is first in a subquery's FROM: the WHEREs found nothing (#433).
+        clear()
+        seed("CREATE (:K {a: 1}), (:K {b: 2}), (:K {a: 3, b: 4}), (:P {name: 'a'})-[:R]->(:Q {name: 'x'}), (:P {name: 'b'})-[:R]->(:Q {name: 'y'})")
+        // The issue's statements.
+        assertEquals(listOf(2L), query("UNWIND [1, 2] AS k WITH k WHERE 2 IN [i IN range(1, k) | i] RETURN k"))
+        assertEquals(listOf(2L), query("MATCH (n:K) WHERE 'b' IN keys(n) RETURN count(n)"))
+        assertEquals(listOf(2L), query("MATCH (n:K) WHERE 'b' IN [k IN keys(n) | k] RETURN count(n)"))
+        assertEquals(
+            listOf(mapOf("b" to 2L), mapOf("a" to 3L, "b" to 4L)),
+            query("UNWIND [{a: 1}, {b: 2}, {a: 3, b: 4}] AS m WITH m WHERE 'b' IN keys(m) RETURN m"),
+        )
+        // A comprehension that filters, and a list a pattern comprehension collects, in a WHERE, an EXISTS and a RETURN.
+        assertEquals(listOf(3L), query("UNWIND [1, 2, 3] AS k WITH k WHERE 3 IN [i IN range(1, k) WHERE i > 1 | i] RETURN k"))
+        assertEquals(listOf("b"), query("MATCH (p:P) WHERE 'y' IN [(p)-[:R]->(q) | q.name] RETURN p.name"))
+        assertEquals(listOf("b"), query("MATCH (p:P) WHERE EXISTS { MATCH (p)-[:R]->(q) WHERE 'y' IN [(p)-->(r) | r.name] } RETURN p.name"))
+        assertEquals(listOf(listOf(3L, 4L)), query("MATCH (n:K) WHERE EXISTS { MATCH (m:K) WHERE m.a = n.a AND 'b' IN keys(n) } RETURN n.a, n.b"))
+        assertEquals(listOf(listOf(1L, false), listOf(2L, true)), query("UNWIND [1, 2] AS k RETURN k, 2 IN [i IN range(1, k) | i] ORDER BY k"))
+        assertEquals(listOf(listOf("a", false), listOf("b", true)), query("MATCH (p:P) RETURN p.name, 'y' IN [(p)-[:R]->(q) | q.name] ORDER BY p.name"))
+        // Quantifiers over such a list.
+        val each = "UNWIND [1, 2, 3] AS k WITH k WHERE"
+        assertEquals(listOf(3L), query("$each any(i IN [j IN range(1, k) | j] WHERE i = 3) RETURN k"))
+        assertEquals(listOf(1L, 2L), query("$each all(i IN [j IN range(1, k) | j] WHERE i < 3) RETURN k ORDER BY k"))
+        assertEquals(listOf(1L), query("$each none(i IN [j IN range(1, k) | j] WHERE i = 2) RETURN k"))
+        assertEquals(listOf(2L), query("$each single(i IN [j IN range(1, k) | j] WHERE i >= 2) RETURN k"))
+        assertEquals(listOf(2L), query("MATCH (n:K) WHERE any(x IN keys(n) WHERE x = 'b') RETURN count(n)"))
+        assertEquals(listOf(1L), query("MATCH (n:K) WHERE none(x IN keys(n) WHERE x = 'b') RETURN count(n)"))
+        // Unwound beside the table whose row it reads.
+        assertEquals(listOf(listOf(1L, 1L), listOf(2L, 1L), listOf(2L, 2L)), query("UNWIND [1, 2] AS k UNWIND [i IN range(1, k) | i] AS j RETURN k, j ORDER BY k, j"))
+        assertEquals(listOf(listOf("a", "x"), listOf("b", "y")), query("MATCH (p:P) UNWIND [(p)-[:R]->(q) | q.name] AS x RETURN p.name, x ORDER BY p.name"))
+        // A list that may hold temporal values, which Oracle reads by its places.
+        assertEquals(listOf(2L), query("UNWIND [1, 2] AS k WITH k WHERE 2 IN [i IN range(1, k) | CASE WHEN i = 2 THEN 2 ELSE date('2024-01-01') END] RETURN k"))
+        assertEquals(listOf(2L), query("UNWIND [1, 2] AS k WITH k WHERE 2 IN [i IN range(1, k) | coalesce(CASE WHEN i = 2 THEN 2 END, date('2024-01-01'))] RETURN k"))
+        assertEquals(
+            listOf(listOf(1L, 1L), listOf(2L, 1L), listOf(2L, 2L)),
+            query("UNWIND [1, 2] AS k UNWIND [i IN range(1, k) | date('2024-01-01') + duration({days: i - 1})] AS t RETURN k, t.day ORDER BY k, t.day"),
+        )
+    }
+
+    @Test
     fun `texts, text functions and arithmetic over an aggregate's result, beside grouping keys, a walk, DISTINCT and an order`() {
         // #373: an operation over an aggregate's result is worked out over the aggregate's column, where it would bind a value;
         // the three aggregates concatenated ran the compiler out of memory on Oracle, and compiled to 68 MB on Postgres.
