@@ -239,7 +239,7 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return depth == 0 && !quoted
     }
 
-    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [split], [replaceText] and [reversedText], which read them otherwise. */
+    /** Whether the texts [texts] gives its body are CLOBs: see [scalar], [startsWith], [endsWith], [containsText], [split], [replaceText] and [reversedText], which read them otherwise. */
     private var long = false
 
     override fun boolOf(json: String) = shared(json) { (x) -> "CASE WHEN ${kind(x)} = 'boolean' THEN JSON_VALUE($x, '$' RETURNING BOOLEAN) END" }
@@ -288,7 +288,8 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
      * is read so: a property inside an item (`[n.a]`, `collect(n.a)`) is read as [propertyOf] reads it, and isn't worked
      * around. Read so, a text past 32 KB still can't be sorted by, grouped by or made `DISTINCT`: Oracle refuses it
      * (ORA-40180), as it does any JSON that large, and the session stays open. A write's block is worked around too, where
-     * it takes a text from the row it is writing: see [rowValue]; and so is an unwound item's value an item gives: see [itemValue].
+     * it takes a text from the row it is writing: see [rowValue]; so is an unwound item's value an item gives: see [itemValue];
+     * and so is an item of a list read by its place: see [listItem].
      *
      * To remove it, delete this override, so the item is read as [propertyOf] reads it, `JSON_QUERY … RETURNING JSON`,
      * once an Oracle release no longer crashes on the repro, and `CypherWriteOracleTest`'s "a property past 32 KB read on
@@ -344,11 +345,31 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
     override fun itemValue(json: String, key: String) = throughText(json, listOf(key))
 
     /** The value at [keys] in the JSON [json]: a text read with one path from [json] written out as text, anything else as JSON. */
-    private fun throughText(json: String, keys: List<String>) = shared(json) { (x) ->
-        val path = OracleSql.path(keys)
-        "CASE WHEN JSON_VALUE($x, ${OracleSql.path(keys, ".type()")}) = 'string' " +
-            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($x RETURNING CLOB), $path RETURNING CLOB)) ELSE JSON_QUERY($x, $path RETURNING JSON) END"
-    }
+    private fun throughText(json: String, keys: List<String>) = shared(json) { (x) -> throughText(x, OracleSql.path(keys), OracleSql.path(keys, ".type()")) }
+
+    /**
+     * The value at the path [path] in the JSON [json], with [passing] its `PASSING` clause where it has one: a text read with
+     * that path from [json] written out as text, anything else as JSON. [typed] is the path to its kind, `.type()`.
+     */
+    private fun throughText(json: String, path: String, typed: String, passing: String = "") =
+        "CASE WHEN JSON_VALUE($json, $typed$passing) = 'string' " +
+            "THEN JSON(JSON_QUERY(JSON_SERIALIZE($json RETURNING CLOB), $path$passing RETURNING CLOB)) ELSE JSON_QUERY($json, $path$passing RETURNING JSON) END"
+
+    /**
+     * The item at the path [path] of the JSON list [json], `'$[0]'`, read as [throughText] reads a value: a text from the list
+     * written out as text, anything else as JSON, as before.
+     *
+     * **A workaround for the Oracle bug of [itemProperty] (#388), to be removed with it.** A statement crashed the session where
+     * it took a text past 32 KB from a list as JSON, `JSON_QUERY(list, '$[$i]' RETURNING JSON)`, for each of two or more rows,
+     * from the second run on: an item of a list `split` made, read by index, by `head` or `last`, or after a slice, of a stored
+     * list, and of one a `WITH` passed on. Its text read straight from the list by its path, `JSON_VALUE(list, '$[0]'
+     * RETURNING CLOB)`, ran clean too, but a value the item is read as whole, returned or passed on, needs it as JSON. An
+     * item is read as text only where it is a text: the list is written out whole for it, so a short text of a long list
+     * costs that list's length. To remove it, read the item with `JSON_QUERY(… RETURNING JSON)` again, once an Oracle release
+     * no longer crashes on the repro in `docs/oracle-long-json-string-crash.md`, and `CypherQueryOracleTest`'s "a text past
+     * 32 KB that is an item of a list" test still passes without it.
+     */
+    private fun listItem(json: String, path: String, passing: String = "") = throughText(json, path, "${path.dropLast(1)}.type()'", passing)
 
     /**
      * A value in a parameter that is a map, `${'$'}p.text`, read with one path from the text the parameter is bound as, and
@@ -369,10 +390,10 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         return doubled
     }
 
-    /** Counted from the end where negative: a JSON path counts from the start. */
+    /** Counted from the end where negative: a JSON path counts from the start. Read as [listItem] reads an item. */
     override fun element(json: String, index: String) = shared(json, index) { (list, i) ->
         val at = "JSON_VALUE($i, '$' RETURNING NUMBER)"
-        "JSON_QUERY($list, '\$[\$i]' PASSING CASE WHEN $at < 0 THEN JSON_VALUE($list, '\$.size()' RETURNING NUMBER) + $at ELSE $at END AS \"i\" RETURNING JSON)"
+        listItem(list, "'\$[\$i]'", " PASSING CASE WHEN $at < 0 THEN JSON_VALUE($list, '\$.size()' RETURNING NUMBER) + $at ELSE $at END AS \"i\"")
     }
 
     /** A JSON path names a key as it is written, so a key an expression gives is not read: `map[key]` is null, where `list[i]` reads its item. */
@@ -616,8 +637,43 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         if (long) shared(a, b) { (t, x) -> "(LENGTH($t) >= LENGTH($x) AND DBMS_LOB.COMPARE($t, $x, LENGTH($x), LENGTH($t) - LENGTH($x) + 1, 1) = 0)" }
         else shared(b) { (x) -> "(SUBSTR($a, -LENGTH($x)) = $x)" }
 
-    /** Of CLOBs too (see [texts]), though `INSTR` looks for no text past 32 KB (ORA-22828). */
-    override fun containsText(a: String, b: String) = "(INSTR($a, $b) > 0)"
+    /**
+     * By `INSTR`, of `VARCHAR2`s, and of CLOBs (see [texts]) where the text looked for is at most [SEARCHED_TEXT] UTF-16
+     * units: `INSTR` refuses a longer one (ORA-22828, #312), and `DBMS_LOB.INSTR` one past 4,000 bytes (ORA-22835). A
+     * longer one is in the text where the two are as long and `DBMS_LOB.COMPARE` finds them equal, and where it is
+     * shorter, where [searched] finds it. The CLOBs are bound, so a property is read inside the bound subquery: see [texts].
+     *
+     * Each way gives a number, 1 where the text is found, and only the `CASE` that chooses between them is compared with 1:
+     * `(SELECT … MODEL …) = 1` and `> 0` were false where the subquery alone gave 1, as was a `CASE` with the comparison
+     * in a branch; a `CASE` of numbers compared outside gave the right answer in a select, a `WHERE`, a cross join, a
+     * `COUNT(CASE …)` and a PL/SQL block.
+     */
+    override fun containsText(a: String, b: String) =
+        if (!long) "(INSTR($a, $b) > 0)"
+        else bound(a, b) { (t, x) ->
+            "(CASE WHEN $t IS NULL OR $x IS NULL THEN NULL WHEN LENGTH($x) <= $SEARCHED_TEXT THEN SIGN(INSTR($t, $x)) " +
+                "WHEN LENGTH($x) >= LENGTH($t) THEN CASE WHEN LENGTH($x) = LENGTH($t) AND DBMS_LOB.COMPARE($t, $x) = 0 THEN 1 ELSE 0 END " +
+                "ELSE ${searched(t, x)} END = 1)"
+        }
+
+    /**
+     * 1 where the CLOB [x], longer than [SEARCHED_TEXT] units and shorter than the CLOB [t], is in [t], else -1. At each
+     * place in turn where its first [SEARCHED_PREFIX] units are, `INSTR` finding each from the one before, it is compared
+     * whole by `DBMS_LOB.COMPARE`. A recursive `WITH` would carry the place from one to the next, but reads no column of
+     * the row it is in (ORA-00904); the `MODEL` clause carries it, and does. So the time grows with the length of [t] and
+     * with how many places are compared, each as far as the two are equal: as `INSTR`'s own, which compares at each place.
+     *
+     * The first units may end on the first of a pair, which `SUBSTR` of a CLOB cuts where `DBMS_LOB.SUBSTR` refuses to
+     * (ORA-22831): `INSTR` finds the half where the whole pair is, and the comparison is of the whole text.
+     */
+    private fun searched(t: String, x: String): String {
+        val prefix = "SUBSTR($x, 1, $SEARCHED_PREFIX)"
+        val found = "CASE WHEN cs_at[0] = 0 OR cs_at[0] > LENGTH($t) - LENGTH($x) + 1 THEN -1 " +
+            "WHEN DBMS_LOB.COMPARE($t, $x, LENGTH($x), cs_at[0], 1) = 0 THEN 1 ELSE 0 END"
+        return "(SELECT cs_found FROM DUAL MODEL DIMENSION BY (0 cs_i) MEASURES (INSTR($t, $prefix) cs_at, 0 cs_found) " +
+            "RULES ITERATE ($SEARCHED_PLACES) UNTIL (cs_found[0] <> 0) " +
+            "(cs_found[0] = $found, cs_at[0] = CASE WHEN cs_found[0] = 0 THEN INSTR($t, $prefix, cs_at[0] + 1) ELSE cs_at[0] END))"
+    }
 
     /** Of a property, read from the properties by its own path: see [direct]. */
     override fun function(name: String, json: String): String? = functionOf(name, json)?.let { direct(it, json) }
@@ -633,8 +689,9 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
         "tostring" -> "COALESCE(JSON_SCALAR(${asText(json)}), JSON_SCALAR(${longText(json)}))"
         "tointeger" -> "JSON_SCALAR(TRUNC(TO_NUMBER(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR)))"
         "tofloat" -> "JSON_SCALAR(TO_BINARY_DOUBLE(JSON_VALUE($json, '\$') DEFAULT NULL ON CONVERSION ERROR))"
-        "head" -> "JSON_QUERY($json, '\$[0]' RETURNING JSON)"
-        "last" -> "JSON_QUERY($json, '\$[last]' RETURNING JSON)"
+        // An item read so where it is a text past 32 KB crashed the session: see [listItem].
+        "head" -> listItem(json, "'\$[0]'")
+        "last" -> listItem(json, "'\$[last]'")
         "abs" -> "CASE WHEN ${kind(json)} = 'double' THEN JSON_SCALAR(ABS(TO_BINARY_DOUBLE(${number(json)}))) ELSE JSON_SCALAR(ABS(${number(json)})) END"
         "keys" -> keys(json)
         else -> null
@@ -1023,6 +1080,21 @@ class OracleCypherCompiler(graph: String, private val nullsEqualStored: Boolean 
 
         /** A query that opens with hints, and those hints: Oracle reads the first hint comment of a query alone. */
         private val HINTED = Regex("""SELECT /\*\+ (.*?) \*/""")
+
+        /**
+         * The most UTF-16 units of a text `INSTR` looks for in a CLOB: 32,767 of one byte, or of three, or 16,385 pairs, each
+         * two units; one more it refuses (ORA-22828). See [containsText].
+         */
+        const val SEARCHED_TEXT = 32_767
+
+        /** How many units of a longer text [containsText] looks for first, with `INSTR`, before comparing it whole there. */
+        const val SEARCHED_PREFIX = 1000
+
+        /**
+         * The most places [containsText] compares a long text at, as `MODEL`'s `ITERATE` takes a number: 2^32 - 1, far more
+         * than a stored text has units, so the search stops where the text is found or no place is left first.
+         */
+        const val SEARCHED_PLACES = 4_294_967_295L
 
         /**
          * The most characters of a text [sharedSum] binds as JSON: one of 40,001, bound as JSON beside a long value, closed the
