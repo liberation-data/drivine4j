@@ -72,7 +72,7 @@ object CypherReader {
         val items = call.oC_YieldItems()
             ?: throw DrivineException("A CALL of a procedure within a query names what it yields, as in Cypher: CALL ${procedure.qualifiedName}() YIELD ${procedure.field}.")
         val where = items.oC_Where()?.let { expression(it.oC_Expression()) }
-        return Clause.Call(false, procedure.query(invocation.oC_Expression().map(::expression), yields(items), where))
+        return Clause.Call(false, procedure.query(invocation.oC_Expression().map(::expression), yields(items), where), procedure = true)
     }
 
     /** The procedure a call names, or the call refused where the compiler does not take it. */

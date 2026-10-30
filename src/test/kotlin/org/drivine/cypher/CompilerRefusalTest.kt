@@ -257,6 +257,12 @@ class CompilerRefusalTest {
                 "MATCH (a) CALL { WITH a MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
                 "MATCH (a) CALL (a) { MATCH (a)-->(b) RETURN b } MATCH (b)-->() RETURN b",
                 "MATCH (a) CALL (a) { CREATE (a)-[:R]->(b) RETURN b } RETURN b",
+                // A name a CALL does not import is a new variable in it, of any kind (#410).
+                "MATCH (a) CALL { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x",
+                "MATCH (a) CALL () { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x",
+                "MATCH (a), (b) CALL (a) { MATCH ()-[b]->() RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL { WITH a WITH 1 AS one MATCH ()-[a]->() RETURN 1 AS x } RETURN x",
+                "MATCH (a) CALL () { CREATE (a) RETURN 1 AS x } RETURN x",
                 "MATCH ()-[n]->(m) FOREACH (n IN [m] | CREATE (n)-[:R]->())",
                 "MATCH (a) WITH a, 1 AS b ORDER BY size([(a)-->(x) | x]) RETURN b",
                 "MATCH (a) MATCH p = (a)-->() RETURN nodes(p)",
@@ -270,8 +276,6 @@ class CompilerRefusalTest {
                 "MATCH ()-[r]->() WITH r MATCH ()-[r]->() RETURN r" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a)-[r]->() RETURN EXISTS { (a)-[r]->() } AS e" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a)-[r]->(b) MERGE (a)-[r]->(b)" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
-                "MATCH (a) CALL { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
-                "MATCH (a) CALL () { MATCH ()-[a]->() RETURN 1 AS x } RETURN a, x" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH ()-[r]->() FOREACH (x IN [1] | CREATE ()-[r:T]->())" to "A relationship variable bound before its pattern is Cypher, and is not compiled to SQL yet.",
                 "MATCH (a) CALL { WITH a RETURN a AS b UNION WITH a MATCH ()-[b]->() RETURN b } RETURN b" to
                     "A UNION in CALL { … } whose queries return values of different kinds is Cypher, and is not compiled to SQL yet.",

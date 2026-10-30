@@ -929,7 +929,7 @@ abstract class SqlCypherCompiler(graph: String) {
             if (call.query.clauses.last() !is Clause.Return) unsupported("A CALL { … } that returns nothing")
             if (call.query.clauses.any(::writes)) unsupported("A write in CALL { … }")
             val order = rowOrder
-            val projected = if (call.query.unions.isEmpty()) calledPart(select, call.query.clauses, null, distinct = false) else calledUnion(select, call.query)
+            val projected = if (call.query.unions.isEmpty()) calledPart(select, call, call.query.clauses, null, distinct = false) else calledUnion(select, call)
             rowOrder = order
             redeclared(projected.scope.keys, select.bound.keys)
             val name = alias("c")
@@ -943,19 +943,36 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /**
-         * One query of a `CALL { … }`, for the row [select] reads: its returned items in the order [names] lists
-         * them, where a `UNION` names them so, and kept distinct with [distinct].
+         * One query of [call], [clauses], for the row [select] reads: its returned items in the order [names] lists
+         * them, where a `UNION` names them so, and kept distinct with [distinct]. It sees only the variables of the row it
+         * imports ([imports]): any other name in it is a new variable, as in Cypher, and so is an import after a `WITH` in it
+         * that does not pass it on (#410). A procedure's call sees each variable of the row throughout, as its `WHERE` reads them.
          */
-        private fun calledPart(select: Select, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
-            var inner = Select(select.scope)
-            importsApart(select.scope, clauses)?.let { (source, imports) ->
+        private fun calledPart(select: Select, call: Clause.Call, clauses: List<Clause>, names: List<String>?, distinct: Boolean): Projected {
+            val imported = if (call.procedure) select.scope else imports(call, clauses, select.scope.keys).let { names -> select.scope.filterKeys { it in names } }
+            var inner = Select(imported)
+            importsApart(imported, clauses)?.let { (source, imports) ->
                 inner.source(source)
                 imports.forEach(inner::bind)
             }
-            clauses.dropLast(1).forEach { inner = read(inner, it, select.scope) }
+            clauses.dropLast(1).forEach { inner = read(inner, it, if (call.procedure) imported else emptyMap()) }
             val projection = (clauses.last() as Clause.Return).projection
             val items = names?.map { name -> projection.items.single { it.name == name } } ?: projection.items
             return project(inner, projection.copy(items = items, distinct = distinct || projection.distinct), final = false)
+        }
+
+        /**
+         * The variables of the row, of [names], that the query [clauses] of [call] imports, as Cypher has it: those its
+         * brackets name, `CALL (a, b) { … }`, or each with `CALL (*) { … }`; with no brackets, those its leading `WITH`
+         * passes on as they are, or each with `WITH *`; none where it has neither, `CALL () { … }` or `CALL { MATCH … }`.
+         */
+        private fun imports(call: Clause.Call, clauses: List<Clause>, names: Collection<String>): Set<String> {
+            val all = names.toSet()
+            if (call.importsAll) return all
+            call.imports?.let { return all intersect it.toSet() }
+            val leading = (clauses.firstOrNull() as? Clause.With)?.projection ?: return emptySet()
+            if (leading.star) return all
+            return all intersect leading.items.filter { (it.expression as? Expression.Variable)?.name == it.name }.map { it.name }.toSet()
         }
 
         /**
@@ -988,7 +1005,8 @@ abstract class SqlCypherCompiler(graph: String) {
         }
 
         /** A `UNION` in a `CALL { … }`: each query's rows, the same items of the same kinds, matched by name as Cypher matches them. */
-        private fun calledUnion(select: Select, query: Query): Projected {
+        private fun calledUnion(select: Select, call: Clause.Call): Projected {
+            val query = call.query
             val parts = listOf(query.clauses) + query.unions.map { it.clauses }
             if (query.unions.map { it.all }.distinct().size > 1) throw DrivineException("UNION and UNION ALL are not mixed in one statement, as in Cypher.")
             val returns = parts.map { it.last() as Clause.Return }
@@ -996,7 +1014,7 @@ abstract class SqlCypherCompiler(graph: String) {
             val names = returns.first().projection.items.map { it.name }
             if (returns.any { r -> r.projection.items.map { it.name }.toSet() != names.toSet() }) throw DrivineException("Each query of a UNION returns the same names, as in Cypher.")
             val distinct = !query.unions.first().all
-            var projected = parts.map { calledPart(select, it, names, distinct) }
+            var projected = parts.map { calledPart(select, call, it, names, distinct) }
             if (projected.map { p -> p.scope.values.map { it::class } }.distinct().size > 1) unsupported("A UNION in CALL { … } whose queries return values of different kinds")
             // A map or a list that holds a node carries a column more, of its identity. Where one query's value has it and
             // another's has none, as `collect([r])` beside `[]`, the queries are compiled again without identities, so their
@@ -1005,7 +1023,7 @@ abstract class SqlCypherCompiler(graph: String) {
                 val was = identities
                 identities = false
                 try {
-                    projected = parts.map { calledPart(select, it, names, distinct) }
+                    projected = parts.map { calledPart(select, call, it, names, distinct) }
                 } finally {
                     identities = was
                 }
@@ -1674,10 +1692,13 @@ abstract class SqlCypherCompiler(graph: String) {
             val returnedCarried = hashMapOf<String, Value.Json>()
             let(kept, ROWS)
             if (ret != null) assign(gathered, literalJson(emptyList<Any>()))
+            // Only what the call imports is seen in it: any other name in it is a new variable, as in Cypher (#410).
+            val imported = imports(call, call.query.clauses, before.keys)
             eachRow(kept) {
                 if (ret != null) let(caller, "$RECORD.item")
+                restore(before.filterKeys { it in imported }, carriedBefore.filterKeys { it in imported })
                 var select = rows()
-                for (clause in imported(call.query.clauses)) {
+                for (clause in imported(call, imported)) {
                     select = if (clause is Clause.Return) with(select, Clause.With(clause.projection, null)) else next(select, clause)
                 }
                 if (ret != null) {
@@ -1720,12 +1741,18 @@ abstract class SqlCypherCompiler(graph: String) {
             }
         }
 
-        /** [clauses] without an importing `WITH` of variables alone that opens them: every variable of the row is seen. */
-        private fun imported(clauses: List<Clause>): List<Clause> {
+        /**
+         * The clauses of [call] without a `WITH` of variables alone that opens them and passes on each variable it
+         * [imports]: the row holds those alone already. One of a call with brackets that passes on fewer is written, so
+         * the others are gone after it.
+         */
+        private fun imported(call: Clause.Call, imports: Set<String>): List<Clause> {
+            val clauses = call.query.clauses
             val first = clauses.firstOrNull() as? Clause.With ?: return clauses
             val projection = first.projection
             val importing = first.where == null && !projection.distinct && projection.orderBy.isEmpty() && projection.skip == null && projection.limit == null &&
-                projection.items.all { (it.expression as? Expression.Variable)?.name == it.name }
+                projection.items.all { (it.expression as? Expression.Variable)?.name == it.name } &&
+                (projection.star || projection.items.map { it.name }.containsAll(imports))
             return if (importing) clauses.drop(1) else clauses
         }
 

@@ -72,6 +72,25 @@ abstract class CypherWriteContract {
     }
 
     @Test
+    fun `a CALL that writes sees only the variables it imports, so a CREATE of a name it does not import makes a new node`() {
+        // Not in the spec yet (#410): the row's node of that name was joined, so no node was made. The rows are Neo4j's (2026.10).
+        query("CREATE (:CyWrite {id: 1}), (:CyWrite {id: 2})")
+        assertEquals(
+            listOf(listOf(1L, true), listOf(2L, true)),
+            query("MATCH (a:CyWrite) CALL () { CREATE (a:CyWrite {made: true}) RETURN a.made AS m } RETURN a.id, m ORDER BY a.id"),
+        )
+        assertEquals(listOf(listOf(1L, 1L)), query("MATCH (a:CyWrite {id: 1}) CALL { CREATE (a:CyWrite {made: false}) RETURN 1 AS x } RETURN [a.id, x]"))
+        assertEquals(listOf(listOf(2L, 3L)), query("MATCH (n:CyWrite) RETURN [count(n.id), count(n.made)]"))
+        // CALL (a) imports a alone: b in it is new, and the row's b is as it was after it.
+        query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CALL (a) { CREATE (a)-[:R]->(b:CyWrite {id: 3}) } RETURN 1")
+        assertEquals(listOf(listOf(1L, 3L)), query("MATCH (a:CyWrite)-[:R]->(b) RETURN [a.id, b.id]"))
+        assertEquals(
+            listOf(listOf(2L, 4L)),
+            query("MATCH (a:CyWrite {id: 1}), (b:CyWrite {id: 2}) CALL (a) { CREATE (b:CyWrite {id: 4}) RETURN b.id AS made } RETURN [b.id, made]"),
+        )
+    }
+
+    @Test
     fun `a statement of hundreds of creates, each naming nodes made before it, makes them all`() {
         val clauses = (0 until 300).flatMap { i ->
             listOf("CREATE (n$i:CyWrite {i: $i})") + if (i > 0) listOf("CREATE (n${i - 1})-[:NEXT]->(n$i)") else emptyList()
